@@ -435,7 +435,9 @@ The terminal reads prompt boundaries from OSC 133 and the directory from OSC 7.
 
 **GitHub: Publish to GitHub** opens the GitHub CLI repository creation wizard
 in the current repository or workspace. **Ports: Forward a Port** accepts a
-local port and runs the Microsoft Dev Tunnels CLI in an integrated terminal.
+port number or a local address such as `localhost:3000`. The tunnel view
+asks the registered provider to run the Microsoft Dev Tunnels CLI in an
+integrated terminal.
 The temporary tunnel uses private access. Stop it from the Ports commands or
 with Ctrl+C in that terminal. These commands require `gh` and `devtunnel`,
 respectively, on PATH. [Dev Tunnels CLI](https://learn.microsoft.com/azure/developer/dev-tunnels/cli-commands)

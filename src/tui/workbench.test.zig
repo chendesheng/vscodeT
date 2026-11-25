@@ -7788,3 +7788,59 @@ test "Simple Browser command and API apply the same URL restrictions before term
     try std.testing.expectEqualStrings("Simple Browser requires an HTTP or HTTPS URL.", workbench.activeTab().?.editor.message());
     try std.testing.expectEqual(@as(usize, 0), workbench.terminalCount());
 }
+
+test "Ports commands use the registered workspace tunnel provider" {
+    const api = @import("../vs/workbench/api/common/extensionApi.zig");
+    const Terminal = struct {
+        launches: usize = 0,
+        alive: bool = false,
+        interrupted: bool = false,
+
+        fn create(context: *anyopaque, options: api.TerminalOptions) !usize {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try std.testing.expectEqualStrings("devtunnel", options.shell_path);
+            try std.testing.expectEqualStrings("Forward Port 3000", options.name);
+            try std.testing.expectEqual(@as(usize, 3), options.shell_args.len);
+            try std.testing.expectEqualStrings("host", options.shell_args[0]);
+            try std.testing.expectEqualStrings("-p", options.shell_args[1]);
+            try std.testing.expectEqualStrings("3000", options.shell_args[2]);
+            self.launches += 1;
+            self.alive = true;
+            return 42;
+        }
+
+        fn running(context: *anyopaque, id: usize) bool {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return id == 42 and self.alive;
+        }
+
+        fn send(context: *anyopaque, id: usize, message: []const u8) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.interrupted = id == 42 and std.mem.eql(u8, message, "\x03");
+            self.alive = false;
+        }
+    };
+    var terminal = Terminal{};
+    const w = try Workbench.init(std.testing.allocator, std.testing.io, &.{}, 80, 24);
+    defer w.deinit();
+    w.builtin_host.tunnel_provider.terminals = .{ .context = &terminal, .create = Terminal.create, .running = Terminal.running, .send_text = Terminal.send };
+    const picker = w.quick_access.inputService().pickerRef();
+    try w.commands.execute("remote.tunnel.closeCommandPalette");
+    picker.accept();
+    try std.testing.expectEqualStrings("Port number or address (eg. 3000 or 10.10.10.10:2000).", picker.placeholder);
+    try picker.setValue("localhost:3000");
+    picker.accept();
+    try std.testing.expectEqual(@as(usize, 1), terminal.launches);
+    for ([_][]const u8{ "3000", "127.0.0.1:3000", "65536", "host..invalid:80", "outside.example:3000" }) |input| {
+        try w.commands.execute("remote.tunnel.forwardCommandPalette");
+        try picker.setValue(input);
+        picker.accept();
+        try std.testing.expectEqual(@as(usize, 1), terminal.launches);
+    }
+    try w.commands.execute("remote.tunnel.closeCommandPalette");
+    try std.testing.expectEqualStrings("Port 3000", picker.items.items[0].item.label);
+    picker.accept();
+    try std.testing.expect(terminal.interrupted);
+    try w.commands.execute("remote.tunnel.closeCommandPalette");
+    try std.testing.expectEqualStrings("No ports currently forwarded. Try running the Forward a Port command", picker.items.items[0].item.label);
+}

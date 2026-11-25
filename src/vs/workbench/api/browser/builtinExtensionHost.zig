@@ -22,6 +22,9 @@ const commands = @import("../../../platform/commands/common/commands.zig");
 const statusbar = @import("../../services/statusbar/browser/statusbar.zig");
 const statusbar_part = @import("../../browser/parts/statusbar/statusbarPart.zig");
 const key_input = @import("../common/keyInput.zig");
+const tunnel = @import("../../../platform/tunnel/common/tunnel.zig");
+const TunnelProvider = @import("../../../../extensions/tunnel-forwarding/portForwarding.zig").TunnelProvider;
+const TunnelView = @import("../../contrib/remote/browser/tunnelView.zig").TunnelView;
 const extension_api = @import("../common/extensionApi.zig");
 const builtin_extension = @import("../common/builtinExtension.zig");
 
@@ -35,6 +38,9 @@ pub const BuiltinExtensionHost = struct {
     key_registry: key_input.KeyInputRegistry,
     extensions: builtin_extension.BuiltinExtensionRegistry,
     context: IExtensionContext,
+    tunnel_service: tunnel.TunnelService = .{},
+    tunnel_provider: TunnelProvider = undefined,
+    tunnel_view: ?TunnelView = null,
 
     pub fn init(allocator: Allocator, workbench: *Workbench) !*BuiltinExtensionHost {
         const self = try allocator.create(BuiltinExtensionHost);
@@ -64,6 +70,7 @@ pub const BuiltinExtensionHost = struct {
                 .on_did_change_active_editor_fn = onDidChangeActiveEditor,
             },
             .window = .{
+                .terminals = .{ .context = self, .create = createExtensionTerminal, .running = extensionTerminalRunning, .send_text = sendTerminalText },
                 .context = self,
                 .create_status_entry_fn = createStatusEntry,
                 .set_message_fn = setWindowMessage,
@@ -72,6 +79,7 @@ pub const BuiltinExtensionHost = struct {
                 .switch_tab_fn = switchTab,
             },
             .workspace = .{
+                .register_tunnel_provider = registerTunnelProvider,
                 .context = self,
                 .text_document_fn = getTextDocument,
                 .get_bool_fn = getBool,
@@ -84,13 +92,22 @@ pub const BuiltinExtensionHost = struct {
                 .record_navigation_fn = historyRecord,
             },
         };
+        try self.tunnel_provider.activate(&self.context);
         return self;
     }
 
     pub fn deinit(self: *BuiltinExtensionHost) void {
+        if (self.tunnel_view) |*view| view.deinit();
+        self.tunnel_provider.deinit();
         self.extensions.deinit();
         self.key_registry.deinit();
         self.allocator.destroy(self);
+    }
+
+    pub fn registerPortActions(self: *BuiltinExtensionHost) !void {
+        self.tunnel_view = @as(TunnelView, undefined);
+        errdefer self.tunnel_view = null;
+        try self.tunnel_view.?.init(&self.context, self.workbench.quick_access.inputService(), &self.tunnel_service);
     }
 
     pub fn registerBuiltin(self: *BuiltinExtensionHost, extension: builtin_extension.IBuiltinExtension) !void {
@@ -488,9 +505,35 @@ fn createStatusEntry(context: *anyopaque, id: []const u8, name: []const u8) anye
     };
 }
 
+fn registerTunnelProvider(context: *anyopaque, provider: tunnel.ITunnelProvider) !extension_api.IDisposable {
+    const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
+    return self.tunnel_service.setTunnelProvider(provider);
+}
+
+fn createExtensionTerminal(context: *anyopaque, options: extension_api.TerminalOptions) !usize {
+    const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
+    const executable = try @import("../../../platform/terminal/node/terminalProfiles.zig").findTerminalExecutable(self.allocator, self.workbench.io, options.shell_path) orelse return error.ExecutableNotFound;
+    defer self.allocator.free(executable);
+    const instance = try self.workbench.launchTerminalProcess(options.name, executable, options.shell_args, null);
+    return instance.id;
+}
+
+fn extensionTerminalRunning(context: *anyopaque, id: usize) bool {
+    const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
+    const service = self.workbench.terminal_service orelse return false;
+    const instance = service.getInstanceFromId(id) orelse return false;
+    return instance.process_state == .running;
+}
+
+fn sendTerminalText(context: *anyopaque, id: usize, text: []const u8) void {
+    const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
+    const service = self.workbench.terminal_service orelse return;
+    if (service.getInstanceFromId(id)) |instance| instance.writeInput(text);
+}
+
 fn setWindowMessage(context: *anyopaque, text: []const u8) void {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
-    if (self.workbench.activeTab()) |tab| tab.editor.setMessage("{s}", .{text});
+    if (self.workbench.activeTab()) |tab| tab.editor.setMessage("{s}", .{text}) else self.workbench.setStatusHint("{s}", .{text});
 }
 
 fn forceCloseActive(context: *anyopaque) anyerror!void {

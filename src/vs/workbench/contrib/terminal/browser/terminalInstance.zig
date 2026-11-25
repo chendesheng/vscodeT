@@ -70,7 +70,6 @@ pub const TerminalInstance = struct {
     initial_cwd: ?[]u8 = null,
     workspace_folder: ?[]u8 = null,
     shell_type: ?CompletionShell = null,
-    forwarded_port: ?u16 = null,
     process_name: []u8,
     profile_name: []u8,
     static_title: ?[]u8 = null,

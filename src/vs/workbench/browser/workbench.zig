@@ -1669,7 +1669,7 @@ pub const Workbench = struct {
         };
         for (commands) |command| try self.commands.register(command);
 
-        try @import("../../../extensions/tunnel-forwarding/portForwarding.zig").register(self);
+        try self.builtin_host.registerPortActions();
         try self.references_view.init(&self.builtin_host.context, self.quick_access.inputService());
         errdefer self.references_view.deinit();
         for (go_to_commands.actions, 0..) |_, index| {

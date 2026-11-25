@@ -215,7 +215,19 @@ pub const IStatusEntry = struct {
     }
 };
 
+pub const TerminalOptions = struct { name: []const u8, shell_path: []const u8, shell_args: []const []const u8 };
+
+/// The native terminal collection uses instance IDs so a disposed terminal
+/// can be queried safely by compiled-in extensions.
+pub const TerminalCollection = struct {
+    context: *anyopaque,
+    create: *const fn (*anyopaque, TerminalOptions) anyerror!usize,
+    running: *const fn (*anyopaque, usize) bool,
+    send_text: *const fn (*anyopaque, usize, []const u8) void,
+};
+
 pub const IWindowService = struct {
+    terminals: ?TerminalCollection = null,
     context: *anyopaque,
     create_status_entry_fn: *const fn (context: *anyopaque, id: []const u8, name: []const u8) anyerror!IStatusEntry,
     set_message_fn: *const fn (context: *anyopaque, text: []const u8) void,
@@ -260,12 +272,19 @@ pub const IHistoryService = struct {
 };
 
 pub const IWorkspaceService = struct {
+    register_tunnel_provider: ?*const fn (*anyopaque, @import("../../../platform/tunnel/common/tunnel.zig").ITunnelProvider) anyerror!IDisposable = null,
+
     /// Looks up a document already open in the editor, as in workspace.textDocuments.
     text_document_fn: ?*const fn (*anyopaque, []const u8) ?*TextModel = null,
 
     context: *anyopaque,
     get_bool_fn: *const fn (context: *anyopaque, key: []const u8, default: bool) bool,
     get_string_fn: *const fn (context: *anyopaque, key: []const u8) ?[]const u8,
+
+    pub fn registerTunnelProvider(self: IWorkspaceService, provider: @import("../../../platform/tunnel/common/tunnel.zig").ITunnelProvider) !IDisposable {
+        const register = self.register_tunnel_provider orelse return error.Unsupported;
+        return register(self.context, provider);
+    }
 
     pub fn getBool(self: IWorkspaceService, key: []const u8, default: bool) bool {
         return self.get_bool_fn(self.context, key, default);

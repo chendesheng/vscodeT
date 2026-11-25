@@ -54,7 +54,10 @@ Show All Commands resolves the quick input service through its Action2 handler.
 * TerminalSuggestAddon requests completions through ITerminalCompletionService.
   The RPC reply wakes the terminal view directly. The terminal host currently
   supports explicit requests to the bundled terminal-suggest provider and
-  appending a suffix at the prompt cursor. Fourteen files still import the shell.
+  appending a suffix at the prompt cursor.
+* The tunnel view owns the two Ports palette actions. The compiled-in extension
+  registers its private local provider with the workspace API and uses the
+  window terminal API. Thirteen files still import the shell.
 * The SCM changes and history panes read settings through IConfigurationService.
   Configuration change events apply settings to open panes, including edits
   made through the configuration API. The graph restores its workspace view mode
