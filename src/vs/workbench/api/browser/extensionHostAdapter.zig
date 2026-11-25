@@ -562,7 +562,7 @@ pub const Extensions = struct {
             for (url) |byte| if (byte < 32 or byte == 127) return false;
             const opener = switch (@import("builtin").os.tag) {
                 .macos => "/usr/bin/open",
-                .linux => try self.workbench.findTerminalExecutable("xdg-open") orelse return false,
+                .linux => try @import("../../../platform/terminal/node/terminalProfiles.zig").findTerminalExecutable(self.allocator, self.io, "xdg-open") orelse return false,
                 else => return false,
             };
             defer if (@import("builtin").os.tag == .linux) self.allocator.free(opener);
@@ -1491,7 +1491,7 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
     const self: *Extensions = @ptrCast(@alignCast(context));
     const args: []const std.json.Value = if (command_args == .array) command_args.array.items else &.{};
     if (std.mem.eql(u8, command, "workbench.action.browser.open") or std.mem.eql(u8, command, "simpleBrowser.show")) {
-        try self.workbench.openBrowser(if (args.len > 0 and args[0] == .string) args[0].string else null);
+        try self.workbench.simple_browser.show(if (args.len > 0 and args[0] == .string) args[0].string else null);
         self.needs_render = true;
         return null;
     }

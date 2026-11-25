@@ -86,6 +86,9 @@ const history_mod = @import("../services/history/common/history.zig");
 const HistoryService = history_mod.HistoryService;
 const commands_mod = @import("./commands.zig");
 const CommandRegistry = commands_mod.CommandRegistry;
+const SimpleBrowserManager = @import("../../../extensions/simple-browser/src/simpleBrowserManager.zig").SimpleBrowserManager;
+const terminal_platform = @import("../../platform/terminal/common/terminal.zig");
+const terminal_profiles = @import("../../platform/terminal/node/terminalProfiles.zig");
 const quick_access_mod = @import("./quickaccess.zig");
 const QuickAccessService = quick_access_mod.QuickAccessService;
 const editor_status_mod = @import("./parts/editor/editorStatus.zig");
@@ -710,6 +713,7 @@ pub const Workbench = struct {
     theme_scheme_host: TerminalColorSchemeHost,
     theme_palette: ?*theme_colors_mod.ThemeColors,
     quick_access: *QuickAccessService,
+    simple_browser: SimpleBrowserManager,
     outline_service: OutlineService,
     services: @import("../../platform/instantiation/common/serviceCollection.zig").ServiceCollection,
     instantiation: @import("../../platform/instantiation/common/instantiationService.zig").InstantiationService,
@@ -1392,6 +1396,7 @@ pub const Workbench = struct {
             self.media_status = null;
         }
 
+        self.simple_browser = .{ .allocator = self.allocator, .io = self.io, .quick_input = self.quick_access.inputService(), .context = self, .open_editor = openTerminalEditorWithProfile, .report_error = reportEditorMessage };
         try self.registerDefaultCommands();
         self.statusbar.setCommandExecutor(.{
             .context = self,
@@ -1422,8 +1427,8 @@ pub const Workbench = struct {
             .{ .id = "list.toggleExpand", .label = "Toggle Expand", .category = "List", .context = self, .run = commandListToggleExpand },
             .{ .id = "list.select", .label = "Select", .category = "List", .context = self, .run = commandListSelect },
             .{ .id = "github.publish", .label = "Publish to GitHub", .category = "GitHub", .context = self, .run = commandGithubPublish },
-            .{ .id = "simpleBrowser.show", .label = "Show", .category = "Simple Browser", .context = self, .run = commandOpenBrowser },
-            .{ .id = "workbench.action.browser.open", .label = "Open Integrated Browser", .show_in_palette = false, .context = self, .run = commandOpenBrowser },
+            .{ .id = "simpleBrowser.show", .label = "Show", .category = "Simple Browser", .context = &self.simple_browser, .run = SimpleBrowserManager.run },
+            .{ .id = "workbench.action.browser.open", .label = "Open Integrated Browser", .show_in_palette = false, .context = &self.simple_browser, .run = SimpleBrowserManager.run },
             .{ .id = "workbench.action.openSettingsJson", .label = "Open User Settings (JSON)", .category = "Preferences", .context = self, .run = commandOpenSettingsJson },
             .{ .id = "workbench.action.openGlobalKeybindingsFile", .label = "Open Keyboard Shortcuts (JSON)", .category = "Preferences", .context = self, .run = commandOpenKeybindingsJson },
             .{ .id = "workbench.action.closeActiveEditor", .label = "Close Editor", .category = "View", .context = self, .run = commandCloseEditor },
@@ -3171,43 +3176,14 @@ pub const Workbench = struct {
         self.revealActiveTerminalTab();
     }
 
-    pub fn openBrowser(self: *Workbench, address: ?[]const u8) !void {
-        const url = std.mem.trim(u8, address orelse "", " \t\r\n");
-        if (url.len == 0) {
-            try self.quick_access.inputService().showPick(&.{}, .{ .placeholder = "Enter an HTTP or HTTPS URL", .allow_free_input = true }, onBrowserAddress, self);
-            return;
-        }
-        const uri = std.Uri.parse(url) catch return error.InvalidBrowserAddress;
-        if (uri.host == null or (!std.ascii.eqlIgnoreCase(uri.scheme, "http") and !std.ascii.eqlIgnoreCase(uri.scheme, "https"))) return error.InvalidBrowserAddress;
-        for (url) |byte| if (byte < 0x20 or byte == 0x7f) return error.InvalidBrowserAddress;
-
-        const executable = try self.findTerminalExecutable("lynx") orelse return error.LynxNotInstalled;
-        defer self.allocator.free(executable);
+    fn openTerminalEditorWithProfile(context: *anyopaque, profile: terminal_platform.ITerminalProfile) !void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
         const pane = self.activePane() orelse return error.GroupPaneMissing;
         const service = try self.ensureTerminalService();
-        const instance = try service.createInstanceWithProfile(.{
-            .path = executable,
-            .args = &.{ "-restrictions=exec,shell", url },
-            .profile_name = "Simple Browser",
-        });
+        const instance = try service.createInstanceWithProfile(profile);
         errdefer instance.deinit();
-        try instance.rename("Simple Browser");
+        try instance.rename(profile.profile_name);
         _ = try self.openTerminalEditor(pane, service, instance);
-    }
-
-    pub fn findTerminalExecutable(self: *Workbench, name: []const u8) !?[]u8 {
-        const search_path = std.c.getenv("PATH") orelse return null;
-        var paths = std.mem.tokenizeScalar(u8, std.mem.span(search_path), std.fs.path.delimiter);
-        while (paths.next()) |directory| {
-            if (!std.fs.path.isAbsolute(directory)) continue;
-            const executable = try std.fs.path.join(self.allocator, &.{ directory, name });
-            std.Io.Dir.accessAbsolute(self.io, executable, .{ .execute = true }) catch {
-                self.allocator.free(executable);
-                continue;
-            };
-            return executable;
-        }
-        return null;
     }
 
     fn newTerminalEditor(self: *Workbench) !void {
@@ -14126,7 +14102,7 @@ fn commandGithubPublish(context: *anyopaque) anyerror!void {
         self.setStatusHint("Open a folder to publish to GitHub", .{});
         return;
     };
-    const executable = try self.findTerminalExecutable("gh") orelse {
+    const executable = try terminal_profiles.findTerminalExecutable(self.allocator, self.io, "gh") orelse {
         self.setStatusHint("Install GitHub CLI and add gh to PATH to publish a repository", .{});
         return;
     };
@@ -14134,22 +14110,11 @@ fn commandGithubPublish(context: *anyopaque) anyerror!void {
     _ = try self.launchTerminalProcess("Publish to GitHub", executable, &.{ "repo", "create" }, folder);
 }
 
-fn commandOpenBrowser(context: *anyopaque) anyerror!void {
+fn reportEditorMessage(context: *anyopaque, message: []const u8) bool {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.openBrowser(null);
-}
-
-fn onBrowserAddress(context: *anyopaque, picker: *QuickPick) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (picker.value.items.len == 0) return;
-    self.openBrowser(picker.value.items) catch |err| {
-        const message = switch (err) {
-            error.LynxNotInstalled => "Install Lynx and add lynx to PATH to use Simple Browser.",
-            error.InvalidBrowserAddress => "Simple Browser requires an HTTP or HTTPS URL.",
-            else => return err,
-        };
-        if (self.activeTab()) |tab| tab.editor.setMessage("{s}", .{message}) else return err;
-    };
+    const tab = self.activeTab() orelse return false;
+    tab.editor.setMessage("{s}", .{message});
+    return true;
 }
 
 fn commandCreateTerminalEditor(context: *anyopaque) anyerror!void {

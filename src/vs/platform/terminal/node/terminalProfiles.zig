@@ -171,3 +171,20 @@ pub fn profileForPath(
         .is_default = true,
     };
 }
+
+/// Locate a terminal helper in an absolute PATH entry. The working directory
+/// may be the opened workspace, so relative executable search paths are skipped.
+pub fn findTerminalExecutable(allocator: std.mem.Allocator, io: std.Io, name: []const u8) !?[]u8 {
+    const search_path = std.c.getenv("PATH") orelse return null;
+    var paths = std.mem.tokenizeScalar(u8, std.mem.span(search_path), std.fs.path.delimiter);
+    while (paths.next()) |directory| {
+        if (!std.fs.path.isAbsolute(directory)) continue;
+        const executable = try std.fs.path.join(allocator, &.{ directory, name });
+        std.Io.Dir.accessAbsolute(io, executable, .{ .execute = true }) catch {
+            allocator.free(executable);
+            continue;
+        };
+        return executable;
+    }
+    return null;
+}

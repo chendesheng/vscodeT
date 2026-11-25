@@ -7705,3 +7705,22 @@ test "workbench context keys observe part visibility and dirty working copies be
     try editor.save();
     try std.testing.expect(!keys.getValue("dirtyWorkingCopies").boolean);
 }
+
+test "Simple Browser command and API apply the same URL restrictions before terminal launch" {
+    const allocator = std.testing.allocator;
+    const io = time_compat.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "browser.txt", "");
+    defer allocator.free(path);
+    const workbench = try Workbench.init(allocator, io, &.{path}, 72, 16);
+    defer workbench.deinit();
+    try std.testing.expectError(error.InvalidBrowserAddress, workbench.simple_browser.show("file:///etc/hosts"));
+    try std.testing.expectError(error.InvalidBrowserAddress, workbench.simple_browser.show("https://example.org/a\rb"));
+    try workbench.commands.execute("simpleBrowser.show");
+    const picker = workbench.quick_access.inputService().pickerRef();
+    try picker.setValue("file:///etc/hosts");
+    picker.accept();
+    try std.testing.expectEqualStrings("Simple Browser requires an HTTP or HTTPS URL.", workbench.activeTab().?.editor.message());
+    try std.testing.expectEqual(@as(usize, 0), workbench.terminalCount());
+}

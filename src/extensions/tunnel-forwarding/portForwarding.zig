@@ -32,7 +32,7 @@ fn forward(context: *anyopaque, picker: *QuickPick) !void {
             }
         }
     }
-    const executable = try w.findTerminalExecutable("devtunnel") orelse {
+    const executable = try @import("../../vs/platform/terminal/node/terminalProfiles.zig").findTerminalExecutable(w.allocator, w.io, "devtunnel") orelse {
         w.setStatusHint("Install the Microsoft Dev Tunnels CLI and add devtunnel to PATH", .{});
         return;
     };
