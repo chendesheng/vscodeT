@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 13,383 lines and has no inline tests. It has no direct imports from `src/tui`. Nine files import the shell. All 151 baseline
+The browser shell is 13,381 lines and has no inline tests. It has no direct imports from `src/tui`. Nine files import the shell. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records 256 command IDs with labels, categories and visibility for empty and
@@ -47,7 +47,9 @@ Show All Commands resolves the quick input service through its Action2 handler.
   and watcher reloads. A missing input opens empty. A missing watched file reports a
   failed reload and preserves the open model. Closing or superseding a request cancels
   its read before releasing the path.
-* Fresh and restored windows supply their initial service collection. Startup resolves
+* Fresh and restored windows supply their initial service collection and call startup
+  explicitly. Startup returns the instantiation service. The terminal opens command-line
+  files after startup. Startup resolves
   the lifecycle service and signals Ready before initializing layout and starting
   the contribution registries. The editor part
   constructs group views from the registered group models. Each group restores

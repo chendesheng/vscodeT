@@ -143,6 +143,7 @@ const outline_model = @import("../../editor/contrib/documentSymbols/browser/outl
 const OutlineModel = outline_model.OutlineModel;
 const lifecycle_mod = @import("../services/lifecycle/common/lifecycle.zig");
 const ServiceCollection = @import("../../platform/instantiation/common/serviceCollection.zig").ServiceCollection;
+const InstantiationService = @import("../../platform/instantiation/common/instantiationService.zig").InstantiationService;
 const ServicesAccessor = @import("../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
 const outline_pane_mod = @import("../contrib/outline/browser/outlinePane.zig");
 const OutlinePane = outline_pane_mod.OutlinePane;
@@ -489,6 +490,7 @@ const WindowViews = struct {
 
 pub const Workbench = struct {
     const WindowTimer = @import("../../base/common/async.zig").WindowTimer;
+    startup_window: ?struct { parent: *ui.Node, options: IWorkbenchOptions, has_previous_state: bool },
     restore_timer: ?*WindowTimer,
     code_editors: CodeEditorService,
     window_views: WindowViews,
@@ -621,7 +623,7 @@ pub const Workbench = struct {
     simple_browser: SimpleBrowserManager,
     outline_service: OutlineService,
     services: ServiceCollection,
-    instantiation: @import("../../platform/instantiation/common/instantiationService.zig").InstantiationService,
+    instantiation: InstantiationService,
     layout_api: layout_service_mod.IWorkbenchLayoutService,
     lifecycle_api: lifecycle_mod.ILifecycleService,
     /// Terminal Outline side panel (`outline` view container).
@@ -641,6 +643,7 @@ pub const Workbench = struct {
     breadcrumbs_arena: std.heap.ArenaAllocator,
     navigation_arena: std.heap.ArenaAllocator,
     builtin_host: *@import("../api/browser/builtinExtensionHost.zig").BuiltinExtensionHost,
+    references_view_registered: bool,
     references_view: @import("../../../extensions/references-view/referencesView.zig").SymbolsTree,
     pending_references: ?*ReferencesModel = null,
     symbol_picker: ?struct {
@@ -708,35 +711,22 @@ pub const Workbench = struct {
     dialog: ?*ui.Dialog = null,
     pending_dialog: ?DialogRequest = null,
 
-    /// Mounts the workbench in the window supplied by the host. The window and
-    /// its parent element outlive this workbench. The workbench takes the entries
-    /// from services. Instances supplied by the host remain borrowed.
-    pub fn init(allocator: Allocator, io: Io, surface: *ui.Surface, services: *ServiceCollection, paths: []const []const u8, options: IWorkbenchOptions, state: ?PreviousState) !*Workbench {
-        const parent = surface.document().root orelse return error.MissingWorkbenchParent;
-        const self = try initWorkbench(allocator, io, surface, services, state);
-        errdefer self.deinit();
-        self.layout.reset_layout = options.reset_layout;
-        try self.startup(parent, options);
-        if (state != null) {
-            try self.restoreEditors();
-            self.layoutAll();
-        }
-        for (paths) |path| try self.openPath(path);
-        if (state == null) try self.part.when_restored.open(allocator);
-        return self;
-    }
-
     pub const PreviousState = struct {
         data: editor_groups.SerializedEditorPart,
         registry: *editor_factory.EditorFactoryRegistry,
     };
 
-    fn initWorkbench(allocator: Allocator, io: Io, surface: *ui.Surface, services: *ServiceCollection, state: ?PreviousState) !*Workbench {
+    /// Constructs the window. The host owns the surface and the option slices
+    /// through startup. Service instances supplied by the host remain borrowed.
+    pub fn init(allocator: Allocator, io: Io, surface: *ui.Surface, services: *ServiceCollection, options: IWorkbenchOptions, state: ?PreviousState) !*Workbench {
+        const parent = surface.document().root orelse return error.MissingWorkbenchParent;
         const self = try allocator.create(Workbench);
         errdefer allocator.destroy(self);
 
         self.* = undefined;
+        self.startup_window = .{ .parent = parent, .options = options, .has_previous_state = state != null };
         self.restore_timer = null;
+        self.references_view_registered = false;
         self.allocator = allocator;
         self.io = io;
         self.async_io_state = Io.Threaded.init(allocator, .{
@@ -822,6 +812,7 @@ pub const Workbench = struct {
         self.search_service = null;
         try self.initShellModels();
         errdefer self.deinitShellModels();
+        self.layout.reset_layout = options.reset_layout;
         self.outline_service = OutlineService.init(allocator);
         errdefer self.outline_service.deinit();
         self.breadcrumbs_service = BreadcrumbsService.init(allocator);
@@ -891,9 +882,16 @@ pub const Workbench = struct {
         return self;
     }
 
-    fn startup(self: *Workbench, parent: *ui.Node, options: IWorkbenchOptions) !void {
+    pub fn startup(self: *Workbench) !*InstantiationService {
+        const window = self.startup_window orelse return error.WorkbenchAlreadyStarted;
+        self.startup_window = null;
         try self.initServices();
-        try self.instantiation.invokeFunction(startWorkbench, .{ self, parent, options });
+        try self.instantiation.invokeFunction(startWorkbench, .{ self, window.parent, window.options });
+        if (window.has_previous_state) {
+            try self.restoreEditors();
+            self.layoutAll();
+        } else try self.part.when_restored.open(self.allocator);
+        return &self.instantiation;
     }
 
     fn startWorkbench(accessor: ServicesAccessor, self: *Workbench, parent: *ui.Node, options: IWorkbenchOptions) !void {
@@ -1595,7 +1593,7 @@ pub const Workbench = struct {
 
         try self.builtin_host.registerPortActions();
         try self.references_view.init(&self.builtin_host.context, self.quick_access.inputService());
-        errdefer self.references_view.deinit();
+        self.references_view_registered = true;
         for (go_to_commands.actions, 0..) |_, index| {
             const action = &go_to_commands.actions[index];
             self.symbol_action_contexts[index] = .{ .workbench = self, .action = action };
@@ -1820,7 +1818,7 @@ pub const Workbench = struct {
             self.home_path = null;
         }
         self.breadcrumbs_arena.deinit();
-        self.references_view.deinit();
+        if (self.references_view_registered) self.references_view.deinit();
         self.builtin_host.deinit();
         self.navigation_arena.deinit();
         self.breadcrumbs_service.deinit();
@@ -1830,7 +1828,7 @@ pub const Workbench = struct {
         }
         self.outline_service.deinit();
         self.closeSymbolPicker();
-        self.instantiation.deinit();
+        if (self.startup_window == null) self.instantiation.deinit();
         self.services.deinit();
         if (self.media_status) |status| {
             status.deinit();

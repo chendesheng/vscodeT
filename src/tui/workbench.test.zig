@@ -8479,6 +8479,19 @@ test "workbench shutdown cancels outstanding restore and idle callbacks" {
     }
 }
 
+test "disposing a constructed workbench before startup leaves the window empty" {
+    const allocator = std.testing.allocator;
+    var surface: ui.Surface = undefined;
+    try @import("workbench.zig").initWindowSurface(&surface, allocator, 48, 16);
+    defer surface.deinit();
+    var services = try @import("../vs/workbench/workbench.common.main.zig").createServices(allocator);
+    defer services.deinit();
+    const wb = try Workbench.init(allocator, std.testing.io, &surface, &services, .{}, null);
+    try std.testing.expectEqual(.Starting, wb.lifecycle.phase);
+    wb.deinit();
+    try std.testing.expect(surface.document().root.?.first_child == null);
+}
+
 test "workbench mounts and disposes only its subtree in the terminal window" {
     var surface: ui.Surface = undefined;
     try @import("workbench.zig").initWindowSurface(&surface, std.testing.allocator, 48, 16);
@@ -8494,8 +8507,13 @@ test "workbench mounts and disposes only its subtree in the terminal window" {
         var services = try @import("../vs/workbench/workbench.common.main.zig").createServices(std.testing.allocator);
         defer services.deinit();
         _ = try services.set(models.outline_model_service_id, &supplied_models);
-        const wb = try Workbench.init(std.testing.allocator, std.testing.io, &surface, &services, &.{}, .{}, null);
+        const wb = try Workbench.init(std.testing.allocator, std.testing.io, &surface, &services, .{}, null);
         defer wb.deinit();
+        try std.testing.expect(wb.layout.main_container == null);
+        try std.testing.expect(sibling.nextSibling() == null);
+        const instantiation = try wb.startup();
+        try std.testing.expectEqual(&wb.instantiation, instantiation);
+        try std.testing.expectError(error.WorkbenchAlreadyStarted, wb.startup());
         try std.testing.expectEqual(&supplied_models, try wb.instantiation.invokeFunction(models.getOutlineModelService, .{}));
         const main = wb.layout.main_container.?;
         try std.testing.expectEqual(parent, main.parent.?);

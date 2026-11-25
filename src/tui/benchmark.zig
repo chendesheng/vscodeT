@@ -390,7 +390,7 @@ test "benchmark: workbench scroll frame" {
     var surface: @import("ui").Surface = undefined;
     try terminal_workbench.initWindowSurface(&surface, allocator, 140, 44);
     defer surface.deinit();
-    const workbench = try terminal_workbench.createWorkbench(allocator, io, &surface, &.{path}, .{}, null);
+    const workbench = try @import("app.zig").startWorkbench(allocator, io, &surface, &.{path}, null);
     defer workbench.deinit();
     const tab = workbench.activeTab() orelse return error.SkipZigTest;
 
@@ -452,7 +452,7 @@ test "benchmark: explorer sidebar scroll" {
     var surface: @import("ui").Surface = undefined;
     try terminal_workbench.initWindowSurface(&surface, allocator, 140, 44);
     defer surface.deinit();
-    const workbench = try terminal_workbench.createWorkbench(allocator, io, &surface, &.{}, .{}, null);
+    const workbench = try @import("app.zig").startWorkbench(allocator, io, &surface, &.{}, null);
     defer workbench.deinit();
     try workbench.initSidebar(".");
     const sidebar = workbench.sidebar orelse return error.SkipZigTest;

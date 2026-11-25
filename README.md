@@ -1313,7 +1313,9 @@ console API for raw mode, sizing and input polling.
   folder shows that folder as the Explorer root and starts with an empty
   editor group; files on the command line still open as tabs. Opening only
   files uses an empty workspace, as upstream does.
-- Startup creates the main terminal document and the editor part before the first frame.
+- The terminal host supplies the window document and initial services, calls
+  `Workbench.startup()`, then opens command-line files. Startup mounts the editor
+  part before the first frame.
   Editor groups mount their active panes beneath the editor part’s grid. Directional
   focus chooses the most recently active group sharing the requested edge. At the
   outside edge, focus wraps within the same row or column. The group focus actions

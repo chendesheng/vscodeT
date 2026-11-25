@@ -25,7 +25,11 @@ pub const TestWindow = struct {
         doc.setRoot(try doc.createElement(.div));
         var services = try @import("../../workbench.common.main.zig").createServices(allocator);
         defer services.deinit();
-        return .{ .surface = surface, .workbench = try Workbench.init(allocator, io, surface, &services, paths, options, previous) };
+        const workbench = try Workbench.init(allocator, io, surface, &services, options, previous);
+        errdefer workbench.deinit();
+        _ = try workbench.startup();
+        for (paths) |path| try workbench.openPath(path);
+        return .{ .surface = surface, .workbench = workbench };
     }
 
     fn measureWidth(cp: u21) u2 {

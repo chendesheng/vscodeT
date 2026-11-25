@@ -88,6 +88,16 @@ pub fn logStd(
 /// the main log file. While the alternate screen is active the message goes to
 /// the log only: a direct stderr write would paint over the cell grid.
 const WillShutdownEvent = @import("../vs/workbench/services/lifecycle/common/lifecycle.zig").WillShutdownEvent;
+pub fn startWorkbench(allocator: std.mem.Allocator, io: std.Io, surface: *ui.Surface, paths: []const []const u8, previous: ?Workbench.PreviousState) !*Workbench {
+    var services = try @import("../vs/workbench/workbench.common.main.zig").createServices(allocator);
+    defer services.deinit();
+    const workbench = try Workbench.init(allocator, io, surface, &services, .{}, previous);
+    errdefer workbench.deinit();
+    _ = try workbench.startup();
+    for (paths) |path| try workbench.openPath(path);
+    return workbench;
+}
+
 const SessionOnShutdown = struct {
     workbench: *Workbench,
     registry: *EditorFactoryRegistry,
@@ -467,7 +477,7 @@ pub fn main(init: std.process.Init) !void {
             var owned = data;
             defer owned.deinit(allocator);
 
-            const created = terminal_workbench.createWorkbench(allocator, io, &surface, &.{}, .{}, .{ .data = data, .registry = &registry.? }) catch |err| blk: {
+            const created = startWorkbench(allocator, io, &surface, &.{}, .{ .data = data, .registry = &registry.? }) catch |err| blk: {
                 report(log_service, "session restore failed: {s}", .{@errorName(err)});
                 break :blk @as(?*Workbench, null);
             };
@@ -487,7 +497,7 @@ pub fn main(init: std.process.Init) !void {
             report(log_service, "no files or folders to open and no restorable session", .{});
             return;
         }
-        workbench = try terminal_workbench.createWorkbench(allocator, io, &surface, &.{}, .{}, null);
+        workbench = try startWorkbench(allocator, io, &surface, &.{}, null);
     }
     infoLog(log_service, "startup: workbench-init={d}ms", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
