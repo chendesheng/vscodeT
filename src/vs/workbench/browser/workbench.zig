@@ -3938,7 +3938,7 @@ pub const Workbench = struct {
         const pending = try self.allocator.create(ScmDiscardDialog);
         errdefer self.allocator.destroy(pending);
         pending.* = .{ .workbench = self, .request = .{ .root = root, .path = path, .untracked = untracked } };
-        try self.dialog_service.confirm(.{
+        _ = try self.dialog_service.confirm(.{
             .message = message,
             .detail = if (untracked) "This deletes the file from disk." else "This restores the file from the Git index.",
             .primary_button = if (untracked) "Delete" else "Discard",
@@ -5716,7 +5716,7 @@ pub const Workbench = struct {
         const pending = try self.allocator.create(CloseTabDialog);
         errdefer self.allocator.destroy(pending);
         pending.* = .{ .workbench = self, .request = .{ .pane = pane, .tab = tab } };
-        try self.dialog_service.prompt(.{
+        _ = try self.dialog_service.prompt(.{
             .message = prompt.message,
             .detail = prompt.detail,
             .buttons = &.{ prompt.save_label, dialogs.dont_save_label, dialogs.cancel_label },
@@ -5773,7 +5773,7 @@ pub const Workbench = struct {
         if (self.activeTab()) |tab| try tab.ensureControllers();
         self.focusActiveEditor();
 
-        try self.dialog_service.prompt(.{
+        _ = try self.dialog_service.prompt(.{
             .message = prompt.message,
             .detail = prompt.detail,
             .buttons = &.{ prompt.save_label, dialogs.dont_save_label, dialogs.cancel_label },
@@ -10278,7 +10278,7 @@ fn searchActiveSelectionText(context: *anyopaque, allocator: Allocator) anyerror
 fn searchConfirmReplaceAll(context: *anyopaque, message: []const u8) !void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     if (self.isDialogOpen()) return error.DialogAlreadyOpen;
-    try self.dialog_service.confirm(.{ .message = message, .primary_button = "Replace" }, .{ .context = self, .complete = onSearchReplaceAllConfirmed });
+    _ = try self.dialog_service.confirm(.{ .message = message, .primary_button = "Replace" }, .{ .context = self, .complete = onSearchReplaceAllConfirmed });
 }
 
 fn onSearchReplaceAllConfirmed(context: *anyopaque, result: dialogs.IConfirmationResult) void {

@@ -1,6 +1,5 @@
 // Port of `src/vs/workbench/api/browser/mainThreadMessageService.ts`.
-// Nonmodal messages are notifications with extension-specific action IDs;
-// the terminal modal-dialog adapter still uses the quick input picker.
+// Nonmodal messages use notifications; modal messages use the dialog service.
 const std = @import("std");
 const rpc = @import("../../services/extensions/common/rpcProtocol.zig");
 const notification = @import("../../../platform/notification/common/notification.zig");
@@ -8,14 +7,13 @@ const Severity = @import("../../../base/common/severity.zig").Severity;
 const Action = @import("../../../base/common/actions.zig").Action;
 const IAction = @import("../../../base/common/actions.zig").IAction;
 const legacy = @import("../../../platform/notification/common/notificationLegacy.zig").legacyExtensionLinkParsing;
-const QuickInputService = @import("../../../platform/quickinput/browser/quickInputService.zig").QuickInputService;
-const QuickPick = @import("../../../platform/quickinput/browser/quickInput.zig").QuickPick;
-const Item = @import("../../../platform/quickinput/common/quickInput.zig").QuickPickItem;
+const dialogs = @import("../../../platform/dialogs/common/dialogs.zig");
 
 pub const MainThreadMessageService = struct {
     allocator: std.mem.Allocator,
     notification_service: notification.INotificationService,
-    quick_input: *QuickInputService,
+    dialog_service: dialogs.IDialogService,
+    modal_pending: std.ArrayList(*ModalMessage) = .empty,
     pending: std.ArrayList(*Message) = .empty,
 
     pub fn deinit(self: *MainThreadMessageService) void {
@@ -27,16 +25,21 @@ pub const MainThreadMessageService = struct {
             if (std.mem.indexOfScalar(*Message, self.pending.items, message) != null) message.finish();
         }
         self.pending.deinit(self.allocator);
+        while (self.modal_pending.items.len > 0) {
+            const modal = self.modal_pending.items[self.modal_pending.items.len - 1];
+            if (modal.handle) |handle| handle.cancel() else ModalMessage.dispose(modal);
+        }
+        self.modal_pending.deinit(self.allocator);
     }
     pub fn showMessage(self: *MainThreadMessageService, args: []const rpc.Arg) !rpc.HandlerReply {
         if (args.len < 4 or args[1] != .json or args[1].json != .string or args[3] != .json or args[3].json != .array) return error.InvalidNotification;
         const options = if (args[2] == .json and args[2].json == .object) args[2].json else std.json.Value.null;
-        if (get(options, "modal")) |modal| if (modal == .bool and modal.bool) return Prompt.show(self.allocator, self.quick_input, args);
         const severity: Severity = if (args[0] == .json and args[0].json == .integer) switch (args[0].json.integer) {
             2 => .Warning,
             3 => .Error,
             else => .Info,
         } else .Info;
+        if (get(options, "modal")) |modal| if (modal == .bool and modal.bool) return self.showModalMessage(severity, args[1].json.string, options, args[3].json.array.items);
         const message = try self.allocator.create(Message);
         errdefer self.allocator.destroy(message);
         message.* = .{ .service = self, .arena = .init(self.allocator), .notification = .{ .severity = severity, .message = undefined, .source = .{ .text = "Extension" }, .legacy_extension_link_parsing = legacy } };
@@ -124,73 +127,82 @@ pub const MainThreadMessageService = struct {
             service.allocator.destroy(self);
         }
     };
-};
 
-pub const Prompt = struct {
-    allocator: std.mem.Allocator,
-    quick_input: *QuickInputService,
-    arena: std.heap.ArenaAllocator,
-    title: []const u8,
-    items: []const Item,
-    rpc: *rpc.RpcProtocol = undefined,
-    request: u32 = 0,
-    result: rpc.HandlerReply = .empty,
-
-    pub fn show(allocator: std.mem.Allocator, quick_input: *QuickInputService, args: []const rpc.Arg) !rpc.HandlerReply {
-        if (args.len < 4 or args[1] != .json or args[1].json != .string or args[3] != .json or args[3].json != .array) return error.InvalidNotification;
-        const title = args[1].json.string;
-        const detail = if (args[2] == .json and args[2].json == .object) args[2].json.object.get("detail") else null;
-        const description = if (detail != null and detail.? == .string) detail.?.string else "";
-        const commands = args[3].json.array.items;
-        var arena = std.heap.ArenaAllocator.init(allocator);
+    fn showModalMessage(self: *MainThreadMessageService, severity: Severity, message: []const u8, options: std.json.Value, commands: []const std.json.Value) !rpc.HandlerReply {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
         errdefer arena.deinit();
         const a = arena.allocator();
-        var items: std.ArrayList(Item) = .empty;
+        var labels: std.ArrayList([]const u8) = .empty;
+        var handles: std.ArrayList(?i64) = .empty;
+        var cancel_label: ?[]const u8 = null;
         var cancel_handle: ?i64 = null;
-        var cancel_label: []const u8 = if (commands.len == 0) "OK" else "Cancel";
         for (commands) |command| {
-            const close = MainThreadMessageService.get(command, "isCloseAffordance") orelse continue;
-            if (close != .bool or !close.bool) continue;
-            const label = MainThreadMessageService.get(command, "title") orelse continue;
-            const handle = MainThreadMessageService.get(command, "handle") orelse continue;
-            if (label != .string or handle != .integer) continue;
-            cancel_handle = handle.integer;
-            cancel_label = try a.dupe(u8, label.string);
+            const title = get(command, "title") orelse continue;
+            const handle = get(command, "handle") orelse continue;
+            if (title != .string or handle != .integer) continue;
+            const close = get(command, "isCloseAffordance");
+            if (close != null and close.? == .bool and close.?.bool) {
+                // As upstream, the last close affordance is the cancel button.
+                cancel_label = title.string;
+                cancel_handle = handle.integer;
+            } else {
+                try labels.append(a, try a.dupe(u8, title.string));
+                try handles.append(a, handle.integer);
+            }
         }
-        try items.append(a, .{ .item = .{ .id = if (cancel_handle) |handle| try std.fmt.allocPrint(a, "{d}", .{handle}) else "", .label = cancel_label } });
-        const instructions = try a.dupe(u8, description);
-        for (commands) |command| {
-            if (command != .object) continue;
-            const label = command.object.get("title") orelse continue;
-            const handle = command.object.get("handle") orelse continue;
-            if (label != .string or handle != .integer) continue;
-            if (cancel_handle == handle.integer) continue;
-            try items.append(a, .{ .item = .{ .id = try std.fmt.allocPrint(a, "{d}", .{handle.integer}), .label = try a.dupe(u8, label.string), .description = instructions } });
+        try labels.append(a, try a.dupe(u8, cancel_label orelse if (labels.items.len > 0) "Cancel" else "OK"));
+        try handles.append(a, cancel_handle);
+        const detail = get(options, "detail");
+        const prompt: dialogs.DialogPrompt = .{
+            .message = try a.dupe(u8, message),
+            .detail = try a.dupe(u8, if (detail != null and detail.? == .string) detail.?.string else ""),
+            .buttons = labels.items,
+            .severity = severity,
+        };
+        const modal = try self.allocator.create(ModalMessage);
+        errdefer self.allocator.destroy(modal);
+        modal.* = .{ .service = self, .arena = arena, .prompt = prompt, .handles = handles.items };
+        try self.modal_pending.append(self.allocator, modal);
+        return .{ .deferred = .{ .context = modal, .start = ModalMessage.start } };
+    }
+
+    const ModalMessage = struct {
+        service: *MainThreadMessageService,
+        arena: std.heap.ArenaAllocator,
+        prompt: dialogs.DialogPrompt,
+        handles: []const ?i64,
+        channel: *rpc.RpcProtocol = undefined,
+        request: u32 = 0,
+        handle: ?dialogs.IDialogHandle = null,
+
+        fn start(context: *anyopaque, channel: *rpc.RpcProtocol, id: u32) void {
+            const self: *ModalMessage = @ptrCast(@alignCast(context));
+            self.channel = channel;
+            self.request = id;
+            self.handle = self.service.dialog_service.prompt(self.prompt, .{
+                .context = self,
+                .complete = complete,
+                .dispose = dispose,
+            }) catch {
+                complete(self, null);
+                dispose(self);
+                return;
+            };
         }
-        const message = try a.dupe(u8, title);
-        const self = try allocator.create(Prompt);
-        self.* = .{ .allocator = allocator, .quick_input = quick_input, .arena = arena, .title = message, .items = items.items, .result = if (cancel_handle) |handle| .{ .json = .{ .integer = handle } } else .empty };
-        return .{ .deferred = .{ .context = self, .start = start } };
-    }
 
-    fn start(context: *anyopaque, channel: *rpc.RpcProtocol, id: u32) void {
-        const self: *Prompt = @ptrCast(@alignCast(context));
-        self.rpc = channel;
-        self.request = id;
-        self.quick_input.showPick(self.items, .{ .placeholder = self.title, .cleanup = finish, .cleanup_context = self }, pick, self) catch finish(self);
-    }
+        fn complete(context: *anyopaque, selected: ?usize) void {
+            const self: *ModalMessage = @ptrCast(@alignCast(context));
+            const index = selected orelse self.handles.len - 1;
+            const result = if (index < self.handles.len) self.handles[index] else null;
+            self.channel.sendReply(self.request, if (result) |handle| .{ .json = .{ .integer = handle } } else .empty);
+        }
 
-    fn pick(context: *anyopaque, picker: *QuickPick) !void {
-        const self: *Prompt = @ptrCast(@alignCast(context));
-        const item = picker.selectedItem() orelse return;
-        const handle = std.fmt.parseInt(i64, item.id, 10) catch return;
-        self.result = .{ .json = .{ .integer = handle } };
-    }
-
-    fn finish(context: *anyopaque) void {
-        const self: *Prompt = @ptrCast(@alignCast(context));
-        self.rpc.sendReply(self.request, self.result);
-        self.arena.deinit();
-        self.allocator.destroy(self);
-    }
+        fn dispose(context: *anyopaque) void {
+            const self: *ModalMessage = @ptrCast(@alignCast(context));
+            const service = self.service;
+            if (std.mem.indexOfScalar(*ModalMessage, service.modal_pending.items, self)) |index| _ = service.modal_pending.swapRemove(index);
+            self.arena.deinit();
+            service.allocator.destroy(self);
+        }
+    };
 };

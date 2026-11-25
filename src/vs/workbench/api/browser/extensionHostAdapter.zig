@@ -300,7 +300,7 @@ pub const Extensions = struct {
         };
         errdefer self.inline_completions.deinit();
 
-        self.message_service = .{ .allocator = allocator, .notification_service = services.notification, .quick_input = services.common.quick_input };
+        self.message_service = .{ .allocator = allocator, .notification_service = services.notification, .dialog_service = services.dialog };
         errdefer self.message_service.deinit();
         self.storage_actor = try MainThreadStorage.init(allocator);
         self.statusbar_actor = try MainThreadStatusBar.init(allocator, services.common.statusbar, .{

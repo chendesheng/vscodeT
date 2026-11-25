@@ -13,6 +13,7 @@ pub const DialogHandlerContribution = struct {
     model: *DialogsModel,
     handler: BrowserDialogHandler = .{},
     current: ?*ui.Dialog = null,
+    current_id: ?usize = null,
     will_show: usize,
     did_show: usize,
 
@@ -39,9 +40,16 @@ pub const DialogHandlerContribution = struct {
     }
 
     fn processDialogs(self: *DialogHandlerContribution) !void {
-        if (self.current != null) return;
-        const item = self.model.first() orelse return;
-        self.current = try self.handler.show(self.allocator, item.args);
+        const first = self.model.first();
+        const id = if (first) |item| item.id else null;
+        if (self.current_id == id) return;
+        if (self.current) |dialog| dialog.deinit();
+        self.current = null;
+        self.current_id = null;
+        if (first) |item| {
+            self.current = try self.handler.show(self.allocator, item.args);
+            self.current_id = item.id;
+        }
     }
 
     pub fn setThemeColors(self: *DialogHandlerContribution, palette: ?*const ThemeColors) void {
@@ -71,9 +79,6 @@ pub const DialogHandlerContribution = struct {
     }
 
     fn close(self: *DialogHandlerContribution, selected: ?usize) void {
-        const dialog = self.current orelse return;
-        self.current = null;
-        dialog.deinit();
         self.model.close(selected);
     }
 

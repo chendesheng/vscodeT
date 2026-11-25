@@ -42,13 +42,13 @@ test "DialogsModel: prompts queue, complete after close, preserve callback lifet
     var observed = Observed{ .service = &service, .handler = handler };
     const api = service.interface();
     var message = [_]u8{ 'f', 'i', 'r', 's', 't' };
-    try api.prompt(.{ .message = &message, .buttons = &.{ "Accept", "Cancel" } }, .{
+    _ = try api.prompt(.{ .message = &message, .buttons = &.{ "Accept", "Cancel" } }, .{
         .context = &observed,
         .complete = Observed.promptComplete,
         .dispose = Observed.dispose,
     });
     @memset(&message, 'x');
-    try api.confirm(.{ .message = "second" }, .{
+    _ = try api.confirm(.{ .message = "second" }, .{
         .context = &observed,
         .complete = Observed.confirmComplete,
         .dispose = Observed.dispose,

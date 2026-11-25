@@ -1,6 +1,6 @@
 // Reusable modal message dialog for terminal hosts.
 //
-// A host supplies a message, a detail line and up to three button labels. The
+// A host supplies a message, a detail line and button labels. The
 // dialog owns focus, layout, painting and hit testing; it is composited into
 // the host's `CellGrid` after the underlying content. The interaction rules
 // follow the modal save-confirmation pattern used by VS Code's browser dialog:
@@ -29,8 +29,6 @@ const style = @import("style.zig");
 const CellGrid = cell.CellGrid;
 const PaintStyle = cell.PaintStyle;
 
-pub const max_buttons = 3;
-
 const dialog_max_width: usize = 50;
 const border_width: usize = 1;
 const cell_border = @import("cell_border.zig");
@@ -51,12 +49,16 @@ const secondary_background = style.Color{ .r = 0x3a, .g = 0x3a, .b = 0x3c };
 const secondary_focused_background = style.Color{ .r = 0x5a, .g = 0x5a, .b = 0x5c };
 const secondary_foreground = style.Color{ .r = 0xed, .g = 0xed, .b = 0xed };
 
+pub const Severity = enum { info, warning, err };
+
 pub const Theme = struct {
     background: style.Color = dialog_background,
     border: style.Color = dialog_border,
     text: style.Color = text_color,
     detail: style.Color = detail_color,
     warning: style.Color = warning_color,
+    information: style.Color = .{ .r = 0x75, .g = 0xbe, .b = 0xff },
+    err: style.Color = .{ .r = 0xf4, .g = 0x87, .b = 0x71 },
     primary_background: style.Color = primary_background,
     primary_focused_background: style.Color = primary_focused_background,
     primary_foreground: style.Color = primary_foreground,
@@ -113,14 +115,15 @@ pub const Dialog = struct {
     allocator: Allocator,
     message: []u8,
     detail: []u8,
-    buttons: [max_buttons][]u8 = undefined,
+    buttons: [][]u8,
     button_count: usize = 0,
     focused: usize = 0,
     hovered: ?usize = null,
     pressed: ?usize = null,
     layout: Layout = .{},
-    button_rects: [max_buttons]ButtonRect = [_]ButtonRect{ .{}, .{}, .{} },
+    button_rects: []ButtonRect,
     theme: Theme = .{},
+    severity: Severity = .warning,
 
     fn backgroundPaint(self: *const Dialog) PaintStyle {
         return .{ .fg = cell.packColor(self.theme.text), .bg = cell.packColor(self.theme.background) };
@@ -132,7 +135,11 @@ pub const Dialog = struct {
         return .{ .fg = cell.packColor(self.theme.detail), .bg = cell.packColor(self.theme.background) };
     }
     fn warningPaint(self: *const Dialog) PaintStyle {
-        return .{ .fg = cell.packColor(self.theme.warning), .bg = cell.packColor(self.theme.background), .attrs = cell.Attr.bold };
+        return .{ .fg = cell.packColor(switch (self.severity) {
+            .warning => self.theme.warning,
+            .info => self.theme.information,
+            .err => self.theme.err,
+        }), .bg = cell.packColor(self.theme.background), .attrs = cell.Attr.bold };
     }
 
     pub fn init(
@@ -142,14 +149,14 @@ pub const Dialog = struct {
         labels: []const []const u8,
     ) !*Dialog {
         if (labels.len == 0) return error.NoDialogButtons;
-        if (labels.len > max_buttons) return error.TooManyDialogButtons;
 
         const message_copy = try allocator.dupe(u8, message);
         errdefer allocator.free(message_copy);
         const detail_copy = try allocator.dupe(u8, detail);
         errdefer allocator.free(detail_copy);
 
-        var label_copies: [max_buttons][]u8 = undefined;
+        const label_copies = try allocator.alloc([]u8, labels.len);
+        errdefer allocator.free(label_copies);
         var copied: usize = 0;
         errdefer for (label_copies[0..copied]) |label| allocator.free(label);
         for (labels, 0..) |label, index| {
@@ -157,6 +164,9 @@ pub const Dialog = struct {
             copied += 1;
         }
 
+        const rects = try allocator.alloc(ButtonRect, labels.len);
+        errdefer allocator.free(rects);
+        @memset(rects, .{});
         const self = try allocator.create(Dialog);
         errdefer allocator.destroy(self);
         self.* = .{
@@ -164,6 +174,7 @@ pub const Dialog = struct {
             .message = message_copy,
             .detail = detail_copy,
             .buttons = label_copies,
+            .button_rects = rects,
             .button_count = labels.len,
             .focused = 0,
         };
@@ -172,6 +183,8 @@ pub const Dialog = struct {
 
     pub fn deinit(self: *Dialog) void {
         for (self.buttons[0..self.button_count]) |label| self.allocator.free(label);
+        self.allocator.free(self.buttons);
+        self.allocator.free(self.button_rects);
         self.allocator.free(self.message);
         self.allocator.free(self.detail);
         self.allocator.destroy(self);
@@ -277,7 +290,7 @@ pub const Dialog = struct {
         const frame_cells = if (caps.has(.round)) @as(usize, 0) else border_width;
         const layout = self.computeLayout(grid.cols, grid.rows, frame_cells);
         self.layout = layout;
-        for (&self.button_rects) |*rect| rect.* = .{};
+        @memset(self.button_rects, .{});
         if (layout.width == 0 or layout.height == 0) return;
 
         self.dimBackdrop(grid, layout);
@@ -340,23 +353,31 @@ pub const Dialog = struct {
 
         if (!layout.compact) {
             if (row < content_bottom) {
-                grid.putCodepoint(inner_x, row, warning_glyph, 1, self.warningPaint());
+                grid.putCodepoint(inner_x, row, switch (self.severity) {
+                    .warning => warning_glyph,
+                    .info => 0x2139,
+                    .err => 0x2716,
+                }, 1, self.warningPaint());
                 row += 1;
             }
         }
 
+        const text_bottom = if (layout.compact) content_bottom -| 1 else content_bottom;
         const message_start = row;
         const message_drawn = drawWrapped(
             grid,
             inner_x,
             row,
             layout.content_width,
-            content_bottom -| row,
+            text_bottom -| row,
             self.message,
             self.messagePaint(),
         );
         row = message_start + message_drawn;
-        if (message_drawn < layout.message_rows) return;
+        if (message_drawn < layout.message_rows) {
+            if (layout.compact) self.renderButtons(grid, layout, text_bottom, content_bottom);
+            return;
+        }
 
         if (layout.detail_rows > 0) {
             if (!layout.compact and row < content_bottom) row += 1;
@@ -366,12 +387,15 @@ pub const Dialog = struct {
                 inner_x,
                 row,
                 layout.content_width,
-                content_bottom -| row,
+                text_bottom -| row,
                 self.detail,
                 self.detailPaint(),
             );
             row = detail_start + detail_drawn;
-            if (detail_drawn < layout.detail_rows) return;
+            if (detail_drawn < layout.detail_rows) {
+                if (layout.compact) self.renderButtons(grid, layout, text_bottom, content_bottom);
+                return;
+            }
         }
 
         if (!layout.compact and row < content_bottom) row += 1;
@@ -382,25 +406,25 @@ pub const Dialog = struct {
         if (row >= content_bottom) return;
 
         if (layout.compact) {
-            var widths: [max_buttons]usize = @splat(0);
-            horizontalButtonWidths(self, layout.content_width, &widths);
-
-            var total: usize = 0;
-            for (widths[0..self.button_count], 0..) |width, index| {
-                total += width;
-                if (index + 1 < self.button_count) total += 1;
-            }
+            // A narrow terminal cannot show arbitrarily many buttons at
+            // once. Keep keyboard focus visible in a window of buttons.
+            const count = @min(self.button_count, @max(1, (layout.content_width + 1) / 4));
+            const start = @min((self.focused / count) * count, self.button_count - count);
+            const labels = self.buttons[start..][0..count];
+            const gaps = count - 1;
+            var natural_total = gaps;
+            for (labels) |label| natural_total += textWidth(label) + 2;
+            const usable = layout.content_width -| gaps;
+            const total = @min(natural_total, layout.content_width);
             const inner_x = layout.x + layout.frame_cells + horizontal_padding;
             var col = inner_x + (layout.content_width -| total) / 2;
-
-            for (widths[0..self.button_count], 0..) |width, index| {
+            for (labels, start..) |label, index| {
+                const width = if (natural_total <= layout.content_width)
+                    textWidth(label) + 2
+                else
+                    usable / count + @as(usize, @intFromBool(index - start < usable % count));
                 if (width == 0) continue;
-                const rect = ButtonRect{
-                    .x = col,
-                    .y = row,
-                    .width = width,
-                    .height = 1,
-                };
+                const rect = ButtonRect{ .x = col, .y = row, .width = width, .height = 1 };
                 self.button_rects[index] = rect;
                 self.paintButton(grid, rect, index);
                 col += width + 1;
@@ -487,28 +511,6 @@ fn dialogWidth(cols: usize) usize {
 
 fn contentWidth(width: usize, frame_cells: usize) usize {
     return @max(width -| (2 * frame_cells) -| (2 * horizontal_padding), 1);
-}
-
-fn horizontalButtonWidths(dialog: *const Dialog, content_width: usize, widths: *[max_buttons]usize) void {
-    const count = dialog.button_count;
-    const gaps = count -| 1;
-
-    var natural_total = gaps;
-    for (dialog.buttons[0..count]) |label| natural_total += textWidth(label) + 2;
-    if (natural_total <= content_width) {
-        for (dialog.buttons[0..count], 0..) |label, index| {
-            widths[index] = textWidth(label) + 2;
-        }
-        return;
-    }
-
-    const usable = content_width -| gaps;
-    const base = usable / count;
-    var extra = usable % count;
-    for (0..count) |index| {
-        widths[index] = base + @as(usize, if (extra > 0) 1 else 0);
-        if (extra > 0) extra -= 1;
-    }
 }
 
 fn drawButtonLabel(grid: *CellGrid, rect: ButtonRect, label: []const u8, paint: PaintStyle) void {
@@ -875,4 +877,24 @@ fn allRows(allocator: Allocator, grid: *const CellGrid) ![]u8 {
         try out.append('\n');
     }
     return out.toOwnedSlice();
+}
+
+test "Dialog: compact layout keeps the focused choice visible with many buttons" {
+    const allocator = std.testing.allocator;
+    const dialog = try Dialog.init(allocator, "Long prompt", "Detail", &.{ "A", "B", "C", "D", "E", "F", "G", "H", "I", "J" });
+    defer dialog.deinit();
+    var grid = try CellGrid.init(allocator, 20, 8);
+    defer grid.deinit();
+    dialog.render(&grid);
+    try std.testing.expect(dialog.layout.compact);
+    try std.testing.expect(dialog.buttonRect(0) != null);
+    try std.testing.expect(dialog.buttonRect(9) == null);
+    dialog.focusPrevious();
+    grid.clear();
+    dialog.render(&grid);
+    try std.testing.expectEqual(@as(usize, 9), dialog.focused);
+    try std.testing.expect(dialog.buttonRect(9) != null);
+    try std.testing.expect(dialog.buttonRect(0) == null);
+    var enter: events.KeyEvent = .{ .key = .enter };
+    try std.testing.expectEqual(Action{ .activate = 9 }, dialog.handleKey(&enter));
 }

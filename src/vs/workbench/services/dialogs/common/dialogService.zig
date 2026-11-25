@@ -20,12 +20,12 @@ pub const DialogService = struct {
         return self.model.first() != null;
     }
 
-    pub fn prompt(self: *DialogService, prompt_args: dialogs.DialogPrompt, handler: dialogs.PromptHandler) !void {
-        try self.model.show(prompt_args, .{ .prompt = handler });
+    pub fn prompt(self: *DialogService, prompt_args: dialogs.DialogPrompt, handler: dialogs.PromptHandler) !dialogs.IDialogHandle {
+        return self.model.show(prompt_args, .{ .prompt = handler });
     }
 
-    pub fn confirm(self: *DialogService, confirmation: dialogs.IConfirmation, handler: dialogs.ConfirmationHandler) !void {
-        try self.model.show(.{
+    pub fn confirm(self: *DialogService, confirmation: dialogs.IConfirmation, handler: dialogs.ConfirmationHandler) !dialogs.IDialogHandle {
+        return self.model.show(.{
             .message = confirmation.message,
             .detail = confirmation.detail,
             .buttons = &.{ confirmation.primary_button, confirmation.cancel_button },
@@ -49,13 +49,13 @@ pub const DialogService = struct {
         return self.hasDialog();
     }
 
-    fn promptContext(context: *anyopaque, args: dialogs.DialogPrompt, handler: dialogs.PromptHandler) !void {
+    fn promptContext(context: *anyopaque, args: dialogs.DialogPrompt, handler: dialogs.PromptHandler) !dialogs.IDialogHandle {
         const self: *DialogService = @ptrCast(@alignCast(context));
-        try self.prompt(args, handler);
+        return self.prompt(args, handler);
     }
 
-    fn confirmContext(context: *anyopaque, args: dialogs.IConfirmation, handler: dialogs.ConfirmationHandler) !void {
+    fn confirmContext(context: *anyopaque, args: dialogs.IConfirmation, handler: dialogs.ConfirmationHandler) !dialogs.IDialogHandle {
         const self: *DialogService = @ptrCast(@alignCast(context));
-        try self.confirm(args, handler);
+        return self.confirm(args, handler);
     }
 };

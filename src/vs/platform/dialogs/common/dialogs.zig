@@ -23,6 +23,7 @@ pub const DialogPrompt = struct {
     detail: []const u8 = "",
     buttons: []const []const u8,
     initial_focus: usize = 0,
+    severity: @import("../../../base/common/severity.zig").Severity = .Warning,
 };
 
 pub const IConfirmation = struct {
@@ -65,13 +66,25 @@ pub const DialogCallback = union(enum) {
     }
 };
 
+/// The owner may dismiss a pending dialog on disposal. The model owns the
+/// result callback until the item is closed.
+pub const IDialogHandle = struct {
+    context: *anyopaque,
+    id: usize,
+    cancel_fn: *const fn (*anyopaque, usize) void,
+
+    pub fn cancel(self: IDialogHandle) void {
+        self.cancel_fn(self.context, self.id);
+    }
+};
+
 pub const dialog_service_id = @import("../../instantiation/common/instantiation.zig").ServiceIdentifier(IDialogService, "dialogService");
 
 pub const IDialogService = struct {
     context: *anyopaque,
     has_dialog: *const fn (*anyopaque) bool,
-    prompt_fn: *const fn (*anyopaque, DialogPrompt, PromptHandler) anyerror!void,
-    confirm_fn: *const fn (*anyopaque, IConfirmation, ConfirmationHandler) anyerror!void,
+    prompt_fn: *const fn (*anyopaque, DialogPrompt, PromptHandler) anyerror!IDialogHandle,
+    confirm_fn: *const fn (*anyopaque, IConfirmation, ConfirmationHandler) anyerror!IDialogHandle,
     on_will_show_dialog: *Emitter(void),
     on_did_show_dialog: *Emitter(void),
 
@@ -79,12 +92,12 @@ pub const IDialogService = struct {
         return self.has_dialog(self.context);
     }
 
-    pub fn prompt(self: IDialogService, args: DialogPrompt, handler: PromptHandler) !void {
-        try self.prompt_fn(self.context, args, handler);
+    pub fn prompt(self: IDialogService, args: DialogPrompt, handler: PromptHandler) !IDialogHandle {
+        return self.prompt_fn(self.context, args, handler);
     }
 
-    pub fn confirm(self: IDialogService, args: IConfirmation, handler: ConfirmationHandler) !void {
-        try self.confirm_fn(self.context, args, handler);
+    pub fn confirm(self: IDialogService, args: IConfirmation, handler: ConfirmationHandler) !IDialogHandle {
+        return self.confirm_fn(self.context, args, handler);
     }
 };
 
