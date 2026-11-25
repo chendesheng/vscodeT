@@ -2,7 +2,7 @@
 // `src/vs/workbench/services/themes/browser/workbenchThemeService.ts`.
 //
 // Terminal adaptations: themes are registered explicitly (no extension point),
-// there are no file/product icon themes and no configuration watcher; the
+// file icon definitions use terminal glyphs. The
 // active color theme is persisted by id in the storage service.
 //
 // Async terminal adaptation: `prepareTheme` reads/parses a theme and its
@@ -20,6 +20,11 @@ const storage_mod = @import("../../../../platform/storage/common/storage.zig");
 const color_theme = @import("../common/colorThemeData.zig");
 const configuration_mod = @import("../../../../platform/configuration/common/configuration.zig");
 const time_compat = @import("../../../../base/common/timeCompat.zig");
+
+const FileIconThemeData = @import("fileIconThemeData.zig").FileIconThemeData;
+const ConfigurationService = @import("../../configuration/browser/configurationService.zig").ConfigurationService;
+const ExtensionRegistry = @import("../../extensions/common/extensionsRegistry.zig").Registry;
+const ThemeColors = @import("../../../browser/themeColors.zig").ThemeColors;
 
 const Value = configuration_mod.Value;
 
@@ -74,6 +79,11 @@ pub const ThemeService = struct {
     active_id: []const u8,
     active: *ColorThemeData,
     onDidColorThemeChange: Emitter(void),
+    current_file_icon_theme: FileIconThemeData = .{},
+    onDidFileIconThemeChange: Emitter(FileIconThemeData),
+    file_icon_registry: ?*const ExtensionRegistry = null,
+    configuration: ?*ConfigurationService = null,
+    configuration_listener: ?usize = null,
 
     pub fn init(allocator: Allocator, colors: *color_utils.ColorRegistry, storage: ?*InMemoryStorageService) !*ThemeService {
         const self = try allocator.create(ThemeService);
@@ -87,6 +97,7 @@ pub const ThemeService = struct {
             .active_id = try allocator.dupe(u8, "vs-dark"),
             .active = active,
             .onDidColorThemeChange = Emitter(void).init(allocator),
+            .onDidFileIconThemeChange = .init(allocator),
         };
         try self.registerTheme("vs-dark", "Dark (Visual Studio)", .DARK);
         return self;
@@ -105,8 +116,74 @@ pub const ThemeService = struct {
         self.active.deinit();
         self.themes.deinit();
         self.allocator.free(self.active_id);
+        self.detachConfiguration();
+        self.onDidFileIconThemeChange.deinit();
         self.onDidColorThemeChange.deinit();
         self.allocator.destroy(self);
+    }
+
+    pub fn getFileIconTheme(self: *const ThemeService) FileIconThemeData {
+        return self.current_file_icon_theme;
+    }
+
+    pub fn setFileIconThemeRegistry(self: *ThemeService, registry: ?*const ExtensionRegistry) void {
+        if (self.file_icon_registry == registry) return;
+        self.file_icon_registry = registry;
+        self.restoreFileIconTheme();
+    }
+
+    pub fn setConfiguration(self: *ThemeService, configuration: *ConfigurationService) !void {
+        if (self.configuration == configuration) return;
+        const listener = try configuration.listenConfigurationChange(self, onConfigurationChanged);
+        self.detachConfiguration();
+        self.configuration = configuration;
+        self.configuration_listener = listener;
+        self.restoreFileIconTheme();
+    }
+
+    pub fn detachConfiguration(self: *ThemeService) void {
+        if (self.configuration_listener) |listener| self.configuration.?.unlistenConfigurationChange(listener);
+        self.configuration_listener = null;
+        self.configuration = null;
+    }
+
+    fn onConfigurationChanged(change: configuration_mod.Change, self: *ThemeService) !void {
+        if (configuration_mod.affectsConfiguration(change, ThemeSettings.FILE_ICON_THEME)) self.restoreFileIconTheme();
+    }
+
+    fn restoreFileIconTheme(self: *ThemeService) void {
+        var id: ?[]const u8 = "vs-seti";
+        if (self.configuration) |config| {
+            if (config.getValue(ThemeSettings.FILE_ICON_THEME, .{})) |value| {
+                switch (value.*) {
+                    .null => id = null,
+                    .string => id = value.string,
+                    else => {},
+                }
+            }
+        }
+        const previous = self.current_file_icon_theme;
+        var data = FileIconThemeData.init(self.file_icon_registry, id, previous.variant, previous.foreground);
+        if (id != null and data.settings_id == null) {
+            data = FileIconThemeData.init(self.file_icon_registry, "vs-seti", previous.variant, previous.foreground);
+        }
+        self.current_file_icon_theme = data;
+        self.updateFileIconColors();
+        if (previous.catalog != data.catalog or previous.disabled != data.disabled or !std.mem.eql(u8, previous.settings_id orelse "", data.settings_id orelse "")) {
+            self.onDidFileIconThemeChange.fire(self.current_file_icon_theme) catch {};
+        }
+    }
+
+    /// Browser CSS selects scheme variants and inherits foreground from the
+    /// active color theme. The terminal resolves those values to cell colors.
+    pub fn updateFileIconColors(self: *ThemeService) void {
+        self.current_file_icon_theme.variant = switch (self.active.theme_type) {
+            .LIGHT => "light",
+            .HIGH_CONTRAST_LIGHT => "highContrastLight",
+            .HIGH_CONTRAST_DARK => "highContrast",
+            .DARK => "",
+        };
+        self.current_file_icon_theme.foreground = ThemeColors.init(self.active).color("foreground", .{ 204, 204, 204 });
     }
 
     pub fn registerTheme(self: *ThemeService, id: []const u8, label: []const u8, theme_type: ColorScheme) !void {
@@ -269,6 +346,7 @@ pub const ThemeService = struct {
         if (self.storage) |service| {
             service.store(STORAGE_KEY, .{ .string = id }, .profile, .user) catch {};
         }
+        self.updateFileIconColors();
         self.onDidColorThemeChange.fire({}) catch {};
     }
 
@@ -355,6 +433,7 @@ pub const ThemeService = struct {
         if (self.storage) |service| {
             try service.store(STORAGE_KEY, .{ .string = id }, .profile, .user);
         }
+        self.updateFileIconColors();
         try self.onDidColorThemeChange.fire({});
     }
 };

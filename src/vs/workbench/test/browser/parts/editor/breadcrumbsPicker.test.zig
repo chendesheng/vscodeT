@@ -41,7 +41,7 @@ test "breadcrumbsPicker: file tree expands folders inline" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     const ui = @import("ui");
-    const file_icon = @import("../../../../browser/fileIcon.zig");
+    const file_icon = @import("../../../../services/themes/browser/fileIconThemeData.zig");
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 

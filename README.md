@@ -855,7 +855,7 @@ console API for raw mode, sizing and input polling.
   (default on): a lone child chain such as `src/vs/editor` renders as one
   compressed row, expands/collapses as one node, and resolves the compressed
   child through `autoExpandCompressedChildren`. Rows paint Nerd Font folder and
-  file glyphs from `src/vs/workbench/browser/fileIcon.zig`: VS Code's SVG icon
+  file glyphs from `src/vs/workbench/services/themes/browser/fileIconThemeData.zig`: VS Code's SVG icon
   themes have no terminal image layer, so the Nerd Font glyph is the terminal
   adaptation of `workbench.iconTheme` (a Nerd Font must be configured in the
   terminal). Tree indent guides follow `workbench.tree.renderIndentGuides`

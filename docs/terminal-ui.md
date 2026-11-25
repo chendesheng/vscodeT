@@ -1568,7 +1568,7 @@ Library constraints:
   `CompressibleObjectTree` adapter renders a compressed path as one
   `a/b/c` row, and object/index/synchronous-data tree view adapters are ported
   too. Rows paint Nerd Font folder/file glyphs
-  (`src/vs/workbench/browser/fileIcon.zig`), the terminal adaptation of
+  (`src/vs/workbench/services/themes/browser/fileIconThemeData.zig`), the terminal adaptation of
   `workbench.iconTheme`: there is no SVG/image layer, so a Nerd Font configured
   in the terminal supplies the icons. Indent guides follow
   `workbench.tree.renderIndentGuides` (`none`, `onHover`, `always`; default

@@ -22,7 +22,7 @@ const clock = @import("../../../base/common/timeCompat.zig");
 const busy_delay_ms = 800;
 const progress_frame_ms = 50;
 const scrollbar_hide_ms = 500;
-const file_icons = @import("../../../workbench/browser/fileIcon.zig");
+const file_icons = @import("../../../workbench/services/themes/browser/fileIconThemeData.zig");
 
 const base_background = ui.Color{ .r = 31, .g = 31, .b = 31 };
 const base_foreground = ui.Color{ .r = 230, .g = 230, .b = 230 };

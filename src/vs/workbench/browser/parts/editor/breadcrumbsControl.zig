@@ -42,7 +42,7 @@ const widget_mod = @import("../../../../base/browser/ui/breadcrumbs/breadcrumbsW
 const BreadcrumbsWidget = widget_mod.BreadcrumbsWidget;
 const Item = widget_mod.Item;
 const ItemKind = widget_mod.ItemKind;
-const file_icon_mod = @import("../../fileIcon.zig");
+const file_icon_mod = @import("../../../services/themes/browser/fileIconThemeData.zig");
 
 pub const SelectMode = enum { pick, reveal };
 

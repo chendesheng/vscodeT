@@ -26,7 +26,7 @@ const list = @import("../../../../../base/browser/ui/list/list.zig");
 const list_scrollbar = @import("../../../../../base/browser/ui/list/listScrollbarTerminal.zig");
 const tree = @import("../../../../../base/browser/ui/tree/tree.zig");
 const abstract_tree = @import("../../../../../base/browser/ui/tree/abstractTree.zig");
-const file_icon = @import("../../../../browser/fileIcon.zig");
+const file_icon = @import("../../../../services/themes/browser/fileIconThemeData.zig");
 
 const ExplorerItem = explorer.ExplorerItem;
 const ExplorerModel = explorer.ExplorerModel;
@@ -133,7 +133,7 @@ pub const Sidebar = struct {
     io: Io,
     model: *ExplorerModel,
     files_filter: FilesFilter,
-    file_icons: file_icon.Appearance = .{},
+    theme_service: ?*@import("../../../../services/themes/browser/workbenchThemeService.zig").ThemeService = null,
     data_source: explorer_viewer.ExplorerDataSource,
     tree: *AsyncTree,
     compression_enabled: bool = true,
@@ -842,11 +842,12 @@ fn renderRow(
 
     // Nerd Font file/folder icon, after the twistie and its gap, matching the
     // Explorer row order (twistie, file icon, label).
-    if (!sidebar.file_icons.disabled) {
+    const icons: file_icon.FileIconThemeData = if (sidebar.theme_service) |service| service.getFileIconTheme() else .{};
+    if (!icons.disabled) {
         const icon = if (item.is_directory)
-            sidebar.file_icons.forFolder(item.name, !collapsed)
+            icons.forFolder(item.name, !collapsed)
         else
-            sidebar.file_icons.forFile(item.name, null);
+            icons.forFile(item.name, null);
         if (col < row.x + row.width) {
             var icon_paint = PaintStyle{
                 .fg = ui.cell.packColor(icon.color),

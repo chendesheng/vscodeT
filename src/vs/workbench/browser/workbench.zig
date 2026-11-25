@@ -65,7 +65,7 @@ const terminal_editor_config = @import("../../editor/browser/config/terminalEdit
 const editor_options = @import("../../editor/common/config/editorOptions.zig");
 const ViewCell = @import("../../../tui/editorView.zig").Cell;
 const tab_bar = @import("./parts/editor/multiEditorTabsControl.zig");
-const file_icon = @import("./fileIcon.zig");
+const file_icon = @import("../services/themes/browser/fileIconThemeData.zig");
 const Sidebar = @import("../contrib/files/browser/views/explorerView.zig").Sidebar;
 const activity_bar_mod = @import("./parts/activitybar/activitybarPart.zig");
 const ActivityBarPart = @import("./parts/activitybar/activitybarPart.zig").ActivityBarPart;
@@ -2286,6 +2286,7 @@ pub const Workbench = struct {
         }
         if (self.configuration) |configuration| {
             if (self.terminal_service) |service| service.options.configuration = null;
+            if (self.theme_service) |service| service.detachConfiguration();
             configuration.deinit();
             self.configuration = null;
         }
@@ -2343,6 +2344,7 @@ pub const Workbench = struct {
                 self.settings_watcher = null;
             }
             if (self.terminal_service) |service| service.options.configuration = null;
+            if (self.theme_service) |service| service.detachConfiguration();
             configuration.deinit();
             self.configuration = null;
             try self.ensureConfiguration();
@@ -2388,6 +2390,8 @@ pub const Workbench = struct {
                 },
             },
         );
+        const themes = try self.ensureThemeService();
+        try themes.setConfiguration(self.configuration.?);
         if (self.declarative) |catalog| try self.applyExtensionDefaults(catalog);
         if (self.terminal_service) |service| service.options.configuration = self.configuration;
         self.settings_watcher = SettingsWatcher.init(self.allocator, self.io, self.configuration.?) catch null;
@@ -2708,6 +2712,7 @@ pub const Workbench = struct {
             );
         }
         if (self.search_view == null) try self.initSearchFromWorkspace();
+        self.sidebar.?.theme_service = self.theme_service;
         self.sidebar.?.setOpenEditorQuery(.{ .context = self, .is_open = isPathOpen });
         try self.setSidebarVisible(true);
         _ = try self.activity_bar_part.setActive(self.activity_bar_part.activities.items[0].id);
@@ -4139,6 +4144,7 @@ pub const Workbench = struct {
         if (self.declarative == registry) return;
         self.snippet_provider.setCatalog(registry);
         self.declarative = registry;
+        if (self.ensureThemeService()) |service| service.setFileIconThemeRegistry(registry) else |_| {}
         self.applyExtensionDefaults(registry) catch {};
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| tab.editor.applyDeclarativeExtensions(registry) catch {};
@@ -8428,24 +8434,8 @@ pub const Workbench = struct {
         keys.is_centered_layout.set(.{ .boolean = self.layout_model.isMainEditorCentered() });
     }
 
-    fn fileIconAppearance(self: *const Workbench) file_icon.Appearance {
-        var id: ?[]const u8 = "vs-seti";
-        if (self.configuration) |configuration| {
-            if (configuration.getValue("workbench.iconTheme", .{})) |setting| {
-                id = switch (setting.*) {
-                    .null => null,
-                    .string => setting.string,
-                    else => id,
-                };
-            }
-        }
-        const variant: []const u8 = if (self.theme_palette) |palette| switch (palette.theme.theme_type) {
-            .LIGHT => "light",
-            .HIGH_CONTRAST_LIGHT => "highContrastLight",
-            .HIGH_CONTRAST_DARK => "highContrast",
-            .DARK => "",
-        } else "";
-        return file_icon.Appearance.init(self.declarative, id, variant, self.themeColor("foreground", .{ 204, 204, 204 }));
+    fn getFileIconTheme(self: *const Workbench) file_icon.FileIconThemeData {
+        return if (self.theme_service) |service| service.getFileIconTheme() else .{};
     }
 
     fn themeColor(self: *const Workbench, id: []const u8, fallback: [3]u8) ui.Color {
@@ -8637,6 +8627,7 @@ pub const Workbench = struct {
             .hc_light = .{ .string = "foreground" },
         }, null, "Editor foreground color", false);
         const service = try theme_service_mod.ThemeService.init(self.allocator, registry, null);
+        service.setFileIconThemeRegistry(self.declarative);
         self.theme_colors = registry;
         self.theme_service = service;
         return service;
@@ -8822,6 +8813,7 @@ pub const Workbench = struct {
             configuration.getValue(theme_service_mod.ThemeSettings.SEMANTIC_TOKEN_COLOR_CUSTOMIZATIONS, .{}),
         ) catch {};
 
+        service.updateFileIconColors();
         self.refreshSyntaxTheme(loaded);
 
         const palette = self.allocator.create(theme_colors_mod.ThemeColors) catch return;
@@ -11238,7 +11230,6 @@ pub const Workbench = struct {
                     try container.render(&self.frame.next, content, focused, self.theme_palette);
                 } else if (self.sidebar) |sidebar| {
                     if (self.theme_palette) |palette| sidebar.setThemeColors(palette);
-                    sidebar.file_icons = self.fileIconAppearance();
                     try sidebar.render(&self.frame.next, content, focused, .{
                         .show_header = false,
                         .cell_borders = self.part.cell_borders,
@@ -11436,7 +11427,7 @@ pub const Workbench = struct {
             for (descriptions.items) |description| self.allocator.free(description);
             descriptions.deinit();
         }
-        const icons = self.fileIconAppearance();
+        const icons = self.getFileIconTheme();
         for (ordered.items, 0..) |tab, index| {
             infos[index] = .{
                 .label = tab.input.getName(),
@@ -12637,7 +12628,6 @@ fn explorerPaneRenderBody(context: *anyopaque, grid: *ui.CellGrid, rect: ui.Rect
     const self: *Workbench = @ptrCast(@alignCast(context));
     const sidebar = self.sidebar orelse return;
     if (self.theme_palette) |palette| sidebar.setThemeColors(palette);
-    sidebar.file_icons = self.fileIconAppearance();
     try sidebar.render(grid, rect, focused, .{
         .show_header = false,
         .cell_borders = self.part.cell_borders,
@@ -12807,7 +12797,7 @@ fn breadcrumbFileIcon(context: *anyopaque) ?file_icon.Icon {
     const self: *BreadcrumbContext = @ptrCast(@alignCast(context));
     const tab = self.activeTab() orelse return null;
     if (tab.editor.path.len == 0) return null;
-    const icons = self.workbench.fileIconAppearance();
+    const icons = self.workbench.getFileIconTheme();
     return if (icons.disabled) null else icons.forFile(std.fs.path.basename(tab.editor.path), tab.editor.languageId());
 }
 
@@ -12978,7 +12968,7 @@ fn onBreadcrumbPickerOpenFile(context: *anyopaque, path: []const u8) anyerror!vo
 
 fn onBreadcrumbPickerFileIcon(context: *anyopaque, path: []const u8) file_icon.Icon {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    return self.fileIconAppearance().forFile(std.fs.path.basename(path), null);
+    return self.getFileIconTheme().forFile(std.fs.path.basename(path), null);
 }
 
 fn onBreadcrumbPickerReveal(context: *anyopaque, outline: *outline_mod.IOutline, element: *anyopaque) anyerror!void {

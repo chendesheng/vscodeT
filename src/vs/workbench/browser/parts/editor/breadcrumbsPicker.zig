@@ -128,7 +128,7 @@ test "breadcrumb picker: parent directory stops at the root" {
 const ui = @import("ui");
 const list_mod = @import("../../../../base/browser/ui/list/list.zig");
 const theme_colors_mod = @import("../../themeColors.zig");
-const file_icon_mod = @import("../../fileIcon.zig");
+const file_icon_mod = @import("../../../services/themes/browser/fileIconThemeData.zig");
 
 // ---------------------------------------------------------------------------
 // Terminal breadcrumb pickers

@@ -170,4 +170,4 @@ When coverage changes, update the row and status count together. Record the test
 [preview]: ../src/vs/workbench/contrib/markdown/browser/markdownPreviewDocument.zig
 [copilot]: https://github.com/microsoft/vscode/blob/e31c2e52f563620846caab877103f630ea361b9c/extensions/copilot/src/extension/completions/vscode-node/completionsCoreContribution.ts#L44
 [browser]: https://github.com/microsoft/vscode/blob/e31c2e52f563620846caab877103f630ea361b9c/extensions/simple-browser/src/extension.ts
-[icons]: ../src/vs/workbench/browser/fileIcon.zig
+[icons]: ../src/vs/workbench/services/themes/browser/fileIconThemeData.zig

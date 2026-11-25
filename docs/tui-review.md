@@ -211,7 +211,7 @@ means a smaller host file remains; "Keep" means it stays.
 | `languageConfiguration.zig` | 146 | **Delete** | concrete `LanguageConfigurationService` + context in `editor/common/languages/languageConfigurationRegistry.zig` |
 | `commands.zig` | 167 | **Delete** | `Action2`/`MenuRegistry` + `CommandRegistry.getCommands` |
 | `theme.zig` | 23 | **Delete** | `TokenizationRegistry`/theme service helper |
-| `fileIcon.zig` | 71 | **Keep** (short term) | documented TUI badge; fold into file-icon picker when icon themes are ported |
+| `fileIconThemeData.zig` | Moved | Theme service | Resolves contributed file icon definitions for terminal glyphs |
 | `workingCopy.zig` | 70 | **Delete** | `textFileEditorModel.zig` adapter |
 | `hoverProvider.zig` | 175 | **Keep** | TUI-only word/token fallback; documented |
 | `cellBorders.zig` | 61 | **Move** | probe state machine → `ui/cell_border.zig`; app drives it |
@@ -1288,7 +1288,7 @@ without touching VS Code ports.
 | `workbench.zig` | `workbench/browser/workbench.ts`, `browser/parts/editor/editorActions.ts`, `browser/actions/layoutActions.ts`, `contrib/terminal/browser/terminalActions.ts`, `contrib/search/browser/searchActions*` | `vs/workbench/browser/...` parts/actions; host shell |
 | `workingCopy.zig` | `workbench/services/textfile/common/textFileEditorModel.ts`, `workbench/services/workingCopy/common/workingCopy.ts` | `vs/workbench/services/textfile/common/textFileEditorModel.zig` |
 | `hoverProvider.zig` | none (TUI fallback) | keep host |
-| `fileIcon.zig` | `workbench/services/themes/common/fileIconThemeData.ts` | keep host until icon themes |
+| `fileIconThemeData.zig` | `workbench/services/themes/browser/fileIconThemeData.ts` | Active icon theme belongs to the theme service |
 | `cellBorders.zig` | none (terminal protocol) | `ui/cell_border.zig` |
 
 ## Appendix B: classification checklist

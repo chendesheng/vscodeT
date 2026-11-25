@@ -20,7 +20,7 @@ const resource_tree = @import("../../../../base/common/resourceTree.zig");
 const storage_mod = @import("../../../../platform/storage/common/storage.zig");
 const views = @import("../../../common/views.zig");
 const css = @import("./media/scm_css.zig");
-const file_icon = @import("../../../browser/fileIcon.zig");
+const file_icon = @import("../../../services/themes/browser/fileIconThemeData.zig");
 const list_scrollbar = @import("../../../../base/browser/ui/list/listScrollbarTerminal.zig");
 const theme_colors_mod = @import("../../../browser/themeColors.zig");
 

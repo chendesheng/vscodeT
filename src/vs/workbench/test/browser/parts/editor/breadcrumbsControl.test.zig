@@ -14,7 +14,7 @@ const Selection = control_mod.Selection;
 const SelectMode = control_mod.SelectMode;
 const OutlineEditor = @import("../../../../services/outline/browser/outline.zig").OutlineEditor;
 const IOutline = @import("../../../../services/outline/browser/outline.zig").IOutline;
-const file_icon = @import("../../../../browser/fileIcon.zig");
+const file_icon = @import("../../../../services/themes/browser/fileIconThemeData.zig");
 
 test "BreadcrumbsControl: labels and item kinds from a path model" {
     const allocator = std.testing.allocator;

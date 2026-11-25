@@ -20,7 +20,7 @@ const FileEditorInput = @import("../vs/workbench/contrib/files/browser/editors/f
 const FileEditorSerializer = @import("../vs/workbench/contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorSerializer;
 const editor_factory = @import("../vs/workbench/common/editor/editorFactory.zig");
 const editor_options = @import("../vs/editor/common/config/editorOptions.zig");
-const file_icon = @import("../vs/workbench/browser/fileIcon.zig");
+const file_icon = @import("../vs/workbench/services/themes/browser/fileIconThemeData.zig");
 const Sidebar = @import("../vs/workbench/contrib/files/browser/views/explorerView.zig").Sidebar;
 const zen_mode_contribution = @import("../vs/workbench/browser/workbench.zenMode.contribution.zig");
 const outline_mod = @import("../vs/workbench/services/outline/browser/outline.zig");
@@ -2355,7 +2355,7 @@ test "Workbench: color theme settings load a registered theme palette" {
     theme_file.close(io);
     var settings_file = try tmp.dir.createFile(io, "settings.json", .{});
     try settings_file.writeStreamingAll(io,
-        \\{ "workbench.colorTheme": "Test Theme" }
+        \\{ "workbench.colorTheme": "Test Theme", "workbench.iconTheme": null }
     );
     settings_file.close(io);
 
@@ -2383,6 +2383,19 @@ test "Workbench: color theme settings load a registered theme palette" {
 
     const service = workbench.theme_service.?;
     try std.testing.expectEqualStrings("Test Theme", service.getActiveThemeId());
+    try std.testing.expect(service.getFileIconTheme().disabled);
+    var changes: usize = 0;
+    const listener = try service.onDidFileIconThemeChange.listen(&changes, struct {
+        fn changed(data: file_icon.FileIconThemeData, count: *usize) !void {
+            try std.testing.expect(!data.disabled);
+            count.* += 1;
+        }
+    }.changed);
+    defer service.onDidFileIconThemeChange.unlisten(listener);
+    try workbench.setUserConfigurationValue("workbench.iconTheme", .{ .string = "vs-seti" });
+    try std.testing.expect(!service.getFileIconTheme().disabled);
+    try std.testing.expectEqual(@as(usize, 1), changes);
+    try std.testing.expectEqualStrings("light", service.getFileIconTheme().variant);
     const palette = workbench.theme_palette.?;
     try std.testing.expectEqual(@as(u8, 0xff), palette.background.r);
     try std.testing.expectEqual(@as(u8, 0x10), palette.foreground.g);

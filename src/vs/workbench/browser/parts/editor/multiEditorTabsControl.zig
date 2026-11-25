@@ -9,7 +9,7 @@
 //!
 //! Terminal adaptations, documented in `README.md` and `docs/terminal-ui.md`:
 //! - The file icon theme is adapted as the Explorer's Nerd Font glyphs; tabs
-//!   reuse `fileIcon.zig`, so the header and the breadcrumb row paint the same
+//!   reuse `fileIconThemeData.zig`, so the header and the breadcrumb row paint the same
 //!   glyph and color for one file.
 //! - A live tab drag over the strip paints upstream's `drop-target-left`/
 //!   `drop-target-right` insertion feedback: a thin cell-border stroke where
@@ -29,7 +29,7 @@
 const std = @import("std");
 const ui = @import("ui");
 const theme_colors_mod = @import("../../themeColors.zig");
-const file_icon = @import("../../fileIcon.zig");
+const file_icon = @import("../../../services/themes/browser/fileIconThemeData.zig");
 const editor_group_view = @import("./editorGroupView.zig");
 
 const CellGrid = ui.CellGrid;
