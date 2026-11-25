@@ -7,6 +7,7 @@ const ThemeColors = @import("../../../browser/themeColors.zig").ThemeColors;
 const panel_part = @import("../../../browser/parts/panel/panelPart.zig");
 const TerminalService = @import("./terminalService.zig").TerminalService;
 const Config = @import("../common/terminalConfiguration.zig").Config;
+const sash_css = @import("../../../../base/browser/ui/sash/sash_css.zig");
 const tabs = @import("./terminalTabsList.zig");
 const terminal_view = @import("./terminalRenderer.zig");
 
@@ -70,6 +71,212 @@ pub const TerminalTabbedView = struct {
         else
             ui.cell.snap(result.tabs.x) - 1;
         return result;
+    }
+
+    /// Terminal event adaptation of TerminalTabbedView's tab list, split view
+    /// and sash listeners. The panel owns the selection and hit decisions;
+    /// cross-part commands and PTY mouse input cross the host boundary.
+    pub const MouseAction = union(enum) {
+        sync_size,
+        move_to_editor: usize,
+        kill_panel: usize,
+        tab_menu: usize,
+        new_terminal,
+        profiles,
+        terminal_picker,
+        split_tabs: usize,
+        kill_tabs: usize,
+        tab_list_menu,
+        content: struct { index: usize, rect: ui.Rect },
+    };
+
+    pub const MouseHost = struct {
+        context: *anyopaque,
+        pointer: *ui.Pointer,
+        focus_panel: *const fn (*anyopaque) void,
+        dispatch: *const fn (*anyopaque, MouseAction, *const ui.MouseEvent) bool,
+    };
+
+    /// Null means the mouse is outside the terminal panel. The encoded
+    /// terminal mouse path may explicitly decline a content event.
+    pub fn handleMouse(self: *TerminalTabbedView, service: *TerminalService, rect: ui.Rect, title_end: usize, event: *const ui.MouseEvent, now_ms: i64, host: MouseHost) ?bool {
+        const config = Config.load(service.options.configuration);
+        const left_press = event.kind == .down and event.button == .left;
+        const geometry = self.layoutForService(rect, service);
+        const list = &self.tab_list;
+        if (list.dragging_pane_sash) |index| {
+            if (event.kind == .up or service.at(index) == null) list.dragging_pane_sash = null;
+            if (event.kind == .move and service.at(index) != null) {
+                service.group.resizePaneBoundary(geometry.terminal, index, event.x);
+                _ = host.dispatch(host.context, .sync_size, event);
+            }
+            host.pointer.* = sash_css.pointer(.vertical);
+            return true;
+        }
+        if (list.dragging_sash) {
+            if (event.kind == .up) {
+                list.dragging_sash = false;
+                self.storeListWidth(service.io) catch {};
+            }
+            if (event.kind == .move) {
+                const width = if (config.tabs_location == .left)
+                    event.x -| ui.cell.snap(rect.x)
+                else
+                    ui.cell.snap(rect.x + rect.w) -| event.x -| 1;
+                list.resize(width);
+                _ = host.dispatch(host.context, .sync_size, event);
+            }
+            host.pointer.* = sash_css.pointer(.vertical);
+            return true;
+        }
+        const hit = self.hitTest(service, rect, title_end, event.x, event.y);
+        if (list.dragged_instance) |id| {
+            if (event.kind == .up) {
+                const was_dragging = list.drag_target != null or list.drag_start_y != event.y;
+                list.dragged_instance = null;
+                list.drag_target = null;
+                if (was_dragging) {
+                    self.finishListDrag(service, rect, id, hit, event, host);
+                    return true;
+                }
+            } else if (event.kind == .move and event.button == .left and event.y != list.drag_start_y) {
+                list.drag_target = switch (hit) {
+                    .tab, .split, .kill => |index| index,
+                    else => null,
+                };
+                host.pointer.* = .grabbing;
+                return true;
+            }
+        }
+        if (event.kind == .move) {
+            list.hovered = switch (hit) {
+                .tab, .split, .kill => |index| if (event.y > ui.cell.snap(rect.y)) index else null,
+                else => null,
+            };
+        }
+        if (event.kind == .wheel and contains(geometry.tabs, event.x, event.y)) {
+            list.scroll(event.delta_y, service.count(), ui.cell.snap(geometry.tabs.h));
+            return true;
+        }
+        switch (hit) {
+            .none => {},
+            .tab => |index| {
+                host.pointer.* = .pointer;
+                if (event.kind == .down and event.button == .middle) _ = host.dispatch(host.context, .{ .kill_panel = index }, event);
+                if (event.kind == .down and event.button == .right) _ = host.dispatch(host.context, .{ .tab_menu = index }, event);
+                if (left_press) {
+                    const anchor = if (event.mods.shift) service.group.active else null;
+                    service.group.selectTab(index, anchor, event.mods.ctrl);
+                    const id = service.at(index).?.id;
+                    const now = now_ms;
+                    const double_click = list.last_clicked == id and now - list.last_click_ms <= 400;
+                    list.last_clicked = id;
+                    list.last_click_ms = now;
+                    list.dragged_instance = id;
+                    list.drag_start_y = event.y;
+                    list.focused = !double_click and config.tabs_focus_mode == .doubleClick;
+                    host.focus_panel(host.context);
+                }
+                return true;
+            },
+            .new_terminal, .profiles, .terminal_picker, .split, .kill => {
+                host.pointer.* = .pointer;
+                if (event.y > ui.cell.snap(rect.y) and event.kind == .down) {
+                    switch (hit) {
+                        .split, .kill => |index| {
+                            if (event.button == .middle) _ = host.dispatch(host.context, .{ .kill_panel = index }, event);
+                            if (event.button == .right) _ = host.dispatch(host.context, .{ .tab_menu = index }, event);
+                        },
+                        else => {},
+                    }
+                }
+                if (left_press) switch (hit) {
+                    .new_terminal => _ = host.dispatch(host.context, .new_terminal, event),
+                    .profiles => _ = host.dispatch(host.context, .profiles, event),
+                    .terminal_picker => _ = host.dispatch(host.context, .terminal_picker, event),
+                    .split => |index| _ = host.dispatch(host.context, .{ .split_tabs = index }, event),
+                    .kill => |index| _ = host.dispatch(host.context, .{ .kill_tabs = index }, event),
+                    else => unreachable,
+                };
+                return true;
+            },
+            .sash => {
+                host.pointer.* = sash_css.pointer(.vertical);
+                if (event.kind == .down and event.button == .right) _ = host.dispatch(host.context, .tab_list_menu, event);
+                if (left_press) {
+                    const now = now_ms;
+                    const double_click = if (list.last_sash_click_ms) |previous| now - previous <= 400 else false;
+                    list.last_sash_click_ms = if (double_click) null else now;
+                    if (double_click) {
+                        const ideal = tabs.TerminalTabList.idealWidth(service);
+                        list.resize(if (list.width == ideal) tabs.narrow_view_width else ideal);
+                        self.storeListWidth(service.io) catch {};
+                        _ = host.dispatch(host.context, .sync_size, event);
+                    } else {
+                        list.dragging_sash = true;
+                    }
+                }
+                return true;
+            },
+            .pane_sash => |index| {
+                host.pointer.* = sash_css.pointer(.vertical);
+                if (left_press) list.dragging_pane_sash = index;
+                return true;
+            },
+            .empty_tabs => {
+                if (event.kind == .down and event.button == .right) _ = host.dispatch(host.context, .tab_list_menu, event);
+                if (left_press) {
+                    const now = now_ms;
+                    if (list.last_clicked == null and now - list.last_click_ms <= 400) _ = host.dispatch(host.context, .new_terminal, event);
+                    list.last_clicked = null;
+                    list.last_click_ms = now;
+                }
+                return true;
+            },
+            .content => |pane| {
+                if (left_press) {
+                    host.focus_panel(host.context);
+                    list.focused = false;
+                    _ = service.setActive(pane.index);
+                }
+                return host.dispatch(host.context, .{ .content = .{ .index = pane.index, .rect = pane.rect } }, event);
+            },
+        }
+        return null;
+    }
+
+    fn finishListDrag(self: *TerminalTabbedView, service: *TerminalService, rect: ui.Rect, id: usize, hit: Hit, event: *const ui.MouseEvent, host: MouseHost) void {
+        for (0..service.count()) |source| {
+            const instance = service.at(source).?;
+            if (instance.id != id) continue;
+            switch (hit) {
+                .tab, .split, .kill => |target| service.group.moveGroup(source, target),
+                .empty_tabs => service.group.moveGroup(source, null),
+                .none => if (host.dispatch(host.context, .{ .move_to_editor = source }, event)) return,
+                else => {},
+            }
+            self.revealActive(service, rect);
+            return;
+        }
+    }
+
+    pub fn revealActive(self: *TerminalTabbedView, service: *TerminalService, rect: ui.Rect) void {
+        const l = self.layoutForService(rect, service);
+        self.tab_list.reveal(service.group.active, service.count(), ui.cell.snap(l.tabs.h));
+    }
+
+    pub fn focusListRow(self: *TerminalTabbedView, service: *TerminalService, rect: ui.Rect, next: bool) void {
+        if (service.count() == 0) return;
+        const index = if (next) @min(service.count() - 1, service.group.active + 1) else service.group.active -| 1;
+        service.group.selectTab(index, null, false);
+        self.revealActive(service, rect);
+    }
+
+    pub fn focusPane(self: *TerminalTabbedView, service: *TerminalService, rect: ui.Rect, next: bool) bool {
+        if (!service.group.focusPane(next)) return false;
+        self.tab_list.focused = false;
+        self.revealActive(service, rect);
+        return true;
     }
 
     pub fn layoutForService(self: *const TerminalTabbedView, rect: ui.Rect, service: *const TerminalService) Layout {

@@ -219,6 +219,7 @@ const encoding_mod = @import("../services/textfile/common/encoding.zig");
 const SearchOption = @import("../contrib/search/browser/searchWidget.zig").Option;
 const terminal_service_mod = @import("../contrib/terminal/browser/terminalService.zig");
 const terminal_configuration = @import("../contrib/terminal/common/terminalConfiguration.zig");
+const terminal_actions = @import("../contrib/terminal/browser/terminalActions.zig");
 const terminal_common = @import("../contrib/terminal/common/terminal.zig");
 const terminal_panel = @import("../contrib/terminal/browser/terminalTabbedView.zig");
 const terminal_tabs = @import("../contrib/terminal/browser/terminalTabsList.zig");
@@ -3112,19 +3113,14 @@ pub const Workbench = struct {
 
     fn focusPanelPane(self: *Workbench, next: bool) bool {
         const service = self.terminal_service orelse return false;
-        if (!service.group.focusPane(next)) return false;
+        if (!self.terminal_tabbed_view.focusPane(service, self.panelRect(), next)) return false;
         self.focus = .terminal;
-        self.terminal_tabbed_view.tab_list.focused = false;
-        self.revealActiveTerminalTab();
         return true;
     }
 
     fn focusTerminalListRow(self: *Workbench, next: bool) void {
         const service = self.terminal_service orelse return;
-        if (service.count() == 0) return;
-        const index = if (next) @min(service.count() - 1, service.group.active + 1) else service.group.active -| 1;
-        service.group.selectTab(index, null, false);
-        self.revealActiveTerminalTab();
+        self.terminal_tabbed_view.focusListRow(service, self.panelRect(), next);
     }
 
     fn terminalPanelActive(self: *const Workbench) bool {
@@ -3133,8 +3129,7 @@ pub const Workbench = struct {
 
     fn revealActiveTerminalTab(self: *Workbench) void {
         const service = self.terminal_service orelse return;
-        const l = self.terminal_tabbed_view.layoutForService(self.panelRect(), service);
-        self.terminal_tabbed_view.tab_list.reveal(service.group.active, service.count(), ui.cell.snap(l.tabs.h));
+        self.terminal_tabbed_view.revealActive(service, self.panelRect());
     }
 
     pub fn focusTerminal(self: *Workbench) !void {
@@ -3275,146 +3270,12 @@ pub const Workbench = struct {
         const left_press = event.kind == .down and event.button == .left;
         if (self.terminalPanelActive()) {
             const rect = self.panelRect();
-            const layout = self.terminal_tabbed_view.layoutForService(rect, service);
-            const list = &self.terminal_tabbed_view.tab_list;
-            if (list.dragging_pane_sash) |index| {
-                if (event.kind == .up or service.at(index) == null) list.dragging_pane_sash = null;
-                if (event.kind == .move and service.at(index) != null) {
-                    service.group.resizePaneBoundary(layout.terminal, index, event.x);
-                    self.syncTerminalSize();
-                }
-                self.pointer = sash_css.pointer(.vertical);
-                return true;
-            }
-            if (list.dragging_sash) {
-                if (event.kind == .up) {
-                    list.dragging_sash = false;
-                    self.terminal_tabbed_view.storeListWidth(self.io) catch {};
-                }
-                if (event.kind == .move) {
-                    const width = if (self.terminalConfig().tabs_location == .left)
-                        event.x -| ui.cell.snap(rect.x)
-                    else
-                        ui.cell.snap(rect.x + rect.w) -| event.x -| 1;
-                    list.resize(width);
-                    self.syncTerminalSize();
-                }
-                self.pointer = sash_css.pointer(.vertical);
-                return true;
-            }
-            const hit = self.terminal_tabbed_view.hitTest(service, rect, panel_part_mod.titleContentEnd(&self.panel_part, rect), event.x, event.y);
-            if (list.dragged_instance) |id| {
-                if (event.kind == .up) {
-                    const was_dragging = list.drag_target != null or list.drag_start_y != event.y;
-                    list.dragged_instance = null;
-                    list.drag_target = null;
-                    if (was_dragging) {
-                        self.finishTerminalListDrag(service, id, hit, event);
-                        return true;
-                    }
-                } else if (event.kind == .move and event.button == .left and event.y != list.drag_start_y) {
-                    list.drag_target = switch (hit) {
-                        .tab, .split, .kill => |index| index,
-                        else => null,
-                    };
-                    self.pointer = .grabbing;
-                    return true;
-                }
-            }
-            if (event.kind == .move) {
-                list.hovered = switch (hit) {
-                    .tab, .split, .kill => |index| if (event.y > ui.cell.snap(rect.y)) index else null,
-                    else => null,
-                };
-            }
-            if (event.kind == .wheel and terminal_panel.contains(layout.tabs, event.x, event.y)) {
-                list.scroll(event.delta_y, service.count(), ui.cell.snap(layout.tabs.h));
-                return true;
-            }
-            switch (hit) {
-                .none => {},
-                .tab => |index| {
-                    self.pointer = .pointer;
-                    if (event.kind == .down and event.button == .middle) self.killPanelTerminal(index) catch {};
-                    if (event.kind == .down and event.button == .right) self.showTerminalTabMenu(index, event) catch {};
-                    if (left_press) {
-                        const anchor = if (event.mods.shift) service.group.active else null;
-                        service.group.selectTab(index, anchor, event.mods.ctrl);
-                        const id = service.at(index).?.id;
-                        const now = time_compat.milliTimestamp();
-                        const double_click = list.last_clicked == id and now - list.last_click_ms <= 400;
-                        list.last_clicked = id;
-                        list.last_click_ms = now;
-                        list.dragged_instance = id;
-                        list.drag_start_y = event.y;
-                        list.focused = !double_click and self.terminalConfig().tabs_focus_mode == .doubleClick;
-                        self.focus = .terminal;
-                    }
-                    return true;
-                },
-                .new_terminal, .profiles, .terminal_picker, .split, .kill => {
-                    self.pointer = .pointer;
-                    if (event.y > ui.cell.snap(rect.y) and event.kind == .down) {
-                        switch (hit) {
-                            .split, .kill => |index| {
-                                if (event.button == .middle) self.killPanelTerminal(index) catch {};
-                                if (event.button == .right) self.showTerminalTabMenu(index, event) catch {};
-                            },
-                            else => {},
-                        }
-                    }
-                    if (left_press) switch (hit) {
-                        .new_terminal => self.newPanelTerminal() catch {},
-                        .profiles => self.showTerminalProfileMenu(null, event) catch {},
-                        .terminal_picker => self.showTerminalSwitchMenu(event) catch {},
-                        .split => |index| self.splitTerminalTabs(index) catch {},
-                        .kill => |index| self.killTerminalTabs(index) catch {},
-                        else => unreachable,
-                    };
-                    return true;
-                },
-                .sash => {
-                    self.pointer = sash_css.pointer(.vertical);
-                    if (event.kind == .down and event.button == .right) self.showTerminalTabListMenu(event) catch {};
-                    if (left_press) {
-                        const now = time_compat.milliTimestamp();
-                        const double_click = if (list.last_sash_click_ms) |previous| now - previous <= 400 else false;
-                        list.last_sash_click_ms = if (double_click) null else now;
-                        if (double_click) {
-                            const ideal = terminal_tabs.TerminalTabList.idealWidth(service);
-                            list.resize(if (list.width == ideal) terminal_tabs.narrow_view_width else ideal);
-                            self.terminal_tabbed_view.storeListWidth(self.io) catch {};
-                            self.syncTerminalSize();
-                        } else {
-                            list.dragging_sash = true;
-                        }
-                    }
-                    return true;
-                },
-                .pane_sash => |index| {
-                    self.pointer = sash_css.pointer(.vertical);
-                    if (left_press) list.dragging_pane_sash = index;
-                    return true;
-                },
-                .empty_tabs => {
-                    if (event.kind == .down and event.button == .right) self.showTerminalTabListMenu(event) catch {};
-                    if (left_press) {
-                        const now = time_compat.milliTimestamp();
-                        if (list.last_clicked == null and now - list.last_click_ms <= 400) self.newPanelTerminal() catch {};
-                        list.last_clicked = null;
-                        list.last_click_ms = now;
-                    }
-                    return true;
-                },
-                .content => |pane| {
-                    if (left_press) {
-                        self.focus = .terminal;
-                        list.focused = false;
-                        _ = service.setActive(pane.index);
-                    }
-                    return self.routeTerminalMouse(service.at(pane.index).?, pane.rect, event);
-                },
-            }
+            if (self.terminal_tabbed_view.handleMouse(service, rect, panel_part_mod.titleContentEnd(&self.panel_part, rect), event, time_compat.milliTimestamp(), .{
+                .context = self,
+                .pointer = &self.pointer,
+                .focus_panel = focusTerminalTabbedView,
+                .dispatch = dispatchTerminalTabbedViewAction,
+            })) |handled| return handled;
         }
         const pane = self.part.viewAt(event.x, event.y) orelse return false;
         const tab = pane.activeTab() orelse return false;
@@ -3429,22 +3290,32 @@ pub const Workbench = struct {
         return self.routeTerminalMouse(instance, rect, event);
     }
 
-    fn finishTerminalListDrag(self: *Workbench, service: *TerminalService, id: usize, hit: terminal_panel.Hit, event: *const ui.MouseEvent) void {
-        for (0..service.count()) |source| {
-            const instance = service.at(source).?;
-            if (instance.id != id) continue;
-            switch (hit) {
-                .tab, .split, .kill => |target| service.group.moveGroup(source, target),
-                .empty_tabs => service.group.moveGroup(source, null),
-                .none => if (self.part.viewAt(event.x, event.y)) |pane| {
-                    self.movePanelInstanceToEditor(service, pane, source, instance) catch {};
-                    return;
-                },
-                else => {},
-            }
-            self.revealActiveTerminalTab();
-            return;
+    fn focusTerminalTabbedView(context: *anyopaque) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.focus = .terminal;
+    }
+
+    fn dispatchTerminalTabbedViewAction(context: *anyopaque, action: terminal_panel.TerminalTabbedView.MouseAction, event: *const ui.MouseEvent) bool {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        switch (action) {
+            .sync_size => self.syncTerminalSize(),
+            .move_to_editor => |source| {
+                const pane = self.part.viewAt(event.x, event.y) orelse return false;
+                const service = self.terminal_service orelse return false;
+                const instance = service.at(source) orelse return false;
+                self.movePanelInstanceToEditor(service, pane, source, instance) catch {};
+            },
+            .kill_panel => |index| self.killPanelTerminal(index) catch {},
+            .tab_menu => |index| self.showTerminalTabMenu(index, event) catch {},
+            .new_terminal => self.newPanelTerminal() catch {},
+            .profiles => self.showTerminalProfileMenu(null, event) catch {},
+            .terminal_picker => self.showTerminalSwitchMenu(event) catch {},
+            .split_tabs => |index| self.splitTerminalTabs(index) catch {},
+            .kill_tabs => |index| self.killTerminalTabs(index) catch {},
+            .tab_list_menu => self.showTerminalTabListMenu(event) catch {},
+            .content => |pane| return self.routeTerminalMouse(self.terminal_service.?.at(pane.index).?, pane.rect, event),
         }
+        return true;
     }
 
     fn splitTerminalTabs(self: *Workbench, index: usize) !void {
@@ -3470,21 +3341,7 @@ pub const Workbench = struct {
 
     fn showTerminalPicker(self: *Workbench) !void {
         const service = self.terminal_service orelse return;
-        _ = self.breadcrumbs_arena.reset(.retain_capacity);
-        const arena = self.breadcrumbs_arena.allocator();
-        var items = std.array_list.Managed(QuickPickItem).init(arena);
-        for (0..service.count()) |index| {
-            const instance = service.at(index).?;
-            try items.append(.{ .item = .{
-                .id = try std.fmt.allocPrint(arena, "instance:{d}", .{instance.id}),
-                .label = try arena.dupe(u8, instance.displayTitle()),
-                .description = try arena.dupe(u8, instance.labels.description),
-            } });
-        }
-        try self.quick_access.inputService().showPick(items.items, .{
-            .placeholder = "Switch Terminal",
-            .active_id = if (service.group.active < items.items.len) items.items[service.group.active].item.id else null,
-        }, onTerminalPicker, self);
+        try terminal_actions.showSwitchPicker(service, self.quick_access.inputService(), onTerminalPicker, self);
     }
 
     fn showTerminalSwitchMenu(self: *Workbench, event: *const ui.MouseEvent) !void {
@@ -3492,11 +3349,7 @@ pub const Workbench = struct {
         if (service.count() == 0) return;
         const menu = try self.newContextMenu(onTerminalMenu);
         errdefer menu.deinit();
-        for (0..service.count()) |index| {
-            const instance = service.at(index).?;
-            const id = try std.fmt.allocPrint(menu.arena.allocator(), "instance:{d}", .{instance.id});
-            try menu.add(id, .{ .label = instance.displayTitle(), .type = .radio, .checked = service.group.active == index });
-        }
+        try terminal_actions.appendSwitchMenu(service, menu);
         try self.showContextMenu(menu, MenuAnchor.mouse(event));
     }
 
@@ -3504,14 +3357,7 @@ pub const Workbench = struct {
         const service = self.terminal_service orelse return;
         const menu = try self.newContextMenu(onTerminalMenu);
         errdefer menu.deinit();
-        const arena = menu.arena.allocator();
-        for (service.profiles.items, 0..) |profile, index| {
-            const id = if (group_id) |id|
-                try std.fmt.allocPrint(arena, "editor-profile:{d}:{d}", .{ id, index })
-            else
-                try std.fmt.allocPrint(arena, "profile:{d}", .{index});
-            try menu.add(id, .{ .label = profile.profile_name });
-        }
+        try terminal_actions.appendProfileMenu(service, menu, group_id);
         if (menu.items.items.len == 0) {
             menu.deinit();
             return;
@@ -3521,38 +3367,17 @@ pub const Workbench = struct {
 
     fn showTerminalTabMenu(self: *Workbench, index: usize, event: *const ui.MouseEvent) !void {
         const service = self.terminal_service orelse return;
-        const instance = service.at(index) orelse return;
+        if (service.at(index) == null) return;
         const menu = try self.newContextMenu(onTerminalMenu);
         errdefer menu.deinit();
-        const arena = menu.arena.allocator();
-        try menu.add(try std.fmt.allocPrint(arena, "split:{d}", .{instance.id}), .{ .label = "Split Terminal" });
-        const range = service.group.groupRange(index);
-        if (range.end - range.first > 1) {
-            try menu.add(try std.fmt.allocPrint(arena, "unsplit:{d}", .{instance.id}), .{ .label = "Unsplit Terminal" });
-        }
-        if (instance.tab_selected) {
-            var selected: usize = 0;
-            for (service.group.instances.items) |candidate| selected += @intFromBool(candidate.tab_selected);
-            if (selected > 1) try menu.add(try std.fmt.allocPrint(arena, "join:{d}", .{instance.id}), .{ .label = "Join Terminals" });
-        }
-        try menu.add(try std.fmt.allocPrint(arena, "rename:{d}", .{instance.id}), .{ .label = "Rename Terminal" });
-        try menu.add(try std.fmt.allocPrint(arena, "move:{d}", .{instance.id}), .{ .label = "Move Terminal into Editor Area" });
-        try menu.add(try std.fmt.allocPrint(arena, "kill:{d}", .{instance.id}), .{ .label = "Kill Terminal" });
-        try menu.separator();
-        try self.appendTerminalTabListActions(menu);
+        try terminal_actions.appendTabMenu(service, menu, index);
         try self.showContextMenu(menu, MenuAnchor.mouse(event));
-    }
-
-    fn appendTerminalTabListActions(self: *Workbench, menu: *Menu) !void {
-        const move_left = self.terminalConfig().tabs_location == .right;
-        try menu.add(if (move_left) "tabs:left" else "tabs:right", .{ .label = if (move_left) "Move Tabs Left" else "Move Tabs Right" });
-        try menu.add("tabs:hide", .{ .label = "Hide Tabs" });
     }
 
     fn showTerminalTabListMenu(self: *Workbench, event: *const ui.MouseEvent) !void {
         const menu = try self.newContextMenu(onTerminalMenu);
         errdefer menu.deinit();
-        try self.appendTerminalTabListActions(menu);
+        try terminal_actions.appendTabListActions(self.terminalConfig(), menu);
         try self.showContextMenu(menu, MenuAnchor.mouse(event));
     }
 

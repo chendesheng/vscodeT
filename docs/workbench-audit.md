@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 12,094 lines and has no inline tests. It has no direct imports from `src/tui`. Five files import the shell. All 151 baseline
+The browser shell is 11,919 lines and has no inline tests. It has no direct imports from `src/tui`. Five files import the shell. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and
@@ -36,7 +36,7 @@ Show All Commands resolves the quick input service through its Action2 handler.
 
 * The upstream NotificationsModel and NotificationViewItem now own deduplication, normalized message content, progress, visibility and filter events, and status-message replacement. The portable tests run at their original owner path; Layout now honors zenMode.silentNotifications with the upstream exit-info ownership rule, and the notification parts react to position configuration changes. NotificationService owns source and global filters (using the storage service), prompt choices and status handles. The workbench registers its service interface; undo/redo warnings use it once the editor is mounted. NotificationsToasts now ports deferred creation, deduplication before the next frame, spam limiting, visibility, window-focus behavior and purge deadlines. The center, status, toast list and their commands are composed during workbench startup. Toast creation waits until Restored; input and cell painting go through the host. The extension message bridge now uses INotificationService for non-modal messages, with VS Code severity, source, action identities and deferred replies. Terminal modal messages still use the picker adapter; an actual DialogService is outstanding.
 * Extension-host active-document mirrors follow editor/group events, and tab/selection/scroll changes are delivered on the window queue. The tab disposal event detaches listeners while the editor is alive. History listens to editor changes instead of mutating state on activeTab queries.
-* Terminal pointer routing, tab/title hit testing, sash input routing, quick-input key/mouse dispatch and image capability/metrics now live in src/tui/workbench.zig. EditorPart resolves the maximized group in its own viewAt geometry.
+* Terminal pointer routing, tab/title hit testing, sash input routing, quick-input key/mouse dispatch and image capability/metrics now live in src/tui/workbench.zig. EditorPart resolves the maximized group in its own viewAt geometry. TerminalTabbedView owns tab-list interaction, drag/reorder, pane focus, sash resizing, hover and hit decisions. TerminalActions builds the switch/profile/tab menus and picker; picker labels have their own lifetime rather than using breadcrumbs scratch storage. Cross-part transfer and PTY routing still cross the terminal host adapter.
 * TextDiffEditor reads its diff configuration through IConfigurationService rather than the shell.
 * EditorPart owns the group grid layout, maximized geometry and group chrome settings. Each EditorGroupView updates breadcrumb visibility with its active pane.
 * Centered layout, group cycling and resetting group sizes use Action2 and their layout/editor-group services.
