@@ -149,6 +149,7 @@ pub const RenderOptions = struct {
 };
 
 pub const SearchView = struct {
+    pub const ID = @import("../../../services/search/common/search.zig").VIEW_ID;
     allocator: Allocator,
     workspace: *WorkspaceContextService,
     configuration: *ConfigurationService,

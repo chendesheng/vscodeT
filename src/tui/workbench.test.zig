@@ -1609,6 +1609,35 @@ test "Workbench: sidebar renders and opens a file" {
     try std.testing.expect(workbench.layout.isVisible(.sidebar));
 }
 
+test "Search palette actions open the named view after the activity bar changes" {
+    const window = try TestWindow.init(std.testing.allocator, std.testing.io, &.{}, 80, 20);
+    defer window.deinit();
+    const workbench = window.workbench;
+    const views_mod = @import("../vs/workbench/services/views/common/viewsService.zig");
+    const SearchView = @import("../vs/workbench/contrib/search/browser/searchViewTerminal.zig").SearchView;
+    const views = try workbench.instantiation.invokeFunction(struct {
+        fn get(accessor: @import("../vs/platform/instantiation/common/instantiation.zig").ServicesAccessor) !views_mod.IViewsService {
+            return (try accessor.get(views_mod.views_service_id)).*;
+        }
+    }.get, .{});
+    try workbench.initSidebarFromWorkspace();
+    try workbench.activity_bar_part.removeActivity("explorer");
+    try std.testing.expectEqualStrings("search", workbench.activity_bar_part.activityAtVisibleIndex(0).?.id);
+    try std.testing.expect(workbench.search_view != null);
+
+    try std.testing.expect(try workbench.showActivityById("scm"));
+    try std.testing.expect(views.getActiveViewWithId(SearchView) == null);
+    try workbench.commands.execute("toggleSearchCaseSensitive");
+    try std.testing.expect(!workbench.search_view.?.widget.match_case);
+    try workbench.commands.execute("search.action.focusNextSearchResult");
+    try std.testing.expectEqualStrings("search", workbench.activity_bar_part.active_id.?);
+    try std.testing.expectEqual(workbench.search_view.?, views.getActiveViewWithId(SearchView).?);
+    try workbench.commands.execute("toggleSearchCaseSensitive");
+    try std.testing.expect(workbench.search_view.?.widget.match_case);
+    try workbench.commands.execute("search.action.viewAsTree");
+    try std.testing.expectEqual(.tree, workbench.search_view.?.controller.view_mode);
+}
+
 test "Workbench: workspace search streams results and opens a match" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();

@@ -1,8 +1,5 @@
 // Port of `src/vs/workbench/contrib/search/common/constants.ts`.
-//
-// The terminal workbench has no context-key service or menu registry. The
-// upstream ids and key names are kept so the TUI command table and action
-// metadata stay aligned.
+// Search actions and view contributions share the upstream command and context key IDs.
 
 pub const SearchCommandIds = struct {
     pub const find_in_files = "workbench.action.findInFiles";

@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 13,593 lines and has no inline tests. It has no direct imports from `src/tui`. Nine files import the shell. All 151 baseline
+The browser shell is 13,518 lines and has no inline tests. It has no direct imports from `src/tui`. Nine files import the shell. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records 256 command IDs with labels, categories and visibility for empty and
@@ -35,6 +35,10 @@ code editor through ICodeEditorService. A diff exposes its modified control as
 the active editor and its focused side for commands.
 Show All Commands resolves the quick input service through its Action2 handler.
 
+* Twenty Search commands are registered as Action2 contributions by the search action
+  modules. Find and result navigation open Search by view ID. Toggles and toolbar
+  actions use the active view through IViewsService. The palette keeps its
+  existing command IDs, labels and visibility.
 * TextFileService reads and decodes editor inputs for synchronous opens, interactive opens
   and watcher reloads. A missing input opens empty. A missing watched file reports a
   failed reload and preserves the open model. Closing or superseding a request cancels

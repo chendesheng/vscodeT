@@ -93,3 +93,12 @@ pub fn removeElement(
     }
     viewer.focusView();
 }
+
+const SearchView = @import("searchViewTerminal.zig").SearchView;
+const base_actions = @import("searchActionsBase.zig");
+
+const SearchCommandIds = @import("../common/constants.zig").SearchCommandIds;
+pub const remove = base_actions.viewAction(SearchCommandIds.remove, "Dismiss Search Result", .active, SearchView.commandRemove, .{});
+pub const replace = base_actions.viewAction(SearchCommandIds.replace, "Replace", .active, SearchView.commandReplace, .{});
+pub const replace_all_in_file = base_actions.viewAction(SearchCommandIds.replace_all_in_file, "Replace All in File", .active, SearchView.commandReplace, .{});
+pub const replace_all_in_folder = base_actions.viewAction(SearchCommandIds.replace_all_in_folder, "Replace All in Folder", .active, SearchView.commandReplace, .{});

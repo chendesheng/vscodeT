@@ -15,6 +15,7 @@ const Allocator = std.mem.Allocator;
 const configuration = @import("../../../../platform/configuration/common/configuration.zig");
 
 pub const DEFAULT_MAX_SEARCH_RESULTS: usize = 20_000;
+pub const VIEW_ID = "workbench.view.search";
 pub const SEARCH_EXCLUDE_CONFIG = "search.exclude";
 
 /// Port of upstream `ViewMode`.

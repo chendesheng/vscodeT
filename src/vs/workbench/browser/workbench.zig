@@ -171,6 +171,7 @@ const RangeHighlightDecorations = range_highlight_mod.RangeHighlightDecorations;
 const search_editor = @import("../contrib/searchEditor/browser/searchEditor.zig");
 const search_editor_serialization = @import("../contrib/searchEditor/browser/searchEditorSerialization.zig");
 const SearchEditorInput = @import("../contrib/searchEditor/browser/searchEditorInput.zig").SearchEditorInput;
+const search_command_ids = @import("../contrib/search/common/constants.zig").SearchCommandIds;
 const search_view_mod = @import("../contrib/search/browser/searchViewTerminal.zig");
 const SearchView = search_view_mod.SearchView;
 const search_widget_mod = @import("../contrib/search/browser/searchWidget.zig");
@@ -244,8 +245,6 @@ const view_pane_container_mod = @import("./parts/views/viewPaneContainer.zig");
 const text_diff_editor_mod = @import("./parts/editor/textDiffEditor.zig");
 const storage_mod = @import("../../platform/storage/common/storage.zig");
 const TerminalService = terminal_service_mod.TerminalService;
-
-const search_command_ids = @import("../contrib/search/common/constants.zig").SearchCommandIds;
 
 pub const TabKeyResult = enum { unhandled, handled, quit };
 pub const SplitDirection = grid_mod.Orientation;
@@ -463,10 +462,37 @@ pub const IWorkbenchOptions = struct {
     reset_layout: bool = false,
 };
 
+const views_service = @import("../services/views/common/viewsService.zig");
+
+/// The terminal Search view is a single pane in its activity container.
+const WindowViews = struct {
+    workbench: *Workbench,
+
+    pub fn interface(self: *WindowViews) views_service.IViewsService {
+        return .{ .context = self, .get_active_view = getActiveView, .open_view = openView };
+    }
+
+    fn getActiveView(context: *anyopaque, id: []const u8) ?*anyopaque {
+        const self: *WindowViews = @ptrCast(@alignCast(context));
+        const active = self.workbench.sidebar_part.pane.active_id orelse return null;
+        if (!std.mem.eql(u8, id, SearchView.ID) or !std.mem.eql(u8, active, "search")) return null;
+        return self.workbench.search_view;
+    }
+
+    fn openView(context: *anyopaque, id: []const u8, focus: bool) !?*anyopaque {
+        const self: *WindowViews = @ptrCast(@alignCast(context));
+        if (!std.mem.eql(u8, id, SearchView.ID)) return null;
+        try self.workbench.openActivity("search", focus);
+        return self.workbench.search_view;
+    }
+};
+
 pub const Workbench = struct {
     const WindowTimer = @import("../../base/common/async.zig").WindowTimer;
     restore_timer: ?*WindowTimer,
     code_editors: CodeEditorService,
+    window_views: WindowViews,
+    views_api: views_service.IViewsService,
     code_editor_api: code_editor_service.ICodeEditorService,
     allocator: Allocator,
     io: Io,
@@ -890,6 +916,9 @@ pub const Workbench = struct {
         try self.instantiation.init(self.allocator, &self.services);
         self.lifecycle_api = self.lifecycle.interface();
         self.layout_api = self.layout.interface();
+        self.window_views = .{ .workbench = self };
+        self.views_api = self.window_views.interface();
+        _ = try self.services.set(views_service.views_service_id, &self.views_api);
         self.code_editors = .{ .part = self.part };
         self.code_editor_api = self.code_editors.interface();
         _ = try self.services.set(code_editor_service.code_editor_service_id, &self.code_editor_api);
@@ -1419,7 +1448,7 @@ pub const Workbench = struct {
         for (editor_commands) |command| try self.commands.register(command);
         try self.commands.registerAction(&self.instantiation, zen_mode_contribution.toggle_action);
         try self.commands.registerAction(&self.instantiation, zen_mode_contribution.exit_action);
-        const commands = [_]commands_mod.CommandInfo{
+        const before_search = [_]commands_mod.CommandInfo{
             .{ .id = "workbench.action.toggleCenteredLayout", .label = "Toggle Centered Layout", .category = zen_mode_contribution.category, .context = self, .run = commandToggleCenteredLayout },
             .{
                 .id = zen_mode_contribution.zen_hide_editor_tabs_id,
@@ -1510,28 +1539,17 @@ pub const Workbench = struct {
             .{ .id = media_actions.zoom_out_id, .label = media_actions.zoom_out_title, .category = media_actions.category, .requires_editor = true, .context = self, .run = commandImageZoomOut },
             .{ .id = media_actions.select_zoom_level_id, .label = media_actions.select_zoom_level_title, .category = media_actions.category, .requires_editor = true, .context = self, .run = commandImageSelectZoomLevel },
             .{ .id = media_actions.open_in_text_id, .label = media_actions.open_in_text_title, .category = media_actions.category, .requires_editor = true, .context = self, .run = commandImageOpenInTextEditor },
-            .{ .id = "workbench.action.findInFiles", .label = "Find in Files", .category = "Search", .context = self, .run = commandFindInFiles },
-            .{ .id = "workbench.action.replaceInFiles", .label = "Replace in Files", .category = "Search", .context = self, .run = commandReplaceInFiles },
-            .{ .id = "toggleSearchCaseSensitive", .label = "Toggle Case Sensitive", .category = "Search", .context = self, .run = commandToggleSearchCase },
-            .{ .id = "toggleSearchWholeWord", .label = "Toggle Whole Word", .category = "Search", .context = self, .run = commandToggleSearchWholeWord },
-            .{ .id = "toggleSearchRegex", .label = "Toggle Regex", .category = "Search", .context = self, .run = commandToggleSearchRegex },
-            .{ .id = "toggleSearchPreserveCase", .label = "Toggle Preserve Case", .category = "Search", .context = self, .run = commandToggleSearchPreserveCase },
-            .{ .id = "search.action.focusNextSearchResult", .label = "Focus Next Search Result", .category = "Search", .context = self, .run = commandSearchNext },
-            .{ .id = "search.action.focusPreviousSearchResult", .label = "Focus Previous Search Result", .category = "Search", .context = self, .run = commandSearchPrevious },
-            .{ .id = "search.action.remove", .label = "Dismiss Search Result", .category = "Search", .context = self, .run = commandSearchRemove },
-            .{ .id = "search.action.replace", .label = "Replace", .category = "Search", .context = self, .run = commandSearchReplace },
-            .{ .id = "search.action.replaceAllInFile", .label = "Replace All in File", .category = "Search", .context = self, .run = commandSearchReplace },
-            .{ .id = "search.action.replaceAllInFolder", .label = "Replace All in Folder", .category = "Search", .context = self, .run = commandSearchReplace },
-            .{ .id = "search.action.clearSearchResults", .label = "Clear Search Results", .category = "Search", .context = self, .run = commandSearchClear },
+        };
+        for (before_search) |command| try self.commands.register(command);
+        const search_contribution = @import("../contrib/search/browser/search.contribution.zig");
+        for (search_contribution.search_actions) |action| try self.commands.registerAction(&self.instantiation, action);
+        const search_editor_commands = [_]commands_mod.CommandInfo{
             .{ .id = "search.action.openNewEditor", .label = "Open New Search Editor", .category = "Search", .context = self, .run = commandOpenNewSearchEditor },
             .{ .id = "rerunSearchEditorSearch", .label = "Search Again", .category = "Search Editor", .context = self, .run = commandRerunSearchEditor },
-            .{ .id = search_command_ids.open_in_editor, .label = "Open Results in Editor", .category = "Search", .context = self, .run = commandSearchOpenInEditor },
-            .{ .id = search_command_ids.refresh_search_results, .label = "Refresh Search Results", .category = "Search", .context = self, .run = commandSearchRefresh },
-            .{ .id = search_command_ids.view_as_tree, .label = "View as Tree", .category = "Search", .context = self, .run = commandSearchViewAsTree },
-            .{ .id = search_command_ids.view_as_list, .label = "View as List", .category = "Search", .context = self, .run = commandSearchViewAsList },
-            .{ .id = search_command_ids.collapse_search_results, .label = "Collapse Search Results", .category = "Search", .context = self, .run = commandSearchCollapse },
-            .{ .id = search_command_ids.expand_search_results, .label = "Expand Search Results", .category = "Search", .context = self, .run = commandSearchExpand },
-            .{ .id = "workbench.action.search.toggleQueryDetails", .label = "Toggle Search Details", .category = "Search", .context = self, .run = commandSearchDetails },
+        };
+        for (search_editor_commands) |command| try self.commands.register(command);
+        for (search_contribution.result_actions) |action| try self.commands.registerAction(&self.instantiation, action);
+        const commands = [_]commands_mod.CommandInfo{
             .{ .id = "actions.find", .label = "Find", .context = self, .requires_editor = true, .run = commandFind },
             .{ .id = "editor.action.startFindReplaceAction", .label = "Replace", .context = self, .requires_editor = true, .run = commandReplace },
             .{ .id = "editor.action.commentLine", .label = "Toggle Line Comment", .category = "Editor", .context = self, .requires_editor = true, .run = commandToggleLineComment },
@@ -1744,16 +1762,13 @@ pub const Workbench = struct {
     }
 
     pub fn findInFiles(self: *Workbench) !void {
-        try self.showActivity(1);
-        if (self.search_view) |view| {
-            try view.seedFromSelection();
-            view.focus();
-        }
+        const search = @import("../contrib/search/browser/searchActionsBase.zig");
+        if (try search.openSearchView(self.views_api, true)) |view| try search.findInFiles(view);
     }
 
     pub fn replaceInFiles(self: *Workbench) !void {
-        try self.showActivity(1);
-        if (self.search_view) |view| view.focusReplace();
+        const search = @import("../contrib/search/browser/searchActionsBase.zig");
+        if (try search.openSearchView(self.views_api, true)) |view| search.replaceInFiles(view);
     }
 
     /// Enables the threaded TextMate background tokenizer. The TUI calls
@@ -2146,9 +2161,9 @@ pub const Workbench = struct {
 
     /// Shows the activity container with `id` (for example `workbench.view.scm`).
     pub fn showActivityById(self: *Workbench, id: []const u8) !bool {
-        for (self.activity_bar_part.activities.items, 0..) |activity, index| {
+        for (self.activity_bar_part.activities.items) |activity| {
             if (!std.mem.eql(u8, activity.id, id)) continue;
-            try self.showActivity(index);
+            try self.openActivity(activity.id, true);
             return true;
         }
         return false;
@@ -2725,20 +2740,26 @@ pub const Workbench = struct {
 
     pub fn showActivity(self: *Workbench, index: usize) !void {
         const activity = self.activity_bar_part.activityAtVisibleIndex(index) orelse return;
+        try self.openActivity(activity.id, true);
+    }
+
+    fn openActivity(self: *Workbench, id: []const u8, focus: bool) !void {
         if (self.sidebar == null or self.search_view == null) try self.initSidebarFromWorkspace();
         // Switching the visible view container invalidates the hover state
         // painted by the previous one.
         self.clearSidebarViewHover();
         if (self.activeSidebarViewContainer()) |container| container.cancelHeaderDrag();
-        _ = try self.activity_bar_part.setActive(activity.id);
-        _ = try self.sidebar_part.openPaneComposite(activity.id);
+        _ = try self.activity_bar_part.setActive(id);
+        _ = try self.sidebar_part.openPaneComposite(id);
         try self.setSidebarVisible(true);
         try self.syncActivityBarVisibility();
         self.updateSidebarTitleActions();
-        self.focus = .sidebar;
-        self.statusbar.main_part.clearFocus();
-        if (std.mem.eql(u8, activity.id, "search")) {
-            if (self.search_view) |view| view.focus();
+        if (focus) {
+            self.focus = .sidebar;
+            self.statusbar.main_part.clearFocus();
+            if (std.mem.eql(u8, id, "search")) {
+                if (self.search_view) |view| view.focus();
+            }
         }
         if (self.range_highlights) |highlights| highlights.removeHighlightRange();
         self.layoutAll();
@@ -13319,62 +13340,6 @@ fn searchActiveEditorInfo(context: *anyopaque) ?search_view_mod.EditorInfo {
     return self.activeEditorInfo();
 }
 
-fn commandFindInFiles(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.findInFiles();
-}
-
-fn commandReplaceInFiles(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.replaceInFiles();
-}
-
-fn ensureSearch(context: *anyopaque) !*SearchView {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.showActivity(1);
-    return self.search_view.?;
-}
-
-fn commandToggleSearchCase(context: *anyopaque) anyerror!void {
-    const view = try ensureSearch(context);
-    view.commandToggle(.match_case);
-}
-
-fn commandToggleSearchWholeWord(context: *anyopaque) anyerror!void {
-    const view = try ensureSearch(context);
-    view.commandToggle(.whole_word);
-}
-
-fn commandToggleSearchRegex(context: *anyopaque) anyerror!void {
-    const view = try ensureSearch(context);
-    view.commandToggle(.regex);
-}
-
-fn commandToggleSearchPreserveCase(context: *anyopaque) anyerror!void {
-    const view = try ensureSearch(context);
-    view.commandToggle(.preserve_case);
-}
-
-fn commandSearchNext(context: *anyopaque) anyerror!void {
-    const view = try ensureSearch(context);
-    view.commandFocusNext();
-}
-
-fn commandSearchPrevious(context: *anyopaque) anyerror!void {
-    const view = try ensureSearch(context);
-    view.commandFocusPrevious();
-}
-
-fn commandSearchRemove(context: *anyopaque) anyerror!void {
-    const view = try ensureSearch(context);
-    view.commandRemove();
-}
-
-fn commandSearchReplace(context: *anyopaque) anyerror!void {
-    const view = try ensureSearch(context);
-    view.commandReplace();
-}
-
 fn commandOpenNewSearchEditor(context: *anyopaque) anyerror!void {
     try searchOpenResults(context, .{}, .{ .text = "", .match_ranges = &.{} });
 }
@@ -13383,46 +13348,6 @@ fn commandRerunSearchEditor(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const tab = self.activeTab() orelse return;
     if (tab.search_editor_input) |input| input.search_editor.triggerSearch(0, true);
-}
-
-fn commandSearchOpenInEditor(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.search_view) |view| try view.openInEditor();
-}
-
-fn commandSearchRefresh(context: *anyopaque) anyerror!void {
-    const view = try ensureSearch(context);
-    try view.commandRefresh();
-}
-
-fn commandSearchViewAsTree(context: *anyopaque) anyerror!void {
-    const view = try ensureSearch(context);
-    view.commandViewAsTree(true);
-}
-
-fn commandSearchViewAsList(context: *anyopaque) anyerror!void {
-    const view = try ensureSearch(context);
-    view.commandViewAsTree(false);
-}
-
-fn commandSearchCollapse(context: *anyopaque) anyerror!void {
-    const view = try ensureSearch(context);
-    view.commandSetExpanded(false);
-}
-
-fn commandSearchExpand(context: *anyopaque) anyerror!void {
-    const view = try ensureSearch(context);
-    view.commandSetExpanded(true);
-}
-
-fn commandSearchClear(context: *anyopaque) anyerror!void {
-    const view = try ensureSearch(context);
-    view.commandClear();
-}
-
-fn commandSearchDetails(context: *anyopaque) anyerror!void {
-    const view = try ensureSearch(context);
-    view.commandToggleDetails();
 }
 
 fn drawPlainText(grid: *ui.CellGrid, x: usize, y: usize, max_width: usize, text: []const u8, paint: ui.cell.PaintStyle) void {

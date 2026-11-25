@@ -1,9 +1,8 @@
 // Port of the portable helpers in
 // `src/vs/workbench/contrib/search/browser/searchActionsBase.ts`.
 //
-// The terminal workbench has no `IViewsService`/action registry; the TUI owns
-// key dispatch and the command table. The helper layer stays upstream-shaped:
-// action runners operate on a `Viewer` over the visible search rows.
+// Command palette labels follow the terminal port. Actions resolve the active
+// Search view or open it according to the upstream command.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -208,3 +207,56 @@ pub const IFindInFilesArgs = struct {
 fn nodeLessThan(sort_order: SearchSortOrder, a: Node, b: Node) bool {
     return compare.searchComparer(a, b, sort_order) < 0;
 }
+
+const actions = @import("../../../../platform/actions/common/actions.zig");
+const ServicesAccessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
+const views_service = @import("../../../services/views/common/viewsService.zig");
+const IViewsService = views_service.IViewsService;
+const SearchView = @import("searchViewTerminal.zig").SearchView;
+
+pub fn getSearchView(views: IViewsService) ?*SearchView {
+    return views.getActiveViewWithId(SearchView);
+}
+
+pub fn openSearchView(views: IViewsService, focus: bool) !?*SearchView {
+    return views.openView(SearchView, focus);
+}
+
+pub const ViewLookup = enum { open, open_without_focus, active };
+
+/// Binds a search action to its live view through the scoped services accessor.
+/// Compile-time arguments express the fixed option of each upstream subclass.
+pub fn viewAction(
+    comptime id: []const u8,
+    comptime title: []const u8,
+    comptime lookup: ViewLookup,
+    comptime run: anytype,
+    comptime args: anytype,
+) actions.Action2 {
+    return .{
+        .command = .{ .id = id, .title = title, .category = "Search" },
+        .f1 = true,
+        .context = @constCast(&{}),
+        .run_fn = struct {
+            fn invoke(_: *anyopaque, accessor: ServicesAccessor) anyerror!void {
+                const views = (try accessor.get(views_service.views_service_id)).*;
+                const view = (if (lookup == .active) getSearchView(views) else try openSearchView(views, lookup == .open)) orelse return;
+                const result = @call(.auto, run, .{view} ++ args);
+                if (@typeInfo(@TypeOf(result)) == .error_union) try result;
+            }
+        }.invoke,
+    };
+}
+
+pub fn findInFiles(view: *SearchView) !void {
+    try view.seedFromSelection();
+    view.focus();
+}
+
+pub fn replaceInFiles(view: *SearchView) void {
+    view.focusReplace();
+}
+
+const SearchCommandIds = @import("../common/constants.zig").SearchCommandIds;
+pub const find_in_files = viewAction(SearchCommandIds.find_in_files, "Find in Files", .open, findInFiles, .{});
+pub const replace_in_files = viewAction(SearchCommandIds.replace_in_files, "Replace in Files", .open, replaceInFiles, .{});
