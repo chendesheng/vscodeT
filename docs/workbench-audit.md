@@ -35,6 +35,7 @@ code editor through ICodeEditorService. A diff exposes its modified control as
 the active editor and its focused side for commands.
 Show All Commands resolves the quick input service through its Action2 handler.
 
+* The upstream NotificationsModel and NotificationViewItem now own deduplication, normalized message content, progress, visibility and filter events, and status-message replacement. The portable tests run at their original owner path; notification service and parts wiring is still outstanding.
 * EditorPart owns the group grid layout, maximized geometry and group chrome settings. Each EditorGroupView updates breadcrumb visibility with its active pane.
 * Centered layout, group cycling and resetting group sizes use Action2 and their layout/editor-group services.
 * Directional editor-group commands ask EditorPart for the most recently active group

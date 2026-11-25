@@ -1,18 +1,24 @@
 // Port of the core `src/vs/platform/notification/common/notification.ts`
-// contract. Filtering APIs/source filters are not ported yet (and
-// `isNotificationSource` has no Zig equivalent without runtime type checks);
+// contract. `isNotificationSource` is represented by the source union.
 // the notify/info/warn/error/prompt/status surface, handles, progress, the
 // no-op implementations and `withSeverityPrefix` are. `error()` is named
 // `err()` because `error` is a Zig keyword.
 const std = @import("std");
 const Severity = @import("../../../base/common/severity.zig").Severity;
 const NotificationText = @import("./notificationMessage.zig").NotificationText;
+const Emitter = @import("../../../base/common/event.zig").Emitter;
+const LegacyExtensionLinkParsing = @import("./notificationLegacy.zig").LegacyExtensionLinkParsing;
 const IAction = @import("../../../base/common/actions.zig").IAction;
+
+pub const NotificationPriority = enum { DEFAULT, OPTIONAL, SILENT, URGENT };
+pub const NotificationsFilter = enum { OFF, ERROR };
 
 pub const NotificationMessage = union(enum) {
     text: []const u8,
     content: *const NotificationText,
     error_message: []const u8,
+    error_with_actions: struct { message: []const u8, actions: []const IAction },
+    cancelled,
 };
 
 pub const INotificationSource = struct {
@@ -43,6 +49,8 @@ pub const INotification = struct {
     actions: ?INotificationActions = null,
     progress: ?INotificationProgressProperties = null,
     sticky: bool = false,
+    priority: NotificationPriority = .DEFAULT,
+    legacy_extension_link_parsing: ?LegacyExtensionLinkParsing = null,
 };
 
 pub const INotificationProgress = struct {
@@ -73,6 +81,18 @@ pub const INotificationHandle = struct {
     update_message_fn: *const fn (context: *anyopaque, message: NotificationMessage) void,
     update_actions_fn: *const fn (context: *anyopaque, actions: ?INotificationActions) void,
     close_fn: *const fn (context: *anyopaque) void,
+    // Zig adaptation: explicit release of caller-owned handle storage.
+    release_fn: ?*const fn (context: *anyopaque) void = null,
+    visible_fn: ?*const fn (context: *anyopaque) bool = null,
+    on_did_close: ?*Emitter(void) = null,
+    on_did_change_visibility: ?*Emitter(bool) = null,
+
+    pub fn release(self: INotificationHandle) void {
+        if (self.release_fn) |call| call(self.context);
+    }
+    pub fn visible(self: INotificationHandle) ?bool {
+        return if (self.visible_fn) |call| call(self.context) else null;
+    }
 
     pub fn updateSeverity(self: INotificationHandle, severity: Severity) void {
         self.update_severity_fn(self.context, severity);
@@ -106,7 +126,11 @@ pub const IPromptOptions = struct {
 pub const IStatusHandle = struct {
     context: *anyopaque,
     close_fn: *const fn (context: *anyopaque) void,
+    release_fn: ?*const fn (context: *anyopaque) void = null,
 
+    pub fn release(self: IStatusHandle) void {
+        if (self.release_fn) |call| call(self.context);
+    }
     pub fn close(self: IStatusHandle) void {
         self.close_fn(self.context);
     }
@@ -148,7 +172,8 @@ pub const INotificationService = struct {
 };
 
 pub const IStatusMessageOptions = struct {
-    show_in_statusbar: bool = false,
+    show_after: ?i64 = null,
+    hide_after: ?i64 = null,
 };
 
 pub const NoOpProgress = struct {

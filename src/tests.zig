@@ -585,6 +585,7 @@ comptime {
     _ = @import("./vs/platform/notification/common/notificationMessage.zig");
     _ = @import("./vs/platform/notification/common/notification.zig");
     _ = @import("./vs/platform/notification/test/common/notificationMessage.test.zig");
+    _ = @import("./vs/workbench/test/common/notifications.test.zig");
     _ = @import("./vs/base/common/actions.zig");
     _ = @import("./vs/platform/action/common/action.zig");
     _ = @import("./vs/platform/actions/common/actions.zig");
