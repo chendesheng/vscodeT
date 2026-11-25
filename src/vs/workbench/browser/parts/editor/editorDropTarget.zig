@@ -10,6 +10,13 @@ const ui = @import("ui");
 const grid = @import("../../../../base/browser/ui/grid/grid.zig");
 const ThemeColors = @import("../../themeColors.zig").ThemeColors;
 
+/// The upstream drop overlay respects the workbench reduced-motion setting.
+pub fn animationsEnabled(configuration: ?@import("../../../../platform/configuration/common/configuration.zig").IConfigurationService) bool {
+    const config = configuration orelse return true;
+    const value = config.getString("workbench.reduceMotion") orelse return true;
+    return !std.mem.eql(u8, value, "on");
+}
+
 pub const Zone = enum { center, left, right, top, bottom };
 
 pub fn DropOverlay(comptime Pane: type) type {

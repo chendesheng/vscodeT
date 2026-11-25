@@ -695,7 +695,6 @@ pub fn main(init: std.process.Init) !void {
     while (true) {
         const now_ms = time_compat.milliTimestamp();
         if (workbench.window_events.dispatch(now_ms)) needs_render = true;
-        if (workbench.tickEditorDrag(now_ms)) needs_render = true;
         if (json_client) |client| {
             if (client.dispatchResponses(false)) needs_render = true;
         }
@@ -728,7 +727,6 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         timeout = outline_models.dispatchTimers(now_ms, timeout);
-        if (workbench.editorDragTimeout(now_ms)) |drag_timeout| timeout = @min(timeout, drag_timeout);
         timeout = workbench.window_events.nextTimeout(time_compat.milliTimestamp(), timeout);
 
         timeout = restore_timer.nextTimeout(timeout);

@@ -224,7 +224,7 @@ pub fn renderFrame(workbench: *Workbench, writer: *std.Io.Writer) !void {
     try paintEditorGroups(workbench, editor_surface);
     renderEditorFrame(workbench);
     if (workbench.part.maximized_group == null) renderDividers(workbench, workbench.part.root);
-    if (workbench.drag_target) |target| target.paint(&workbench.frame.next, workbench.theme_palette, workbench.part.cell_borders, workbench.animateEditorDrop(), time_compat.milliTimestamp());
+    if (workbench.drag_target) |target| target.paint(&workbench.frame.next, workbench.theme_palette, workbench.part.cell_borders, @import("../vs/workbench/browser/parts/editor/editorDropTarget.zig").animationsEnabled(if (workbench.configuration) |config| config.interface() else null), time_compat.milliTimestamp());
     if (workbench.panelShown()) {
         try renderPanel(workbench);
         renderPanelFrame(workbench);

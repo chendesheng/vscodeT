@@ -522,6 +522,7 @@ pub const Workbench = struct {
     drag_target: ?DropOverlay = null,
     drag_tab_drop: ?TabDrop = null,
     drag_hover: ?DragHover = null,
+    drag_task: @import("../../base/common/windowDispatch.zig").Task,
     tab_selection_anchor: ?struct { pane: *GroupPane, tab: *Tab } = null,
     sidebar: ?*Sidebar = null,
     /// Port of the Explorer viewlet's view-pane container: the Explorer tree
@@ -797,6 +798,7 @@ pub const Workbench = struct {
         self.explorer_view_model = null;
         self.explorer_panes = null;
         self.window_events = .{ .io = self.async_io };
+        self.drag_task = .{ .queue = &self.window_events, .context = self, .run = onEditorDragDeadline };
         self.search_view = null;
         self.search_service = null;
         try self.initShellModels();
@@ -1761,6 +1763,7 @@ pub const Workbench = struct {
         if (self.view_state_storage) |state| state.deinit();
         self.view_state_storage = null;
         self.clearTabDrag();
+        self.drag_task.schedule(null);
         self.cancelAsyncJobs();
         if (self.textmate_background) |factory| {
             TokenizationRegistry.instance.setBackgroundTokenizerFactory(null);
@@ -8058,6 +8061,7 @@ pub const Workbench = struct {
     }
 
     pub fn dispatchDrag(self: *Workbench, event: *EditorDrag.Event) void {
+        defer self.scheduleEditorDragDeadline();
         switch (event.kind) {
             .dragstart => self.onEditorDragStart(event) catch event.preventDefault(),
             .dragenter => {},
@@ -8163,11 +8167,11 @@ pub const Workbench = struct {
                 }
             },
             .pane => |pane| {
-                const area = self.editorDropArea(pane);
+                const area = editor_drop_target.dropArea(pane.rect, if (pane.tabs.items.len == 0) 0 else pane.titleHeight());
                 const zone = editor_drop_target.zoneAt(area, event.mouse.x, event.mouse.y, .{
                     .is_dragging_group = source.tab == null,
                     .prefer_split_vertically = self.preferredSideBySideDirection() == .RIGHT,
-                    .enable_splitting = self.editorDragSetting("workbench.editor.splitOnDragAndDrop", true) !=
+                    .enable_splitting = self.boolSetting("workbench.editor.splitOnDragAndDrop", true) !=
                         editor_tabs_control.isToggleSplitOperation(event.mouse.mods),
                 }) orelse return;
                 if (pane == source.pane and (zone == .center or (!copy and
@@ -8184,36 +8188,22 @@ pub const Workbench = struct {
         event.preventDefault();
     }
 
-    fn editorDropArea(_: *Workbench, pane: *GroupPane) ui.Rect {
-        return editor_drop_target.dropArea(pane.rect, if (pane.tabs.items.len == 0) 0 else pane.titleHeight());
-    }
-
-    fn editorDragSetting(self: *Workbench, key: []const u8, default: bool) bool {
-        const configuration = self.configuration orelse return default;
-        const value = configuration.getValue(key, .{}) orelse return default;
-        return if (value.* == .bool) value.bool else default;
-    }
-
-    pub fn animateEditorDrop(self: *Workbench) bool {
-        const configuration = self.configuration orelse return true;
-        const value = configuration.getValue("workbench.reduceMotion", .{}) orelse return true;
-        return value.* != .string or !std.mem.eql(u8, value.string, "on");
-    }
-
-    pub fn editorDragTimeout(self: *Workbench, now: i64) ?i32 {
+    fn scheduleEditorDragDeadline(self: *Workbench) void {
         var deadline: ?i64 = null;
         if (self.drag_hover) |hover| deadline = hover.deadline;
         if (self.drag_target) |overlay| {
-            if (self.animateEditorDrop()) {
+            if (editor_drop_target.animationsEnabled(if (self.configuration) |config| config.interface() else null)) {
                 if (overlay.frameDeadline()) |frame| deadline = @min(deadline orelse frame, frame);
             }
         }
-        return if (deadline) |at| @intCast(@max(0, at - now)) else null;
+        self.drag_task.schedule(deadline);
     }
 
-    pub fn tickEditorDrag(self: *Workbench, now: i64) bool {
+    fn onEditorDragDeadline(context: *anyopaque, now: i64, _: bool) bool {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        defer self.scheduleEditorDragDeadline();
         var redraw = false;
-        const animate = self.animateEditorDrop();
+        const animate = editor_drop_target.animationsEnabled(if (self.configuration) |config| config.interface() else null);
         if (self.drag_target) |*overlay| {
             if (animate) redraw = overlay.advance(now);
         }
@@ -8392,7 +8382,7 @@ pub const Workbench = struct {
                 }
                 const orientation = editor_drop_target.orientation(overlay.zone);
                 const first = editor_drop_target.newFirst(overlay.zone);
-                const close_empty_groups = self.editorDragSetting("workbench.editor.closeEmptyGroups", true);
+                const close_empty_groups = self.boolSetting("workbench.editor.closeEmptyGroups", true);
                 self.part.setMaximizedGroup(null);
                 if (!copy and (event.source.tab == null or
                     (tabs.len == 1 and source.tabs.items.len == 1 and close_empty_groups)))
@@ -8452,7 +8442,7 @@ pub const Workbench = struct {
         }
         if (preferred) |active| try target.activateTab(active);
         if (!copy and source != target and
-            (whole_group or self.editorDragSetting("workbench.editor.closeEmptyGroups", true)))
+            (whole_group or self.boolSetting("workbench.editor.closeEmptyGroups", true)))
             self.collapseEmptyPane(source);
         try self.focusPane(target);
     }

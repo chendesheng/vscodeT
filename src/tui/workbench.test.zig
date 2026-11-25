@@ -1445,9 +1445,18 @@ test "Workbench: editor drag opens the hovered tab only after its deadline" {
     try sendDragMouse(workbench, 32, pane.hits.items[1].start, y, false);
     const hover = workbench.drag_hover orelse return error.MissingDragHover;
     const deadline = hover.deadline.?;
-    try std.testing.expect(!workbench.tickEditorDrag(deadline - 1));
+    // Drive the same scheduler the terminal uses; other contributions may
+    // have already registered earlier deadlines on this window.
+    for (0..256) |_| {
+        if (workbench.window_events.nextTimeout(deadline - 1, 1) != 0) break;
+        _ = workbench.window_events.dispatch(deadline - 1);
+    }
     try std.testing.expect(workbench.activeTab() != hover.tab);
-    try std.testing.expect(workbench.tickEditorDrag(deadline));
+    try std.testing.expectEqual(deadline, workbench.drag_task.at.?);
+    for (0..256) |_| {
+        if (workbench.drag_task.at == null) break;
+        _ = workbench.window_events.dispatch(deadline);
+    }
     try std.testing.expect(workbench.activeTab() == hover.tab);
     try std.testing.expect(workbench.cancelEditorDrag());
     try std.testing.expect(workbench.drag_hover == null and workbench.drag_tab_drop == null);
