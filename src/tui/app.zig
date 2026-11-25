@@ -616,7 +616,7 @@ pub fn main(init: std.process.Init) !void {
     workbench.initGit() catch {};
     if (profile.user_data_dir) |user_data| workbench.setSidebarViewStorage(user_data) catch {};
     const LayoutStorage = @import("layoutStorage.zig").LayoutStorage;
-    var layout_storage: ?LayoutStorage = if (profile.user_data_dir) |dir| try .init(workbench, dir, args.session) else null;
+    var layout_storage: ?LayoutStorage = if (profile.user_data_dir) |dir| try .init(workbench.allocator, workbench.io, workbench.layout, workbench.workspace.getWorkspace().folders.items, dir, args.session) else null;
     defer if (layout_storage) |*storage| storage.deinit();
     var saved_layout: ?@import("../vs/workbench/browser/layout.zig").Layout.WorkspaceState = null;
     if (layout_storage) |*storage| {

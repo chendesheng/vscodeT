@@ -1105,7 +1105,8 @@ console API for raw mode, sizing and input polling.
   `zenMode.silentNotifications` enables Do Not Disturb only if zen mode owns
   the filter transition, reacts to setting edits, and restores the pre-zen filter.
   A workspace remembers zen mode, its exit state, panel and side bar visibility,
-  and editor centering. Setting `zenMode.restore` to false restores the layout
+  the active sidebar/panel containers and editor centering. Setting
+  `zenMode.restore` to false restores the layout
   that preceded zen mode. Panel width and height, alignment and side bar width
   use profile storage; workspace storage retains the panel position.
 - The panel (bottom by default) is a ported pane-composite part

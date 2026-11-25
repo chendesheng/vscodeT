@@ -20,8 +20,8 @@
 // already is one. The 1px theme borders around the title/header/footer have no
 // cell equivalent and are not painted; the terminal draws part borders as
 // single-cell dividers in the workbench layout. The active viewlet settings key
-// (`workbench.sidebar.activeviewletid`, WORKSPACE scope) is not persisted: the
-// terminal has no session-surviving workspace storage. `focusActivityBar`,
+// (`workbench.sidebar.activeviewletid`, WORKSPACE scope) is restored by Layout
+// through the native workspace storage adapter. `focusActivityBar`,
 // browser boundary sash classes and the activity bar visibility action need a
 // focus model, browser classes and configuration writes. The workbench grid
 // owns the draggable terminal sash.

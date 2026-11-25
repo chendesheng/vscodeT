@@ -2264,9 +2264,11 @@ rules, not changes to the ported view pipeline.
 The terminal saves side bar width, panel alignment and the last non-maximized
 panel width and height in terminal cells under
 `User/globalStorage/layout.state.json`. Workspace storage keeps pane visibility,
-panel position, maximization history, the active panel, editor centering, zen
+panel position, maximization history, the last active sidebar and panel containers, editor centering, zen
 mode and its exit information. The panel defaults to bottom and supports all
-four dock positions; its sash follows the horizontal or vertical sizing axis. Each file
+four dock positions; its sash follows the horizontal or vertical sizing axis.
+Layout restores containers through the registered pane-composite service;
+hidden containers retain the saved last-active ID without mounting their view. Each file
 is replaced atomically on shutdown. An explicit session path identifies an
 empty window across launches. A window without a folder or session path has
 only profile-level sizing. Restoring a terminal panel opens the pane without

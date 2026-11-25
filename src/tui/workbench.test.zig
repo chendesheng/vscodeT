@@ -8805,7 +8805,7 @@ test "workbench restores scoped layout and honors zenMode.restore on reopening" 
         try wb.layout.setSize(.panel, 12);
         try wb.toggleZenMode(false, false);
         try std.testing.expect(wb.layout.isMainEditorCentered());
-        var storage = try LayoutStorage.init(wb, root, null);
+        var storage = try LayoutStorage.init(wb.allocator, wb.io, wb.layout, wb.workspace.getWorkspace().folders.items, root, null);
         defer storage.deinit();
         _ = try wb.core.on_will_shutdown.listen(&storage, LayoutStorage.save);
         try wb.lifecycle.shutdown(.quit);
@@ -8819,7 +8819,7 @@ test "workbench restores scoped layout and honors zenMode.restore on reopening" 
         try wb.setWorkspaceFolders(&.{root});
         try wb.initSidebarFromWorkspace();
         try wb.setUserConfigurationValue("zenMode.restore", .{ .bool = restore_zen });
-        var storage = try LayoutStorage.init(wb, root, null);
+        var storage = try LayoutStorage.init(wb.allocator, wb.io, wb.layout, wb.workspace.getWorkspace().folders.items, root, null);
         defer storage.deinit();
         try std.testing.expect(try storage.load(true) == null);
         try std.testing.expect(!wb.layout.isZenModeActive());
@@ -8842,7 +8842,7 @@ test "workbench restores scoped layout and honors zenMode.restore on reopening" 
     const wb_window = try TestWindow.init(allocator, io, &.{}, 100, 40);
     const wb = wb_window.workbench;
     defer wb_window.deinit();
-    var storage = try LayoutStorage.init(wb, root, "other.session");
+    var storage = try LayoutStorage.init(wb.allocator, wb.io, wb.layout, wb.workspace.getWorkspace().folders.items, root, "other.session");
     defer storage.deinit();
     try wb.layout.restoreParts(try storage.load(false), &wb.part.when_restored);
     try std.testing.expect(!wb.layout.isZenModeActive());
@@ -9773,4 +9773,65 @@ test "Workbench: group close confirmation veto keeps the entire editor set" {
     try std.testing.expect(terminal_workbench.handleDialogKey(wb, &save));
     try std.testing.expect(!wb.isDialogOpen());
     try std.testing.expectEqual(@as(usize, 0), wb.tabCount());
+}
+
+test "Workbench: restore remembers hidden composites without opening their views" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const LayoutStorage = @import("layoutStorage.zig").LayoutStorage;
+    const OpenEvent = @import("../vs/workbench/browser/parts/paneCompositePart.zig").OpenEvent;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "restore_composites.txt", "one");
+    defer allocator.free(path);
+    const root = std.fs.path.dirname(path).?;
+    {
+        const window = try TestWindow.init(allocator, io, &.{path}, 80, 24);
+        defer window.deinit();
+        const wb = window.workbench;
+        try wb.setWorkspaceFolders(&.{root});
+        try wb.initSidebarFromWorkspace();
+        try std.testing.expect(try wb.showActivityById("search"));
+        try std.testing.expect(try wb.openPanelContainer(PROBLEMS_CONTAINER_ID));
+        try wb.layout.setPartHidden(true, .sidebar);
+        try wb.layout.setPartHidden(true, .panel);
+        var storage = try LayoutStorage.init(allocator, io, wb.layout, wb.workspace.getWorkspace().folders.items, root, null);
+        defer storage.deinit();
+        try LayoutStorage.save(.{ .reason = .quit }, &storage);
+    }
+    const window = try TestWindow.init(allocator, io, &.{path}, 80, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.setWorkspaceFolders(&.{root});
+    try wb.initSidebarFromWorkspace();
+    const Observer = struct {
+        opens: usize = 0,
+        fn onOpen(_: OpenEvent, self: *@This()) !void {
+            self.opens += 1;
+        }
+    };
+    var observer = Observer{};
+    const sidebar_listener = try wb.sidebar_part.pane.on_did_pane_composite_open.listen(&observer, Observer.onOpen);
+    defer wb.sidebar_part.pane.on_did_pane_composite_open.unlisten(sidebar_listener);
+    const panel_listener = try wb.panel_part.pane.on_did_pane_composite_open.listen(&observer, Observer.onOpen);
+    defer wb.panel_part.pane.on_did_pane_composite_open.unlisten(panel_listener);
+    {
+        var storage = try LayoutStorage.init(allocator, io, wb.layout, wb.workspace.getWorkspace().folders.items, root, null);
+        defer storage.deinit();
+        const saved = (try storage.load(false)).?;
+        try std.testing.expectEqualStrings("search", saved.@"workbench.sidebar.activeviewletid".?);
+        try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, saved.@"workbench.panelpart.activepanelid".?);
+        try std.testing.expectEqual(@as(usize, 0), observer.opens);
+        try wb.layout.restoreParts(saved, &wb.part.when_restored);
+        try std.testing.expectEqual(@as(usize, 0), observer.opens);
+    }
+    try std.testing.expect(!wb.layout.isVisible(.sidebar));
+    try std.testing.expect(!wb.layout.isVisible(.panel));
+    try std.testing.expect(wb.pane_composite_api.getActivePaneComposite(.sidebar) == null);
+    try std.testing.expect(wb.pane_composite_api.getActivePaneComposite(.panel) == null);
+    try wb.layout.setPartHidden(false, .sidebar);
+    try wb.layout.setPartHidden(false, .panel);
+    try std.testing.expectEqualStrings("search", wb.pane_composite_api.getActivePaneComposite(.sidebar).?.id);
+    try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, wb.pane_composite_api.getActivePaneComposite(.panel).?.id);
+    try std.testing.expectEqual(@as(usize, 2), observer.opens);
 }

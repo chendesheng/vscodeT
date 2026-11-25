@@ -14,6 +14,7 @@ pub const IPaneCompositePartService = struct {
     open_composite: *const fn (*anyopaque, []const u8, Location, bool) anyerror!bool,
     active_composite: *const fn (*anyopaque, Location) ?Descriptor,
     last_active_id: *const fn (*anyopaque, Location) ?[]const u8,
+    restore_last_active_id: *const fn (*anyopaque, Location, ?[]const u8) void,
     visible_ids: *const fn (*anyopaque, Location, std.mem.Allocator) anyerror![][]const u8,
     hide_active: *const fn (*anyopaque, Location) anyerror!void,
 
@@ -27,6 +28,11 @@ pub const IPaneCompositePartService = struct {
 
     pub fn getLastActivePaneCompositeId(self: IPaneCompositePartService, location: Location) ?[]const u8 {
         return self.last_active_id(self.context, location);
+    }
+
+    /// Terminal persistence adapter for CompositePart's storage-service value.
+    pub fn restoreLastActivePaneCompositeId(self: IPaneCompositePartService, location: Location, id: ?[]const u8) void {
+        self.restore_last_active_id(self.context, location, id);
     }
 
     pub fn getVisiblePaneCompositeIds(self: IPaneCompositePartService, location: Location, allocator: std.mem.Allocator) ![][]const u8 {

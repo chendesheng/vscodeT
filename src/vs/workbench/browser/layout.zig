@@ -860,6 +860,7 @@ pub const Layout = struct {
         @"workbench.sideBar.hidden": ?bool = null,
         @"workbench.panel.hidden": ?bool = null,
         @"workbench.panelpart.activepanelid": ?[]const u8 = null,
+        @"workbench.sidebar.activeviewletid": ?[]const u8 = null,
         @"panel.wasLastMaximized": bool = false,
         @"panel.position": ?Position = null,
     };
@@ -872,14 +873,15 @@ pub const Layout = struct {
         @"panel.alignment": ?PanelAlignment = null,
     };
 
-    pub fn workspaceState(self: *const Layout, active_panel: ?[]const u8) WorkspaceState {
+    pub fn workspaceState(self: *const Layout) WorkspaceState {
         return .{
             .@"workbench.editor.centered" = self.isMainEditorCentered(),
             .@"workbench.zenMode.active" = self.isZenModeActive(),
             .@"workbench.zenMode.exitInfo" = self.zen_mode_exit_info,
             .@"workbench.sideBar.hidden" = !self.isVisible(.sidebar),
             .@"workbench.panel.hidden" = !self.isVisible(.panel),
-            .@"workbench.panelpart.activepanelid" = active_panel,
+            .@"workbench.panelpart.activepanelid" = if (self.pane_composite_service) |panes| panes.getLastActivePaneCompositeId(.panel) else null,
+            .@"workbench.sidebar.activeviewletid" = if (self.pane_composite_service) |panes| panes.getLastActivePaneCompositeId(.sidebar) else null,
             .@"panel.wasLastMaximized" = self.panel_was_last_maximized,
             .@"panel.position" = self.panel_position,
         };
@@ -893,11 +895,34 @@ pub const Layout = struct {
             self.panel_position_explicit = true;
             try self.movePanelPosition(position);
         }
-        self.panel_was_last_maximized = state.@"panel.wasLastMaximized";
-        if (state.@"workbench.sideBar.hidden") |hidden| try self.setPartHidden(hidden, .sidebar);
-        if (state.@"workbench.panel.hidden") |hidden| {
-            try self.setPartHidden(hidden, .panel);
-            if (!hidden) try self.onPanelOpened() else self.panel_was_last_maximized = state.@"panel.wasLastMaximized";
+        // restoreParts: resolve the persisted container through the normal
+        // requested/default/first-visible fallback before restoring zen mode.
+        // Hidden parts retain the last-active ID without being opened.
+        if (self.pane_composite_service) |panes| {
+            const sidebar_hidden = state.@"workbench.sideBar.hidden" orelse !self.isVisible(.sidebar);
+            if (sidebar_hidden) {
+                try self.setPartHidden(true, .sidebar);
+                panes.restoreLastActivePaneCompositeId(.sidebar, state.@"workbench.sidebar.activeviewletid");
+            } else {
+                try self.setPartVisibility(false, .sidebar);
+                try self.openViewContainer(.sidebar, state.@"workbench.sidebar.activeviewletid" orelse panes.getLastActivePaneCompositeId(.sidebar), false);
+                if (panes.getActivePaneComposite(.sidebar) == null) try self.setPartHidden(true, .sidebar);
+            }
+            const panel_hidden = state.@"workbench.panel.hidden" orelse !self.isVisible(.panel);
+            self.panel_was_last_maximized = state.@"panel.wasLastMaximized";
+            if (panel_hidden) {
+                try self.setPartHidden(true, .panel);
+                panes.restoreLastActivePaneCompositeId(.panel, state.@"workbench.panelpart.activepanelid");
+                self.panel_was_last_maximized = state.@"panel.wasLastMaximized";
+            } else {
+                try self.setPartVisibility(false, .panel);
+                try self.openViewContainer(.panel, state.@"workbench.panelpart.activepanelid" orelse panes.getLastActivePaneCompositeId(.panel), false);
+                if (panes.getActivePaneComposite(.panel) == null) try self.setPartHidden(true, .panel) else try self.onPanelOpened();
+            }
+        } else {
+            if (state.@"workbench.sideBar.hidden") |hidden| try self.setPartHidden(hidden, .sidebar);
+            if (state.@"workbench.panel.hidden") |hidden| try self.setPartHidden(hidden, .panel);
+            self.panel_was_last_maximized = state.@"panel.wasLastMaximized";
         }
         self.main_editor_centered = state.@"workbench.editor.centered";
         self.zen_mode_exit_info = state.@"workbench.zenMode.exitInfo";

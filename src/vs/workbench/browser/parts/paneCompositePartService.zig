@@ -48,6 +48,7 @@ pub const PaneCompositePartService = struct {
             .open_composite = openPaneComposite,
             .active_composite = getActivePaneComposite,
             .last_active_id = getLastActivePaneCompositeId,
+            .restore_last_active_id = restoreLastActivePaneCompositeId,
             .visible_ids = getVisiblePaneCompositeIds,
             .hide_active = hideActivePaneComposite,
         };
@@ -78,6 +79,12 @@ pub const PaneCompositePartService = struct {
         const self: *PaneCompositePartService = @ptrCast(@alignCast(context));
         const part = self.getPartByLocation(location) orelse return null;
         return part.last_active_id;
+    }
+
+    fn restoreLastActivePaneCompositeId(context: *anyopaque, location: views.ViewContainerLocation, id: ?[]const u8) void {
+        const self: *PaneCompositePartService = @ptrCast(@alignCast(context));
+        const part = self.getPartByLocation(location) orelse return;
+        part.restoreLastActivePaneCompositeId(id);
     }
 
     fn getVisiblePaneCompositeIds(context: *anyopaque, location: views.ViewContainerLocation, allocator: std.mem.Allocator) ![][]const u8 {

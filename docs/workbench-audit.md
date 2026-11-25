@@ -96,6 +96,8 @@ Layout now closes the active sidebar composite on hide, restores the last active
 
 EditorTabsControl now resolves EditorTitleContext through MenuRegistry/MenuService with a captured group and editor context, and owns overflow selection and disposal invalidation. The close, keep-open, pin/unpin and preferred-direction split actions use the group model; Pin means sticky, not merely non-preview. Terminal editor menu contributions have their own terminal owner. Group close actions confirm all target inputs before closing any; a veto keeps the full editor set, and sticky inputs are excluded for Close Others/Right/Saved/All. The unported editor resolver, share and split/move submenus remain portable gaps.
 
+Layout restore now owns sidebar/panel container resolution and fallback, including the persisted sidebar ID. Native layout storage receives only allocator, I/O, workspace folders and Layout; reading JSON never opens a hidden pane.
+
 The portable browser Workbench is 292 lines and has no inline tests. The native TerminalWorkbench window is 4,908 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture

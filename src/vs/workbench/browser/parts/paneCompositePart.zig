@@ -251,6 +251,15 @@ pub const PaneCompositePart = struct {
         return self.getPaneComposite(id);
     }
 
+    /// Restore the persisted CompositePart.activeCompositeSettingsKey without
+    /// mounting a hidden viewlet. Use the descriptor-owned ID, not the parsed
+    /// storage buffer, so the last-active state remains valid after restore.
+    pub fn restoreLastActivePaneCompositeId(self: *PaneCompositePart, id: ?[]const u8) void {
+        const value = id orelse return;
+        const descriptor = self.getPaneComposite(value) orelse return;
+        self.last_active_id = descriptor.id;
+    }
+
     pub fn getLastActivePaneCompositeId(self: *const PaneCompositePart) []const u8 {
         return self.last_active_id orelse "";
     }
