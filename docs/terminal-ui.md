@@ -709,7 +709,8 @@ pauses while a group is expanded. An edge drop restores the grid before
 retiling. There is no 1px
 active-tab top border, horizontal scrollbar, editor actions toolbar, Add Tab
 control; the tab context menu opens at the pointer; duplicate labels
-append a dimmed `workbench.editor.labelFormat` description; overflow clips
+use a dimmed description. MultiEditorTabsControl applies the upstream `shorten`
+algorithm to paths with duplicate names when `workbench.editor.labelFormat` is default; overflow clips
 leading tabs behind a clickable ellipsis that lists them in an anchored menu, and
 reveals the active tab. Preview editors come from Explorer single clicks;
 Enter/quick open/CLI/session opens stay pinned, and an edit pins a preview.

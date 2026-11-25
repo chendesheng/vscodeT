@@ -752,9 +752,10 @@ console API for raw mode, sizing and input polling.
   Pin/Unpin, Split Right, Split Down)
   instead of closing or
   activating a tab; pinned tabs share the single row rather than using a
-  separate pinned row, duplicate labels append a dimmed parent-directory
-  description (`workbench.editor.labelFormat` short/medium/long/default is
-  read), clicking the leading ellipsis lists the clipped tabs in an anchored menu,
+  separate pinned row. With the default label format, same-named tabs show
+  the shortest path that distinguishes them. Short, medium and long formats
+  follow `workbench.editor.labelFormat`. Clicking the leading ellipsis lists
+  the clipped tabs in an anchored menu,
   `workbench.editor.tabCloseButton` off/left/right controls the close cell,
   `workbench.editor.tabSizing` fit/shrink/fixed sizes the strip,
   `workbench.editor.showTabs` none/single hides the row and reclaims it for

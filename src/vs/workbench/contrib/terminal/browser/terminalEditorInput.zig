@@ -25,6 +25,8 @@ pub const TerminalEditorInput = struct {
             .resource = resource,
             .instance = instance,
         };
+        const caps = @import("../../../common/editor.zig").EditorInputCapabilities;
+        self.base.capabilities = caps.Readonly | caps.ForceReveal | caps.CanDropIntoEditor | caps.ForceDescription;
         self.base.impl = self;
         self.base.editor_id = "terminalEditor";
         self.base.resource = resource;

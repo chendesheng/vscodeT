@@ -5525,68 +5525,6 @@ pub const Workbench = struct {
         };
     }
 
-    fn editorTabSizing(self: *Workbench) tab_bar.TabSizing {
-        const configuration = self.configuration orelse return .fit;
-        const value = configuration.getValue("workbench.editor.tabSizing", .{}) orelse return .fit;
-        return switch (value.*) {
-            .string => |text| if (std.mem.eql(u8, text, "shrink"))
-                .shrink
-            else if (std.mem.eql(u8, text, "fixed"))
-                .fixed
-            else
-                .fit,
-            else => .fit,
-        };
-    }
-
-    fn editorTabCloseButton(self: *Workbench) []const u8 {
-        const configuration = self.configuration orelse return "right";
-        const value = configuration.getValue("workbench.editor.tabCloseButton", .{}) orelse return "right";
-        return switch (value.*) {
-            .string => |text| text,
-            else => "right",
-        };
-    }
-
-    fn editorLabelFormat(self: *Workbench) []const u8 {
-        const configuration = self.configuration orelse return "default";
-        const value = configuration.getValue("workbench.editor.labelFormat", .{}) orelse return "default";
-        return switch (value.*) {
-            .string => |text| text,
-            else => "default",
-        };
-    }
-
-    /// Upstream `workbench.editor.labelFormat`: `default` shows a directory
-    /// only for duplicate names, `short` the parent directory, `medium` the
-    /// workspace-relative directory and `long` the absolute directory.
-    fn tabDescription(self: *Workbench, path: []const u8, duplicate: bool, format: []const u8) !?[]u8 {
-        if (path.len == 0) return null;
-        const dir = std.fs.path.dirname(path) orelse return null;
-        var description: []const u8 = "";
-        if (std.mem.eql(u8, format, "short")) {
-            description = std.fs.path.basename(dir);
-        } else if (std.mem.eql(u8, format, "medium")) {
-            if (self.workspaceFolderPath()) |root| {
-                if (relativeToRoot(path, root)) |relative| {
-                    description = std.fs.path.dirname(relative) orelse "";
-                } else {
-                    description = dir;
-                }
-            } else {
-                description = dir;
-            }
-        } else if (std.mem.eql(u8, format, "long")) {
-            description = dir;
-        } else if (duplicate) {
-            // The default label service uses the parent folder name for a
-            // duplicate label; keep the terminal form compact.
-            description = std.fs.path.basename(dir);
-        }
-        if (description.len == 0 or std.mem.eql(u8, description, ".")) return null;
-        return try self.allocator.dupe(u8, description);
-    }
-
     fn relativeToRoot(path: []const u8, root: []const u8) ?[]const u8 {
         const trimmed = std.mem.trimEnd(u8, root, "/\\");
         if (trimmed.len == 0) return null;
@@ -9023,7 +8961,7 @@ pub const Workbench = struct {
 
         const frame = if (self.frame.have_prev) &self.frame.prev else &self.frame.next;
         if (source.tab != null and event.data_transfer.payload.?.len == 1 and
-            self.editorTabSizing() != .shrink)
+            tab_bar.tabSizing(self.configuration) != .shrink)
         {
             const row = ui.cell.snap(source.pane.rect.y);
             for (source.pane.hits.items) |hit| {
@@ -10851,120 +10789,18 @@ pub const Workbench = struct {
             return;
         }
 
-        var ordered = std.array_list.Managed(*Tab).init(self.allocator);
-        defer ordered.deinit();
-        try pane.orderedTabs(self.allocator, &ordered);
-
-        const infos = try self.allocator.alloc(tab_bar.TabInfo, ordered.items.len);
-        defer self.allocator.free(infos);
-        const label_format = self.editorLabelFormat();
-        const close_button_visible = tab_bar.tabCloseButtonVisible(self.editorTabCloseButton());
-        var descriptions = std.array_list.Managed([]u8).init(self.allocator);
-        defer {
-            for (descriptions.items) |description| self.allocator.free(description);
-            descriptions.deinit();
-        }
-        const icons = self.getFileIconTheme();
-        for (ordered.items, 0..) |tab, index| {
-            infos[index] = .{
-                .label = tab.input.getName(),
-                .file_name = std.fs.path.basename(tab.editor.path),
-                .dirty = tab.input.isDirty(),
-                .pinned = pane.group.model.isPinned(.{ .editor = tab.input }),
-                .sticky = pane.group.model.isSticky(.{ .editor = tab.input }),
-                .selected = pane.group.model.isSelected(.{ .editor = tab.input }),
-                .closeable = close_button_visible and
-                    !tab.input.hasCapability(editor_mod.EditorInputCapabilities.CannotClose),
-            };
-            if (tab.search_editor_input != null) {
-                infos[index].file_name = "";
-                infos[index].icon = .{ .glyph = 0xf002, .color = self.themeColor("tab.activeForeground", .{ 110, 164, 118 }) };
-                continue;
-            }
-            if (tab.markdown_panel != null) {
-                infos[index].file_name = "";
-                continue;
-            }
-            if (tab.terminal_input != null) {
-                infos[index].file_name = "";
-                infos[index].icon = .{ .glyph = '❯', .color = .{ .r = 204, .g = 204, .b = 204 } };
-                infos[index].description = tab.input.getDescription(.MEDIUM) orelse "";
-                continue;
-            }
-            if (icons.disabled) {
-                infos[index].file_name = "";
-            } else if (infos[index].file_name.len > 0) {
-                infos[index].icon = icons.forFile(infos[index].file_name, tab.editor.languageId());
-            }
-            var duplicate = false;
-            for (ordered.items, 0..) |other, other_index| {
-                if (other_index == index) continue;
-                if (std.mem.eql(u8, other.input.getName(), tab.input.getName())) {
-                    duplicate = true;
-                    break;
-                }
-            }
-            if (try self.tabDescription(tab.editor.path, duplicate, label_format)) |description| {
-                infos[index].description = description;
-                try descriptions.append(description);
-            }
-        }
-
         const active_group = pane.group == self.service.activeGroup();
-        var hovered_index: ?usize = null;
-        if (self.hovered_pane == pane and self.hovered_tab != null) {
-            for (ordered.items, 0..) |tab, index| {
-                if (tab == self.hovered_tab.?) {
-                    hovered_index = index;
-                    break;
-                }
-            }
-        }
-        const active_tab = pane.activeTab();
-        const title_action: ?tab_bar.TitleAction = if (active_tab) |tab| blk: {
-            if (tab.terminal_input != null) break :blk .{
-                .glyphs = "+⌄",
-                .hovered = self.hovered_title_action_pane == pane,
-            };
-            if (tab.search_editor_input != null) break :blk .{
-                .glyphs = "↻",
-                .hovered = self.hovered_title_action_pane == pane,
-            };
-            if (tab.markdown_preview != null) break :blk .{ .glyphs = "<>", .hovered = self.hovered_title_action_pane == pane };
-            if (!tab.isMarkdown()) break :blk null;
-            break :blk .{
-                .hovered = self.hovered_title_action_pane == pane,
-            };
-        } else null;
-        var drop_index: ?usize = null;
-        if (self.drag_tab_drop) |drop| {
-            if (drop.pane == pane) drop_index = drop.index;
-        }
-        if (pane.titleHeight() > 0) {
-            pane.title_action_hit = try tab_bar.draw(
-                &self.frame.next,
-                infos,
-                pane.activeIndex(ordered.items),
-                x,
-                y,
-                width,
-                &pane.hits,
-                .{
-                    .group_active = active_group,
-                    .hovered = hovered_index,
-                    .close_button_left = std.mem.eql(u8, self.editorTabCloseButton(), "left"),
-                    .tab_sizing = self.editorTabSizing(),
-                    .title_action = title_action,
-                    .drop_index = drop_index,
-                    .cell_borders = self.part.cell_borders,
-                },
-                self.theme_palette,
-            );
-        } else {
-            pane.title_action_hit = null;
-            pane.hits.clearRetainingCapacity();
-        }
-
+        try tab_bar.redraw(pane, &self.frame.next, .{
+            .configuration = self.configuration,
+            .workspace = self.workspace.getWorkspace(),
+            .theme_service = self.theme_service,
+            .palette = self.theme_palette,
+            .group_active = active_group,
+            .hovered_tab = if (self.hovered_pane == pane) self.hovered_tab else null,
+            .title_hovered = self.hovered_title_action_pane == pane,
+            .drop_index = if (self.drag_tab_drop) |drop| (if (drop.pane == pane) drop.index else null) else null,
+            .cell_borders = self.part.cell_borders,
+        });
         const chrome = pane.chromeHeight();
         if (chrome > height) return;
         if (chrome > pane.titleHeight()) {

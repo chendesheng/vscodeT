@@ -201,6 +201,178 @@ fn drawLabel(grid: *CellGrid, label: []const u8, start: usize, row: usize, max_c
     return col - start;
 }
 
+const Tab = @import("editorPane.zig").Tab;
+const Workspace = @import("../../../../platform/workspace/common/workspace.zig").Workspace;
+const resource_input = @import("../../../common/editor/resourceEditorInput.zig");
+const GroupView = editor_group_view.EditorGroupView(*Tab);
+const editor = @import("../../../common/editor.zig");
+const ConfigurationService = @import("../../../services/configuration/browser/configurationService.zig").ConfigurationService;
+const ThemeService = @import("../../../services/themes/browser/workbenchThemeService.zig").ThemeService;
+
+pub const RedrawOptions = struct {
+    configuration: ?*ConfigurationService,
+    workspace: *const Workspace,
+    theme_service: ?*ThemeService,
+    palette: ?*const theme_colors_mod.ThemeColors,
+    group_active: bool,
+    hovered_tab: ?*Tab,
+    title_hovered: bool,
+    drop_index: ?usize,
+    cell_borders: bool,
+};
+
+fn stringSetting(configuration: ?*ConfigurationService, key: []const u8, fallback: []const u8) []const u8 {
+    const service = configuration orelse return fallback;
+    const value = service.getValue(key, .{}) orelse return fallback;
+    return if (value.* == .string) value.string else fallback;
+}
+
+pub fn tabSizing(config: ?*ConfigurationService) TabSizing {
+    return std.meta.stringToEnum(TabSizing, stringSetting(config, "workbench.editor.tabSizing", "fit")) orelse .fit;
+}
+
+pub fn redraw(pane: *GroupView, grid: *CellGrid, options: RedrawOptions) !void {
+    if (pane.titleHeight() == 0) {
+        pane.title_action_hit = null;
+        pane.hits.clearRetainingCapacity();
+        return;
+    }
+    var arena = std.heap.ArenaAllocator.init(pane.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var ordered = std.array_list.Managed(*Tab).init(scratch);
+    try pane.orderedTabs(scratch, &ordered);
+    const close_button = stringSetting(options.configuration, "workbench.editor.tabCloseButton", "right");
+    const infos = try computeTabLabels(scratch, pane, ordered.items, options, tabCloseButtonVisible(close_button));
+    var hovered_index: ?usize = null;
+    if (options.hovered_tab != null) {
+        for (ordered.items, 0..) |tab, index| {
+            if (tab == options.hovered_tab.?) {
+                hovered_index = index;
+                break;
+            }
+        }
+    }
+    const active_tab = pane.activeTab();
+    const title_action: ?TitleAction = if (active_tab) |tab| blk: {
+        if (tab.terminal_input != null) break :blk .{
+            .glyphs = "+⌄",
+            .hovered = options.title_hovered,
+        };
+        if (tab.search_editor_input != null) break :blk .{
+            .glyphs = "↻",
+            .hovered = options.title_hovered,
+        };
+        if (tab.markdown_preview != null) break :blk .{ .glyphs = "<>", .hovered = options.title_hovered };
+        if (!tab.isMarkdown()) break :blk null;
+        break :blk .{
+            .hovered = options.title_hovered,
+        };
+    } else null;
+
+    pane.title_action_hit = try draw(
+        grid,
+        infos,
+        pane.activeIndex(ordered.items),
+        ui.cell.snap(pane.rect.x),
+        ui.cell.snap(pane.rect.y),
+        ui.cell.snap(pane.rect.w),
+        &pane.hits,
+        .{
+            .group_active = options.group_active,
+            .hovered = hovered_index,
+            .close_button_left = std.mem.eql(u8, close_button, "left"),
+            .tab_sizing = tabSizing(options.configuration),
+            .title_action = title_action,
+            .drop_index = options.drop_index,
+            .cell_borders = options.cell_borders,
+        },
+        options.palette,
+    );
+}
+
+fn computeTabLabels(scratch: std.mem.Allocator, pane: *GroupView, ordered: []const *Tab, options: RedrawOptions, close_visible: bool) ![]TabInfo {
+    const format = stringSetting(options.configuration, "workbench.editor.labelFormat", "default");
+    const verbosity: editor.Verbosity = if (std.mem.eql(u8, format, "short")) .SHORT else if (std.mem.eql(u8, format, "long")) .LONG else .MEDIUM;
+    const shorten_duplicates = verbosity == .MEDIUM and !std.mem.eql(u8, format, "medium");
+    const infos = try scratch.alloc(TabInfo, ordered.len);
+    var duplicates: std.StringArrayHashMapUnmanaged(std.ArrayList(usize)) = .empty;
+    const icons: file_icon.FileIconThemeData = if (options.theme_service) |service| service.getFileIconTheme() else .{};
+    for (ordered, infos, 0..) |tab, *info, index| {
+        const name = tab.input.getName();
+        info.* = .{
+            .label = name,
+            .file_name = std.fs.path.basename(tab.editor.path),
+            .dirty = tab.input.isDirty(),
+            .pinned = pane.group.model.isPinned(.{ .editor = tab.input }),
+            .sticky = pane.group.model.isSticky(.{ .editor = tab.input }),
+            .selected = pane.group.model.isSelected(.{ .editor = tab.input }),
+            .closeable = close_visible and !tab.input.hasCapability(editor.EditorInputCapabilities.CannotClose),
+        };
+        if (tab.search_editor_input != null) {
+            info.file_name = "";
+            info.icon = .{ .glyph = 0xf002, .color = if (options.palette) |palette| palette.color("tab.activeForeground", .{ 110, 164, 118 }) else .{ .r = 110, .g = 164, .b = 118 } };
+        } else if (tab.markdown_panel != null) {
+            info.file_name = "";
+        } else if (tab.terminal_input != null) {
+            info.file_name = "";
+            info.icon = .{ .glyph = '❯', .color = .{ .r = 204, .g = 204, .b = 204 } };
+        } else if (icons.disabled) {
+            info.file_name = "";
+        } else if (info.file_name.len > 0) {
+            info.icon = icons.forFile(info.file_name, tab.editor.languageId());
+        }
+        const description = (try tabDescription(scratch, tab, verbosity, options.workspace)) orelse continue;
+        info.description = description;
+        if (shorten_duplicates) {
+            const names = try duplicates.getOrPut(scratch, name);
+            if (!names.found_existing) names.value_ptr.* = .empty;
+            try names.value_ptr.append(scratch, index);
+        }
+    }
+    for (duplicates.values()) |indices| try shortenTabLabels(scratch, ordered, infos, indices.items, options.workspace);
+    return infos;
+}
+
+fn tabDescription(scratch: std.mem.Allocator, tab: *const Tab, verbosity: editor.Verbosity, workspace: *const Workspace) !?[]const u8 {
+    if (tab.input.getDescription(verbosity)) |description| return description;
+    if (tab.search_editor_input != null or tab.markdown_panel != null or tab.terminal_input != null) return null;
+    return resource_input.getDescription(scratch, tab.editor.path, verbosity, workspace);
+}
+
+fn shortenTabLabels(scratch: std.mem.Allocator, tabs: []const *Tab, infos: []TabInfo, indices: []const usize, workspace: *const Workspace) !void {
+    const force_description = editor.EditorInputCapabilities.ForceDescription;
+    if (indices.len == 1) {
+        if (!tabs[indices[0]].input.hasCapability(force_description)) infos[indices[0]].description = "";
+        return;
+    }
+    var descriptions: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
+    var use_long = false;
+    for (indices) |index| {
+        const long = (try tabDescription(scratch, tabs[index], .LONG, workspace)) orelse "";
+        const entry = try descriptions.getOrPut(scratch, infos[index].description);
+        if (entry.found_existing and !std.mem.eql(u8, entry.value_ptr.*, long)) use_long = true;
+        entry.value_ptr.* = long;
+    }
+    if (use_long) {
+        descriptions.clearRetainingCapacity();
+        for (indices) |index| {
+            infos[index].description = (try tabDescription(scratch, tabs[index], .LONG, workspace)) orelse "";
+            try descriptions.put(scratch, infos[index].description, "");
+        }
+    }
+    if (descriptions.count() == 1) {
+        for (indices) |index| {
+            if (!tabs[index].input.hasCapability(force_description)) infos[index].description = "";
+        }
+        return;
+    }
+    const paths = try scratch.alloc(?[]const u8, descriptions.count());
+    for (descriptions.keys(), paths) |key, *path| path.* = key;
+    const shortened = try @import("../../../../base/common/labels.zig").shorten(scratch, paths, std.fs.path.sep);
+    for (indices) |index| infos[index].description = shortened[descriptions.getIndex(infos[index].description).?] orelse "";
+}
+
 /// Paints the tab strip in `row` and fills `hits` with the visible tab
 /// rectangles. `active` is an index into `tabs`; when it does not fit, the
 /// strip scrolls so the active tab is visible on the right.

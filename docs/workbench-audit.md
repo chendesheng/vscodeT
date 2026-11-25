@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 14,220 lines and has no inline tests. All 151 baseline
+The browser shell is 14,056 lines and has no inline tests. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records 256 command IDs with labels, categories and visibility for empty and
@@ -42,6 +42,9 @@ Show All Commands resolves the quick input service through its Action2 handler.
   save the active group ID and recent activation order. Closing the active
   group selects the previously active group. EditorPart saves and restores the
   SerializableGrid, including nested splits, proportions and the maximized leaf.
+* MultiEditorTabsControl builds labels from the group model and resolves file icons
+  through the theme service. Duplicate tabs use the pinned shortest distinguishing
+  path algorithm.
 * Startup creates the main workbench document and the editor part through the
   registered Part before laying out the grid. EditorPart creates the grid
   container and EditorGroupView mounts its pane and watermark. The other

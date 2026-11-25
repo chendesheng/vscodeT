@@ -6430,6 +6430,34 @@ test "terminal host flushes final output and fires one exit before removing pane
     }
 }
 
+test "duplicate tab names with identical parent names show their distinguishing directory" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const left = try seedFile(allocator, io, &tmp, "left/src/main.txt", "left");
+    defer allocator.free(left);
+    const right = try seedFile(allocator, io, &tmp, "right/src/main.txt", "right");
+    defer allocator.free(right);
+    const workbench = try Workbench.init(allocator, io, &.{ left, right }, 180, 24);
+    defer workbench.deinit();
+    var writer: std.Io.Writer.Allocating = .init(allocator);
+    defer writer.deinit();
+    try renderFrame(workbench, &writer.writer);
+    const title_y = ui.cell.snap(workbench.part.activeView().?.rect.y);
+    const titles = try workbench.frame.prev.rowText(allocator, title_y);
+    defer allocator.free(titles);
+    try std.testing.expect(std.mem.indexOf(u8, titles, "left") != null);
+    try std.testing.expect(std.mem.indexOf(u8, titles, "right") != null);
+    _ = try workbench.closeActive();
+    try renderFrame(workbench, &writer.writer);
+    const remaining = try workbench.frame.prev.rowText(allocator, title_y);
+    defer allocator.free(remaining);
+    try std.testing.expect(std.mem.indexOf(u8, remaining, "main.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, remaining, "left") == null);
+    try std.testing.expect(std.mem.indexOf(u8, remaining, "right") == null);
+}
+
 test "Workbench: terminal editor moves the live instance between hosts and closes it once" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
