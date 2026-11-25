@@ -23,14 +23,14 @@ pub const Queue = struct {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         const node = self.scheduled.first orelse return maximum;
-        const task: *Task = @fieldParentPtr("node", node);
+        const task: *Task = @alignCast(@fieldParentPtr("node", node));
         return @intCast(std.math.clamp(task.at.? -| now, 0, maximum));
     }
 
     /// One batch per turn lets input and paint run between result batches.
     pub fn dispatch(self: *Queue, now: i64) bool {
         self.mutex.lockUncancelable(self.io);
-        const task: *Task = if (self.scheduled.first) |node| @fieldParentPtr("node", node) else {
+        const task: *Task = if (self.scheduled.first) |node| @alignCast(@fieldParentPtr("node", node)) else {
             self.mutex.unlock(self.io);
             return false;
         };
@@ -68,7 +68,7 @@ pub const Task = struct {
         const deadline = at orelse return;
         var cursor = queue.scheduled.last;
         while (cursor) |node| : (cursor = node.prev) {
-            const other: *Task = @fieldParentPtr("node", node);
+            const other: *Task = @alignCast(@fieldParentPtr("node", node));
             if (other.at.? <= deadline) break;
         }
         if (cursor) |node| queue.scheduled.insertAfter(node, &self.node) else queue.scheduled.prepend(&self.node);
