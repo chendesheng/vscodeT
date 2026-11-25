@@ -107,6 +107,7 @@ pub const Tab = struct {
     controllers: ?*Controllers = null,
     diff: ?*DiffView = null,
     markdown_preview: ?*MarkdownPreview = null,
+    window: ?*@import("../../../../base/common/windowDispatch.zig").Queue = null,
     // Dynamic previews are singleton webview inputs. In-place previews keep
     // the file input so edits, dirty state and undo survive switching back.
     markdown_panel: ?struct {
@@ -306,6 +307,7 @@ pub const Tab = struct {
     /// Creates the editor contributions on first activation. The tab must have
     /// been attached to a view before any key/mouse event is routed to it.
     pub fn attachWindow(self: *Tab, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+        self.window = window;
         self.editor.attachWindow(window);
         if (self.diff) |diff| diff.widget.original_editor.attachWindow(window);
     }
@@ -608,7 +610,7 @@ pub const Tab = struct {
 
     /// Port of DynamicMarkdownPreview.create in the Markdown extension. A
     /// WebviewInput gives the preview its own tab and normal group lifecycle.
-    pub fn initMarkdownPanel(allocator: Allocator, source: *FileEditorInput, group: *groups.EditorGroup, config: MarkdownPreviewConfig, palette: ?*const theme_colors_mod.ThemeColors, runtime: *ui.image.Runtime, async_io: ?Io) !*Tab {
+    pub fn initMarkdownPanel(allocator: Allocator, source: *FileEditorInput, group: *groups.EditorGroup, config: MarkdownPreviewConfig, palette: ?*const theme_colors_mod.ThemeColors, runtime: *ui.image.Runtime, async_io: ?Io, window: *@import("../../../../base/common/windowDispatch.zig").Queue) !*Tab {
         const self = try allocator.create(Tab);
         errdefer allocator.destroy(self);
         const title = try std.fmt.allocPrint(allocator, "Preview {s}", .{source.base.getName()});
@@ -623,7 +625,7 @@ pub const Tab = struct {
         editor.setReadOnly(true);
         const view = try View.init(allocator, editor);
         errdefer view.deinit();
-        self.* = .{ .allocator = allocator, .editor = editor, .view = view, .file_input = null, .input = &input.base, .image_runtime = runtime, .async_io = async_io };
+        self.* = .{ .allocator = allocator, .editor = editor, .view = view, .file_input = null, .input = &input.base, .image_runtime = runtime, .async_io = async_io, .window = window };
         const preview = try self.createMarkdownPreview(source.editor, config, palette);
         errdefer preview.deinit();
         self.markdown_panel = .{ .input = input, .source = source.retain(), .source_group = group.id };
@@ -632,7 +634,7 @@ pub const Tab = struct {
     }
 
     fn createMarkdownPreview(self: *Tab, editor: *Editor, config: MarkdownPreviewConfig, palette: ?*const theme_colors_mod.ThemeColors) !*MarkdownPreview {
-        const preview = try MarkdownPreview.init(self.allocator, editor);
+        const preview = try MarkdownPreview.init(self.allocator, editor, self.window);
         errdefer preview.deinit();
         preview.setImageRuntime(self.image_runtime);
         if (self.async_io) |io| preview.setAsyncIo(io);
@@ -682,16 +684,6 @@ pub const Tab = struct {
 
     pub fn refreshMarkdownPreview(self: *Tab, force: bool) void {
         if (self.markdown_preview) |preview| preview.refresh(force);
-    }
-
-    pub fn onMarkdownPreviewTick(self: *Tab, now_ms: i64) bool {
-        if (self.markdown_preview) |preview| return preview.onTick(now_ms);
-        return false;
-    }
-
-    pub fn markdownPreviewTimeout(self: *const Tab, now_ms: i64) ?u32 {
-        if (self.markdown_preview) |preview| return preview.nextTimeout(now_ms);
-        return null;
     }
 
     pub const SelectionListener = struct {

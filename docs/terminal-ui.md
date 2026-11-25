@@ -1891,8 +1891,8 @@ can block read from it:
   walk resumes after each applied listing.
 - Image tabs and Markdown images use `ImagePreviewPane.requestLoad` and
   `MarkdownPreview` image jobs; local reads/decodes and remote http(s) fetches
-  never touch the TUI thread. Remote jobs have a 30 s deadline enforced by
-  the poll loop.
+  never touch the TUI thread. Remote jobs have a 30 s deadline scheduled by
+  the preview.
 - `platform/request/node/requestService.zig` is a synchronous `std.http`
   request layer; callers wrap it in `Io.async` when they need the TUI thread
   free.
@@ -1901,7 +1901,7 @@ File reads, image tab decodes, keybindings and color themes post a completion
 callback to the window queue. A POSIX pipe or Windows event wakes terminal
 input waiting on another thread. The window thread consumes the completed
 future. Explorer listings and workspace file changes also wake the window.
-The 4 ms input timeout still applies to local Markdown image loads.
+Markdown image, math and diagram completions wake the window as well; the preview schedules its scroll and refresh deadlines.
 Shutdown cancels and joins every job before the async `Io.Threaded` and the
 services/panes that own the results are freed. Background workers (search,
 watcher JSON server, extension host) continue to use dedicated threads, which

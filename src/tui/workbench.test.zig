@@ -585,9 +585,9 @@ test "Workbench: markdown preview follows editor scroll and can reveal the edito
 
     _ = tab.editor.setTopViewLine(30);
     const now = @import("../vs/base/common/timeCompat.zig").milliTimestamp();
-    _ = workbench.markdownPreviewTick(now + 60);
+    while (workbench.window_events.nextTimeout(now + 60, 1) == 0) _ = workbench.window_events.dispatch(now + 60);
     try std.testing.expect(preview_tab.markdown_preview.?.scroll > 0);
-    _ = workbench.markdownPreviewTick(now + 120);
+    while (workbench.window_events.nextTimeout(now + 120, 1) == 0) _ = workbench.window_events.dispatch(now + 120);
 
     const before = tab.editor.topViewLine();
     var wheel = ui.MouseEvent{
@@ -5001,7 +5001,7 @@ test "Workbench: markdown preview shows displayable images" {
     defer out.deinit();
     // The workbench loads preview images on its background I/O pool.
     for (0..2000) |_| {
-        _ = workbench.markdownPreviewTick(time_compat.milliTimestamp());
+        while (workbench.window_events.nextTimeout(time_compat.milliTimestamp(), 1) == 0) _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
         try renderFrame(workbench, &out.writer);
         if (std.mem.indexOf(u8, out.written(), "\u{10EEEE}") != null) break;
         io.sleep(.fromMilliseconds(1), .awake) catch {};
@@ -5682,7 +5682,7 @@ test "Workbench: markdown preview to the side uses an ordinary editor group and 
         try wb.showMarkdownSource();
         try std.testing.expectEqual(source_group, wb.activePane().?);
         try source.editor.insertText("LiveEdit");
-        _ = wb.markdownPreviewTick(time_compat.milliTimestamp() + 350);
+        while (wb.window_events.nextTimeout(time_compat.milliTimestamp() + 350, 1) == 0) _ = wb.window_events.dispatch(time_compat.milliTimestamp() + 350);
         try renderFrame(wb, &out.writer);
         const rendered = try preview.markdown_preview.?.surface.?.grid().rowText(allocator, 0);
         defer allocator.free(rendered);

@@ -109,7 +109,7 @@ keeps its immutable text while edits invalidate the tree’s reference.
   Markdown images, and fetching remote Markdown images. File opens, external file
   reloads, image tabs, themes and keybindings wake the window on completion.
   The window thread installs each result. Explorer listings and watched
-  settings files use the same wakeup. Markdown image loads still use the host loop. Startup and session restore use synchronous
+  settings files and Markdown image/diagram/math loads use the same wakeup. Startup and session restore use synchronous
   file opens. Settings changes initiate the asynchronous
   configuration/theme/text-file reload flows. Startup scans and extension-host
   `openPath` calls still use the synchronous path; Explorer single clicks use

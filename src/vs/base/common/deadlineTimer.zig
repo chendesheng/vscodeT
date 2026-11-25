@@ -1,7 +1,5 @@
 //! A single one-shot deadline used to adapt browser `setTimeout` calls to the
-//! TUI event loop. The host advances the timer with `tick(now)` and uses
-//! `nextTimeoutMs(now)` to size its poll timeout, mirroring the hover
-//! `DeadlineTimer` adapter.
+//! window event loop. Tests can advance an unattached timer with an explicit clock.
 
 const std = @import("std");
 const time_compat = @import("./timeCompat.zig");
@@ -10,6 +8,19 @@ pub const Callback = *const fn (context: *anyopaque) void;
 
 pub const DeadlineTimer = struct {
     pending: ?Pending = null,
+    task: @import("windowDispatch.zig").Task = .{},
+
+    pub fn attachWindow(self: *DeadlineTimer, window: *@import("windowDispatch.zig").Queue) void {
+        if (self.task.queue == window) return;
+        self.task.schedule(null);
+        self.task = .{ .queue = window, .context = self, .run = fire };
+        if (self.pending) |pending| self.task.schedule(pending.deadline_ms);
+    }
+
+    fn fire(context: *anyopaque, now: i64, _: bool) bool {
+        const self: *DeadlineTimer = @ptrCast(@alignCast(context));
+        return self.tick(now);
+    }
 
     pub const Pending = struct {
         deadline_ms: i64,
@@ -18,20 +29,18 @@ pub const DeadlineTimer = struct {
     };
 
     pub fn schedule(self: *DeadlineTimer, delay_ms: u64, callback: Callback, context: *anyopaque) void {
-        self.pending = .{
-            .deadline_ms = time_compat.milliTimestamp() + @as(i64, @intCast(delay_ms)),
-            .callback = callback,
-            .context = context,
-        };
+        self.scheduleAt(time_compat.milliTimestamp() + @as(i64, @intCast(delay_ms)), callback, context);
     }
 
     /// Test/host helper: schedule against an explicit clock.
     pub fn scheduleAt(self: *DeadlineTimer, deadline_ms: i64, callback: Callback, context: *anyopaque) void {
         self.pending = .{ .deadline_ms = deadline_ms, .callback = callback, .context = context };
+        self.task.schedule(deadline_ms);
     }
 
     pub fn cancel(self: *DeadlineTimer) void {
         self.pending = null;
+        self.task.schedule(null);
     }
 
     pub fn isScheduled(self: *const DeadlineTimer) bool {
@@ -49,6 +58,7 @@ pub const DeadlineTimer = struct {
         const pending = self.pending orelse return false;
         if (now_ms < pending.deadline_ms) return false;
         self.pending = null;
+        self.task.schedule(null);
         pending.callback(pending.context);
         return true;
     }

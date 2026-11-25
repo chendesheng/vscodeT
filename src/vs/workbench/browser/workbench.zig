@@ -5253,7 +5253,7 @@ pub const Workbench = struct {
             try self.focusPane(target);
             return;
         }
-        const preview = try Tab.initMarkdownPanel(self.allocator, source, pane.group, self.markdownPreviewConfig(), self.theme_palette, &self.images, self.async_io);
+        const preview = try Tab.initMarkdownPanel(self.allocator, source, pane.group, self.markdownPreviewConfig(), self.theme_palette, &self.images, self.async_io, &self.window_events);
         {
             errdefer preview.deinit();
             try target.tabs.ensureUnusedCapacity(1);
@@ -5296,28 +5296,6 @@ pub const Workbench = struct {
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| tab.refreshMarkdownPreview(true);
         }
-    }
-
-    pub fn markdownPreviewTick(self: *Workbench, now_ms: i64) bool {
-        var changed = false;
-        for (self.part.group_views.items) |pane| {
-            if (self.part.maximized_group != null and self.part.maximized_group != pane) continue;
-            if (pane.activeTab()) |tab| {
-                if (tab.onMarkdownPreviewTick(now_ms)) changed = true;
-            }
-        }
-        return changed;
-    }
-
-    pub fn markdownPreviewTimeout(self: *Workbench, now_ms: i64) ?u32 {
-        var earliest: ?u32 = null;
-        for (self.part.group_views.items) |pane| {
-            if (self.part.maximized_group != null and self.part.maximized_group != pane) continue;
-            if (pane.activeTab()) |tab| {
-                if (tab.markdownPreviewTimeout(now_ms)) |timeout| earliest = @min(earliest orelse timeout, timeout);
-            }
-        }
-        return earliest;
     }
 
     pub fn setSidebarViewStorage(self: *Workbench, user_data_dir: []const u8) !void {
@@ -5781,18 +5759,6 @@ pub const Workbench = struct {
         };
         self.clearStatusHint();
         return true;
-    }
-
-    /// True while a short read is in flight. The main loop clamps its input
-    /// poll timeout so the result is applied promptly without busy-spinning
-    /// the idle maintenance work.
-    pub fn hasLatencySensitiveReads(self: *Workbench) bool {
-        if (self.activeTab()) |tab| {
-            if (tab.markdown_preview) |preview| {
-                if (preview.hasPendingLocalImages()) return true;
-            }
-        }
-        return false;
     }
 
     pub fn setStatusHint(self: *Workbench, comptime fmt: []const u8, args: anytype) void {

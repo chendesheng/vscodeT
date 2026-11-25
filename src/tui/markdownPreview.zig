@@ -2,7 +2,7 @@
 //!
 //! Async terminal adaptation: local image reads/decodes and remote http(s)
 //! fetches run on the workbench `async_io` as per-preview jobs; the preview
-//! only publishes loaded entries and keeps alt text until `pollImageJobs`
+//! only publishes loaded entries and keeps alt text until the completion callback
 //! applies a result. Remote image requests use the ported `RequestService`
 //! (30 s deadline, 32 MiB cap) and are only issued while the preview exists.
 //!
@@ -23,6 +23,7 @@ const theme_colors_mod = @import("../vs/workbench/browser/themeColors.zig");
 const Editor = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const Position = @import("../vs/editor/common/core/position.zig").Position;
 const time_compat = @import("../vs/base/common/timeCompat.zig");
+const dispatch = @import("../vs/base/common/windowDispatch.zig");
 const DeadlineTimer = @import("../vs/base/common/deadlineTimer.zig").DeadlineTimer;
 const ModelContentChanged = @import("../vs/editor/common/textModelEvents.zig").InternalModelContentChangeEvent;
 const viewEvents = @import("../vs/editor/common/viewEvents.zig");
@@ -51,7 +52,7 @@ const base_scrollbar_thumb = ui.Color{ .r = 105, .g = 108, .b = 122 };
 const base_divider_color = ui.Color{ .r = 70, .g = 70, .b = 70 };
 
 /// One image read/decode job started by `syncImagesAsync`. The result is
-/// applied on the TUI thread in `pollImageJobs`.
+/// applied on the TUI thread on completion.
 const MarkdownImagePayload = struct {
     decoded: mediaImage.Decoded,
     size: usize,
@@ -76,9 +77,7 @@ const MarkdownImageJob = struct {
     /// True once `publishImage` took ownership of `key` as the entry path.
     key_consumed: bool = false,
     source: Source,
-    /// File reads are short and latency-sensitive; remote requests are not.
-    local: bool,
-    /// Remote requests are canceled by the poll loop after this timestamp.
+    /// Remote requests are canceled by a deadline callback after this timestamp.
     deadline_ms: ?i64 = null,
 
     fn deinit(self: *MarkdownImageJob, allocator: Allocator) void {
@@ -92,6 +91,7 @@ const MarkdownImageJob = struct {
 };
 
 fn runMarkdownImageJob(job: *MarkdownImageJob) MarkdownImageResult {
+    defer job.preview.image_completion.post();
     defer job.done.store(true, .release);
     const async_io = job.preview.async_io orelse return .failed;
     return switch (job.source) {
@@ -166,6 +166,11 @@ pub const MarkdownPreview = struct {
     last_down_row: usize = 0,
 
     monitor: topmost.TopmostLineMonitor = .{},
+    monitor_task: dispatch.Task = .{},
+    render_completion: dispatch.Task = .{},
+    image_completion: dispatch.Task = .{},
+    image_deadline: dispatch.Task = .{},
+
     refresh_timer: DeadlineTimer = .{},
     scrolling_timer: DeadlineTimer = .{},
     scroll_disabled_timer: DeadlineTimer = .{},
@@ -176,7 +181,7 @@ pub const MarkdownPreview = struct {
     theme: ?*const theme_colors_mod.ThemeColors = null,
     image_background: u32 = 0,
 
-    pub fn init(allocator: Allocator, editor: *Editor) !*MarkdownPreview {
+    pub fn init(allocator: Allocator, editor: *Editor, window: ?*dispatch.Queue) !*MarkdownPreview {
         const self = try allocator.create(MarkdownPreview);
         errdefer allocator.destroy(self);
         self.* = .{
@@ -197,6 +202,18 @@ pub const MarkdownPreview = struct {
             self.image_loading.deinit();
             self.image_specs.deinit();
             self.image_entries.deinit();
+        }
+        if (window) |queue| {
+            self.monitor_task = .{ .queue = queue, .context = self, .run = onMonitorDeadline };
+            self.render_completion = .{ .queue = queue, .context = self, .run = onRenderCompletion, .progress = true };
+            self.image_completion = .{ .queue = queue, .context = self, .run = onImageCompletion, .progress = true };
+            self.image_deadline = .{ .queue = queue, .context = self, .run = onImageCompletion };
+            self.refresh_timer.attachWindow(queue);
+            self.scrolling_timer.attachWindow(queue);
+            self.scroll_disabled_timer.attachWindow(queue);
+            self.reveal_timer.attachWindow(queue);
+            self.mermaid.delivery = &self.render_completion;
+            self.math.delivery = &self.render_completion;
         }
         self.base_dir = try documentBaseDir(allocator, editor.io, editor.path);
         errdefer allocator.free(self.base_dir);
@@ -235,6 +252,8 @@ pub const MarkdownPreview = struct {
     pub fn deinit(self: *MarkdownPreview) void {
         self.mermaid.deinit();
         self.math.deinit();
+        self.render_completion.schedule(null);
+        self.monitor_task.schedule(null);
         self.cancelImageJobs();
         if (self.request_service) |*service| service.deinit();
         self.request_service = null;
@@ -370,46 +389,36 @@ pub const MarkdownPreview = struct {
         return true;
     }
 
-    pub fn onTick(self: *MarkdownPreview, now_ms: i64) bool {
-        var changed = false;
+    fn onRenderCompletion(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *MarkdownPreview = @ptrCast(@alignCast(context));
         const math_updated = self.math.poll();
-        if (self.mermaid.poll() or math_updated) {
-            self.updatePreview(false) catch |err| {
-                self.last_error = err;
-            };
-            changed = true;
-        }
-        if (self.pollImageJobs()) changed = true;
-        changed = self.refresh_timer.tick(now_ms) or changed;
-        changed = self.scrolling_timer.tick(now_ms) or changed;
-        changed = self.scroll_disabled_timer.tick(now_ms) or changed;
-        changed = self.reveal_timer.tick(now_ms) or changed;
-        if (self.monitor.poll(now_ms)) |line| {
-            if (self.visible and !self.is_scrolling) {
-                self.scrollToSourceLine(line);
-                changed = true;
-            }
-        }
-        return changed or (self.visible and self.surface != null and self.dirty);
+        const mermaid_updated = self.mermaid.poll();
+        if (!math_updated and !mermaid_updated) return false;
+        self.updatePreview(false) catch |err| {
+            self.last_error = err;
+        };
+        return true;
     }
 
-    pub fn nextTimeout(self: *const MarkdownPreview, now_ms: i64) ?u32 {
-        var result: ?u32 = if (self.mermaid.job != null or self.math.job != null) 20 else null;
-        const timers = [_]*const DeadlineTimer{
-            &self.refresh_timer,
-            &self.scrolling_timer,
-            &self.scroll_disabled_timer,
-            &self.reveal_timer,
-        };
-        for (timers) |timer| {
-            if (timer.nextTimeoutMs(now_ms)) |timeout| {
-                result = if (result) |current| @min(current, timeout) else timeout;
-            }
+    fn onMonitorDeadline(context: *anyopaque, now: i64, _: bool) bool {
+        const self: *MarkdownPreview = @ptrCast(@alignCast(context));
+        const line = self.monitor.poll(now) orelse return false;
+        if (!self.visible or self.is_scrolling) return false;
+        self.scrollToSourceLine(line);
+        return true;
+    }
+
+    fn onImageCompletion(context: *anyopaque, now: i64, _: bool) bool {
+        const self: *MarkdownPreview = @ptrCast(@alignCast(context));
+        return self.applyImageJobs(now);
+    }
+
+    fn scheduleImageDeadline(self: *MarkdownPreview) void {
+        var deadline: ?i64 = null;
+        for (self.image_jobs.items) |job| {
+            if (job.deadline_ms) |at| deadline = @min(deadline orelse at, at);
         }
-        if (self.monitor.nextTimeoutMs(now_ms)) |timeout| {
-            result = if (result) |current| @min(current, timeout) else timeout;
-        }
-        return result;
+        self.image_deadline.schedule(deadline);
     }
 
     pub fn paint(self: *MarkdownPreview, frame: *ui.Frame, x: usize, y: usize, w: usize, h: usize) !void {
@@ -790,11 +799,17 @@ pub const MarkdownPreview = struct {
 
     fn queueImageLoad(self: *MarkdownPreview, key: []const u8, source: ImageSource, local: bool) !void {
         const async_io = self.async_io orelse return;
+        try self.image_jobs.ensureUnusedCapacity(1);
+        try self.image_loading.ensureUnusedCapacity(1);
         const key_copy = try self.allocator.dupe(u8, key);
         errdefer self.allocator.free(key_copy);
         const source_copy: MarkdownImageJob.Source = switch (source) {
             .file => |path| .{ .file = try self.allocator.dupe(u8, path) },
             .url => |url| .{ .url = try self.allocator.dupe(u8, url) },
+        };
+        errdefer switch (source_copy) {
+            .file => |path| self.allocator.free(path),
+            .url => |url| self.allocator.free(url),
         };
         const job = try self.allocator.create(MarkdownImageJob);
         errdefer self.allocator.destroy(job);
@@ -803,41 +818,24 @@ pub const MarkdownPreview = struct {
             .future = undefined,
             .key = key_copy,
             .source = source_copy,
-            .local = local,
             .deadline_ms = if (local) null else time_compat.milliTimestamp() + 30_000,
         };
         job.future = async_io.async(runMarkdownImageJob, .{job});
-        self.image_jobs.append(job) catch |err| {
-            _ = job.future.cancel(async_io);
-            if (job.future.result == .image) {
-                var decoded = job.future.result.image.decoded;
-                decoded.deinit(self.allocator);
-            }
-            job.deinit(self.allocator);
-            return err;
-        };
-        self.image_loading.put(job.key, job) catch |err| {
-            _ = self.image_jobs.pop();
-            _ = job.future.cancel(async_io);
-            if (job.future.result == .image) {
-                var decoded = job.future.result.image.decoded;
-                decoded.deinit(self.allocator);
-            }
-            job.deinit(self.allocator);
-            return err;
-        };
+        self.image_jobs.appendAssumeCapacity(job);
+        self.image_loading.putAssumeCapacity(job.key, job);
+        self.scheduleImageDeadline();
     }
 
     /// Applies completed image jobs on the TUI thread. Returns true when at
     /// least one image entry or failure was published.
-    fn pollImageJobs(self: *MarkdownPreview) bool {
+    fn applyImageJobs(self: *MarkdownPreview, now: i64) bool {
         const async_io = self.async_io orelse return false;
         var applied = false;
         var index = self.image_jobs.items.len;
         while (index > 0) {
             index -= 1;
             const job = self.image_jobs.items[index];
-            const expired = if (job.deadline_ms) |deadline| time_compat.milliTimestamp() >= deadline else false;
+            const expired = if (job.deadline_ms) |deadline| now >= deadline else false;
             if (!job.done.load(.acquire) and !expired) continue;
             const result = if (expired)
                 job.future.cancel(async_io)
@@ -859,6 +857,7 @@ pub const MarkdownPreview = struct {
             applied = true;
         }
         if (applied) self.rebuildDocumentAfterImages();
+        self.scheduleImageDeadline();
         return applied;
     }
 
@@ -940,13 +939,8 @@ pub const MarkdownPreview = struct {
         }
         self.image_jobs.clearRetainingCapacity();
         self.image_loading.clearRetainingCapacity();
-    }
-
-    pub fn hasPendingLocalImages(self: *const MarkdownPreview) bool {
-        for (self.image_jobs.items) |job| {
-            if (job.local) return true;
-        }
-        return false;
+        self.image_completion.schedule(null);
+        self.image_deadline.schedule(null);
     }
 
     fn getOrLoadImage(self: *MarkdownPreview, path: []const u8) !?*ImageEntry {
@@ -1226,6 +1220,7 @@ pub const MarkdownPreview = struct {
         if (!event.scrollTopChanged or !self.visible) return false;
         if (topmost.getVisibleLine(self.editor)) |line| {
             self.monitor.updateLine(line, time_compat.milliTimestamp());
+            self.monitor_task.schedule(self.monitor.due_ms);
         }
         return false;
     }
@@ -1305,7 +1300,7 @@ test "markdownPreview: resolves local image URLs and skips remote ones" {
         editor.deinit();
         allocator.destroy(editor);
     }
-    const preview = try MarkdownPreview.init(allocator, editor);
+    const preview = try MarkdownPreview.init(allocator, editor, null);
     defer preview.deinit();
 
     {
@@ -1357,7 +1352,7 @@ test "markdownPreview: async local image load lands on the poll tick" {
         editor.deinit();
         allocator.destroy(editor);
     }
-    const preview = try MarkdownPreview.init(allocator, editor);
+    const preview = try MarkdownPreview.init(allocator, editor, null);
     defer preview.deinit();
     preview.setImageRuntime(&runtime);
     preview.setAsyncIo(async_io);
@@ -1366,7 +1361,7 @@ test "markdownPreview: async local image load lands on the poll tick" {
     try std.testing.expect(preview.image_loading.contains(path));
 
     var waited: usize = 0;
-    while (!preview.pollImageJobs() and waited < 2000) : (waited += 1) {
+    while (!preview.applyImageJobs(time_compat.milliTimestamp()) and waited < 2000) : (waited += 1) {
         async_io.sleep(.fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(preview.usesImagePath(path));
@@ -1388,7 +1383,7 @@ test "markdownPreview: links request the pointer shape" {
         editor.deinit();
         allocator.destroy(editor);
     }
-    const preview = try MarkdownPreview.init(allocator, editor);
+    const preview = try MarkdownPreview.init(allocator, editor, null);
     defer preview.deinit();
 
     try preview.resize(40, 4);

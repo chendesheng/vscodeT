@@ -13,6 +13,7 @@ pub const Renderer = struct {
     version: ?u32 = null,
     cache: std.StringHashMapUnmanaged(?[]u8) = .empty,
     job: ?*Job = null,
+    delivery: ?*@import("../vs/base/common/windowDispatch.zig").Task = null,
 
     const Job = struct {
         source: []u8,
@@ -20,6 +21,7 @@ pub const Renderer = struct {
         allocator: Allocator,
         io: Io,
         done: std.atomic.Value(bool) = .init(false),
+        delivery: ?*@import("../vs/base/common/windowDispatch.zig").Task = null,
         future: Io.Future(?[]u8) = undefined,
     };
 
@@ -72,7 +74,7 @@ pub const Renderer = struct {
             self.allocator.destroy(job);
             return null;
         };
-        job.* = .{ .source = owned, .script = script, .allocator = self.allocator, .io = io };
+        job.* = .{ .source = owned, .script = script, .allocator = self.allocator, .io = io, .delivery = self.delivery };
         job.future = io.concurrent(render, .{job}) catch {
             self.allocator.free(owned);
             self.allocator.destroy(job);
@@ -96,6 +98,7 @@ pub const Renderer = struct {
     }
 
     fn render(job: *Job) ?[]u8 {
+        defer if (job.delivery) |delivery| delivery.post();
         defer job.done.store(true, .release);
         return run(job) catch null;
     }
