@@ -10,8 +10,6 @@ src/vs/editor/standalone/browser/standaloneThemeService.zig -> src/tui/editorVie
 src/vs/workbench/api/browser/builtinExtensionHost.zig -> src/tui/editorInputDispatch.zig
 src/vs/workbench/api/browser/builtinExtensionHost.zig -> src/vs/workbench/browser/workbench.zig
 src/vs/workbench/api/browser/extensionHostAdapter.zig -> src/vs/workbench/browser/workbench.zig
-src/vs/workbench/api/browser/inlineCompletionSession.zig -> src/tui/editorView.zig
-src/vs/workbench/api/browser/inlineCompletionSession.zig -> src/vs/workbench/browser/workbench.zig
 src/vs/workbench/browser/parts/editor/editorPane.zig -> src/tui/editorInputDispatch.zig
 src/vs/workbench/browser/parts/editor/editorPane.zig -> src/tui/editorView.zig
 src/vs/workbench/browser/parts/editor/editorPane.zig -> src/tui/imagePreview.zig

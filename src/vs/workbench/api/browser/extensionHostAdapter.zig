@@ -265,7 +265,18 @@ pub const Extensions = struct {
             .parent_pid = @intCast(manager.currentProcessId()),
         });
         errdefer self.host.deinit();
-        self.inline_completions = .{ .workbench = workbench, .host = self.host, .arena = .init(allocator) };
+        self.inline_completions = .{
+            .editors = .{ .part = workbench.part },
+            .configuration = .{ .context = self, .get_value = configurationValue },
+            .io = io,
+            .window = &workbench.window_events,
+            .host_context = self,
+            .has_editor_focus = hasEditorFocus,
+            .request_frame = requestTerminalFrame,
+            .host = self.host,
+            .arena = .init(allocator),
+        };
+        errdefer self.inline_completions.deinit();
 
         self.storage_actor = try MainThreadStorage.init(allocator);
         self.statusbar_actor = try MainThreadStatusBar.init(allocator, &workbench.statusbar, .{
@@ -420,6 +431,7 @@ pub const Extensions = struct {
             .request = languageFeaturesRequest,
             .notify = languageFeaturesNotify,
         });
+        try self.inline_completions.start(&self.language_features_actor.?);
         self.diagnostics_actor = try MainThreadDiagnostics.init(self.allocator, marker_service, .{
             .context = self,
             .notify = diagnosticsNotify,
@@ -455,6 +467,17 @@ pub const Extensions = struct {
     fn requestTerminalFrame(context: *anyopaque) void {
         const self: *Extensions = @ptrCast(@alignCast(context));
         self.needs_render = true;
+    }
+
+    fn hasEditorFocus(context: *anyopaque) bool {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        return self.workbench.focus == .editor;
+    }
+
+    fn configurationValue(context: *anyopaque, key: []const u8) ?*const @import("../../../platform/configuration/common/configuration.zig").Value {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        const service = self.workbench.configuration orelse return null;
+        return service.getValue(key, .{});
     }
 
     fn showStatusHint(context: *anyopaque, message: []const u8) void {
@@ -865,9 +888,6 @@ pub const Extensions = struct {
         self.activateActiveLanguage();
         self.syncSelection() catch {};
         if (self.visible_ranges_dirty) self.sendVisibleRanges() catch {};
-        if (self.language_features_actor) |*actor| {
-            if (self.inline_completions.tick(actor) catch false) self.needs_render = true;
-        }
         if (self.accounts.changed) {
             self.accounts.changed = false;
             self.needs_render = true;
@@ -2012,6 +2032,7 @@ test "Extensions: language feature registration reaches the workbench registries
     const inline_deadline = time_compat.milliTimestamp() + 5_000;
     while (!tab.view.ghost_text.isVisible() and time_compat.milliTimestamp() < inline_deadline) {
         _ = extension_host.pump();
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
         time_compat.sleepMillis(10);
     }
     try std.testing.expect(tab.view.ghost_text.isVisible());

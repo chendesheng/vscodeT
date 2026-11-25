@@ -470,7 +470,7 @@ different renderer. [Lynx](https://lynx.invisible-island.net/)
 
 Build the native editor and host, install GitHub’s language server, then start
 the editor with the server executable selected. The adapter reads its executable
-from the process environment. [GitHub Copilot Language Server](https://github.com/github/copilot-language-server-release)
+from the process environment. Model content and cursor events schedule inline completion requests; changing editors or opening Suggest cancels them. [GitHub Copilot Language Server](https://github.com/github/copilot-language-server-release)
 
 ```sh
 npm --prefix host ci

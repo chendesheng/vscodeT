@@ -4,10 +4,20 @@
 const Tab = @import("../../../browser/parts/editor/editorPane.zig").Tab;
 const GroupView = @import("../../../browser/parts/editor/editorGroupView.zig").EditorGroupView(*Tab);
 const EditorPart = @import("../../../browser/parts/editor/editorPart.zig").EditorPart(GroupView);
+const EditorInput = @import("../../../common/editor/editorInput.zig").EditorInput;
 const Event = @import("../../../../base/common/event.zig").Emitter(void);
 
 pub const EditorService = struct {
     part: *EditorPart,
+
+    pub fn activeEditorPane(self: EditorService) ?*Tab {
+        const group = self.part.activeView() orelse return null;
+        return group.panes.activePane();
+    }
+
+    pub fn onDidActiveEditorChange(self: EditorService) *@import("../../../../base/common/event.zig").Emitter(?*EditorInput) {
+        return &self.part.service.on_did_active_editor_change;
+    }
 
     pub fn onDidVisibleEditorsChange(self: EditorService) *Event {
         return &self.part.service.on_did_visible_editors_change;

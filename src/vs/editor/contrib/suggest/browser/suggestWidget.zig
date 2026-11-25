@@ -55,14 +55,18 @@ pub const SuggestWidget = struct {
     scroll_top: usize = 0,
     root: ?*ui.Node = null,
     theme: Theme = .{},
+    on_did_show: @import("../../../../base/common/event.zig").Emitter(*SuggestWidget),
+    on_did_hide: @import("../../../../base/common/event.zig").Emitter(*SuggestWidget),
 
     pub fn init(allocator: Allocator, model: *SuggestModel, host: SuggestWidgetHost) !*SuggestWidget {
         const self = try allocator.create(SuggestWidget);
-        self.* = .{ .allocator = allocator, .model = model, .host = host };
+        self.* = .{ .allocator = allocator, .model = model, .host = host, .on_did_show = .init(allocator), .on_did_hide = .init(allocator) };
         return self;
     }
 
     pub fn deinit(self: *SuggestWidget) void {
+        self.on_did_show.deinit();
+        self.on_did_hide.deinit();
         self.allocator.destroy(self);
     }
 
@@ -80,15 +84,19 @@ pub const SuggestWidget = struct {
     }
 
     pub fn show(self: *SuggestWidget, anchor: Position) void {
+        const was_visible = self.anchor != null;
         self.anchor = anchor;
         self.focused = false;
+        if (!was_visible) self.on_did_show.fire(self) catch {};
     }
 
     pub fn hide(self: *SuggestWidget) void {
+        const was_visible = self.anchor != null;
         self.anchor = null;
         self.focused = false;
         self.scroll_top = 0;
         self.root = null;
+        if (was_visible) self.on_did_hide.fire(self) catch {};
     }
 
     pub fn setTheme(self: *SuggestWidget, theme: Theme) void {
