@@ -7,7 +7,7 @@
 // providers, so this port keeps the observable controller behavior for the
 // textual provider:
 //
-//  * track the primary cursor/selection on every editor change;
+//  * listen to explicit cursor/selection, content and focus events;
 //  * ignore multi-line selections and selections that do not fit inside one
 //    word (the word under the selection start);
 //  * wait 50 ms after an explicit cursor move (upstream `runDelayer(50)`) and
@@ -37,6 +37,10 @@ const ui = @import("ui");
 
 const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const TextualDocumentHighlightProvider = @import("./textualHighlightProvider.zig").TextualDocumentHighlightProvider;
+const view_events = @import("../../../common/viewEvents.zig");
+const ViewEventHandler = @import("../../../common/viewEventHandler.zig").ViewEventHandler;
+const ICursorPositionChangedEvent = @import("../../../common/cursorEvents.zig").ICursorPositionChangedEvent;
+const ModelContentChange = @import("../../../common/textModelEvents.zig").InternalModelContentChangeEvent;
 const highlightDecorations = @import("./highlightDecorations.zig");
 
 /// Port of the `editor.occurrencesHighlight` option values.
@@ -82,10 +86,11 @@ pub const WordHighlighter = struct {
     pending_deadline_ms: ?i64 = null,
     task: @import("../../../../base/common/windowDispatch.zig").Task = .{},
     pending_position: Position = Position.init(1, 1),
-    last_model_version: u32,
-    last_position: ?Position = null,
-    last_selection: ?Selection = null,
-    was_focused: bool = false,
+    text_focused: bool = false,
+    handler: ViewEventHandler = .{},
+    content_listener: usize = undefined,
+    cursor_listener: usize = undefined,
+    ignore_position_change_event: bool = false,
 
     pub fn init(
         allocator: Allocator,
@@ -104,8 +109,18 @@ pub const WordHighlighter = struct {
             .settings = settings,
             .ranges = ArrayList(Range).init(allocator),
             .decorations = ArrayList(editorBrowser.Decoration).init(allocator),
-            .last_model_version = editor.model.getVersionId(),
+            .text_focused = host.has_text_focus(host.context),
         };
+        errdefer self.ranges.deinit();
+        errdefer self.decorations.deinit();
+        self.content_listener = try editor.model.onDidChangeContentWithContextId(self, onModelContentChanged);
+        errdefer editor.model.removeDidChangeContentListener(self.content_listener);
+        self.cursor_listener = try editor.on_did_change_cursor_position.listen(self, onCursorPositionChanged);
+        self.handler = ViewEventHandler.init(self, .{
+            .onFocusChanged = onFocusChanged,
+        });
+        editor.addViewEventHandler(&self.handler);
+        if (self.text_focused) self.run(timeNow());
         return self;
     }
 
@@ -124,6 +139,9 @@ pub const WordHighlighter = struct {
         return self.onTick(now);
     }
     pub fn deinit(self: *WordHighlighter) void {
+        self.editor.removeViewEventHandler(&self.handler);
+        self.model.removeDidChangeContentListener(self.content_listener);
+        self.editor.on_did_change_cursor_position.unlisten(self.cursor_listener);
         _ = self.stopAll();
         self.ranges.deinit();
         self.decorations.deinit();
@@ -134,102 +152,55 @@ pub const WordHighlighter = struct {
         return self.ranges.items.len > 0;
     }
 
-    /// Called by the app after every input batch and at startup. Replaces the
-    /// upstream cursor/content/focus listeners.
-    pub fn onEditorChanged(self: *WordHighlighter, now_ms: i64) void {
-        if (self.settings.occurrences_highlight == .off) {
+    fn onModelContentChanged(_: ModelContentChange, self: *WordHighlighter) !void {
+        _ = self.stopAll();
+    }
+
+    fn onCursorPositionChanged(event: ICursorPositionChangedEvent, self: *WordHighlighter) !void {
+        if (self.ignore_position_change_event) return;
+        if (event.reason != .Explicit and !std.mem.eql(u8, event.source, "api")) {
             _ = self.stopAll();
-            self.last_position = null;
-            self.last_selection = null;
-            self.setDeadline(null);
-            self.was_focused = false;
             return;
         }
+        self.run(timeNow());
+    }
 
-        if (!self.host.has_text_focus(self.host.context)) {
-            if (self.was_focused or self.hasDecorations()) {
-                _ = self.stopAll();
-            }
-            self.was_focused = false;
-            self.last_position = null;
-            self.last_selection = null;
-            self.setDeadline(null);
-            self.last_model_version = self.model.getVersionId();
-            return;
-        }
-        if (!self.was_focused) {
-            self.was_focused = true;
-            self.last_position = null;
-            self.last_selection = null;
-        }
+    fn onFocusChanged(context: *anyopaque, event: *const view_events.ViewFocusChangedEvent) bool {
+        const self: *WordHighlighter = @ptrCast(@alignCast(context));
+        self.text_focused = event.isFocused;
+        if (!event.isFocused) return self.stopAll();
+        if (self.pending_deadline_ms == null) self.run(timeNow());
+        return false;
+    }
 
-        const version = self.model.getVersionId();
-        if (version != self.last_model_version) {
-            // Upstream stops on `onDidChangeModelContent` and on cursor
-            // changes with a non-explicit reason (typing). Wait for the next
-            // explicit move before highlighting again.
-            self.last_model_version = version;
-            self.setDeadline(null);
+    /// The portable single-model subset of upstream _run.
+    fn run(self: *WordHighlighter, now_ms: i64) void {
+        if (self.settings.occurrences_highlight == .off or !self.text_focused or !self.host.has_text_focus(self.host.context)) {
             _ = self.stopAll();
-            self.last_position = self.editor.modelCursorPosition();
-            self.last_selection = self.editor.modelSelection();
             return;
         }
 
         const selection = self.editor.modelSelection();
         if (selection.startLineNumber != selection.endLineNumber) {
             _ = self.stopAll();
-            self.setDeadline(null);
-            self.last_position = selection.getPosition();
-            self.last_selection = selection;
             return;
         }
-
-        const position = selection.getPosition();
-        if (self.last_position) |last| {
-            if (last.equals(position)) {
-                if (self.last_selection) |last_selection| {
-                    if (Selection.equalsSelection(&last_selection, &selection)) return;
-                }
-            }
-        }
-
+        const position = Position.init(selection.startLineNumber, selection.startColumn);
         var word = self.model.getWordAtPosition(position) orelse {
             _ = self.stopAll();
-            self.setDeadline(null);
-            self.last_position = position;
-            self.last_selection = selection;
             return;
         };
         defer word.deinit();
-
-        // The selection must sit inside one word, or the word must surround
-        // the (possibly empty) selection, as upstream requires.
         if (word.startColumn > selection.startColumn or word.endColumn < selection.endColumn) {
             _ = self.stopAll();
-            self.setDeadline(null);
-            self.last_position = position;
-            self.last_selection = selection;
             return;
         }
+        if (self.containsPosition(position)) return;
 
-        if (self.containsPosition(position)) {
-            // Keep the current highlights when the cursor moves within them.
-            self.last_position = position;
-            self.last_selection = selection;
-            return;
-        }
-
-        // The old occurrences belong to a different word; clear them while the
-        // new request waits for the run delay (upstream `_stopAll` before the
-        // request).
         _ = self.clearDecorations();
-
         const delay = @max(self.settings.run_delay_ms, self.settings.delay_ms);
-        self.setDeadline(now_ms + @as(i64, @intCast(delay)));
         self.pending_position = position;
-        self.last_position = position;
-        self.last_selection = selection;
+        self.setDeadline(now_ms + @as(i64, @intCast(delay)));
     }
 
     /// Fires the delayed computation. Returns true when decorations changed.
@@ -237,7 +208,7 @@ pub const WordHighlighter = struct {
         const deadline = self.pending_deadline_ms orelse return false;
         if (now_ms < deadline) return false;
         self.setDeadline(null);
-        if (!self.host.has_text_focus(self.host.context)) return self.stopAll();
+        if (!self.text_focused or !self.host.has_text_focus(self.host.context)) return self.stopAll();
         return self.computeAt(self.pending_position);
     }
 
@@ -245,9 +216,6 @@ pub const WordHighlighter = struct {
     pub fn trigger(self: *WordHighlighter) void {
         self.setDeadline(null);
         const selection = self.editor.modelSelection();
-        self.last_position = selection.getPosition();
-        self.last_selection = selection;
-        self.last_model_version = self.model.getVersionId();
         _ = self.computeAt(selection.getPosition());
     }
 
@@ -366,6 +334,8 @@ pub const WordHighlighter = struct {
         const index: isize = if (current) |value| @intCast(value) else (if (delta > 0) -1 else 0);
         const next = @mod(index + delta, count);
         const destination = self.ranges.items[@intCast(next)];
+        self.ignore_position_change_event = true;
+        defer self.ignore_position_change_event = false;
         self.editor.setCursorPosition(destination.getStartPosition()) catch return false;
         self.editor.ensureCursorVisible();
         return true;
@@ -410,10 +380,6 @@ pub const WordHighlighterContribution = struct {
     pub fn saveViewState(self: *const WordHighlighterContribution) bool {
         const highlighter = self.word_highlighter orelse return false;
         return highlighter.hasDecorations();
-    }
-
-    pub fn onEditorChanged(self: *WordHighlighterContribution, now_ms: i64) void {
-        if (self.word_highlighter) |highlighter| highlighter.onEditorChanged(now_ms);
     }
 
     pub fn onTick(self: *WordHighlighterContribution, now_ms: i64) bool {

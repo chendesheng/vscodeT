@@ -327,7 +327,6 @@ pub const Tab = struct {
 
         self.controllers = controllers;
         if (self.window) |window| controllers.attachWindow(window);
-        controllers.word_highlighter.onEditorChanged(time_compat.milliTimestamp());
     }
 
     pub fn handleEditorKey(self: *Tab, event: *ui.KeyEvent, is_pasting: *bool, now_ms: i64, fallback: ?ui.KeyEvent) !bool {
@@ -347,11 +346,10 @@ pub const Tab = struct {
         );
     }
 
-    pub fn onEditorChanged(self: *Tab, now_ms: i64) void {
+    pub fn onEditorChanged(self: *Tab, _: i64) void {
         if (self.diff != null) return;
         if (self.controllers) |controllers| {
             controllers.find.onEditorChanged();
-            controllers.word_highlighter.onEditorChanged(now_ms);
             _ = controllers.suggest.onEditorChanged() catch {};
         }
     }
@@ -988,7 +986,7 @@ pub const Controllers = struct {
         self.word_highlighter = try WordHighlighterContribution.init(allocator, editor, .{
             .context = view,
             .decoration_context = self.word_sink.context(),
-            .has_text_focus = viewHasEditorFocus,
+            .has_text_focus = viewHasWordTextFocus,
             .set_decorations = View.ModelDecorationSink.set,
             .request_frame = viewRequestFrame,
         }, .{});
@@ -1078,6 +1076,11 @@ fn viewRequestFrame(_: *anyopaque) void {}
 fn viewFocusEditor(context: *anyopaque) void {
     const view: *View = @ptrCast(@alignCast(context));
     view.focusEditor();
+}
+
+fn viewHasWordTextFocus(context: *anyopaque) bool {
+    const view: *View = @ptrCast(@alignCast(context));
+    return view.isFocused() and view.hasEditorFocus();
 }
 
 fn viewHasEditorFocus(context: *anyopaque) bool {

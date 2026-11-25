@@ -64,6 +64,7 @@ const Harness = struct {
     editor: *Editor,
     capture: Capture,
     contribution: *WordHighlighterContribution,
+    queue: @import("../../../../../base/common/windowDispatch.zig").Queue,
 
     fn init(allocator: std.mem.Allocator, text: []const u8, settings: @import("../../browser/wordHighlighter.zig").WordHighlighterSettings) !*Harness {
         const self = try allocator.create(Harness);
@@ -81,11 +82,21 @@ const Harness = struct {
             .editor = editor,
             .capture = Capture.init(allocator),
             .contribution = undefined,
+            .queue = .{ .io = io },
         };
         errdefer self.capture.deinit();
 
         self.contribution = try WordHighlighterContribution.init(allocator, editor, self.capture.host(), settings);
+        self.contribution.attachWindow(&self.queue);
         return self;
+    }
+
+    fn deadline(self: *Harness) ?i64 {
+        return self.contribution.word_highlighter.?.pending_deadline_ms;
+    }
+
+    fn dispatchDeadline(self: *Harness) bool {
+        return self.queue.dispatch(self.deadline() orelse return false);
     }
 
     fn deinit(self: *Harness) void {
@@ -108,9 +119,8 @@ test "WordHighlighterContribution: highlights occurrences of the word under the 
     var harness = try Harness.init(testing.allocator, "word word word", configure());
     defer harness.deinit();
 
-    harness.contribution.onEditorChanged(0);
-    try testing.expect(!harness.contribution.onTick(49));
-    try testing.expect(harness.contribution.onTick(50));
+    try testing.expect(!harness.queue.dispatch(harness.deadline().? - 1));
+    try testing.expect(harness.dispatchDeadline());
 
     try testing.expectEqual(@as(usize, 3), harness.capture.decorations.items.len);
     try testing.expectEqual(Range.init(1, 1, 1, 5), harness.capture.decorations.items[0].range);
@@ -125,8 +135,7 @@ test "WordHighlighterContribution: does not start highlighting when occurrences 
     var harness = try Harness.init(testing.allocator, "word word word", .{ .occurrences_highlight = .off });
     defer harness.deinit();
 
-    harness.contribution.onEditorChanged(0);
-    try testing.expect(!harness.contribution.onTick(1000));
+    try testing.expectEqual(@as(?i64, null), harness.deadline());
     try testing.expect(!harness.contribution.saveViewState());
     try testing.expectEqual(@as(usize, 0), harness.capture.decorations.items.len);
 }
@@ -138,21 +147,18 @@ test "WordHighlighterContribution: keeps highlights while the cursor is inside t
     var harness = try Harness.init(testing.allocator, "word word word other", configure());
     defer harness.deinit();
 
-    harness.contribution.onEditorChanged(0);
-    _ = harness.contribution.onTick(50);
+    try testing.expect(harness.dispatchDeadline());
     try testing.expectEqual(@as(usize, 3), harness.capture.decorations.items.len);
 
     // Move inside the second occurrence: no recomputation, highlights stay.
     try harness.editor.setCursorPosition(Position.init(1, 7));
-    harness.contribution.onEditorChanged(100);
-    try testing.expect(!harness.contribution.onTick(1000));
+    try testing.expectEqual(@as(?i64, null), harness.deadline());
     try testing.expectEqual(@as(usize, 3), harness.capture.decorations.items.len);
 
     // Move to a different word: recompute after the run delay.
     try harness.editor.setCursorPosition(Position.init(1, 17));
-    harness.contribution.onEditorChanged(200);
-    try testing.expect(harness.contribution.onTick(249) == false);
-    try testing.expect(harness.contribution.onTick(250));
+    try testing.expect(!harness.queue.dispatch(harness.deadline().? - 1));
+    try testing.expect(harness.dispatchDeadline());
     try testing.expectEqual(@as(usize, 1), harness.capture.decorations.items.len);
     try testing.expectEqual(Range.init(1, 16, 1, 21), harness.capture.decorations.items[0].range);
 }
@@ -165,8 +171,7 @@ test "WordHighlighterContribution: a selection inside one word highlights its oc
     defer harness.deinit();
 
     try harness.editor.setSelection(Range.init(1, 6, 1, 8));
-    harness.contribution.onEditorChanged(0);
-    _ = harness.contribution.onTick(50);
+    try testing.expect(harness.dispatchDeadline());
     try testing.expectEqual(@as(usize, 3), harness.capture.decorations.items.len);
 }
 
@@ -177,12 +182,10 @@ test "WordHighlighterContribution: stops on a multi-line selection" {
     var harness = try Harness.init(testing.allocator, "word word\nword word", configure());
     defer harness.deinit();
 
-    harness.contribution.onEditorChanged(0);
-    _ = harness.contribution.onTick(50);
+    try testing.expect(harness.dispatchDeadline());
     try testing.expect(harness.capture.decorations.items.len > 0);
 
     try harness.editor.setSelection(Range.init(1, 1, 2, 3));
-    harness.contribution.onEditorChanged(100);
     try testing.expectEqual(@as(usize, 0), harness.capture.decorations.items.len);
 }
 
@@ -193,12 +196,10 @@ test "WordHighlighterContribution: stops on content change" {
     var harness = try Harness.init(testing.allocator, "word word word", configure());
     defer harness.deinit();
 
-    harness.contribution.onEditorChanged(0);
-    _ = harness.contribution.onTick(50);
+    try testing.expect(harness.dispatchDeadline());
     try testing.expect(harness.capture.decorations.items.len > 0);
 
     try harness.editor.typeCharacter("x");
-    harness.contribution.onEditorChanged(100);
     try testing.expectEqual(@as(usize, 0), harness.capture.decorations.items.len);
 }
 
@@ -209,12 +210,11 @@ test "WordHighlighterContribution: stops when the editor loses text focus" {
     var harness = try Harness.init(testing.allocator, "word word word", configure());
     defer harness.deinit();
 
-    harness.contribution.onEditorChanged(0);
-    _ = harness.contribution.onTick(50);
+    try testing.expect(harness.dispatchDeadline());
     try testing.expect(harness.capture.decorations.items.len > 0);
 
     harness.capture.focused = false;
-    harness.contribution.onEditorChanged(100);
+    harness.editor.emitViewEvent(.{ .ViewFocusChanged = .{ .isFocused = false } });
     try testing.expectEqual(@as(usize, 0), harness.capture.decorations.items.len);
 }
 
@@ -225,8 +225,7 @@ test "WordHighlighterContribution: move next and previous over sorted occurrence
     var harness = try Harness.init(testing.allocator, "word word word", configure());
     defer harness.deinit();
 
-    harness.contribution.onEditorChanged(0);
-    _ = harness.contribution.onTick(50);
+    try testing.expect(harness.dispatchDeadline());
 
     harness.contribution.moveNext();
     try testing.expectEqual(Position.init(1, 6), harness.editor.modelCursorPosition());

@@ -1501,10 +1501,11 @@ test "app: the word under the caret highlights its occurrences" {
         .set_decorations = View.ModelDecorationSink.set,
         .request_frame = viewRequestFrame,
     }, .{});
+    var queue = @import("../vs/base/common/windowDispatch.zig").Queue{ .io = io };
     defer word_highlighter.deinit();
+    word_highlighter.attachWindow(&queue);
 
-    word_highlighter.onEditorChanged(0);
-    try std.testing.expect(word_highlighter.onTick(50));
+    try std.testing.expect(queue.dispatch(word_highlighter.word_highlighter.?.pending_deadline_ms.?));
 
     try view.refresh();
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -1525,8 +1526,7 @@ test "app: the word under the caret highlights its occurrences" {
 
     // Move to `other`: the old highlights are replaced.
     try editor.setCursorPosition(Position.init(1, 17));
-    word_highlighter.onEditorChanged(100);
-    try std.testing.expect(word_highlighter.onTick(150));
+    try std.testing.expect(queue.dispatch(word_highlighter.word_highlighter.?.pending_deadline_ms.?));
     try view.refresh();
     try view.renderAnsi(&out.writer);
 

@@ -1101,7 +1101,7 @@ pub const View = struct {
 
     fn mouseSetCursor(context: *anyopaque, position: Position) !void {
         const self: *View = @ptrCast(@alignCast(context));
-        try self.editor.setCursorPosition(position);
+        try self.editor.setMouseSelection(position, position);
     }
 
     fn mouseSelectionStart(context: *anyopaque) Position {
@@ -1262,9 +1262,7 @@ pub const View = struct {
     }
 
     fn selectFrom(self: *View, anchor: Position, position: Position) !void {
-        try self.editor.setSelections(&[_]Selection{
-            Selection.init(anchor.lineNumber, anchor.column, position.lineNumber, position.column),
-        });
+        try self.editor.setMouseSelection(anchor, position);
     }
 
     /// Mirrors the editor's horizontal scroll range into the UI scroll view.
@@ -1593,12 +1591,11 @@ pub const View = struct {
     /// Forwards the workbench focus state to the ported View/overlays. This is
     /// the terminal boundary for upstream `View.focus()`/`blur()`.
     pub fn setFocused(self: *View, focused: bool) bool {
-        const changed = self.terminal_view_host.viewRef().setFocused(focused);
-        if (changed) {
-            if (!focused and self.mount != null) self.focusEditor();
-            self.invalidate();
-        }
-        return changed;
+        if (self.isFocused() == focused) return false;
+        if (!focused and self.mount != null) self.focusEditor();
+        self.editor.emitViewEvent(.{ .ViewFocusChanged = .{ .isFocused = focused } });
+        self.invalidate();
+        return true;
     }
 
     pub fn isFocused(self: *const View) bool {
