@@ -41,12 +41,19 @@ const ContentEvent = @import("../../../../../editor/common/textModelEvents.zig")
 const Features = @import("../../../../../editor/common/services/languageFeaturesService.zig").LanguageFeaturesService;
 const Disposable = @import("../../../../../base/common/lifecycle.zig").IDisposable;
 
+const Editor = @import("../../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const Selection = @import("../../../../../editor/common/core/selection.zig").Selection;
+const ConfigurationService = @import("../../../../services/configuration/browser/configurationService.zig").ConfigurationService;
+const MarkerDecorationsService = @import("../../../../../editor/common/services/markerDecorationsService.zig").MarkerDecorationsService;
+const MarkerSeverity = @import("../../../../../platform/markers/common/markers.zig").MarkerSeverity;
+const outline_config = @import("../../../outline/browser/outline.zig");
+const OutlineService = @import("../../../../services/outline/browser/outlineService.zig").OutlineService;
+
 pub const Host = struct {
     context: *anyopaque,
     current_position: *const fn (context: *anyopaque) ?Position,
     reveal_range: *const fn (context: *anyopaque, range: Range) anyerror!void,
     request_render: *const fn (context: *anyopaque) void,
-    apply_markers: ?*const fn (*anyopaque, *OutlineModel, *anyopaque) void = null,
     /// The terminal adapter for `DocumentSymbolFilter` and breadcrumb kind
     /// filtering. As in upstream, the settings lookup has its own context,
     /// separate from the editor used for selection and reveal.
@@ -64,6 +71,9 @@ pub const DocumentSymbolsOutline = struct {
     buffer: ?*TextModel = null,
     features: ?*Features = null,
     content_listener: ?usize = null,
+    provider_listener: ?usize = null,
+    marker_listener: ?usize = null,
+    creator: ?*DocumentSymbolsOutlineCreator = null,
     pending: ?Disposable = null,
     pending_model: ?*OutlineModel = null,
     version: u32 = 0,
@@ -136,6 +146,14 @@ pub const DocumentSymbolsOutline = struct {
         self.buffer = buffer;
         self.features = features;
         self.content_listener = try buffer.onDidChangeContentWithContextId(self, onContent);
+        self.provider_listener = try features.document_symbol_provider.on_did_change.listen(self, onProvidersChanged);
+        try self.createOutline();
+    }
+
+    fn onProvidersChanged(_: usize, self: *DocumentSymbolsOutline) !void {
+        self.removed_length = null;
+        if (self.service) |service| service.cancelTimer(self);
+        self.setModel(try OutlineModel.empty(self.allocator));
         try self.createOutline();
     }
 
@@ -153,7 +171,9 @@ pub const DocumentSymbolsOutline = struct {
 
     fn createOutline(self: *DocumentSymbolsOutline) !void {
         self.cancelRequest();
+        self.removeMarkerListener();
         const buffer = self.buffer.?;
+        if (!self.features.?.document_symbol_provider.has(buffer)) return;
         self.version = buffer.getVersionId();
         const providers = try self.features.?.document_symbol_provider.ordered(self.allocator, buffer, false);
         defer self.allocator.free(providers);
@@ -196,10 +216,44 @@ pub const DocumentSymbolsOutline = struct {
             model.deinit();
             return;
         }
-        if (self.host.apply_markers) |apply| if (self.host.symbol_filter) |filter| apply(filter.context, model, self.host.context);
+        if (!model.isEmpty()) if (self.creator) |creator| {
+            self.applyMarkersToOutline(model) catch {};
+            self.marker_listener = creator.markers.on_did_change_marker.listen(self, onMarkersChanged) catch null;
+        };
         if (self.model == model) model.deinit();
         self.setModel(model);
         self.host.request_render(self.host.context);
+    }
+
+    fn removeMarkerListener(self: *DocumentSymbolsOutline) void {
+        if (self.marker_listener) |id| self.creator.?.markers.on_did_change_marker.unlisten(id);
+        self.marker_listener = null;
+    }
+
+    fn onMarkersChanged(buffer: *TextModel, self: *DocumentSymbolsOutline) !void {
+        if (self.buffer != buffer) return;
+        try self.applyMarkersToOutline(self.model);
+        self.rebuildTree();
+        try self.emitter.fire(.{});
+    }
+
+    fn applyMarkersToOutline(self: *DocumentSymbolsOutline, model: *OutlineModel) !void {
+        const creator = self.creator orelse return;
+        if (!creator.enabled("problems.visibility") or !creator.enabled("outline.problems.enabled")) {
+            try model.updateMarker(&.{});
+            return;
+        }
+        const live = try creator.markers.getLiveMarkers(self.allocator, self.buffer.?);
+        defer self.allocator.free(live);
+        var markers: std.ArrayList(outline_model_mod.OutlineMarker) = .empty;
+        defer markers.deinit(self.allocator);
+        for (live) |entry| {
+            const severity = entry.marker.severity;
+            if (severity == MarkerSeverity.Error or severity == MarkerSeverity.Warning) {
+                try markers.append(self.allocator, .{ .range = entry.range, .severity = severity });
+            }
+        }
+        try model.updateMarker(markers.items);
     }
 
     pub fn interfacePtr(self: *DocumentSymbolsOutline) *IOutline {
@@ -339,7 +393,7 @@ pub const DocumentSymbolsOutline = struct {
     fn reveal(context: *anyopaque, element: *anyopaque, options: RevealOptions) !void {
         const self: *DocumentSymbolsOutline = @ptrCast(@alignCast(context));
         const target: *SymbolElement = @ptrCast(@alignCast(element));
-        const range = if (options.select) target.symbol.range else target.symbol.selection_range;
+        const range = if (options.select) target.symbol.range else target.symbol.selection_range.collapseToStart();
         try self.host.reveal_range(self.host.context, range);
         self.host.request_render(self.host.context);
     }
@@ -348,6 +402,8 @@ pub const DocumentSymbolsOutline = struct {
         const self: *DocumentSymbolsOutline = @ptrCast(@alignCast(context));
         if (self.service) |service| service.cancelTimer(self);
         self.cancelRequest();
+        self.removeMarkerListener();
+        if (self.provider_listener) |id| self.features.?.document_symbol_provider.on_did_change.unlisten(id);
         if (self.content_listener) |id| self.buffer.?.removeDidChangeContentListener(id);
         self.elements.deinit();
         self.tree_arena.deinit();
@@ -355,6 +411,95 @@ pub const DocumentSymbolsOutline = struct {
         self.model.deinit();
         self.allocator.destroy(self);
     }
+};
+
+/// The terminal returns its outline handle immediately. The shared model
+/// service publishes the first result through on_did_change.
+pub const DocumentSymbolsOutlineCreator = struct {
+    models: *Service,
+    features: *Features,
+    // Configuration can be installed after language services during startup.
+    configuration: *const ?*ConfigurationService,
+    markers: *MarkerDecorationsService,
+    registration: ?Disposable = null,
+
+    pub fn register(self: *@This(), service: *OutlineService) !void {
+        self.registration = try service.registerOutlineCreator(self.interface());
+    }
+
+    pub fn dispose(self: *@This()) void {
+        if (self.registration) |registration| registration.dispose();
+        self.registration = null;
+    }
+
+    pub fn interface(self: *@This()) outline.IOutlineCreator {
+        return .{ .context = self, .matches = matches, .create_outline = createOutline };
+    }
+
+    fn matches(_: *anyopaque, pane: outline.OutlineEditor) bool {
+        return pane.control != null;
+    }
+
+    fn createOutline(context: *anyopaque, pane: outline.OutlineEditor, target: outline.OutlineTarget) !?*IOutline {
+        const self: *@This() = @ptrCast(@alignCast(context));
+        const editor = pane.control orelse return null;
+        const model = try OutlineModel.empty(self.models.allocator);
+        const instance = DocumentSymbolsOutline.create(self.models.allocator, model, .{
+            .context = editor,
+            .current_position = currentPosition,
+            .reveal_range = revealRange,
+            .request_render = requestRender,
+            .symbol_filter = switch (target) {
+                .OutlinePane => .{ .context = self, .is_visible = outlineSymbolVisible },
+                .Breadcrumbs => .{ .context = self, .is_visible = breadcrumbSymbolVisible },
+                .QuickPick => null,
+            },
+        }) catch |err| {
+            model.deinit();
+            return err;
+        };
+        const result = instance.interfacePtr();
+        errdefer result.dispose();
+        instance.creator = self;
+        result.uri = pane.resource;
+        result.config.collapse_by_default = target == .Breadcrumbs or (target == .OutlinePane and self.initiallyCollapsed(pane.resource));
+        try instance.bind(self.models, editor.model, self.features);
+        return result;
+    }
+
+    fn initiallyCollapsed(self: *@This(), resource: ?[]const u8) bool {
+        const configuration = self.configuration.* orelse return false;
+        const initial = configuration.getValue(outline_config.OutlineConfigKeys.collapse_items, .{ .resource = resource }) orelse return false;
+        return initial.* == .string and std.mem.eql(u8, initial.string, outline_config.OutlineConfigCollapseItemsValues.collapsed);
+    }
+
+    fn enabled(self: *@This(), key: []const u8) bool {
+        const configuration = self.configuration.* orelse return true;
+        const value = configuration.getValue(key, .{}) orelse return true;
+        return value.* != .bool or value.bool;
+    }
+
+    fn outlineSymbolVisible(context: *anyopaque, kind: u32) bool {
+        const self: *@This() = @ptrCast(@alignCast(context));
+        return self.enabled(outline_config.showConfigForKind(kind));
+    }
+
+    fn breadcrumbSymbolVisible(context: *anyopaque, kind: u32) bool {
+        const self: *@This() = @ptrCast(@alignCast(context));
+        return self.enabled(outline_config.breadcrumbConfigForKind(kind));
+    }
+
+    fn currentPosition(context: *anyopaque) ?Position {
+        const editor: *Editor = @ptrCast(@alignCast(context));
+        return editor.modelSelection().getStartPosition();
+    }
+
+    fn revealRange(context: *anyopaque, range: Range) !void {
+        const editor: *Editor = @ptrCast(@alignCast(context));
+        try editor.setSelections(&.{Selection.init(range.startLineNumber, range.startColumn, range.endLineNumber, range.endColumn)});
+    }
+
+    fn requestRender(_: *anyopaque) void {}
 };
 
 fn compareNames(a: []const u8, b: []const u8) std.math.Order {
@@ -419,11 +564,15 @@ test "DocumentSymbolsOutline: tree snapshot, active element and comparator" {
         fn current(_: *anyopaque) ?Position {
             return position;
         }
-        fn reveal(_: *anyopaque, _: Range) !void {}
+        fn reveal(ctx: *anyopaque, range: Range) !void {
+            const selection: *Range = @ptrCast(@alignCast(ctx));
+            selection.* = range;
+        }
         fn render(_: *anyopaque) void {}
     };
+    var selection: Range = undefined;
     const outline_view = try DocumentSymbolsOutline.create(allocator, outline_model, .{
-        .context = @ptrCast(&context),
+        .context = &selection,
         .current_position = HostImpl.current,
         .reveal_range = HostImpl.reveal,
         .request_render = HostImpl.render,
@@ -451,4 +600,7 @@ test "DocumentSymbolsOutline: tree snapshot, active element and comparator" {
     try std.testing.expectEqualStrings("method", selected.label);
     try std.testing.expectEqual(active, selected.element);
     try input.reveal(selected.element, .{});
+    try std.testing.expectEqual(Range.init(2, 9, 2, 9), selection);
+    try input.reveal(selected.element, .{ .select = true });
+    try std.testing.expectEqual(Range.init(2, 3, 2, 14), selection);
 }

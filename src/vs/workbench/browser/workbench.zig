@@ -138,9 +138,8 @@ const OutlineService = outline_service_mod.OutlineService;
 const outline_mod = @import("../services/outline/browser/outline.zig");
 const OutlineEditor = outline_mod.OutlineEditor;
 const IOutlineCreator = outline_mod.IOutlineCreator;
-const DocumentSymbolsOutline = @import("../contrib/codeEditor/browser/outline/documentSymbolsOutline.zig").DocumentSymbolsOutline;
+const DocumentSymbolsOutlineCreator = @import("../contrib/codeEditor/browser/outline/documentSymbolsOutline.zig").DocumentSymbolsOutlineCreator;
 const OutlineModel = @import("../../editor/contrib/documentSymbols/browser/outlineModel.zig").OutlineModel;
-const OutlineMarker = @import("../../editor/contrib/documentSymbols/browser/outlineModel.zig").OutlineMarker;
 const outline_pane_mod = @import("../contrib/outline/browser/outlinePane.zig");
 const OutlinePane = outline_pane_mod.OutlinePane;
 const outline_contrib = @import("../contrib/outline/browser/outline.zig");
@@ -759,8 +758,7 @@ pub const Workbench = struct {
     snippet_registration: ?IDisposable = null,
     word_completion_provider: ?*WordBasedCompletionProvider = null,
     word_completion_registration: ?IDisposable = null,
-    outline_registration: ?IDisposable = null,
-    document_symbol_listener: ?@import("../../base/common/event.zig").Emitter(usize).ListenerId = null,
+    outline_creator: ?DocumentSymbolsOutlineCreator = null,
     focus: Focus = .editor,
     is_pasting: bool = false,
     terminal_service: ?*TerminalService = null,
@@ -966,8 +964,7 @@ pub const Workbench = struct {
         self.snippet_registration = null;
         self.word_completion_provider = null;
         self.word_completion_registration = null;
-        self.outline_registration = null;
-        self.document_symbol_listener = null;
+        self.outline_creator = null;
         self.outline_view = null;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         errdefer self.workspace.deinit();
@@ -1845,14 +1842,7 @@ pub const Workbench = struct {
             if (request == .discard_scm) request.discard_scm.deinit(self.allocator);
         }
         self.pending_dialog = null;
-        if (self.outline_registration) |registration| {
-            registration.dispose();
-            self.outline_registration = null;
-        }
-        if (self.document_symbol_listener) |listener| {
-            if (self.language_features) |features| features.document_symbol_provider.on_did_change.unlisten(listener);
-            self.document_symbol_listener = null;
-        }
+        if (self.outline_creator) |*creator| creator.dispose();
         self.disposeBreadcrumbs();
         self.disposeAllInactiveBreadcrumbs();
         if (self.context_menu) |menu| menu.deinit();
@@ -4124,12 +4114,13 @@ pub const Workbench = struct {
         // Keep the panel title badge and the `hideIfEmpty` tab in sync with
         // marker changes, like the markers view container in upstream.
         self.marker_listener = try marker_service.on_marker_changed.listen(self, onMarkersChanged);
-        self.document_symbol_listener = try features.document_symbol_provider.on_did_change.listen(self, onDocumentSymbolsChanged);
-        self.outline_registration = try self.outline_service.registerOutlineCreator(.{
-            .context = self,
-            .matches = outlineMatches,
-            .create_outline = outlineCreate,
-        });
+        self.outline_creator = .{
+            .models = &self.outline_models,
+            .features = features,
+            .configuration = &self.configuration,
+            .markers = marker_decorations,
+        };
+        try self.outline_creator.?.register(&self.outline_service);
 
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
@@ -4138,10 +4129,6 @@ pub const Workbench = struct {
             }
         }
         self.refreshStatus();
-    }
-
-    fn onDocumentSymbolsChanged(_: usize, self: *Workbench) !void {
-        self.outline_service.notifyOutlineChanged();
     }
 
     fn onMarkersChanged(_: MarkerChangeEvent, self: *Workbench) !void {
@@ -12723,9 +12710,10 @@ fn outlinePaneTitleActions(context: *anyopaque) []const views_mod.TitleAction {
 fn outlineActiveEditor(context: *anyopaque) ?OutlineEditor {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const tab = self.activeTab() orelse return null;
-    if (tab.isImage() or tab.isDiff()) return null;
+    if (tab.isImage() or tab.markdown_panel != null or tab.terminal_input != null) return null;
     return .{
         .context = @ptrCast(tab),
+        .control = tab.editor,
         .resource = tab.editor.path,
         .language_id = tab.editor.languageId(),
     };
@@ -12743,6 +12731,8 @@ fn outlineViewCurrentPosition(context: *anyopaque) ?Position {
     return tab.editor.modelSelection().getStartPosition();
 }
 
+fn outlineRequestRender(_: *anyopaque) void {}
+
 fn outlineFocusEditor(context: *anyopaque) void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     self.focusEditor();
@@ -12753,104 +12743,6 @@ fn outlineSymbolVisible(context: *anyopaque, kind: u32) bool {
     const self: *Workbench = @ptrCast(@alignCast(context));
     return self.findBoolSetting(outline_contrib.showConfigForKind(kind), true);
 }
-
-fn breadcrumbSymbolVisible(context: *anyopaque, kind: u32) bool {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    return self.findBoolSetting(outline_contrib.breadcrumbConfigForKind(kind), true);
-}
-
-fn outlineMatches(context: *anyopaque, editor: OutlineEditor) bool {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const active: *Tab = @ptrCast(@alignCast(editor.context));
-    const resource = editor.resource orelse return false;
-    if (!std.mem.eql(u8, active.editor.path, resource)) return false;
-    const features = self.language_features orelse return false;
-    return features.document_symbol_provider.has(active.editor.model);
-}
-
-fn outlineCreate(context: *anyopaque, editor: OutlineEditor, target: outline_mod.OutlineTarget) !?*outline_mod.IOutline {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const tab: *Tab = @ptrCast(@alignCast(editor.context));
-    const features = self.language_features orelse return null;
-    if (!features.document_symbol_provider.has(tab.editor.model)) return null;
-    const model = try OutlineModel.empty(self.allocator);
-    const outline = DocumentSymbolsOutline.create(self.allocator, model, .{
-        .context = tab,
-        .current_position = outlineCurrentPosition,
-        .reveal_range = outlineRevealRange,
-        .request_render = outlineRequestRender,
-        .apply_markers = applyDocumentOutlineMarkers,
-        .symbol_filter = .{
-            .context = self,
-            .is_visible = if (target == .Breadcrumbs) breadcrumbSymbolVisible else outlineSymbolVisible,
-        },
-    }) catch |err| {
-        model.deinit();
-        return err;
-    };
-    errdefer outline.interfacePtr().dispose();
-    try outline.bind(&self.outline_models, tab.editor.model, features);
-    const result = outline.interfacePtr();
-    result.config.collapse_by_default = target == .OutlinePane and outlineCollapseByDefault(self);
-    return result;
-}
-
-fn applyDocumentOutlineMarkers(context: *anyopaque, model: *OutlineModel, editor: *anyopaque) void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const tab: *Tab = @ptrCast(@alignCast(editor));
-    outlineApplyMarkers(self, model, tab) catch {};
-}
-
-/// Port of `_applyMarkersToOutline`: roll the model's error/warning markers up
-/// into the outline tree before the tree snapshot is built. The browser gets
-/// live markers from `IMarkerDecorationsService`; the terminal reads the same
-/// resource's markers from `MarkerService`.
-fn outlineApplyMarkers(self: *Workbench, model: *OutlineModel, tab: *Tab) !void {
-    if (!self.findBoolSetting("problems.visibility", true)) return;
-    if (!self.findBoolSetting("outline.problems.enabled", true)) return;
-    const marker_service = self.marker_service orelse return;
-    var resource = markers_mod.Resource.fromUri(self.allocator, tab.editor.model.uri()) catch return;
-    defer resource.deinit(self.allocator);
-    const list = marker_service.read(self.allocator, .{ .resource = resource }) catch return;
-    defer self.allocator.free(list);
-    var markers = std.array_list.Managed(OutlineMarker).init(self.allocator);
-    defer markers.deinit();
-    for (list) |marker| {
-        const severity = marker.severity;
-        if (severity != markers_mod.MarkerSeverity.Error and severity != markers_mod.MarkerSeverity.Warning) continue;
-        try markers.append(.{
-            .range = Range.init(
-                @intCast(marker.start_line_number),
-                @intCast(marker.start_column),
-                @intCast(marker.end_line_number),
-                @intCast(marker.end_column),
-            ),
-            .severity = severity,
-        });
-    }
-    model.updateMarker(markers.items) catch {};
-}
-
-fn outlineCollapseByDefault(self: *Workbench) bool {
-    const configuration = self.configuration orelse return false;
-    const value = configuration.getValue(outline_contrib.OutlineConfigKeys.collapse_items, .{}) orelse return false;
-    return switch (value.*) {
-        .string => |text| std.mem.eql(u8, text, outline_contrib.OutlineConfigCollapseItemsValues.collapsed),
-        else => false,
-    };
-}
-
-fn outlineCurrentPosition(context: *anyopaque) ?Position {
-    const tab: *Tab = @ptrCast(@alignCast(context));
-    return tab.editor.modelSelection().getStartPosition();
-}
-
-fn outlineRevealRange(context: *anyopaque, range: Range) !void {
-    const tab: *Tab = @ptrCast(@alignCast(context));
-    try tab.editor.setSelections(&.{Selection.init(range.startLineNumber, range.startColumn, range.endLineNumber, range.endColumn)});
-}
-
-fn outlineRequestRender(_: *anyopaque) void {}
 
 const InactiveBreadcrumb = struct {
     control: *BreadcrumbsControl,
@@ -12909,6 +12801,7 @@ fn breadcrumbOutlineEditor(context: *anyopaque) ?OutlineEditor {
     const tab = self.activeTab() orelse return null;
     return .{
         .context = @ptrCast(tab),
+        .control = if (tab.isImage() or tab.markdown_panel != null or tab.terminal_input != null) null else tab.editor,
         .resource = tab.editor.path,
         .language_id = tab.editor.languageId(),
     };

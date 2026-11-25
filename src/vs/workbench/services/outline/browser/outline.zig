@@ -12,7 +12,7 @@
 //   browser renderer/delegate and quick-pick source are replaced by the
 //   shared `ListWidget` and the breadcrumb popup.
 // - `IEditorPane` is replaced by `OutlineEditor`, a small descriptor the TUI
-//   fills from its tab. There is no extension host yet, so a creator gets the
+//   fills from its tab. A creator gets the
 //   descriptor synchronously; asynchronous provider results arrive through
 //   `IOutline.on_did_change`.
 // - `OutlineTarget` keeps the upstream bit values.
@@ -26,10 +26,10 @@ pub const OutlineTarget = enum(u8) {
     QuickPick = 4,
 };
 
-/// The terminal stand-in for upstream `IEditorPane`. A creator may cast
-/// `context` when it is registered by the TUI; portable creators should only
-/// rely on `resource` and `language_id`.
+/// The terminal adapter for upstream `IEditorPane.getControl()` and its input.
 pub const OutlineEditor = struct {
+    /// Code editor control, or the modified control of a diff editor.
+    control: ?*@import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor = null,
     context: *anyopaque,
     resource: ?[]const u8,
     language_id: []const u8,

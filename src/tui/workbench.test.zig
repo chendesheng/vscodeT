@@ -4186,7 +4186,9 @@ test "Workbench: LSP navigation, references and symbol picker" {
             allocator_.free(uri);
             return locations;
         }
-        fn symbols(_: *anyopaque, allocator_: Allocator, model: *@import("../vs/editor/common/model/textModel.zig").TextModel, _: CancellationToken) ![]languages.DocumentSymbol {
+        fn symbols(context: *anyopaque, allocator_: Allocator, model: *@import("../vs/editor/common/model/textModel.zig").TextModel, _: CancellationToken) ![]languages.DocumentSymbol {
+            const requests: *usize = @ptrCast(@alignCast(context));
+            requests.* += 1;
             _ = model;
             const result = try allocator_.alloc(languages.DocumentSymbol, 1);
             result[0] = .{
@@ -4203,7 +4205,7 @@ test "Workbench: LSP navigation, references and symbol picker" {
     defer workbench.deinit();
     try workbench.enableLanguageFeatures();
     const features = workbench.language_features.?;
-    var context: u8 = 0;
+    var context: usize = 0;
     const definition_registration = try features.definition_provider.register(.{ .language = "*" }, .{
         .context = &context,
         .provide_definition = Fake.definition,
@@ -4226,8 +4228,22 @@ test "Workbench: LSP navigation, references and symbol picker" {
     try std.testing.expect(try workbench.revealDefinition());
     try std.testing.expectEqual(@as(usize, 2), tab.editor.modelCursorPosition().lineNumber);
 
+    const pane = @import("../vs/workbench/services/outline/browser/outline.zig").OutlineEditor{
+        .context = tab,
+        .control = tab.editor,
+        .resource = path,
+        .language_id = tab.editor.languageId(),
+    };
+    const outline = (try workbench.outline_service.createOutline(pane, .OutlinePane)).?;
+    defer outline.dispose();
+    const breadcrumbs = (try workbench.outline_service.createOutline(pane, .Breadcrumbs)).?;
+    defer breadcrumbs.dispose();
+    try std.testing.expect(!outline.is_empty);
+    try std.testing.expect(breadcrumbs.config.collapse_by_default);
+    try std.testing.expect(!outline.config.collapse_by_default);
     try std.testing.expect(try workbench.gotoSymbolInEditor());
     try std.testing.expect(workbench.quick_access.isOpen());
+    try std.testing.expectEqual(@as(usize, 1), context);
     const picker = workbench.quick_access.inputService().pickerRef();
     try std.testing.expectEqual(@as(usize, 1), picker.items.items.len);
     picker.accept();

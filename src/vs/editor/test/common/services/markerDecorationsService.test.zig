@@ -43,23 +43,16 @@ test "markerDecorationsService: applies and removes decorations" {
         markerData(2, markers.MarkerSeverity.Warning),
     }, null);
 
-    const live = try service_entry_live(service, model.model, allocator);
+    const live = try service.getLiveMarkers(allocator, model.model);
     defer allocator.free(live);
     try std.testing.expectEqual(@as(usize, 2), live.len);
 
     try marker_service.changeOne("test", resource, &.{}, null);
-    const empty = try service_entry_live(service, model.model, allocator);
+    const empty = try service.getLiveMarkers(allocator, model.model);
     defer allocator.free(empty);
     try std.testing.expectEqual(@as(usize, 0), empty.len);
 
     service.unregisterModel(model.model);
-}
-
-fn service_entry_live(service: *MarkerDecorationsService, model: anytype, allocator: std.mem.Allocator) ![]@import("../../../common/services/markerDecorations.zig").LiveMarker {
-    for (service.models.items) |entry| {
-        if (entry.model == model) return entry.decorations.getLiveMarkers(allocator);
-    }
-    return &.{};
 }
 
 test "markerDecorationsService: limit and suppression" {
@@ -86,17 +79,17 @@ test "markerDecorationsService: limit and suppression" {
         item.* = markerData(@intCast(index + 1), markers.MarkerSeverity.Error);
     }
     try marker_service.changeOne("test", resource, data, null);
-    const live = try service_entry_live(service, model.model, allocator);
+    const live = try service.getLiveMarkers(allocator, model.model);
     defer allocator.free(live);
     try std.testing.expectEqual(@as(usize, 5000), live.len);
 
     const suppression = try service.addMarkerSuppression(model.model, Range.init(1, 1, 100, 2));
-    const suppressed = try service_entry_live(service, model.model, allocator);
+    const suppressed = try service.getLiveMarkers(allocator, model.model);
     defer allocator.free(suppressed);
     try std.testing.expectEqual(@as(usize, 4900), suppressed.len);
     suppression.dispose();
 
-    const restored = try service_entry_live(service, model.model, allocator);
+    const restored = try service.getLiveMarkers(allocator, model.model);
     defer allocator.free(restored);
     try std.testing.expectEqual(@as(usize, 5000), restored.len);
 }

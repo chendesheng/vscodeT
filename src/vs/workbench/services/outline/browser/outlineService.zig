@@ -72,8 +72,9 @@ pub const OutlineService = struct {
     /// that creator. Entries stay in the list so a later unregistration never
     /// removes a different provider.
     pub fn registerOutlineCreator(self: *OutlineService, creator: IOutlineCreator) !IDisposable {
-        try self.creators.append(.{ .creator = creator });
         const registration = try self.allocator.create(Registration);
+        errdefer self.allocator.destroy(registration);
+        try self.creators.append(.{ .creator = creator });
         registration.* = .{ .service = self, .index = self.creators.items.len - 1 };
         self.notifyOutlineChanged();
         return .{ .context = registration, .disposeFn = disposeRegistration };

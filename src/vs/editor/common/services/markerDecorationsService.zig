@@ -214,6 +214,12 @@ pub const MarkerDecorationsService = struct {
         }
     }
 
+    /// Current decoration ranges reflect edits since the markers were published.
+    pub fn getLiveMarkers(self: *MarkerDecorationsService, allocator: Allocator, model: *TextModel) ![]LiveMarker {
+        const entry = self.entryFor(model) orelse return &.{};
+        return entry.decorations.getLiveMarkers(allocator);
+    }
+
     /// Port of `IMarkerDecorationsService.getMarker`: resolves the marker a
     /// marker decoration was created for, which the hover participant uses to
     /// render the diagnostic popup.
