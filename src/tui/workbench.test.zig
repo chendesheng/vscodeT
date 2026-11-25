@@ -6689,6 +6689,8 @@ test "Workbench: closing the side bar keeps the activity bar" {
 
     _ = try workbench.commands.execute("workbench.action.closeSidebar");
     try std.testing.expect(!workbench.sidebar_part.isVisible());
+    try std.testing.expect(workbench.sidebar_part.activePaneComposite() == null);
+    try std.testing.expectEqualStrings("explorer", workbench.sidebar_part.pane.last_active_id.?);
     try std.testing.expectEqual(@as(usize, 3), ui.cell.snap(workbench.part.base.bounds.?.x));
 
     // The activity bar stays visible and clickable while the side bar is
@@ -6701,8 +6703,12 @@ test "Workbench: closing the side bar keeps the activity bar" {
     try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &rail_click));
     try std.testing.expect(workbench.sidebar_part.isVisible());
 
+    try workbench.showActivity(1);
+    try std.testing.expectEqualStrings("search", workbench.sidebar_part.activePaneComposite().?.id);
     _ = try workbench.commands.execute("workbench.action.closeSidebar");
+    try std.testing.expect(workbench.sidebar_part.activePaneComposite() == null);
     _ = try workbench.commands.execute("workbench.action.focusSideBar");
+    try std.testing.expectEqualStrings("search", workbench.sidebar_part.activePaneComposite().?.id);
     try std.testing.expect(workbench.sidebar_part.isVisible());
     try std.testing.expectEqual(Focus.sidebar, workbench.focus);
 }

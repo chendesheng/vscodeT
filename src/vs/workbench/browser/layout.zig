@@ -421,8 +421,10 @@ pub const Layout = struct {
 
     pub fn setPartHidden(self: *Layout, hidden: bool, part: Parts) !void {
         if (part == .statusbar and !self.isZenModeActive()) self.configured_statusbar_visible = !hidden;
-        if (part == .panel and self.pane_composite_service != null)
-            return self.setPanelHidden(hidden);
+        if (self.pane_composite_service != null) {
+            if (part == .sidebar) return self.setSideBarHidden(hidden);
+            if (part == .panel) return self.setPanelHidden(hidden);
+        }
         try self.setPartVisibility(hidden, part);
     }
 
@@ -432,6 +434,47 @@ pub const Layout = struct {
             return;
         }
         try self.visibilityChanged(part, !hidden);
+    }
+
+    /// Upstream openViewContainer: try the requested container, the
+    /// default view container, then the first visible container in the bar.
+    fn openViewContainer(self: *Layout, location: @import("../common/views.zig").ViewContainerLocation, id: ?[]const u8, focus: bool) !void {
+        const panes = self.pane_composite_service orelse return;
+        if (id) |requested| {
+            if (try panes.openPaneComposite(requested, location, focus)) return;
+        }
+        if (self.view_descriptor_service) |views| {
+            if (views.getDefaultViewContainer(location)) |container| {
+                if (try panes.openPaneComposite(container.id, location, focus)) return;
+            }
+        }
+        const visible = try panes.getVisiblePaneCompositeIds(location, self.allocator);
+        defer self.allocator.free(visible);
+        if (visible.len != 0) _ = try panes.openPaneComposite(visible[0], location, focus);
+    }
+
+    /// Portable setSideBarHidden. The single-window terminal has no
+    /// maximized auxiliary bar, but preserves composite lifetime and focus.
+    fn setSideBarHidden(self: *Layout, hidden: bool) !void {
+        const panes = self.pane_composite_service orelse return;
+        try self.setPartVisibility(hidden, .sidebar);
+        if (hidden) {
+            if (panes.getActivePaneComposite(.sidebar) != null) {
+                try panes.hideActivePaneComposite(.sidebar);
+                self.focusPanelOrEditor();
+            }
+        } else if (panes.getActivePaneComposite(.sidebar) == null) {
+            try self.openViewContainer(.sidebar, panes.getLastActivePaneCompositeId(.sidebar), false);
+        }
+    }
+
+    fn focusPanelOrEditor(self: *Layout) void {
+        const panes = self.pane_composite_service orelse return;
+        if ((hasFocusContext(self, .panel) or !self.isVisible(.editor)) and panes.getActivePaneComposite(.panel) != null) {
+            focusPartContext(self, .panel);
+        } else {
+            focusPartContext(self, .editor);
+        }
     }
 
     /// Portable setPanelHidden: change the grid visibility, close the
@@ -446,12 +489,7 @@ pub const Layout = struct {
                 focusPartContext(self, .editor);
             }
         } else if (panes.getActivePaneComposite(.panel) == null) {
-            const visible = try panes.getVisiblePaneCompositeIds(.panel, self.allocator);
-            defer self.allocator.free(visible);
-            const last = panes.getLastActivePaneCompositeId(.panel);
-            const default = if (self.view_descriptor_service) |views| views.getDefaultViewContainer(.panel) else null;
-            const id = last orelse if (visible.len != 0) visible[0] else if (default) |container| container.id else return;
-            _ = try panes.openPaneComposite(id, .panel, true);
+            try self.openViewContainer(.panel, panes.getLastActivePaneCompositeId(.panel), true);
         }
     }
 

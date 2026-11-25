@@ -65,3 +65,17 @@ pub const zen_tabs_actions = [_]actions.Action2{
     zenTabsAction(zen.zen_show_multiple_editor_tabs_id, zen.zen_show_multiple_editor_tabs_label, zen.zen_show_multiple_editor_tabs_description, .multiple),
     zenTabsAction(zen.zen_show_single_editor_tab_id, zen.zen_show_single_editor_tab_label, zen.zen_show_single_editor_tab_description, .single),
 };
+
+/// ToggleSidebarVisibilityAction. Palette metadata remains compatible with
+/// the native command inventory; the ARIA alert is browser-only.
+pub const toggle_sidebar_visibility_action: actions.Action2 = .{
+    .command = .{ .id = "workbench.action.toggleSidebarVisibility", .title = "Toggle Primary Side Bar Visibility", .category = "View" },
+    .f1 = true,
+    .context = @constCast(&{}),
+    .run_fn = toggleSidebarVisibility,
+};
+
+fn toggleSidebarVisibility(_: *anyopaque, accessor: ServicesAccessor) !void {
+    const service = try accessor.get(layout.layout_service_id);
+    try service.setPartHidden(service.isVisible(.sidebar), .sidebar);
+}

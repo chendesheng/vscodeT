@@ -1557,12 +1557,8 @@ pub const TerminalWorkbench = struct {
         for (scm_contribution.view_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (self.git_commands.openActions()) |action| try self.commands.registerAction(self.instantiation, action);
         for (@import("../vs/workbench/browser/parts/editor/diffEditorCommands.zig").diff_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        const before_search = [_]commands_mod.CommandInfo{
-            .{ .id = "workbench.action.toggleSidebarVisibility", .label = "Toggle Primary Side Bar Visibility", .category = "View", .context = self, .run = commandToggleSidebar },
-            .{ .id = "workbench.action.closeSidebar", .label = "Close Primary Side Bar", .category = "View", .context = self, .run = commandCloseSidebar },
-            .{ .id = "workbench.action.focusSideBar", .label = "Focus into Primary Side Bar", .category = "View", .context = self, .run = commandFocusSidebar },
-        };
-        for (before_search) |command| try self.commands.register(command);
+        try self.commands.registerAction(self.instantiation, @import("../vs/workbench/browser/actions/layoutActions.zig").toggle_sidebar_visibility_action);
+        for (@import("../vs/workbench/browser/parts/sidebar/sidebarActions.zig").sidebar_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (activity_bar_mod.switch_sidebar_actions) |action| try self.commands.registerAction(self.instantiation, action);
         try self.commands.registerAction(self.instantiation, @import("../vs/workbench/browser/parts/statusbar/statusbarActions.zig").focus_statusbar_action);
         for (terminal_actions.terminal_actions) |action| try self.commands.registerAction(self.instantiation, action);
@@ -2292,9 +2288,9 @@ pub const TerminalWorkbench = struct {
         if (self.search_window.view == null) try self.search_window.initFromWorkspace();
         self.sidebar.?.theme_service = self.theme_service;
         self.sidebar.?.setOpenEditorQuery(.{ .context = self, .is_open = isPathOpen });
-        try self.setSidebarVisible(true);
         _ = try self.activity_bar_part.setActive(self.activity_bar_part.activities.items[0].id);
         _ = try self.sidebar_part.openPaneComposite(self.activity_bar_part.activities.items[0].id);
+        try self.setSidebarVisible(true);
         self.updateSidebarTitleActions();
         self.layoutAll();
     }
@@ -5178,27 +5174,6 @@ fn reportEditorMessage(context: *anyopaque, message: []const u8) bool {
 fn commandViewExplorer(context: *anyopaque) anyerror!void {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     try self.showExplorer();
-}
-
-fn commandCloseSidebar(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    if (!self.sidebar_part.isVisible()) return;
-    try self.setSidebarVisible(false);
-    self.setFocus(.editor);
-    self.layoutAll();
-}
-
-fn commandFocusSidebar(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    if (self.sidebar == null) return;
-    try self.setSidebarVisible(true);
-    self.focusSidebar();
-    self.layoutAll();
-}
-
-fn commandToggleSidebar(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try self.toggleSidebar();
 }
 
 fn listCommandKey(command: []const u8) ?ui.Key {
