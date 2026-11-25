@@ -417,7 +417,6 @@ test "benchmark: workbench scroll frame" {
         refresh_us_total += nowUs(io) - refresh_start;
 
         const render_start = nowUs(io);
-        workbench.refreshStatus();
         try renderFrame(workbench, &out.writer);
         render_us_total += nowUs(io) - render_start;
         out.clearRetainingCapacity();
@@ -477,7 +476,6 @@ test "benchmark: explorer sidebar scroll" {
         const start = nowUs(io);
         const wheel = ui.MouseEvent{ .kind = .wheel, .x = x, .y = y, .delta_y = 1 };
         _ = workbench.handleSidebarMouse(&wheel);
-        workbench.refreshStatus();
         try renderFrame(workbench, &out.writer);
         out.clearRetainingCapacity();
         const elapsed = nowUs(io) - start;

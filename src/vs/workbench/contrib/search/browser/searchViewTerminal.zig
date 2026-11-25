@@ -40,6 +40,7 @@ const actions_base = @import("./searchActionsBase.zig");
 const remove_replace = @import("./searchActionsRemoveReplace.zig");
 const configuration_mod = @import("../../../services/configuration/browser/configurationService.zig");
 const ConfigurationService = configuration_mod.ConfigurationService;
+const ActivityService = @import("../../../services/activity/browser/activityService.zig").ActivityService;
 const tree = @import("./searchTreeModel/searchTreeCommon.zig");
 const SearchResult = tree.SearchResult;
 const FileMatch = tree.FileMatch;
@@ -177,6 +178,9 @@ pub const SearchView = struct {
     theme: ?*const theme_colors_mod.ThemeColors = null,
     keybinding_removals: []const *const resolved_keybinding_item.ResolvedKeybindingItem = &.{},
     pending_action: ?Action = null,
+    activity_service: ?*ActivityService = null,
+    activity_listener: ?usize = null,
+    badge_buf: [32]u8 = undefined,
 
     pub fn init(
         allocator: Allocator,
@@ -255,6 +259,7 @@ pub const SearchView = struct {
     }
 
     pub fn deinit(self: *SearchView) void {
+        self.detachActivity();
         self.clearHighlight();
         self.clearReplaceConfirmation();
         self.controller.deinit();
@@ -265,6 +270,40 @@ pub const SearchView = struct {
         self.collapse_seen.deinit();
         if (self.keybindings) |service| service.deinit();
         self.allocator.destroy(self);
+    }
+
+    /// Terminal-specific result-count badge. Its input follows the original
+    /// SearchResult event, not the workbench paint loop.
+    pub fn attachActivity(self: *SearchView, service: *ActivityService) !void {
+        self.detachActivity();
+        self.activity_listener = try self.model.result.on_change.listen(self, onResultActivityChanged);
+        self.activity_service = service;
+        try self.updateActivity();
+    }
+
+    pub fn detachActivity(self: *SearchView) void {
+        if (self.activity_listener) |id| self.model.result.on_change.unlisten(id);
+        self.activity_listener = null;
+        if (self.activity_service) |service| service.removeActivity("search", "search.results");
+        self.activity_service = null;
+    }
+
+    fn onResultActivityChanged(_: ChangeEvent, self: *SearchView) !void {
+        try self.updateActivity();
+    }
+
+    fn updateActivity(self: *SearchView) !void {
+        const service = self.activity_service orelse return;
+        const count = self.model.result.count();
+        if (count == 0) {
+            service.removeActivity("search", "search.results");
+            return;
+        }
+        const text = try std.fmt.bufPrint(&self.badge_buf, "{d}", .{count});
+        try service.setViewContainerActivity("search", .{
+            .id = "search.results",
+            .badge = .{ .description = text },
+        });
     }
 
     /// Number of current search matches, used as the activity-bar badge

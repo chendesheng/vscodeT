@@ -40,6 +40,16 @@ pub const IndentationStatus = struct {
     insert_spaces: bool = true,
 };
 
+pub const StatusChange = enum { selection, indentation, encoding, eol, language };
+pub const StatusListener = struct {
+    context: *anyopaque,
+    on_change: *const fn (*anyopaque, StatusChange) void,
+};
+const IDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
+const EditorService = @import("../../../services/editor/browser/editorService.zig").EditorService;
+const Tab = @import("editorPane.zig").Tab;
+const EditorInput = @import("../../../common/editor/editorInput.zig").EditorInput;
+
 /// The portable editor surface used by the status controller. `codeEditorWidgetTerminal.zig`
 /// implements this adapter; the controller never imports the terminal editor.
 pub const IEditorStatusTarget = struct {
@@ -59,6 +69,7 @@ pub const IEditorStatusTarget = struct {
     set_eol: *const fn (context: *anyopaque, eol: EOL) anyerror!void,
     set_encoding: *const fn (context: *anyopaque, encoding: encoding_mod.Encoding) void,
     set_language: *const fn (context: *anyopaque, language_id: []const u8) anyerror!void,
+    subscribe: ?*const fn (*anyopaque, Allocator, StatusListener) anyerror!IDisposable = null,
 };
 
 pub const Host = struct {
@@ -72,6 +83,12 @@ pub const EditorStatus = struct {
     quick_input: *QuickInputService,
     host: Host,
     target: ?IEditorStatusTarget = null,
+    active_editor_listeners: IDisposable = .none,
+    editor_service: ?EditorService = null,
+    active_pane: ?*Tab = null,
+    pane_dispose_listener: ?usize = null,
+    active_listener: ?usize = null,
+    visible_listener: ?usize = null,
     selection_accessor: ?EntryAccessor = null,
     indentation_accessor: ?EntryAccessor = null,
     encoding_accessor: ?EntryAccessor = null,
@@ -134,15 +151,81 @@ pub const EditorStatus = struct {
     }
 
     pub fn deinit(self: *EditorStatus) void {
+        self.active_editor_listeners.dispose();
+        self.detachActivePane();
+        if (self.editor_service) |service| {
+            if (self.active_listener) |id| service.onDidActiveEditorChange().unlisten(id);
+            if (self.visible_listener) |id| service.onDidVisibleEditorsChange().unlisten(id);
+        }
         self.picker_arena.deinit();
         self.allocator.destroy(self);
+    }
+
+    /// Mirrors EditorStatus.registerListeners and updateStatusBar. The
+    /// terminal's visible-pane event replaces onDidChangeControl.
+    pub fn bindActiveEditor(self: *EditorStatus, service: EditorService) !void {
+        self.editor_service = service;
+        self.active_listener = try service.onDidActiveEditorChange().listen(self, onActiveEditorChanged);
+        self.visible_listener = try service.onDidVisibleEditorsChange().listen(self, onVisibleEditorsChanged);
+        try self.updateActiveEditor();
+    }
+
+    fn onActiveEditorChanged(_: ?*EditorInput, self: *EditorStatus) !void {
+        try self.updateActiveEditor();
+    }
+    fn onVisibleEditorsChanged(_: void, self: *EditorStatus) !void {
+        try self.updateActiveEditor();
+    }
+    fn detachActivePane(self: *EditorStatus) void {
+        if (self.active_pane) |pane| {
+            if (self.pane_dispose_listener) |id| pane.unlistenWillDispose(id);
+        }
+        self.active_pane = null;
+        self.pane_dispose_listener = null;
+    }
+
+    fn onActivePaneDisposed(_: void, self: *EditorStatus) !void {
+        self.detachActivePane();
+        try self.update(null);
+    }
+
+    fn updateActiveEditor(self: *EditorStatus) !void {
+        const service = self.editor_service orelse return;
+        const pane = service.activeEditorPane();
+        if (pane != self.active_pane) {
+            self.detachActivePane();
+            if (pane) |active| {
+                self.pane_dispose_listener = try active.listenWillDispose(self, onActivePaneDisposed);
+                self.active_pane = active;
+            }
+        }
+        const editor = if (pane) |active| active.codeEditorControl() else null;
+        try self.update(if (editor) |active| active.statusTarget() else null);
+    }
+
+    fn onTargetChanged(context: *anyopaque, change: StatusChange) void {
+        const self: *EditorStatus = @ptrCast(@alignCast(context));
+        if (self.target) |target| self.updateStatusElement(target, change);
     }
 
     /// Updates the visible labels from the active editor. A null target hides
     /// the editor-status entries, matching upstream when no code editor is
     /// active.
     pub fn update(self: *EditorStatus, target: ?IEditorStatusTarget) !void {
-        self.target = target;
+        const previous = if (self.target) |value| value.context else null;
+        const next = if (target) |value| value.context else null;
+        if (previous != next) {
+            self.active_editor_listeners.dispose();
+            self.active_editor_listeners = .none;
+            self.target = target;
+            if (target) |value| {
+                if (value.subscribe) |subscribe| self.active_editor_listeners = try subscribe(value.context, self.allocator, .{
+                    .context = self,
+                    .on_change = onTargetChanged,
+                });
+            }
+        } else self.target = target;
+
         const value = target orelse {
             setText(self.selection_accessor, "");
             setText(self.indentation_accessor, "");
@@ -151,46 +234,47 @@ pub const EditorStatus = struct {
             setText(self.language_accessor, "");
             return;
         };
+        inline for (std.meta.tags(StatusChange)) |change| self.updateStatusElement(value, change);
+    }
 
-        const selection = value.selection(value.context);
-        updateEntry(
-            self.selection_accessor,
-            "Editor Selection",
-            "Go to Line/Column",
-            goto_line_command,
-            self.selectionLabel(selection),
-        );
-
-        const indentation = value.indentation(value.context);
-        updateEntry(
-            self.indentation_accessor,
-            "Editor Indentation",
-            "Select Indentation",
-            change_indentation_command,
-            self.indentationLabel(indentation),
-        );
-
-        updateEntry(
-            self.encoding_accessor,
-            "Editor Encoding",
-            "Select Encoding",
-            change_encoding_command,
-            encodingLabel(value.encoding(value.context)),
-        );
-        updateEntry(
-            self.eol_accessor,
-            "Editor End of Line",
-            "Select End of Line Sequence",
-            change_eol_command,
-            eolLabel(value.eol(value.context)),
-        );
-        updateEntry(
-            self.language_accessor,
-            "Editor Language",
-            "Select Language Mode",
-            change_language_mode_command,
-            value.language_name(value.context),
-        );
+    fn updateStatusElement(self: *EditorStatus, value: IEditorStatusTarget, change: StatusChange) void {
+        switch (change) {
+            .selection => updateEntry(
+                self.selection_accessor,
+                "Editor Selection",
+                "Go to Line/Column",
+                goto_line_command,
+                self.selectionLabel(value.selection(value.context)),
+            ),
+            .indentation => updateEntry(
+                self.indentation_accessor,
+                "Editor Indentation",
+                "Select Indentation",
+                change_indentation_command,
+                self.indentationLabel(value.indentation(value.context)),
+            ),
+            .encoding => updateEntry(
+                self.encoding_accessor,
+                "Editor Encoding",
+                "Select Encoding",
+                change_encoding_command,
+                encodingLabel(value.encoding(value.context)),
+            ),
+            .eol => updateEntry(
+                self.eol_accessor,
+                "Editor End of Line",
+                "Select End of Line Sequence",
+                change_eol_command,
+                eolLabel(value.eol(value.context)),
+            ),
+            .language => updateEntry(
+                self.language_accessor,
+                "Editor Language",
+                "Select Language Mode",
+                change_language_mode_command,
+                value.language_name(value.context),
+            ),
+        }
     }
 
     fn selectionLabel(self: *EditorStatus, status: SelectionStatus) []const u8 {

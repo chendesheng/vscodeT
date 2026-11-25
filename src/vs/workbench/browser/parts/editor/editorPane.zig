@@ -525,6 +525,19 @@ pub const Tab = struct {
         if (self.image_preview) |pane| try pane.layout(@max(width, 1), @max(height, 1));
     }
 
+    /// getCodeEditor(activeEditorPane.getControl()) in the single-window
+    /// terminal. A diff exposes its modified text control.
+    pub fn codeEditorControl(self: *Tab) ?*Editor {
+        if (self.isImage() or self.terminal_input != null or self.markdown_preview != null) return null;
+        if (self.diff) |diff| return diff.widget.modified_editor;
+        return self.editor;
+    }
+
+    pub fn imageMetadataEvent(self: *Tab) ?*@import("../../../../base/common/event.zig").Emitter(void) {
+        const pane = self.image_preview orelse return null;
+        return &pane.editor.on_did_change_metadata;
+    }
+
     pub fn imageStatusInfo(self: *Tab) ?@import("../../../contrib/mediaPreview/browser/mediaPreviewStatusBar.zig").Info {
         const pane = self.image_preview orelse return null;
         return pane.statusInfo();

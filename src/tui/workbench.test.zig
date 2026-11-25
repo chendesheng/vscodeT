@@ -1723,6 +1723,7 @@ test "Workbench: workspace search streams results and opens a match" {
     try view.startSearch();
     try waitForSearch(workbench);
     try std.testing.expectEqual(@as(usize, 2), view.model.result.count());
+    try std.testing.expectEqualStrings("2", workbench.activity_service.getContainerBadgeDescription("search").?);
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -1731,6 +1732,8 @@ test "Workbench: workspace search streams results and opens a match" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "SEARCH") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "alpha") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "2 results in 1 file") != null);
+    view.controller.clearResults(true);
+    try std.testing.expect(workbench.activity_service.getContainerBadgeDescription("search") == null);
 }
 
 test "Workbench: opening a search match selects its range" {
@@ -3260,7 +3263,6 @@ test "Workbench: status bar spans the window and shows editor state" {
     try std.testing.expectEqual(@as(usize, 9), ui.cell.snap(pane.rect.h));
     try std.testing.expectEqual(@as(usize, 7), workbench.activeTab().?.editor.screen_height);
 
-    workbench.refreshStatus();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
@@ -3275,6 +3277,16 @@ test "Workbench: status bar spans the window and shows editor state" {
     try std.testing.expect(std.mem.indexOf(u8, status, "LF") != null);
     try std.testing.expect(std.mem.indexOf(u8, status, "UTF-8") != null);
     try std.testing.expect(std.mem.indexOf(u8, status, "Plain Text") != null);
+
+    // Active editor subscriptions update the status before the next frame,
+    // without a workbench status refresh.
+    try workbench.activeTab().?.editor.setCursorPosition(Position.init(1, 3));
+    workbench.activeTab().?.editor.setEncoding(.utf8_with_bom);
+    try renderFrame(workbench, &out.writer);
+    const updated_status = try workbench.frame.prev.rowText(allocator, 9);
+    defer allocator.free(updated_status);
+    try std.testing.expect(std.mem.indexOf(u8, updated_status, "Ln 1, Col 3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated_status, "UTF-8 with BOM") != null);
 
     workbench.focusStatusBar();
     try std.testing.expectEqual(Focus.statusbar, workbench.focus);
@@ -3340,8 +3352,6 @@ test "Workbench: clicking a status entry focuses it and runs its command" {
         .text = "CMD",
         .command = .{ .id = "test.statusbar.command" },
     }, "test.statusbar.command", .right, .{ .number = 50 });
-
-    workbench.refreshStatus();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
@@ -3380,7 +3390,6 @@ test "Workbench: status values open the matching pickers" {
     const workbench_window = try TestWindow.init(allocator, io, &.{path}, 120, 10);
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
-    workbench.refreshStatus();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
@@ -3423,7 +3432,6 @@ test "Workbench: EOL and language pickers update the editor" {
     const workbench_window = try TestWindow.init(allocator, io, &.{path}, 120, 10);
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
-    workbench.refreshStatus();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
@@ -4903,7 +4911,6 @@ test "Workbench: a capable terminal uploads and paints the image" {
 
     // The zoom command updates the viewer and the status entries.
     try workbench.commands.execute("imagePreview.zoomIn");
-    workbench.refreshStatus();
     try std.testing.expect(workbench.media_status.?.last.scale != null);
     const scale = tagScale(workbench.media_status.?.last.scale.?);
     try std.testing.expect(scale > 1);

@@ -328,6 +328,7 @@ pub const EditorDocument = struct {
     declarative_arena: std.heap.ArenaAllocator,
     declarative: ?*const extensions_registry.Registry = null,
     encoding: encoding_mod.Encoding = .utf8,
+    on_did_change_encoding: Emitter(void),
     /// Alternative version id at the last successful save. Shared by every
     /// view so both split panes flip clean together.
     saved_version: u32,
@@ -433,6 +434,7 @@ pub const EditorDocument = struct {
             .declarative_arena = declarative_arena,
             .declarative = declarative,
             .encoding = encoding,
+            .on_did_change_encoding = Emitter(void).init(allocator),
             .saved_version = model.getAlternativeVersionId(),
             .refs = 1,
             .editors = std.array_list.Managed(*Editor).init(allocator),
@@ -467,6 +469,7 @@ pub const EditorDocument = struct {
     fn deinit(self: *EditorDocument) void {
         std.debug.assert(self.editors.items.len == 0);
         self.editors.deinit();
+        self.on_did_change_encoding.deinit();
         // Mirror the old single-owner teardown order: registry/arena data
         // before the model, then undo, then the language service and codec.
         self.language_config_service.deinit();
@@ -2410,7 +2413,9 @@ pub const Editor = struct {
     }
 
     pub fn setEncoding(self: *Editor, encoding: encoding_mod.Encoding) void {
+        if (self.document.encoding == encoding) return;
         self.document.encoding = encoding;
+        self.document.on_did_change_encoding.fire({}) catch {};
     }
 
     pub fn statusTarget(self: *Editor) editor_status.IEditorStatusTarget {
@@ -2431,7 +2436,76 @@ pub const Editor = struct {
             .set_eol = statusSetEOL,
             .set_encoding = statusSetEncoding,
             .set_language = statusSetLanguage,
+            .subscribe = statusSubscribe,
         };
+    }
+
+    const StatusSubscription = struct {
+        allocator: Allocator,
+        editor: *Editor,
+        listener: editor_status.StatusListener,
+        cursor_id: usize = undefined,
+        content_id: usize = undefined,
+        options_id: usize = undefined,
+        language_id: usize = undefined,
+        encoding_id: usize = undefined,
+
+        fn dispose(self: *StatusSubscription) void {
+            self.editor.on_did_change_cursor_position.unlisten(self.cursor_id);
+            self.editor.model.removeDidChangeContentListener(self.content_id);
+            self.editor.model.removeDidChangeOptionsListener(self.options_id);
+            self.editor.model.removeDidChangeLanguageListener(self.language_id);
+            self.editor.document.on_did_change_encoding.unlisten(self.encoding_id);
+            self.allocator.destroy(self);
+        }
+
+        fn notify(self: *StatusSubscription, change: editor_status.StatusChange) void {
+            self.listener.on_change(self.listener.context, change);
+        }
+
+        fn onCursor(_: ICursorPositionChangedEvent, self: *StatusSubscription) !void {
+            self.notify(.selection);
+        }
+        fn onContent(event: InternalModelContentChangeEvent, self: *StatusSubscription) !void {
+            self.notify(.eol);
+            const selections = try self.editor.getSelections();
+            defer self.editor.allocator.free(selections);
+            for (event.contentChangedEvent.changes.items) |change| {
+                for (selections) |selection| {
+                    const range = Range.init(selection.startLineNumber, selection.startColumn, selection.endLineNumber, selection.endColumn);
+                    if (@import("../../../common/core/range.zig").areIntersecting(&range, &change.range)) {
+                        self.notify(.selection);
+                        return;
+                    }
+                }
+            }
+        }
+        fn onOptions(_: @import("../../../common/textModelEvents.zig").ModelOptionsChangedEvent, self: *StatusSubscription) !void {
+            self.notify(.indentation);
+        }
+        fn onLanguage(_: @import("../../../common/textModelEvents.zig").ModelLanguageChangedEvent, self: *StatusSubscription) !void {
+            self.notify(.language);
+        }
+        fn onEncoding(_: void, self: *StatusSubscription) !void {
+            self.notify(.encoding);
+        }
+    };
+
+    fn statusSubscribe(context: *anyopaque, allocator: Allocator, listener: editor_status.StatusListener) !IDisposable {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        const subscription = try allocator.create(StatusSubscription);
+        errdefer allocator.destroy(subscription);
+        subscription.* = .{ .allocator = allocator, .editor = self, .listener = listener };
+        subscription.cursor_id = try self.on_did_change_cursor_position.listen(subscription, StatusSubscription.onCursor);
+        errdefer self.on_did_change_cursor_position.unlisten(subscription.cursor_id);
+        subscription.content_id = try self.model.onDidChangeContentWithContextId(subscription, StatusSubscription.onContent);
+        errdefer self.model.removeDidChangeContentListener(subscription.content_id);
+        subscription.options_id = try self.model.listenDidChangeOptions(subscription, StatusSubscription.onOptions);
+        errdefer self.model.removeDidChangeOptionsListener(subscription.options_id);
+        subscription.language_id = try self.model.listenDidChangeLanguage(subscription, StatusSubscription.onLanguage);
+        errdefer self.model.removeDidChangeLanguageListener(subscription.language_id);
+        subscription.encoding_id = try self.document.on_did_change_encoding.listen(subscription, StatusSubscription.onEncoding);
+        return IDisposable.from(StatusSubscription, subscription, StatusSubscription.dispose);
     }
 
     fn statusSelection(context: *anyopaque) editor_status.SelectionStatus {
@@ -4697,7 +4771,7 @@ pub const Editor = struct {
     /// manager; the caller keeps ownership of the decoded text.
     pub fn applyReloadedContent(self: *Editor, text: []const u8, encoding: encoding_mod.Encoding) !void {
         if (self.read_only) return error.ReadOnly;
-        self.document.encoding = encoding;
+        self.setEncoding(encoding);
         try self.replaceGeneratedContents(text, true);
     }
 

@@ -361,6 +361,14 @@ pub const TextModel = struct {
         try self._onDidChangeOptions.event(callback);
     }
 
+    pub fn listenDidChangeOptions(self: *TextModel, context: anytype, callback: fn (ModelOptionsChangedEvent, @TypeOf(context)) anyerror!void) !usize {
+        return self._onDidChangeOptions.listen(context, callback);
+    }
+
+    pub fn removeDidChangeOptionsListener(self: *TextModel, id: usize) void {
+        self._onDidChangeOptions.unlisten(id);
+    }
+
     pub fn onDidChangeAttached(self: *TextModel, callback: fn () void) !void {
         try self._onDidChangeAttached.event(callback);
     }
@@ -533,6 +541,8 @@ pub const TextModel = struct {
         }
         self._onWillDispose.deinit();
         self._onDidChangeDecorations.deinit();
+        self._onDidChangeOptions.deinit();
+        self._onDidChangeAttached.deinit();
         self._onDidChangeInjectedText.deinit();
         self._onDidChangeLineHeight.deinit();
         self._eventEmitter.deinit();

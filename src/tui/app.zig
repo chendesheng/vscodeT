@@ -682,7 +682,6 @@ pub fn main(init: std.process.Init) !void {
     };
     workbench.restore(&restore_timer, saved_layout) catch |err| report(log_service, "workbench restore failed: {s}", .{@errorName(err)});
     infoLog(log_service, "workbench ready: {d} tab(s)", .{workbench.tabCount()});
-    workbench.refreshStatus();
     if (workbench.activeTab()) |active| try active.view.refresh();
     try terminal_host.render();
     infoLog(log_service, "startup: first-frame={d}ms active-editor-wraps={d}", .{
@@ -717,7 +716,6 @@ pub fn main(init: std.process.Init) !void {
                     current.onEditorChanged(now_ms);
                     try current.refresh();
                 }
-                workbench.refreshStatus();
                 needs_render = false;
                 try terminal_host.render();
             }
@@ -815,7 +813,6 @@ pub fn main(init: std.process.Init) !void {
                     if (current.isImage()) {
                         switch (current.handleImageKey(event)) {
                             .changed => {
-                                workbench.refreshStatus();
                                 needs_render = true;
                             },
                             .open_text => {
@@ -890,7 +887,6 @@ pub fn main(init: std.process.Init) !void {
                         if (event.kind == .down) workbench.focusEditor();
                         switch (current.handleImageMouse(adjusted, focus_gained)) {
                             .changed => {
-                                workbench.refreshStatus();
                                 needs_render = true;
                             },
                             .open_text => {
@@ -960,7 +956,6 @@ pub fn main(init: std.process.Init) !void {
                 }
             }
         }
-        workbench.refreshStatus();
         try tui.hideCursor(out);
         needs_render = false;
         try terminal_host.render();

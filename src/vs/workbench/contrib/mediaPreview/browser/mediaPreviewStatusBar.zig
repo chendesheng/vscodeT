@@ -2,9 +2,8 @@
 //
 // Upstream contributes three right-aligned status entries (zoom, dimensions,
 // file size) and updates them when the active media preview changes. The
-// terminal controller keeps that shape and adds/disposes the same entries; the
-// workbench calls `update` from `refreshStatus` instead of the browser's
-// `onDidChangeActiveEditor` event.
+// terminal controller keeps that shape and observes active editor/control
+// changes. Terminal image-load and zoom events refresh the active preview.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -17,6 +16,9 @@ const files = @import("../../../../platform/files/common/files.zig");
 const StatusbarService = statusbar_part.StatusbarService;
 const EntryAccessor = statusbar_part.EntryAccessor;
 const StatusbarEntry = statusbar.StatusbarEntry;
+const EditorService = @import("../../../services/editor/browser/editorService.zig").EditorService;
+const EditorInput = @import("../../../common/editor/editorInput.zig").EditorInput;
+const Tab = @import("../../../browser/parts/editor/editorPane.zig").Tab;
 
 pub const SELECT_IMAGE_ZOOM_LEVEL_COMMAND_ID = "imagePreview.selectZoomLevel";
 
@@ -40,6 +42,13 @@ pub const Info = struct {
 pub const MediaPreviewStatus = struct {
     allocator: Allocator,
     statusbar: *StatusbarService,
+    editor_service: ?EditorService = null,
+    active_listener: ?usize = null,
+    visible_listener: ?usize = null,
+    metadata_event: ?*@import("../../../../base/common/event.zig").Emitter(void) = null,
+    metadata_listener: ?usize = null,
+    active_pane: ?*Tab = null,
+    pane_dispose_listener: ?usize = null,
     zoom: ?EntryAccessor = null,
     dimensions: ?EntryAccessor = null,
     file_size: ?EntryAccessor = null,
@@ -75,10 +84,82 @@ pub const MediaPreviewStatus = struct {
     }
 
     pub fn deinit(self: *MediaPreviewStatus) void {
+        self.detachMetadata();
+        self.detachActivePane();
+        if (self.editor_service) |service| {
+            if (self.active_listener) |id| service.onDidActiveEditorChange().unlisten(id);
+            if (self.visible_listener) |id| service.onDidVisibleEditorsChange().unlisten(id);
+        }
         if (self.file_size) |entry| entry.dispose();
         if (self.dimensions) |entry| entry.dispose();
         if (self.zoom) |entry| entry.dispose();
         self.allocator.destroy(self);
+    }
+
+    pub fn bindActiveEditor(self: *MediaPreviewStatus, service: EditorService) !void {
+        self.editor_service = service;
+        self.active_listener = try service.onDidActiveEditorChange().listen(self, onActiveEditorChanged);
+        self.visible_listener = try service.onDidVisibleEditorsChange().listen(self, onVisibleEditorsChanged);
+        self.refreshActive();
+    }
+
+    fn onActiveEditorChanged(_: ?*EditorInput, self: *MediaPreviewStatus) !void {
+        self.refreshActive();
+    }
+
+    fn onVisibleEditorsChanged(_: void, self: *MediaPreviewStatus) !void {
+        self.refreshActive();
+    }
+
+    fn detachMetadata(self: *MediaPreviewStatus) void {
+        if (self.metadata_event) |event| {
+            if (self.metadata_listener) |id| event.unlisten(id);
+        }
+        self.metadata_event = null;
+        self.metadata_listener = null;
+    }
+
+    fn detachActivePane(self: *MediaPreviewStatus) void {
+        if (self.active_pane) |pane| {
+            if (self.pane_dispose_listener) |id| pane.unlistenWillDispose(id);
+        }
+        self.active_pane = null;
+        self.pane_dispose_listener = null;
+    }
+
+    fn onActivePaneDisposed(_: void, self: *MediaPreviewStatus) !void {
+        self.detachMetadata();
+        self.detachActivePane();
+        self.update(null);
+    }
+
+    fn onMetadataChanged(_: void, self: *MediaPreviewStatus) !void {
+        self.refreshActive();
+    }
+
+    pub fn refreshActive(self: *MediaPreviewStatus) void {
+        const service = self.editor_service orelse return;
+        const pane = service.activeEditorPane();
+        const event = if (pane) |active| active.imageMetadataEvent() else null;
+        if (pane != self.active_pane) {
+            self.detachActivePane();
+            if (pane) |active| {
+                if (active.listenWillDispose(self, onActivePaneDisposed)) |id| {
+                    self.pane_dispose_listener = id;
+                    self.active_pane = active;
+                } else |_| {}
+            }
+        }
+        if (self.metadata_event != event) {
+            self.detachMetadata();
+            if (event) |source| {
+                if (source.listen(self, onMetadataChanged)) |id| {
+                    self.metadata_listener = id;
+                    self.metadata_event = source;
+                } else |_| {}
+            }
+        }
+        self.update(if (pane) |active| active.imageStatusInfo() else null);
     }
 
     pub fn update(self: *MediaPreviewStatus, info: ?Info) void {

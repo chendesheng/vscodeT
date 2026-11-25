@@ -74,6 +74,7 @@ pub const ImagePreviewEditor = struct {
     /// View state captured by `beginLoad` until `applyLoaded` runs.
     load_previous_view_state: ?ViewState = null,
     load_id: u32 = 0,
+    on_did_change_metadata: @import("../../../../base/common/event.zig").Emitter(void),
 
     pub fn init(allocator: Allocator, host: Host, path: []const u8) !*ImagePreviewEditor {
         const self = try initDeferred(allocator, host, path);
@@ -90,6 +91,7 @@ pub const ImagePreviewEditor = struct {
             .allocator = allocator,
             .host = host,
             .path = try allocator.dupe(u8, path),
+            .on_did_change_metadata = @import("../../../../base/common/event.zig").Emitter(void).init(allocator),
         };
         return self;
     }
@@ -102,6 +104,7 @@ pub const ImagePreviewEditor = struct {
         self.viewer.clear();
         self.message = null;
         self.file_size = null;
+        self.on_did_change_metadata.fire({}) catch {};
         return self.load_id;
     }
 
@@ -167,9 +170,11 @@ pub const ImagePreviewEditor = struct {
         }
         self.pending_view_state = self.load_previous_view_state;
         self.load_previous_view_state = null;
+        self.on_did_change_metadata.fire({}) catch {};
     }
 
     pub fn deinit(self: *ImagePreviewEditor) void {
+        self.on_did_change_metadata.deinit();
         self.host.clear(self.host.context);
         self.allocator.free(self.path);
         self.allocator.destroy(self);
@@ -186,6 +191,7 @@ pub const ImagePreviewEditor = struct {
     /// Reads and decodes the image. A missing/corrupt/unsupported file becomes
     /// a message instead of an error so the tab can render a placeholder.
     pub fn load(self: *ImagePreviewEditor, preserve_view_state: bool) void {
+        defer self.on_did_change_metadata.fire({}) catch {};
         const load_id = self.load_id + 1;
         self.load_id = load_id;
         const previous = if (preserve_view_state) self.viewer.getViewState() else null;
@@ -250,14 +256,17 @@ pub const ImagePreviewEditor = struct {
         self.pending_view_state = null;
         if (!self.viewer.has_image) return;
         self.viewer.setViewState(state, viewport, cell);
+        self.on_did_change_metadata.fire({}) catch {};
     }
 
     pub fn zoomIn(self: *ImagePreviewEditor, viewport: viewer_mod.CellRect, cell: viewer_mod.CellSize) void {
         self.viewer.zoomIn(viewport, cell);
+        self.on_did_change_metadata.fire({}) catch {};
     }
 
     pub fn zoomOut(self: *ImagePreviewEditor, viewport: viewer_mod.CellRect, cell: viewer_mod.CellSize) void {
         self.viewer.zoomOut(viewport, cell);
+        self.on_did_change_metadata.fire({}) catch {};
     }
 
     pub fn setScale(
@@ -267,5 +276,6 @@ pub const ImagePreviewEditor = struct {
         cell: viewer_mod.CellSize,
     ) void {
         self.viewer.setScale(scale, viewport, cell);
+        self.on_did_change_metadata.fire({}) catch {};
     }
 };

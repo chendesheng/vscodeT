@@ -565,8 +565,6 @@ pub const Workbench = struct {
     problems_view: ?MarkersView = null,
     marker_listener: ?Emitter(MarkerChangeEvent).ListenerId = null,
     range_highlights: ?*RangeHighlightDecorations = null,
-    search_badge_buf: [32]u8 = undefined,
-    search_badge_count: usize = 0,
     workspace: *WorkspaceContextService,
     configuration: ?*ConfigurationService,
     settings_watcher: ?*SettingsWatcher = null,
@@ -942,6 +940,9 @@ pub const Workbench = struct {
         _ = try self.service.on_did_active_editor_change.listen(self, onActiveHistoryEditor);
         _ = try self.service.on_did_visible_editors_change.listen(self, onHistoryVisibleEditorsChanged);
         _ = try self.layout.on_did_change.listen(self, onGridChanged);
+        const editor_service = @import("../services/editor/browser/editorService.zig").EditorService{ .part = self.part };
+        if (self.editor_status) |status| try status.bindActiveEditor(editor_service);
+        if (self.media_status) |status| try status.bindActiveEditor(editor_service);
     }
 
     fn onWillShutdown(event: lifecycle_mod.WillShutdownEvent, self: *Workbench) !void {
@@ -1292,6 +1293,7 @@ pub const Workbench = struct {
             self.allocator.free(panes);
             self.explorer_panes = null;
         }
+        if (self.search_view) |view| view.detachActivity();
         self.activity_service.deinit();
         if (self.notification_controller) |controller| controller.deinit();
         self.statusbar.deinit();
@@ -2602,6 +2604,7 @@ pub const Workbench = struct {
             },
         );
         errdefer view.deinit();
+        try view.attachActivity(&self.activity_service);
         view.model.result.model_host = .{ .context = self, .get = searchTextModel, .queue = &self.window_events };
         self.search_service = service;
         view.model.delivery.attach(&self.window_events, view, SearchView.dispatchSearch);
@@ -3013,7 +3016,6 @@ pub const Workbench = struct {
         self.service.activateGroup(pane.group);
         self.layoutAll();
         self.focusEditor();
-        self.refreshStatus();
         return tab;
     }
 
@@ -3651,7 +3653,6 @@ pub const Workbench = struct {
                 tab.attachLanguageRegistry(features);
             }
         }
-        self.refreshStatus();
     }
 
     fn onMarkersChanged(_: MarkerChangeEvent, self: *Workbench) !void {
@@ -3986,7 +3987,6 @@ pub const Workbench = struct {
         self.syncGitStatus();
         self.syncGitActivity();
         if (self.scm_view) |view| view.refresh();
-        self.refreshStatus();
     }
 
     fn gitAutoRefresh(context: *anyopaque) bool {
@@ -4167,7 +4167,6 @@ pub const Workbench = struct {
             tab.layoutCells(dims.width, dims.height);
             tab.focusEditor();
             self.focusEditor();
-            self.refreshStatus();
             return;
         }
 
@@ -4209,7 +4208,6 @@ pub const Workbench = struct {
             pane.syncActivePane();
             if (pane.tabForInput(opened.result.editor)) |existing| existing.focusEditor();
             self.focusEditor();
-            self.refreshStatus();
             return;
         }
 
@@ -4218,7 +4216,6 @@ pub const Workbench = struct {
         tab.layoutCells(dims.width, dims.height);
         tab.focusEditor();
         self.focusEditor();
-        self.refreshStatus();
     }
 
     fn findDiffTab(self: *Workbench, path: []const u8, left_label: []const u8, right_label: []const u8) ?struct { pane: *GroupPane, tab: *Tab } {
@@ -4891,7 +4888,6 @@ pub const Workbench = struct {
         try tab.toggleMarkdownEditor(self.markdownPreviewConfig(), self.theme_palette);
         pane.layout();
         self.focusEditor();
-        self.refreshStatus();
     }
 
     pub fn showMarkdownPreviewToSide(self: *Workbench) !void {
@@ -4937,7 +4933,6 @@ pub const Workbench = struct {
             try target.addTab(preview);
         }
         try self.focusPane(target);
-        self.refreshStatus();
     }
 
     pub fn showMarkdownSource(self: *Workbench) !void {
@@ -5654,7 +5649,6 @@ pub const Workbench = struct {
             };
             if (self.activeTab()) |opened| opened.editor.setSelection(range) catch {};
         }
-        self.refreshStatus();
         self.revealActiveEditor();
     }
 
@@ -9162,9 +9156,6 @@ pub const Workbench = struct {
         return surface;
     }
 
-    /// Publishes the search result count as the Search activity badge. This
-    /// is the first live activity-service badge source in the terminal
-    /// workbench; view containers without a source have no badge.
     /// The terminal boundary for upstream editor focus/blur: only the active
     /// tab of the active group receives focus while the editor owns focus.
     fn syncEditorFocus(self: *Workbench) void {
@@ -9199,41 +9190,7 @@ pub const Workbench = struct {
         }
     }
 
-    fn syncSearchActivity(self: *Workbench) void {
-        const count = if (self.search_view) |view| view.matchCount() else 0;
-        if (self.search_badge_count == count) return;
-        self.search_badge_count = count;
-        if (count == 0) {
-            self.activity_service.removeActivity("search", "search.results");
-            return;
-        }
-        const text = std.fmt.bufPrint(&self.search_badge_buf, "{d}", .{count}) catch "?";
-        self.activity_service.setViewContainerActivity("search", .{
-            .id = "search.results",
-            .badge = .{ .description = text },
-        }) catch {};
-    }
-
-    /// Rebuilds every status-bar entry from the active editor. Values use the
-    /// upstream editor-status labels; the standard entries keep their
-    /// quick-picker commands so a click opens the same action as upstream.
-    pub fn refreshStatus(self: *Workbench) void {
-        if (self.activeTab()) |tab| {
-            if (tab.isImage()) {
-                if (self.editor_status) |status| status.update(null) catch {};
-                if (self.media_status) |status| status.update(tab.imageStatusInfo());
-                return;
-            }
-        }
-        const target = if (self.activeTab()) |tab| (if (tab.terminal_input == null and tab.markdown_preview == null) tab.editor.statusTarget() else null) else null;
-        if (self.editor_status) |status| {
-            status.update(target) catch {};
-        }
-        if (self.media_status) |status| status.update(null);
-    }
-
     pub fn preparePartsForRender(self: *Workbench) !*ui.Surface {
-        self.syncSearchActivity();
         const editor_surface = try self.synchronizeEditorDom();
         self.syncEditorFocus();
         return editor_surface;
@@ -10105,7 +10062,6 @@ fn onSymbolPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
         return;
     };
     self.focusEditor();
-    self.refreshStatus();
     self.revealActiveEditor();
 }
 
@@ -10526,13 +10482,11 @@ fn commandGitOpenFile(context: *anyopaque) anyerror!void {
 fn commandDiffNext(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     if (self.activeTab()) |tab| _ = tab.nextDiffChange();
-    self.refreshStatus();
 }
 
 fn commandDiffPrevious(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     if (self.activeTab()) |tab| _ = tab.previousDiffChange();
-    self.refreshStatus();
 }
 
 fn commandDiffSwap(context: *anyopaque) anyerror!void {
@@ -10706,7 +10660,6 @@ fn commandImageZoomIn(context: *anyopaque) anyerror!void {
     const tab = self.activeTab() orelse return;
     const pane = tab.image_preview orelse return;
     pane.zoomIn();
-    self.refreshStatus();
 }
 
 fn commandImageZoomOut(context: *anyopaque) anyerror!void {
@@ -10714,7 +10667,6 @@ fn commandImageZoomOut(context: *anyopaque) anyerror!void {
     const tab = self.activeTab() orelse return;
     const pane = tab.image_preview orelse return;
     pane.zoomOut();
-    self.refreshStatus();
 }
 
 const image_zoom_pick_items = [_]QuickPickItem{
@@ -10762,7 +10714,6 @@ fn onImageZoomLevelAccepted(context: *anyopaque, picker: *QuickPick) anyerror!vo
         const value = std.fmt.parseFloat(f64, item.id) catch return;
         pane.setScale(.{ .number = value });
     }
-    self.refreshStatus();
 }
 
 fn commandImageOpenInTextEditor(context: *anyopaque) anyerror!void {
@@ -11530,7 +11481,6 @@ fn searchOpenResults(context: *anyopaque, config: search_editor.Config, snapshot
     self.applyEditorSettingsToTab(tab);
     self.layoutAll();
     self.focusEditor();
-    self.refreshStatus();
     if (config.query.len > 0 and query.form.contextLines() > 0) query.triggerSearch(0, true);
 }
 

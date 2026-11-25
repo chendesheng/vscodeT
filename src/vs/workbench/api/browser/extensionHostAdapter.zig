@@ -304,8 +304,8 @@ pub const Extensions = struct {
         errdefer self.message_service.deinit();
         self.storage_actor = try MainThreadStorage.init(allocator);
         self.statusbar_actor = try MainThreadStatusBar.init(allocator, &workbench.statusbar, .{
-            .context = workbench,
-            .callback = refreshWorkbenchStatus,
+            .context = self,
+            .callback = requestTerminalFrame,
         });
         self.commands_actor = try MainThreadCommands.init(allocator, self.host, .{
             .context = self,
@@ -505,11 +505,6 @@ pub const Extensions = struct {
     fn showStatusHint(context: *anyopaque, message: []const u8) void {
         const workbench: *Workbench = @ptrCast(@alignCast(context));
         workbench.setStatusHint("{s}", .{message});
-    }
-
-    fn refreshWorkbenchStatus(context: *anyopaque) void {
-        const workbench: *Workbench = @ptrCast(@alignCast(context));
-        workbench.refreshStatus();
     }
 
     fn diagnosticsModelFor(context: *anyopaque, resource: markers_mod.Resource) ?*TextModel {
