@@ -9,8 +9,9 @@ is ported into `src/vs/...` at matching upstream paths, and built-in extension
 sources (currently the Git extension) into `src/extensions/...`, mirroring
 `vscode/extensions/...`.
 
-The terminal host handles input and frame output. The browser workbench still
-contains feature and rendering code. The port audit tracks the service owners,
+The terminal host handles input and frame output. Workbench startup creates
+the activity bar, sidebar, editor, panel and status bar in one document. The
+browser workbench still contains feature and rendering code. The port audit tracks the service owners,
 the pinned startup sequence and the remaining extractions.
 [Workbench port audit](docs/workbench-audit.md)
 

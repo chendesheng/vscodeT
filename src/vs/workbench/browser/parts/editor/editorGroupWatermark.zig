@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const ui = @import("ui");
+const ThemeColors = @import("../../themeColors.zig").ThemeColors;
 const Class = @import("media/editorgroupview_css.zig").Class;
 
 pub const settings_key = "workbench.tips.enabled";
@@ -61,6 +62,26 @@ pub const Colors = struct {
     hover: ui.Color,
     key_foreground: ui.Color,
     key_background: ui.Color,
+
+    pub fn fromTheme(palette: ?*const ThemeColors) Colors {
+        const background = color(palette, "editor.background", .{ 30, 30, 33 });
+        const foreground = color(palette, "foreground", .{ 204, 204, 204 });
+        const description = color(palette, "descriptionForeground", .{ 167, 167, 167 });
+        return .{
+            .background = background,
+            .foreground = foreground,
+            .description = description,
+            .letterpress = letterpressColor(background, foreground),
+            .hover = color(palette, "toolbar.hoverBackground", .{ 60, 60, 63 }),
+            .key_foreground = color(palette, "keybindingLabel.foreground", .{ description.r, description.g, description.b }),
+            .key_background = color(palette, "keybindingLabel.background", .{ 48, 48, 51 }),
+        };
+    }
+
+    fn color(palette: ?*const ThemeColors, id: []const u8, fallback: [3]u8) ui.Color {
+        if (palette) |theme| return theme.color(id, fallback);
+        return .{ .r = fallback[0], .g = fallback[1], .b = fallback[2] };
+    }
 };
 
 pub const EditorGroupWatermark = struct {

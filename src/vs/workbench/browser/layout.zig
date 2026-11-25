@@ -364,6 +364,15 @@ pub const Layout = struct {
 
     pub fn setSidebarPosition(self: *Layout, position: Position) !void {
         if (self.sidebar_position == position) return;
+        const Class = @import("media/part_css.zig").Class;
+        const side: Class = if (position == .left) .left else .right;
+        const previous: Class = if (side == .left) .right else .left;
+        for ([_]Parts{ .activitybar, .sidebar }) |id| {
+            const part = self.parts.get(id) orelse continue;
+            const container = part.part.getContainer() orelse continue;
+            try container.addClass(side);
+            container.removeClass(previous);
+        }
         self.sidebar_position = position;
         try self.on_did_change.fire({});
     }

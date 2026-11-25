@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 13,966 lines and has no inline tests. All 151 baseline
+The browser shell is 13,962 lines and has no inline tests. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records 256 command IDs with labels, categories and visibility for empty and
@@ -47,8 +47,8 @@ Show All Commands resolves the quick input service through its Action2 handler.
 * MultiEditorTabsControl builds labels from the group model and resolves file icons
   through the theme service. Duplicate tabs use the pinned shortest distinguishing
   path algorithm.
-* Startup creates the main workbench document and the editor part through the
-  registered Part before laying out the grid. EditorPart creates the grid
+* Startup creates the activity bar, sidebar, editor, panel and status bar containers
+  through their registered Parts in pinned source order before laying out the grid. EditorPart creates the grid
   container and EditorGroupView mounts its pane and watermark. The other
   terminal parts still have independent paint surfaces.
 * The workbench options accept extra stylesheet class IDs and a layout reset.

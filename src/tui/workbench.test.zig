@@ -8195,6 +8195,28 @@ test "workbench startup creates the live editor part and applies extraClasses be
     const main = wb.editor_surface.?.document().root.?;
     try std.testing.expect(main.hasClass(editor_css.workbench.Class.monaco_workbench));
     try std.testing.expect(main.hasClass(extra));
+    var child = main.first_child;
+    inline for (.{ .activitybar, .sidebar, .editor, .panel, .statusbar }) |id| {
+        const container = (try wb.layout.getPart(id)).getContainer().?;
+        try std.testing.expectEqual(child, container);
+        try std.testing.expect(container.hasClass(@field(editor_css.part.Class, @tagName(id))));
+        try std.testing.expectEqualStrings("workbench.parts." ++ @tagName(id), container.getAttribute("id").?);
+        child = container.nextSibling();
+    }
+    try std.testing.expect(child == null);
+    for ([_]workbench_layout.Parts{ .activitybar, .sidebar }) |id| {
+        const node = (try wb.layout.getPart(id)).getContainer().?;
+        try std.testing.expect(node.hasClass(editor_css.part.Class.left));
+    }
+    try wb.layout.setSidebarPosition(.right);
+    const sidebar_node = (try wb.layout.getPart(.sidebar)).getContainer().?;
+    try std.testing.expect(sidebar_node.hasClass(editor_css.part.Class.right));
+    try std.testing.expect(!sidebar_node.hasClass(editor_css.part.Class.left));
+    try wb.layout.setSidebarPosition(.left);
+    const status = (try wb.layout.getPart(.statusbar)).getContainer().?;
+    try std.testing.expectEqual(.footer, status.asElement().tag);
+    try std.testing.expectEqualStrings("status", status.getAttribute("role").?);
+    try std.testing.expectEqualStrings("off", status.getAttribute("aria-live").?);
     const part = try wb.layout.getPart(.editor);
     const editor = part.getContainer().?;
     try std.testing.expectEqual(main, editor.parent.?);
@@ -8209,7 +8231,10 @@ test "workbench startup creates the live editor part and applies extraClasses be
     try renderFrame(wb, &out.writer);
     try std.testing.expectEqual(wb.part.grid_element.?, wb.activePane().?.dom.?.split_view.parent.?);
     const tree = wb.editor_surface.?.box_tree;
-    try std.testing.expectEqual(part.bounds.?, tree.find(editor).?.rect);
+    for ([_]workbench_layout.Parts{ .activitybar, .sidebar, .editor, .panel, .statusbar }) |id| {
+        const registered = try wb.layout.getPart(id);
+        try std.testing.expectEqual(registered.bounds.?, tree.find(registered.getContainer().?).?.rect);
+    }
     try std.testing.expectEqual(wb.activePane().?.rect, tree.find(wb.activePane().?.dom.?.split_view).?.rect);
     try wb.resize(95, 30);
     try renderFrame(wb, &out.writer);

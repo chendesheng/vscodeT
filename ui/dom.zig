@@ -27,7 +27,7 @@ pub const FocusEvent = event.FocusEvent;
 pub const Listener = event.Listener;
 pub const FocusDirection = event.FocusDirection;
 
-pub const Tag = enum { div, span, generic };
+pub const Tag = enum { div, span, generic, footer };
 
 pub const Text = struct {
     data: []const u8,
@@ -887,7 +887,7 @@ fn hasClassId(element: *const Element, id: u16) bool {
 /// HTML-ish initial display for the small tag set.
 pub fn defaultDisplay(tag: Tag) style_mod.Display {
     return switch (tag) {
-        .div, .generic => .block,
+        .div, .generic, .footer => .block,
         .span => .inline_,
     };
 }

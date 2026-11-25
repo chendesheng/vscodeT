@@ -10370,21 +10370,6 @@ pub const Workbench = struct {
         self.commands.execute(id) catch |err| std.log.warn("Editor shortcut {s} failed: {s}", .{ id, @errorName(err) });
     }
 
-    fn watermarkColors(self: *const Workbench) editor_group_watermark.Colors {
-        const background = self.themeColor("editor.background", .{ 30, 30, 33 });
-        const foreground = self.themeColor("foreground", .{ 204, 204, 204 });
-        const description = self.themeColor("descriptionForeground", .{ 167, 167, 167 });
-        return .{
-            .background = background,
-            .foreground = foreground,
-            .description = description,
-            .letterpress = editor_group_watermark.letterpressColor(background, foreground),
-            .hover = self.themeColor("toolbar.hoverBackground", .{ 60, 60, 63 }),
-            .key_foreground = self.themeColor("keybindingLabel.foreground", .{ description.r, description.g, description.b }),
-            .key_background = self.themeColor("keybindingLabel.background", .{ 48, 48, 51 }),
-        };
-    }
-
     fn renderWorkbench(self: *Workbench, options: IWorkbenchOptions) !void {
         self.editor_surface = try ui.Surface.init(self.allocator, .{ .cols = self.cols, .rows = self.rows, .measure_width = cell_metrics.measureCodepoint });
         const doc = self.editor_surface.?.document();
@@ -10398,18 +10383,29 @@ pub const Workbench = struct {
         });
         for (options.extra_classes) |class| try main.addClass(class);
         self.layout.main_container = main;
-        const container = try createPart(main, .editor, "main", editor_css.part.Class.editor);
-        const editor = try self.layout.getPart(.editor);
-        try editor.create(container);
+        const Class = editor_css.part.Class;
+        const side: Class = if (self.layout.sidebarPosition() == .left) .left else .right;
+        inline for (.{
+            .{ .activitybar, "none", &[_]Class{ .activitybar, side } },
+            .{ .sidebar, "none", &[_]Class{ .sidebar, side } },
+            .{ .editor, "main", &[_]Class{.editor} },
+            .{ .panel, "none", &[_]Class{ .panel, .basepanel, .bottom } },
+            .{ .statusbar, "status", &[_]Class{.statusbar} },
+        }) |description| {
+            const container = try createPart(main, description[0], description[1], description[2]);
+            const part = try self.layout.getPart(description[0]);
+            try part.create(container);
+        }
         doc.setRoot(main);
     }
 
-    fn createPart(main: *ui.Node, comptime id: workbench_layout.Parts, role: []const u8, class: editor_css.part.Class) !*ui.Node {
-        const element = try main.document.createElement(.div);
+    fn createPart(main: *ui.Node, comptime id: workbench_layout.Parts, role: []const u8, classes: []const editor_css.part.Class) !*ui.Node {
+        const element = try main.document.createElement(if (id == .statusbar) .footer else .div);
         try element.setAttribute("id", "workbench.parts." ++ @tagName(id));
         try element.setAttribute("role", role);
         try element.addClass(editor_css.part.Class.part);
-        try element.addClass(class);
+        for (classes) |class| try element.addClass(class);
+        if (id == .statusbar) try element.setAttribute("aria-live", "off");
         _ = try main.appendChild(element);
         return element;
     }
@@ -10418,7 +10414,7 @@ pub const Workbench = struct {
         const surface = &self.editor_surface.?;
         try surface.resize(self.cols, self.rows);
         surface.border_capabilities = self.part.cell_border_capabilities;
-        const colors = self.watermarkColors();
+        const colors = editor_group_watermark.Colors.fromTheme(self.theme_palette);
         const show_tips = self.part.count() == 1 and self.boolSetting(editor_group_watermark.settings_key, true);
         for (self.part.group_views.items) |pane| {
             const visible = self.part.maximized_group == null or self.part.maximized_group == pane;
