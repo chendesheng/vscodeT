@@ -25,6 +25,8 @@ const ui = @import("ui");
 
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
 const layout_service = @import("../../../services/layout/browser/layoutService.zig");
+const ConfigurationService = @import("../../../services/configuration/browser/configurationService.zig").ConfigurationService;
+const Part = @import("../../part.zig").Part;
 const editor_panes = @import("editorPanes.zig");
 const grid = @import("../../../../base/browser/ui/grid/grid.zig");
 const sash_css = @import("../../../../base/browser/ui/sash/sash_css.zig");
@@ -44,6 +46,9 @@ pub fn EditorPart(comptime GroupView: type) type {
         const Self = @This();
         const LayoutNode = grid.Node(*GroupView);
 
+        base: Part,
+        visible: bool = true,
+        part_options: struct { show_tabs: layout_service.EditorTabsMode = .multiple } = .{},
         allocator: Allocator,
         service: *editor_groups.EditorGroupsService,
         group_views: std.array_list.Managed(*GroupView),
@@ -66,11 +71,13 @@ pub fn EditorPart(comptime GroupView: type) type {
             errdefer allocator.destroy(self);
 
             self.* = .{
+                .base = Part.init(allocator, .editor, Self),
                 .allocator = allocator,
                 .service = service,
                 .group_views = std.array_list.Managed(*GroupView).init(allocator),
                 .root = undefined,
             };
+            errdefer self.base.deinit();
             errdefer self.group_views.deinit();
 
             const first = try self.createView(service.groups.items[0]);
@@ -88,7 +95,14 @@ pub fn EditorPart(comptime GroupView: type) type {
             return self;
         }
 
+        pub fn setVisible(self: *Self, visible: bool) !void {
+            if (self.visible == visible) return;
+            self.visible = visible;
+            try self.base.setVisible(visible);
+        }
+
         pub fn deinit(self: *Self) void {
+            self.base.deinit();
             for (self.group_views.items) |view| {
                 view.deinit();
                 self.allocator.destroy(view);
@@ -96,6 +110,17 @@ pub fn EditorPart(comptime GroupView: type) type {
             self.group_views.deinit();
             grid.deinitRoot(*GroupView, self.allocator, self.root);
             self.allocator.destroy(self);
+        }
+
+        pub fn handleChangedPartOptions(self: *Self, config: ?*ConfigurationService, enforced: ?layout_service.EditorTabsMode) void {
+            self.part_options.show_tabs = getTabsMode(config, enforced);
+        }
+
+        fn getTabsMode(config: ?*ConfigurationService, enforced: ?layout_service.EditorTabsMode) layout_service.EditorTabsMode {
+            if (enforced) |mode| return mode;
+            const service = config orelse return .multiple;
+            const setting = service.getValue(layout_service.LayoutSettings.editor_tabs_mode, .{}) orelse return .multiple;
+            return layout_service.editorTabsMode(setting.*, .multiple);
         }
 
         pub fn count(self: *const Self) usize {

@@ -4,10 +4,24 @@ const Focus = shell.Focus;
 const GroupPane = shell.GroupPane;
 const TabKeyResult = shell.TabKeyResult;
 const Workbench = shell.Workbench;
-const launchTestTerminal = shell.launchTestTerminal;
-const pumpSidebarForTests = shell.pumpSidebarForTests;
-const seedFile = shell.seedFile;
-const sendDragMouse = shell.sendDragMouse;
+const DropZone = @import("../vs/workbench/browser/parts/editor/editorDropTarget.zig").Zone;
+const color_utils = @import("../vs/platform/theme/common/colorUtils.zig");
+const theme_colors_mod = @import("../vs/workbench/browser/themeColors.zig");
+const terminal_ids = @import("../vs/workbench/contrib/terminal/common/terminal.zig").TerminalCommandId;
+const scm_view_mod = @import("../vs/workbench/contrib/scm/browser/scmViewPane.zig");
+const scm_history_view_mod = @import("../vs/workbench/contrib/scm/browser/scmHistoryViewPane.zig");
+const scm_common = @import("../vs/workbench/contrib/scm/common/scm.zig");
+const editor_part = @import("../vs/workbench/browser/parts/editor/editorPart.zig");
+const sidebar_part_mod = @import("../vs/workbench/browser/parts/sidebar/sidebarPart.zig");
+const sash_css = @import("../vs/base/browser/ui/sash/sash_css.zig");
+const search_command_ids = @import("../vs/workbench/contrib/search/common/constants.zig").SearchCommandIds;
+const layout_service_mod = @import("../vs/workbench/services/layout/browser/layoutService.zig");
+const workbench_layout = @import("../vs/workbench/browser/layout.zig");
+const WorkbenchGrid = workbench_layout.WorkbenchGrid;
+const outline_pane_mod = @import("../vs/workbench/contrib/outline/browser/outlinePane.zig");
+const OutlinePane = outline_pane_mod.OutlinePane;
+const tui_editor_mod = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
+const Editor = tui_editor_mod.Editor;
 const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
@@ -5543,4 +5557,2128 @@ test "command palette preserves registration order, metadata and editor precondi
     try std.testing.expectEqual(empty.len, empty_index);
     try std.testing.expectEqual(editing.len, editing_index);
     try std.testing.expectEqualStrings(@embedFile("fixtures/workbench-palette.jsonl"), snapshot.written());
+}
+
+test "Workbench: clicking a pane body focuses its group" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "click_focus.txt", "alpha\nbeta");
+    defer allocator.free(path);
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    const settings_path = try std.fmt.allocPrint(allocator, "{s}/settings.json", .{root});
+    defer allocator.free(settings_path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPaths(&.{settings_path});
+    workbench.ensureConfigurationReady();
+    try workbench.splitActive(.horizontal);
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const first = workbench.part.group_views.items[0];
+    const second = workbench.part.group_views.items[1];
+    try std.testing.expect(workbench.activePane().? == second);
+    try std.testing.expect(first.tabs_visible and second.tabs_visible);
+
+    // Tabs visible: a press on the group body (not its title control) focuses
+    // the group and is translated for the group's active editor.
+    var click = ui.MouseEvent{
+        .kind = .down,
+        .x = ui.cell.snap(first.rect.x) + 2,
+        .y = ui.cell.snap(first.rect.y) + first.chromeHeight() + 1,
+        .button = .left,
+    };
+    try std.testing.expect(!workbench.handleTabMouse(&click));
+    try std.testing.expect(workbench.activePane().? == first);
+    try std.testing.expect(workbench.activeTab() == first.activeTab());
+    var target = workbench.editorMouseEvent(click) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(first.activeTab().?, target.tab);
+    try std.testing.expectEqual(@as(usize, 2), target.event.x);
+    try std.testing.expectEqual(@as(usize, 1), target.event.y);
+
+    // `workbench.editor.showTabs: single` hides a one-tab strip; the body press
+    // must still focus the group (the regression this guards).
+    workbench.ensureConfigurationReady();
+    try workbench.setUserConfigurationValue("workbench.editor.showTabs", .{ .string = "single" });
+    try std.testing.expect(!first.tabs_visible and !second.tabs_visible);
+
+    click = .{
+        .kind = .down,
+        .x = ui.cell.snap(second.rect.x) + 2,
+        .y = ui.cell.snap(second.rect.y) + second.chromeHeight() + 1,
+        .button = .left,
+    };
+    try std.testing.expect(!workbench.handleTabMouse(&click));
+    try std.testing.expect(workbench.activePane().? == second);
+    try std.testing.expect(workbench.activeTab() == second.activeTab());
+    target = workbench.editorMouseEvent(click) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(second.activeTab().?, target.tab);
+    try std.testing.expectEqual(@as(usize, 2), target.event.x);
+    try std.testing.expectEqual(@as(usize, 1), target.event.y);
+}
+
+test "Workbench: cell borders remove the split gutter" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "border_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "border_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    defer workbench.deinit();
+    try workbench.activateIndex(1);
+    try workbench.splitActive(.horizontal);
+
+    const first = workbench.part.group_views.items[0];
+    const second = workbench.part.group_views.items[1];
+    // The fallback reserves one gutter column between the panes.
+    try std.testing.expectEqual(ui.cell.snap(first.rect.right()) + 1, ui.cell.snap(second.rect.x));
+
+    workbench.setCellBorders(true);
+    try std.testing.expectEqual(ui.cell.snap(first.rect.right()), ui.cell.snap(second.rect.x));
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const grid = &workbench.frame.prev;
+    const left_edge = ui.cell.snap(first.rect.right()) - 1;
+    const right_edge = ui.cell.snap(second.rect.x);
+    const row: usize = 2;
+    const edge = ui.cell_border.Segment;
+    const left_stroke = grid.borderSetAt(left_edge, row).strokeAt(edge.right) orelse return error.MissingSashStroke;
+    const right_stroke = grid.borderSetAt(right_edge, row).strokeAt(edge.left) orelse return error.MissingSashStroke;
+    try std.testing.expect(left_stroke.eql(right_stroke));
+    try std.testing.expectEqual(@as(u8, 16), left_stroke.width);
+    try std.testing.expectEqual(.centered, left_stroke.placement);
+}
+
+test "Workbench: mixed editor splits join inside a single rounded frame" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "round.txt", "text");
+    defer allocator.free(path);
+    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 24);
+    defer workbench.deinit();
+    const first = workbench.activePane().?;
+    try workbench.splitActive(.horizontal);
+    _ = try workbench.part.splitGroup(first, .vertical, false);
+    workbench.part.layout(workbench.part.viewport);
+
+    const rounded = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,half,center,palette,round,outside,radius\x1b\\").?;
+    const basic = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,half,center,palette\x1b\\").?;
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+
+    for ([_]?ui.cell_border.Capabilities{ null, basic, rounded }) |caps| {
+        workbench.setCellBorderCapabilities(caps);
+        try workbench.render(&out.writer);
+        const outer = workbench.part.base.bounds.?;
+        const x = ui.cell.snap(outer.x);
+        const right = ui.cell.snap(outer.right()) - 1;
+        const top = ui.cell.snap(outer.y);
+        const bottom = ui.cell.snap(outer.bottom()) - 1;
+        const sides = workbench.part.root.kind.split;
+        const stack = sides.first.kind.split;
+        const column = ui.cell.snap(sides.first.rect.right());
+        const row = ui.cell.snap(stack.first.rect.bottom());
+        const cells = &workbench.frame.prev;
+        if (caps) |native| {
+            try std.testing.expectEqual(outer, workbench.part.root.rect);
+            try std.testing.expectEqual(column, ui.cell.snap(sides.second.rect.x));
+            try std.testing.expectEqual(row, ui.cell.snap(stack.second.rect.y));
+            const joint = ui.cell_border.Joint;
+            const has_round = native.has(.round);
+            try std.testing.expectEqual(if (has_round) joint.top_left else 0, cells.borderSetAt(x, top).joints);
+            try std.testing.expectEqual(if (has_round) joint.top_right else 0, cells.borderSetAt(right, top).joints);
+            try std.testing.expectEqual(if (has_round) joint.bottom_left else 0, cells.borderSetAt(x, bottom).joints);
+            try std.testing.expectEqual(if (has_round) joint.bottom_right else 0, cells.borderSetAt(right, bottom).joints);
+            const edge = ui.cell_border.Segment;
+            const frame_join = cells.borderSetAt(column, top);
+            try std.testing.expectEqual(@as(u8, 0), frame_join.joints);
+            try std.testing.expect(frame_join.strokeAt(edge.top) != null);
+            try std.testing.expect(frame_join.strokeAt(edge.left) != null);
+            const split_join = cells.borderSetAt(column - 1, row);
+            try std.testing.expectEqual(@as(u8, 0), split_join.joints);
+            try std.testing.expect(split_join.strokeAt(edge.top) != null);
+            try std.testing.expect(split_join.strokeAt(edge.right) != null);
+            try std.testing.expect(cells.borderSetAt(column, row).strokeAt(edge.top) == null);
+        } else {
+            try std.testing.expectEqual(x + 1, ui.cell.snap(first.rect.x));
+            try std.testing.expectEqual(column + 1, ui.cell.snap(sides.second.rect.x));
+            try std.testing.expectEqual(row + 1, ui.cell.snap(stack.second.rect.y));
+            try std.testing.expectEqual(@as(u32, '╭'), cells.cluster[cells.index(x, top)]);
+            try std.testing.expectEqual(@as(u32, '╮'), cells.cluster[cells.index(right, top)]);
+            try std.testing.expectEqual(@as(u32, '╰'), cells.cluster[cells.index(x, bottom)]);
+            try std.testing.expectEqual(@as(u32, '╯'), cells.cluster[cells.index(right, bottom)]);
+            try std.testing.expectEqual(@as(u32, '┬'), cells.cluster[cells.index(column, top)]);
+            try std.testing.expectEqual(@as(u32, '┴'), cells.cluster[cells.index(column, bottom)]);
+            try std.testing.expectEqual(@as(u32, '├'), cells.cluster[cells.index(x, row)]);
+            try std.testing.expectEqual(@as(u32, '┤'), cells.cluster[cells.index(column, row)]);
+        }
+    }
+}
+
+test "Workbench: stacked editor dividers use the editor background and sash color with and without cell borders" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "sash.txt", "text");
+    defer allocator.free(path);
+
+    const theme_data = @import("../vs/workbench/services/themes/common/colorThemeData.zig");
+    var registry = color_utils.ColorRegistry.init(allocator);
+    defer registry.deinit();
+    const theme = try theme_data.ColorThemeData.createUnloadedTheme(allocator, &registry, "vs-dark", &.{
+        .{ "editor.background", "#283038" },
+        .{ "editorGroup.border", "#505860" },
+        .{ "sash.hoverBorder", "#1267a0" },
+    });
+    defer theme.deinit();
+    const expected_bg = ui.cell.packColor(.{ .r = 0x28, .g = 0x30, .b = 0x38 });
+    const expected_idle = ui.cell.packColor(.{ .r = 0x50, .g = 0x58, .b = 0x60 });
+    const expected_highlight = ui.cell.packColor(.{ .r = 0x12, .g = 0x67, .b = 0xa0 });
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 24);
+    defer workbench.deinit();
+    workbench.theme_palette = try allocator.create(theme_colors_mod.ThemeColors);
+    workbench.theme_palette.?.* = theme_colors_mod.ThemeColors.init(theme);
+    try workbench.splitActive(.vertical);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+
+    const split = workbench.part.root.kind.split;
+    for ([_]bool{ false, true }) |borders| {
+        workbench.setCellBorders(borders);
+        const x = ui.cell.snap(split.first.rect.x) + 10;
+        const y = ui.cell.snap(split.first.rect.bottom());
+        try workbench.render(&out.writer);
+        const cells = &workbench.frame.prev;
+        const at = cells.index(x, y);
+        const background_at = cells.index(x, if (borders) y - 1 else y);
+        const idle_background = cells.bg[background_at];
+        if (!borders) {
+            try std.testing.expectEqual(@as(u32, '─'), cells.cluster[at]);
+            try std.testing.expectEqual(expected_bg, cells.bg[at]);
+            try std.testing.expectEqual(expected_idle, cells.fg[at]);
+        }
+
+        workbench.beginMousePointer();
+        try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .move, .x = x, .y = y }));
+        try std.testing.expectEqual(ui.Pointer.ns_resize, workbench.pointerShape());
+        try workbench.render(&out.writer);
+        try std.testing.expectEqual(expected_highlight, cells.bg[background_at]);
+        if (borders) {
+            const stroke = cells.borderSetAt(x, y).strokeAt(ui.cell_border.Segment.top) orelse return error.MissingSashStroke;
+            try std.testing.expectEqual(@as(u8, 64), stroke.width);
+            try std.testing.expectEqual(expected_highlight, ui.cell.packColor(stroke.color.rgb));
+        } else {
+            try std.testing.expectEqual(expected_bg, cells.fg[at]);
+        }
+
+        try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .down, .x = x, .y = y, .button = .left }));
+        try workbench.render(&out.writer);
+        try std.testing.expectEqual(expected_highlight, cells.bg[background_at]);
+        if (borders) {
+            const stroke = cells.borderSetAt(x, y).strokeAt(ui.cell_border.Segment.top) orelse return error.MissingSashStroke;
+            try std.testing.expectEqual(expected_highlight, ui.cell.packColor(stroke.color.rgb));
+        } else {
+            try std.testing.expectEqual(@as(u32, '─'), cells.cluster[at]);
+            try std.testing.expectEqual(expected_bg, cells.fg[at]);
+        }
+
+        try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .up, .x = x, .y = y, .button = .left }));
+        try std.testing.expectEqual(ui.Pointer.ns_resize, workbench.pointerShape());
+        workbench.beginMousePointer();
+        try std.testing.expect(!workbench.handleSashMouse(&.{ .kind = .move, .x = x, .y = y - 2 }));
+        try std.testing.expectEqual(ui.Pointer.default, workbench.pointerShape());
+        try workbench.render(&out.writer);
+        try std.testing.expectEqual(idle_background, cells.bg[background_at]);
+        if (borders) {
+            const stroke = cells.borderSetAt(x, y).strokeAt(ui.cell_border.Segment.top) orelse return error.MissingSashStroke;
+            try std.testing.expectEqual(@as(u8, 16), stroke.width);
+            try std.testing.expectEqual(expected_idle, ui.cell.packColor(stroke.color.rgb));
+        } else {
+            try std.testing.expectEqual(expected_idle, cells.fg[at]);
+        }
+    }
+}
+
+test "Workbench: dropping a tab on a pane edge tiles a new pane" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "drag_split_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "drag_split_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    defer workbench.deinit();
+    workbench.setCellBorders(true);
+    try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const pane = workbench.part.group_views.items[0];
+    const tab_x = pane.hits.items[0].start;
+    const tab_y = ui.cell.snap(pane.rect.y);
+    var down = ui.MouseEvent{ .kind = .down, .x = tab_x, .y = tab_y, .button = .left };
+    try std.testing.expect(workbench.handleTabMouse(&down));
+
+    var move = ui.MouseEvent{
+        .kind = .move,
+        .x = ui.cell.snap(pane.rect.right()) - 1,
+        .y = ui.cell.snap(pane.rect.y) + ui.cell.snap(pane.rect.h) / 2,
+        .button = .left,
+    };
+    try std.testing.expect(workbench.handleTabMouse(&move));
+    try std.testing.expect(workbench.drag_target != null);
+    try std.testing.expectEqual(DropZone.right, workbench.drag_target.?.zone);
+
+    var up = move;
+    up.kind = .up;
+    try std.testing.expect(workbench.handleTabDragMouse(&up));
+
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+    try std.testing.expectEqual(@as(usize, 2), workbench.part.group_views.items.len);
+    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+    const first = workbench.part.group_views.items[0];
+    const second = workbench.part.group_views.items[1];
+    try std.testing.expectEqual(ui.cell.snap(first.rect.right()), ui.cell.snap(second.rect.x));
+}
+
+test "Workbench: editor drag paints all four destinations and uses the release coordinates" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const a = try seedFile(allocator, io, &tmp, "preview_a.txt", "alpha");
+    defer allocator.free(a);
+    const b = try seedFile(allocator, io, &tmp, "preview_b.txt", "beta");
+    defer allocator.free(b);
+
+    const zones = [_]DropZone{ .right, .left, .top, .bottom };
+    for (zones, 0..) |zone, index| {
+        const borders = index % 2 == 0;
+        const workbench = try Workbench.init(allocator, io, &.{ a, b }, 110, 28);
+        defer workbench.deinit();
+        workbench.setCellBorders(borders);
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        defer out.deinit();
+        try workbench.render(&out.writer);
+
+        const pane = workbench.activePane().?;
+        const left = ui.cell.snap(pane.rect.x);
+        const top = ui.cell.snap(pane.rect.y);
+        const right = ui.cell.snap(pane.rect.right());
+        const bottom = ui.cell.snap(pane.rect.bottom());
+        const center_x = (left + right) / 2;
+        const center_y = (top + bottom) / 2;
+        const tab_x = pane.hits.items[0].start;
+        const dragged = pane.tabAtIndex(allocator, pane.hits.items[0].index).?;
+        const edge_x = switch (zone) {
+            .left => left,
+            .right => right - 1,
+            else => center_x,
+        };
+        const edge_y = switch (zone) {
+            .top => top + pane.titleHeight(),
+            .bottom => bottom - 1,
+            else => center_y,
+        };
+        const before = workbench.frame.prev.bg[workbench.frame.prev.index(center_x, center_y)];
+
+        try sendDragMouse(workbench, 0, tab_x, top, false);
+        try sendDragMouse(workbench, 32, edge_x, edge_y, false);
+        if (workbench.drag_target) |*overlay| overlay.fade_start -= 150;
+        const overlay = workbench.drag_target orelse return error.MissingDropOverlay;
+        try std.testing.expectEqual(zone, overlay.zone);
+        try std.testing.expect(workbench.editor_drag.data_transfer.image != null);
+        try workbench.render(&out.writer);
+
+        const sample_x = ui.cell.snap(overlay.rect.x + overlay.rect.w / 3);
+        const sample_y = ui.cell.snap(overlay.rect.y + overlay.rect.h / 3);
+        const highlighted = workbench.frame.prev.bg[workbench.frame.prev.index(sample_x, sample_y)];
+        try std.testing.expect(highlighted != before);
+
+        if (zone == .right) {
+            // Release on the opposite edge without an intervening move.
+            try sendDragMouse(workbench, 0, left, center_y, true);
+            const destination = workbench.activePane().?;
+            try std.testing.expect(destination.activeTab() == dragged);
+            try std.testing.expect(destination.rect.x < pane.rect.x);
+        } else {
+            try sendDragMouse(workbench, 0, edge_x, edge_y, true);
+            const destination = workbench.activePane().?;
+            try std.testing.expect(destination.activeTab() == dragged);
+            try std.testing.expectEqual(overlay.rect.x, destination.rect.x);
+            try std.testing.expectEqual(overlay.rect.w, destination.rect.w);
+            try std.testing.expectEqual(overlay.rect.bottom(), destination.rect.bottom());
+        }
+        try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+        try std.testing.expect(workbench.drag_target == null and workbench.editor_drag.source == null);
+    }
+}
+
+test "Workbench: editor drag keeps range selection and cancels on source removal" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const a = try seedFile(allocator, io, &tmp, "a.txt", "alpha");
+    defer allocator.free(a);
+    const b = try seedFile(allocator, io, &tmp, "b.txt", "beta");
+    defer allocator.free(b);
+    const c = try seedFile(allocator, io, &tmp, "c.txt", "gamma");
+    defer allocator.free(c);
+    const workbench = try Workbench.init(allocator, io, &.{ a, b, c }, 100, 20);
+    defer workbench.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const pane = workbench.activePane().?;
+    const y = ui.cell.snap(pane.rect.y);
+    try sendDragMouse(workbench, 0, pane.hits.items[0].start, y, false);
+    try sendDragMouse(workbench, 0, pane.hits.items[0].start, y, true);
+    try sendDragMouse(workbench, 4, pane.hits.items[1].start, y, false);
+    try sendDragMouse(workbench, 4, pane.hits.items[1].start, y, true);
+
+    const edge_x = ui.cell.snap(pane.rect.right()) - 1;
+    const center_y = ui.cell.snap(pane.rect.y + pane.rect.h / 2);
+    try sendDragMouse(workbench, 0, pane.hits.items[1].start, y, false);
+    try sendDragMouse(workbench, 32, edge_x, center_y, false);
+    const dragged = workbench.editor_drag.data_transfer.payload.?;
+    try std.testing.expectEqual(@as(usize, 2), dragged.len);
+    try std.testing.expect(dragged[0] == pane.tabAtIndex(allocator, 0).?);
+    try std.testing.expect(dragged[1] == pane.tabAtIndex(allocator, 1).?);
+    try sendDragMouse(workbench, 0, edge_x, center_y, true);
+    const destination = workbench.activePane().?;
+    try std.testing.expectEqual(@as(usize, 2), destination.tabs.items.len);
+    try std.testing.expectEqualStrings("a.txt", destination.tabAtIndex(allocator, 0).?.input.getName());
+    try std.testing.expectEqualStrings("b.txt", destination.tabAtIndex(allocator, 1).?.input.getName());
+
+    workbench.last_tab_click = null;
+    try workbench.render(&out.writer);
+    const source_tab = destination.tabAtIndex(allocator, 0).?;
+    const hit = destination.hits.items[0];
+    try sendDragMouse(workbench, 0, hit.start, ui.cell.snap(destination.rect.y), false);
+    try sendDragMouse(workbench, 32, edge_x, center_y, false);
+    try std.testing.expect(workbench.editor_drag.active);
+    _ = try workbench.closePath(source_tab.editor.path);
+    try std.testing.expect(workbench.editor_drag.source == null and workbench.drag_target == null);
+    try sendDragMouse(workbench, 0, edge_x, center_y, true);
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+}
+
+test "Workbench: bottom panel has a rounded outline with and without cell borders" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const workbench = try Workbench.init(allocator, io, &.{}, 90, 24);
+    defer workbench.deinit();
+    try workbench.showProblems();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    const caps = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,round,outside,radius\x1b\\").?;
+    for ([_]bool{ false, true }) |native| {
+        workbench.setCellBorderCapabilities(if (native) caps else null);
+        try workbench.render(&out.writer);
+
+        const cells = &workbench.frame.prev;
+        const left = ui.cell.snap(workbench.part.base.bounds.?.x);
+        const right = workbench.cols - 1;
+        const top = ui.cell.snap(workbench.part.base.bounds.?.h);
+        const bottom = ui.cell.snap(workbench.statusBarRect().y) - 1;
+        const joint = ui.cell_border.Joint;
+        const corners = [_]struct { x: usize, y: usize, glyph: u32, round_joint: u8 }{
+            .{ .x = left, .y = top, .glyph = '╭', .round_joint = joint.top_left },
+            .{ .x = right, .y = top, .glyph = '╮', .round_joint = joint.top_right },
+            .{ .x = left, .y = bottom, .glyph = '╰', .round_joint = joint.bottom_left },
+            .{ .x = right, .y = bottom, .glyph = '╯', .round_joint = joint.bottom_right },
+        };
+        for (corners) |corner| {
+            if (native) {
+                try std.testing.expectEqual(corner.round_joint, cells.borderSetAt(corner.x, corner.y).joints);
+            } else {
+                try std.testing.expectEqual(corner.glyph, cells.cluster[cells.index(corner.x, corner.y)]);
+            }
+        }
+
+        const inset: usize = if (native) 0 else 1;
+        const title = try cells.rowText(allocator, top + inset);
+        defer allocator.free(title);
+        try std.testing.expect(std.mem.indexOf(u8, title, "PROBLEMS") != null);
+        const content = workbench.panelContentRect();
+        try std.testing.expectEqual(left + inset, ui.cell.snap(content.x));
+        try std.testing.expectEqual(top + inset + 1, ui.cell.snap(content.y));
+        try std.testing.expectEqual(bottom + 1 - inset, ui.cell.snap(content.bottom()));
+    }
+
+    workbench.setCellBorderCapabilities(null);
+    try workbench.resize(90, 7);
+    try workbench.render(&out.writer);
+    const title = try workbench.frame.prev.rowText(allocator, ui.cell.snap(workbench.part.base.bounds.?.h));
+    defer allocator.free(title);
+    try std.testing.expect(std.mem.indexOf(u8, title, "PROBLEMS") != null);
+    try std.testing.expect(workbench.panelContentRect().h >= 1);
+}
+
+test "Workbench: zen mode applies configuration changes while active" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "zen_config.txt", "alpha\nbeta\n");
+    defer allocator.free(path);
+
+    var settings_file = try tmp.dir.createFile(io, "zen-live-settings.json", .{});
+    try settings_file.writeStreamingAll(io, "{}");
+    settings_file.close(io);
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const settings_path = try std.fmt.allocPrint(allocator, "{s}/zen-live-settings.json", .{buffer[0..root_len]});
+    defer allocator.free(settings_path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPaths(&.{settings_path});
+    try workbench.setUserConfigurationValue("editor.lineNumbers", .{ .string = "relative" });
+
+    const tab = workbench.activeTab().?;
+    try std.testing.expectEqual(editor_options.RenderLineNumbersType.Relative, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
+
+    try workbench.toggleZenMode(false, false);
+    try std.testing.expectEqual(editor_options.RenderLineNumbersType.Off, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
+    try std.testing.expect(workbench.layout.isMainEditorCentered());
+    try std.testing.expect(!workbench.statusBarVisible());
+    try std.testing.expect(!workbench.activity_bar_part.visible);
+
+    try workbench.setUserConfigurationValue("zenMode.hideLineNumbers", .{ .bool = false });
+    try std.testing.expectEqual(editor_options.RenderLineNumbersType.Relative, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
+
+    try workbench.setUserConfigurationValue("zenMode.hideStatusBar", .{ .bool = false });
+    try std.testing.expect(workbench.statusBarVisible());
+
+    try workbench.setUserConfigurationValue("zenMode.hideActivityBar", .{ .bool = false });
+    try std.testing.expect(workbench.activity_bar_part.visible);
+
+    try workbench.setUserConfigurationValue("zenMode.centerLayout", .{ .bool = false });
+    try std.testing.expect(!workbench.layout.isMainEditorCenteredEffective());
+
+    try workbench.toggleZenMode(false, false);
+    try std.testing.expect(!workbench.layout.isZenModeActive());
+    try std.testing.expectEqual(editor_options.RenderLineNumbersType.Relative, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
+    try std.testing.expect(workbench.statusBarVisible());
+    try std.testing.expect(workbench.activity_bar_part.visible);
+}
+
+test "Workbench: centered layout narrows and centers the editor part" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "centered.txt", "alpha\n");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
+    defer workbench.deinit();
+
+    const area = workbench.part.base.bounds.?;
+    try workbench.commands.execute("workbench.action.toggleCenteredLayout");
+    try std.testing.expect(workbench.layout.isMainEditorCentered());
+    try std.testing.expect(workbench.layout.isMainEditorCenteredEffective());
+    const centered = workbench.part.viewport;
+    try std.testing.expect(centered.w < area.w);
+    try std.testing.expect(centered.x > area.x);
+    var rendered: std.Io.Writer.Allocating = .init(allocator);
+    defer rendered.deinit();
+    try workbench.render(&rendered.writer);
+    const pane_rect = workbench.activePane().?.rect;
+    try std.testing.expect(pane_rect.x >= centered.x);
+    try std.testing.expect(pane_rect.x + pane_rect.w <= centered.x + centered.w);
+
+    try workbench.commands.execute("workbench.action.toggleCenteredLayout");
+    try std.testing.expect(!workbench.layout.isMainEditorCentered());
+    try std.testing.expectEqual(area.w, workbench.part.viewport.w);
+}
+
+test "Workbench: activity bar top moves the composite bar into the side bar" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, ".vscode");
+    var settings = try tmp.dir.createFile(io, ".vscode/settings.json", .{});
+    try settings.writeStreamingAll(io, "{\"workbench.activityBar.location\": \"top\"}");
+    settings.close(io);
+
+    const path = try seedFile(allocator, io, &tmp, "top_bar.txt", "alpha\n");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
+
+    // The rail is gone and the side bar takes the left column.
+    try std.testing.expectEqual(@as(usize, 0), ui.cell.snap(workbench.activity_bar_part.base.bounds.?.w));
+    try std.testing.expect(workbench.sidebar_part.shouldShowCompositeBar());
+    try std.testing.expectEqual(@as(usize, 29), ui.cell.snap(workbench.part.base.bounds.?.x));
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    // Row 0 is the composite bar, row 1 the title label, row 2 the content.
+    const grid = workbench.frame.present();
+    try std.testing.expectEqual(@as(u32, '\u{f07b}'), grid.cluster[grid.index(1, 0)]);
+    try std.testing.expectEqual(@as(u32, '\u{f002}'), grid.cluster[grid.index(4, 0)]);
+    const title_row = try grid.rowText(allocator, 1);
+    defer allocator.free(title_row);
+    try std.testing.expect(std.mem.indexOf(u8, title_row, "EXPLORER") != null);
+    // The tree is the first thing below the title (`.vscode` sorts first).
+    var found_file = false;
+    for (2..5) |row| {
+        const content_row = try workbench.frame.present().rowText(allocator, row);
+        defer allocator.free(content_row);
+        if (std.mem.indexOf(u8, content_row, "top_bar.txt") != null) found_file = true;
+    }
+    try std.testing.expect(found_file);
+
+    // Clicking a composite bar item switches the view container.
+    const search_click = ui.MouseEvent{ .kind = .down, .x = 4, .y = 0 };
+    try std.testing.expect(workbench.handleSidebarMouse(&search_click));
+    try std.testing.expectEqual(@as(usize, 1), workbench.activeActivity());
+
+    out.clearRetainingCapacity();
+    try workbench.render(&out.writer);
+    const search_title = try workbench.frame.present().rowText(allocator, 1);
+    defer allocator.free(search_title);
+    try std.testing.expect(std.mem.indexOf(u8, search_title, "SEARCH") != null);
+}
+
+test "Workbench: closing the side bar keeps the activity bar" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "rail_closed.txt", "alpha\n");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    const grid = workbench.frame.present();
+    try std.testing.expectEqual(@as(u32, '\u{f07b}'), grid.cluster[grid.index(1, 1)]);
+
+    _ = try workbench.commands.execute("workbench.action.closeSidebar");
+    try std.testing.expect(!workbench.sidebar_part.isVisible());
+    try std.testing.expectEqual(@as(usize, 3), ui.cell.snap(workbench.part.base.bounds.?.x));
+
+    // The activity bar stays visible and clickable while the side bar is
+    // closed; an entry click reveals the side bar again.
+    out.clearRetainingCapacity();
+    try workbench.render(&out.writer);
+    const closed_grid = workbench.frame.present();
+    try std.testing.expectEqual(@as(u32, '\u{f07b}'), closed_grid.cluster[closed_grid.index(1, 1)]);
+    const rail_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 1 };
+    try std.testing.expect(workbench.handleSidebarMouse(&rail_click));
+    try std.testing.expect(workbench.sidebar_part.isVisible());
+
+    _ = try workbench.commands.execute("workbench.action.closeSidebar");
+    _ = try workbench.commands.execute("workbench.action.focusSideBar");
+    try std.testing.expect(workbench.sidebar_part.isVisible());
+    try std.testing.expectEqual(Focus.sidebar, workbench.focus);
+}
+
+test "Workbench: status bar escape clears the hover tooltip" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "status_escape.txt", "alpha");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
+    defer workbench.deinit();
+    const part = workbench.statusbar.main_part;
+    const entry = part.model.entries()[0];
+    workbench.focusStatusBar();
+    part.setHovered(entry.handle);
+    try std.testing.expect(part.hovered != null);
+
+    try std.testing.expect(try workbench.handleStatusbarKey(&.{ .key = .escape }));
+    try std.testing.expect(part.hovered == null);
+}
+
+test "Workbench: external file changes reload clean editors only" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "external.txt", "before");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
+    defer workbench.deinit();
+
+    const tab = workbench.activeTab().?;
+
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "after" });
+    workbench.handleFileChanges(&.{.{ .type = .UPDATED, .resource = path }});
+    var reload_guard: usize = 0;
+    while (workbench.reload_jobs.items.len != 0 and reload_guard < 2000) : (reload_guard += 1) {
+        _ = workbench.pollFileWatcher(time_compat.milliTimestamp());
+        std.Io.sleep(io, .fromMilliseconds(1), .awake) catch {};
+    }
+    try std.testing.expect(reload_guard < 2000);
+    var reloaded = try tab.editor.model.getValue(.TextDefined, true);
+    defer reloaded.deinit();
+    try std.testing.expectEqualStrings("after", reloaded.items);
+
+    // Dirty editors keep the in-memory content.
+    try tab.editor.insertText("local ");
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "external" });
+    workbench.handleFileChanges(&.{.{ .type = .UPDATED, .resource = path }});
+    var preserved = try tab.editor.model.getValue(.TextDefined, true);
+    defer preserved.deinit();
+    try std.testing.expectEqualStrings("local after", preserved.items);
+    try std.testing.expect(tab.editor.hasConflict());
+    try std.testing.expect(std.mem.indexOf(u8, tab.editor.message(), "Conflict") != null);
+    try tab.editor.save();
+    try std.testing.expect(!tab.editor.hasConflict());
+    try std.testing.expect(std.mem.indexOf(u8, tab.editor.message(), "Saved") != null);
+}
+
+test "Workbench: terminal splits share one group and preserve panel geometry on resize" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const workbench = try Workbench.init(allocator, io, &.{}, 96, 24);
+    defer workbench.deinit();
+    const service = try TerminalService.init(allocator, io, .{ .launch = launchTestTerminal });
+    workbench.terminal_service = service;
+    workbench.commands.execute(terminal_ids.new) catch |err| switch (err) {
+        error.PtyOpenFailed => return error.SkipZigTest,
+        else => return err,
+    };
+
+    try workbench.commands.execute(terminal_ids.split);
+    try std.testing.expectEqual(@as(usize, 1), service.group.groupCount());
+    try std.testing.expectEqual(@as(usize, 2), service.count());
+    const view = &workbench.terminal_tabbed_view;
+    const layout = view.layoutForService(workbench.panelRect(), service);
+    const first = service.group.paneRect(layout.terminal, 0);
+    const second = service.group.paneRect(layout.terminal, 1);
+    try std.testing.expectEqual(first.right() + 1, second.x);
+    try std.testing.expectEqual(layout.terminal.right(), second.right());
+    try std.testing.expectEqual(ui.cell.snap(first.w), service.at(0).?.cols);
+
+    const divider = ui.cell.snap(first.right());
+    const y = ui.cell.snap(first.y);
+    try std.testing.expect(workbench.handleTerminalMouse(&.{ .kind = .down, .button = .left, .x = divider, .y = y }));
+    try std.testing.expect(workbench.handleTerminalMouse(&.{ .kind = .move, .button = .left, .x = divider + 5, .y = y }));
+    try std.testing.expect(workbench.handleTerminalMouse(&.{ .kind = .up, .button = .left, .x = divider + 5, .y = y }));
+    try std.testing.expect(service.at(0).?.cols > ui.cell.snap(first.w));
+    try std.testing.expect(service.at(1).?.cols < ui.cell.snap(second.w));
+
+    const first_instance = service.at(0).?;
+    const second_instance = service.at(1).?;
+    try service.group.unsplitInstance(1);
+    try std.testing.expectEqual(@as(usize, 2), service.group.groupCount());
+    try service.group.joinInstances(&.{ first_instance, second_instance });
+    try std.testing.expectEqual(@as(usize, 1), service.group.groupCount());
+    try std.testing.expectEqual(first_instance, service.active().?);
+}
+
+test "Workbench: terminal editor moves the live instance between hosts and closes it once" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const workbench = try Workbench.init(allocator, io, &.{}, 96, 24);
+    defer workbench.deinit();
+    const service = try TerminalService.init(allocator, io, .{ .launch = launchTestTerminal });
+    workbench.terminal_service = service;
+    workbench.commands.execute(terminal_ids.new) catch |err| switch (err) {
+        error.PtyOpenFailed => return error.SkipZigTest,
+        else => return err,
+    };
+    const instance = service.active().?;
+    instance.emulator.feed("session state");
+    try workbench.commands.execute(terminal_ids.move_to_editor);
+    const pane = workbench.activePane().?;
+    const tab = pane.activeTab().?;
+    try std.testing.expectEqual(instance, tab.terminalInstance().?);
+    try std.testing.expectEqual(@as(usize, 0), service.count());
+    try std.testing.expectEqual(@as(usize, 1), workbench.terminalCount());
+    try std.testing.expect(workbench.terminalAcceptsPaste());
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    const line = try workbench.frame.prev.rowText(allocator, ui.cell.snap(pane.rect.y) + pane.chromeHeight());
+    defer allocator.free(line);
+    try std.testing.expect(std.mem.indexOf(u8, line, "session state") != null);
+
+    try workbench.commands.execute(terminal_ids.move_to_panel);
+    try std.testing.expectEqual(@as(usize, 0), service.editor.instances.items.len);
+    try std.testing.expectEqual(instance, service.active().?);
+    try std.testing.expectEqual(@as(usize, 1), workbench.terminalCount());
+    try workbench.killTerminal();
+    try std.testing.expectEqual(@as(usize, 0), workbench.terminalCount());
+}
+
+test "Workbench: sidebar and single editor have outlines with and without cell borders" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "framed.txt", "hello");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    const workbench = try Workbench.init(allocator, io, &.{path}, 90, 24);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
+    const caps = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,round,outside,radius\x1b\\").?;
+    const grid_cells = &workbench.frame.prev;
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+
+    for ([_]bool{ false, true }) |native| {
+        workbench.setCellBorderCapabilities(if (native) caps else null);
+        try workbench.layout.setPartHidden(false, .sidebar);
+
+        try workbench.render(&out.writer);
+        const side = workbench.sidebar_part.base.bounds.?;
+        const side_x = ui.cell.snap(side.x);
+        const side_right = ui.cell.snap(side.right()) - 1;
+        try std.testing.expectEqual(side_right + 1, ui.cell.snap(workbench.part.base.bounds.?.x));
+        try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
+        if (native) {
+            try std.testing.expectEqual(ui.cell_border.Joint.top_left, grid_cells.borderSetAt(side_x, 0).joints);
+            try std.testing.expectEqual(ui.cell_border.Joint.top_right, grid_cells.borderSetAt(side_right, 0).joints);
+            try std.testing.expect(std.meta.eql(side, sidebar_part_mod.SidebarPart.innerRect(workbench.sidebar_part.base.bounds.?, workbench.part.cell_borders)));
+        } else {
+            try std.testing.expectEqual(@as(u32, '╭'), grid_cells.cluster[grid_cells.index(side_x, 0)]);
+            try std.testing.expectEqual(@as(u32, '╮'), grid_cells.cluster[grid_cells.index(side_right, 0)]);
+        }
+
+        // The sidebar and editor frames meet at the sash. Either cell should
+        // offer the same resize gesture, including with an expanded editor.
+        workbench.maximizeActiveGroup();
+        for (0..2) |cell| {
+            const width = workbench.layout.size(.sidebar);
+            const x = ui.cell.snap(workbench.sidebar_part.base.bounds.?.right()) - 1 + cell;
+            const border_x = x - cell;
+            const background_at = grid_cells.index(border_x, 3);
+            workbench.beginMousePointer();
+            try workbench.render(&out.writer);
+            const idle_background = grid_cells.bg[background_at];
+            try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .move, .x = x, .y = 3 }));
+            try std.testing.expectEqual(ui.Pointer.ew_resize, workbench.pointerShape());
+            try workbench.render(&out.writer);
+            const highlight = ui.cell.packColor(sash_css.hoverStyle(if (workbench.theme_palette) |theme| theme.sashHoverBorder() else null).background.?);
+            try std.testing.expectEqual(highlight, grid_cells.bg[background_at]);
+            if (native) {
+                const stroke = grid_cells.borderSetAt(border_x, 3).strokeAt(ui.cell_border.Segment.right) orelse return error.MissingSashStroke;
+                try std.testing.expectEqual(highlight, ui.cell.packColor(stroke.color.rgb));
+            }
+            workbench.beginMousePointer();
+            try std.testing.expect(!workbench.handleSashMouse(&.{ .kind = .move, .x = x + 4, .y = 3 }));
+            try workbench.render(&out.writer);
+            try std.testing.expectEqual(idle_background, grid_cells.bg[background_at]);
+
+            try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .down, .x = x, .y = 3, .button = .left }));
+            try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .up, .x = x, .y = 3, .button = .left }));
+            try std.testing.expectEqual(width, workbench.layout.size(.sidebar));
+
+            try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .down, .x = x, .y = 3, .button = .left }));
+            try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .move, .x = x + 2, .y = 3 }));
+            try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .up, .x = x + 2, .y = 3, .button = .left }));
+            try std.testing.expectEqual(width + 2, workbench.layout.size(.sidebar));
+        }
+        workbench.minimizeActiveGroup();
+
+        try workbench.splitActive(.horizontal);
+        const editor_split = workbench.part.root.kind.split;
+        const editor_sash_x = ui.cell.snap(editor_split.first.rect.right());
+        const sidebar_sash_x = ui.cell.snap(workbench.sidebar_part.base.bounds.?.right()) - 1;
+        try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .down, .x = editor_sash_x, .y = 3, .button = .left }));
+        workbench.beginMousePointer();
+        try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .move, .x = sidebar_sash_x, .y = 3 }));
+        try std.testing.expect(ui.cell.snap(editor_split.first.rect.right()) < editor_sash_x);
+        try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .up, .x = sidebar_sash_x, .y = 3, .button = .left }));
+        try workbench.joinAllGroups();
+
+        try workbench.layout.setPartHidden(true, .sidebar);
+
+        try workbench.render(&out.writer);
+        const editor_x = ui.cell.snap(workbench.activity_bar_part.base.bounds.?.w);
+        const editor_right = workbench.cols - 1;
+        const editor = workbench.activePane().?;
+        try std.testing.expectEqual(editor_x, ui.cell.snap(workbench.part.base.bounds.?.x));
+        if (native) {
+            try std.testing.expectEqual(ui.cell_border.Joint.top_left, grid_cells.borderSetAt(editor_x, 0).joints);
+            try std.testing.expectEqual(ui.cell_border.Joint.top_right, grid_cells.borderSetAt(editor_right, 0).joints);
+        } else {
+            try std.testing.expectEqual(@as(u32, '╭'), grid_cells.cluster[grid_cells.index(editor_x, 0)]);
+            try std.testing.expectEqual(@as(u32, '╮'), grid_cells.cluster[grid_cells.index(editor_right, 0)]);
+            try std.testing.expectEqual(editor_x + 1, ui.cell.snap(editor.rect.x));
+        }
+    }
+}
+
+test "Workbench: dragging the sash above the bottom panel resizes it" {
+    const workbench = try Workbench.init(std.testing.allocator, std.Io.Threaded.global_single_threaded.io(), &.{}, 90, 36);
+    defer workbench.deinit();
+    try workbench.showProblems();
+    workbench.focusEditor();
+    const caps = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,round,outside,radius\x1b\\").?;
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+
+    for ([_]bool{ false, true }) |native| {
+        workbench.setCellBorderCapabilities(if (native) caps else null);
+        for (0..2) |inset| {
+            try workbench.layout.setSize(.panel, 10);
+
+            try workbench.render(&output.writer);
+            const panel = workbench.panel_part.base.bounds.?;
+            const x = ui.cell.snap(panel.x + panel.w / 2);
+            const y = ui.cell.snap(panel.y) - inset;
+            var event = ui.MouseEvent{ .kind = .move, .x = x, .y = y };
+            workbench.beginMousePointer();
+            try std.testing.expect(workbench.handleSashMouse(&event));
+            try std.testing.expectEqual(ui.Pointer.ns_resize, workbench.pointer);
+            try workbench.render(&output.writer);
+            const grid = &workbench.frame.prev;
+            try std.testing.expectEqual(ui.cell.packColor(sash_css.hoverStyle(if (workbench.theme_palette) |theme| theme.sashHoverBorder() else null).background.?), grid.bg[grid.index(x, ui.cell.snap(panel.y))]);
+
+            event.kind = .down;
+            event.button = .left;
+            try std.testing.expect(workbench.handleSashMouse(&event));
+            try std.testing.expectEqual(@as(usize, 10), ui.cell.snap(workbench.panel_part.base.bounds.?.h));
+            event.kind = .move;
+            event.button = .none;
+            event.y -= 3;
+            try std.testing.expect(workbench.handleSashMouse(&event));
+            try std.testing.expectEqual(@as(usize, 13), ui.cell.snap(workbench.panel_part.base.bounds.?.h));
+            event.kind = .up;
+            event.y += 5;
+            try std.testing.expect(workbench.handleSashMouse(&event));
+            try std.testing.expectEqual(@as(usize, 8), ui.cell.snap(workbench.panel_part.base.bounds.?.h));
+            try std.testing.expectEqual(Focus.editor, workbench.focus);
+        }
+    }
+
+    const title = workbench.panelRect();
+    const x = ui.cell.snap(title.x) + 2;
+    const y = ui.cell.snap(title.y);
+    try std.testing.expect(panel_part_mod.hitTest(&workbench.panel_part, title, x, y) != null);
+    const title_press = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
+    try std.testing.expect(!workbench.handleSashMouse(&title_press));
+    try std.testing.expect(workbench.handlePanelMouse(&title_press));
+
+    const panel = workbench.panel_part.base.bounds.?;
+    const divider_x = ui.cell.snap(panel.x + panel.w / 2);
+    var drag = ui.MouseEvent{ .kind = .down, .x = divider_x, .y = ui.cell.snap(panel.y), .button = .left };
+    try std.testing.expect(workbench.handleSashMouse(&drag));
+    const wheel = ui.MouseEvent{ .kind = .wheel, .x = drag.x, .y = drag.y, .delta_y = 3 };
+    try std.testing.expect(!workbench.handleSashMouse(&wheel));
+    drag.kind = .move;
+    drag.y = 0;
+    try std.testing.expect(workbench.handleSashMouse(&drag));
+    try std.testing.expectEqual(editor_part.min_pane_height, ui.cell.snap(workbench.part.base.bounds.?.h));
+    try std.testing.expectEqual(workbench.layout.workbenchRows(workbench.rows) - editor_part.min_pane_height, ui.cell.snap(workbench.panel_part.base.bounds.?.h));
+    drag.y = workbench.layout.workbenchRows(workbench.rows);
+    try std.testing.expect(workbench.handleSashMouse(&drag));
+    try std.testing.expectEqual(workbench.panel_part.minimum_height, ui.cell.snap(workbench.panel_part.base.bounds.?.h));
+    try std.testing.expect(workbench.cancelSashDrag());
+    try std.testing.expect(workbench.layout.workbench_grid.activeSash() == null);
+}
+
+test "Workbench: dragging the sidebar divider resizes the side bar" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const filename = "a_long_filename_for_the_resize_test.txt";
+    const path = try seedFile(allocator, io, &tmp, filename, "alpha");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
+
+    const before = workbench.layout.size(.sidebar);
+    const divider = ui.cell.snap(workbench.activity_bar_part.base.bounds.?.w) + before;
+    try std.testing.expect(workbench.layout.isVisible(.sidebar));
+
+    const down = ui.MouseEvent{ .kind = .down, .x = divider, .y = 2, .button = .left };
+    try std.testing.expect(workbench.handleSashMouse(&down));
+    try std.testing.expectEqual(WorkbenchGrid.Sash.sidebar, workbench.layout.workbench_grid.activeSash().?);
+
+    const move = ui.MouseEvent{ .kind = .move, .x = divider + 4, .y = 2, .button = .left };
+    try std.testing.expect(workbench.handleSashMouse(&move));
+    try std.testing.expectEqual(before + 4, workbench.layout.size(.sidebar));
+
+    const up = ui.MouseEvent{ .kind = .up, .x = divider + 4, .y = 2, .button = .left };
+    try std.testing.expect(workbench.handleSashMouse(&up));
+    try std.testing.expect(workbench.layout.workbench_grid.activeSash() == null);
+
+    // The editor minimum, not a fraction of the window, stops the sash.
+    const far = ui.MouseEvent{ .kind = .down, .x = ui.cell.snap(workbench.activity_bar_part.base.bounds.?.w) + workbench.layout.size(.sidebar), .y = 2, .button = .left };
+    try std.testing.expect(workbench.handleSashMouse(&far));
+    const drag_far = ui.MouseEvent{ .kind = .move, .x = 10_000, .y = 2, .button = .left };
+    try std.testing.expect(workbench.handleSashMouse(&drag_far));
+    try std.testing.expect(workbench.layout.size(.sidebar) > workbench.cols / 2);
+    try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(workbench.part.base.bounds.?.w));
+
+    try std.testing.expectEqual(ui.Pointer.w_resize, workbench.pointerShape());
+    try sidebarMouseForTest(workbench, .up, drag_far.x);
+    const maximum = workbench.layout.size(.sidebar);
+    const rail = ui.cell.snap(workbench.activity_bar_part.base.bounds.?.w);
+    const minimum = workbench.sidebar_part.minimum_width + @as(usize, @intFromBool(!workbench.part.cell_borders));
+    const half = minimum / 2;
+    const start = rail + maximum;
+    const threshold = start - ui.cell.snap(workbench.sidebar_part.base.bounds.?.w) + minimum - half;
+    workbench.focusSidebar();
+    try sidebarMouseForTest(workbench, .down, start);
+    try sidebarMouseForTest(workbench, .move, threshold);
+    try std.testing.expectEqual(workbench.sidebar_part.minimum_width, workbench.layout.size(.sidebar));
+    try std.testing.expectEqual(ui.Pointer.e_resize, workbench.pointerShape());
+    try sidebarMouseForTest(workbench, .move, threshold - 1);
+    try std.testing.expect(!workbench.layout.isVisible(.sidebar));
+    try std.testing.expectEqual(Focus.editor, workbench.focus);
+    try std.testing.expectEqual(rail, ui.cell.snap(workbench.part.base.bounds.?.x));
+
+    // The same captured press can cross the threshold in either direction.
+    try sidebarMouseForTest(workbench, .move, threshold);
+    try std.testing.expect(workbench.layout.isVisible(.sidebar));
+    try std.testing.expectEqual(workbench.sidebar_part.minimum_width, workbench.layout.size(.sidebar));
+    try sidebarMouseForTest(workbench, .up, threshold - 1);
+    try std.testing.expect(!workbench.sidebar_part.isVisible());
+    try workbench.toggleSidebar();
+    try std.testing.expectEqual(maximum, workbench.layout.size(.sidebar));
+    try workbench.toggleSidebar();
+
+    // A fresh press on the hidden sash snaps open at half the minimum.
+    try sidebarMouseForTest(workbench, .down, rail);
+    try sidebarMouseForTest(workbench, .move, rail + half - 1);
+    try std.testing.expect(!workbench.layout.isVisible(.sidebar));
+    try sidebarMouseForTest(workbench, .move, rail + half);
+    try std.testing.expect(workbench.layout.isVisible(.sidebar));
+    try std.testing.expectEqual(workbench.sidebar_part.minimum_width, workbench.layout.size(.sidebar));
+    try sidebarMouseForTest(workbench, .up, rail + minimum + 4);
+    try std.testing.expectEqual(minimum + 4, ui.cell.snap(workbench.sidebar_part.base.bounds.?.w));
+
+    // Double-click measures the full label even while its paint is clipped.
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+    try workbench.render(&output.writer);
+    const click_x = ui.cell.snap(workbench.sidebar_part.base.bounds.?.right()) - 1;
+    for (0..2) |_| {
+        try sidebarMouseForTest(workbench, .down, click_x);
+        try sidebarMouseForTest(workbench, .up, click_x);
+    }
+    try std.testing.expectEqual(6 + filename.len + 1, workbench.layout.size(.sidebar));
+
+    // Alt-drag keeps the sidebar visible and applies the last-sash half bound.
+    const alt_start = workbench.layout.size(.sidebar);
+    const alt_edge = ui.cell.snap(workbench.sidebar_part.base.bounds.?.right()) - 1;
+    for ([_]ui.MouseKind{ .down, .move, .up }) |kind| {
+        try std.testing.expect(workbench.handleSashMouse(&.{
+            .kind = kind,
+            .x = if (kind == .down) alt_edge else 0,
+            .y = 2,
+            .button = .left,
+            .mods = .{ .alt = true },
+        }));
+    }
+    try std.testing.expectEqual(alt_start - (alt_start - workbench.sidebar_part.minimum_width) / 2, workbench.layout.size(.sidebar));
+
+    try workbench.showProblems();
+    try workbench.resizeEditorArea(-100, 0);
+    try std.testing.expectEqual(@as(usize, 18), ui.cell.snap(workbench.panel_part.base.bounds.?.w));
+    workbench.closePanel();
+
+    // An uneven editor split must still reserve each group's minimum.
+    try workbench.splitActive(.horizontal);
+    workbench.part.root.kind.split.ratio = 0.8;
+    try workbench.resizeEditorArea(-100, 0);
+    const split = workbench.part.root.kind.split;
+    try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(split.first.rect.w));
+    try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(split.second.rect.w));
+    try workbench.resize(50, 12);
+    try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(split.first.rect.w));
+    try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(split.second.rect.w));
+    workbench.maximizeActiveGroup();
+    try workbench.resizeEditorArea(-100, 0);
+    try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(workbench.part.base.bounds.?.w));
+}
+
+test "Workbench: zen mode hides chrome, line numbers and tabs and restores them" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "zen.txt", "alpha\nbeta\n");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    var settings_file = try tmp.dir.createFile(io, "zen-settings.json", .{});
+    try settings_file.writeStreamingAll(io, "{}");
+    settings_file.close(io);
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const settings_path = try std.fmt.allocPrint(allocator, "{s}/zen-settings.json", .{buffer[0..root_len]});
+    defer allocator.free(settings_path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPaths(&.{settings_path});
+    try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
+    _ = try workbench.showActivityById("explorer");
+    _ = try workbench.panel_part.pane.openPaneComposite(PROBLEMS_CONTAINER_ID, false);
+    try workbench.panel_part.setVisible(true);
+
+    const pane = workbench.activePane().?;
+    const tab = workbench.activeTab().?;
+    try std.testing.expect(workbench.layout.isVisible(.sidebar));
+    try std.testing.expect(workbench.panelShown());
+    try std.testing.expect(workbench.activity_bar_part.visible);
+    try std.testing.expect(workbench.statusBarVisible());
+    try std.testing.expectEqual(editor_options.RenderLineNumbersType.On, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
+    try std.testing.expectEqual(layout_service_mod.EditorTabsMode.multiple, workbench.part.part_options.show_tabs);
+    try std.testing.expect(!workbench.layout.isMainEditorCentered());
+
+    var zen_events: usize = 0;
+    try workbench.layout.on_did_change_zen_mode.event(&zen_events, struct {
+        fn callback(_: bool, context: *usize) !void {
+            context.* += 1;
+        }
+    }.callback);
+
+    try workbench.commands.execute(zen_mode_contribution.toggle_zen_mode_id);
+    try std.testing.expect(workbench.layout.isZenModeActive());
+    try std.testing.expectEqual(@as(usize, 1), zen_events);
+    try std.testing.expect(!workbench.layout.isVisible(.sidebar));
+    try std.testing.expect(!workbench.panelShown());
+    try std.testing.expect(!workbench.activity_bar_part.visible);
+    try std.testing.expect(!workbench.statusBarVisible());
+    try std.testing.expectEqual(editor_options.RenderLineNumbersType.Off, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
+    // The default `zenMode.centerLayout` centers the single editor group.
+    try std.testing.expect(workbench.layout.isMainEditorCentered());
+    try std.testing.expect(workbench.layout.isMainEditorCenteredEffective());
+    try std.testing.expect(workbench.part.viewport.w < workbench.part.base.bounds.?.w);
+    try std.testing.expectEqual(Focus.editor, workbench.focus);
+    var rendered: std.Io.Writer.Allocating = .init(allocator);
+    defer rendered.deinit();
+    try workbench.render(&rendered.writer);
+
+    // The zen tab actions write `zenMode.showTabs` and take effect while zen
+    // mode is active, without touching `workbench.editor.showTabs`.
+    try workbench.commands.execute(zen_mode_contribution.zen_hide_editor_tabs_id);
+    try std.testing.expectEqual(layout_service_mod.EditorTabsMode.none, workbench.part.part_options.show_tabs);
+    try std.testing.expect(!pane.tabs_visible);
+    try workbench.commands.execute(zen_mode_contribution.zen_show_single_editor_tab_id);
+    try std.testing.expectEqual(layout_service_mod.EditorTabsMode.single, workbench.part.part_options.show_tabs);
+    try workbench.commands.execute(zen_mode_contribution.zen_show_multiple_editor_tabs_id);
+    try std.testing.expectEqual(layout_service_mod.EditorTabsMode.multiple, workbench.part.part_options.show_tabs);
+
+    try workbench.commands.execute(zen_mode_contribution.exit_zen_mode_id);
+    try std.testing.expect(!workbench.layout.isZenModeActive());
+    try std.testing.expectEqual(@as(usize, 2), zen_events);
+    try std.testing.expect(workbench.layout.isVisible(.sidebar));
+    try std.testing.expect(workbench.panelShown());
+    try std.testing.expect(workbench.activity_bar_part.visible);
+    try std.testing.expect(workbench.statusBarVisible());
+    try std.testing.expectEqual(editor_options.RenderLineNumbersType.On, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
+    try std.testing.expectEqual(layout_service_mod.EditorTabsMode.multiple, workbench.part.part_options.show_tabs);
+    try std.testing.expect(!workbench.layout.isMainEditorCentered());
+    try std.testing.expectEqual(Focus.editor, workbench.focus);
+}
+
+test "Workbench: side bar part paints the title and runs its actions" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "title_action.txt", "alpha beta\n");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    // The title row belongs to the side bar part and the label is uppercased.
+    const explorer_title = try workbench.frame.present().rowText(allocator, 0);
+    defer allocator.free(explorer_title);
+    try std.testing.expect(std.mem.indexOf(u8, explorer_title, "EXPLORER") != null);
+    // The Explorer view has no header of its own: its first tree row follows
+    // the title directly.
+    const first_tree_row = try workbench.frame.present().rowText(allocator, 1);
+    defer allocator.free(first_tree_row);
+    try std.testing.expect(std.mem.indexOf(u8, first_tree_row, "title_action.txt") != null);
+
+    // The title row, the content and the divider column share the side bar
+    // background; only the divider glyph gets the border foreground.
+    const side_bar_bg = ui.cell.packColor(ui.Color{ .r = 30, .g = 30, .b = 33 });
+    const presented = workbench.frame.present();
+    const title_right = ui.cell.snap(workbench.activity_bar_part.base.bounds.?.w) + workbench.layout.size(.sidebar) - 1;
+    try std.testing.expectEqual(side_bar_bg, presented.bg[presented.index(title_right, 0)]);
+    const divider = ui.cell.snap(workbench.activity_bar_part.base.bounds.?.w) + workbench.layout.size(.sidebar);
+    try std.testing.expectEqual(side_bar_bg, presented.bg[presented.index(divider, 0)]);
+    try std.testing.expectEqual(side_bar_bg, presented.bg[presented.index(divider, 5)]);
+    try std.testing.expectEqual(
+        ui.cell.packColor(ui.Color{ .r = 70, .g = 70, .b = 70 }),
+        presented.fg[presented.index(divider, 5)],
+    );
+
+    try workbench.findInFiles();
+    const view = workbench.search_view.?;
+    try view.widget.setValue(.search, "alpha");
+    try view.startSearch();
+    var guard: usize = 0;
+    while ((view.model.isSearching() or view.wantsTick()) and guard < 100) : (guard += 1) {
+        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+    }
+    try std.testing.expect(view.rows.items.len > 0);
+    const details_before = view.widget.details_visible;
+
+    out.clearRetainingCapacity();
+    try workbench.render(&out.writer);
+    const search_title = try workbench.frame.present().rowText(allocator, 0);
+    defer allocator.free(search_title);
+    try std.testing.expect(std.mem.indexOf(u8, search_title, "SEARCH") != null);
+
+    // Find the title action through the same hit testing as a mouse press.
+    const sidebar_rect = sidebar_part_mod.SidebarPart.innerRect(workbench.sidebar_part.base.bounds.?, workbench.part.cell_borders);
+    const title_y = ui.cell.snap(sidebar_rect.y);
+    var clear_x: ?usize = null;
+    for (ui.cell.snap(sidebar_rect.x)..ui.cell.snap(sidebar_rect.right())) |x| {
+        if (sidebar_part_mod.hitTest(&workbench.sidebar_part, sidebar_rect, x, title_y)) |hit| {
+            if (hit == .action and std.mem.eql(u8, hit.action, search_command_ids.clear_search_results)) {
+                clear_x = x;
+                break;
+            }
+        }
+    }
+    const clear_click = ui.MouseEvent{ .kind = .down, .button = .left, .x = clear_x.?, .y = title_y };
+    try std.testing.expect(workbench.handleSidebarMouse(&clear_click));
+    try std.testing.expectEqual(@as(usize, 0), view.rows.items.len);
+
+    const details = view.widget.controlRect(.more).?;
+    const details_click = ui.MouseEvent{
+        .kind = .down,
+        .button = .left,
+        .x = ui.cell.snap(view.last_rect.x + details.x),
+        .y = ui.cell.snap(view.last_rect.y + details.y),
+    };
+    try std.testing.expect(details_click.y > title_y);
+    try std.testing.expect(workbench.handleSidebarMouse(&details_click));
+    try std.testing.expectEqual(!details_before, view.widget.details_visible);
+    try std.testing.expectEqual(search_widget_mod.Field.includes, view.widget.focus_field);
+}
+
+test "Workbench: search guides, preview ellipses and the Open in editor link" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const source = "prefix words before a significant amount of extra context alpha and more trailing words after the match alpha";
+    const path = try seedFile(allocator, io, &tmp, "preview.txt", source);
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 20);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    try workbench.layout.setSize(.sidebar, 45);
+    pumpSidebarForTests(workbench);
+    try workbench.findInFiles();
+    const view = workbench.search_view.?;
+    try view.widget.setValue(.search, "alpha");
+    try view.startSearch();
+    var guard: usize = 0;
+    while ((view.model.isSearching() or view.wantsTick()) and guard < 100) : (guard += 1) {
+        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+    }
+    try std.testing.expectEqual(@as(usize, 2), view.matchCount());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    const x = ui.cell.snap(view.last_rect.x);
+    const y = ui.cell.snap(view.last_rect.y) + view.results_y + 1;
+    const end = ui.cell.snap(view.last_rect.right());
+    const grid = workbench.frame.present();
+    try std.testing.expectEqual(@as(u32, ' '), grid.cluster[grid.index(x, y)]);
+    const snippet = try grid.rowText(allocator, y);
+    defer allocator.free(snippet);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, snippet, "…"));
+    try std.testing.expect(std.mem.indexOf(u8, snippet, "alpha") != null);
+
+    const move = ui.MouseEvent{ .kind = .move, .x = x + 4, .y = y };
+    try std.testing.expect(workbench.handleSidebarMouse(&move));
+    try workbench.render(&out.writer);
+    const hovered = workbench.frame.present();
+    try std.testing.expectEqual(@as(u32, '│'), hovered.cluster[hovered.index(x, y)]);
+    try std.testing.expect(hovered.cluster[hovered.index(end - 2, y)] != '│');
+
+    const link = view.open_in_editor_rect;
+    try std.testing.expectEqual(@as(f64, "Open in editor".len), link.w);
+    const link_x = ui.cell.snap(link.x);
+    const link_y = ui.cell.snap(link.y);
+    const status = try hovered.rowText(allocator, link_y);
+    defer allocator.free(status);
+    try std.testing.expect(std.mem.indexOf(u8, status, "2 results in 1 file - Open in editor") != null);
+    try std.testing.expect(workbench.handleSidebarMouse(&.{ .kind = .move, .x = link_x, .y = link_y }));
+    try std.testing.expectEqual(ui.Pointer.pointer, workbench.pointer);
+    try workbench.render(&out.writer);
+    const after_hover = workbench.frame.present();
+    try std.testing.expectEqual(@as(u32, ' '), after_hover.cluster[after_hover.index(x, y)]);
+
+    try std.testing.expect(workbench.handleSidebarMouse(&.{ .kind = .down, .button = .left, .x = link_x, .y = link_y }));
+    const snapshot = workbench.activeTab().?;
+    try std.testing.expectEqualStrings("Search: alpha", snapshot.input.getName());
+    try std.testing.expect(snapshot.editor.read_only);
+    var contents = try snapshot.editor.model.getValue(null, false);
+    defer contents.deinit();
+    const expected = try std.fmt.allocPrint(allocator, "2 results - 1 file\n\npreview.txt:\n  1: {s}\n", .{source});
+    defer allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, contents.items);
+    const decorations = try snapshot.editor.model.getAllDecorations(0, false);
+    defer allocator.free(decorations);
+    var match_line = try snapshot.editor.model.getLineContent(4);
+    defer match_line.deinit();
+    var matches: usize = 0;
+    for (decorations) |decoration| {
+        if (decoration.range.startLineNumber == 4 and
+            decoration.range.endColumn - decoration.range.startColumn == "alpha".len)
+        {
+            const range = decoration.range;
+            try std.testing.expectEqualStrings("alpha", match_line.items[range.startColumn - 1 .. range.endColumn - 1]);
+            matches += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), matches);
+}
+
+test "Workbench: search aligns nested guides and keeps the link inline at the result limit" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "nested/results.txt", "alpha one\nalpha two\nalpha three\n");
+    defer allocator.free(path);
+    const settings = try seedFile(allocator, io, &tmp, "settings.json",
+        \\{"search.maxResults":2,"workbench.activityBar.location":"top"}
+    );
+    defer allocator.free(settings);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 20);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPaths(&.{settings});
+    try workbench.initSidebar(root);
+    try workbench.layout.setSize(.sidebar, 45);
+    pumpSidebarForTests(workbench);
+    const caps = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,half,center,round,outside,radius\x1b\\").?;
+    workbench.setCellBorderCapabilities(caps);
+    try workbench.findInFiles();
+    const view = workbench.search_view.?;
+    view.commandViewAsTree(true);
+    try view.widget.setValue(.search, "alpha");
+    try view.startSearch();
+    var guard: usize = 0;
+    while (view.wantsTick() and guard < 100) : (guard += 1) {
+        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+    }
+    try std.testing.expect(view.model.limitHit());
+    try std.testing.expectEqual(@as(usize, 2), view.matchCount());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    const x = ui.cell.snap(view.last_rect.x);
+    const y = ui.cell.snap(view.last_rect.y) + view.results_y;
+    const grid = workbench.frame.present();
+    const status = try grid.rowText(allocator, y - 1);
+    defer allocator.free(status);
+    try std.testing.expect(std.mem.indexOf(u8, status, "2 results in 1 file - Open in editor") != null);
+
+    // The file is the folder's child, and the match is the file's child.
+    const folder_col = x;
+    const file_col = x + 2;
+    try std.testing.expectEqual(@as(u32, '⌄'), grid.cluster[grid.index(folder_col, y)]);
+    try std.testing.expectEqual(@as(u32, '⌄'), grid.cluster[grid.index(file_col, y + 1)]);
+    const move = ui.MouseEvent{ .kind = .move, .x = x + 5, .y = y + 2 };
+    try std.testing.expect(workbench.handleSidebarMouse(&move));
+    try workbench.render(&out.writer);
+    const hovered = workbench.frame.present();
+    try std.testing.expect(hovered.borderSetAt(folder_col, y + 1).strokeAt(ui.cell_border.Segment.v_top) != null);
+    try std.testing.expect(hovered.borderSetAt(folder_col, y + 2).strokeAt(ui.cell_border.Segment.v_top) != null);
+    try std.testing.expect(hovered.borderSetAt(file_col, y + 2).strokeAt(ui.cell_border.Segment.v_top) != null);
+    try std.testing.expect(hovered.borderSetAt(file_col + 1, y + 2).strokeAt(ui.cell_border.Segment.v_top) == null);
+}
+
+test "Workbench: outline side panel shows provider symbols" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "outline/file.ts", "class A {}\nfunction b() {}\n");
+    defer allocator.free(path);
+
+    const Fake = struct {
+        var labels = [_][]const u8{ "A", "b" };
+        var nodes: [2]u8 = undefined;
+        var elements: [2]outline_mod.TreeElement = undefined;
+        var roots: [1]outline_mod.TreeElement = undefined;
+        var outline: outline_mod.IOutline = undefined;
+        var revealed: usize = 0;
+
+        fn matches(_: *anyopaque, _: OutlineEditor) bool {
+            return true;
+        }
+        fn create(_: *anyopaque, _: OutlineEditor, target: outline_mod.OutlineTarget) !?*outline_mod.IOutline {
+            _ = target;
+            return &outline;
+        }
+        fn rootsFor(_: *anyopaque) []const outline_mod.TreeElement {
+            return roots[0..];
+        }
+        fn breadcrumbs(_: *anyopaque) []const outline_mod.BreadcrumbsOutlineElement {
+            return &.{};
+        }
+        fn reveal(_: *anyopaque, _: *anyopaque, _: outline_mod.RevealOptions) !void {
+            revealed += 1;
+        }
+        fn dispose(_: *anyopaque) void {}
+    };
+    var context: u8 = 0;
+    Fake.nodes = .{ 1, 2 };
+    Fake.elements[0] = .{
+        .element = @ptrCast(&Fake.nodes[0]),
+        .label = Fake.labels[0],
+        .symbol_kind = 5,
+        .id = "a",
+    };
+    Fake.elements[1] = .{
+        .element = @ptrCast(&Fake.nodes[1]),
+        .label = Fake.labels[1],
+        .symbol_kind = 12,
+        .id = "b",
+    };
+    Fake.roots[0] = .{
+        .element = @ptrCast(&Fake.nodes[0]),
+        .label = Fake.labels[0],
+        .symbol_kind = 5,
+        .id = "a",
+        .collapsible = true,
+        .children = Fake.elements[1..2],
+    };
+    Fake.outline = .{
+        .context = @ptrCast(&context),
+        .uri = path,
+        .outline_kind = "test",
+        .config = .{
+            .breadcrumbs_data_source = .{ .context = @ptrCast(&context), .get_breadcrumb_elements = Fake.breadcrumbs },
+            .tree_data_source = .{ .context = @ptrCast(&context), .get_roots = Fake.rootsFor },
+        },
+        .revealFn = Fake.reveal,
+        .disposeFn = Fake.dispose,
+    };
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 60, 12);
+    defer workbench.deinit();
+    const registration = try workbench.outline_service.registerOutlineCreator(.{
+        .context = @ptrCast(&context),
+        .matches = Fake.matches,
+        .create_outline = Fake.create,
+    });
+    defer registration.dispose();
+    try workbench.openPath(path);
+    try workbench.activeTab().?.ensureControllers();
+    _ = try workbench.showActivityById("explorer");
+    try std.testing.expect(workbench.explorer_container.?.model.isCollapsed("outline"));
+    workbench.explorer_container.?.model.setCollapsed("outline", false);
+    workbench.explorer_container.?.setActive("outline");
+    try workbench.commands.execute("outline.focus");
+
+    const view = workbench.outline_view.?;
+    try std.testing.expectEqual(@as(usize, 2), view.rowCount());
+    try std.testing.expectEqualStrings("A", view.rowLabel(0).?);
+    try std.testing.expectEqualStrings("b", view.rowLabel(1).?);
+    try std.testing.expectEqual(@as(usize, 2), view.rowDepth(1).?);
+
+    view.setFocused(true);
+    view.selectRow(1);
+    try std.testing.expect(try view.handleKey(&.{ .key = .enter }));
+    try std.testing.expectEqual(@as(usize, 1), Fake.revealed);
+
+    try view.setFollowCursor(true);
+    const actions = view.titleActions();
+    try std.testing.expectEqual(@as(usize, 2), actions.len);
+    try std.testing.expectEqualStrings("outline.collapse", actions[0].id);
+    try std.testing.expectEqual(@as(u21, 0xeac5), actions[0].glyph);
+    try std.testing.expectEqualStrings(OutlinePane.more_actions_id, actions[1].id);
+    try workbench.commands.execute(OutlinePane.more_actions_id);
+    try std.testing.expect(!workbench.isQuickAccessOpen());
+    const popup = workbench.context_menu.?.popup.?;
+    try std.testing.expect(popup.items[0].checked);
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .home }));
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .enter }));
+    try std.testing.expect(!view.view_state.follow_cursor);
+    try std.testing.expect(workbench.context_menu == null);
+}
+
+test "Workbench: closing the active tab detaches the outline editor handler" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "outline-a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "outline-b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 12);
+    defer workbench.deinit();
+    _ = try workbench.showActivityById("explorer");
+    workbench.explorer_container.?.model.setCollapsed("outline", false);
+    try workbench.commands.execute("outline.focus");
+
+    const view = workbench.outline_view.?;
+    const old_editor = workbench.activeTab().?.editor;
+    try std.testing.expect(view.editor == old_editor);
+
+    _ = try workbench.closeActive();
+    try std.testing.expect(view.editor == null);
+    try std.testing.expect(workbench.activeTab() != null);
+}
+
+test "Workbench: git scm integration, diff tabs and read-only snapshots" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    if (!try runGitTest(allocator, root, &.{"init"})) return error.SkipZigTest;
+    _ = try runGitTest(allocator, root, &.{ "symbolic-ref", "HEAD", "refs/heads/main" });
+    _ = try runGitTest(allocator, root, &.{ "config", "user.name", "Test User" });
+    _ = try runGitTest(allocator, root, &.{ "config", "user.email", "test@example.com" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "one\ntwo\nthree\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "published.txt", .data = "published\n" });
+    if (!try runGitTest(allocator, root, &.{ "add", "a.txt", "published.txt" })) return error.SkipZigTest;
+    if (!try runGitTest(allocator, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "initial" })) return error.SkipZigTest;
+
+    // Working-tree modification (two change blocks), staged addition and
+    // untracked file.
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "one\nTWO\nthree\nFOUR\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "staged.txt", .data = "staged\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "untracked.txt", .data = "untracked\n" });
+    if (!try runGitTest(allocator, root, &.{ "add", "staged.txt" })) return error.SkipZigTest;
+
+    const path = try std.fmt.allocPrint(allocator, "{s}/a.txt", .{root});
+    defer allocator.free(path);
+    const staged_path = try std.fmt.allocPrint(allocator, "{s}/staged.txt", .{root});
+    defer allocator.free(staged_path);
+    const untracked_path = try std.fmt.allocPrint(allocator, "{s}/untracked.txt", .{root});
+    defer allocator.free(untracked_path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 30);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
+    try workbench.initGit();
+
+    try std.testing.expect(workbench.repository != null);
+    try std.testing.expect(workbench.scm_view != null);
+    try std.testing.expect(workbench.quick_diff_controller != null);
+    const initial_tabs = workbench.tabCount();
+    const provider = workbench.repository.?;
+    try std.testing.expect(provider.count() >= 3);
+    try std.testing.expect(workbench.scm_view.?.resourceCount() >= 3);
+
+    // The Changes view honors the upstream view-mode and sort commands.
+    {
+        const view = workbench.scm_view.?;
+        try std.testing.expectEqual(scm_common.ViewMode.list, view.viewMode());
+        try std.testing.expectEqual(scm_view_mod.ViewSortKey.path, view.viewSortKey());
+        _ = try workbench.commands.execute(scm_view_mod.SET_SORT_BY_NAME_ACTION_ID);
+        try std.testing.expectEqual(scm_view_mod.ViewSortKey.name, view.viewSortKey());
+        _ = try workbench.commands.execute(scm_view_mod.SET_SORT_BY_PATH_ACTION_ID);
+        try std.testing.expectEqual(scm_view_mod.ViewSortKey.path, view.viewSortKey());
+        _ = try workbench.commands.execute(scm_view_mod.SET_TREE_VIEW_MODE_ACTION_ID);
+        try std.testing.expectEqual(scm_common.ViewMode.tree, view.viewMode());
+        try std.testing.expect(view.resourceCount() >= 3);
+        _ = try workbench.commands.execute(scm_view_mod.SET_LIST_VIEW_MODE_ACTION_ID);
+        try std.testing.expectEqual(scm_common.ViewMode.list, view.viewMode());
+    }
+
+    // The SCM container stacks the Changes and Graph sections and the Graph
+    // lists the repository commits.
+    try std.testing.expect(workbench.scm_container != null);
+    try std.testing.expect(workbench.scm_view_model != null);
+    try std.testing.expect(workbench.scm_history_view != null);
+    const visible_views = try workbench.scm_view_model.?.visibleViews(allocator);
+    defer allocator.free(visible_views);
+    try std.testing.expectEqual(@as(usize, 2), visible_views.len);
+    try std.testing.expectEqualStrings("changes", visible_views[0].id);
+    try std.testing.expectEqualStrings("graph", visible_views[1].id);
+
+    workbench.refreshGitStatus();
+    const history_view = workbench.scm_history_view.?;
+    try history_view.refresh(.reload);
+    try std.testing.expect(history_view.view_models.len > 0);
+    try std.testing.expect(history_view.rows.items.len > 0);
+    try std.testing.expect(history_view.hasCurrentHistoryItem() or history_view.view_models.len > 0);
+
+    // Collapsing the Graph section keeps the header and gives the space to
+    // Changes; rendering both states must not crash.
+    _ = try workbench.showActivityById("scm");
+    workbench.scm_view_model.?.setCollapsed("graph", true);
+    try std.testing.expect(workbench.scm_view_model.?.isCollapsed("graph"));
+    var scm_frame: std.Io.Writer.Allocating = .init(allocator);
+    defer scm_frame.deinit();
+    try workbench.render(&scm_frame.writer);
+    try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "Source Control") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "Graph") != null);
+    // Changes renders the staged and working groups and their file names.
+    try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "Staged Changes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "staged.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "untracked.txt") != null);
+    // The Changes tree starts with the branch-aware message input and Commit button.
+    try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "Message (Enter to") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "\u{2713} Commit") != null);
+    try std.testing.expectEqualStrings(
+        "Message (Enter to commit on \"main\")",
+        workbench.scm_interface.?.repositories()[0].input.placeholder(),
+    );
+    workbench.scm_view_model.?.setCollapsed("graph", false);
+
+    // A mode-1003 idle motion over a section header must not toggle it or run
+    // its title actions; only a press does.
+    {
+        const container = workbench.scm_container.?;
+        var changes_header: ?ui.Rect = null;
+        for (container.sections.items) |section| {
+            if (std.mem.eql(u8, section.id, "changes")) changes_header = section.header_rect;
+        }
+        const header = changes_header orelse return error.TestExpectedChangesHeader;
+        var hover = ui.MouseEvent{
+            .kind = .move,
+            .x = ui.cell.snap(header.x) + 2,
+            .y = ui.cell.snap(header.y),
+        };
+        try std.testing.expect(workbench.handleSidebarMouse(&hover));
+        try std.testing.expect(!workbench.scm_view_model.?.isCollapsed("changes"));
+        hover.kind = .click;
+        hover.button = .left;
+        try std.testing.expect(workbench.handleSidebarMouse(&hover));
+        try std.testing.expect(workbench.scm_view_model.?.isCollapsed("changes"));
+        try std.testing.expect(workbench.handleSidebarMouse(&hover));
+        try std.testing.expect(!workbench.scm_view_model.?.isCollapsed("changes"));
+    }
+
+    // Dragging the separator increases Changes and leaves the Graph expanded.
+    try workbench.render(&scm_frame.writer);
+    const scm_container = workbench.scm_container.?;
+    const sash = scm_container.sashes.items[0].rect;
+    const before = scm_container.bodyRect("changes").?.h;
+    var drag_sash = ui.MouseEvent{
+        .kind = .down,
+        .x = ui.cell.snap(sash.x) + 3,
+        .y = ui.cell.snap(sash.y),
+        .button = .left,
+    };
+    try std.testing.expect(workbench.handleSashMouse(&drag_sash));
+    drag_sash.kind = .move;
+    drag_sash.y += 2;
+    try std.testing.expect(workbench.handleSashMouse(&drag_sash));
+    drag_sash.kind = .up;
+    try std.testing.expect(workbench.handleSashMouse(&drag_sash));
+    try workbench.render(&scm_frame.writer);
+    try std.testing.expectEqual(before + 2, scm_container.bodyRect("changes").?.h);
+    try std.testing.expect(!workbench.scm_view_model.?.isCollapsed("graph"));
+
+    // Pointer motion over the Graph body still drives the row hover: body
+    // moves are forwarded to the pane while header moves only track the
+    // hovered title action.
+    var hover_frame: std.Io.Writer.Allocating = .init(allocator);
+    defer hover_frame.deinit();
+    try workbench.render(&hover_frame.writer);
+    const graph_body = workbench.scm_container.?.bodyRect("graph") orelse return error.TestExpectedGraphBody;
+    var body_move = ui.MouseEvent{ .kind = .move, .x = ui.cell.snap(graph_body.x) + 2, .y = ui.cell.snap(graph_body.y) };
+    try std.testing.expect(workbench.handleSidebarMouse(&body_move));
+    try std.testing.expect(history_view.hoveredRow() != null);
+    try std.testing.expect(history_view.hoverContent() != null);
+    history_view.clearHover();
+
+    // The history hover keeps all four rounded corners and the same content
+    // inset with either kind of border.
+    history_view.hovered_row = 0;
+    history_view.hover_content = try allocator.dupe(u8, "7d272ae workbench: report Explorer open failures on click\nA single click opened a preview editor and discarded the change.\nthat Enter and the async open path use, and keep focus in the editor.");
+    var hovered_frame: std.Io.Writer.Allocating = .init(allocator);
+    defer hovered_frame.deinit();
+    const caps = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,round,outside,radius\x1b\\").?;
+    for ([_]bool{ false, true }) |native| {
+        workbench.setCellBorderCapabilities(if (native) caps else null);
+        try workbench.render(&hovered_frame.writer);
+        const hover_surface = &(workbench.scm_hover_surface orelse return error.TestExpectedHoverSurface);
+        const hover_grid = hover_surface.grid();
+        try std.testing.expect(hover_grid.cols >= 12 and hover_grid.rows >= 5);
+        const cells = &workbench.frame.prev;
+        const left = ui.cell.snap(workbench.activity_bar_part.base.bounds.?.w) + workbench.layout.size(.sidebar) + 1;
+        const top = ui.cell.snap(history_view.hoverRect().?.y);
+        const right = left + hover_grid.cols - 1;
+        const bottom = top + hover_grid.rows - 1;
+        const joint = ui.cell_border.Joint;
+        for ([_]usize{ left, right, left, right }, [_]usize{ top, top, bottom, bottom }, [_]u32{ '╭', '╮', '╰', '╯' }, [_]u8{ joint.top_left, joint.top_right, joint.bottom_left, joint.bottom_right }) |x, y, glyph, round_joint| {
+            if (native) {
+                try std.testing.expectEqual(round_joint, cells.borderSetAt(x, y).joints);
+            } else {
+                try std.testing.expectEqual(glyph, cells.cluster[cells.index(x, y)]);
+            }
+        }
+        try std.testing.expectEqual(@as(u32, '7'), cells.cluster[cells.index(left + 2, top + 2)]);
+    }
+    workbench.setCellBorderCapabilities(null);
+    history_view.clearHover();
+
+    // Expanding the first commit appends its changed-file rows.
+    history_view.selection = 0;
+    const rows_before_expand = history_view.rows.items.len;
+    _ = try history_view.handleKey(&.{ .key = .right });
+    try std.testing.expect(history_view.rows.items.len > rows_before_expand);
+
+    // The branch/status entry and activity badge follow the repository.
+    try std.testing.expect(workbench.git_status_accessor != null);
+    try std.testing.expectEqual(@as(usize, provider.count()), workbench.git_badge_count);
+
+    // Open the working-tree diff from SCM, which owns the resource path only
+    // until the next refresh.
+    const working_resource = provider.groups[2].resources.items[0];
+    try std.testing.expectEqualStrings("a.txt", working_resource.relative_path);
+    try workbench.scm_view.?.host.open_change(workbench.scm_view.?.host.context, &working_resource.iface);
+    var tab = workbench.activeTab() orelse return error.TestExpectedTab;
+    try std.testing.expect(tab.isDiff());
+    try std.testing.expectEqual(@as(usize, 2), tab.diff.?.widget.changeCount());
+    try std.testing.expect(tab.editor.isReadOnly());
+    try std.testing.expect(tab.diff.?.model.modified_path.ptr != working_resource.absolute_path.ptr);
+
+    // The diff tab composites both panes, the center gutter and its title.
+    var diff_frame: std.Io.Writer.Allocating = .init(allocator);
+    defer diff_frame.deinit();
+    try workbench.render(&diff_frame.writer);
+    try std.testing.expect(std.mem.indexOf(u8, diff_frame.written(), "HEAD") != null);
+    try std.testing.expect(std.mem.indexOf(u8, diff_frame.written(), "Working Tree") != null);
+    try std.testing.expect(workbench.cursorCell() != null);
+
+    // Navigation keys are TUI-specific (Alt-Up/Alt-Down).
+    const before_change = tab.diff.?.widget.current_change;
+    const next_key = ui.KeyEvent{ .key = .down, .mods = .{ .alt = true } };
+    const result = try workbench.handleTabKey(&next_key);
+    try std.testing.expectEqual(TabKeyResult.handled, result);
+    try std.testing.expect(tab.diff.?.widget.current_change != before_change);
+    const previous_key = ui.KeyEvent{ .key = .up, .mods = .{ .alt = true } };
+    try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&previous_key));
+    try std.testing.expectEqual(before_change, tab.diff.?.widget.current_change);
+
+    // Save/revert are inert for a diff tab (the read-only snapshot editor
+    // rejects the low-level save as well).
+    try std.testing.expectError(error.ReadOnly, tab.editor.save());
+
+    // Staged and untracked diffs open with distinct titles/keys.
+    try workbench.openDiff(staged_path, .head, .index);
+    const staged_tab = workbench.activeTab().?;
+    try std.testing.expect(staged_tab.isDiff());
+    try std.testing.expect(std.mem.indexOf(u8, staged_tab.input.getName(), "HEAD") != null);
+    try std.testing.expect(std.mem.indexOf(u8, staged_tab.input.getName(), "Index") != null);
+
+    // Index <-> working tree diff for a file that was staged and then edited.
+    try tmp.dir.writeFile(io, .{ .sub_path = "staged.txt", .data = "staged\nmore\n" });
+    try workbench.openDiff(staged_path, .index, .working);
+    const index_working_tab = workbench.activeTab().?;
+    try std.testing.expect(index_working_tab.isDiff());
+    try std.testing.expect(std.mem.indexOf(u8, index_working_tab.input.getName(), "Index") != null);
+    try std.testing.expect(std.mem.indexOf(u8, index_working_tab.input.getName(), "Working Tree") != null);
+
+    try workbench.openDiff(untracked_path, .empty, .working);
+    const untracked_tab = workbench.activeTab().?;
+    try std.testing.expect(untracked_tab.isDiff());
+    try std.testing.expectEqual(initial_tabs + 4, workbench.tabCount());
+
+    // Reopening from the rebuilt SCM rows refreshes and activates the same tab.
+    workbench.refreshGitStatus();
+    const refreshed_resource = provider.groups[2].resources.items[0];
+    try std.testing.expectEqualStrings("a.txt", refreshed_resource.relative_path);
+    try workbench.scm_view.?.host.open_change(workbench.scm_view.?.host.context, &refreshed_resource.iface);
+    try std.testing.expectEqual(tab, workbench.activeTab().?);
+    try std.testing.expectEqual(initial_tabs + 4, workbench.tabCount());
+
+    // Opening a changed file from the Graph uses the parent/commit snapshot
+    // diff; root commits compare against the empty tree.
+    var change_row: ?usize = null;
+    for (history_view.rows.items, 0..) |row, row_index| {
+        if (std.meta.activeTag(row) == .change) {
+            change_row = row_index;
+            break;
+        }
+    }
+    try std.testing.expect(change_row != null);
+    history_view.selection = change_row.?;
+    _ = try history_view.handleKey(&.{ .key = .enter });
+    const commit_tab = workbench.activeTab() orelse return error.TestExpectedTab;
+    try std.testing.expect(commit_tab.isDiff());
+    try std.testing.expect(std.mem.indexOf(u8, commit_tab.input.getName(), "\u{2194}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, commit_tab.input.getName(), "Empty") != null);
+
+    // Session save has no serializer for diff tabs and skips them.
+    var registry = editor_factory.EditorFactoryRegistry.init(allocator);
+    defer registry.deinit();
+    var file_serializer = workbench.createFileSerializer();
+    try registry.registerEditorSerializer(FileEditorInput.TYPE_ID, file_serializer.interface());
+    var serialized = try workbench.serializePart(allocator, &registry);
+    defer serialized.deinit(allocator);
+    var serialized_editors: usize = 0;
+    for (serialized.groups) |group_data| serialized_editors += group_data.editors.len;
+    // Only the normal file tab is serialized; the three diff inputs have no
+    // serializer and are skipped.
+    try std.testing.expectEqual(initial_tabs, serialized_editors);
+
+    // Quick-diff decorations can be disabled and detach the gutter cell.
+    try workbench.openPath(path);
+    const file_tab = workbench.activeTab().?;
+    try std.testing.expect(!file_tab.isDiff());
+    workbench.quick_diff_controller.?.setConfig(.{ .decorations = .none });
+    try std.testing.expectEqual(@as(usize, 0), file_tab.editor.lineDecorationsWidth());
+    workbench.quick_diff_controller.?.setConfig(.{ .decorations = .all });
+    try std.testing.expectEqual(@as(usize, 1), file_tab.editor.lineDecorationsWidth());
+
+    // The commit input commits the index. The `git.commit` command reads the
+    // SCM input model, like upstream's command.
+    {
+        var input = workbench.scm_interface.?.repositories()[0].input;
+        input.setValue("scm commit message", false);
+        workbench.scm_view.?.refresh();
+        try std.testing.expect(provider.repository.stateRef().index_changes.len > 0);
+        _ = try workbench.commands.execute("git.commit");
+        const after_commit = provider.repository.stateRef();
+        try std.testing.expectEqual(@as(usize, 0), after_commit.index_changes.len);
+        try std.testing.expect(after_commit.working_tree_changes.len > 0);
+        try std.testing.expectEqualStrings("", input.value());
+        const subject = try captureGitTest(allocator, root, &.{ "log", "-1", "--pretty=%s" });
+        defer if (subject) |text| allocator.free(text);
+        try std.testing.expect(subject != null);
+        try std.testing.expect(std.mem.indexOf(u8, subject.?, "scm commit message") != null);
+
+        // With an empty index the terminal's smart-commit path stages the
+        // changed files before committing.
+        input.setValue("smart commit", false);
+        workbench.scm_view.?.refresh();
+        _ = try workbench.commands.execute("git.commit");
+        const after_smart = provider.repository.stateRef();
+        try std.testing.expectEqual(@as(usize, 0), after_smart.index_changes.len);
+        try std.testing.expectEqual(@as(usize, 0), after_smart.working_tree_changes.len);
+        try std.testing.expectEqual(@as(usize, 0), after_smart.untracked_changes.len);
+        const smart_subject = try captureGitTest(allocator, root, &.{ "log", "-1", "--pretty=%s" });
+        defer if (smart_subject) |text| allocator.free(text);
+        try std.testing.expect(smart_subject != null);
+        try std.testing.expect(std.mem.indexOf(u8, smart_subject.?, "smart commit") != null);
+    }
+}
+
+test "Workbench: SCM headers toggle on click and Load More pages the history" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    if (!try runGitTest(allocator, root, &.{"init"})) return error.SkipZigTest;
+    _ = try runGitTest(allocator, root, &.{ "symbolic-ref", "HEAD", "refs/heads/main" });
+    _ = try runGitTest(allocator, root, &.{ "config", "user.name", "Test User" });
+    _ = try runGitTest(allocator, root, &.{ "config", "user.email", "test@example.com" });
+    var number: usize = 0;
+    while (number < 4) : (number += 1) {
+        const contents = try std.fmt.allocPrint(allocator, "commit {d}\n", .{number});
+        defer allocator.free(contents);
+        try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = contents });
+        if (!try runGitTest(allocator, root, &.{ "add", "a.txt" })) return error.SkipZigTest;
+        const message = try std.fmt.allocPrint(allocator, "commit {d}", .{number});
+        defer allocator.free(message);
+        if (!try runGitTest(allocator, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", message })) return error.SkipZigTest;
+    }
+
+    const path = try std.fmt.allocPrint(allocator, "{s}/a.txt", .{root});
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 30);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
+    try workbench.initGit();
+    _ = try workbench.showActivityById("scm");
+    try workbench.layout.setSize(.sidebar, 40);
+
+    const view = workbench.scm_history_view orelse return error.TestExpectedHistoryView;
+    view.setConfig(.{ .page_size = 2, .page_on_scroll = false });
+    try view.refresh(.reload);
+    try std.testing.expectEqual(@as(usize, 3), view.rows.items.len);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const container = workbench.scm_container orelse return error.TestExpectedScmContainer;
+
+    // Pointer motion over the Graph header never collapses the section and
+    // never runs a title action; only a left click does. Hovering a title
+    // action marks it in the ui surface's hover chain, which paints its
+    // declared hover style.
+    const header = container.sections.items[1].header_rect;
+    const graph_header_y = ui.cell.snap(header.y);
+    const header_start = ui.cell.snap(header.x);
+    const header_end = header_start + ui.cell.snap(header.w);
+    const header_surface = &(container.headers.items[3].surface orelse return error.TestExpectedScmContainer);
+    var over_title = ui.MouseEvent{ .kind = .move, .x = header_start + 1, .y = graph_header_y };
+    try std.testing.expect(workbench.handleSidebarMouse(&over_title));
+    try std.testing.expect(!container.model.isCollapsed("graph"));
+    for (container.headers.items[3].nodes.items) |entry| {
+        if (entry.id.len != 0) try std.testing.expect(!entry.node.isHovered());
+    }
+    var action_x: ?usize = null;
+    var scan = header_end;
+    while (scan > header_start) {
+        scan -= 1;
+        const hit = container.hitTest(header, scan, graph_header_y) orelse continue;
+        if (hit == .action and std.mem.eql(u8, hit.action.action, scm_history_view_mod.GRAPH_MENU_ACTION_ID)) {
+            action_x = scan;
+            break;
+        }
+    }
+    try std.testing.expect(action_x != null);
+    const mode_before = view.view_mode;
+    var over_action = ui.MouseEvent{ .kind = .move, .x = action_x.?, .y = graph_header_y };
+    try std.testing.expect(workbench.handleSidebarMouse(&over_action));
+    try std.testing.expectEqual(mode_before, view.view_mode);
+    try std.testing.expect(!container.model.isCollapsed("graph"));
+    const hovered = header_surface.document().hoverTarget();
+    try std.testing.expect(hovered != null);
+    var on_action = false;
+    for (container.headers.items[3].nodes.items) |entry| {
+        if (entry.id.len != 0 and entry.node == hovered.?) on_action = true;
+    }
+    try std.testing.expect(on_action);
+
+    const graph_press = ui.MouseEvent{ .kind = .down, .button = .left, .x = action_x.?, .y = graph_header_y };
+    try std.testing.expect(workbench.handleSidebarMouse(&graph_press));
+    try std.testing.expect(workbench.context_menu != null);
+    const graph_menu = workbench.context_menu.?.popup.?;
+    try std.testing.expect(!workbench.isQuickAccessOpen());
+    try std.testing.expectEqual(graph_press.x, graph_menu.options.x.?);
+    try std.testing.expectEqual(graph_press.y, graph_menu.options.y.?);
+    try std.testing.expectEqualStrings("View as List", graph_menu.items[0].label);
+    try std.testing.expectEqual(mode_before == .list, graph_menu.items[0].checked);
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .end }));
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .enter }));
+    try std.testing.expectEqual(.tree, view.viewMode());
+    view.setViewMode(mode_before);
+
+    const changes = workbench.scm_view.?;
+    changes.setViewMode(.tree);
+    try workbench.commands.execute(scm_view_mod.CHANGES_MENU_ACTION_ID);
+    const changes_menu = workbench.context_menu.?.popup.?;
+    try std.testing.expectEqualStrings("View & Sort", changes_menu.items[0].label);
+    try std.testing.expect(changes_menu.items[0].submenu[1].checked);
+    try std.testing.expect(!changes_menu.items[0].submenu[3].enabled);
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .home }));
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .right }));
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .enter }));
+    try std.testing.expectEqual(.list, changes.viewMode());
+
+    const header_context = ui.MouseEvent{ .kind = .down, .button = .right, .x = header_start + 1, .y = graph_header_y };
+    try std.testing.expect(workbench.handleSidebarMouse(&header_context));
+    const view_items = workbench.context_menu.?.popup.?.items;
+    try std.testing.expectEqualStrings("Graph", view_items[view_items.len - 1].label);
+    try std.testing.expect(view_items[view_items.len - 1].checked);
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .escape }));
+
+    // Moving back over the title clears the action hover.
+    try std.testing.expect(workbench.handleSidebarMouse(&over_title));
+    for (container.headers.items[3].nodes.items) |entry| {
+        if (entry.id.len != 0) try std.testing.expect(!entry.node.isHovered());
+    }
+
+    // The left click toggles the section; a second click restores it for the
+    // Load More click below.
+    var header_click = ui.MouseEvent{ .kind = .click, .x = header_start + 1, .y = graph_header_y, .button = .left };
+    try std.testing.expect(workbench.handleSidebarMouse(&header_click));
+    try std.testing.expect(container.model.isCollapsed("graph"));
+    try workbench.render(&out.writer);
+    const collapsed_y = ui.cell.snap(container.sections.items[1].header_rect.y);
+    var expand_click = ui.MouseEvent{ .kind = .click, .x = header_start + 1, .y = collapsed_y, .button = .left };
+    try std.testing.expect(workbench.handleSidebarMouse(&expand_click));
+    try std.testing.expect(!container.model.isCollapsed("graph"));
+    try workbench.render(&out.writer);
+
+    const body = container.bodyRect("graph") orelse return error.TestExpectedGraphBody;
+    try std.testing.expect(ui.cell.snap(body.h) >= 3);
+    const x = ui.cell.snap(body.x) + 2;
+    const y = ui.cell.snap(body.y) + 2;
+    var click = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
+    try std.testing.expect(workbench.handleSidebarMouse(&click));
+    try std.testing.expectEqual(@as(usize, 4), view.rows.items.len);
+}
+
+fn seedFile(allocator: Allocator, io: Io, tmp: *std.testing.TmpDir, name: []const u8, contents: []const u8) ![]u8 {
+    const path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/{s}", .{ tmp.sub_path, name });
+    errdefer allocator.free(path);
+    if (std.fs.path.dirname(path)) |directory| {
+        Io.Dir.cwd().createDirPath(io, directory) catch {};
+    }
+    var editor = try Editor.createFromText(allocator, io, contents, path, 40, 7);
+    try editor.save();
+    editor.deinit();
+    allocator.destroy(editor);
+    return path;
+}
+
+fn pumpSidebarForTests(workbench: *Workbench) void {
+    const sidebar = workbench.sidebar orelse return;
+    var guard: usize = 0;
+    while (sidebar.hasPendingLoad() and guard < 1000) : (guard += 1) {
+        _ = sidebar.pollLoad();
+        if (sidebar.hasPendingLoad()) std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+}
+
+fn sendDragMouse(workbench: *Workbench, report: usize, x: usize, y: usize, release: bool) !void {
+    var buf: [64]u8 = undefined;
+    const bytes = try std.fmt.bufPrint(&buf, "\x1b[<{d};{d};{d}{c}", .{ report, x + 1, y + 1, @as(u8, if (release) 'm' else 'M') });
+    var decoded = try ui.input.decode(workbench.allocator, bytes);
+    defer decoded.deinit(workbench.allocator);
+    try std.testing.expectEqual(@as(usize, 1), decoded.items.len);
+    const mouse = &decoded.items[0].mouse;
+    if (workbench.handleTabDragMouse(mouse)) return;
+    if (workbench.handleSashMouse(mouse)) return;
+    _ = workbench.handleTabMouse(mouse);
+}
+
+fn sidebarMouseForTest(workbench: *Workbench, kind: ui.MouseKind, x: usize) !void {
+    try std.testing.expect(workbench.handleSashMouse(&.{ .kind = kind, .x = x, .y = 2, .button = .left }));
+}
+
+fn runGitTest(allocator: Allocator, root: []const u8, args: []const []const u8) !bool {
+    var argv = std.array_list.Managed([]const u8).init(allocator);
+    defer argv.deinit();
+    try argv.append("git");
+    try argv.append("-C");
+    try argv.append(root);
+    try argv.appendSlice(args);
+    const result = std.process.run(allocator, std.testing.io, .{
+        .argv = argv.items,
+        .stdout_limit = .limited(1024 * 1024),
+        .stderr_limit = .limited(1024 * 1024),
+        .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(20_000), .clock = .awake } },
+    }) catch return false;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    return result.term == .exited and result.term.exited == 0;
+}
+
+fn captureGitTest(allocator: Allocator, root: []const u8, args: []const []const u8) !?[]u8 {
+    var argv = std.array_list.Managed([]const u8).init(allocator);
+    defer argv.deinit();
+    try argv.append("git");
+    try argv.append("-C");
+    try argv.append(root);
+    try argv.appendSlice(args);
+    const result = std.process.run(allocator, std.testing.io, .{
+        .argv = argv.items,
+        .stdout_limit = .limited(1024 * 1024),
+        .stderr_limit = .limited(1024 * 1024),
+        .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(20_000), .clock = .awake } },
+    }) catch return null;
+    defer allocator.free(result.stderr);
+    if (!(result.term == .exited and result.term.exited == 0)) {
+        allocator.free(result.stdout);
+        return null;
+    }
+    return result.stdout;
+}
+
+fn launchTestTerminal(service: *TerminalService, allocator: Allocator) anyerror!*terminal_service_mod.TerminalInstance {
+    const instance = try terminal_service_mod.TerminalInstance.create(allocator, service.io, service.next_id, .{
+        .shell = "/bin/true",
+        .profile_name = "true",
+    });
+    service.next_id += 1;
+    return instance;
 }

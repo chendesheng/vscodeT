@@ -175,6 +175,20 @@ pub const SidebarPart = struct {
         return self.visible;
     }
 
+    pub fn resizeWidth(base: *Part, width: usize) !usize {
+        const self: *SidebarPart = @fieldParentPtr("base", base);
+        try self.setWidth(width);
+        return self.width;
+    }
+
+    /// The terminal border is painted on the cell edge when supported.
+    /// Glyph borders reserve space inside the sidebar's grid rectangle.
+    pub fn innerRect(frame: ui.Rect, cell_borders: bool) ui.Rect {
+        if (cell_borders) return frame;
+        if (frame.h >= 14) return .{ .x = frame.x + 1, .y = frame.y + 1, .w = frame.w - 2, .h = frame.h - 2 };
+        return .{ .x = frame.x, .y = frame.y, .w = frame.w - 1, .h = frame.h };
+    }
+
     pub fn setWidth(self: *SidebarPart, width: usize) !void {
         const clamped = @max(self.minimum_width, @min(width, self.maximum_width));
         if (self.width == clamped) return;

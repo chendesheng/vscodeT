@@ -241,6 +241,7 @@ pub const Layout = struct {
     pub fn layout(self: *Layout, rects: WorkbenchGrid.Rects, statusbar: ui.Rect) void {
         self.layoutPart(.activitybar, rects.activity_bar);
         self.layoutPart(.sidebar, rects.sidebar);
+        self.layoutPart(.editor, rects.editor);
         self.layoutPart(.panel, rects.panel);
         self.layoutPart(.statusbar, statusbar);
     }
@@ -273,8 +274,12 @@ pub const Layout = struct {
 
     pub fn setSize(self: *Layout, part: Parts, value: usize) !void {
         const index = @backingInt(part);
-        if (self.states[index].size == value) return;
-        self.states[index].size = value;
+        const constrained = if (self.parts.get(part)) |binding| blk: {
+            const resize = binding.part.resize_primary orelse break :blk value;
+            break :blk try resize(binding.part, value);
+        } else value;
+        if (self.states[index].size == constrained) return;
+        self.states[index].size = constrained;
         try self.on_did_change.fire({});
     }
 

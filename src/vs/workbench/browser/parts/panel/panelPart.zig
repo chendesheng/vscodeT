@@ -98,6 +98,12 @@ pub const PanelPart = struct {
         return self.visible;
     }
 
+    pub fn resizeHeight(base: *Part, height: usize) !usize {
+        const self: *PanelPart = @fieldParentPtr("base", base);
+        try self.setSize(height);
+        return self.size;
+    }
+
     pub fn setSize(self: *PanelPart, size: usize) !void {
         const clamped = @max(self.minimum_height, @min(size, self.maximum_height));
         if (self.size == clamped) return;

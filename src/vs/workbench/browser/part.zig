@@ -11,6 +11,7 @@ pub const Part = struct {
     on_did_visibility_change: Emitter(bool),
     bounds: ?ui.Rect = null,
     registration: IDisposable = .none,
+    resize_primary: ?*const fn (*Part, usize) anyerror!usize = null,
     read_visible: *const fn (*const Part) bool,
     apply_visible: *const fn (*Part, bool) anyerror!void,
 
