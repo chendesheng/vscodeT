@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 15,185 lines and has no inline tests. All 151 baseline
+The browser shell is 15,079 lines and has no inline tests. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records 256 command IDs with labels, categories and visibility for empty and
@@ -52,6 +52,10 @@ Show All Commands resolves the quick input service through its Action2 handler.
   The RPC reply wakes the terminal view directly. The terminal host currently
   supports explicit requests to the bundled terminal-suggest provider and
   appending a suffix at the prompt cursor. Fourteen files still import the shell.
+* The SCM changes and history panes read settings through IConfigurationService.
+  Configuration change events apply settings to open panes, including edits
+  made through the configuration API. The graph restores its workspace view mode
+  before applying the configured default.
 * The terminal host owns its input buffer, descriptor waits, resize handling
   and frame output. Breadcrumb and outline updates request a frame from their
   model listeners. The command table, native menu construction, feature

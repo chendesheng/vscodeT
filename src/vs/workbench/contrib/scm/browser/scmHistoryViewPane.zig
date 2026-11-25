@@ -13,6 +13,7 @@
 // - the tree mode compresses single-child folders like `scm.compactFolders`.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const IConfigurationService = @import("../../../../platform/configuration/common/configuration.zig").IConfigurationService;
 const ui = @import("ui");
 const history = @import("../common/history.zig");
 const scm_history = @import("./scmHistory.zig");
@@ -46,6 +47,24 @@ pub const Config = struct {
     compact_folders: bool = true,
     short_hash_length: usize = 7,
     always_show_actions: bool = false,
+
+    pub fn read(service: IConfigurationService) Config {
+        var config = Config{};
+        if (service.getValue("scm.graph.pageSize")) |value| {
+            if (value.* == .integer) config.page_size = @intCast(std.math.clamp(value.integer, 1, 1000));
+        }
+        if (service.getValue("git.commitShortHashLength")) |value| {
+            if (value.* == .integer) config.short_hash_length = @intCast(@max(value.integer, 1));
+        }
+        config.page_on_scroll = service.getBool("scm.graph.pageOnScroll", config.page_on_scroll);
+        config.badges_all = std.mem.eql(u8, service.getString("scm.graph.badges") orelse "filter", "all");
+        config.show_incoming_changes = service.getBool("scm.graph.showIncomingChanges", config.show_incoming_changes);
+        config.show_outgoing_changes = service.getBool("scm.graph.showOutgoingChanges", config.show_outgoing_changes);
+        config.default_view_mode = if (std.mem.eql(u8, service.getString("scm.defaultViewMode") orelse "list", "list")) .list else .tree;
+        config.compact_folders = service.getBool("scm.compactFolders", config.compact_folders);
+        config.always_show_actions = service.getBool("scm.alwaysShowActions", config.always_show_actions);
+        return config;
+    }
 };
 
 pub const Host = struct {
@@ -171,7 +190,10 @@ pub const SCMHistoryViewPane = struct {
     pub fn setConfig(self: *SCMHistoryViewPane, config: Config) void {
         const mode_changed = config.default_view_mode != self.config.default_view_mode;
         self.config = config;
-        if (mode_changed) self.view_mode = config.default_view_mode;
+        if (mode_changed) {
+            self.view_mode = self.loadViewMode();
+            self.rebuildRows() catch {};
+        }
         self.revision += 1;
     }
 

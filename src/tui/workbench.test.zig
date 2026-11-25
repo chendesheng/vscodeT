@@ -7185,6 +7185,9 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
 
     const workbench = try Workbench.init(allocator, io, &.{path}, 100, 30);
     defer workbench.deinit();
+    const settings_path = try std.fs.path.join(allocator, &.{ root, ".git", "test-settings.json" });
+    defer allocator.free(settings_path);
+    try workbench.setUserSettingsPaths(&.{settings_path});
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.initGit();
@@ -7196,6 +7199,23 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     const provider = workbench.repository.?;
     try std.testing.expect(provider.count() >= 3);
     try std.testing.expect(workbench.scm_view.?.resourceCount() >= 3);
+
+    // Direct configuration edits reach both views before the host polls files.
+    const graph = workbench.scm_history_view.?;
+    try workbench.setUserConfigurationValue("scm.graph.pageSize", .{ .integer = 1001 });
+    try std.testing.expectEqual(@as(usize, 1000), graph.config.page_size);
+    try workbench.setUserConfigurationValue("scm.graph.pageSize", .{ .integer = 0 });
+    try std.testing.expectEqual(@as(usize, 1), graph.config.page_size);
+    try workbench.setUserConfigurationValue("scm.graph.pageSize", null);
+    try std.testing.expectEqual(@as(usize, 50), graph.config.page_size);
+    try workbench.setUserConfigurationValue("scm.defaultViewMode", .{ .string = "tree" });
+    try std.testing.expectEqual(scm_common.ViewMode.tree, workbench.scm_view.?.viewMode());
+    try std.testing.expectEqual(.tree, graph.viewMode());
+    graph.setViewMode(.list);
+    graph.setViewMode(.tree);
+    try workbench.setUserConfigurationValue("scm.defaultViewMode", null);
+    try std.testing.expectEqual(.tree, graph.viewMode());
+    graph.setViewMode(.list);
 
     // The Changes view honors the upstream view-mode and sort commands.
     {

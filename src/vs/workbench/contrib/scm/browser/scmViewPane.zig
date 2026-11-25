@@ -26,6 +26,7 @@
 //   filtering and automatic reveal are unported.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const IConfigurationService = @import("../../../../platform/configuration/common/configuration.zig").IConfigurationService;
 const ui = @import("ui");
 const theme_colors_mod = @import("../../../browser/themeColors.zig");
 const views = @import("../../../common/views.zig");
@@ -99,6 +100,32 @@ pub const Config = struct {
     /// `scm.showInputActionButton`: hide the commit toolbar while keeping the
     /// message box and its Enter shortcut.
     show_input_action_button: bool = true,
+
+    pub fn read(service: IConfigurationService) Config {
+        var config = Config{};
+        config.default_view_mode = if (std.mem.eql(u8, service.getString("scm.defaultViewMode") orelse "list", "list")) .list else .tree;
+        if (service.getString("scm.defaultViewSortKey")) |value| {
+            config.default_view_sort_key = std.meta.stringToEnum(ViewSortKey, value) orelse .path;
+        }
+        if (service.getString("scm.providerCountBadge")) |value| {
+            config.provider_count_badge = std.meta.stringToEnum(ProviderCountBadge, value) orelse .hidden;
+        }
+        if (service.getString("workbench.tree.renderIndentGuides")) |value| config.indent_guides = IndentGuides.fromString(value);
+        config.always_show_repositories = service.getBool("scm.alwaysShowRepositories", config.always_show_repositories);
+        config.compact_folders = service.getBool("scm.compactFolders", config.compact_folders);
+        config.show_input_action_button = service.getBool("scm.showInputActionButton", config.show_input_action_button);
+        config.show_action_button = service.getBool("scm.showActionButton", config.show_action_button);
+        config.show_commit_action = service.getBool("git.showActionButton.commit", config.show_commit_action);
+        config.show_publish_action = service.getBool("git.showActionButton.publish", config.show_publish_action);
+        config.show_sync_action = service.getBool("git.showActionButton.sync", config.show_sync_action);
+        const decorations = service.getBool("git.decorations.enabled", true);
+        config.decoration_colors = decorations and service.getBool("explorer.decorations.colors", config.decoration_colors);
+        config.decoration_badges = decorations and service.getBool("explorer.decorations.badges", config.decoration_badges);
+        config.always_show_actions = service.getBool("scm.alwaysShowActions", config.always_show_actions);
+        config.inline_open_file_action = service.getBool("git.showInlineOpenFileAction", config.inline_open_file_action);
+        config.open_diff_on_click = service.getBool("git.openDiffOnClick", config.open_diff_on_click);
+        return config;
+    }
 };
 
 pub const Host = struct {

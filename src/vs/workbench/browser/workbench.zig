@@ -2427,7 +2427,7 @@ pub const Workbench = struct {
         );
         const themes = try self.ensureThemeService();
         try themes.setConfiguration(self.configuration.?);
-        try self.configuration.?.onDidChangeConfiguration(self, onLayoutConfigurationChange);
+        try self.configuration.?.onDidChangeConfiguration(self, onWorkbenchConfigurationChange);
         if (self.declarative) |catalog| try self.applyExtensionDefaults(catalog);
         if (self.terminal_service) |service| service.options.configuration = self.configuration;
         self.settings_watcher = SettingsWatcher.init(self.allocator, self.io, self.configuration.?) catch null;
@@ -2438,16 +2438,20 @@ pub const Workbench = struct {
         }
         self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
         self.applyLayoutSettings();
+        self.applyScmConfig();
     }
 
-    fn onLayoutConfigurationChange(change: configuration_mod.Change, self: *Workbench) !void {
+    fn onWorkbenchConfigurationChange(change: configuration_mod.Change, self: *Workbench) !void {
         const config = @import("../../platform/configuration/common/configuration.zig");
         if (config.affectsConfiguration(change, "workbench") or config.affectsConfiguration(change, "zenMode")) {
             self.applyLayoutSettings();
             self.applyZenModeConfigurationChange();
         }
-        if (config.affectsConfiguration(change, layout_service_mod.LayoutSettings.editor_centered_layout_auto_resize) or config.affectsConfiguration(change, "diffEditor.renderSideBySide")) {
-            self.centerMainEditorLayout(self.layout.isMainEditorCentered(), false);
+        if (config.affectsConfiguration(change, "scm") or config.affectsConfiguration(change, "git") or
+            config.affectsConfiguration(change, "explorer.decorations") or config.affectsConfiguration(change, "workbench.tree.renderIndentGuides"))
+        {
+            self.applyScmConfig();
+            self.requestFrame();
         }
         if (config.affectsConfiguration(change, layout_service_mod.LayoutSettings.editor_centered_layout_auto_resize) or
             config.affectsConfiguration(change, "diffEditor.renderSideBySide"))
@@ -2677,7 +2681,6 @@ pub const Workbench = struct {
             if (watcher.poll(now_ms) catch false) {
                 changed = true;
                 if (self.search_view) |view| view.onConfigurationChanged();
-                self.applyScmConfig();
             }
         }
         if (self.file_watcher_service) |service| {
@@ -4489,7 +4492,6 @@ pub const Workbench = struct {
             .status = scmViewStatus,
         });
         self.scm_view = scm_view;
-        scm_view.setConfig(self.scmChangesConfig());
 
         // Graph view and the collapsible SCM view container. The existing
         // terminal ViewContainerModel only holds the portable visible/collapsed
@@ -4506,7 +4508,7 @@ pub const Workbench = struct {
             self.quick_diff_storage,
         );
         self.scm_history_view = history_view;
-        history_view.setConfig(self.scmHistoryConfig());
+        self.applyScmConfig();
         if (self.theme_palette) |palette| history_view.setThemeColors(palette);
         if (provider.historyProvider()) |history_provider| {
             history_view.setProvider(history_provider.interface());
@@ -4542,7 +4544,6 @@ pub const Workbench = struct {
         self.next_git_refresh = time_compat.milliTimestamp();
         self.syncGitStatus();
         self.syncGitActivity();
-        self.syncScmInput();
         if (self.scm_view) |view| view.refresh();
         self.refreshStatus();
     }
@@ -5251,70 +5252,19 @@ pub const Workbench = struct {
         return paths.toOwnedSlice();
     }
 
-    /// Builds the Graph configuration from the user settings.
-    pub fn scmHistoryConfig(self: *Workbench) scm_history_view_mod.Config {
-        var config = scm_history_view_mod.Config{};
-        const configuration = self.configuration orelse return config;
-        config.always_show_actions = configuration.getBool("scm.alwaysShowActions", false);
-        if (configuration.getValue("scm.graph.pageSize", .{})) |value| {
-            switch (value.*) {
-                .integer => |number| config.page_size = @intCast(@max(@min(number, 1000), 1)),
-                else => {},
-            }
-        }
-        if (configuration.getValue("scm.graph.pageOnScroll", .{})) |value| {
-            switch (value.*) {
-                .bool => |enabled| config.page_on_scroll = enabled,
-                else => {},
-            }
-        }
-        if (configuration.getValue("scm.graph.badges", .{})) |value| {
-            switch (value.*) {
-                .string => |text| config.badges_all = std.mem.eql(u8, text, "all"),
-                else => {},
-            }
-        }
-        if (configuration.getValue("scm.graph.showIncomingChanges", .{})) |value| {
-            switch (value.*) {
-                .bool => |enabled| config.show_incoming_changes = enabled,
-                else => {},
-            }
-        }
-        if (configuration.getValue("scm.graph.showOutgoingChanges", .{})) |value| {
-            switch (value.*) {
-                .bool => |enabled| config.show_outgoing_changes = enabled,
-                else => {},
-            }
-        }
-        if (configuration.getValue("scm.defaultViewMode", .{})) |value| {
-            switch (value.*) {
-                .string => |text| config.default_view_mode = if (std.mem.eql(u8, text, "tree")) .tree else .list,
-                else => {},
-            }
-        }
-        if (configuration.getValue("scm.compactFolders", .{})) |value| {
-            switch (value.*) {
-                .bool => |enabled| config.compact_folders = enabled,
-                else => {},
-            }
-        }
-        if (configuration.getValue("git.commitShortHashLength", .{})) |value| {
-            switch (value.*) {
-                .integer => |number| config.short_hash_length = @intCast(@max(number, 1)),
-                else => {},
-            }
-        }
-        return config;
-    }
-
     /// Re-applies the SCM settings the terminal views understand. A view keeps
     /// an explicit list/tree or sort choice made through its title action or
     /// command, like upstream's workspace storage override.
     fn applyScmConfig(self: *Workbench) void {
-        const config = self.scmHistoryConfig();
+        const configuration = self.configuration orelse {
+            self.syncScmInput();
+            return;
+        };
+        const service = configuration.interface();
+        const config = scm_history_view_mod.Config.read(service);
         if (self.scm_history_view) |view| view.setConfig(config);
         self.syncScmInput();
-        if (self.scm_view) |view| view.setConfig(self.scmChangesConfig());
+        if (self.scm_view) |view| view.setConfig(scm_view_mod.Config.read(service));
         if (self.repository) |provider| provider.setCommitShortHashLength(config.short_hash_length);
     }
 
@@ -5359,62 +5309,6 @@ pub const Workbench = struct {
         else
             "Message (Enter to commit)";
         input.setPlaceholder(placeholder);
-    }
-
-    fn scmChangesConfig(self: *Workbench) scm_view_mod.Config {
-        var config = scm_view_mod.Config{};
-        const configuration = self.configuration orelse return config;
-        if (configuration.getValue("scm.defaultViewMode", .{})) |value| {
-            switch (value.*) {
-                .string => |text| config.default_view_mode = if (std.mem.eql(u8, text, "tree")) .tree else .list,
-                else => {},
-            }
-        }
-        if (configuration.getValue("scm.defaultViewSortKey", .{})) |value| {
-            switch (value.*) {
-                .string => |text| {
-                    if (std.mem.eql(u8, text, "name")) {
-                        config.default_view_sort_key = .name;
-                    } else if (std.mem.eql(u8, text, "status")) {
-                        config.default_view_sort_key = .status;
-                    } else {
-                        config.default_view_sort_key = .path;
-                    }
-                },
-                else => {},
-            }
-        }
-        config.always_show_repositories = configuration.getBool("scm.alwaysShowRepositories", false);
-        config.compact_folders = configuration.getBool("scm.compactFolders", true);
-        config.show_input_action_button = configuration.getBool("scm.showInputActionButton", true);
-        config.show_action_button = configuration.getBool("scm.showActionButton", true);
-        config.show_commit_action = configuration.getBool("git.showActionButton.commit", true);
-        config.show_publish_action = configuration.getBool("git.showActionButton.publish", true);
-        config.show_sync_action = configuration.getBool("git.showActionButton.sync", true);
-        const decorations = configuration.getBool("git.decorations.enabled", true);
-        config.decoration_colors = decorations and configuration.getBool("explorer.decorations.colors", true);
-        config.decoration_badges = decorations and configuration.getBool("explorer.decorations.badges", true);
-        config.always_show_actions = configuration.getBool("scm.alwaysShowActions", false);
-        config.inline_open_file_action = configuration.getBool("git.showInlineOpenFileAction", true);
-        config.open_diff_on_click = configuration.getBool("git.openDiffOnClick", true);
-        if (configuration.getValue("workbench.tree.renderIndentGuides", .{})) |value| {
-            if (value.* == .string) config.indent_guides = @TypeOf(config.indent_guides).fromString(value.string);
-        }
-        if (configuration.getValue("scm.providerCountBadge", .{})) |value| {
-            switch (value.*) {
-                .string => |text| {
-                    if (std.mem.eql(u8, text, "visible")) {
-                        config.provider_count_badge = .visible;
-                    } else if (std.mem.eql(u8, text, "auto")) {
-                        config.provider_count_badge = .auto;
-                    } else {
-                        config.provider_count_badge = .hidden;
-                    }
-                },
-                else => {},
-            }
-        }
-        return config;
     }
 
     fn scmChangesRenderBody(
