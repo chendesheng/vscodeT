@@ -1,4 +1,4 @@
-// Port of the count-badge portion of SCMActiveRepositoryController from
+// Port of the count-badge and status-bar portions of SCMActiveRepositoryController from
 // src/vs/workbench/contrib/scm/browser/activity.ts. The single-root terminal
 // registers one repository, which is both the visible and active repository;
 // hiding the SCM sidebar does not change that selection. Title variables and
@@ -7,24 +7,28 @@ const std = @import("std");
 const scm = @import("../common/scm.zig");
 const configuration = @import("../../../../platform/configuration/common/configuration.zig");
 const ConfigurationService = @import("../../../services/configuration/browser/configurationService.zig").ConfigurationService;
+const statusbar = @import("../../../browser/parts/statusbar/statusbarPart.zig");
 const ActivityService = @import("../../../services/activity/browser/activityService.zig").ActivityService;
 
 pub const SCMActiveRepositoryController = struct {
     allocator: std.mem.Allocator,
     provider: *scm.ISCMProvider,
     activity_service: *ActivityService,
+    statusbar_service: *statusbar.StatusbarService,
+    status_entry: ?statusbar.EntryAccessor = null,
     resources_listener: ?usize = null,
     configuration_service: ?*ConfigurationService = null,
     configuration_listener: ?usize = null,
     count: usize = 0,
     badge_buffer: [32]u8 = undefined,
 
-    pub fn create(allocator: std.mem.Allocator, provider: *scm.ISCMProvider, activity_service: *ActivityService, config: ?*ConfigurationService) !*SCMActiveRepositoryController {
+    pub fn create(allocator: std.mem.Allocator, provider: *scm.ISCMProvider, activity_service: *ActivityService, statusbar_service: *statusbar.StatusbarService, config: ?*ConfigurationService) !*SCMActiveRepositoryController {
         const self = try allocator.create(SCMActiveRepositoryController);
-        self.* = .{ .allocator = allocator, .provider = provider, .activity_service = activity_service };
+        self.* = .{ .allocator = allocator, .provider = provider, .activity_service = activity_service, .statusbar_service = statusbar_service };
         errdefer self.destroy();
         self.resources_listener = try provider.on_did_change_resources.listen(self, onDidChangeResources);
         try self.setConfiguration(config);
+        try self.updateStatusBar();
         return self;
     }
 
@@ -43,6 +47,7 @@ pub const SCMActiveRepositoryController = struct {
 
     fn onDidChangeResources(_: void, self: *SCMActiveRepositoryController) !void {
         try self.updateActivityCountBadge();
+        try self.updateStatusBar();
     }
 
     fn onDidChangeConfiguration(change: configuration.Change, self: *SCMActiveRepositoryController) !void {
@@ -63,8 +68,32 @@ pub const SCMActiveRepositoryController = struct {
         self.count = count;
     }
 
+    /// The native provider currently supplies one combined checkout/sync
+    /// command. Its text is borrowed from the repository's stable buffer.
+    fn updateStatusBar(self: *SCMActiveRepositoryController) !void {
+        const commands = self.provider.status_bar_commands;
+        if (commands.len == 0) {
+            if (self.status_entry) |entry| entry.dispose();
+            self.status_entry = null;
+            return;
+        }
+        const command = commands[0];
+        const entry: @import("../../../services/statusbar/browser/statusbar.zig").StatusbarEntry = .{
+            .name = "Source Control",
+            .text = command.title,
+            .tooltip = command.id,
+            .command = if (command.id.len == 0) null else .{ .id = command.id },
+        };
+        if (self.status_entry) |accessor| {
+            accessor.update(entry);
+        } else {
+            self.status_entry = try self.statusbar_service.addEntry(entry, "workbench.scm.branch", .left, .{ .number = 100 });
+        }
+    }
+
     pub fn destroy(self: *SCMActiveRepositoryController) void {
         self.detachConfiguration();
+        if (self.status_entry) |entry| entry.dispose();
         if (self.resources_listener) |listener| self.provider.on_did_change_resources.unlisten(listener);
         if (self.count != 0) self.activity_service.removeActivity("scm", "scm.changes");
         self.allocator.destroy(self);

@@ -697,8 +697,6 @@ pub const Workbench = struct {
     scm: SCMContribution,
     scm_view_model: ?*view_container_model_mod.ViewContainerModel = null,
     scm_container: ?*view_pane_container_mod.ViewPaneContainer = null,
-    git_status_accessor: ?EntryAccessor = null,
-    git_status_buf: [96]u8 = undefined,
     /// Set when the quit confirmation commits to closing the window.
     quit_requested: bool = false,
     /// The modal save confirmation, if one is open.
@@ -770,7 +768,6 @@ pub const Workbench = struct {
         self.scm = SCMContribution.init(allocator);
         self.scm_view_model = null;
         self.scm_container = null;
-        self.git_status_accessor = null;
         self.quit_requested = false;
         self.dialog = null;
         self.pending_dialog = null;
@@ -3833,6 +3830,7 @@ pub const Workbench = struct {
         try self.scm.attachProvider(provider.interface(), &quick_providers, .{
             .editors = .{ .part = self.part },
             .activity_service = &self.activity_service,
+            .statusbar_service = &self.statusbar,
             .window = &self.window_events,
             .configuration = self.configuration,
             .changes_host = .{
@@ -3879,13 +3877,7 @@ pub const Workbench = struct {
             self.explorer_panes.?,
         );
 
-        self.git_status_accessor = try self.statusbar.addEntry(.{
-            .name = "Source Control",
-            .text = "",
-            .command = .{ .id = "workbench.view.scm" },
-        }, "workbench.scm.branch", .left, .{ .number = 100 });
         if (self.file_watcher_service) |files_service| provider.watch(files_service) catch {};
-        self.syncGitStatus();
         if (self.scm.changes) |view| view.refresh();
     }
 
@@ -3904,36 +3896,6 @@ pub const Workbench = struct {
         if (provider.refreshHistoryRefs(true)) {
             if (self.scm.history) |view| view.onHistoryItemRefsChanged(true);
         }
-        self.syncGitStatus();
-    }
-
-    fn syncGitStatus(self: *Workbench) void {
-        const accessor = self.git_status_accessor orelse return;
-        const provider = self.git_model.repository orelse {
-            accessor.update(.{ .name = "Source Control", .text = "" });
-            return;
-        };
-        const state = provider.repository.stateRef();
-        var branch: []const u8 = "";
-        if (state.head) |head| {
-            if (head.ref.name) |name| branch = name;
-        }
-        var ahead: usize = 0;
-        var behind: usize = 0;
-        if (state.head) |head| {
-            ahead = head.ahead orelse 0;
-            behind = head.behind orelse 0;
-        }
-        const text = if (branch.len > 0)
-            std.fmt.bufPrint(&self.git_status_buf, "\u{2387} {s} \u{2191}{d} \u{2193}{d} ({d})", .{
-                branch,
-                ahead,
-                behind,
-                provider.count(),
-            }) catch "Git"
-        else
-            std.fmt.bufPrint(&self.git_status_buf, "\u{2387} (detached) ({d})", .{provider.count()}) catch "Git";
-        accessor.update(.{ .name = "Source Control", .text = text, .tooltip = "workbench.view.scm" });
     }
 
     /// Opens a diff between two refs of `path`. `working` uses the open buffer
@@ -4010,10 +3972,7 @@ pub const Workbench = struct {
     fn gitDisabled(context: ?*anyopaque, reason: []const u8) void {
         const raw_context = context orelse return;
         const self: *Workbench = @ptrCast(@alignCast(raw_context));
-        if (self.status_hint_accessor) |hint| {
-            const text = std.fmt.bufPrint(&self.git_status_buf, "Source Control disabled: {s}", .{reason}) catch "Source Control disabled";
-            hint.update(.{ .name = "Source Control", .text = text });
-        }
+        self.setStatusHint("Source Control disabled: {s}", .{reason});
     }
 
     fn providerOpenChange(context: *anyopaque, provider: *repository_mod.Repository, resource: *repository_mod.GitScmResource) anyerror!void {
@@ -4139,7 +4098,7 @@ pub const Workbench = struct {
 
     fn scmViewCommit(context: *anyopaque, message: []const u8, action: scm_view_mod.CommitAction) anyerror!void {
         const self: *Workbench = @ptrCast(@alignCast(context));
-        try self.commitScmMessageWithAction(message, action);
+        try (try self.gitCommands()).commit(message, action);
     }
 
     fn scmViewStatus(context: *anyopaque, message: []const u8) void {
@@ -4178,118 +4137,23 @@ pub const Workbench = struct {
         }
     }
 
+    fn gitCommands(self: *Workbench) !@import("../../../extensions/git/src/commands.zig").Commands {
+        return .{
+            .allocator = self.allocator,
+            .repository = self.git_model.repository orelse return error.NoRepository,
+            .configuration = if (self.configuration) |config| config.interface() else null,
+            .host = .{ .context = self, .report_status = scmViewStatus, .did_run_remote_action = onScmRemoteAction },
+        };
+    }
+
     fn runScmRemoteAction(self: *Workbench, action: git_mod.Git.RemoteAction, remote: ?[]const u8) !void {
-        const provider = self.git_model.repository orelse return error.NoRepository;
-        const git = provider.git orelse return error.NoGit;
-        try git.runRemoteAction(provider.root, action, remote);
+        try (try self.gitCommands()).remote(action, remote);
+    }
+
+    fn onScmRemoteAction(context: *anyopaque) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
         self.refreshGitStatus();
         if (self.scm.history) |view| view.refresh(.reload) catch {};
-    }
-
-    fn finishScmCommit(self: *Workbench, action: scm_view_mod.CommitAction) void {
-        if (action == .sync) {
-            self.runScmRemoteAction(.pull, null) catch |err| {
-                self.setStatusHint("Committed, but pull failed: {s}", .{@errorName(err)});
-                return;
-            };
-        }
-        if (action == .push or action == .sync) {
-            self.runScmRemoteAction(.push, null) catch |err| {
-                self.setStatusHint("Committed, but push failed: {s}", .{@errorName(err)});
-                return;
-            };
-        }
-        self.setStatusHint("Committed", .{});
-    }
-
-    /// Commits `message`. With staged changes the index is committed as-is;
-    /// when the index is empty the terminal substitutes upstream's smart
-    /// commit prompt by staging the changed files (honoring
-    /// `git.smartCommitChanges`), then commits.
-    fn commitScmMessage(self: *Workbench, message: []const u8) !void {
-        return self.commitScmMessageWithAction(message, .commit);
-    }
-
-    fn commitScmMessageWithAction(self: *Workbench, message: []const u8, action: scm_view_mod.CommitAction) !void {
-        const provider = self.git_model.repository orelse return error.NoRepository;
-        const state = provider.repository.stateRef();
-        if (message.len == 0 and action != .amend) {
-            self.setStatusHint("Commit message is required", .{});
-            return error.EmptyCommitMessage;
-        }
-        if (state.merge_changes.len > 0) {
-            self.setStatusHint("Resolve the merge conflicts before committing", .{});
-            return error.UnresolvedConflicts;
-        }
-        const total = state.index_changes.len +
-            state.working_tree_changes.len +
-            state.untracked_changes.len;
-        if (total == 0 and action != .amend) {
-            self.setStatusHint("No changes to commit", .{});
-            return error.NoChanges;
-        }
-
-        const git = provider.git orelse {
-            self.setStatusHint("Commit failed: Git is not available", .{});
-            return error.NoGit;
-        };
-
-        const options = git_mod.GitCommitOptions{ .amend = action == .amend };
-        if (state.index_changes.len > 0 or total == 0) {
-            git.commitFiles(provider.root, &.{}, message, options) catch |err| {
-                self.setStatusHint("Commit failed: {s}", .{@errorName(err)});
-                return err;
-            };
-            self.finishScmCommit(action);
-            return;
-        }
-
-        var tracked_only = false;
-        if (self.configuration) |configuration| {
-            if (configuration.getValue("git.smartCommitChanges", .{})) |value| {
-                switch (value.*) {
-                    .string => |text| tracked_only = std.mem.eql(u8, text, "tracked"),
-                    else => {},
-                }
-            }
-        }
-        var files = std.array_list.Managed([]const u8).init(self.allocator);
-        defer files.deinit();
-        var seen = std.StringHashMap(void).init(self.allocator);
-        defer seen.deinit();
-        const working_paths = try uniqueChangePaths(&seen, state.working_tree_changes, files.allocator);
-        defer files.allocator.free(working_paths);
-        try files.appendSlice(working_paths);
-        if (!tracked_only) {
-            const untracked_paths = try uniqueChangePaths(&seen, state.untracked_changes, files.allocator);
-            defer files.allocator.free(untracked_paths);
-            try files.appendSlice(untracked_paths);
-        }
-        if (files.items.len == 0) {
-            self.setStatusHint("No tracked changes to commit", .{});
-            return error.NothingStaged;
-        }
-        git.commitFiles(provider.root, files.items, message, options) catch |err| {
-            self.setStatusHint("Commit failed: {s}", .{@errorName(err)});
-            return err;
-        };
-        self.finishScmCommit(action);
-    }
-
-    fn uniqueChangePaths(
-        seen: *std.StringHashMap(void),
-        changes: []const repository_mod.GitChange,
-        allocator: Allocator,
-    ) ![]const []const u8 {
-        var paths = std.array_list.Managed([]const u8).init(allocator);
-        errdefer paths.deinit();
-        for (changes) |change| {
-            if (change.path.len == 0) continue;
-            if (seen.contains(change.path)) continue;
-            try seen.put(change.path, {});
-            try paths.append(change.path);
-        }
-        return paths.toOwnedSlice();
     }
 
     /// Re-applies the SCM settings the terminal views understand. A view keeps

@@ -18,6 +18,8 @@ const Emitter = @import("../../../../base/common/event.zig").Emitter;
 const history = @import("./history.zig");
 
 pub const Command = languages.Command;
+/// Terminal projection of the Git commit dropdown / post-commit command.
+pub const CommitAction = enum { commit, amend, push, sync };
 pub const Selector = language_selector.Selector;
 
 pub const VIEWLET_ID = "workbench.view.scm";

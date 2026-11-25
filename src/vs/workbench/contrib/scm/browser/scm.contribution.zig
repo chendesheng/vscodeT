@@ -39,6 +39,7 @@ pub const SCMContribution = struct {
     pub const Options = struct {
         editors: EditorService,
         activity_service: *ActivityService,
+        statusbar_service: *@import("../../../browser/parts/statusbar/statusbarPart.zig").StatusbarService,
         window: *WindowQueue,
         configuration: ?*ConfigurationService,
         changes_host: scm_view.Host,
@@ -54,7 +55,7 @@ pub const SCMContribution = struct {
         service.* = SCMService.init(allocator);
         self.service = service;
         _ = try service.registerSCMProvider(provider);
-        self.activity = try SCMActiveRepositoryController.create(allocator, provider, options.activity_service, options.configuration);
+        self.activity = try SCMActiveRepositoryController.create(allocator, provider, options.activity_service, options.statusbar_service, options.configuration);
 
         const storage = try allocator.create(Storage);
         storage.* = Storage.init(allocator);

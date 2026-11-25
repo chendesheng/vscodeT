@@ -99,6 +99,7 @@ pub const Repository = struct {
     label: []u8,
     name: []u8,
     branch: ?[]u8 = null,
+    status_bar: @import("statusbar.zig").StatusBarCommands = .{},
     host: Host,
     groups: [3]GitScmGroup,
     group_pointers: [3]*scm.ISCMResourceGroup,
@@ -446,6 +447,7 @@ pub const Repository = struct {
             }
         }
         self.base.count = self.count();
+        self.base.status_bar_commands = self.status_bar.update(state, self.count());
         if (self.branch) |branch| self.allocator.free(branch);
         self.branch = null;
         if (state.head) |head| {

@@ -7922,15 +7922,19 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expect(history_view.rows.items.len > rows_before_expand);
 
     // The branch/status entry and activity badge follow the repository.
-    try std.testing.expect(workbench.git_status_accessor != null);
+    try std.testing.expect(workbench.scm.activity.?.status_entry != null);
     try std.testing.expectEqual(@as(usize, provider.count()), workbench.scm.activity.?.count);
     // Count mode follows configuration events, and a selected repository is
     // still active while the Source Control view is not shown.
     try workbench.setUserConfigurationValue("scm.countBadge", .{ .string = "off" });
     try std.testing.expectEqual(@as(usize, 0), workbench.scm.activity.?.count);
     try std.testing.expect(workbench.activity_service.getContainerBadgeDescription("scm") == null);
+    const sidebar_was_shown = workbench.sidebarShown();
+    if (sidebar_was_shown) try workbench.toggleSidebar();
+    try std.testing.expect(!workbench.sidebarShown());
     try workbench.setUserConfigurationValue("scm.countBadge", .{ .string = "focused" });
     try std.testing.expectEqual(@as(usize, provider.count()), workbench.scm.activity.?.count);
+    if (sidebar_was_shown) try workbench.toggleSidebar();
     try workbench.setUserConfigurationValue("scm.countBadge", .{ .string = "all" });
 
     // Open the working-tree diff from SCM, which owns the resource path only

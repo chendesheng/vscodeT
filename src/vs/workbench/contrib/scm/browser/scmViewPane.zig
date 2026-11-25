@@ -89,7 +89,7 @@ pub fn appendSecondary(menu: *Menu, service: *MenuService, parent: keys.IContext
     try menu.appendMenuActions(service, menus.menu_ids.SCMTitle, context.interface(), true);
 }
 
-pub const CommitAction = enum { commit, amend, push, sync };
+pub const CommitAction = @import("../common/scm.zig").CommitAction;
 pub const ResourceAction = enum {
     open_file,
     open_change,
