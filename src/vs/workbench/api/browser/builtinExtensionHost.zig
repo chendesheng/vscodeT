@@ -55,6 +55,7 @@ pub const BuiltinExtensionHost = struct {
                 .context = self,
                 .register_fn = registerCommand,
                 .execute_fn = executeCommand,
+                .locations_fn = executeLocationProvider,
             },
             .key_input = .{ .context = self, .register_fn = registerKeyHandler },
             .editors = .{
@@ -72,6 +73,7 @@ pub const BuiltinExtensionHost = struct {
             },
             .workspace = .{
                 .context = self,
+                .text_document_fn = getTextDocument,
                 .get_bool_fn = getBool,
                 .get_string_fn = getString,
             },
@@ -396,13 +398,15 @@ fn registerCommand(
     const label_copy = try self.allocator.dupe(u8, label);
     errdefer self.allocator.free(label_copy);
     state.* = .{ .host = self, .id = id_copy, .label = label_copy, .handler = handler };
+    const registration = try self.allocator.create(CommandRegistration);
+    errdefer self.allocator.destroy(registration);
     try self.workbench.commands.register(.{
         .id = state.id,
         .label = state.label,
+        .category = handler.category,
         .context = state,
         .run = runRegisteredCommand,
     });
-    const registration = try self.allocator.create(CommandRegistration);
     registration.* = .{ .host = self, .state = state };
     return .{ .context = registration, .disposeFn = CommandRegistration.dispose };
 }
@@ -410,6 +414,25 @@ fn registerCommand(
 fn executeCommand(context: *anyopaque, id: []const u8) anyerror!bool {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
     return self.workbench.commands.platform.execute(id);
+}
+
+/// Built-in API command IDs map to the model-and-position commands in goToSymbol.ts.
+fn executeLocationProvider(context: *anyopaque, arena: Allocator, id: []const u8, model: *TextModel, position: Position) ![]const extension_api.LocationLink {
+    const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
+    const features = self.workbench.language_features orelse return &.{};
+    const symbols = @import("../../../editor/contrib/gotoSymbol/browser/goToSymbol.zig");
+    const none = @import("../../../base/common/cancellation.zig").CancellationToken.None;
+    const links = if (std.mem.eql(u8, id, "vscode.executeReferenceProvider"))
+        try symbols.getReferencesAtPosition(arena, &features.reference_provider, model, position, false, false, none)
+    else if (std.mem.eql(u8, id, "vscode.executeImplementationProvider"))
+        try symbols.getImplementationsAtPosition(arena, &features.implementation_provider, model, position, false, none)
+    else
+        return error.UnknownCommand;
+    var sorted = try @import("../../../editor/contrib/gotoSymbol/browser/referencesModel.zig").ReferencesModel.init(arena, links, "");
+    defer sorted.deinit();
+    const result = try arena.alloc(extension_api.LocationLink, sorted.references.len);
+    for (result, sorted.references) |*link, reference| link.* = reference.link;
+    return result;
 }
 
 const StatusEntryState = struct {
@@ -483,6 +506,12 @@ fn openPath(context: *anyopaque, path: []const u8) anyerror!void {
 fn switchTab(context: *anyopaque, delta: isize) anyerror!void {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
     try self.workbench.switchTab(delta);
+}
+
+fn getTextDocument(context: *anyopaque, path: []const u8) ?*TextModel {
+    const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
+    const input = self.workbench.findOpenInput(path) orelse return null;
+    return input.editor.model;
 }
 
 fn getBool(context: *anyopaque, key: []const u8, default: bool) bool {

@@ -28,6 +28,19 @@ pub const ActionDescriptor = struct {
     no_result_generic: []const u8,
     always_show_list: bool = false,
     compact_references: bool = true,
+
+    /// Portable provider dispatch of SymbolNavigationAction's concrete subclasses.
+    pub fn getLocationLinks(action: *const ActionDescriptor, arena: std.mem.Allocator, features: *@import("../../../common/services/languageFeaturesService.zig").LanguageFeaturesService, model: *@import("../../../common/model/textModel.zig").TextModel, position: @import("../../../common/core/position.zig").Position) ![]@import("../../../common/languages.zig").LocationLink {
+        const symbols = @import("goToSymbol.zig");
+        const CancellationToken = @import("../../../../base/common/cancellation.zig").CancellationToken;
+        return switch (action.kind) {
+            .definition => try symbols.getDefinitionsAtPosition(arena, &features.definition_provider, model, position, false, CancellationToken.None),
+            .declaration => try symbols.getDeclarationsAtPosition(arena, &features.declaration_provider, model, position, false, CancellationToken.None),
+            .type_definition => try symbols.getTypeDefinitionsAtPosition(arena, &features.type_definition_provider, model, position, false, CancellationToken.None),
+            .implementation => try symbols.getImplementationsAtPosition(arena, &features.implementation_provider, model, position, false, CancellationToken.None),
+            .references => try symbols.getReferencesAtPosition(arena, &features.reference_provider, model, position, action.compact_references, false, CancellationToken.None),
+        };
+    }
 };
 
 pub const definition = ActionDescriptor{

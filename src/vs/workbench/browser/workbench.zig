@@ -197,8 +197,6 @@ const editorBrowser = @import("../../editor/browser/editorBrowser.zig");
 const Range = @import("../../editor/common/core/range.zig").Range;
 const LanguageFeaturesService = @import("../../editor/common/services/languageFeaturesService.zig").LanguageFeaturesService;
 const languages = @import("../../editor/common/languages.zig");
-const CancellationToken = @import("../../base/common/cancellation.zig").CancellationToken;
-const go_to_symbol = @import("../../editor/contrib/gotoSymbol/browser/goToSymbol.zig");
 const references_model = @import("../../editor/contrib/gotoSymbol/browser/referencesModel.zig");
 const ReferencesModel = references_model.ReferencesModel;
 const go_to_commands = @import("../../editor/contrib/gotoSymbol/browser/goToCommands.zig");
@@ -735,7 +733,8 @@ pub const Workbench = struct {
     home_path: ?[]u8 = null,
     breadcrumbs_arena: std.heap.ArenaAllocator,
     navigation_arena: std.heap.ArenaAllocator,
-    reference_history: @import("../../../extensions/references-view/referencesView.zig").History = .{},
+    builtin_host: *@import("../api/browser/builtinExtensionHost.zig").BuiltinExtensionHost,
+    references_view: @import("../../../extensions/references-view/referencesView.zig").SymbolsTree,
     pending_references: ?*ReferencesModel = null,
     symbol_picker: ?struct {
         tab: *Tab,
@@ -938,7 +937,6 @@ pub const Workbench = struct {
         self.breadcrumbs_settings = BreadcrumbsSettings.load(null);
         self.breadcrumbs_arena = std.heap.ArenaAllocator.init(allocator);
         errdefer self.breadcrumbs_arena.deinit();
-        self.reference_history = .{};
         self.navigation_arena = std.heap.ArenaAllocator.init(allocator);
         errdefer self.navigation_arena.deinit();
         self.pending_references = null;
@@ -1400,6 +1398,8 @@ pub const Workbench = struct {
         }
 
         self.simple_browser = .{ .allocator = self.allocator, .io = self.io, .quick_input = self.quick_access.inputService(), .context = self, .open_editor = openTerminalEditorWithProfile, .report_error = reportEditorMessage };
+        self.builtin_host = try @import("../api/browser/builtinExtensionHost.zig").BuiltinExtensionHost.init(self.allocator, self);
+        errdefer self.builtin_host.deinit();
         try self.registerDefaultCommands();
         self.statusbar.setCommandExecutor(.{
             .context = self,
@@ -1679,7 +1679,8 @@ pub const Workbench = struct {
         for (commands) |command| try self.commands.register(command);
 
         try @import("../../../extensions/tunnel-forwarding/portForwarding.zig").register(self);
-        try @import("../../../extensions/references-view/referencesView.zig").register(self);
+        try self.references_view.init(&self.builtin_host.context, self.quick_access.inputService());
+        errdefer self.references_view.deinit();
         for (go_to_commands.actions, 0..) |_, index| {
             const action = &go_to_commands.actions[index];
             self.symbol_action_contexts[index] = .{ .workbench = self, .action = action };
@@ -1911,7 +1912,8 @@ pub const Workbench = struct {
             self.home_path = null;
         }
         self.breadcrumbs_arena.deinit();
-        self.reference_history.deinit(self.allocator);
+        self.references_view.deinit();
+        self.builtin_host.deinit();
         self.navigation_arena.deinit();
         self.breadcrumbs_service.deinit();
         if (self.outline_view) |view| {
@@ -6812,13 +6814,7 @@ pub const Workbench = struct {
 
         const model = tab.editor.model;
         const position = tab.editor.modelCursorPosition();
-        const links = switch (action.kind) {
-            .definition => try go_to_symbol.getDefinitionsAtPosition(arena, &features.definition_provider, model, position, false, CancellationToken.None),
-            .declaration => try go_to_symbol.getDeclarationsAtPosition(arena, &features.declaration_provider, model, position, false, CancellationToken.None),
-            .type_definition => try go_to_symbol.getTypeDefinitionsAtPosition(arena, &features.type_definition_provider, model, position, false, CancellationToken.None),
-            .implementation => try go_to_symbol.getImplementationsAtPosition(arena, &features.implementation_provider, model, position, false, CancellationToken.None),
-            .references => try go_to_symbol.getReferencesAtPosition(arena, &features.reference_provider, model, position, action.compact_references, false, CancellationToken.None),
-        };
+        const links = try action.getLocationLinks(arena, features, model, position);
 
         const references = try arena.create(ReferencesModel);
         references.* = try ReferencesModel.init(arena, links, action.title);

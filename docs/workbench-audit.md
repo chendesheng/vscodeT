@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 15,239 lines and has no inline tests. All 151 baseline
+The browser shell is 15,235 lines and has no inline tests. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records 256 command IDs with labels, categories and visibility for empty and
@@ -43,7 +43,9 @@ populated editor groups.
   on shutdown. Document symbols use one shared outline-model service.
 * Task providers, authentication account choices, file-icon theme data and
   sidebar moves have service owners. Simple Browser uses its bundled command
-  handler and launches Lynx in a terminal editor.
+  handler and launches Lynx in a terminal editor. The bundled references view
+  uses the extension command API to query reference and implementation providers
+  and the window API to reveal a result.
 * The terminal host owns its input buffer, descriptor waits, resize handling
   and frame output. The command table, native menu construction, feature
   wiring and several state-scanning methods still live in the browser shell.

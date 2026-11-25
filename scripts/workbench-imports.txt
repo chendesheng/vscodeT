@@ -1,4 +1,3 @@
-src/extensions/references-view/referencesView.zig -> src/vs/workbench/browser/workbench.zig
 src/extensions/tunnel-forwarding/portForwarding.zig -> src/vs/workbench/browser/workbench.zig
 src/tui/benchmark.zig -> src/vs/workbench/browser/workbench.zig
 src/tui/workbench.test.zig -> src/vs/workbench/browser/workbench.zig

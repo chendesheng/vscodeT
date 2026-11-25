@@ -4292,9 +4292,9 @@ test "Workbench: LSP navigation, references and symbol picker" {
     picker.accept();
     try std.testing.expectEqual(@as(usize, 3), reference_picker.items.items.len);
     reference_picker.accept();
-    try std.testing.expectEqual(@as(usize, 1), workbench.reference_history.entries.items.len);
+    try std.testing.expectEqual(@as(usize, 1), workbench.references_view.history.entries.items.len);
     try workbench.commands.execute("references-view.clearHistory");
-    try std.testing.expectEqual(@as(usize, 0), workbench.reference_history.entries.items.len);
+    try std.testing.expectEqual(@as(usize, 0), workbench.references_view.history.entries.items.len);
 
     try std.testing.expect(try workbench.showHover());
     try std.testing.expect(tab.controllers.?.hover.isVisible());

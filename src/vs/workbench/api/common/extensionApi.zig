@@ -260,6 +260,9 @@ pub const IHistoryService = struct {
 };
 
 pub const IWorkspaceService = struct {
+    /// Looks up a document already open in the editor, as in workspace.textDocuments.
+    text_document_fn: ?*const fn (*anyopaque, []const u8) ?*TextModel = null,
+
     context: *anyopaque,
     get_bool_fn: *const fn (context: *anyopaque, key: []const u8, default: bool) bool,
     get_string_fn: *const fn (context: *anyopaque, key: []const u8) ?[]const u8,
@@ -273,14 +276,26 @@ pub const IWorkspaceService = struct {
 };
 
 pub const CommandHandler = struct {
+    category: []const u8 = "",
     context: *anyopaque,
     run: *const fn (context: *anyopaque) anyerror!void,
 };
 
+pub const LocationLink = @import("../../../editor/common/languages.zig").LocationLink;
+
 pub const ICommandService = struct {
+    /// Typed executeCommand overload for the language provider API. The supplied
+    /// arena owns the result and its resource strings.
+    locations_fn: ?*const fn (*anyopaque, Allocator, []const u8, *TextModel, Position) anyerror![]const LocationLink = null,
+
     context: *anyopaque,
     register_fn: *const fn (context: *anyopaque, id: []const u8, label: []const u8, handler: CommandHandler) anyerror!IDisposable,
     execute_fn: *const fn (context: *anyopaque, id: []const u8) anyerror!bool,
+
+    pub fn executeLocationProvider(self: ICommandService, arena: Allocator, id: []const u8, model: *TextModel, position: Position) ![]const LocationLink {
+        const run = self.locations_fn orelse return error.UnknownCommand;
+        return run(self.context, arena, id, model, position);
+    }
 
     pub fn register(self: ICommandService, id: []const u8, label: []const u8, handler: CommandHandler) !IDisposable {
         return self.register_fn(self.context, id, label, handler);
