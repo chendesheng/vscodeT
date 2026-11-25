@@ -6497,7 +6497,7 @@ test "Workbench: zen mode applies configuration changes while active" {
     try workbench.setUserConfigurationValue("zenMode.silentNotifications", .{ .bool = true });
     try std.testing.expect(workbench.notification_api.getFilter(null) == .ERROR);
     try workbench.setUserConfigurationValue("workbench.notifications.position", .{ .string = "bottom-left" });
-    try std.testing.expect(workbench.notification_controller.?.position == .bottom_left);
+    try std.testing.expect(workbench.core.notification_controller.?.position == .bottom_left);
     try std.testing.expectEqual(editor_options.RenderLineNumbersType.Off, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
     try std.testing.expect(workbench.layout.isMainEditorCentered());
     try std.testing.expect(!workbench.geometry().statusBarVisible());
@@ -8742,7 +8742,7 @@ test "workbench mounts and disposes only its subtree in the terminal window" {
         try std.testing.expect(wb.layout.main_container == null);
         try std.testing.expect(sibling.nextSibling() == null);
         const instantiation = try wb.startup();
-        try std.testing.expectEqual(&wb.instantiation, instantiation);
+        try std.testing.expectEqual(wb.instantiation, instantiation);
         try std.testing.expectError(error.WorkbenchAlreadyStarted, wb.startup());
         try std.testing.expectEqual(&supplied_models, try wb.instantiation.invokeFunction(models.getOutlineModelService, .{}));
         const main = wb.layout.main_container.?;
@@ -8863,7 +8863,7 @@ test "Workbench: notification center commands render an actionable notification 
     const window = try TestWindow.init(allocator, std.testing.io, &.{}, 80, 24);
     defer window.deinit();
     const wb = window.workbench;
-    const controller = wb.notification_controller.?;
+    const controller = wb.core.notification_controller.?;
     var count: usize = 0;
     const handle = wb.notification_api.prompt(.Info, .{ .text = "Complete the operation" }, &.{.{ .label = "Complete", .context = &count, .run_fn = struct {
         fn run(ctx: *anyopaque) void {

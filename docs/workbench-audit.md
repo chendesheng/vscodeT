@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 6,365 lines and has no inline tests. There are no direct imports from `src/vs` to `src/tui` anywhere in the tree. Three files import the shell: the terminal host, its integration tests, and the Workbench test fixture. No production feature module imports the shell. All 151 baseline
+The browser shell is 6,281 lines and has no inline tests. There are no direct imports from `src/vs` to `src/tui` anywhere in the tree. Three files import the shell: the terminal host, its integration tests, and the Workbench test fixture. No production feature module imports the shell. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and
@@ -207,3 +207,5 @@ with its owning port.
 * SearchViewTerminal owns the native Search view/service lifetime and document queries. SearchEditorFactory in searchEditor.contribution creates and navigates Search Editor inputs and registers the two palette actions; ReplaceService owns the native open/closed file edit adapter. The window supplies only editor focus/configuration/layout hooks. The closed-file adapter still uses the terminal byte-offset path rather than the full upstream bulk-edit service.
 
 * The Git extension owns eight command registrations, remote publish picker identity and labels, and resolving snapshot diff contents (including unsaved working editors). SCMContribution owns its registered view container and model; SidebarPart owns view-container mounting and unmounting. The workbench supplies the native editor and SCM selection callbacks.
+
+* The portable WorkbenchCore now owns Layout, InstantiationService, the upstream startup/registry/context/listener/part order, the notification controller and restore deadlines. The transitional native shell supplies explicit service instances and window lifecycle/focus callbacks. The next structural step relocates the native shell to src/tui and renames the core to Workbench at the pinned upstream path.

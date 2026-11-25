@@ -63,6 +63,7 @@ const SidebarPart = sidebar_part_mod.SidebarPart;
 const layout_service_mod = @import("../services/layout/browser/layoutService.zig");
 const workbench_layout = @import("./layout.zig");
 const Layout = workbench_layout.Layout;
+const workbench_core = @import("workbenchCore.zig");
 const code_editor_service = @import("../../editor/browser/services/codeEditorService.zig");
 const CodeEditorService = @import("../services/editor/browser/codeEditorService.zig").CodeEditorService;
 const WorkbenchGrid = workbench_layout.WorkbenchGrid;
@@ -131,7 +132,6 @@ const Emitter = @import("../../base/common/event.zig").Emitter;
 const lifecycle_mod = @import("../services/lifecycle/common/lifecycle.zig");
 const ServiceCollection = @import("../../platform/instantiation/common/serviceCollection.zig").ServiceCollection;
 const InstantiationService = @import("../../platform/instantiation/common/instantiationService.zig").InstantiationService;
-const ServicesAccessor = @import("../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
 const outline_pane_mod = @import("../contrib/outline/browser/outlinePane.zig");
 const OutlinePane = outline_pane_mod.OutlinePane;
 const outline_contrib = @import("../contrib/outline/browser/outline.zig");
@@ -307,11 +307,7 @@ const MenuActionContext = struct {
     view_id: ?[]const u8 = null,
 };
 
-pub const IWorkbenchOptions = struct {
-    /// Class IDs in the terminal document stylesheet.
-    extra_classes: []const u16 = &.{},
-    reset_layout: bool = false,
-};
+pub const IWorkbenchOptions = workbench_core.IWorkbenchOptions;
 
 const views_service = @import("../services/views/common/viewsService.zig");
 
@@ -356,8 +352,7 @@ const WindowViews = struct {
 
 pub const Workbench = struct {
     const WindowTimer = @import("../../base/common/async.zig").WindowTimer;
-    startup_window: ?struct { parent: *ui.Node, options: IWorkbenchOptions, has_previous_state: bool },
-    restore_timer: ?*WindowTimer,
+    core: workbench_core.WorkbenchCore,
     code_editors: CodeEditorService,
     window_views: WindowViews,
     views_api: views_service.IViewsService,
@@ -396,7 +391,7 @@ pub const Workbench = struct {
     explorer_panes: ?[]view_pane_container_mod.Pane = null,
     window_events: @import("../../base/common/windowDispatch.zig").Queue,
     search_window: search_view_mod.SearchWindow,
-    layout: Layout,
+    layout: *Layout,
     activity_bar_part: ActivityBarPart,
     sidebar_part: SidebarPart,
     panel_part: PanelPart,
@@ -406,7 +401,6 @@ pub const Workbench = struct {
     notification_storage: storage_mod.InMemoryStorageService,
     notification_service: *@import("../services/notification/common/notificationService.zig").NotificationService,
     notification_api: @import("../../platform/notification/common/notification.zig").INotificationService,
-    notification_controller: ?*@import("parts/notifications/notificationsCommands.zig").NotificationsController = null,
     images: ui.image.Runtime,
     markdown_previews: MarkdownPreviewManager,
     group_actions: @import("parts/editor/editorActions.zig").GroupActions,
@@ -467,7 +461,7 @@ pub const Workbench = struct {
     simple_browser: SimpleBrowserManager,
     outline_service: OutlineService,
     services: ServiceCollection,
-    instantiation: InstantiationService,
+    instantiation: *InstantiationService,
     layout_api: layout_service_mod.IWorkbenchLayoutService,
     lifecycle_api: lifecycle_mod.ILifecycleService,
     on_will_shutdown: Emitter(lifecycle_mod.WillShutdownEvent),
@@ -537,8 +531,6 @@ pub const Workbench = struct {
         errdefer allocator.destroy(self);
 
         self.* = undefined;
-        self.startup_window = .{ .parent = parent, .options = options, .has_previous_state = state != null };
-        self.restore_timer = null;
         self.references_view_registered = false;
         self.allocator = allocator;
         self.view_factory = view_factory;
@@ -595,7 +587,7 @@ pub const Workbench = struct {
         self.search_window = undefined;
         self.search_window.view = null;
         self.search_window.service = null;
-        try self.initShellModels();
+        try self.initShellModels(parent, options, state != null);
         errdefer self.deinitShellModels();
         self.layout.reset_layout = options.reset_layout;
         self.outline_service = OutlineService.init(allocator);
@@ -992,43 +984,61 @@ pub const Workbench = struct {
     }
 
     pub fn startup(self: *Workbench) !*InstantiationService {
-        const window = self.startup_window orelse return error.WorkbenchAlreadyStarted;
-        self.startup_window = null;
-        try self.initServices();
-        try self.instantiation.invokeFunction(startWorkbench, .{ self, window.parent, window.options });
-        if (window.has_previous_state) {
-            try self.restoreEditors();
-            self.layoutAll();
-        } else try self.part.when_restored.open(self.allocator);
-        return &self.instantiation;
-    }
-
-    fn startWorkbench(accessor: ServicesAccessor, self: *Workbench, parent: *ui.Node, options: IWorkbenchOptions) !void {
-        try self.layout.initLayout(self.part);
-        try self.registerDefaultCommands();
-        try @import("../workbench.common.main.zig").registerMenus(&self.commands.menus);
-        try self.contributions.start(accessor);
-        _ = try self.ensureContextKeys();
-        try self.registerListeners();
-        try self.renderWorkbench(parent, options);
-        try self.createNotificationsHandlers();
-        try self.layout.createWorkbenchLayout();
-        self.layoutAll();
-    }
-
-    fn createNotificationsHandlers(self: *Workbench) !void {
-        const notifications = @import("parts/notifications/notificationsCommands.zig");
-        const controller = try notifications.NotificationsController.create(self.allocator, self.notification_service, &self.statusbar, &self.window_events, (try self.ensureContextKeys()).interface(), .{
+        return self.core.startup(&self.services, .{
             .context = self,
-            .request_frame = notificationFrame,
-            .open_link = notificationOpenLink,
-            .focus_editor = notificationFocusEditor,
+            .part = self.part,
+            .commands = &self.commands,
+            .contributions = &self.contributions,
+            .lifecycle = &self.lifecycle,
+            .will_shutdown = &self.on_will_shutdown,
+            .did_shutdown = &self.on_did_shutdown,
+            .notification_service = self.notification_service,
+            .statusbar = &self.statusbar,
+            .window = &self.window_events,
+            .configuration = &self.configuration,
+            .notification_host = .{
+                .context = self,
+                .request_frame = notificationFrame,
+                .open_link = notificationOpenLink,
+                .focus_editor = notificationFocusEditor,
+            },
+            .register_services = struct {
+                fn run(context: *anyopaque) !void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    try host.registerNativeServices();
+                }
+            }.run,
+            .register_commands = struct {
+                fn run(context: *anyopaque) !void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    try host.registerDefaultCommands();
+                }
+            }.run,
+            .context_keys = struct {
+                fn run(context: *anyopaque) !@import("../../platform/contextkey/common/contextkey.zig").IContextKeyService {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    return (try host.ensureContextKeys()).interface();
+                }
+            }.run,
+            .register_listeners = struct {
+                fn run(context: *anyopaque) !void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    try host.registerNativeListeners();
+                }
+            }.run,
+            .restore_editors = struct {
+                fn run(context: *anyopaque) !void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    try host.restoreEditors();
+                }
+            }.run,
+            .layout = struct {
+                fn run(context: *anyopaque) void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    host.layoutAll();
+                }
+            }.run,
         });
-        errdefer controller.deinit();
-        try controller.attachConfiguration(self.configuration);
-        _ = try self.services.set(notifications.controller_id, controller);
-        try notifications.registerNotificationCommands(&self.commands, &self.instantiation);
-        self.notification_controller = controller;
     }
 
     fn notificationFrame(context: *anyopaque) void {
@@ -1048,9 +1058,7 @@ pub const Workbench = struct {
         } else _ = try @import("../../platform/opener/common/opener.zig").openExternal(self.allocator, self.io, href);
     }
 
-    fn registerListeners(self: *Workbench) !void {
-        _ = try self.lifecycle_api.on_will_shutdown.listen(self, onWillShutdown);
-        _ = try self.lifecycle_api.on_did_shutdown.listen(self, onDidShutdown);
+    fn registerNativeListeners(self: *Workbench) !void {
         _ = try self.dialog_api.on_will_show_dialog.listenSignal(self, onDialogStateChanged);
         _ = try self.dialog_api.on_did_show_dialog.listenSignal(self, onDialogStateChanged);
         _ = try self.part.on_did_focus.listen(self, onEditorPartFocus);
@@ -1084,16 +1092,7 @@ pub const Workbench = struct {
         if (self.media_status) |status| try status.bindActiveEditor(editor_service);
     }
 
-    fn onWillShutdown(event: lifecycle_mod.WillShutdownEvent, self: *Workbench) !void {
-        try self.on_will_shutdown.fire(event);
-    }
-
-    fn onDidShutdown(_: void, self: *Workbench) !void {
-        try self.on_did_shutdown.fire({});
-    }
-
-    fn initServices(self: *Workbench) !void {
-        try self.instantiation.init(self.allocator, &self.services);
+    fn registerNativeServices(self: *Workbench) !void {
         self.lifecycle_api = self.lifecycle.interface();
         self.layout_api = self.layout.interface();
         self.window_views = .{ .workbench = self };
@@ -1112,13 +1111,7 @@ pub const Workbench = struct {
         self.terminal_action_services = terminal_actions.TerminalActionServices.bind(self);
         _ = try self.services.set(terminal_actions.terminal_action_services_id, &self.terminal_action_services);
         _ = try self.services.set(lifecycle_mod.lifecycle_service_id, &self.lifecycle_api);
-        _ = try self.services.set(layout_service_mod.layout_service_id, &self.layout_api);
         _ = try self.services.set(@import("../../platform/notification/common/notification.zig").notification_service_id, &self.notification_api);
-        try self.instantiation.invokeFunction(setServicesReady, .{});
-    }
-
-    fn setServicesReady(accessor: ServicesAccessor) !void {
-        try (try accessor.get(lifecycle_mod.lifecycle_service_id)).setPhase(.Ready);
     }
 
     fn restoreEditors(self: *Workbench) !void {
@@ -1135,53 +1128,14 @@ pub const Workbench = struct {
     }
 
     pub fn restore(self: *Workbench, timer: *WindowTimer, saved: ?Layout.WorkspaceState) !void {
-        if (self.restore_timer != null or self.lifecycle.will_shutdown) return error.WorkbenchAlreadyRestoring;
-        _ = try self.lifecycle.on_will_shutdown.listen(self, stopRestoration);
-        self.restore_timer = timer;
-        const restoring = self.layout.restoreParts(saved, &self.part.when_restored);
-        try self.layout.when_ready.wait(self.allocator, .{ .context = self, .run = onLayoutReady });
-        try restoring;
-    }
-
-    fn stopRestoration(_: lifecycle_mod.WillShutdownEvent, self: *Workbench) !void {
-        self.cancelRestoreTimer();
-    }
-
-    fn cancelRestoreTimer(self: *Workbench) void {
-        if (self.restore_timer) |timer| timer.callback = null;
-        self.restore_timer = null;
-    }
-
-    fn onLayoutReady(context: *anyopaque) !void {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        const callback = lifecycle_mod.Continuation{ .context = self, .run = onLayoutRestored };
-        self.restore_timer.?.setTimeout(2000, callback);
-        try self.layout.when_restored.wait(self.allocator, callback);
-    }
-
-    fn onLayoutRestored(context: *anyopaque) !void {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        if (self.restore_timer == null or self.lifecycle.phase.reached(.Restored)) return;
-        defer self.restore_timer.?.setTimeout(2500, .{ .context = self, .run = scheduleEventually });
-        try self.lifecycle_api.setPhase(.Restored);
-        if (self.notification_controller) |controller| try controller.toasts.start();
-    }
-
-    fn scheduleEventually(context: *anyopaque) !void {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        self.restore_timer.?.runWhenIdle(2500, .{ .context = self, .run = onWindowIdle });
-    }
-
-    fn onWindowIdle(context: *anyopaque) !void {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        try self.lifecycle_api.setPhase(.Eventually);
+        try self.core.restore(timer, saved);
     }
 
     pub fn createFileSerializer(self: *Workbench) FileEditorSerializer {
         return FileEditorSerializer.init(self.allocator, self.io, self.cols, self.editorContentHeight());
     }
 
-    fn initShellModels(self: *Workbench) !void {
+    fn initShellModels(self: *Workbench, parent: *ui.Node, options: IWorkbenchOptions, has_previous_state: bool) !void {
         self.dialog_service = .init(self.allocator);
         errdefer self.dialog_service.deinit();
         self.dialog_handler = try @import("parts/dialogs/dialog.web.contribution.zig").DialogHandlerContribution.create(self.allocator, &self.dialog_service.model);
@@ -1190,7 +1144,9 @@ pub const Workbench = struct {
         self.marker_listener = null;
         self.markers_status = null;
         self.range_highlights = null;
-        self.layout = Layout.init(self.allocator);
+        self.core = workbench_core.WorkbenchCore.init(self.allocator, parent, options, has_previous_state);
+        self.layout = &self.core.layout;
+        self.instantiation = &self.core.instantiation;
         self.layout.zen_host = .{
             .context = self,
             .get_configuration = readZenModeConfiguration,
@@ -1200,7 +1156,7 @@ pub const Workbench = struct {
             .focus_part = focusLayoutPart,
             .apply_line_numbers = applyZenLineNumbers,
         };
-        errdefer self.layout.deinit();
+        errdefer self.core.deinit();
         self.activity_bar_part = ActivityBarPart.init(self.allocator);
         errdefer self.activity_bar_part.deinit();
         self.sidebar_part = SidebarPart.init(self.allocator);
@@ -1220,7 +1176,6 @@ pub const Workbench = struct {
         errdefer self.view_descriptor_service.deinit();
         try self.view_descriptor_service.attach();
         _ = try self.view_descriptor_service.on_did_change_container.listen(self, onViewContainerChanged);
-        self.notification_controller = null;
         self.notification_storage = storage_mod.InMemoryStorageService.init(self.allocator);
         errdefer self.notification_storage.deinit();
         self.notification_service = try @import("../services/notification/common/notificationService.zig").NotificationService.create(self.allocator, &self.notification_storage);
@@ -1424,7 +1379,7 @@ pub const Workbench = struct {
         }
         if (self.search_window.view) |view| view.detachActivity();
         self.activity_service.deinit();
-        if (self.notification_controller) |controller| controller.deinit();
+        self.core.disposeNotifications();
         self.statusbar.deinit();
         self.notification_service.deinit();
         self.notification_storage.deinit();
@@ -1433,7 +1388,7 @@ pub const Workbench = struct {
         self.view_descriptor_service.deinit();
         self.view_containers_registry.deinit();
         self.activity_bar_part.deinit();
-        self.layout.deinit();
+        self.core.deinit();
     }
 
     fn initQuickAccess(self: *Workbench) !void {
@@ -1565,7 +1520,7 @@ pub const Workbench = struct {
     fn registerDefaultCommands(self: *Workbench) !void {
         const status = self.editor_status.?;
         try self.commands.register(.{ .id = "workbench.action.quickOpen", .label = "Go to File...", .category = "File", .context = self, .run = commandQuickOpen });
-        try self.commands.registerAction(&self.instantiation, @import("../contrib/quickaccess/browser/commandsQuickAccess.zig").ShowAllCommandsAction.descriptor);
+        try self.commands.registerAction(self.instantiation, @import("../contrib/quickaccess/browser/commandsQuickAccess.zig").ShowAllCommandsAction.descriptor);
         const before_group_focus = [_]commands_mod.CommandInfo{
             .{ .id = editor_status_mod.goto_line_command, .label = "Go to Line/Column...", .category = "Go", .context = status, .run = editor_status_mod.commandGotoLine },
             .{ .id = editor_status_mod.change_indentation_command, .label = "Change Indentation", .category = "Editor", .context = status, .run = editor_status_mod.commandChangeIndentation },
@@ -1596,16 +1551,16 @@ pub const Workbench = struct {
         };
         for (before_group_focus) |command| try self.commands.register(command);
         const outline_actions = @import("../contrib/outline/browser/outlineActions.zig");
-        try self.commands.registerAction(&self.instantiation, outline_actions.focus_action);
+        try self.commands.registerAction(self.instantiation, outline_actions.focus_action);
         try self.commands.register(.{ .id = OutlinePane.more_actions_id, .label = "Outline More Actions", .show_in_palette = false, .context = self, .run = commandOutlineMoreActions });
-        for (outline_actions.outline_actions) |action| try self.commands.registerAction(&self.instantiation, action);
-        for (self.group_actions.splitActions()) |action| try self.commands.registerAction(&self.instantiation, action);
-        for (@import("parts/editor/editorActions.zig").focus_group_actions) |action| try self.commands.registerAction(&self.instantiation, action);
+        for (outline_actions.outline_actions) |action| try self.commands.registerAction(self.instantiation, action);
+        for (self.group_actions.splitActions()) |action| try self.commands.registerAction(self.instantiation, action);
+        for (@import("parts/editor/editorActions.zig").focus_group_actions) |action| try self.commands.registerAction(self.instantiation, action);
         const editor_actions = @import("parts/editor/editorActions.zig");
-        for (editor_actions.new_group_actions) |action| try self.commands.registerAction(&self.instantiation, action);
-        for (self.group_actions.joinActions()) |action| try self.commands.registerAction(&self.instantiation, action);
-        for (editor_actions.move_group_actions) |action| try self.commands.registerAction(&self.instantiation, action);
-        for (self.group_actions.transferActions()) |action| try self.commands.registerAction(&self.instantiation, action);
+        for (editor_actions.new_group_actions) |action| try self.commands.registerAction(self.instantiation, action);
+        for (self.group_actions.joinActions()) |action| try self.commands.registerAction(self.instantiation, action);
+        for (editor_actions.move_group_actions) |action| try self.commands.registerAction(self.instantiation, action);
+        for (self.group_actions.transferActions()) |action| try self.commands.registerAction(self.instantiation, action);
         const after_move_groups = [_]commands_mod.CommandInfo{
             .{ .id = "workbench.action.navigateLeft", .label = "Focus Group Left", .category = "View", .context = self, .run = commandNavigateLeft },
             .{ .id = "workbench.action.navigateRight", .label = "Focus Group Right", .category = "View", .context = self, .run = commandNavigateRight },
@@ -1613,9 +1568,9 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.navigateDown", .label = "Focus Group Down", .category = "View", .context = self, .run = commandNavigateDown },
         };
         for (after_move_groups) |command| try self.commands.register(command);
-        try self.commands.registerAction(&self.instantiation, editor_actions.navigate_between_groups_action);
-        try self.commands.registerAction(&self.instantiation, editor_actions.reset_group_sizes_action);
-        for (@import("actions/layoutActions.zig").resize_actions) |action| try self.commands.registerAction(&self.instantiation, action);
+        try self.commands.registerAction(self.instantiation, editor_actions.navigate_between_groups_action);
+        try self.commands.registerAction(self.instantiation, editor_actions.reset_group_sizes_action);
+        for (@import("actions/layoutActions.zig").resize_actions) |action| try self.commands.registerAction(self.instantiation, action);
         const before_join_all = [_]commands_mod.CommandInfo{
             .{ .id = "workbench.action.maximizeEditor", .label = "Maximize Editor Group", .category = "View", .context = self, .run = commandMaximizeEditor },
             .{ .id = "workbench.action.closePanel", .label = "Close Panel", .category = "View", .context = self, .run = commandClosePanel },
@@ -1623,7 +1578,7 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.closeOtherEditors", .label = "Close Other Editors", .category = "View", .context = self, .run = commandCloseOtherEditors },
         };
         for (before_join_all) |command| try self.commands.register(command);
-        try self.commands.registerAction(&self.instantiation, self.group_actions.joinAllAction());
+        try self.commands.registerAction(self.instantiation, self.group_actions.joinAllAction());
         const after_group_actions = [_]commands_mod.CommandInfo{
             .{ .id = "workbench.action.lastEditorInGroup", .label = "Last Editor in Group", .category = "View", .context = self, .run = commandLastEditorInGroup },
             .{ .id = "workbench.action.previousEditor", .label = "Previous Editor", .category = "View", .context = self, .run = commandPreviousEditor },
@@ -1631,7 +1586,7 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.revertAndCloseActiveEditor", .label = "Revert and Close Editor", .category = "View", .context = self, .run = commandRevertAndCloseActiveEditor },
         };
         for (after_group_actions) |command| try self.commands.register(command);
-        try self.commands.registerAction(&self.instantiation, terminal_actions.editor_action);
+        try self.commands.registerAction(self.instantiation, terminal_actions.editor_action);
         const after_terminal_editor = [_]commands_mod.CommandInfo{
             .{ .id = "workbench.view.explorer", .label = "View: Show Explorer", .category = "View", .context = self, .run = commandViewExplorer },
             .{ .id = "workbench.view.scm", .label = "View: Show Source Control", .category = "View", .context = self, .run = commandViewScm },
@@ -1640,9 +1595,9 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.togglePanel", .label = "View: Toggle Panel Visibility", .category = "View", .context = self, .run = commandTogglePanel },
         };
         for (after_terminal_editor) |command| try self.commands.register(command);
-        try self.commands.registerAction(&self.instantiation, zen_mode_contribution.toggle_action);
-        try self.commands.registerAction(&self.instantiation, zen_mode_contribution.exit_action);
-        try self.commands.registerAction(&self.instantiation, @import("actions/layoutActions.zig").toggle_centered_layout_action);
+        try self.commands.registerAction(self.instantiation, zen_mode_contribution.toggle_action);
+        try self.commands.registerAction(self.instantiation, zen_mode_contribution.exit_action);
+        try self.commands.registerAction(self.instantiation, @import("actions/layoutActions.zig").toggle_centered_layout_action);
         const before_scm = [_]commands_mod.CommandInfo{
             .{
                 .id = zen_mode_contribution.zen_hide_editor_tabs_id,
@@ -1676,16 +1631,16 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.nextPanelView", .label = "View: Next Panel View", .category = "View", .context = self, .run = commandNextPanelView },
         };
         for (before_scm) |command| try self.commands.register(command);
-        for (self.git_commands.refreshActions()) |action| try self.commands.registerAction(&self.instantiation, action);
+        for (self.git_commands.refreshActions()) |action| try self.commands.registerAction(self.instantiation, action);
         const scm_menus = [_]commands_mod.CommandInfo{
             .{ .id = scm_view_mod.CHANGES_MENU_ACTION_ID, .label = "Changes More Actions", .show_in_palette = false, .context = self, .run = commandScmChangesMenu },
             .{ .id = scm_history_view_mod.GRAPH_MENU_ACTION_ID, .label = "Graph More Actions", .show_in_palette = false, .context = self, .run = commandScmGraphMenu },
             .{ .id = "workbench.scm.action.showMenu", .label = "Source Control More Actions", .show_in_palette = false, .context = self, .run = commandScmMenu },
         };
         for (scm_menus) |command| try self.commands.register(command);
-        for (self.git_commands.remoteActions()) |action| try self.commands.registerAction(&self.instantiation, action);
-        for (scm_contribution.view_actions) |action| try self.commands.registerAction(&self.instantiation, action);
-        for (self.git_commands.openActions()) |action| try self.commands.registerAction(&self.instantiation, action);
+        for (self.git_commands.remoteActions()) |action| try self.commands.registerAction(self.instantiation, action);
+        for (scm_contribution.view_actions) |action| try self.commands.registerAction(self.instantiation, action);
+        for (self.git_commands.openActions()) |action| try self.commands.registerAction(self.instantiation, action);
         const before_search = [_]commands_mod.CommandInfo{
             .{ .id = "workbench.action.compareEditor.nextChange", .label = "Go to Next Change", .category = "Diff", .context = self, .run = commandDiffNext },
             .{ .id = "workbench.action.compareEditor.previousChange", .label = "Go to Previous Change", .category = "Diff", .context = self, .run = commandDiffPrevious },
@@ -1698,37 +1653,37 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.nextSideBarView", .label = "Next Primary Side Bar View", .category = "View", .context = self, .run = commandNextSidebarView },
         };
         for (before_search) |command| try self.commands.register(command);
-        try self.commands.registerAction(&self.instantiation, @import("parts/statusbar/statusbarActions.zig").focus_statusbar_action);
-        for (terminal_actions.terminal_actions) |action| try self.commands.registerAction(&self.instantiation, action);
+        try self.commands.registerAction(self.instantiation, @import("parts/statusbar/statusbarActions.zig").focus_statusbar_action);
+        for (terminal_actions.terminal_actions) |action| try self.commands.registerAction(self.instantiation, action);
         try self.markdown_previews.registerCommands(&self.commands);
-        for (media_actions.zoom_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
+        for (media_actions.zoom_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
         try self.commands.register(.{ .id = media_actions.open_in_text_id, .label = media_actions.open_in_text_title, .category = media_actions.category, .requires_editor = true, .context = self, .run = commandImageOpenInTextEditor });
         const search_contribution = @import("../contrib/search/browser/search.contribution.zig");
-        for (search_contribution.search_actions) |action| try self.commands.registerAction(&self.instantiation, action);
-        for (self.search_window.factory.actionDescriptors()) |action| try self.commands.registerAction(&self.instantiation, action);
-        for (search_contribution.result_actions) |action| try self.commands.registerAction(&self.instantiation, action);
+        for (search_contribution.search_actions) |action| try self.commands.registerAction(self.instantiation, action);
+        for (self.search_window.factory.actionDescriptors()) |action| try self.commands.registerAction(self.instantiation, action);
+        for (search_contribution.result_actions) |action| try self.commands.registerAction(self.instantiation, action);
         const editor_commands_1 = [_]commands_mod.CommandInfo{
             .{ .id = "actions.find", .label = "Find", .context = self, .requires_editor = true, .run = commandFind },
             .{ .id = "editor.action.startFindReplaceAction", .label = "Replace", .context = self, .requires_editor = true, .run = commandReplace },
         };
         for (editor_commands_1) |command| try self.commands.register(command);
-        for (@import("../../editor/contrib/comment/browser/comment.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
-        for (@import("../../editor/contrib/linesOperations/browser/linesOperations.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
-        for (@import("../../editor/contrib/linesOperations/browser/linesOperations.zig").indent_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
-        for (@import("../../editor/contrib/insertFinalNewLine/browser/insertFinalNewLine.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
-        for (@import("../../editor/contrib/lineSelection/browser/lineSelection.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
-        for (@import("../../editor/contrib/multicursor/browser/multicursor.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
-        for (@import("../../editor/contrib/bracketMatching/browser/bracketMatching.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
-        for (@import("../../editor/contrib/smartSelect/browser/smartSelect.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
-        for (@import("../../editor/contrib/format/browser/formatActions.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
-        for (@import("../../editor/contrib/indentation/browser/indentation.zig").conversion_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
+        for (@import("../../editor/contrib/comment/browser/comment.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
+        for (@import("../../editor/contrib/linesOperations/browser/linesOperations.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
+        for (@import("../../editor/contrib/linesOperations/browser/linesOperations.zig").indent_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
+        for (@import("../../editor/contrib/insertFinalNewLine/browser/insertFinalNewLine.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
+        for (@import("../../editor/contrib/lineSelection/browser/lineSelection.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
+        for (@import("../../editor/contrib/multicursor/browser/multicursor.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
+        for (@import("../../editor/contrib/bracketMatching/browser/bracketMatching.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
+        for (@import("../../editor/contrib/smartSelect/browser/smartSelect.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
+        for (@import("../../editor/contrib/format/browser/formatActions.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
+        for (@import("../../editor/contrib/indentation/browser/indentation.zig").conversion_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
         const editor_commands_2 = [_]commands_mod.CommandInfo{
             .{ .id = "editor.action.wordHighlight.trigger", .label = "Trigger Symbol Highlight", .category = "Go", .context = self, .requires_editor = true, .run = commandWordHighlightTrigger },
         };
         for (editor_commands_2) |command| try self.commands.register(command);
-        for (@import("../../editor/contrib/inPlaceReplace/browser/inPlaceReplace.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
-        for (@import("../../editor/contrib/indentation/browser/indentation.zig").reindent_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
-        for (@import("../../editor/contrib/folding/browser/folding.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
+        for (@import("../../editor/contrib/inPlaceReplace/browser/inPlaceReplace.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
+        for (@import("../../editor/contrib/indentation/browser/indentation.zig").reindent_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
+        for (@import("../../editor/contrib/folding/browser/folding.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
         const editor_commands_3 = [_]commands_mod.CommandInfo{
             .{ .id = sticky_actions.toggle_sticky_scroll.id, .label = sticky_actions.toggle_sticky_scroll.label, .category = "View", .context = self, .requires_editor = true, .run = commandToggleStickyScroll },
             .{ .id = sticky_actions.focus_sticky_scroll.id, .label = sticky_actions.focus_sticky_scroll.label, .category = "View", .context = self, .requires_editor = true, .run = commandFocusStickyScroll },
@@ -1740,8 +1695,8 @@ pub const Workbench = struct {
         try self.builtin_host.registerPortActions();
         try self.references_view.init(&self.builtin_host.context, self.quick_access.inputService());
         self.references_view_registered = true;
-        for (self.symbol_navigation.actionDescriptors()) |action| try self.commands.registerEditorAction(&self.instantiation, action);
-        try self.commands.registerEditorAction(&self.instantiation, self.symbol_quick_access.actionDescriptor());
+        for (self.symbol_navigation.actionDescriptors()) |action| try self.commands.registerEditorAction(self.instantiation, action);
+        try self.commands.registerEditorAction(self.instantiation, self.symbol_quick_access.actionDescriptor());
         try self.commands.register(.{
             .id = "editor.action.showHover",
             .label = "Show or Focus Hover",
@@ -1826,7 +1781,7 @@ pub const Workbench = struct {
         for (self.focus_subscriptions) |subscription| if (subscription) |value| value.dispose();
         if (self.terminal_focus_subscription) |subscription| subscription.dispose();
         self.terminal_tabbed_view.on_list_focus = null;
-        self.cancelRestoreTimer();
+        self.core.cancelRestoreTimer();
         if (self.context_keys != null) {
             self.terminal_context.deinit();
             self.workbench_context.deinit();
@@ -1861,7 +1816,7 @@ pub const Workbench = struct {
             self.outline_view = null;
         }
         self.outline_service.deinit();
-        if (self.startup_window == null) self.instantiation.deinit();
+        self.core.disposeInstantiation();
         self.services.deinit();
         if (self.media_status) |status| {
             status.deinit();
@@ -1956,7 +1911,7 @@ pub const Workbench = struct {
     /// The terminal supplies only its cell dimensions and a view of the
     /// registered parts. Layout owns the grid and size constraints.
     pub fn geometry(self: *const Workbench) workbench_layout.TerminalGeometry {
-        return .{ .layout = &self.layout, .cols = self.cols, .rows = self.rows, .part = self.part, .sidebar_part = &self.sidebar_part, .activity_bar_part = &self.activity_bar_part, .panel_part = &self.panel_part, .sidebar_available = self.sidebar != null };
+        return .{ .layout = self.layout, .cols = self.cols, .rows = self.rows, .part = self.part, .sidebar_part = &self.sidebar_part, .activity_bar_part = &self.activity_bar_part, .panel_part = &self.panel_part, .sidebar_available = self.sidebar != null };
     }
 
     /// The Terminal container is active and has at least one instance.
@@ -2113,7 +2068,7 @@ pub const Workbench = struct {
             self.git_model.detachConfiguration();
             self.scm.detachConfiguration();
             if (self.theme_service) |service| service.detachConfiguration();
-            if (self.notification_controller) |controller| try controller.attachConfiguration(null);
+            if (self.core.notification_controller) |controller| try controller.attachConfiguration(null);
             configuration.deinit();
             self.configuration = null;
         }
@@ -2174,7 +2129,7 @@ pub const Workbench = struct {
             self.git_model.detachConfiguration();
             self.scm.detachConfiguration();
             if (self.theme_service) |service| service.detachConfiguration();
-            if (self.notification_controller) |controller| try controller.attachConfiguration(null);
+            if (self.core.notification_controller) |controller| try controller.attachConfiguration(null);
             configuration.deinit();
             self.configuration = null;
             try self.ensureConfiguration();
@@ -2217,7 +2172,7 @@ pub const Workbench = struct {
         try themes.setConfiguration(self.configuration.?);
         try self.git_model.setConfiguration(self.configuration);
         try self.scm.setConfiguration(self.configuration);
-        if (self.notification_controller) |controller| try controller.attachConfiguration(self.configuration);
+        if (self.core.notification_controller) |controller| try controller.attachConfiguration(self.configuration);
         try self.configuration.?.onDidChangeConfiguration(self, onWorkbenchConfigurationChange);
         if (self.declarative) |catalog| try self.applyExtensionDefaults(catalog);
         if (self.terminal_service) |service| service.options.configuration = self.configuration;
@@ -4907,45 +4862,6 @@ pub const Workbench = struct {
     fn executeWatermarkShortcut(context: *anyopaque, id: []const u8) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         self.commands.execute(id) catch |err| std.log.warn("Editor shortcut {s} failed: {s}", .{ id, @errorName(err) });
-    }
-
-    fn renderWorkbench(self: *Workbench, parent: *ui.Node, options: IWorkbenchOptions) !void {
-        const doc = parent.document;
-        try editor_css.registerWorkbench(doc);
-        const main = try doc.createElement(.div);
-        self.layout.main_container = main;
-        try main.addClass(editor_css.workbench.Class.monaco_workbench);
-        try main.addClass(switch (@import("builtin").os.tag) {
-            .windows => editor_css.workbench.Class.windows,
-            .macos => editor_css.workbench.Class.mac,
-            else => editor_css.workbench.Class.linux,
-        });
-        for (options.extra_classes) |class| try main.addClass(class);
-        const Class = editor_css.part.Class;
-        const side: Class = if (self.layout_api.getSideBarPosition() == .left) .left else .right;
-        inline for (.{
-            .{ .activitybar, "none", &[_]Class{ .activitybar, side } },
-            .{ .sidebar, "none", &[_]Class{ .sidebar, side } },
-            .{ .editor, "main", &[_]Class{.editor} },
-            .{ .panel, "none", &[_]Class{ .panel, .basepanel, .bottom } },
-            .{ .statusbar, "status", &[_]Class{.statusbar} },
-        }) |description| {
-            const container = try createPart(main, description[0], description[1], description[2]);
-            const part = try self.layout.getPart(description[0]);
-            try part.create(container);
-        }
-        _ = try parent.appendChild(main);
-    }
-
-    fn createPart(main: *ui.Node, comptime id: workbench_layout.Parts, role: []const u8, classes: []const editor_css.part.Class) !*ui.Node {
-        const element = try main.document.createElement(if (id == .statusbar) .footer else .div);
-        try element.setAttribute("id", "workbench.parts." ++ @tagName(id));
-        try element.setAttribute("role", role);
-        try element.addClass(editor_css.part.Class.part);
-        for (classes) |class| try element.addClass(class);
-        if (id == .statusbar) try element.setAttribute("aria-live", "off");
-        _ = try main.appendChild(element);
-        return element;
     }
 
     pub fn watermarkShortcuts(self: *Workbench) editor_group_view.WatermarkShortcuts {

@@ -740,7 +740,7 @@ pub fn main(init: std.process.Init) !void {
             switch (item.*) {
                 .focus => |focused| {
                     if (workbench.git_model.repository) |repo| repo.onWindowFocus(focused);
-                    if (workbench.notification_controller) |controller| controller.toasts.onWindowFocus(focused);
+                    if (workbench.core.notification_controller) |controller| controller.toasts.onWindowFocus(focused);
                     if (!focused) {
                         if (workbench.context_menu_service.current != null) {
                             workbench.context_menu_service.hideContextMenu();
@@ -770,7 +770,7 @@ pub fn main(init: std.process.Init) !void {
                     workbench.clearStatusHover();
 
                     if (try terminal_workbench.handleQuickAccessKey(workbench, event)) continue;
-                    if (workbench.notification_controller) |controller| if (controller.handleKey(event)) continue;
+                    if (workbench.core.notification_controller) |controller| if (controller.handleKey(event)) continue;
                     if (try terminal_workbench.handleTerminalKey(workbench, event)) continue;
                     if (try terminal_workbench.handlePanelKey(workbench, event)) continue;
                     if (try terminal_workbench.handleSidebarKey(workbench, event)) {
@@ -860,7 +860,7 @@ pub fn main(init: std.process.Init) !void {
                     if (terminal_workbench.handleBreadcrumbPopupMouse(workbench, event)) continue;
                     if (terminal_workbench.handleTabDragMouse(workbench, event)) continue;
                     if (terminal_workbench.handleQuickAccessMouse(workbench, event)) continue;
-                    if (workbench.notification_controller) |controller| if (controller.handleMouse(event)) continue;
+                    if (workbench.core.notification_controller) |controller| if (controller.handleMouse(event)) continue;
                     if (terminal_workbench.handleSashMouse(workbench, event)) continue;
                     if (terminal_workbench.handleStatusbarMouse(workbench, event)) continue;
                     if (terminal_workbench.handlePanelMouse(workbench, event)) continue;
