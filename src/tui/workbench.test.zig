@@ -1,6 +1,7 @@
 // Terminal workbench integration tests, driven through the host and service APIs.
 const TestWindow = @import("../vs/workbench/test/browser/workbenchTestServices.zig").TestWindow;
-const renderFrame = @import("workbench.zig").renderFrame;
+const terminal_workbench = @import("workbench.zig");
+const renderFrame = terminal_workbench.renderFrame;
 const cursorCell = @import("workbench.zig").cursorCell;
 const shell = @import("../vs/workbench/browser/workbench.zig");
 const Focus = shell.Focus;
@@ -94,7 +95,7 @@ fn clickStatusEntry(workbench: *Workbench, id: []const u8) !bool {
 
 fn closeQuickAccess(workbench: *Workbench) !void {
     var escape = ui.KeyEvent{ .key = .escape };
-    _ = try workbench.handleQuickAccessKey(&escape);
+    _ = try terminal_workbench.handleQuickAccessKey(workbench, &escape);
     try std.testing.expect(!workbench.isQuickAccessOpen());
 }
 
@@ -223,15 +224,15 @@ test "Workbench: empty editor renders the watermark and runs its shortcuts" {
     try std.testing.expect(workbench.handleWatermarkKey(&.{ .key = .enter }));
     try std.testing.expect(workbench.quick_access.isOpen());
     var escape = ui.KeyEvent{ .key = .escape };
-    _ = try workbench.handleQuickAccessKey(&escape);
+    _ = try terminal_workbench.handleQuickAccessKey(workbench, &escape);
 
     const hit = search_row.first_child.?.prev.?.asElement().rect;
     var mouse = ui.MouseEvent{ .kind = .move, .x = ui.cell.snap(hit.x), .y = ui.cell.snap(hit.y) };
-    try std.testing.expect(workbench.handleTabMouse(&mouse));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &mouse));
     try std.testing.expectEqual(ui.Pointer.pointer, workbench.pointer);
     mouse.kind = .down;
     mouse.button = .left;
-    try std.testing.expect(workbench.handleTabMouse(&mouse));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &mouse));
     try std.testing.expectEqualStrings("search", workbench.activity_bar_part.active_id.?);
 
     try workbench.openPath(path);
@@ -741,7 +742,7 @@ test "Workbench: editor group focus stays put when wheeling over another pane" {
     const x = ui.cell.snap(left.rect.x) + left_tab.editor.gutterWidth();
     const y = ui.cell.snap(left.rect.y) + left.chromeHeight();
     var wheel = ui.MouseEvent{ .kind = .wheel, .x = x, .y = y, .delta_y = 3 };
-    try std.testing.expect(!workbench.handleTabMouse(&wheel));
+    try std.testing.expect(!terminal_workbench.handleTabMouse(workbench, &wheel));
     const target = workbench.editorMouseEvent(wheel) orelse return error.TestExpectedWheelTarget;
     try std.testing.expectEqual(left_tab, target.tab);
     const hit = (try surface.elementFromPoint(x, y)) orelse return error.TestExpectedWheelTarget;
@@ -1071,16 +1072,16 @@ test "Workbench: sash drag resizes the split" {
     const boundary = ui.cell.snap(workbench.part.root.kind.split.first.rect.right());
 
     var down = ui.MouseEvent{ .kind = .down, .x = boundary, .y = 2, .button = .left };
-    try std.testing.expect(workbench.handleSashMouse(&down));
+    try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &down));
     try std.testing.expect(workbench.part.active_sash != null);
 
     var move = ui.MouseEvent{ .kind = .move, .x = 30, .y = 2, .button = .left };
-    try std.testing.expect(workbench.handleSashMouse(&move));
+    try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &move));
     try std.testing.expectEqual(@as(f64, 0.6), workbench.part.root.kind.split.ratio);
     try std.testing.expectEqual(@as(usize, 30), ui.cell.snap(workbench.part.root.kind.split.first.rect.w));
 
     var up = ui.MouseEvent{ .kind = .up, .x = 30, .y = 2, .button = .left };
-    try std.testing.expect(workbench.handleSashMouse(&up));
+    try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &up));
     try std.testing.expect(workbench.part.active_sash == null);
 }
 
@@ -1106,24 +1107,24 @@ test "Workbench: tabs and editor content resolve pointer shapes" {
     const tab_x = pane.hits.items[0].start;
     const title_y = ui.cell.snap(pane.rect.y);
 
-    workbench.beginMousePointer();
+    terminal_workbench.beginMousePointer(workbench);
     var over_tab = ui.MouseEvent{ .kind = .move, .x = tab_x, .y = title_y };
-    try std.testing.expect(workbench.handleTabMouse(&over_tab));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &over_tab));
     try std.testing.expectEqual(ui.Pointer.pointer, workbench.pointerShape());
 
-    workbench.beginMousePointer();
+    terminal_workbench.beginMousePointer(workbench);
     var empty_strip = over_tab;
     empty_strip.x = ui.cell.snap(pane.rect.right()) - 1;
-    try std.testing.expect(workbench.handleTabMouse(&empty_strip));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &empty_strip));
     try std.testing.expectEqual(ui.Pointer.default, workbench.pointerShape());
 
-    workbench.beginMousePointer();
+    terminal_workbench.beginMousePointer(workbench);
     const content = ui.MouseEvent{
         .kind = .move,
         .x = ui.cell.snap(pane.rect.x) + tab.editor.gutterWidth() + 1,
         .y = title_y + pane.chromeHeight(),
     };
-    workbench.updateMousePointer(content);
+    terminal_workbench.updateMousePointer(workbench, content);
     try std.testing.expectEqual(ui.Pointer.text, workbench.pointerShape());
 }
 
@@ -1213,7 +1214,7 @@ test "Workbench: dragging a tab into a pane moves it there" {
     const tab_x = source.hits.items[0].start;
     const tab_y = ui.cell.snap(source.rect.y);
     var down = ui.MouseEvent{ .kind = .down, .x = tab_x, .y = tab_y, .button = .left };
-    try std.testing.expect(workbench.handleTabMouse(&down));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &down));
 
     var move = ui.MouseEvent{
         .kind = .move,
@@ -1221,7 +1222,7 @@ test "Workbench: dragging a tab into a pane moves it there" {
         .y = ui.cell.snap(target.rect.y) + ui.cell.snap(target.rect.h) / 2,
         .button = .left,
     };
-    try std.testing.expect(workbench.handleTabMouse(&move));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &move));
     try std.testing.expect(workbench.editor_drag.active);
 
     var up = move;
@@ -1256,7 +1257,7 @@ test "Workbench: dragging over a tab strip previews the insertion and reorders o
     const pane = workbench.part.group_views.items[0];
     const tab_y = ui.cell.snap(pane.rect.y);
     var down = ui.MouseEvent{ .kind = .down, .x = pane.hits.items[0].start, .y = tab_y, .button = .left };
-    try std.testing.expect(workbench.handleTabMouse(&down));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &down));
 
     // Right half of the second tab: insert after it, not a top-edge split.
     const second = pane.hits.items[1];
@@ -1266,7 +1267,7 @@ test "Workbench: dragging over a tab strip previews the insertion and reorders o
         .y = tab_y,
         .button = .left,
     };
-    try std.testing.expect(workbench.handleTabMouse(&move));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &move));
     try std.testing.expect(workbench.editor_drag.active);
     try std.testing.expect(workbench.drag_target == null);
     try std.testing.expect(workbench.drag_tab_drop != null);
@@ -1325,7 +1326,7 @@ test "Workbench: dropping a tab on another strip inserts at the previewed index"
 
     const source_y = ui.cell.snap(source.rect.y);
     var down = ui.MouseEvent{ .kind = .down, .x = source.hits.items[0].start, .y = source_y, .button = .left };
-    try std.testing.expect(workbench.handleTabMouse(&down));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &down));
 
     // The right half of the target's only tab inserts after it.
     const target_y = ui.cell.snap(target.rect.y);
@@ -1336,7 +1337,7 @@ test "Workbench: dropping a tab on another strip inserts at the previewed index"
         .y = target_y,
         .button = .left,
     };
-    try std.testing.expect(workbench.handleTabMouse(&move));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &move));
     try std.testing.expect(workbench.drag_tab_drop != null);
     try std.testing.expect(workbench.drag_tab_drop.?.pane == target);
     try std.testing.expectEqual(@as(usize, 1), workbench.drag_tab_drop.?.index);
@@ -2273,7 +2274,7 @@ test "Workbench: Ctrl-P opens a file and Alt-P runs a command" {
     try workbench.setWorkspaceFolders(&.{root});
 
     var ctrl_p = ui.KeyEvent{ .key = .{ .char = 'p' }, .mods = .{ .ctrl = true } };
-    try std.testing.expect(try workbench.handleQuickAccessKey(&ctrl_p));
+    try std.testing.expect(try terminal_workbench.handleQuickAccessKey(workbench, &ctrl_p));
     try std.testing.expect(workbench.isQuickAccessOpen());
 
     const picker = workbench.quick_access.controller.pickerRef();
@@ -2286,7 +2287,7 @@ test "Workbench: Ctrl-P opens a file and Alt-P runs a command" {
     try std.testing.expectEqualStrings("alpha.txt", picker.activeItem().?.label);
 
     var enter = ui.KeyEvent{ .key = .enter };
-    _ = try workbench.handleQuickAccessKey(&enter);
+    _ = try terminal_workbench.handleQuickAccessKey(workbench, &enter);
     try std.testing.expect(!workbench.isQuickAccessOpen());
     var open_guard: usize = 0;
     while (workbench.tabCount() == 0 and open_guard < 2000) : (open_guard += 1) {
@@ -2299,10 +2300,10 @@ test "Workbench: Ctrl-P opens a file and Alt-P runs a command" {
 
     // Alt-P opens the command palette directly; "split" runs the split command.
     var alt_p = ui.KeyEvent{ .key = .{ .char = 'p' }, .mods = .{ .alt = true } };
-    try std.testing.expect(try workbench.handleQuickAccessKey(&alt_p));
+    try std.testing.expect(try terminal_workbench.handleQuickAccessKey(workbench, &alt_p));
     try std.testing.expect(workbench.isQuickAccessOpen());
     try picker.setValue(">split");
-    _ = try workbench.handleQuickAccessKey(&enter);
+    _ = try terminal_workbench.handleQuickAccessKey(workbench, &enter);
     try std.testing.expect(!workbench.isQuickAccessOpen());
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
 }
@@ -2426,7 +2427,7 @@ test "Workbench: quick access row buttons open to the side, configure shortcuts 
     const layout = quick.widget.layout;
     const right = layout.x + layout.width - layout.inset - 1;
     var click = ui.MouseEvent{ .kind = .down, .button = .left, .x = right - 5, .y = layout.y + layout.inset + 1 };
-    try std.testing.expect(workbench.handleQuickAccessMouse(&click));
+    try std.testing.expect(terminal_workbench.handleQuickAccessMouse(workbench, &click));
     try std.testing.expect(!quick.isOpen());
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
     try std.testing.expectEqualStrings("CPU.hs", workbench.activeTab().?.input.getName());
@@ -2434,7 +2435,7 @@ test "Workbench: quick access row buttons open to the side, configure shortcuts 
     try quick.showFilePicker();
     try renderFrame(workbench, &out.writer);
     click.x = right - 2;
-    try std.testing.expect(workbench.handleQuickAccessMouse(&click));
+    try std.testing.expect(terminal_workbench.handleQuickAccessMouse(workbench, &click));
     try std.testing.expect(quick.isOpen());
     try std.testing.expectEqual(@as(usize, 0), workbench.history.getHistory().len);
     try std.testing.expectEqual(@as(usize, 0), quick.controller.pickerRef().rows.items.len);
@@ -2450,14 +2451,14 @@ test "Workbench: quick access row buttons open to the side, configure shortcuts 
     try std.testing.expectEqualStrings("Ctrl", keys[0]);
     try std.testing.expectEqualStrings("Alt", keys[1]);
     try std.testing.expectEqualStrings("B", keys[2]);
-    try std.testing.expect(workbench.handleQuickAccessMouse(&click));
+    try std.testing.expect(terminal_workbench.handleQuickAccessMouse(workbench, &click));
     try std.testing.expect(quick.isOpen());
     try std.testing.expectEqual(@as(?usize, null), quick.commands_provider.base.history.rank(command));
     try renderFrame(workbench, &out.writer);
     var tab_key = ui.KeyEvent{ .key = .tab };
     var enter = ui.KeyEvent{ .key = .enter };
-    try std.testing.expect(try workbench.handleQuickAccessKey(&tab_key));
-    try std.testing.expect(try workbench.handleQuickAccessKey(&enter));
+    try std.testing.expect(try terminal_workbench.handleQuickAccessKey(workbench, &tab_key));
+    try std.testing.expect(try terminal_workbench.handleQuickAccessKey(workbench, &enter));
     try std.testing.expect(!quick.isOpen());
     try std.testing.expectEqualStrings("keybindings.json", workbench.activeTab().?.input.getName());
     try std.testing.expectEqualStrings(command, workbench.activeTab().?.controllers.?.find.state.search_string);
@@ -2482,7 +2483,7 @@ test "Workbench: quick open renders and an outside click only closes it" {
     try workbench.setWorkspaceFolders(&.{root});
 
     var ctrl_p = ui.KeyEvent{ .key = .{ .char = 'p' }, .mods = .{ .ctrl = true } };
-    try std.testing.expect(try workbench.handleQuickAccessKey(&ctrl_p));
+    try std.testing.expect(try terminal_workbench.handleQuickAccessKey(workbench, &ctrl_p));
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -2490,7 +2491,7 @@ test "Workbench: quick open renders and an outside click only closes it" {
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "Search files") != null);
 
     var click = ui.MouseEvent{ .kind = .down, .x = 0, .y = 9 };
-    try std.testing.expect(workbench.handleQuickAccessMouse(&click));
+    try std.testing.expect(terminal_workbench.handleQuickAccessMouse(workbench, &click));
     try std.testing.expect(!workbench.isQuickAccessOpen());
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
 }
@@ -3370,26 +3371,26 @@ test "Workbench: status values open the matching pickers" {
     try std.testing.expect(workbench.quick_access.isPickOpen());
     try std.testing.expectEqualStrings("Indent Using Spaces", workbench.quick_access.inputService().pickerRef().activeItem().?.label);
     var escape = ui.KeyEvent{ .key = .escape };
-    _ = try workbench.handleQuickAccessKey(&escape);
+    _ = try terminal_workbench.handleQuickAccessKey(workbench, &escape);
 
     try std.testing.expect(try clickStatusEntry(workbench, "status.editor.encoding"));
     try std.testing.expect(workbench.quick_access.isPickOpen());
     try std.testing.expectEqualStrings("UTF-8", workbench.quick_access.inputService().pickerRef().activeItem().?.label);
-    _ = try workbench.handleQuickAccessKey(&escape);
+    _ = try terminal_workbench.handleQuickAccessKey(workbench, &escape);
 
     try std.testing.expect(try clickStatusEntry(workbench, "status.editor.eol"));
     try std.testing.expect(workbench.quick_access.isPickOpen());
     try std.testing.expectEqualStrings("LF", workbench.quick_access.inputService().pickerRef().activeItem().?.label);
-    _ = try workbench.handleQuickAccessKey(&escape);
+    _ = try terminal_workbench.handleQuickAccessKey(workbench, &escape);
 
     try std.testing.expect(try clickStatusEntry(workbench, "status.editor.mode"));
     try std.testing.expect(workbench.quick_access.isPickOpen());
-    _ = try workbench.handleQuickAccessKey(&escape);
+    _ = try terminal_workbench.handleQuickAccessKey(workbench, &escape);
 
     try std.testing.expect(try clickStatusEntry(workbench, "status.editor.selection"));
     try std.testing.expect(workbench.quick_access.isPickOpen());
     try std.testing.expectEqual(@as(usize, 0), workbench.quick_access.inputService().pickerRef().items.items.len);
-    _ = try workbench.handleQuickAccessKey(&escape);
+    _ = try terminal_workbench.handleQuickAccessKey(workbench, &escape);
     try std.testing.expect(!workbench.quick_access.isOpen());
 }
 
@@ -3411,9 +3412,9 @@ test "Workbench: EOL and language pickers update the editor" {
 
     try std.testing.expect(try clickStatusEntry(workbench, "status.editor.encoding"));
     var down = ui.KeyEvent{ .key = .down };
-    _ = try workbench.handleQuickAccessKey(&down);
+    _ = try terminal_workbench.handleQuickAccessKey(workbench, &down);
     var enter = ui.KeyEvent{ .key = .enter };
-    _ = try workbench.handleQuickAccessKey(&enter);
+    _ = try terminal_workbench.handleQuickAccessKey(workbench, &enter);
     try std.testing.expectEqual(
         encoding_mod.Encoding.utf8_with_bom,
         workbench.activeTab().?.editor.getEncoding(),
@@ -3424,8 +3425,8 @@ test "Workbench: EOL and language pickers update the editor" {
     );
 
     try std.testing.expect(try clickStatusEntry(workbench, "status.editor.eol"));
-    _ = try workbench.handleQuickAccessKey(&down);
-    _ = try workbench.handleQuickAccessKey(&enter);
+    _ = try terminal_workbench.handleQuickAccessKey(workbench, &down);
+    _ = try terminal_workbench.handleQuickAccessKey(workbench, &enter);
     try std.testing.expect(!workbench.quick_access.isOpen());
     try std.testing.expectEqual(EOL.CRLF, workbench.activeTab().?.editor.model.getEOL());
     try std.testing.expectEqualStrings(
@@ -3436,10 +3437,10 @@ test "Workbench: EOL and language pickers update the editor" {
     try std.testing.expect(try clickStatusEntry(workbench, "status.editor.mode"));
     for ("zig") |ch| {
         var typed = ui.KeyEvent{ .key = .{ .char = ch } };
-        _ = try workbench.handleQuickAccessKey(&typed);
+        _ = try terminal_workbench.handleQuickAccessKey(workbench, &typed);
     }
     try std.testing.expectEqualStrings("zig", workbench.quick_access.inputService().pickerRef().activeItem().?.id);
-    _ = try workbench.handleQuickAccessKey(&enter);
+    _ = try terminal_workbench.handleQuickAccessKey(workbench, &enter);
     try std.testing.expectEqualStrings("zig", workbench.activeTab().?.editor.languageId());
     try std.testing.expectEqualStrings(
         "Zig",
@@ -3449,17 +3450,17 @@ test "Workbench: EOL and language pickers update the editor" {
     try std.testing.expect(try clickStatusEntry(workbench, "status.editor.selection"));
     for ("2:3") |ch| {
         var typed = ui.KeyEvent{ .key = .{ .char = ch } };
-        _ = try workbench.handleQuickAccessKey(&typed);
+        _ = try terminal_workbench.handleQuickAccessKey(workbench, &typed);
     }
-    _ = try workbench.handleQuickAccessKey(&enter);
+    _ = try terminal_workbench.handleQuickAccessKey(workbench, &enter);
     const selections = try workbench.activeTab().?.editor.getSelections();
     defer allocator.free(selections);
     try std.testing.expectEqual(@as(usize, 2), selections[0].startLineNumber);
     try std.testing.expectEqual(@as(usize, 3), selections[0].startColumn);
 
     try std.testing.expect(try clickStatusEntry(workbench, "status.editor.indentation"));
-    _ = try workbench.handleQuickAccessKey(&down);
-    _ = try workbench.handleQuickAccessKey(&enter);
+    _ = try terminal_workbench.handleQuickAccessKey(workbench, &down);
+    _ = try terminal_workbench.handleQuickAccessKey(workbench, &enter);
     try std.testing.expect(!workbench.activeTab().?.editor.model.getOptions().insertSpaces);
     try std.testing.expectEqualStrings(
         "Tab Size: 4",
@@ -3718,9 +3719,9 @@ test "Workbench: decoded divider drag resizes the split" {
             .key, .focus => return error.TestUnexpectedResult,
             .mouse => |*mouse| {
                 if (workbench.handleTabDragMouse(mouse)) continue;
-                if (workbench.handleQuickAccessMouse(mouse)) continue;
+                if (terminal_workbench.handleQuickAccessMouse(workbench, mouse)) continue;
                 if (workbench.handleStatusbarMouse(mouse)) continue;
-                if (workbench.handleSashMouse(mouse)) continue;
+                if (terminal_workbench.handleSashMouse(workbench, mouse)) continue;
             },
         }
     }
@@ -3755,18 +3756,18 @@ test "Workbench: sash follows drag motion without button bits" {
     const boundary = ui.cell.snap(first.rect.right());
 
     var down = ui.MouseEvent{ .kind = .down, .x = boundary, .y = 2, .button = .left };
-    try std.testing.expect(workbench.handleSashMouse(&down));
+    try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &down));
     try std.testing.expect(workbench.part.active_sash != null);
 
     // Mode 1003 terminals may report drag motion with button `none`; the
     // grabbed sash still follows the pointer instead of ending the drag.
     var move = ui.MouseEvent{ .kind = .move, .x = boundary + 6, .y = 2, .button = .none };
-    try std.testing.expect(workbench.handleSashMouse(&move));
+    try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &move));
     try std.testing.expect(workbench.part.active_sash != null);
     try std.testing.expectEqual(@as(f64, 30.0 / 49.0), workbench.part.root.kind.split.ratio);
 
     var up = ui.MouseEvent{ .kind = .up, .x = boundary + 6, .y = 2, .button = .left };
-    try std.testing.expect(workbench.handleSashMouse(&up));
+    try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &up));
     try std.testing.expect(workbench.part.active_sash == null);
 }
 
@@ -3803,9 +3804,9 @@ test "Workbench: decoded divider drag resizes a vertical split" {
             .key, .focus => return error.TestUnexpectedResult,
             .mouse => |*mouse| {
                 if (workbench.handleTabDragMouse(mouse)) continue;
-                if (workbench.handleQuickAccessMouse(mouse)) continue;
+                if (terminal_workbench.handleQuickAccessMouse(workbench, mouse)) continue;
                 if (workbench.handleStatusbarMouse(mouse)) continue;
-                if (workbench.handleSashMouse(mouse)) continue;
+                if (terminal_workbench.handleSashMouse(workbench, mouse)) continue;
             },
         }
     }
@@ -3841,7 +3842,7 @@ test "Workbench: tab context menu closes the tab" {
         .y = ui.cell.snap(pane.rect.y),
         .button = .right,
     };
-    try std.testing.expect(workbench.handleTabMouse(&down));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &down));
     try std.testing.expect(!workbench.isQuickAccessOpen());
     try std.testing.expect(workbench.context_menu_service.current != null);
     try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .home }));
@@ -3917,7 +3918,7 @@ test "Workbench: breadcrumb row shows the workspace-relative path" {
 
     const hit = control.widget.hits.items[0];
     var click = ui.MouseEvent{ .kind = .down, .x = hit.start, .y = 1, .button = .left };
-    try std.testing.expect(workbench.handleTabMouse(&click));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &click));
     try std.testing.expect(!workbench.quick_access.inputService().isVisible());
     try std.testing.expect(workbench.breadcrumbPopupVisible());
     try std.testing.expect(workbench.breadcrumb_popup.?.file != null);
@@ -4041,7 +4042,7 @@ test "Workbench: closing a dirty tab asks, cancel keeps it and save closes it" {
         .y = ui.cell.snap(pane.rect.y),
         .button = .left,
     };
-    try std.testing.expect(workbench.handleTabMouse(&click));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &click));
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
 
     // A dirty tab opens the save confirmation instead of closing.
@@ -4056,7 +4057,7 @@ test "Workbench: closing a dirty tab asks, cancel keeps it and save closes it" {
         .y = ui.cell.snap(pane2.rect.y),
         .button = .left,
     };
-    try std.testing.expect(workbench.handleTabMouse(&click2));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &click2));
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
     try std.testing.expect(workbench.isDialogOpen());
 
@@ -4084,7 +4085,7 @@ test "Workbench: closing a dirty tab asks, cancel keeps it and save closes it" {
         .y = ui.cell.snap(pane3.rect.y),
         .button = .left,
     };
-    try std.testing.expect(workbench.handleTabMouse(&click3));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &click3));
     try std.testing.expect(workbench.isDialogOpen());
     var enter = ui.KeyEvent{ .key = .enter };
     try std.testing.expect(workbench.handleDialogKey(&enter));
@@ -4121,7 +4122,7 @@ test "Workbench: don't save closes a dirty tab without writing" {
         .y = ui.cell.snap(pane.rect.y),
         .button = .left,
     };
-    try std.testing.expect(workbench.handleTabMouse(&click));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &click));
     try std.testing.expect(workbench.isDialogOpen());
 
     var down = ui.KeyEvent{ .key = .down };
@@ -4347,15 +4348,15 @@ test "Workbench: double click pins a preview tab and toggles a pinned group" {
     const x = hit.start + 1;
     const y = ui.cell.snap(pane.rect.y);
     var first = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
-    try std.testing.expect(workbench.handleTabMouse(&first));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &first));
     try std.testing.expect(!pane.group.model.isPinned(.{ .editor = workbench.activeTab().?.input }));
     // A real terminal also delivers the release between the two presses.
     var up = ui.MouseEvent{ .kind = .up, .x = x, .y = y, .button = .left };
-    try std.testing.expect(workbench.handleTabMouse(&up));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &up));
     // Simulate a slow second click caused by the first activation's work.
     workbench.last_tab_click.?.at_ms -= 700;
     var second = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
-    try std.testing.expect(workbench.handleTabMouse(&second));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &second));
     try std.testing.expect(pane.group.model.isPinned(.{ .editor = workbench.activeTab().?.input }));
     try std.testing.expect(workbench.part.maximized_group == null);
 
@@ -4369,17 +4370,17 @@ test "Workbench: double click pins a preview tab and toggles a pinned group" {
 
     // A second double click on the now-pinned tab expands the group.
     var third = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
-    try std.testing.expect(workbench.handleTabMouse(&third));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &third));
     var fourth = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
-    try std.testing.expect(workbench.handleTabMouse(&fourth));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &fourth));
     try std.testing.expect(workbench.part.maximized_group == pane);
 
     // And another double click restores the split layout.
     try renderFrame(workbench, &out.writer);
     var fifth = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
-    try std.testing.expect(workbench.handleTabMouse(&fifth));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &fifth));
     var sixth = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
-    try std.testing.expect(workbench.handleTabMouse(&sixth));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &sixth));
     try std.testing.expect(workbench.part.maximized_group == null);
 }
 
@@ -4407,7 +4408,7 @@ test "Workbench: double click still pins after a jittery drag starts" {
     const x = hit.start + 1;
     const y = ui.cell.snap(pane.rect.y);
     var first = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
-    try std.testing.expect(workbench.handleTabMouse(&first));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &first));
 
     // Hand jitter turns the pending click into a drag before the second press.
     var jitter = ui.MouseEvent{ .kind = .move, .x = x + 3, .y = y, .button = .left };
@@ -4416,7 +4417,7 @@ test "Workbench: double click still pins after a jittery drag starts" {
 
     var second = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
     try std.testing.expect(!workbench.handleTabDragMouse(&second));
-    try std.testing.expect(workbench.handleTabMouse(&second));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &second));
     try std.testing.expect(pane.group.model.isPinned(.{ .editor = workbench.activeTab().?.input }));
 }
 
@@ -4862,8 +4863,8 @@ test "Workbench: a capable terminal uploads and paints the image" {
     const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 12);
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
-    workbench.setImageProtocol(.unicode_placeholders);
-    workbench.setCellPixelSize(8, 16);
+    terminal_workbench.setImageProtocol(workbench, .unicode_placeholders);
+    terminal_workbench.setCellPixelSize(workbench, 8, 16);
     const tab = workbench.activeTab().?;
     try std.testing.expect(tab.isImage());
 
@@ -4909,7 +4910,7 @@ test "Workbench: image files reload on change and open in a text editor" {
     const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 12);
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
-    workbench.setImageProtocol(.unicode_placeholders);
+    terminal_workbench.setImageProtocol(workbench, .unicode_placeholders);
     const tab = workbench.activeTab().?;
     const pane = tab.image_preview.?;
     const before = pane.editor.load_id;
@@ -4995,8 +4996,8 @@ test "Workbench: markdown preview shows displayable images" {
     }
     try std.testing.expect(saw_alt);
 
-    workbench.setImageProtocol(.unicode_placeholders);
-    workbench.setCellPixelSize(8, 16);
+    terminal_workbench.setImageProtocol(workbench, .unicode_placeholders);
+    terminal_workbench.setCellPixelSize(workbench, 8, 16);
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     // The workbench loads preview images on its background I/O pool.
@@ -5024,7 +5025,7 @@ test "Workbench: closing an image tab releases the terminal image" {
     const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 12);
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
-    workbench.setImageProtocol(.unicode_placeholders);
+    terminal_workbench.setImageProtocol(workbench, .unicode_placeholders);
     var first: std.Io.Writer.Allocating = .init(allocator);
     defer first.deinit();
     try renderFrame(workbench, &first.writer);
@@ -5263,7 +5264,7 @@ test "Workbench: right click on a tab neither closes nor activates it" {
     const tab_x = pane.hits.items[0].start + 1;
     const tab_y = ui.cell.snap(pane.rect.y);
     var down = ui.MouseEvent{ .kind = .down, .x = tab_x, .y = tab_y, .button = .right };
-    try std.testing.expect(workbench.handleTabMouse(&down));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &down));
     try std.testing.expect(!workbench.isQuickAccessOpen());
     try std.testing.expect(workbench.context_menu_service.current != null);
     var release = down;
@@ -5408,7 +5409,7 @@ test "Workbench: tab overflow lists clipped tabs" {
         .y = ui.cell.snap(pane.rect.y),
         .button = .left,
     };
-    try std.testing.expect(workbench.handleTabMouse(&down));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &down));
     try std.testing.expect(!workbench.isQuickAccessOpen());
     try std.testing.expect(workbench.context_menu_service.current != null);
     try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .home }));
@@ -5447,7 +5448,7 @@ test "Workbench: tab context menu closes to the right" {
         .y = ui.cell.snap(pane.rect.y),
         .button = .right,
     };
-    try std.testing.expect(workbench.handleTabMouse(&down));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &down));
     try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .home }));
     for (0..2) |_| try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .down }));
     var enter = ui.KeyEvent{ .key = .enter };
@@ -5481,7 +5482,7 @@ test "Workbench: tab context menu splits the captured tab" {
         .y = ui.cell.snap(pane.rect.y),
         .button = .right,
     };
-    try std.testing.expect(workbench.handleTabMouse(&down));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &down));
     try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .home }));
     for (0..6) |_| try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .down }));
     var enter = ui.KeyEvent{ .key = .enter };
@@ -5516,7 +5517,7 @@ test "Workbench: tab context menu closes saved tabs" {
         .y = ui.cell.snap(pane.rect.y),
         .button = .right,
     };
-    try std.testing.expect(workbench.handleTabMouse(&down));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &down));
     try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .home }));
     for (0..3) |_| try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .down }));
     var enter = ui.KeyEvent{ .key = .enter };
@@ -5553,7 +5554,7 @@ test "Workbench: close saved keeps dirty tabs" {
         .y = ui.cell.snap(pane.rect.y),
         .button = .right,
     };
-    try std.testing.expect(workbench.handleTabMouse(&down));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &down));
     try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .home }));
     for (0..3) |_| try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .down }));
     var enter = ui.KeyEvent{ .key = .enter };
@@ -5660,7 +5661,7 @@ test "Workbench: markdown preview to the side uses an ordinary editor group and 
         try renderFrame(wb, &out.writer);
         const action = source_group.title_action_hit.?;
         var click = ui.MouseEvent{ .kind = .down, .button = .left, .x = action.start, .y = ui.cell.snap(source_group.rect.y) };
-        try std.testing.expect(wb.handleTabMouse(&click));
+        try std.testing.expect(terminal_workbench.handleTabMouse(wb, &click));
         try std.testing.expectEqual(@as(usize, 2), wb.groupCount());
         const target = wb.activePane().?;
         const preview = target.activeTab().?;
@@ -5671,10 +5672,10 @@ test "Workbench: markdown preview to the side uses an ordinary editor group and 
         try std.testing.expectEqual(source.editor, preview.markdown_preview.?.editor);
         const boundary = ui.cell.snap(source_group.rect.right());
         const y = ui.cell.snap(source_group.rect.y) + source_group.chromeHeight() + 1;
-        try std.testing.expect(wb.handleSashMouse(&.{ .kind = .down, .button = .left, .x = boundary, .y = y }));
+        try std.testing.expect(terminal_workbench.handleSashMouse(wb, &.{ .kind = .down, .button = .left, .x = boundary, .y = y }));
         try std.testing.expect(wb.part.active_sash == wb.part.root);
-        try std.testing.expect(wb.handleSashMouse(&.{ .kind = .move, .x = boundary + 6, .y = y }));
-        try std.testing.expect(wb.handleSashMouse(&.{ .kind = .up, .x = boundary + 6, .y = y }));
+        try std.testing.expect(terminal_workbench.handleSashMouse(wb, &.{ .kind = .move, .x = boundary + 6, .y = y }));
+        try std.testing.expect(terminal_workbench.handleSashMouse(wb, &.{ .kind = .up, .x = boundary + 6, .y = y }));
         try std.testing.expectEqual(boundary + 6, ui.cell.snap(source_group.rect.right()));
         try renderFrame(wb, &out.writer);
         try std.testing.expectEqual(ui.cell.snap(target.rect.w), preview.markdown_preview.?.width);
@@ -5890,7 +5891,7 @@ test "Workbench: clicking a pane body focuses its group" {
         .y = ui.cell.snap(first.rect.y) + first.chromeHeight() + 1,
         .button = .left,
     };
-    try std.testing.expect(!workbench.handleTabMouse(&click));
+    try std.testing.expect(!terminal_workbench.handleTabMouse(workbench, &click));
     try std.testing.expect(workbench.activePane().? == first);
     try std.testing.expect(workbench.activeTab() == first.activeTab());
     var target = workbench.editorMouseEvent(click) orelse return error.TestUnexpectedResult;
@@ -5910,7 +5911,7 @@ test "Workbench: clicking a pane body focuses its group" {
         .y = ui.cell.snap(second.rect.y) + second.chromeHeight() + 1,
         .button = .left,
     };
-    try std.testing.expect(!workbench.handleTabMouse(&click));
+    try std.testing.expect(!terminal_workbench.handleTabMouse(workbench, &click));
     try std.testing.expect(workbench.activePane().? == second);
     try std.testing.expect(workbench.activeTab() == second.activeTab());
     target = workbench.editorMouseEvent(click) orelse return error.TestUnexpectedResult;
@@ -6075,8 +6076,8 @@ test "Workbench: stacked editor dividers use the editor background and sash colo
             try std.testing.expectEqual(expected_idle, cells.fg[at]);
         }
 
-        workbench.beginMousePointer();
-        try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .move, .x = x, .y = y }));
+        terminal_workbench.beginMousePointer(workbench);
+        try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &.{ .kind = .move, .x = x, .y = y }));
         try std.testing.expectEqual(ui.Pointer.ns_resize, workbench.pointerShape());
         try renderFrame(workbench, &out.writer);
         try std.testing.expectEqual(expected_highlight, cells.bg[background_at]);
@@ -6088,7 +6089,7 @@ test "Workbench: stacked editor dividers use the editor background and sash colo
             try std.testing.expectEqual(expected_bg, cells.fg[at]);
         }
 
-        try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .down, .x = x, .y = y, .button = .left }));
+        try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &.{ .kind = .down, .x = x, .y = y, .button = .left }));
         try renderFrame(workbench, &out.writer);
         try std.testing.expectEqual(expected_highlight, cells.bg[background_at]);
         if (borders) {
@@ -6099,10 +6100,10 @@ test "Workbench: stacked editor dividers use the editor background and sash colo
             try std.testing.expectEqual(expected_bg, cells.fg[at]);
         }
 
-        try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .up, .x = x, .y = y, .button = .left }));
+        try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &.{ .kind = .up, .x = x, .y = y, .button = .left }));
         try std.testing.expectEqual(ui.Pointer.ns_resize, workbench.pointerShape());
-        workbench.beginMousePointer();
-        try std.testing.expect(!workbench.handleSashMouse(&.{ .kind = .move, .x = x, .y = y - 2 }));
+        terminal_workbench.beginMousePointer(workbench);
+        try std.testing.expect(!terminal_workbench.handleSashMouse(workbench, &.{ .kind = .move, .x = x, .y = y - 2 }));
         try std.testing.expectEqual(ui.Pointer.default, workbench.pointerShape());
         try renderFrame(workbench, &out.writer);
         try std.testing.expectEqual(idle_background, cells.bg[background_at]);
@@ -6141,7 +6142,7 @@ test "Workbench: dropping a tab on a pane edge tiles a new pane" {
     const tab_x = pane.hits.items[0].start;
     const tab_y = ui.cell.snap(pane.rect.y);
     var down = ui.MouseEvent{ .kind = .down, .x = tab_x, .y = tab_y, .button = .left };
-    try std.testing.expect(workbench.handleTabMouse(&down));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &down));
 
     var move = ui.MouseEvent{
         .kind = .move,
@@ -6149,7 +6150,7 @@ test "Workbench: dropping a tab on a pane edge tiles a new pane" {
         .y = ui.cell.snap(pane.rect.y) + ui.cell.snap(pane.rect.h) / 2,
         .button = .left,
     };
-    try std.testing.expect(workbench.handleTabMouse(&move));
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &move));
     try std.testing.expect(workbench.drag_target != null);
     try std.testing.expectEqual(DropZone.right, workbench.drag_target.?.zone);
 
@@ -6815,10 +6816,10 @@ test "Workbench: sidebar and single editor have outlines with and without cell b
             const x = ui.cell.snap(workbench.sidebar_part.base.bounds.?.right()) - 1 + cell;
             const border_x = x - cell;
             const background_at = grid_cells.index(border_x, 3);
-            workbench.beginMousePointer();
+            terminal_workbench.beginMousePointer(workbench);
             try renderFrame(workbench, &out.writer);
             const idle_background = grid_cells.bg[background_at];
-            try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .move, .x = x, .y = 3 }));
+            try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &.{ .kind = .move, .x = x, .y = 3 }));
             try std.testing.expectEqual(ui.Pointer.ew_resize, workbench.pointerShape());
             try renderFrame(workbench, &out.writer);
             const highlight = ui.cell.packColor(sash_css.hoverStyle(if (workbench.theme_palette) |theme| theme.sashHoverBorder() else null).background.?);
@@ -6827,18 +6828,18 @@ test "Workbench: sidebar and single editor have outlines with and without cell b
                 const stroke = grid_cells.borderSetAt(border_x, 3).strokeAt(ui.cell_border.Segment.right) orelse return error.MissingSashStroke;
                 try std.testing.expectEqual(highlight, ui.cell.packColor(stroke.color.rgb));
             }
-            workbench.beginMousePointer();
-            try std.testing.expect(!workbench.handleSashMouse(&.{ .kind = .move, .x = x + 4, .y = 3 }));
+            terminal_workbench.beginMousePointer(workbench);
+            try std.testing.expect(!terminal_workbench.handleSashMouse(workbench, &.{ .kind = .move, .x = x + 4, .y = 3 }));
             try renderFrame(workbench, &out.writer);
             try std.testing.expectEqual(idle_background, grid_cells.bg[background_at]);
 
-            try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .down, .x = x, .y = 3, .button = .left }));
-            try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .up, .x = x, .y = 3, .button = .left }));
+            try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &.{ .kind = .down, .x = x, .y = 3, .button = .left }));
+            try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &.{ .kind = .up, .x = x, .y = 3, .button = .left }));
             try std.testing.expectEqual(width, workbench.layout.size(.sidebar));
 
-            try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .down, .x = x, .y = 3, .button = .left }));
-            try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .move, .x = x + 2, .y = 3 }));
-            try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .up, .x = x + 2, .y = 3, .button = .left }));
+            try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &.{ .kind = .down, .x = x, .y = 3, .button = .left }));
+            try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &.{ .kind = .move, .x = x + 2, .y = 3 }));
+            try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &.{ .kind = .up, .x = x + 2, .y = 3, .button = .left }));
             try std.testing.expectEqual(width + 2, workbench.layout.size(.sidebar));
         }
         workbench.minimizeActiveGroup();
@@ -6847,11 +6848,11 @@ test "Workbench: sidebar and single editor have outlines with and without cell b
         const editor_split = workbench.part.root.kind.split;
         const editor_sash_x = ui.cell.snap(editor_split.first.rect.right());
         const sidebar_sash_x = ui.cell.snap(workbench.sidebar_part.base.bounds.?.right()) - 1;
-        try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .down, .x = editor_sash_x, .y = 3, .button = .left }));
-        workbench.beginMousePointer();
-        try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .move, .x = sidebar_sash_x, .y = 3 }));
+        try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &.{ .kind = .down, .x = editor_sash_x, .y = 3, .button = .left }));
+        terminal_workbench.beginMousePointer(workbench);
+        try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &.{ .kind = .move, .x = sidebar_sash_x, .y = 3 }));
         try std.testing.expect(ui.cell.snap(editor_split.first.rect.right()) < editor_sash_x);
-        try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .up, .x = sidebar_sash_x, .y = 3, .button = .left }));
+        try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &.{ .kind = .up, .x = sidebar_sash_x, .y = 3, .button = .left }));
         try workbench.joinAllGroups();
 
         try workbench.layout.setPartHidden(true, .sidebar);
@@ -6892,8 +6893,8 @@ test "Workbench: dragging the sash above the bottom panel resizes it" {
             const x = ui.cell.snap(panel.x + panel.w / 2);
             const y = ui.cell.snap(panel.y) - inset;
             var event = ui.MouseEvent{ .kind = .move, .x = x, .y = y };
-            workbench.beginMousePointer();
-            try std.testing.expect(workbench.handleSashMouse(&event));
+            terminal_workbench.beginMousePointer(workbench);
+            try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &event));
             try std.testing.expectEqual(ui.Pointer.ns_resize, workbench.pointer);
             try renderFrame(workbench, &output.writer);
             const grid = &workbench.frame.prev;
@@ -6901,16 +6902,16 @@ test "Workbench: dragging the sash above the bottom panel resizes it" {
 
             event.kind = .down;
             event.button = .left;
-            try std.testing.expect(workbench.handleSashMouse(&event));
+            try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &event));
             try std.testing.expectEqual(@as(usize, 10), ui.cell.snap(workbench.panel_part.base.bounds.?.h));
             event.kind = .move;
             event.button = .none;
             event.y -= 3;
-            try std.testing.expect(workbench.handleSashMouse(&event));
+            try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &event));
             try std.testing.expectEqual(@as(usize, 13), ui.cell.snap(workbench.panel_part.base.bounds.?.h));
             event.kind = .up;
             event.y += 5;
-            try std.testing.expect(workbench.handleSashMouse(&event));
+            try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &event));
             try std.testing.expectEqual(@as(usize, 8), ui.cell.snap(workbench.panel_part.base.bounds.?.h));
             try std.testing.expectEqual(Focus.editor, workbench.focus);
         }
@@ -6921,22 +6922,22 @@ test "Workbench: dragging the sash above the bottom panel resizes it" {
     const y = ui.cell.snap(title.y);
     try std.testing.expect(panel_part_mod.hitTest(&workbench.panel_part, title, x, y) != null);
     const title_press = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
-    try std.testing.expect(!workbench.handleSashMouse(&title_press));
+    try std.testing.expect(!terminal_workbench.handleSashMouse(workbench, &title_press));
     try std.testing.expect(workbench.handlePanelMouse(&title_press));
 
     const panel = workbench.panel_part.base.bounds.?;
     const divider_x = ui.cell.snap(panel.x + panel.w / 2);
     var drag = ui.MouseEvent{ .kind = .down, .x = divider_x, .y = ui.cell.snap(panel.y), .button = .left };
-    try std.testing.expect(workbench.handleSashMouse(&drag));
+    try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &drag));
     const wheel = ui.MouseEvent{ .kind = .wheel, .x = drag.x, .y = drag.y, .delta_y = 3 };
-    try std.testing.expect(!workbench.handleSashMouse(&wheel));
+    try std.testing.expect(!terminal_workbench.handleSashMouse(workbench, &wheel));
     drag.kind = .move;
     drag.y = 0;
-    try std.testing.expect(workbench.handleSashMouse(&drag));
+    try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &drag));
     try std.testing.expectEqual(editor_part.min_pane_height, ui.cell.snap(workbench.part.base.bounds.?.h));
     try std.testing.expectEqual(workbench.layout.workbenchRows(workbench.rows) - editor_part.min_pane_height, ui.cell.snap(workbench.panel_part.base.bounds.?.h));
     drag.y = workbench.layout.workbenchRows(workbench.rows);
-    try std.testing.expect(workbench.handleSashMouse(&drag));
+    try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &drag));
     try std.testing.expectEqual(workbench.panel_part.minimum_height, ui.cell.snap(workbench.panel_part.base.bounds.?.h));
     try std.testing.expect(workbench.cancelSashDrag());
     try std.testing.expect(workbench.layout.workbench_grid.activeSash() == null);
@@ -6991,8 +6992,8 @@ test "Workbench: right sidebar moves its rail, hit targets and snapping sash tog
     try std.testing.expect(wb.layout.isVisible(.sidebar));
     try sidebarMouseForTest(wb, .up, hidden_edge - minimum);
     const alt_edge = wb.workbenchGridLayout().sidebarSashCell();
-    try std.testing.expect(wb.handleSashMouse(&.{ .kind = .down, .x = alt_edge, .y = 2, .button = .left, .mods = .{ .alt = true } }));
-    try std.testing.expect(wb.handleSashMouse(&.{ .kind = .move, .x = 89, .y = 2, .mods = .{ .alt = true } }));
+    try std.testing.expect(terminal_workbench.handleSashMouse(wb, &.{ .kind = .down, .x = alt_edge, .y = 2, .button = .left, .mods = .{ .alt = true } }));
+    try std.testing.expect(terminal_workbench.handleSashMouse(wb, &.{ .kind = .move, .x = 89, .y = 2, .mods = .{ .alt = true } }));
     try std.testing.expect(wb.layout.isVisible(.sidebar));
     try sidebarMouseForTest(wb, .up, 89);
     try wb.setUserConfigurationValue("workbench.sideBar.location", .{ .string = "left" });
@@ -7022,22 +7023,22 @@ test "Workbench: dragging the sidebar divider resizes the side bar" {
     try std.testing.expect(workbench.layout.isVisible(.sidebar));
 
     const down = ui.MouseEvent{ .kind = .down, .x = divider, .y = 2, .button = .left };
-    try std.testing.expect(workbench.handleSashMouse(&down));
+    try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &down));
     try std.testing.expectEqual(WorkbenchGrid.Sash.sidebar, workbench.layout.workbench_grid.activeSash().?);
 
     const move = ui.MouseEvent{ .kind = .move, .x = divider + 4, .y = 2, .button = .left };
-    try std.testing.expect(workbench.handleSashMouse(&move));
+    try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &move));
     try std.testing.expectEqual(before + 4, workbench.layout.size(.sidebar));
 
     const up = ui.MouseEvent{ .kind = .up, .x = divider + 4, .y = 2, .button = .left };
-    try std.testing.expect(workbench.handleSashMouse(&up));
+    try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &up));
     try std.testing.expect(workbench.layout.workbench_grid.activeSash() == null);
 
     // The editor minimum, not a fraction of the window, stops the sash.
     const far = ui.MouseEvent{ .kind = .down, .x = ui.cell.snap(workbench.activity_bar_part.base.bounds.?.w) + workbench.layout.size(.sidebar), .y = 2, .button = .left };
-    try std.testing.expect(workbench.handleSashMouse(&far));
+    try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &far));
     const drag_far = ui.MouseEvent{ .kind = .move, .x = 10_000, .y = 2, .button = .left };
-    try std.testing.expect(workbench.handleSashMouse(&drag_far));
+    try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &drag_far));
     try std.testing.expect(workbench.layout.size(.sidebar) > workbench.cols / 2);
     try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(workbench.part.base.bounds.?.w));
 
@@ -7094,7 +7095,7 @@ test "Workbench: dragging the sidebar divider resizes the side bar" {
     const alt_start = workbench.layout.size(.sidebar);
     const alt_edge = ui.cell.snap(workbench.sidebar_part.base.bounds.?.right()) - 1;
     for ([_]ui.MouseKind{ .down, .move, .up }) |kind| {
-        try std.testing.expect(workbench.handleSashMouse(&.{
+        try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &.{
             .kind = kind,
             .x = if (kind == .down) alt_edge else 0,
             .y = 2,
@@ -7791,12 +7792,12 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
         .y = ui.cell.snap(sash.y),
         .button = .left,
     };
-    try std.testing.expect(workbench.handleSashMouse(&drag_sash));
+    try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &drag_sash));
     drag_sash.kind = .move;
     drag_sash.y += 2;
-    try std.testing.expect(workbench.handleSashMouse(&drag_sash));
+    try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &drag_sash));
     drag_sash.kind = .up;
-    try std.testing.expect(workbench.handleSashMouse(&drag_sash));
+    try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &drag_sash));
     try renderFrame(workbench, &scm_frame.writer);
     try std.testing.expectEqual(before + 2, scm_container.bodyRect("changes").?.h);
     try std.testing.expect(!workbench.scm_view_model.?.isCollapsed("graph"));
@@ -8183,12 +8184,12 @@ fn sendDragMouse(workbench: *Workbench, report: usize, x: usize, y: usize, relea
     try std.testing.expectEqual(@as(usize, 1), decoded.items.len);
     const mouse = &decoded.items[0].mouse;
     if (workbench.handleTabDragMouse(mouse)) return;
-    if (workbench.handleSashMouse(mouse)) return;
-    _ = workbench.handleTabMouse(mouse);
+    if (terminal_workbench.handleSashMouse(workbench, mouse)) return;
+    _ = terminal_workbench.handleTabMouse(workbench, mouse);
 }
 
 fn sidebarMouseForTest(workbench: *Workbench, kind: ui.MouseKind, x: usize) !void {
-    try std.testing.expect(workbench.handleSashMouse(&.{ .kind = kind, .x = x, .y = 2, .button = .left }));
+    try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &.{ .kind = kind, .x = x, .y = 2, .button = .left }));
 }
 
 fn runGitTest(allocator: Allocator, root: []const u8, args: []const []const u8) !bool {

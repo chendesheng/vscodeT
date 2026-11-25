@@ -9,6 +9,7 @@ const terminal_input = @import("../vs/workbench/contrib/terminal/browser/termina
 const time_compat = @import("../vs/base/common/timeCompat.zig");
 const shell = @import("../vs/workbench/browser/workbench.zig");
 pub const Workbench = shell.Workbench;
+const WorkbenchGrid = @import("../vs/workbench/browser/layout.zig").WorkbenchGrid;
 const activity_bar_mod = @import("../vs/workbench/browser/parts/activitybar/activitybarPart.zig");
 const sidebar_part_mod = @import("../vs/workbench/browser/parts/sidebar/sidebarPart.zig");
 const panel_part_mod = @import("../vs/workbench/browser/parts/panel/panelPart.zig");
@@ -145,7 +146,7 @@ pub const TerminalWorkbench = struct {
     pub fn handleResize(self: *TerminalWorkbench) !bool {
         const size = try tui.resizedSize() orelse return false;
         try self.workbench.resize(size.width, size.height);
-        self.workbench.setCellPixelSize(size.cell_width_px, size.cell_height_px);
+        setCellPixelSize(self.workbench, size.cell_width_px, size.cell_height_px);
         try tui.clearScreen(self.output);
         return true;
     }
@@ -869,4 +870,415 @@ fn roundFrameCorner(workbench: *Workbench, x: usize, y: usize, joint: u8, outsid
         round_style.outside = .terminal_background;
     }
     cells.roundBorder(x, y, joint, round_style);
+}
+
+// Native input and terminal-capability adapters.
+pub fn handleQuickAccessKey(self: *Workbench, event: *ui.KeyEvent) !bool {
+    const was_open = self.quick_access.isOpen();
+    const handled = try self.quick_access.handleKey(event);
+    // A keyboard-opened picker covers whatever the pointer was over; reset
+    // until the next mouse move resolves the new target.
+    if (handled and !was_open and self.quick_access.isOpen()) beginMousePointer(self);
+    return handled;
+}
+
+pub fn handleQuickAccessMouse(self: *Workbench, event: *ui.MouseEvent) bool {
+    const handled = self.quick_access.handleMouse(event);
+    if (handled) self.pointer = self.quick_access.pointerAt(event.x, event.y);
+    return handled;
+}
+
+/// Starts, updates and ends a sash drag. Called before tab and editor mouse
+/// handling; a drag consumes every event until the button is released.
+pub fn handleSashMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+    if (self.editor_drag.source != null) return false;
+    if (!self.quick_access.isOpen() and self.sidebarShown()) {
+        if (self.activeSidebarViewContainer()) |container| {
+            if (container.header_press != null and (event.kind == .move or event.kind == .up)) {
+                return self.handleSidebarPaneHeader(container, event, .{});
+            }
+            if (container.sash_dragging != null and container.handleSashMouse(event)) {
+                self.pointer = sash_css.pointer(.horizontal);
+                return true;
+            }
+        }
+    }
+    if (self.layout.workbench_grid.activeSash() != null) return self.handleWorkbenchSashMouse(event);
+    if (if (self.part.maximized_group == null) self.part.active_sash else null) |split| {
+        switch (event.kind) {
+            .move => {
+                // Upstream's sash owns pointer capture, so motion while
+                // the boundary is grabbed resizes it. Some terminals and
+                // multiplexers report that motion without the held button
+                // bits; relying on them here would drop the drag. A lost
+                // release is healed by the next down or up event.
+                self.part.resizeSash(split, event.x, event.y);
+                self.pointer = self.part.sashPointer(split);
+                return true;
+            },
+            .up, .click => {
+                self.part.resizeSash(split, event.x, event.y);
+                self.part.active_sash = null;
+                if (self.part.dividerAt(event.x, event.y)) |still_over| {
+                    self.hovered_sash = .{ .editor = still_over };
+                    self.pointer = self.part.sashPointer(still_over);
+                } else {
+                    self.hovered_sash = null;
+                    self.pointer = .default;
+                }
+                return true;
+            },
+            .down => {
+                self.pointer = self.part.sashPointer(split);
+                return true;
+            },
+            .wheel => return false,
+        }
+    }
+
+    if (self.handleWorkbenchSashMouse(event)) return true;
+    if (!self.quick_access.isOpen() and self.sidebarShown()) {
+        if (self.activeSidebarViewContainer()) |container| {
+            if (container.handleSashMouse(event)) {
+                if (event.kind == .move) self.clearSidebarViewHover();
+                self.pointer = if (container.sash_hovered != null or container.sash_dragging != null) sash_css.pointer(.horizontal) else .default;
+                return true;
+            }
+        }
+    }
+    if (self.part.maximized_group != null or self.quick_access.isOpen()) return false;
+    if (event.kind != .down or event.button != .left) {
+        // Keep the editor from treating a click on the sash as a caret
+        // placement; hover motion over the line is also consumed.
+        if (event.kind != .wheel) {
+            if (self.part.dividerAt(event.x, event.y)) |split| {
+                if (event.kind == .move) self.hovered_sash = .{ .editor = split };
+                self.pointer = self.part.sashPointer(split);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    const split = self.part.dividerAt(event.x, event.y) orelse return false;
+    self.pointer = self.part.sashPointer(split);
+    self.part.active_sash = split;
+    return true;
+}
+
+pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+    if (self.handleTabDragMouse(event)) return true;
+    if (!WorkbenchGrid.Rects.inColumn(self.workbenchGridLayout().editor, event.x)) return false;
+
+    const pane = self.part.viewAt(event.x, event.y) orelse {
+        self.clearTabHover();
+        return false;
+    };
+    if (pane.isEmpty()) {
+        self.clearTabHover();
+        if (handleWatermarkMouse(self, pane, event)) return true;
+        if (event.kind == .down) {
+            pane.focus();
+            self.focusEditor();
+            if (pane.watermark) |*watermark| watermark.blur();
+        }
+        return false;
+    }
+    const pane_y = ui.cell.snap(pane.rect.y);
+    const breadcrumb_y = pane_y + pane.titleHeight();
+
+    // Hover tracking on the tab row and the breadcrumb row.
+    if (event.kind == .move) {
+        if (pane.tabs_visible and event.y == pane_y) {
+            self.hovered_pane = pane;
+            if (pane.title_action_hit) |hit| {
+                if (event.x >= hit.start and event.x < hit.end) {
+                    self.hovered_title_action_pane = pane;
+                    self.hovered_tab = null;
+                    self.pointer = .pointer;
+                    return true;
+                }
+            }
+            self.hovered_title_action_pane = null;
+            if (tab_bar.hitAt(pane.hits.items, event.x)) |index| {
+                self.hovered_tab = pane.tabAtIndex(self.allocator, index);
+                self.pointer = .pointer;
+            } else {
+                self.hovered_tab = null;
+                self.pointer = .default;
+            }
+            return true;
+        }
+        self.clearTabHover();
+        if (pane.breadcrumbsVisible() and event.y == breadcrumb_y and self.activePane() == pane) {
+            if (self.ensureBreadcrumbsControl(pane)) |control| {
+                control.hover(event.x);
+                return true;
+            } else |_| {}
+        }
+        return false;
+    }
+
+    if (event.kind == .down) {
+        if (pane.tabs_visible and event.y == pane_y) {
+            self.focusEditor();
+        }
+    }
+
+    if (event.y == breadcrumb_y and pane.breadcrumbsVisible()) {
+        if (event.kind == .down and pane.tabs.items.len > 0) {
+            self.service.activateGroup(pane.group);
+            self.focus = .breadcrumbs;
+            self.statusbar.main_part.clearFocus();
+            if (self.search_view) |view| view.blur();
+            if (self.ensureBreadcrumbsControl(pane)) |control| {
+                control.setFocused(true);
+                // Populate the hit rectangles before handling the click;
+                // the inactive pane's row was painted by a short-lived
+                // control whose hits are gone.
+                control.draw(&self.frame.next, .{
+                    .x = pane.rect.x,
+                    .y = @floatFromInt(breadcrumb_y),
+                    .w = pane.rect.w,
+                    .h = 1,
+                }, true) catch {};
+                _ = control.click(event.x) catch {};
+                self.requestFrame();
+            } else |_| {}
+        }
+        return true;
+    }
+
+    if (!pane.tabs_visible or event.y != pane_y) {
+        // Upstream: the browser focuses the editor pane on a body press,
+        // and `EditorGroupView.onDidFocus` makes the group active
+        // (`EditorPart.doSetGroupActive`). The terminal view has no DOM
+        // focus-on-mousedown, so a press that brings focus into the group
+        // calls the ported `focus()`; a press inside the already-active
+        // group stays with the UI focus handling so clicks on its widgets
+        // are not blurred first. This does not depend on the title row.
+        if (event.kind == .down and pane.group != self.service.activeGroup()) pane.focus();
+        return false;
+    }
+
+    // Every non-move event on the tab row resolves the shape here, before
+    // the click paths below return early.
+    {
+        const over_action = if (pane.title_action_hit) |action_hit|
+            event.x >= action_hit.start and event.x < action_hit.end
+        else
+            false;
+        self.pointer = if (over_action or tab_bar.hitAt(pane.hits.items, event.x) != null)
+            .pointer
+        else
+            .default;
+    }
+
+    if (event.kind == .down and pane.tabs.items.len > 0) {
+        self.service.activateGroup(pane.group);
+
+        // A double click is matched against the rectangle the first click
+        // recorded. Activating a partially visible tab can scroll the
+        // strip, so the second cell may now belong to a different tab.
+        const now = time_compat.milliTimestamp();
+        if (event.button == .left and !event.mods.shift and !event.mods.ctrl) {
+            if (self.last_tab_click) |previous| {
+                if (previous.pane == pane and event.y == previous.y and
+                    event.x >= previous.start and event.x < previous.end and
+                    now - previous.at_ms <= 800 and
+                    pane.indexOfTab(previous.tab) != null)
+                {
+                    self.last_tab_click = null;
+                    // Upstream: double click pins a preview tab; a pinned
+                    // tab toggles the group size (default: expand).
+                    if (pane.group.model.isPinned(.{ .editor = previous.tab.input })) {
+                        self.toggleExpandGroup(pane);
+                    } else {
+                        _ = pane.group.model.pin(previous.tab.input) catch {};
+                    }
+                    self.focusEditor();
+                    self.requestFrame();
+                    return true;
+                }
+            }
+        }
+
+        if (event.button == .left) {
+            if (pane.title_action_hit) |hit| {
+                if (event.x >= hit.start and event.x < hit.end) {
+                    if (pane.activeTab()) |tab| {
+                        if (tab.search_editor_input) |input| {
+                            input.search_editor.triggerSearch(0, true);
+                            return true;
+                        }
+                        if (tab.terminalInstance()) |instance| {
+                            self.service.activateGroup(pane.group);
+                            if (event.x == hit.start + 1) {
+                                self.showTerminalProfileMenu(pane.group.id, event) catch {};
+                            } else if (event.mods.alt) {
+                                self.openTerminalEditorToSide(instance) catch {};
+                            } else {
+                                _ = self.createTerminalInEditor(pane, null) catch {};
+                            }
+                            return true;
+                        }
+                    }
+                    if (pane.activeTab()) |tab| {
+                        if (tab.markdown_preview != null) self.showMarkdownSource() catch {} else self.openMarkdownPanel(!event.mods.alt) catch {};
+                    }
+                    self.focusEditor();
+                    return true;
+                }
+            }
+        }
+        if (event.button == .middle) {
+            if (tab_bar.hitAt(pane.hits.items, event.x)) |index| {
+                if (pane.tabAtIndex(self.allocator, index)) |tab| {
+                    _ = self.closeTab(pane, tab) catch {};
+                }
+            }
+            return true;
+        }
+        if (event.button == .right) {
+            if (tab_bar.hitAt(pane.hits.items, event.x)) |index| {
+                if (pane.tabAtIndex(self.allocator, index)) |tab| {
+                    self.showTabContextMenu(pane, tab, event) catch {};
+                }
+            }
+            return true;
+        }
+        if (event.button != .left) return false;
+        if (pane.hits.items.len > 0 and event.x < pane.hits.items[0].start) {
+            if (self.showTabOverflowMenu(pane, event) catch false) return true;
+        }
+        if (tab_bar.closeHitAt(pane.hits.items, event.x)) |index| {
+            if (pane.tabAtIndex(self.allocator, index)) |tab| {
+                _ = self.closeTab(pane, tab) catch {};
+            }
+            return true;
+        }
+        if (tab_bar.hitAt(pane.hits.items, event.x)) |index| {
+            const tab = pane.tabAtIndex(self.allocator, index);
+            var recorded_hit: ?tab_bar.Hit = null;
+            if (tab != null and event.button == .left) {
+                recorded_hit = for (pane.hits.items) |candidate| {
+                    if (candidate.index == index) break candidate;
+                } else null;
+            }
+            if (tab) |value| {
+                if (builtin.os.tag == .macos and event.mods.ctrl) {
+                    self.showTabContextMenu(pane, value, event) catch {};
+                    return true;
+                }
+                self.selectTabForDrag(pane, value, index, event.mods) catch return true;
+                // Timestamp after activation: creating controllers or
+                // revealing a large file can take long enough that the
+                // second press would otherwise fall outside the window.
+                if (recorded_hit != null and !event.mods.shift and !event.mods.ctrl) {
+                    const entry = recorded_hit.?;
+                    self.last_tab_click = .{
+                        .pane = pane,
+                        .tab = value,
+                        .at_ms = time_compat.milliTimestamp(),
+                        .x = event.x,
+                        .y = event.y,
+                        .start = entry.start,
+                        .end = entry.end,
+                    };
+                }
+                self.editor_drag.arm(.{ .pane = pane, .tab = value }, event.*);
+            }
+        } else {
+            self.last_tab_click = null;
+            self.editor_drag.arm(.{ .pane = pane, .tab = null }, event.*);
+        }
+    }
+    if (event.kind == .up and event.button == .left and !event.mods.shift and !event.mods.ctrl) {
+        if (tab_bar.hitAt(pane.hits.items, event.x) != null) {
+            if (pane.activeTab()) |active| pane.group.model.setSelection(active.input, &.{}) catch {};
+        }
+    }
+    return true;
+}
+
+fn handleWatermarkMouse(self: *Workbench, pane: *shell.GroupPane, event: *const ui.MouseEvent) bool {
+    switch (event.kind) {
+        .move => {},
+        .down, .up => if (event.button != .left) return false,
+        else => return false,
+    }
+    const watermark = if (pane.watermark) |*view| view else return false;
+    const surface = self.synchronizeEditorDom() catch return false;
+    const target = (surface.elementFromPoint(event.x, event.y) catch null) orelse return false;
+    if (watermark.rowAt(target) == null) return false;
+    if (event.kind == .down) self.focusEditor();
+    self.pointer = .pointer;
+    var mouse = event.*;
+    surface.document().dispatchMouse(target, &mouse);
+    return true;
+}
+
+/// Resets the requested shape before one mouse-move is routed. Each
+/// handler that recognizes a target sets its own shape; anything that
+/// consumes the event without setting one leaves the terminal default.
+/// Presses and releases keep the shape the last move established.
+pub fn beginMousePointer(self: *Workbench) void {
+    self.pointer = .default;
+    self.hovered_sash = null;
+    _ = self.editor_surface.clearHover();
+}
+
+/// Resolves the pointer for the editor pane under a mouse cell. The tab
+/// strip and breadcrumb row are handled by `handleTabMouse` before this is
+/// reached, so only the pane content remains.
+pub fn updateMousePointer(self: *Workbench, event: ui.MouseEvent) void {
+    const pane = self.part.viewAt(event.x, event.y) orelse {
+        self.pointer = .default;
+        return;
+    };
+    const pane_x = ui.cell.snap(pane.rect.x);
+    const pane_y = ui.cell.snap(pane.rect.y);
+    if (event.x < pane_x or event.y < pane_y + pane.chromeHeight()) {
+        self.pointer = .default;
+        return;
+    }
+    const tab = pane.activeTab() orelse {
+        self.pointer = .default;
+        return;
+    };
+    self.pointer = tab.pointerAt(
+        event.x - pane_x,
+        event.y - (pane_y + pane.chromeHeight()),
+    ) catch .default;
+}
+
+/// Hosts call this after the kitty graphics probe (and when it changes).
+pub fn setImageProtocol(self: *Workbench, capability: ui.image.Capability) void {
+    if (self.images.protocol == capability) return;
+    self.images.setProtocol(capability);
+    invalidateImageParts(self);
+}
+
+/// Terminal cell pixel size (from `TIOCGWINSZ`). Image row counts and the
+/// image-preview fit depend on it.
+pub fn setCellPixelSize(self: *Workbench, width_px: usize, height_px: usize) void {
+    if (width_px == 0 or height_px == 0) return;
+    if (width_px == self.images.cell_width_px and height_px == self.images.cell_height_px) return;
+    self.images.setCellSize(width_px, height_px);
+    invalidateImageParts(self);
+}
+
+fn invalidateImageParts(self: *Workbench) void {
+    for (self.part.group_views.items) |pane| {
+        for (pane.tabs.items) |tab| {
+            if (tab.isImage()) {
+                tab.invalidateImages();
+                continue;
+            }
+            if (tab.markdown_preview) |preview| {
+                preview.invalidateImages();
+                preview.forceRefresh() catch {};
+            }
+        }
+    }
 }

@@ -426,6 +426,11 @@ pub fn EditorPart(comptime GroupView: type) type {
         }
 
         pub fn viewAt(self: *const Self, x: usize, y: usize) ?*GroupView {
+            if (self.maximized_group) |view| {
+                const rect = view.rect;
+                if (x >= ui.cell.snap(rect.x) and x < ui.cell.snap(rect.right()) and y >= ui.cell.snap(rect.y) and y < ui.cell.snap(rect.bottom())) return view;
+                return null;
+            }
             for (self.group_views.items) |view| {
                 const rect = view.rect;
                 if (x >= ui.cell.snap(rect.x) and x < ui.cell.snap(rect.right()) and

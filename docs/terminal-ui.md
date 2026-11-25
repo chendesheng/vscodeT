@@ -8,7 +8,12 @@ editor, sidebar, panel, status bar and overlays, and flushes completed frames.
 Terminal cells supply part bounds and pointer input. Browser DOM
 font measurement, macOS font smoothing, auxiliary windows, floating panels,
 ARIA live regions and browser-managed text selection and IME lack equivalent
-host APIs here. [Workbench port audit](workbench-audit.md)
+host APIs here. Notification center and toast rows use terminal cell bounds,
+explicit link and button hit regions, and the status-bar bell in lieu of the
+browser title bar. Notification deadlines use the shared window scheduler;
+there is no notification-state poll. The terminal routes tab, sash and quick
+input hit testing and terminal pixel/capability changes in `src/tui/workbench.zig`.
+[Workbench port audit](workbench-audit.md)
 
 ## 1. Context
 

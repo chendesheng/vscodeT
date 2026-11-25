@@ -1096,7 +1096,7 @@ console API for raw mode, sizing and input polling.
   un-centers the editor as the transition requires. The `inZenMode` and
   `isCenteredLayout` context keys are available to user keybindings. Not
   ported: `zenMode.fullScreen` (the TUI cannot full-screen its host terminal
-  window), `zenMode.silentNotifications` (there is no notification service)
+  window), `zenMode.silentNotifications` (the notification service is ported; the zen-mode integration is pending)
   and the auxiliary-bar branch (the terminal has no secondary side bar).
   A workspace remembers zen mode, its exit state, panel and side bar visibility,
   and editor centering. Setting `zenMode.restore` to false restores the layout
@@ -2396,5 +2396,13 @@ Editor contributions:
   language overrides, application/machine scope filtering, and untrusted
   workspace filtering for restricted/unregistered settings.
 
-- There is no notification center: transient errors and messages are shown in
-  the status bar, save/quit dialogs and the terminal status row instead.
+- Notifications use the ported `NotificationsModel` and `NotificationService`;
+  the center, toast list, status entries and command-palette actions are wired
+  into the terminal workbench. Extension non-modal messages retain severity,
+  source and actions; their promises resolve on selection or dismissal. Toast
+  scheduling and lifetime are driven by window events and deadlines. The
+  status-bar bell opens the center, and Notifications: Show Notifications is
+  available in the command palette. Browser-only ARIA announcements and title
+  bar positioning are not available; the terminal keeps the bell in its status
+  bar. The modal extension prompt still uses the quick-input adapter, and the
+  per-source filter picker and full command-URI arguments remain unported.

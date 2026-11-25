@@ -504,8 +504,8 @@ pub fn main(init: std.process.Init) !void {
     });
     defer workbench.deinit();
     workbench.setCellBorderCapabilities(if (border_probe.supported) border_probe.capabilities else null);
-    workbench.setImageProtocol(image_probe.capability);
-    workbench.setCellPixelSize(size.cell_width_px, size.cell_height_px);
+    terminal_workbench.setImageProtocol(workbench, image_probe.capability);
+    terminal_workbench.setCellPixelSize(workbench, size.cell_width_px, size.cell_height_px);
     // OSC 22 needs no probe: a terminal without pointer-shape support ignores
     // the sequence and the frame is unaffected.
     workbench.setPointerShapes(true);
@@ -799,7 +799,7 @@ pub fn main(init: std.process.Init) !void {
                     }
                     workbench.clearStatusHover();
 
-                    if (try workbench.handleQuickAccessKey(event)) continue;
+                    if (try terminal_workbench.handleQuickAccessKey(workbench, event)) continue;
                     if (workbench.notification_controller) |controller| if (controller.handleKey(event)) continue;
                     if (try workbench.handleTerminalKey(event)) continue;
                     if (try workbench.handlePanelKey(event)) continue;
@@ -882,7 +882,7 @@ pub fn main(init: std.process.Init) !void {
                     // Only motion re-resolves the whole workbench: a press or
                     // release keeps the shape the last move established, so a
                     // click on a row does not flicker back to the arrow.
-                    if (event.kind == .move) workbench.beginMousePointer();
+                    if (event.kind == .move) terminal_workbench.beginMousePointer(workbench);
                     if (workbench.handleDialogMouse(event)) {
                         if (workbench.shouldQuit()) return;
                         continue;
@@ -890,16 +890,16 @@ pub fn main(init: std.process.Init) !void {
                     if (workbench.context_menu_service.handleMouse(event, &workbench.pointer)) continue;
                     if (workbench.handleBreadcrumbPopupMouse(event)) continue;
                     if (workbench.handleTabDragMouse(event)) continue;
-                    if (workbench.handleQuickAccessMouse(event)) continue;
+                    if (terminal_workbench.handleQuickAccessMouse(workbench, event)) continue;
                     if (workbench.notification_controller) |controller| if (controller.handleMouse(event)) continue;
-                    if (workbench.handleSashMouse(event)) continue;
+                    if (terminal_workbench.handleSashMouse(workbench, event)) continue;
                     if (workbench.handleStatusbarMouse(event)) continue;
                     if (workbench.handlePanelMouse(event)) continue;
                     if (workbench.handleSidebarMouse(event)) {
                         sidebar_event_count += 1;
                         continue;
                     }
-                    if (workbench.handleTabMouse(event)) continue;
+                    if (terminal_workbench.handleTabMouse(workbench, event)) continue;
                     if (workbench.handleTerminalMouse(event)) continue;
                     if (workbench.handleSearchEditorMouse(event)) {
                         needs_render = true;
@@ -908,7 +908,7 @@ pub fn main(init: std.process.Init) !void {
 
                     // The editor pane resolves text/pointer/resize shapes from
                     // the surface's style tree before the event is routed.
-                    workbench.updateMousePointer(event.*);
+                    terminal_workbench.updateMousePointer(workbench, event.*);
                     var target = workbench.editorMouseEvent(event.*) orelse continue;
                     const current = target.tab;
                     const adjusted = &target.event;
