@@ -17,6 +17,7 @@ const contextkey = @import("../../../../platform/contextkey/common/contextkey.zi
 const instantiation = @import("../../../../platform/instantiation/common/instantiation.zig");
 const actions = @import("../../../../platform/actions/common/actions.zig");
 const registry = @import("../../commands.zig");
+const configuration_mod = @import("../../../services/configuration/browser/configurationService.zig");
 const keys = @import("../../../../base/common/keyCodes.zig");
 const bindings = @import("../../../../platform/keybinding/common/keybindingsRegistry.zig");
 
@@ -37,6 +38,8 @@ pub const NotificationsController = struct {
     focus_key: contextkey.IContextKey,
     center_focus: bool = false,
     position: model.NotificationsPosition = .bottom_right,
+    configuration: ?*configuration_mod.ConfigurationService = null,
+    configuration_listener: ?usize = null,
     center_visibility: usize,
     toasts_visibility: usize,
     center_listener: usize,
@@ -73,6 +76,7 @@ pub const NotificationsController = struct {
         return self;
     }
     pub fn deinit(self: *NotificationsController) void {
+        self.attachConfiguration(null) catch {};
         self.center.on_did_change_visibility.unlisten(self.center_visibility);
         self.toasts.on_did_change_visibility.unlisten(self.toasts_visibility);
         self.center.on_did_change.unlisten(self.center_listener);
@@ -118,6 +122,23 @@ pub const NotificationsController = struct {
     }
     pub fn hide(self: *NotificationsController) void {
         self.center.hide();
+    }
+    pub fn attachConfiguration(self: *NotificationsController, configuration: ?*configuration_mod.ConfigurationService) !void {
+        if (self.configuration == configuration) return;
+        if (self.configuration_listener) |listener| self.configuration.?.unlistenConfigurationChange(listener);
+        self.configuration = null;
+        self.configuration_listener = null;
+        if (configuration) |service| {
+            self.configuration_listener = try service.listenConfigurationChange(self, onConfigurationChange);
+            self.configuration = service;
+        }
+        self.setPosition(model.getNotificationsPosition(if (configuration) |service| service.interface() else null));
+    }
+    fn onConfigurationChange(change: configuration_mod.Change, self: *NotificationsController) !void {
+        if (@import("../../../../platform/configuration/common/configuration.zig").affectsConfiguration(change, model.NotificationsSettings.notifications_position)) {
+            self.setPosition(model.getNotificationsPosition(self.configuration.?.interface()));
+            self.requestFrame();
+        }
     }
     pub fn setPosition(self: *NotificationsController, position: model.NotificationsPosition) void {
         self.position = position;

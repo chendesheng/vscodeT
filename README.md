@@ -1096,8 +1096,9 @@ console API for raw mode, sizing and input polling.
   un-centers the editor as the transition requires. The `inZenMode` and
   `isCenteredLayout` context keys are available to user keybindings. Not
   ported: `zenMode.fullScreen` (the TUI cannot full-screen its host terminal
-  window), `zenMode.silentNotifications` (the notification service is ported; the zen-mode integration is pending)
-  and the auxiliary-bar branch (the terminal has no secondary side bar).
+  window) and the auxiliary-bar branch (the terminal has no secondary side bar).
+  `zenMode.silentNotifications` enables Do Not Disturb only if zen mode owns
+  the filter transition, reacts to setting edits, and restores the pre-zen filter.
   A workspace remembers zen mode, its exit state, panel and side bar visibility,
   and editor centering. Setting `zenMode.restore` to false restores the layout
   that preceded zen mode. Panel height and side bar width use profile storage.

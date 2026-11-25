@@ -640,4 +640,26 @@ pub const NotificationsModel = struct {
     }
 };
 
-pub const NotificationsPosition = enum { bottom_right, bottom_left, top_right };
+pub const NotificationsSettings = struct {
+    pub const notifications_position = "workbench.notifications.position";
+    pub const notifications_button = "workbench.notifications.showInTitleBar";
+};
+pub const NotificationsPosition = enum {
+    bottom_right,
+    bottom_left,
+    top_right,
+    pub fn name(self: NotificationsPosition) []const u8 {
+        return switch (self) {
+            .bottom_right => "bottom-right",
+            .bottom_left => "bottom-left",
+            .top_right => "top-right",
+        };
+    }
+};
+pub fn getNotificationsPosition(configuration: ?@import("../../platform/configuration/common/configuration.zig").IConfigurationService) NotificationsPosition {
+    const config = configuration orelse return .bottom_right;
+    const value = config.getString(NotificationsSettings.notifications_position) orelse return .bottom_right;
+    if (std.mem.eql(u8, value, "bottom-left")) return .bottom_left;
+    if (std.mem.eql(u8, value, "top-right")) return .top_right;
+    return .bottom_right;
+}

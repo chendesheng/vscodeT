@@ -366,6 +366,9 @@ pub fn EditorGroupView(comptime View: type) type {
             return if (self.tabs_visible) title_height else 0;
         }
 
+        pub fn contentDimensions(self: *const Self) struct { width: usize, height: usize } {
+            return .{ .width = @max(ui.cell.snap(self.rect.w), 1), .height = @max(ui.cell.snap(self.rect.h) -| self.chromeHeight(), 1) };
+        }
         pub fn chromeHeight(self: *const Self) usize {
             return self.titleHeight() + if (self.breadcrumbsVisible()) breadcrumbs_height else 0;
         }

@@ -23,6 +23,8 @@ pub const NotificationMessage = union(enum) {
 
 pub const INotificationSourceFilter = struct { id: []const u8, label: []const u8, filter: NotificationsFilter };
 
+pub const NotificationFilter = union(enum) { global: NotificationsFilter, source: INotificationSourceFilter };
+
 pub const INotificationSource = struct {
     id: []const u8,
     label: []const u8,
@@ -153,6 +155,11 @@ pub const notification_service_id = @import("../../instantiation/common/instanti
 
 pub const INotificationService = struct {
     context: *anyopaque,
+    get_filter_fn: ?*const fn (*anyopaque, ?INotificationSource) NotificationsFilter = null,
+    set_filter_fn: ?*const fn (*anyopaque, NotificationFilter) anyerror!void = null,
+    get_filters_fn: ?*const fn (*anyopaque, std.mem.Allocator) anyerror![]INotificationSourceFilter = null,
+    remove_filter_fn: ?*const fn (*anyopaque, []const u8) anyerror!void = null,
+    on_did_change_filter: ?*Emitter(void) = null,
     notify_fn: *const fn (context: *anyopaque, notification: INotification) INotificationHandle,
     info_fn: *const fn (context: *anyopaque, message: NotificationMessage) void,
     warn_fn: *const fn (context: *anyopaque, message: NotificationMessage) void,
@@ -160,6 +167,18 @@ pub const INotificationService = struct {
     prompt_fn: *const fn (context: *anyopaque, severity: Severity, message: NotificationMessage, choices: []const IPromptChoice, options: ?IPromptOptions) INotificationHandle,
     status_fn: *const fn (context: *anyopaque, message: NotificationMessage, options: ?IStatusMessageOptions) IStatusHandle,
 
+    pub fn getFilter(self: INotificationService, source: ?INotificationSource) NotificationsFilter {
+        return if (self.get_filter_fn) |call| call(self.context, source) else .OFF;
+    }
+    pub fn setFilter(self: INotificationService, filter: NotificationFilter) !void {
+        if (self.set_filter_fn) |call| try call(self.context, filter);
+    }
+    pub fn getFilters(self: INotificationService, allocator: std.mem.Allocator) ![]INotificationSourceFilter {
+        return if (self.get_filters_fn) |call| call(self.context, allocator) else allocator.alloc(INotificationSourceFilter, 0);
+    }
+    pub fn removeFilter(self: INotificationService, id: []const u8) !void {
+        if (self.remove_filter_fn) |call| try call(self.context, id);
+    }
     pub fn notify(self: INotificationService, notification: INotification) INotificationHandle {
         return self.notify_fn(self.context, notification);
     }

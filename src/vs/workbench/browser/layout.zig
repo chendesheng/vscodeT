@@ -195,6 +195,7 @@ pub const Layout = struct {
     workbench_grid: WorkbenchGrid = .{},
     /// Port of `LayoutStateKeys.ZEN_MODE_ACTIVE` / `ZEN_MODE_EXIT_INFO`.
     zen_host: ?ZenModeHost = null,
+    notification_service: ?@import("../../platform/notification/common/notification.zig").INotificationService = null,
     configured_statusbar_visible: bool = true,
     zen_hide_line_numbers: bool = false,
     zen_mode_active: bool = false,
@@ -525,6 +526,7 @@ pub const Layout = struct {
         if (self.isZenModeActive()) {
             if (!restoring) self.zen_mode_exit_info = .{
                 .transitionedToCenteredEditorLayout = !self.isMainEditorCentered() and config.center_layout,
+                .handleNotificationsDoNotDisturbMode = if (self.notification_service) |service| service.getFilter(null) == .OFF else false,
                 .wasVisible = .{ .panel = self.isVisible(.panel), .sideBar = self.isVisible(.sidebar) },
             };
             try self.setPartHidden(true, .panel);
@@ -532,6 +534,9 @@ pub const Layout = struct {
             if (config.hide_activity_bar) try self.setPartHidden(true, .activitybar);
             if (config.hide_status_bar) try self.setPartHidden(true, .statusbar);
             if (config.hide_line_numbers) self.setZenLineNumbers(host, true);
+            if (config.silent_notifications and self.zen_mode_exit_info.handleNotificationsDoNotDisturbMode) {
+                if (self.notification_service) |service| try service.setFilter(.{ .global = .ERROR });
+            }
             if (config.center_layout) try self.centerMainEditorLayout(true, true);
         } else {
             const info = self.zen_mode_exit_info;
@@ -540,6 +545,9 @@ pub const Layout = struct {
             try self.setPartHidden(!host.configured_visible(host.context, .activitybar), .activitybar);
             try self.setPartHidden(!self.configured_statusbar_visible, .statusbar);
             if (info.transitionedToCenteredEditorLayout) try self.centerMainEditorLayout(false, true);
+            if (info.handleNotificationsDoNotDisturbMode) {
+                if (self.notification_service) |service| try service.setFilter(.{ .global = .OFF });
+            }
             self.setZenLineNumbers(host, false);
         }
         if (!skip_layout) try self.on_did_change.fire({});
@@ -562,6 +570,9 @@ pub const Layout = struct {
         if (affects(change, settings.hide_activity_bar) or affects(change, layout_service.LayoutSettings.activity_bar_location))
             try self.setPartHidden(config.hide_activity_bar or !host.configured_visible(host.context, .activitybar), .activitybar);
         if (affects(change, settings.hide_status_bar)) try self.setPartHidden(config.hide_status_bar, .statusbar);
+        if (affects(change, settings.silent_notifications) and self.zen_mode_exit_info.handleNotificationsDoNotDisturbMode) {
+            if (self.notification_service) |service| try service.setFilter(.{ .global = if (config.silent_notifications) .ERROR else .OFF });
+        }
         if (affects(change, settings.center_layout))
             try self.centerMainEditorLayout(config.center_layout, true);
         if (affects(change, settings.hide_line_numbers)) self.setZenLineNumbers(host, config.hide_line_numbers);

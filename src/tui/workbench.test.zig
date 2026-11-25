@@ -6372,7 +6372,15 @@ test "Workbench: zen mode applies configuration changes while active" {
     const tab = workbench.activeTab().?;
     try std.testing.expectEqual(editor_options.RenderLineNumbersType.Relative, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
 
+    try std.testing.expect(workbench.notification_api.getFilter(null) == .OFF);
     try workbench.toggleZenMode(false, false);
+    try std.testing.expect(workbench.notification_api.getFilter(null) == .ERROR);
+    try workbench.setUserConfigurationValue("zenMode.silentNotifications", .{ .bool = false });
+    try std.testing.expect(workbench.notification_api.getFilter(null) == .OFF);
+    try workbench.setUserConfigurationValue("zenMode.silentNotifications", .{ .bool = true });
+    try std.testing.expect(workbench.notification_api.getFilter(null) == .ERROR);
+    try workbench.setUserConfigurationValue("workbench.notifications.position", .{ .string = "bottom-left" });
+    try std.testing.expect(workbench.notification_controller.?.position == .bottom_left);
     try std.testing.expectEqual(editor_options.RenderLineNumbersType.Off, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
     try std.testing.expect(workbench.layout.isMainEditorCentered());
     try std.testing.expect(!workbench.statusBarVisible());
@@ -6392,15 +6400,18 @@ test "Workbench: zen mode applies configuration changes while active" {
 
     try workbench.toggleZenMode(false, false);
     try std.testing.expect(!workbench.layout.isZenModeActive());
+    try std.testing.expect(workbench.notification_api.getFilter(null) == .OFF);
     try std.testing.expectEqual(editor_options.RenderLineNumbersType.Relative, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
     try std.testing.expect(workbench.statusBarVisible());
     try std.testing.expect(workbench.activity_bar_part.visible);
 
     // Exiting zen uses the current workbench preference, including an edit
     // made after entry while the status bar was temporarily hidden.
+    try workbench.notification_api.setFilter(.{ .global = .ERROR });
     try workbench.commands.execute(zen_mode_contribution.toggle_zen_mode_id);
     try workbench.setUserConfigurationValue("workbench.statusBar.visible", .{ .bool = false });
     try workbench.commands.execute(zen_mode_contribution.exit_zen_mode_id);
+    try std.testing.expect(workbench.notification_api.getFilter(null) == .ERROR);
     try std.testing.expect(!workbench.statusBarVisible());
 }
 

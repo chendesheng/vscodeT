@@ -13,6 +13,7 @@ pub const defaults_json =
     \\{
     \\  "workbench": {
     \\    "tips": { "enabled": true },
+    \\    "notifications": { "position": "bottom-right", "showInTitleBar": true },
     \\    "activityBar": {
     \\      "location": "default",
     \\      "autoHide": false,

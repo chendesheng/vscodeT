@@ -230,10 +230,25 @@ pub const NotificationService = struct {
     };
 
     pub fn interface(self: *NotificationService) notification.INotificationService {
-        return .{ .context = self, .notify_fn = notifyImpl, .info_fn = infoImpl, .warn_fn = warnImpl, .error_fn = errorImpl, .status_fn = statusImpl, .prompt_fn = promptImpl };
+        return .{ .context = self, .get_filter_fn = getFilterImpl, .set_filter_fn = setFilterImpl, .get_filters_fn = getFiltersImpl, .remove_filter_fn = removeFilterImpl, .on_did_change_filter = &self.on_did_change_filter, .notify_fn = notifyImpl, .info_fn = infoImpl, .warn_fn = warnImpl, .error_fn = errorImpl, .status_fn = statusImpl, .prompt_fn = promptImpl };
     }
     fn fromContext(ctx: *anyopaque) *NotificationService {
         return @ptrCast(@alignCast(ctx));
+    }
+    fn getFilterImpl(ctx: *anyopaque, source: ?Source) Filter {
+        return fromContext(ctx).getFilter(source);
+    }
+    fn setFilterImpl(ctx: *anyopaque, filter: notification.NotificationFilter) !void {
+        switch (filter) {
+            .global => |value| try fromContext(ctx).setFilter(value),
+            .source => |value| try fromContext(ctx).setSourceFilter(value),
+        }
+    }
+    fn getFiltersImpl(ctx: *anyopaque, allocator: Allocator) ![]SourceFilter {
+        return fromContext(ctx).getFilters(allocator);
+    }
+    fn removeFilterImpl(ctx: *anyopaque, id: []const u8) !void {
+        try fromContext(ctx).removeFilter(id);
     }
     fn notifyImpl(ctx: *anyopaque, input: notification.INotification) INotificationHandle {
         return fromContext(ctx).notify(input);

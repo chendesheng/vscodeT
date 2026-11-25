@@ -908,6 +908,7 @@ pub const Workbench = struct {
             .focus_editor = notificationFocusEditor,
         });
         errdefer controller.deinit();
+        try controller.attachConfiguration(self.configuration);
         _ = try self.services.set(notifications.controller_id, controller);
         try notifications.registerNotificationCommands(&self.commands, &self.instantiation);
         self.notification_controller = controller;
@@ -1068,6 +1069,7 @@ pub const Workbench = struct {
         self.notification_service = try @import("../services/notification/common/notificationService.zig").NotificationService.create(self.allocator, &self.notification_storage);
         errdefer self.notification_service.deinit();
         self.notification_api = self.notification_service.interface();
+        self.layout.notification_service = self.notification_api;
         self.statusbar = try StatusbarService.init(self.allocator);
         errdefer self.statusbar.deinit();
         try self.statusbar.main_part.base.register(layout_service);
@@ -2178,6 +2180,7 @@ pub const Workbench = struct {
             if (self.terminal_service) |service| service.options.configuration = null;
             if (self.quick_diff_controller) |controller| controller.detachConfiguration();
             if (self.theme_service) |service| service.detachConfiguration();
+            if (self.notification_controller) |controller| try controller.attachConfiguration(null);
             configuration.deinit();
             self.configuration = null;
         }
@@ -2237,6 +2240,7 @@ pub const Workbench = struct {
             if (self.terminal_service) |service| service.options.configuration = null;
             if (self.quick_diff_controller) |controller| controller.detachConfiguration();
             if (self.theme_service) |service| service.detachConfiguration();
+            if (self.notification_controller) |controller| try controller.attachConfiguration(null);
             configuration.deinit();
             self.configuration = null;
             try self.ensureConfiguration();
@@ -2285,6 +2289,7 @@ pub const Workbench = struct {
         const themes = try self.ensureThemeService();
         try themes.setConfiguration(self.configuration.?);
         if (self.quick_diff_controller) |controller| try controller.setConfiguration(self.configuration);
+        if (self.notification_controller) |controller| try controller.attachConfiguration(self.configuration);
         try self.configuration.?.onDidChangeConfiguration(self, onWorkbenchConfigurationChange);
         if (self.declarative) |catalog| try self.applyExtensionDefaults(catalog);
         if (self.terminal_service) |service| service.options.configuration = self.configuration;
@@ -4347,7 +4352,7 @@ pub const Workbench = struct {
     ) !void {
         if (self.findDiffTab(path, left_label, right_label)) |existing| {
             const tab = existing.tab;
-            const dims = editorDimensions(self, existing.pane);
+            const dims = existing.pane.contentDimensions();
             try tab.diff.?.replace(original_text, modified_text, dims.width, dims.height, text_diff_editor_mod.computeConfiguration(if (self.configuration) |config| config.interface() else null));
             tab.syncDiffViews();
             try existing.pane.activateTab(tab);
@@ -4360,7 +4365,7 @@ pub const Workbench = struct {
         }
 
         const pane = self.activePane() orelse return error.GroupPaneMissing;
-        const dims = editorDimensions(self, pane);
+        const dims = pane.contentDimensions();
         const tab = blk: {
             const view = try text_diff_editor_mod.DiffView.create(
                 self.allocator,
@@ -5047,16 +5052,6 @@ pub const Workbench = struct {
         return std_uri.fsPath(parsed, allocator) catch uri;
     }
 
-    const Dimensions = struct { width: usize, height: usize };
-
-    fn editorDimensions(self: *Workbench, pane: *GroupPane) Dimensions {
-        _ = self;
-        return .{
-            .width = @max(ui.cell.snap(pane.rect.w), 1),
-            .height = @max(ui.cell.snap(pane.rect.h) -| pane.chromeHeight(), 1),
-        };
-    }
-
     // --- end git / source control
 
     pub fn markdownPreviewConfig(self: *Workbench) MarkdownPreviewConfig {
@@ -5424,7 +5419,7 @@ pub const Workbench = struct {
         if (self.findOpenInput(path)) |existing| {
             return self.openExistingInput(path, existing, options);
         }
-        const size = self.editorDimensions(self.activePane() orelse return error.GroupPaneMissing);
+        const size = (self.activePane() orelse return error.GroupPaneMissing).contentDimensions();
         const editor = try Editor.createWithExtensionsOptions(self.allocator, self.io, path, size.width, size.height, self.declarative, self.json_client, .{ .reserve_scrollbar = true });
         errdefer {
             editor.deinit();
@@ -5555,7 +5550,7 @@ pub const Workbench = struct {
     }
 
     fn openLoadedTextEditor(self: *Workbench, path: []const u8, loaded: *const text_files.ResolvedTextFile, options: OpenOptions) !void {
-        const size = self.editorDimensions(self.activePane() orelse return error.GroupPaneMissing);
+        const size = (self.activePane() orelse return error.GroupPaneMissing).contentDimensions();
         const editor = try Editor.createWithExtensionsFromLoadedText(
             self.allocator,
             self.io,
@@ -6659,7 +6654,7 @@ pub const Workbench = struct {
             }
             errdefer _ = target.group.model.closeEditor(&copied_input.base, .UNKNOWN, true) catch {};
 
-            const dims = editorDimensions(self, target);
+            const dims = target.contentDimensions();
             const copied = try Tab.initImageFromInput(
                 self.allocator,
                 self.io,
@@ -11876,7 +11871,7 @@ fn searchOpenResults(context: *anyopaque, config: search_editor.Config, snapshot
     const pane = self.activePane() orelse return error.GroupPaneMissing;
     try self.ensureConfiguration();
     const configuration = self.configuration.?;
-    const dims = self.editorDimensions(pane);
+    const dims = pane.contentDimensions();
     const query = try search_editor.SearchEditor.init(self.allocator, .{ .context = self, .start_text_search = startSearchEditorJob }, config, configuration);
     const input = SearchEditorInput.init(self.allocator, self.io, config.query, query, snapshot.text, dims.width, dims.height) catch |err| {
         query.deinit();
