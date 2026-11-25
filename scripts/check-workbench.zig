@@ -1,7 +1,9 @@
 const std = @import("std");
 
 const shell = "src/vs/workbench/browser/workbench.zig";
-const line_budget = 6281;
+const line_budget = 258;
+const native_window = "src/tui/workbenchWindow.zig";
+const native_line_budget = 6282;
 const exceptions = @embedFile("workbench-imports.txt");
 
 pub fn main(init: std.process.Init) !void {
@@ -13,6 +15,7 @@ pub fn main(init: std.process.Init) !void {
 
     var ok = true;
     var saw_shell = false;
+    var saw_native = false;
     var root = try std.Io.Dir.cwd().openDir(init.io, ".", .{ .iterate = true });
     defer root.close(init.io);
     var walker = try root.walkSelectively(allocator);
@@ -32,11 +35,15 @@ pub fn main(init: std.process.Init) !void {
         const source = try entry.dir.readFileAllocOptions(init.io, entry.basename, temp, .unlimited, .of(u8), 0);
         const path = try temp.dupe(u8, entry.path);
         std.mem.replaceScalar(u8, path, std.fs.path.sep, '/');
-        if (std.mem.eql(u8, path, shell)) {
-            saw_shell = true;
+        const is_shell = std.mem.eql(u8, path, shell);
+        const is_native = std.mem.eql(u8, path, native_window);
+        if (is_shell or is_native) {
+            if (is_shell) saw_shell = true;
+            if (is_native) saw_native = true;
+            const budget: usize = if (is_shell) line_budget else native_line_budget;
             const count = std.mem.countScalar(u8, source, '\n') + @intFromBool(source.len > 0 and source[source.len - 1] != '\n');
-            if (count > line_budget) {
-                std.log.err("{s} has {d} lines, budget {d}", .{ path, count, line_budget });
+            if (count > budget) {
+                std.log.err("{s} has {d} lines, budget {d}", .{ path, count, budget });
                 ok = false;
             }
         }
@@ -54,7 +61,7 @@ pub fn main(init: std.process.Init) !void {
             std.mem.replaceScalar(u8, imported, '\\', '/');
             const target = try std.fs.path.resolveAllocPosix(temp, &.{ std.fs.path.dirnamePosix(path) orelse ".", imported });
             if (!std.mem.eql(u8, target, shell) and
-                !(std.mem.startsWith(u8, path, "src/vs/") and std.mem.startsWith(u8, target, "src/tui/"))) continue;
+                !((std.mem.startsWith(u8, path, "src/vs/") or std.mem.startsWith(u8, path, "src/extensions/")) and std.mem.startsWith(u8, target, "src/tui/"))) continue;
             const edge = try std.fmt.allocPrint(temp, "{s} -> {s}", .{ path, target });
             if (allowed.getPtr(edge)) |found| {
                 found.* = true;
@@ -70,5 +77,5 @@ pub fn main(init: std.process.Init) !void {
         std.log.err("remove obsolete exception: {s}", .{entry.key_ptr.*});
         ok = false;
     }
-    if (!ok or !saw_shell) return error.WorkbenchBoundary;
+    if (!ok or !saw_shell or !saw_native) return error.WorkbenchBoundary;
 }

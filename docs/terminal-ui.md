@@ -1,5 +1,7 @@
 # Terminal UI architecture: a DOM-like tree rendered to terminal cells
 
+**Current Workbench architecture:** `src/vs/workbench/browser/workbench.zig` owns the portable Workbench startup, Layout, registered parts, notifications and lifecycle. `src/tui/workbenchWindow.zig` owns the native TerminalWorkbench window and remaining service/feature adapters; `src/tui/workbench.zig` owns the terminal event loop, rendering, and input. See the [Workbench port audit](workbench-audit.md) for the live boundary, line budgets, and remaining port omissions.
+
 Status: proposed design.
 
 The native host in `src/tui/workbench.zig` preserves partial input sequences

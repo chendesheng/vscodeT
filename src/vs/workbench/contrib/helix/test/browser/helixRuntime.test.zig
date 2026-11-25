@@ -16,9 +16,9 @@ fn disableVim(context: *anyopaque) void {
     if (vim.isEnabled()) vim.setEnabledPersistent(false) catch {};
 }
 
-pub fn Tests(comptime factory: anytype) type {
+pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) type {
     return struct {
-        const TestWindow = @import("../../../../test/browser/workbenchTestServices.zig").TestWindow(factory);
+        const TestWindow = @import("../../../../test/browser/workbenchTestServices.zig").TestWindow(terminal_window_type, factory);
         test "Helix runtime: enable/disable persist and control the key handler" {
             const allocator = std.testing.allocator;
             const io = time_compat.io;

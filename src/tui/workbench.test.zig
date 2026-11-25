@@ -1,13 +1,13 @@
 // Terminal workbench integration tests, driven through the host and service APIs.
-const TestWindow = @import("../vs/workbench/test/browser/workbenchTestServices.zig").TestWindow(@import("./editorView.zig").View.createHandle);
+const TestWindow = @import("../vs/workbench/test/browser/workbenchTestServices.zig").TestWindow(@import("workbench.zig").TerminalWorkbench, @import("./editorView.zig").View.createHandle);
 const terminal_workbench = @import("workbench.zig");
 const renderFrame = terminal_workbench.renderFrame;
 const cursorCell = @import("workbench.zig").cursorCell;
-const shell = @import("../vs/workbench/browser/workbench.zig");
+const shell = @import("workbenchWindow.zig");
 const Focus = shell.Focus;
 const GroupPane = shell.GroupPane;
 const TabKeyResult = shell.TabKeyResult;
-const Workbench = shell.Workbench;
+const Workbench = shell.TerminalWorkbench;
 const DropZone = @import("../vs/workbench/browser/parts/editor/editorDropTarget.zig").Zone;
 const color_utils = @import("../vs/platform/theme/common/colorUtils.zig");
 const theme_colors_mod = @import("../vs/workbench/browser/themeColors.zig");
@@ -3980,7 +3980,7 @@ test "Workbench: breadcrumb row shows the workspace-relative path" {
     try std.testing.expect(control.widget.itemCount() >= 2);
 
     var needs_frame = false;
-    var host = try @import("workbench.zig").TerminalWorkbench.init(workbench, &out.writer, null, null);
+    var host = try @import("workbench.zig").TerminalHostLoop.init(workbench, &out.writer, null, null);
     defer host.deinit();
     host.scheduleFrames(&needs_frame);
     try control.model.?.refresh();
@@ -5746,7 +5746,7 @@ test "startup opens files at the laid-out pane width with one wrapping pass" {
     const wb = wb_window.workbench;
     defer wb_window.deinit();
     try wb.initSidebarFromWorkspace();
-    try wb.openPath("src/vs/workbench/browser/workbench.zig");
+    try wb.openPath("src/tui/workbenchWindow.zig");
     const editor = wb.activeTab().?.editor;
     const pane = wb.activePane().?;
     try std.testing.expectEqual(pane.panes.page_position.?.width, editor.screen_width);
@@ -6817,7 +6817,7 @@ test "terminal host flushes final output and fires one exit before removing pane
     defer workbench_window.deinit();
     var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();
-    var host = try @import("workbench.zig").TerminalWorkbench.init(workbench, &output.writer, null, null);
+    var host = try @import("workbench.zig").TerminalHostLoop.init(workbench, &output.writer, null, null);
     defer host.deinit();
     const script = "read line; printf '\\033]2;last-output\\007'; exit ";
     const editor = workbench.launchTerminalProcess("editor", "/bin/sh", &.{ "-c", script ++ "17" }, null) catch |err| switch (err) {

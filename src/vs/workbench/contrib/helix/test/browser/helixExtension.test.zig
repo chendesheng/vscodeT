@@ -10,9 +10,9 @@ const Position = @import("../../../../../editor/common/core/position.zig").Posit
 const TextModel = @import("../../../../../editor/common/model/textModel.zig").TextModel;
 const completion = @import("../../../../../editor/common/languages/completion.zig");
 
-pub fn Tests(comptime factory: anytype) type {
+pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) type {
     return struct {
-        const TestWindow = @import("../../../../test/browser/workbenchTestServices.zig").TestWindow(factory);
+        const TestWindow = @import("../../../../test/browser/workbenchTestServices.zig").TestWindow(terminal_window_type, factory);
         test "Helix extension: registers a key handler and edits through the host" {
             const allocator = std.testing.allocator;
             const io = time_compat.io;

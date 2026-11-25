@@ -7,8 +7,9 @@ const ui = @import("ui");
 const tui = @import("tui.zig");
 const terminal_input = @import("../vs/workbench/contrib/terminal/browser/terminalInput.zig");
 const time_compat = @import("../vs/base/common/timeCompat.zig");
-const shell = @import("../vs/workbench/browser/workbench.zig");
-pub const Workbench = shell.Workbench;
+const shell = @import("workbenchWindow.zig");
+pub const TerminalWorkbench = shell.TerminalWorkbench;
+pub const Workbench = TerminalWorkbench;
 const TabKeyResult = shell.TabKeyResult;
 const GroupPane = shell.GroupPane;
 const Tab = @import("../vs/workbench/browser/parts/editor/editorPane.zig").Tab;
@@ -38,7 +39,7 @@ pub fn initWindowSurface(surface: *ui.Surface, allocator: std.mem.Allocator, col
 
 const WakeSignal = @import("wakeSignal.zig").Signal;
 
-pub const TerminalWorkbench = struct {
+pub const TerminalHostLoop = struct {
     worker_wake: *WakeSignal,
     workbench: *Workbench,
     output: *std.Io.Writer,
@@ -51,7 +52,7 @@ pub const TerminalWorkbench = struct {
         source: union(enum) { input, worker_completion, terminal_output: usize, terminal_exit: usize },
     };
 
-    pub fn init(workbench: *Workbench, output: *std.Io.Writer, border_probe_bytes: ?[]const u8, image_probe_bytes: ?[]const u8) !TerminalWorkbench {
+    pub fn init(workbench: *Workbench, output: *std.Io.Writer, border_probe_bytes: ?[]const u8, image_probe_bytes: ?[]const u8) !TerminalHostLoop {
         var buffer = try std.array_list.Managed(u8).initCapacity(workbench.allocator, 4096);
         errdefer buffer.deinit();
         if (border_probe_bytes) |bytes| try buffer.appendSlice(bytes);
@@ -63,7 +64,7 @@ pub const TerminalWorkbench = struct {
         return .{ .worker_wake = wake, .workbench = workbench, .output = output, .input_buffer = buffer };
     }
 
-    pub fn scheduleFrames(self: *TerminalWorkbench, needs_render: *bool) void {
+    pub fn scheduleFrames(self: *TerminalHostLoop, needs_render: *bool) void {
         self.workbench.frame_scheduler = .{ .context = needs_render, .request = requestFrame };
     }
 
@@ -72,7 +73,7 @@ pub const TerminalWorkbench = struct {
         needs_render.* = true;
     }
 
-    pub fn deinit(self: *TerminalWorkbench) void {
+    pub fn deinit(self: *TerminalHostLoop) void {
         self.workbench.window_events.setWake(null);
         self.worker_wake.deinit();
         self.workbench.allocator.destroy(self.worker_wake);
@@ -81,13 +82,13 @@ pub const TerminalWorkbench = struct {
         self.input_buffer.deinit();
     }
 
-    pub fn hasBufferedInput(self: *const TerminalWorkbench) bool {
+    pub fn hasBufferedInput(self: *const TerminalHostLoop) bool {
         return self.input_buffer.items.len != 0 and !self.awaiting_continuation;
     }
 
     const Readiness = struct { input: bool = false, redraw: bool = false };
 
-    pub fn wait(self: *TerminalWorkbench, timeout: i32) !Readiness {
+    pub fn wait(self: *TerminalHostLoop, timeout: i32) !Readiness {
         const workbench = self.workbench;
         var result = Readiness{};
         if (builtin.os.tag == .windows) {
@@ -100,7 +101,7 @@ pub const TerminalWorkbench = struct {
         return result;
     }
 
-    fn waitPosix(self: *TerminalWorkbench, timeout: i32, result: *Readiness) !void {
+    fn waitPosix(self: *TerminalHostLoop, timeout: i32, result: *Readiness) !void {
         const posix = std.posix;
         const workbench = self.workbench;
         self.watched.len = 0;
@@ -145,14 +146,14 @@ pub const TerminalWorkbench = struct {
         }
     }
 
-    fn watch(self: *TerminalWorkbench, fd: std.posix.fd_t, events: i16, source: @FieldType(Watch, "source")) !void {
+    fn watch(self: *TerminalHostLoop, fd: std.posix.fd_t, events: i16, source: @FieldType(Watch, "source")) !void {
         try self.watched.append(self.workbench.allocator, .{
             .descriptor = .{ .fd = fd, .events = events, .revents = 0 },
             .source = source,
         });
     }
 
-    pub fn handleResize(self: *TerminalWorkbench) !bool {
+    pub fn handleResize(self: *TerminalHostLoop) !bool {
         const size = try tui.resizedSize() orelse return false;
         try self.workbench.resize(size.width, size.height);
         setCellPixelSize(self.workbench, size.cell_width_px, size.cell_height_px);
@@ -162,7 +163,7 @@ pub const TerminalWorkbench = struct {
 
     const Batch = struct { decoded: ui.input.DecodeResult, pasted: bool };
 
-    pub fn readEvents(self: *TerminalWorkbench, input_ready: bool) !Batch {
+    pub fn readEvents(self: *TerminalHostLoop, input_ready: bool) !Batch {
         const w = self.workbench;
         if (input_ready or self.input_buffer.items.len == 0) _ = try tui.readFd(w.io, 0, &self.input_buffer);
         var pasted = false;
@@ -183,14 +184,14 @@ pub const TerminalWorkbench = struct {
     }
 
     /// Decoded events may borrow input bytes until dispatch finishes.
-    pub fn consume(self: *TerminalWorkbench, count: usize) void {
+    pub fn consume(self: *TerminalHostLoop, count: usize) void {
         const remaining = self.input_buffer.items[count..];
         std.mem.copyForwards(u8, self.input_buffer.items[0..remaining.len], remaining);
         self.input_buffer.shrinkRetainingCapacity(remaining.len);
         self.awaiting_continuation = remaining.len != 0;
     }
 
-    pub fn render(self: *TerminalWorkbench) !void {
+    pub fn render(self: *TerminalHostLoop) !void {
         try renderFrame(self.workbench, self.output);
         try syncCursor(self.workbench, self.output);
         try self.output.flush();

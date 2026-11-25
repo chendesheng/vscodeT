@@ -5,9 +5,9 @@ const ui = @import("ui");
 const VimRuntime = @import("../../browser/vimRuntime.zig").VimRuntime;
 const time_compat = @import("../../../../../base/common/timeCompat.zig");
 
-pub fn Tests(comptime factory: anytype) type {
+pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) type {
     return struct {
-        const TestWindow = @import("../../../../test/browser/workbenchTestServices.zig").TestWindow(factory);
+        const TestWindow = @import("../../../../test/browser/workbenchTestServices.zig").TestWindow(terminal_window_type, factory);
         test "Vim runtime: enable/disable persist and control the key handler" {
             const allocator = std.testing.allocator;
             const io = time_compat.io;

@@ -1,3 +1,2 @@
-src/tui/workbench.test.zig -> src/vs/workbench/browser/workbench.zig
-src/tui/workbench.zig -> src/vs/workbench/browser/workbench.zig
+src/tui/workbenchWindow.zig -> src/vs/workbench/browser/workbench.zig
 src/vs/workbench/test/browser/workbenchTestServices.zig -> src/vs/workbench/browser/workbench.zig

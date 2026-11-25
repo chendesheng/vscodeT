@@ -1,5 +1,5 @@
 const std = @import("std");
-const TestWindow = @import("../vs/workbench/test/browser/workbenchTestServices.zig").TestWindow(@import("./editorView.zig").View.createHandle);
+const TestWindow = @import("../vs/workbench/test/browser/workbenchTestServices.zig").TestWindow(@import("workbench.zig").TerminalWorkbench, @import("./editorView.zig").View.createHandle);
 const builtin = @import("builtin");
 const Io = std.Io;
 const tui = @import("./tui.zig");
@@ -12,8 +12,8 @@ const editorInputDispatch = @import("../vs/editor/browser/widget/codeEditor/code
 const handleKeyEvent = editorInputDispatch.handleKeyEvent;
 const View = @import("./editorView.zig").View;
 const terminal_workbench = @import("workbench.zig");
-const TerminalWorkbench = terminal_workbench.TerminalWorkbench;
-const Workbench = terminal_workbench.Workbench;
+const TerminalHostLoop = terminal_workbench.TerminalHostLoop;
+const Workbench = terminal_workbench.TerminalWorkbench;
 const extensions = @import("../vs/workbench/api/browser/extensionHostAdapter.zig");
 const extensions_registry = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
 const VimRuntime = @import("../vs/workbench/contrib/vim/browser/vimRuntime.zig").VimRuntime;
@@ -665,7 +665,7 @@ pub fn main(init: std.process.Init) !void {
     });
 
     var needs_render = false;
-    var terminal_host = try TerminalWorkbench.init(workbench, out, border_probe.leftover, image_probe.leftover);
+    var terminal_host = try TerminalHostLoop.init(workbench, out, border_probe.leftover, image_probe.leftover);
     defer terminal_host.deinit();
     terminal_host.scheduleFrames(&needs_render);
 

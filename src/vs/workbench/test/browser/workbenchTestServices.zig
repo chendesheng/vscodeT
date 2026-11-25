@@ -4,20 +4,19 @@ const std = @import("std");
 const ui = @import("ui");
 const CursorColumns = @import("../../../editor/common/core/cursorColumns.zig").CursorColumns;
 
-const shell = @import("../../browser/workbench.zig");
-const Workbench = shell.Workbench;
+const WorkbenchOptions = @import("../../browser/workbench.zig").IWorkbenchOptions;
 
-pub fn TestWindow(comptime factory: @import("../../browser/parts/editor/editorPane.zig").EditorViewFactory) type {
+pub fn TestWindow(comptime Window: type, comptime factory: @import("../../browser/parts/editor/editorPane.zig").EditorViewFactory) type {
     return struct {
         const Self = @This();
-        workbench: *Workbench,
+        workbench: *Window,
         surface: *ui.Surface,
 
         pub fn init(allocator: std.mem.Allocator, io: std.Io, paths: []const []const u8, cols: usize, rows: usize) !Self {
             return initWithOptions(allocator, io, paths, cols, rows, .{}, null);
         }
 
-        pub fn initWithOptions(allocator: std.mem.Allocator, io: std.Io, paths: []const []const u8, cols: usize, rows: usize, options: shell.IWorkbenchOptions, previous: ?Workbench.PreviousState) !Self {
+        pub fn initWithOptions(allocator: std.mem.Allocator, io: std.Io, paths: []const []const u8, cols: usize, rows: usize, options: WorkbenchOptions, previous: ?Window.PreviousState) !Self {
             const surface = try allocator.create(ui.Surface);
             errdefer allocator.destroy(surface);
             surface.* = try ui.Surface.init(allocator, .{ .cols = @max(cols, 1), .rows = @max(rows, 1), .measure_width = measureWidth });
@@ -26,7 +25,7 @@ pub fn TestWindow(comptime factory: @import("../../browser/parts/editor/editorPa
             doc.setRoot(try doc.createElement(.div));
             var services = try @import("../../workbench.common.main.zig").createServices(allocator);
             defer services.deinit();
-            const workbench = try Workbench.init(allocator, io, factory, surface, &services, options, previous);
+            const workbench = try Window.init(allocator, io, factory, surface, &services, options, previous);
             errdefer workbench.deinit();
             _ = try workbench.startup();
             for (paths) |path| try workbench.openPath(path);

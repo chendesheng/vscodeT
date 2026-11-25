@@ -1,8 +1,9 @@
 # Workbench port audit
 
 The reference is `vscode/src/vs/workbench/browser/workbench.ts` at
-`e31c2e52`. It composes services and parts. The current Zig composition
-root still owns feature wiring and host state; terminal painting and input routing live in src/tui.
+`e31c2e52`. It composes services and parts. The portable Zig Workbench now occupies that path. The native window and
+terminal event loop live in src/tui; the native window still has remaining
+feature wiring and service adapters to extract.
 
 ## Baseline at 47925902
 
@@ -25,7 +26,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 6,281 lines and has no inline tests. There are no direct imports from `src/vs` to `src/tui` anywhere in the tree. Three files import the shell: the terminal host, its integration tests, and the Workbench test fixture. No production feature module imports the shell. All 151 baseline
+The portable browser Workbench is 258 lines and has no inline tests. The native TerminalWorkbench window is 6,282 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and
@@ -209,3 +210,5 @@ with its owning port.
 * The Git extension owns eight command registrations, remote publish picker identity and labels, and resolving snapshot diff contents (including unsaved working editors). SCMContribution owns its registered view container and model; SidebarPart owns view-container mounting and unmounting. The workbench supplies the native editor and SCM selection callbacks.
 
 * The portable WorkbenchCore now owns Layout, InstantiationService, the upstream startup/registry/context/listener/part order, the notification controller and restore deadlines. The transitional native shell supplies explicit service instances and window lifecycle/focus callbacks. The next structural step relocates the native shell to src/tui and renames the core to Workbench at the pinned upstream path.
+
+* The portable Workbench now lives at the pinned browser/workbench.zig path and owns Layout, the service-instantiation lifecycle, registered part creation, notification handlers and restoration deadlines. TerminalWorkbench is the native window adapter, and TerminalHostLoop owns fd/input readiness and frame delivery. Generic integration suites receive the window type at the test root. Remaining native feature wiring is still debt, not part of the faithful portable Workbench.

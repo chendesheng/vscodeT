@@ -1846,9 +1846,9 @@ fn countListenerCall(context: *anyopaque) void {
     calls.* += 1;
 }
 
-pub fn Tests(comptime factory: anytype) type {
+pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) type {
     return struct {
-        const TestWindow = @import("../../test/browser/workbenchTestServices.zig").TestWindow(factory);
+        const TestWindow = @import("../../test/browser/workbenchTestServices.zig").TestWindow(terminal_window_type, factory);
         test "Extensions: editor-pane disposal detaches listeners before the editor is destroyed" {
             const allocator = std.testing.allocator;
             const io = std.Io.Threaded.global_single_threaded.io();
