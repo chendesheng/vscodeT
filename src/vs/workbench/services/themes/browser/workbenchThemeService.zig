@@ -19,6 +19,8 @@ const theme_mod = @import("../../../../platform/theme/common/theme.zig");
 const storage_mod = @import("../../../../platform/storage/common/storage.zig");
 const color_theme = @import("../common/colorThemeData.zig");
 const configuration_mod = @import("../../../../platform/configuration/common/configuration.zig");
+const scheme_service = @import("../common/hostColorSchemeService.zig");
+const WindowQueue = @import("../../../../base/common/windowDispatch.zig").Queue;
 const time_compat = @import("../../../../base/common/timeCompat.zig");
 
 const FileIconThemeData = @import("fileIconThemeData.zig").FileIconThemeData;
@@ -71,9 +73,37 @@ const FileResourceReader = struct {
     }
 };
 
+const ThemeLoadOutcome = union(enum) {
+    theme: *ColorThemeData,
+    err: anyerror,
+};
+
+/// One worker-thread color-theme load. The prepared theme is installed on the
+/// TUI thread when the window receives its completion.
+const ThemeLoadJob = struct {
+    allocator: Allocator,
+    io: Io,
+    service: *ThemeService,
+    future: Io.Future(ThemeLoadOutcome),
+    completion: @import("../../../../base/common/windowDispatch.zig").Task,
+    request: ThemeService.PrepareRequest,
+};
+
+fn runThemeLoadJob(job: *ThemeLoadJob) ThemeLoadOutcome {
+    defer job.completion.post();
+    const theme = ThemeService.prepareTheme(
+        job.allocator,
+        job.service.colors,
+        &job.request,
+        job.io,
+    ) catch |err| return .{ .err = err };
+    return .{ .theme = theme };
+}
+
 pub const ThemeService = struct {
     allocator: Allocator,
     colors: *color_utils.ColorRegistry,
+    owns_colors: bool = false,
     storage: ?*InMemoryStorageService,
     themes: std.StringHashMap(ThemeEntry),
     active_id: []const u8,
@@ -84,6 +114,54 @@ pub const ThemeService = struct {
     file_icon_registry: ?*const ExtensionRegistry = null,
     configuration: ?*ConfigurationService = null,
     configuration_listener: ?usize = null,
+    theme_runtime: ?Runtime = null,
+    theme_job: ?*ThemeLoadJob = null,
+    theme_candidates: [3]?[]u8 = .{ null, null, null },
+    theme_candidate_index: usize = 0,
+
+    pub const Runtime = struct {
+        io: Io,
+        window: *WindowQueue,
+        scheme: scheme_service.IHostColorSchemeService,
+    };
+
+    pub fn attachWindow(self: *ThemeService, runtime: Runtime) void {
+        self.theme_runtime = runtime;
+    }
+
+    /// Native workbench registry owns the default colors. Standalone users
+    /// that already have a registry continue to use init with a borrowed one.
+    pub fn createDefault(allocator: Allocator, storage: ?*InMemoryStorageService) !*ThemeService {
+        const registry = try allocator.create(color_utils.ColorRegistry);
+        registry.* = color_utils.ColorRegistry.init(allocator);
+        errdefer {
+            registry.deinit();
+            allocator.destroy(registry);
+        }
+        // VS Code's baseColors.ts and editorColors.ts supply these even for
+        // themes such as Light High Contrast that omit editor colors.
+        _ = try registry.registerColor("foreground", .{
+            .dark = .{ .string = "#CCCCCC" },
+            .light = .{ .string = "#616161" },
+            .hc_dark = .{ .string = "#FFFFFF" },
+            .hc_light = .{ .string = "#292929" },
+        }, null, "Overall foreground color", false);
+        _ = try registry.registerColor("editor.background", .{
+            .dark = .{ .string = "#1E1E1E" },
+            .light = .{ .string = "#FFFFFF" },
+            .hc_dark = .{ .string = "#000000" },
+            .hc_light = .{ .string = "#FFFFFF" },
+        }, null, "Editor background color", false);
+        _ = try registry.registerColor("editor.foreground", .{
+            .dark = .{ .string = "#BBBBBB" },
+            .light = .{ .string = "#333333" },
+            .hc_dark = .{ .string = "#FFFFFF" },
+            .hc_light = .{ .string = "foreground" },
+        }, null, "Editor foreground color", false);
+        const service = try init(allocator, registry, storage);
+        service.owns_colors = true;
+        return service;
+    }
 
     pub fn init(allocator: Allocator, colors: *color_utils.ColorRegistry, storage: ?*InMemoryStorageService) !*ThemeService {
         const self = try allocator.create(ThemeService);
@@ -113,12 +191,17 @@ pub const ThemeService = struct {
     }
 
     pub fn deinit(self: *ThemeService) void {
+        self.cancelColorThemeLoad();
         self.active.deinit();
         self.themes.deinit();
         self.allocator.free(self.active_id);
         self.detachConfiguration();
         self.onDidFileIconThemeChange.deinit();
         self.onDidColorThemeChange.deinit();
+        if (self.owns_colors) {
+            self.colors.deinit();
+            self.allocator.destroy(self.colors);
+        }
         self.allocator.destroy(self);
     }
 
@@ -142,13 +225,49 @@ pub const ThemeService = struct {
     }
 
     pub fn detachConfiguration(self: *ThemeService) void {
+        self.cancelColorThemeLoad();
         if (self.configuration_listener) |listener| self.configuration.?.unlistenConfigurationChange(listener);
         self.configuration_listener = null;
         self.configuration = null;
     }
 
+    // Upstream installConfigurationListener: settings selection restores the
+    // color theme; customization changes update the current theme directly.
     fn onConfigurationChanged(change: configuration_mod.Change, self: *ThemeService) !void {
+        for ([_][]const u8{
+            ThemeSettings.COLOR_THEME,
+            ThemeSettings.PREFERRED_DARK_THEME,
+            ThemeSettings.PREFERRED_LIGHT_THEME,
+            ThemeSettings.PREFERRED_HC_DARK_THEME,
+            ThemeSettings.PREFERRED_HC_LIGHT_THEME,
+            ThemeSettings.DETECT_COLOR_SCHEME,
+            ThemeSettings.DETECT_HC,
+            ThemeSettings.SYSTEM_COLOR_THEME,
+        }) |key| {
+            if (configuration_mod.affectsConfiguration(change, key)) {
+                self.restoreColorThemeAsync();
+                break;
+            }
+        }
         if (configuration_mod.affectsConfiguration(change, ThemeSettings.FILE_ICON_THEME)) self.restoreFileIconTheme();
+        const config = self.configuration orelse return;
+        var changed = false;
+        if (configuration_mod.affectsConfiguration(change, ThemeSettings.COLOR_CUSTOMIZATIONS)) {
+            try self.applyColorCustomizations(self.allocator, config.getValue(ThemeSettings.COLOR_CUSTOMIZATIONS, .{}));
+            changed = true;
+        }
+        if (configuration_mod.affectsConfiguration(change, ThemeSettings.TOKEN_COLOR_CUSTOMIZATIONS)) {
+            try self.applyTokenColorCustomizations(self.allocator, config.getValue(ThemeSettings.TOKEN_COLOR_CUSTOMIZATIONS, .{}));
+            changed = true;
+        }
+        if (configuration_mod.affectsConfiguration(change, ThemeSettings.SEMANTIC_TOKEN_COLOR_CUSTOMIZATIONS)) {
+            try self.applySemanticTokenColorCustomizations(self.allocator, config.getValue(ThemeSettings.SEMANTIC_TOKEN_COLOR_CUSTOMIZATIONS, .{}));
+            changed = true;
+        }
+        if (changed) {
+            self.updateFileIconColors();
+            try self.onDidColorThemeChange.fire({});
+        }
     }
 
     fn restoreFileIconTheme(self: *ThemeService) void {
@@ -338,6 +457,12 @@ pub const ThemeService = struct {
     /// id allocation can fail; once the active theme is swapped, storage and
     /// the change event are non-fatal (like upstream's fire-and-forget event).
     pub fn applyPreparedTheme(self: *ThemeService, id: []const u8, theme: *ColorThemeData) !void {
+        try self.installPreparedTheme(id, theme);
+        self.updateFileIconColors();
+        self.onDidColorThemeChange.fire({}) catch {};
+    }
+
+    fn installPreparedTheme(self: *ThemeService, id: []const u8, theme: *ColorThemeData) !void {
         const id_copy = try self.allocator.dupe(u8, id);
         self.allocator.free(self.active_id);
         self.active_id = id_copy;
@@ -346,6 +471,136 @@ pub const ThemeService = struct {
         if (self.storage) |service| {
             service.store(STORAGE_KEY, .{ .string = id }, .profile, .user) catch {};
         }
+    }
+
+    pub fn registerThemeSources(self: *ThemeService, themes: []const @import("../../extensions/common/extensionsRegistry.zig").Theme) !void {
+        for (themes) |theme| {
+            try self.registerThemeFile(theme.settings_id, theme.label, colorSchemeForUiTheme(theme.ui_theme), theme.root, theme.path);
+        }
+    }
+
+    fn configuredThemeValues(self: *ThemeService) ?[3][]const u8 {
+        const config = self.configuration orelse return null;
+        const runtime = self.theme_runtime orelse return null;
+        const settings = @import("../common/themeConfiguration.zig").ThemeConfiguration.init(config.interface(), runtime.scheme);
+        return .{ settings.getColorTheme() orelse ThemeSettingDefaults.COLOR_THEME_DARK, ThemeSettingDefaults.COLOR_THEME_DARK, "vs-dark" };
+    }
+
+    /// Startup applies the same configured theme and fallback sequence before
+    /// the first rendered frame. Subsequent changes use the window queue.
+    pub fn restoreColorTheme(self: *ThemeService) void {
+        self.cancelColorThemeLoad();
+        const values = self.configuredThemeValues() orelse return;
+        for (values) |value| {
+            const id = self.findThemeSettingsId(value) orelse continue;
+            var request = PrepareRequest.init(self, id, self.allocator) catch continue;
+            defer request.deinit();
+            const theme = prepareTheme(self.allocator, self.colors, &request, time_compat.io) catch continue;
+            self.installPreparedTheme(id, theme) catch {
+                theme.deinit();
+                continue;
+            };
+            break;
+        }
+        self.finishConfiguredTheme();
+    }
+
+    pub fn restoreColorThemeAsync(self: *ThemeService) void {
+        self.cancelColorThemeLoad();
+        const values = self.configuredThemeValues() orelse return;
+        var count: usize = 0;
+        for (values) |value| {
+            const id = self.findThemeSettingsId(value) orelse continue;
+            var duplicate = false;
+            for (self.theme_candidates[0..count]) |existing| {
+                if (existing) |candidate| {
+                    if (std.mem.eql(u8, candidate, id)) duplicate = true;
+                }
+            }
+            if (duplicate) continue;
+            self.theme_candidates[count] = self.allocator.dupe(u8, id) catch continue;
+            count += 1;
+        }
+        self.startThemeCandidate();
+    }
+
+    fn startThemeCandidate(self: *ThemeService) void {
+        const runtime = self.theme_runtime orelse return;
+        while (self.theme_candidate_index < self.theme_candidates.len) {
+            const maybe_id = self.theme_candidates[self.theme_candidate_index];
+            self.theme_candidate_index += 1;
+            const id = maybe_id orelse continue;
+            var request = PrepareRequest.init(self, id, self.allocator) catch continue;
+            const job = self.allocator.create(ThemeLoadJob) catch {
+                request.deinit();
+                continue;
+            };
+            job.* = .{
+                .allocator = self.allocator,
+                .io = runtime.io,
+                .service = self,
+                .completion = .{ .queue = runtime.window, .context = self, .run = applyLoadedTheme, .progress = true },
+                .future = undefined,
+                .request = request,
+            };
+            job.future = runtime.io.async(runThemeLoadJob, .{job});
+            self.theme_job = job;
+            return;
+        }
+        self.freeThemeCandidates();
+        self.finishConfiguredTheme();
+    }
+
+    fn applyLoadedTheme(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *ThemeService = @ptrCast(@alignCast(context));
+        const job = self.theme_job orelse return false;
+        const result = job.future.await(job.io);
+        self.theme_job = null;
+        switch (result) {
+            .theme => |theme| {
+                self.installPreparedTheme(job.request.id, theme) catch theme.deinit();
+                job.request.deinit();
+                self.allocator.destroy(job);
+                self.freeThemeCandidates();
+                self.finishConfiguredTheme();
+            },
+            .err => {
+                job.request.deinit();
+                self.allocator.destroy(job);
+                self.startThemeCandidate();
+            },
+        }
+        return true;
+    }
+
+    pub fn cancelColorThemeLoad(self: *ThemeService) void {
+        if (self.theme_job) |job| {
+            self.theme_job = null;
+            const result = job.future.cancel(job.io);
+            job.completion.schedule(null);
+            switch (result) {
+                .theme => |theme| theme.deinit(),
+                .err => {},
+            }
+            job.request.deinit();
+            self.allocator.destroy(job);
+        }
+        self.freeThemeCandidates();
+        self.theme_candidate_index = 0;
+    }
+
+    fn freeThemeCandidates(self: *ThemeService) void {
+        for (&self.theme_candidates) |*id| {
+            if (id.*) |value| self.allocator.free(value);
+            id.* = null;
+        }
+    }
+
+    fn finishConfiguredTheme(self: *ThemeService) void {
+        const config = self.configuration orelse return;
+        self.applyColorCustomizations(self.allocator, config.getValue(ThemeSettings.COLOR_CUSTOMIZATIONS, .{})) catch {};
+        self.applyTokenColorCustomizations(self.allocator, config.getValue(ThemeSettings.TOKEN_COLOR_CUSTOMIZATIONS, .{})) catch {};
+        self.applySemanticTokenColorCustomizations(self.allocator, config.getValue(ThemeSettings.SEMANTIC_TOKEN_COLOR_CUSTOMIZATIONS, .{})) catch {};
         self.updateFileIconColors();
         self.onDidColorThemeChange.fire({}) catch {};
     }

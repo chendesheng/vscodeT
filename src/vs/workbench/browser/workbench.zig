@@ -107,7 +107,6 @@ const user_keybindings_mod = @import("../services/keybinding/browser/userKeybind
 const theme_service_mod = @import("../services/themes/browser/workbenchThemeService.zig");
 const theme_configuration_mod = @import("../services/themes/common/themeConfiguration.zig");
 const host_color_scheme_mod = @import("../services/themes/common/hostColorSchemeService.zig");
-const color_utils = @import("../../platform/theme/common/colorUtils.zig");
 const syntax_theme_mod = @import("../../editor/standalone/browser/standaloneThemeService.zig");
 const textmate_background_mod = @import("../services/textMate/browser/backgroundTokenization/threadedBackgroundTokenizerFactory.zig");
 const TokenizationRegistry = @import("../../editor/common/tokenizationRegistry.zig").TokenizationRegistry;
@@ -381,33 +380,6 @@ const OpenJob = struct {
     options: Workbench.OpenOptions,
 };
 
-const ThemeLoadOutcome = union(enum) {
-    theme: *@import("../services/themes/common/colorThemeData.zig").ColorThemeData,
-    err: anyerror,
-};
-
-/// One worker-thread color-theme load. The prepared theme is installed on the
-/// TUI thread when the window receives its completion.
-const ThemeLoadJob = struct {
-    allocator: Allocator,
-    io: Io,
-    service: *theme_service_mod.ThemeService,
-    future: Io.Future(ThemeLoadOutcome),
-    completion: WindowTask,
-    request: theme_service_mod.ThemeService.PrepareRequest,
-};
-
-fn runThemeLoadJob(job: *ThemeLoadJob) ThemeLoadOutcome {
-    defer job.completion.post();
-    const theme = theme_service_mod.ThemeService.prepareTheme(
-        job.allocator,
-        job.service.colors,
-        &job.request,
-        job.io,
-    ) catch |err| return .{ .err = err };
-    return .{ .theme = theme };
-}
-
 const KeybindingsOutcome = union(enum) {
     bindings: *user_keybindings_mod.UserKeybindings,
     err: anyerror,
@@ -518,11 +490,8 @@ pub const Workbench = struct {
     /// supersedes it; the generation is checked again when the result lands.
     pending_open: ?OpenJob = null,
     reload_jobs: std.array_list.Managed(*TextFileRead),
-    theme_job: ?*ThemeLoadJob = null,
     keybindings_job: ?*KeybindingsJob = null,
     keybindings_reload_pending: bool = false,
-    theme_candidates: [3]?[]u8 = .{ null, null, null },
-    theme_candidate_index: usize = 0,
     cols: usize,
     rows: usize,
 
@@ -612,7 +581,6 @@ pub const Workbench = struct {
     user_keybindings: ?*user_keybindings_mod.UserKeybindings,
     /// Filtered user bindings passed to the global host; owned by the workbench.
     global_user_overrides: []const *const resolved_keybinding_item.ResolvedKeybindingItem,
-    theme_colors: ?*color_utils.ColorRegistry,
     theme_service: ?*theme_service_mod.ThemeService,
     syntax_theme: syntax_theme_mod.SyntaxTheme,
     syntax_theme_ready: bool,
@@ -733,9 +701,6 @@ pub const Workbench = struct {
         errdefer self.text_file_service.deinit();
         self.pending_open = null;
         self.reload_jobs = std.array_list.Managed(*TextFileRead).init(allocator);
-        self.theme_job = null;
-        self.theme_candidates = .{ null, null, null };
-        self.theme_candidate_index = 0;
         self.keybindings_job = null;
         self.keybindings_reload_pending = false;
         self.editor_surface = surface;
@@ -747,7 +712,6 @@ pub const Workbench = struct {
         self.context_key_handles = null;
         self.user_keybindings = null;
         self.global_user_overrides = &.{};
-        self.theme_colors = null;
         self.theme_service = null;
         self.syntax_theme = .{};
         self.syntax_theme_ready = false;
@@ -1867,10 +1831,6 @@ pub const Workbench = struct {
         if (self.theme_palette) |palette| self.allocator.destroy(palette);
         if (self.syntax_theme_ready) self.syntax_theme.deinit();
         if (self.theme_service) |service| service.deinit();
-        if (self.theme_colors) |registry| {
-            registry.deinit();
-            self.allocator.destroy(registry);
-        }
         self.quick_access.deinit();
         self.working_copy_service.deinit();
         self.menu_service.deinit();
@@ -2377,7 +2337,6 @@ pub const Workbench = struct {
         self.applyConfiguredLanguageAssociationsToAllEditors();
         if (self.search_view) |view| view.onConfigurationChanged();
         self.requestKeybindingsReload();
-        self.applyThemeSettingsAsync();
         self.applyBreadcrumbsSettings();
         self.applyMarkdownPreviewConfig();
         if (self.git_model.repository != null) self.refreshGitStatus();
@@ -4802,7 +4761,7 @@ pub const Workbench = struct {
     fn cancelAsyncJobs(self: *Workbench) void {
         self.cancelPendingOpen();
         self.cancelReloadJobs();
-        self.cancelThemeJob();
+        if (self.theme_service) |service| service.cancelColorThemeLoad();
         self.cancelKeybindingsJob();
         if (self.sidebar) |sidebar| sidebar.cancelLoad();
         for (self.part.group_views.items) |pane| {
@@ -6418,231 +6377,41 @@ pub const Workbench = struct {
 
     fn ensureThemeService(self: *Workbench) !*theme_service_mod.ThemeService {
         if (self.theme_service) |service| return service;
-        const registry = try self.allocator.create(color_utils.ColorRegistry);
-        registry.* = color_utils.ColorRegistry.init(self.allocator);
-        errdefer {
-            registry.deinit();
-            self.allocator.destroy(registry);
-        }
-        // VS Code's baseColors.ts and editorColors.ts supply these even for
-        // themes such as Light High Contrast that omit editor colors.
-        _ = try registry.registerColor("foreground", .{
-            .dark = .{ .string = "#CCCCCC" },
-            .light = .{ .string = "#616161" },
-            .hc_dark = .{ .string = "#FFFFFF" },
-            .hc_light = .{ .string = "#292929" },
-        }, null, "Overall foreground color", false);
-        _ = try registry.registerColor("editor.background", .{
-            .dark = .{ .string = "#1E1E1E" },
-            .light = .{ .string = "#FFFFFF" },
-            .hc_dark = .{ .string = "#000000" },
-            .hc_light = .{ .string = "#FFFFFF" },
-        }, null, "Editor background color", false);
-        _ = try registry.registerColor("editor.foreground", .{
-            .dark = .{ .string = "#BBBBBB" },
-            .light = .{ .string = "#333333" },
-            .hc_dark = .{ .string = "#FFFFFF" },
-            .hc_light = .{ .string = "foreground" },
-        }, null, "Editor foreground color", false);
-        const service = try theme_service_mod.ThemeService.init(self.allocator, registry, null);
+        const service = try theme_service_mod.ThemeService.createDefault(self.allocator, null);
+        errdefer service.deinit();
+        service.attachWindow(.{ .io = self.async_io, .window = &self.window_events, .scheme = self.theme_scheme_host.interface() });
         service.setFileIconThemeRegistry(self.declarative);
-        self.theme_colors = registry;
+        _ = try service.onDidColorThemeChange.listen(self, onColorThemeChanged);
+        _ = try service.onDidFileIconThemeChange.listenSignal(self, onFileIconThemeChanged);
         self.theme_service = service;
         return service;
     }
 
-    /// Registers the color themes discovered from the built-in and installed
-    /// extension roots. Later registrations win, so the TUI extension root can
-    /// override a profile or built-in theme with the same settings id.
     pub fn registerThemeSources(self: *Workbench, themes: []const extensions_registry.Theme) !void {
-        const service = try self.ensureThemeService();
-        for (themes) |theme| {
-            try service.registerThemeFile(
-                theme.settings_id,
-                theme.label,
-                theme_service_mod.colorSchemeForUiTheme(theme.ui_theme),
-                theme.root,
-                theme.path,
-            );
-        }
+        try (try self.ensureThemeService()).registerThemeSources(themes);
     }
 
-    /// Applies `workbench.colorTheme`, the preferred-scheme settings and the
-    /// color/token customizations, then reinstalls the token theme. Falls back
-    /// to the default dark theme and, for a checkout without theme assets, to
-    /// the bundled syntax theme.
     pub fn applyThemeSettings(self: *Workbench) void {
         self.ensureConfiguration() catch {};
-        const configuration = self.configuration orelse return;
         const service = self.ensureThemeService() catch return;
-
-        const theme_configuration = theme_configuration_mod.ThemeConfiguration.init(
-            configuration.interface(),
-            self.theme_scheme_host.interface(),
-        );
-        const requested = theme_configuration.getColorTheme() orelse
-            theme_service_mod.ThemeSettingDefaults.COLOR_THEME_DARK;
-        var loaded = service.activateSettingsId(requested) catch false;
-        if (!loaded) {
-            loaded = service.activateSettingsId(theme_service_mod.ThemeSettingDefaults.COLOR_THEME_DARK) catch false;
-        }
-        if (!loaded) loaded = service.activateSettingsId("vs-dark") catch false;
-
-        self.finishThemeApply(loaded);
+        service.restoreColorTheme();
     }
 
-    /// Watcher-triggered variant: resolves the same candidate sequence as
-    /// `applyThemeSettings`, loads the selected theme on the async Io and
-    /// installs it on completion. Mirrors upstream's asynchronous
-    /// `workbenchThemeService` reload.
-    pub fn applyThemeSettingsAsync(self: *Workbench) void {
-        self.ensureConfiguration() catch {};
-        const configuration = self.configuration orelse return;
-        const service = self.ensureThemeService() catch return;
-
-        self.cancelThemeJob();
-        const theme_configuration = theme_configuration_mod.ThemeConfiguration.init(
-            configuration.interface(),
-            self.theme_scheme_host.interface(),
-        );
-        const requested = theme_configuration.getColorTheme() orelse
-            theme_service_mod.ThemeSettingDefaults.COLOR_THEME_DARK;
-        const values = [_][]const u8{
-            requested,
-            theme_service_mod.ThemeSettingDefaults.COLOR_THEME_DARK,
-            "vs-dark",
-        };
-        var count: usize = 0;
-        for (values) |value| {
-            const id = service.findThemeSettingsId(value) orelse continue;
-            if (count >= self.theme_candidates.len) break;
-            var duplicate = false;
-            for (self.theme_candidates[0..count]) |existing| {
-                if (existing) |candidate| {
-                    if (std.mem.eql(u8, candidate, id)) duplicate = true;
-                }
-            }
-            if (duplicate) continue;
-            const copy = self.allocator.dupe(u8, id) catch continue;
-            self.theme_candidates[count] = copy;
-            count += 1;
-        }
-        self.theme_candidate_index = 0;
-        self.startThemeCandidate();
+    fn onFileIconThemeChanged(self: *Workbench) !void {
+        self.requestFrame();
     }
 
-    fn startThemeCandidate(self: *Workbench) void {
+    fn onColorThemeChanged(_: void, self: *Workbench) !void {
         const service = self.theme_service orelse return;
-        while (self.theme_candidate_index < self.theme_candidates.len) {
-            const maybe_id = self.theme_candidates[self.theme_candidate_index];
-            self.theme_candidate_index += 1;
-            const id = maybe_id orelse continue;
-            var request = theme_service_mod.ThemeService.PrepareRequest.init(service, id, self.allocator) catch continue;
-            const job = self.allocator.create(ThemeLoadJob) catch {
-                request.deinit();
-                continue;
-            };
-            job.* = .{
-                .allocator = self.allocator,
-                .io = self.async_io,
-                .service = service,
-                .completion = .{ .queue = &self.window_events, .context = self, .run = applyLoadedTheme, .progress = true },
-                .future = undefined,
-                .request = request,
-            };
-            job.future = self.async_io.async(runThemeLoadJob, .{job});
-            self.theme_job = job;
-            return;
-        }
-        self.freeThemeCandidates();
-        self.finishThemeApply(false);
-    }
-
-    /// Drains a completed theme load and installs it on the TUI thread.
-    fn applyLoadedTheme(context: *anyopaque, _: i64, _: bool) bool {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        const job = self.theme_job.?;
-        const result = job.future.await(self.async_io);
-        self.theme_job = null;
-        const service = self.theme_service orelse return false;
-        switch (result) {
-            .theme => |theme_value| {
-                var theme = theme_value;
-                var applied = true;
-                service.applyPreparedTheme(job.request.id, theme) catch {
-                    applied = false;
-                    theme.deinit();
-                };
-                job.request.deinit();
-                self.allocator.destroy(job);
-                self.freeThemeCandidates();
-                self.finishThemeApply(applied);
-                return true;
-            },
-            .err => {
-                job.request.deinit();
-                self.allocator.destroy(job);
-                self.startThemeCandidate();
-                return true;
-            },
-        }
-    }
-
-    fn cancelThemeJob(self: *Workbench) void {
-        if (self.theme_job) |job| {
-            self.theme_job = null;
-            const result = job.future.cancel(job.io);
-            job.completion.schedule(null);
-            switch (result) {
-                .theme => |theme_value| {
-                    var theme = theme_value;
-                    theme.deinit();
-                },
-                .err => {},
-            }
-            job.request.deinit();
-            self.allocator.destroy(job);
-        }
-        self.freeThemeCandidates();
-        self.theme_candidate_index = 0;
-    }
-
-    fn freeThemeCandidates(self: *Workbench) void {
-        for (&self.theme_candidates) |*maybe_id| {
-            if (maybe_id.*) |id| {
-                self.allocator.free(id);
-                maybe_id.* = null;
-            }
-        }
-    }
-
-    fn finishThemeApply(self: *Workbench, loaded: bool) void {
-        const configuration = self.configuration orelse return;
-        const service = self.theme_service orelse return;
-
-        service.applyColorCustomizations(
-            self.allocator,
-            configuration.getValue(theme_service_mod.ThemeSettings.COLOR_CUSTOMIZATIONS, .{}),
-        ) catch {};
-        service.applyTokenColorCustomizations(
-            self.allocator,
-            configuration.getValue(theme_service_mod.ThemeSettings.TOKEN_COLOR_CUSTOMIZATIONS, .{}),
-        ) catch {};
-        service.applySemanticTokenColorCustomizations(
-            self.allocator,
-            configuration.getValue(theme_service_mod.ThemeSettings.SEMANTIC_TOKEN_COLOR_CUSTOMIZATIONS, .{}),
-        ) catch {};
-
-        service.updateFileIconColors();
-        self.refreshSyntaxTheme(loaded);
-
-        const palette = self.allocator.create(theme_colors_mod.ThemeColors) catch return;
+        self.refreshSyntaxTheme(true);
+        const palette = try self.allocator.create(theme_colors_mod.ThemeColors);
         palette.* = theme_colors_mod.ThemeColors.init(service.getActiveTheme());
         const previous = self.theme_palette;
         self.theme_palette = palette;
         self.applyThemeToParts(palette);
         if (previous) |old| self.allocator.destroy(old);
         self.refreshOpenViews();
+        self.requestFrame();
     }
 
     fn applyThemeToParts(self: *Workbench, palette: ?*const theme_colors_mod.ThemeColors) void {

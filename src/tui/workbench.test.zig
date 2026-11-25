@@ -2637,6 +2637,16 @@ test "Workbench: color theme settings load a registered theme palette" {
     try std.testing.expectEqual(@as(u8, 0x10), palette.foreground.g);
     const status = palette.color("statusBar.background", .{ 0, 0, 0 });
     try std.testing.expectEqual(@as(u8, 0xee), status.r);
+
+    // The service applies customizations through the configuration event
+    // without an explicit host reload or a frame.
+    var colors: std.json.ObjectMap = .empty;
+    defer colors.deinit(allocator);
+    try colors.put(allocator, "editor.background", .{ .string = "#123456" });
+    try workbench.setUserConfigurationValue("workbench.colorCustomizations", .{ .object = colors });
+    try std.testing.expectEqual(@as(u8, 0x12), workbench.theme_palette.?.background.r);
+    try workbench.setUserConfigurationValue("workbench.colorCustomizations", null);
+    try std.testing.expectEqual(@as(u8, 0xff), workbench.theme_palette.?.background.r);
 }
 
 test "Workbench: opening a themed file initializes the editor controllers" {
