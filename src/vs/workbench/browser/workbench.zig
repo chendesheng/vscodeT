@@ -120,8 +120,7 @@ const textmate_background_mod = @import("../services/textMate/browser/background
 const TokenizationRegistry = @import("../../editor/common/tokenizationRegistry.zig").TokenizationRegistry;
 const theme_colors_mod = @import("./themeColors.zig");
 const SettingsWatcher = configuration_mod.SettingsWatcher;
-const lifecycle_mod = @import("../../base/common/lifecycle.zig");
-const IDisposable = lifecycle_mod.IDisposable;
+const IDisposable = @import("../../base/common/lifecycle.zig").IDisposable;
 const breadcrumbs_mod = @import("./parts/editor/breadcrumbs.zig");
 const BreadcrumbsService = breadcrumbs_mod.BreadcrumbsService;
 const BreadcrumbsSettings = breadcrumbs_mod.Settings;
@@ -139,7 +138,10 @@ const outline_mod = @import("../services/outline/browser/outline.zig");
 const OutlineEditor = outline_mod.OutlineEditor;
 const IOutlineCreator = outline_mod.IOutlineCreator;
 const DocumentSymbolsOutlineCreator = @import("../contrib/codeEditor/browser/outline/documentSymbolsOutline.zig").DocumentSymbolsOutlineCreator;
-const OutlineModel = @import("../../editor/contrib/documentSymbols/browser/outlineModel.zig").OutlineModel;
+const outline_model = @import("../../editor/contrib/documentSymbols/browser/outlineModel.zig");
+const OutlineModel = outline_model.OutlineModel;
+const lifecycle_mod = @import("../services/lifecycle/common/lifecycle.zig");
+const ServicesAccessor = @import("../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
 const outline_pane_mod = @import("../contrib/outline/browser/outlinePane.zig");
 const OutlinePane = outline_pane_mod.OutlinePane;
 const outline_contrib = @import("../contrib/outline/browser/outline.zig");
@@ -711,7 +713,10 @@ pub const Workbench = struct {
     theme_palette: ?*theme_colors_mod.ThemeColors,
     quick_access: *QuickAccessService,
     outline_service: OutlineService,
-    outline_models: @import("../../editor/contrib/documentSymbols/browser/outlineModel.zig").OutlineModelService,
+    services: @import("../../platform/instantiation/common/serviceCollection.zig").ServiceCollection,
+    instantiation: @import("../../platform/instantiation/common/instantiationService.zig").InstantiationService,
+    layout_api: layout_service_mod.IWorkbenchLayoutService,
+    lifecycle_api: lifecycle_mod.ILifecycleService,
     /// Terminal Outline side panel (`outline` view container).
     outline_view: ?*OutlinePane = null,
     breadcrumbs_service: BreadcrumbsService,
@@ -925,8 +930,6 @@ pub const Workbench = struct {
         self.search_service = null;
         try self.initShellModels();
         errdefer self.deinitShellModels();
-        self.outline_models = .init(allocator);
-        errdefer self.outline_models.deinit();
         self.outline_service = OutlineService.init(allocator);
         errdefer self.outline_service.deinit();
         self.breadcrumbs_service = BreadcrumbsService.init(allocator);
@@ -990,10 +993,33 @@ pub const Workbench = struct {
         _ = try self.service.on_did_active_editor_change.listen(self, onActiveMarkdownEditor);
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
-        try self.lifecycle.setPhase(.Ready);
-        try self.contributions.start(self.lifecycle.interface());
+        try self.initServices();
+        errdefer self.services.deinit();
+        errdefer self.instantiation.deinit();
+        try self.instantiation.invokeFunction(startContributions, .{&self.contributions});
         try self.initQuickAccess();
         return self;
+    }
+
+    fn initServices(self: *Workbench) !void {
+        self.services = .init(self.allocator);
+        errdefer self.services.deinit();
+        self.lifecycle_api = self.lifecycle.interface();
+        self.layout_api = self.layout.interface();
+        _ = try self.services.set(lifecycle_mod.lifecycle_service_id, &self.lifecycle_api);
+        _ = try self.services.set(layout_service_mod.layout_service_id, &self.layout_api);
+        try outline_model.registerSingleton(&self.services);
+        try self.instantiation.init(self.allocator, &self.services);
+        errdefer self.instantiation.deinit();
+        try self.instantiation.invokeFunction(setServicesReady, .{});
+    }
+
+    fn setServicesReady(accessor: ServicesAccessor) !void {
+        try (try accessor.get(lifecycle_mod.lifecycle_service_id)).setPhase(.Ready);
+    }
+
+    fn startContributions(accessor: ServicesAccessor, registry: *contributions_mod.WorkbenchContributions) !void {
+        try registry.start(accessor);
     }
 
     fn restoreEditors(self: *Workbench) !void {
@@ -1883,7 +1909,8 @@ pub const Workbench = struct {
         }
         self.outline_service.deinit();
         self.closeSymbolPicker();
-        self.outline_models.deinit();
+        self.instantiation.deinit();
+        self.services.deinit();
         if (self.media_status) |status| {
             status.deinit();
             self.media_status = null;
@@ -4111,24 +4138,29 @@ pub const Workbench = struct {
         errdefer self.allocator.destroy(word_provider);
         word_provider.* = WordBasedCompletionProvider.init();
 
-        self.language_features = features;
-        self.marker_service = marker_service;
-        self.marker_decorations = marker_decorations;
-        self.word_completion_provider = word_provider;
-        self.snippet_registration = try features.completion_provider.register(.{ .language = "*" }, self.snippet_provider.interface());
-        self.word_completion_registration = try features.completion_provider.register(.{ .language = "*" }, word_provider.interface());
-        if (self.markers_status) |status| status.attach(marker_service);
-        if (self.problems_view) |view| view.setService(marker_service);
-        // Keep the panel title badge and the `hideIfEmpty` tab in sync with
-        // marker changes, like the markers view container in upstream.
-        self.marker_listener = try marker_service.on_marker_changed.listen(self, onMarkersChanged);
+        const snippets = try features.completion_provider.register(.{ .language = "*" }, self.snippet_provider.interface());
+        errdefer snippets.dispose();
+        const words = try features.completion_provider.register(.{ .language = "*" }, word_provider.interface());
+        errdefer words.dispose();
+        const listener = try marker_service.on_marker_changed.listen(self, onMarkersChanged);
+        errdefer marker_service.on_marker_changed.unlisten(listener);
         self.outline_creator = .{
-            .models = &self.outline_models,
+            .models = try self.instantiation.invokeFunction(outline_model.getOutlineModelService, .{}),
             .features = features,
             .configuration = &self.configuration,
             .markers = marker_decorations,
         };
+        errdefer self.outline_creator = null;
         try self.outline_creator.?.register(&self.outline_service);
+        self.language_features = features;
+        self.marker_service = marker_service;
+        self.marker_decorations = marker_decorations;
+        self.word_completion_provider = word_provider;
+        self.snippet_registration = snippets;
+        self.word_completion_registration = words;
+        self.marker_listener = listener;
+        if (self.markers_status) |status| status.attach(marker_service);
+        if (self.problems_view) |view| view.setService(marker_service);
 
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
@@ -5783,10 +5815,6 @@ pub const Workbench = struct {
         };
     }
 
-    fn tabCloseButtonVisible(setting: []const u8) bool {
-        return !std.mem.eql(u8, setting, "off");
-    }
-
     fn editorLabelFormat(self: *Workbench) []const u8 {
         const configuration = self.configuration orelse return "default";
         const value = configuration.getValue("workbench.editor.labelFormat", .{}) orelse return "default";
@@ -7026,7 +7054,7 @@ pub const Workbench = struct {
         input.pickerRef().setBusy(true);
         self.symbol_picker = .{ .tab = tab };
         errdefer input.hide();
-        const subscription = try self.outline_models.getOrCreate(tab.editor.model, providers, self, symbolPickerReady);
+        const subscription = try self.outline_creator.?.models.getOrCreate(tab.editor.model, providers, self, symbolPickerReady);
         if (self.symbol_picker) |*picker| picker.subscription = subscription;
         return self.symbol_picker != null;
     }
@@ -11385,7 +11413,7 @@ pub const Workbench = struct {
         const infos = try self.allocator.alloc(tab_bar.TabInfo, ordered.items.len);
         defer self.allocator.free(infos);
         const label_format = self.editorLabelFormat();
-        const close_button_visible = tabCloseButtonVisible(self.editorTabCloseButton());
+        const close_button_visible = tab_bar.tabCloseButtonVisible(self.editorTabCloseButton());
         var descriptions = std.array_list.Managed([]u8).init(self.allocator);
         defer {
             for (descriptions.items) |description| self.allocator.free(description);
@@ -15152,108 +15180,6 @@ pub fn pumpSidebarForTests(workbench: *Workbench) void {
     }
 }
 
-test "Workbench: markdown preview to the side uses an ordinary editor group and sash" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const path = try seedFile(allocator, io, &tmp, "source.md", "# First");
-    defer allocator.free(path);
-    const other = try seedFile(allocator, io, &tmp, "other.md", "# Second");
-    defer allocator.free(other);
-
-    for ([_]bool{ false, true }) |borders| {
-        const wb = try Workbench.init(allocator, io, &.{path}, 100, 22);
-        defer wb.deinit();
-        wb.setCellBorders(borders);
-        const source_group = wb.activePane().?;
-        const source = source_group.activeTab().?;
-        var out: std.Io.Writer.Allocating = .init(allocator);
-        defer out.deinit();
-        try wb.render(&out.writer);
-        const action = source_group.title_action_hit.?;
-        var click = ui.MouseEvent{ .kind = .down, .button = .left, .x = action.start, .y = ui.cell.snap(source_group.rect.y) };
-        try std.testing.expect(wb.handleTabMouse(&click));
-        try std.testing.expectEqual(@as(usize, 2), wb.groupCount());
-        const target = wb.activePane().?;
-        const preview = target.activeTab().?;
-        try std.testing.expect(target != source_group and preview != source);
-        try std.testing.expectEqualStrings("Preview source.md", preview.input.getName());
-        try std.testing.expectEqualStrings("markdown.preview", preview.input.editor_id.?);
-        try std.testing.expect(source.markdown_preview == null);
-        try std.testing.expectEqual(source.editor, preview.markdown_preview.?.editor);
-        const boundary = ui.cell.snap(source_group.rect.right());
-        const y = ui.cell.snap(source_group.rect.y) + source_group.chromeHeight() + 1;
-        try std.testing.expect(wb.handleSashMouse(&.{ .kind = .down, .button = .left, .x = boundary, .y = y }));
-        try std.testing.expect(wb.part.active_sash == wb.part.root);
-        try std.testing.expect(wb.handleSashMouse(&.{ .kind = .move, .x = boundary + 6, .y = y }));
-        try std.testing.expect(wb.handleSashMouse(&.{ .kind = .up, .x = boundary + 6, .y = y }));
-        try std.testing.expectEqual(boundary + 6, ui.cell.snap(source_group.rect.right()));
-        try wb.render(&out.writer);
-        try std.testing.expectEqual(ui.cell.snap(target.rect.w), preview.markdown_preview.?.width);
-
-        try wb.showMarkdownSource();
-        try std.testing.expectEqual(source_group, wb.activePane().?);
-        try source.editor.insertText("LiveEdit");
-        _ = wb.markdownPreviewTick(time_compat.milliTimestamp() + 350);
-        try wb.render(&out.writer);
-        const rendered = try preview.markdown_preview.?.surface.?.grid().rowText(allocator, 0);
-        defer allocator.free(rendered);
-        try std.testing.expect(std.mem.indexOf(u8, rendered, "LiveEdit") != null);
-        try wb.openPath(other);
-        try std.testing.expectEqualStrings("Preview other.md", preview.input.getName());
-        try wb.showMarkdownPreviewToSide();
-        try std.testing.expectEqual(preview, wb.activeTab().?);
-        try std.testing.expectEqual(@as(usize, 1), target.count());
-        // Closing the active source retargets the unlocked panel to the
-        // remaining Markdown tab, just like selecting it explicitly.
-        try wb.showMarkdownSource();
-        _ = try wb.closeActive();
-        try wb.focusPane(target);
-        try std.testing.expectEqualStrings("Preview source.md", preview.input.getName());
-        try wb.showMarkdownSource();
-        try std.testing.expect(wb.activeTab().?.file_input != null);
-        try wb.focusPane(target);
-        _ = try wb.closeActive();
-        try std.testing.expectEqual(@as(usize, 1), wb.groupCount());
-        try std.testing.expect(wb.activeTab().?.isMarkdown());
-    }
-}
-
-test "Workbench: markdown side preview reuses a group below and survives closing its only source" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const path = try seedFile(allocator, io, &tmp, "persist.md", "# Heading");
-    defer allocator.free(path);
-    const wb = try Workbench.init(allocator, io, &.{path}, 100, 32);
-    defer wb.deinit();
-    const settings = try seedFile(allocator, io, &tmp, "settings.json", "{\"workbench.editor.openSideBySideDirection\":\"down\"}");
-    defer allocator.free(settings);
-    try wb.setUserSettingsPaths(&.{settings});
-    wb.ensureConfigurationReady();
-    const source_group = wb.activePane().?;
-    const below = try wb.newEmptyGroup(.DOWN);
-    try wb.focusPane(source_group);
-    const ctrl_k = ui.KeyEvent{ .key = .{ .char = 'k' }, .mods = .{ .ctrl = true } };
-    const v = ui.KeyEvent{ .key = .{ .char = 'v' } };
-    try std.testing.expect(try wb.handleGlobalKey(&ctrl_k));
-    try std.testing.expect(try wb.handleGlobalKey(&v));
-    try std.testing.expectEqual(below, wb.activePane().?);
-    try std.testing.expectEqual(@as(usize, 2), wb.groupCount());
-    const preview = wb.activeTab().?;
-    try wb.showMarkdownSource();
-    const document = wb.activeTab().?.editor.model;
-    _ = try wb.closeActive();
-    try std.testing.expectEqual(@as(usize, 1), wb.groupCount());
-    try std.testing.expectEqual(preview, wb.activeTab().?);
-    try std.testing.expectEqual(document, preview.markdown_preview.?.editor.model);
-    try wb.showMarkdownSource();
-    try std.testing.expect(wb.activeTab().?.isMarkdown());
-    try std.testing.expectEqual(document, wb.activeTab().?.editor.model);
-}
-
 test "Workbench: clicking a pane body focuses its group" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -17535,62 +17461,4 @@ test "Workbench: terminal editor moves the live instance between hosts and close
     try std.testing.expectEqual(@as(usize, 1), workbench.terminalCount());
     try workbench.killTerminal();
     try std.testing.expectEqual(@as(usize, 0), workbench.terminalCount());
-}
-
-test "Workbench: breadcrumb symbol filtering survives editor group focus changes" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const path = try seedFile(allocator, io, &tmp, "focus.ts", "one\ntwo");
-    defer allocator.free(path);
-    const settings = try seedFile(allocator, io, &tmp, "settings.json",
-        \\{"breadcrumbs.filePath":"off","breadcrumbs.showFunctions":false}
-    );
-    defer allocator.free(settings);
-
-    const Symbols = struct {
-        fn provide(_: *anyopaque, arena: Allocator, _: *@import("../../editor/common/model/textModel.zig").TextModel, _: CancellationToken) ![]languages.DocumentSymbol {
-            return arena.dupe(languages.DocumentSymbol, &.{
-                .{ .name = "VisibleClass", .kind = 5, .range = Range.init(1, 1, 1, 4), .selection_range = Range.init(1, 1, 1, 4) },
-                .{ .name = "HiddenFunction", .kind = 12, .range = Range.init(2, 1, 2, 4), .selection_range = Range.init(2, 1, 2, 4) },
-            });
-        }
-    };
-
-    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 12);
-    defer workbench.deinit();
-    try workbench.setUserSettingsPaths(&.{settings});
-    try workbench.enableLanguageFeatures();
-    const registration = try workbench.language_features.?.document_symbol_provider.register(.{ .language = "*" }, .{
-        .context = workbench,
-        .provide_document_symbols = Symbols.provide,
-    });
-    defer registration.dispose();
-
-    const first = workbench.activePane().?;
-    try workbench.splitActive(.horizontal);
-    const second = workbench.activePane().?;
-    try std.testing.expect(first != second);
-    try second.activeTab().?.editor.setCursorPosition(Position.init(2, 1));
-    try workbench.focusPane(first);
-
-    var out: std.Io.Writer.Allocating = .init(allocator);
-    defer out.deinit();
-    for ([_]*GroupPane{ second, first }) |pane| {
-        try workbench.cycleGroup();
-        try std.testing.expectEqual(pane, workbench.activePane().?);
-        try workbench.render(&out.writer);
-        const row = try workbench.frame.prev.rowText(allocator, 1);
-        defer allocator.free(row);
-        try std.testing.expect(std.mem.indexOf(u8, row, "VisibleClass") != null);
-        try std.testing.expect(std.mem.indexOf(u8, row, "HiddenFunction") == null);
-    }
-}
-
-test "Workbench: tab close button honors the off setting" {
-    try std.testing.expect(Workbench.tabCloseButtonVisible("right"));
-    try std.testing.expect(Workbench.tabCloseButtonVisible("left"));
-    try std.testing.expect(!Workbench.tabCloseButtonVisible("off"));
 }

@@ -446,6 +446,29 @@ pub const OutlineRequest = struct {
 /// Upstream OutlineModelService.getOrCreate. A pending promise can outlive
 /// its cache entry. Subscribers share the result and only the last cancelled
 /// subscriber cancels the provider.
+const instantiation = @import("../../../../platform/instantiation/common/instantiation.zig");
+pub const outline_model_service_id = instantiation.ServiceIdentifier(OutlineModelService, "outlineModelService");
+
+pub fn getOutlineModelService(accessor: instantiation.ServicesAccessor) !*OutlineModelService {
+    return accessor.get(outline_model_service_id);
+}
+
+/// Upstream registers OutlineModelService as a delayed singleton.
+pub fn registerSingleton(collection: *@import("../../../../platform/instantiation/common/serviceCollection.zig").ServiceCollection) !void {
+    _ = try collection.setFactory(outline_model_service_id, createService, disposeService);
+}
+
+fn createService(allocator: Allocator, _: instantiation.ServicesAccessor) !*OutlineModelService {
+    const service = try allocator.create(OutlineModelService);
+    service.* = .init(allocator);
+    return service;
+}
+
+fn disposeService(allocator: Allocator, service: *OutlineModelService) void {
+    service.deinit();
+    allocator.destroy(service);
+}
+
 pub const OutlineModelService = struct {
     const Disposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
     const debounce_mod = @import("../../../common/services/languageFeatureDebounce.zig");

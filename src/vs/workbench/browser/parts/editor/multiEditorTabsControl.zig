@@ -849,3 +849,13 @@ test "tabBar: hover background and last-pinned separator" {
         grid.fg[grid.index(hits.items[1].start - 1, 0)],
     );
 }
+
+pub fn tabCloseButtonVisible(setting: []const u8) bool {
+    return !std.mem.eql(u8, setting, "off");
+}
+
+test "Workbench: tab close button honors the off setting" {
+    try std.testing.expect(tabCloseButtonVisible("right"));
+    try std.testing.expect(tabCloseButtonVisible("left"));
+    try std.testing.expect(!tabCloseButtonVisible("off"));
+}

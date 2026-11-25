@@ -557,7 +557,11 @@ pub const MenuRegistry = struct {
 };
 
 /// The registries an `Action2` registers into.
+const InstantiationService = @import("../../instantiation/common/instantiationService.zig").InstantiationService;
+const ServicesAccessor = @import("../../instantiation/common/instantiation.zig").ServicesAccessor;
+
 pub const ActionRegistries = struct {
+    instantiation: *InstantiationService,
     commands: *commands.CommandRegistry,
     keybindings: *keybindings_registry.KeybindingsRegistry,
     menus: *MenuRegistry,
@@ -573,7 +577,7 @@ pub const MenuRegistration = struct {
     is_hidden_by_default: bool = false,
 };
 
-pub const ActionRun = *const fn (context: *anyopaque, accessor: ?*const anyopaque) anyerror!void;
+pub const ActionRun = *const fn (context: *anyopaque, accessor: ServicesAccessor) anyerror!void;
 
 pub const Action2 = struct {
     command: ICommandAction,
@@ -585,6 +589,7 @@ pub const Action2 = struct {
 };
 
 pub const ActionRegistration = struct {
+    instantiation: *InstantiationService,
     allocator: Allocator,
     commands: *commands.CommandRegistry,
     id: []const u8,
@@ -596,7 +601,11 @@ pub const ActionRegistration = struct {
 
     fn run(context: *anyopaque) anyerror!void {
         const self: *ActionRegistration = @ptrCast(@alignCast(context));
-        return self.run_fn(self.context, null);
+        try self.instantiation.invokeFunction(invokeAction, .{self});
+    }
+
+    fn invokeAction(accessor: ServicesAccessor, self: *ActionRegistration) !void {
+        try self.run_fn(self.context, accessor);
     }
 
     pub fn dispose(self: *ActionRegistration) void {
@@ -622,6 +631,7 @@ pub fn registerAction2(registries: ActionRegistries, action2: Action2) !*ActionR
     const registration = try allocator.create(ActionRegistration);
     registration.* = .{
         .allocator = allocator,
+        .instantiation = registries.instantiation,
         .commands = registries.commands,
         .id = command.id,
         .context = action2.context,
@@ -689,7 +699,7 @@ test "Action2 registers command, keybinding and menu contribution" {
     const key_codes = @import("../../../base/common/keyCodes.zig");
     const Counter = struct {
         count: usize = 0,
-        fn run(context: *anyopaque, _: ?*const anyopaque) anyerror!void {
+        fn run(context: *anyopaque, _: ServicesAccessor) anyerror!void {
             const counter: *@This() = @ptrCast(@alignCast(context));
             counter.count += 1;
         }
@@ -703,7 +713,13 @@ test "Action2 registers command, keybinding and menu contribution" {
     var menu_registry = MenuRegistry.init(allocator);
     defer menu_registry.deinit();
 
+    var collection = @import("../../instantiation/common/serviceCollection.zig").ServiceCollection.init(allocator);
+    defer collection.deinit();
+    var instantiation: InstantiationService = undefined;
+    try instantiation.init(allocator, &collection);
+    defer instantiation.deinit();
     const registries = ActionRegistries{
+        .instantiation = &instantiation,
         .commands = &command_registry,
         .keybindings = &keybinding_registry,
         .menus = &menu_registry,

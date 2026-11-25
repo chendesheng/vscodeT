@@ -11,6 +11,8 @@ const Emitter = @import("../../../../base/common/event.zig").Emitter;
 
 pub const IPartVisibilityChangeEvent = struct { part_id: Parts, visible: bool };
 
+pub const layout_service_id = @import("../../../../platform/instantiation/common/instantiation.zig").ServiceIdentifier(IWorkbenchLayoutService, "layoutService");
+
 pub const IWorkbenchLayoutService = struct {
     context: *anyopaque,
     register_part: *const fn (*anyopaque, *Part) anyerror!IDisposable,

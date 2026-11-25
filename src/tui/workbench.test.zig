@@ -5353,3 +5353,161 @@ test "startup opens files at the laid-out pane width with one wrapping pass" {
     try std.testing.expect(editor.screen_width < wb.cols);
     try std.testing.expectEqual(@as(usize, 1), editor.view_lines.rebuildAllCount());
 }
+
+test "Workbench: markdown preview to the side uses an ordinary editor group and sash" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "source.md", "# First");
+    defer allocator.free(path);
+    const other = try seedFile(allocator, io, &tmp, "other.md", "# Second");
+    defer allocator.free(other);
+
+    for ([_]bool{ false, true }) |borders| {
+        const wb = try Workbench.init(allocator, io, &.{path}, 100, 22);
+        defer wb.deinit();
+        wb.setCellBorders(borders);
+        const source_group = wb.activePane().?;
+        const source = source_group.activeTab().?;
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        defer out.deinit();
+        try wb.render(&out.writer);
+        const action = source_group.title_action_hit.?;
+        var click = ui.MouseEvent{ .kind = .down, .button = .left, .x = action.start, .y = ui.cell.snap(source_group.rect.y) };
+        try std.testing.expect(wb.handleTabMouse(&click));
+        try std.testing.expectEqual(@as(usize, 2), wb.groupCount());
+        const target = wb.activePane().?;
+        const preview = target.activeTab().?;
+        try std.testing.expect(target != source_group and preview != source);
+        try std.testing.expectEqualStrings("Preview source.md", preview.input.getName());
+        try std.testing.expectEqualStrings("markdown.preview", preview.input.editor_id.?);
+        try std.testing.expect(source.markdown_preview == null);
+        try std.testing.expectEqual(source.editor, preview.markdown_preview.?.editor);
+        const boundary = ui.cell.snap(source_group.rect.right());
+        const y = ui.cell.snap(source_group.rect.y) + source_group.chromeHeight() + 1;
+        try std.testing.expect(wb.handleSashMouse(&.{ .kind = .down, .button = .left, .x = boundary, .y = y }));
+        try std.testing.expect(wb.part.active_sash == wb.part.root);
+        try std.testing.expect(wb.handleSashMouse(&.{ .kind = .move, .x = boundary + 6, .y = y }));
+        try std.testing.expect(wb.handleSashMouse(&.{ .kind = .up, .x = boundary + 6, .y = y }));
+        try std.testing.expectEqual(boundary + 6, ui.cell.snap(source_group.rect.right()));
+        try wb.render(&out.writer);
+        try std.testing.expectEqual(ui.cell.snap(target.rect.w), preview.markdown_preview.?.width);
+
+        try wb.showMarkdownSource();
+        try std.testing.expectEqual(source_group, wb.activePane().?);
+        try source.editor.insertText("LiveEdit");
+        _ = wb.markdownPreviewTick(time_compat.milliTimestamp() + 350);
+        try wb.render(&out.writer);
+        const rendered = try preview.markdown_preview.?.surface.?.grid().rowText(allocator, 0);
+        defer allocator.free(rendered);
+        try std.testing.expect(std.mem.indexOf(u8, rendered, "LiveEdit") != null);
+        try wb.openPath(other);
+        try std.testing.expectEqualStrings("Preview other.md", preview.input.getName());
+        try wb.showMarkdownPreviewToSide();
+        try std.testing.expectEqual(preview, wb.activeTab().?);
+        try std.testing.expectEqual(@as(usize, 1), target.count());
+        // Closing the active source retargets the unlocked panel to the
+        // remaining Markdown tab, just like selecting it explicitly.
+        try wb.showMarkdownSource();
+        _ = try wb.closeActive();
+        wb.service.activateGroup(target.group);
+        try wb.focusActiveGroup();
+        try std.testing.expectEqualStrings("Preview source.md", preview.input.getName());
+        try wb.showMarkdownSource();
+        try std.testing.expect(wb.activeTab().?.file_input != null);
+        wb.service.activateGroup(target.group);
+        try wb.focusActiveGroup();
+        _ = try wb.closeActive();
+        try std.testing.expectEqual(@as(usize, 1), wb.groupCount());
+        try std.testing.expect(wb.activeTab().?.isMarkdown());
+    }
+}
+
+test "Workbench: markdown side preview reuses a group below and survives closing its only source" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "persist.md", "# Heading");
+    defer allocator.free(path);
+    const wb = try Workbench.init(allocator, io, &.{path}, 100, 32);
+    defer wb.deinit();
+    const settings = try seedFile(allocator, io, &tmp, "settings.json", "{\"workbench.editor.openSideBySideDirection\":\"down\"}");
+    defer allocator.free(settings);
+    try wb.setUserSettingsPaths(&.{settings});
+    wb.ensureConfigurationReady();
+    const source_group = wb.activePane().?;
+    const below = try wb.newEmptyGroup(.DOWN);
+    wb.service.activateGroup(source_group.group);
+    try wb.focusActiveGroup();
+    const ctrl_k = ui.KeyEvent{ .key = .{ .char = 'k' }, .mods = .{ .ctrl = true } };
+    const v = ui.KeyEvent{ .key = .{ .char = 'v' } };
+    try std.testing.expect(try wb.handleGlobalKey(&ctrl_k));
+    try std.testing.expect(try wb.handleGlobalKey(&v));
+    try std.testing.expectEqual(below, wb.activePane().?);
+    try std.testing.expectEqual(@as(usize, 2), wb.groupCount());
+    const preview = wb.activeTab().?;
+    try wb.showMarkdownSource();
+    const document = wb.activeTab().?.editor.model;
+    _ = try wb.closeActive();
+    try std.testing.expectEqual(@as(usize, 1), wb.groupCount());
+    try std.testing.expectEqual(preview, wb.activeTab().?);
+    try std.testing.expectEqual(document, preview.markdown_preview.?.editor.model);
+    try wb.showMarkdownSource();
+    try std.testing.expect(wb.activeTab().?.isMarkdown());
+    try std.testing.expectEqual(document, wb.activeTab().?.editor.model);
+}
+
+test "Workbench: breadcrumb symbol filtering survives editor group focus changes" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "focus.ts", "one\ntwo");
+    defer allocator.free(path);
+    const settings = try seedFile(allocator, io, &tmp, "settings.json",
+        \\{"breadcrumbs.filePath":"off","breadcrumbs.showFunctions":false}
+    );
+    defer allocator.free(settings);
+
+    const Symbols = struct {
+        fn provide(_: *anyopaque, arena: Allocator, _: *@import("../vs/editor/common/model/textModel.zig").TextModel, _: CancellationToken) ![]languages.DocumentSymbol {
+            return arena.dupe(languages.DocumentSymbol, &.{
+                .{ .name = "VisibleClass", .kind = 5, .range = Range.init(1, 1, 1, 4), .selection_range = Range.init(1, 1, 1, 4) },
+                .{ .name = "HiddenFunction", .kind = 12, .range = Range.init(2, 1, 2, 4), .selection_range = Range.init(2, 1, 2, 4) },
+            });
+        }
+    };
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 12);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPaths(&.{settings});
+    try workbench.enableLanguageFeatures();
+    const registration = try workbench.language_features.?.document_symbol_provider.register(.{ .language = "*" }, .{
+        .context = workbench,
+        .provide_document_symbols = Symbols.provide,
+    });
+    defer registration.dispose();
+
+    const first = workbench.activePane().?;
+    try workbench.splitActive(.horizontal);
+    const second = workbench.activePane().?;
+    try std.testing.expect(first != second);
+    try second.activeTab().?.editor.setCursorPosition(Position.init(2, 1));
+    workbench.service.activateGroup(first.group);
+    try workbench.focusActiveGroup();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    for ([_]*GroupPane{ second, first }) |pane| {
+        try workbench.cycleGroup();
+        try std.testing.expectEqual(pane, workbench.activePane().?);
+        try workbench.render(&out.writer);
+        const row = try workbench.frame.prev.rowText(allocator, 1);
+        defer allocator.free(row);
+        try std.testing.expect(std.mem.indexOf(u8, row, "VisibleClass") != null);
+        try std.testing.expect(std.mem.indexOf(u8, row, "HiddenFunction") == null);
+    }
+}

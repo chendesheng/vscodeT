@@ -678,6 +678,7 @@ pub fn main(init: std.process.Init) !void {
     // A read can end in the middle of an escape sequence. Keep those bytes
     // and wait for the rest instead of decoding the tail as typed text.
     var awaiting_input_continuation = false;
+    const outline_models = try workbench.instantiation.invokeFunction(@import("../vs/editor/contrib/documentSymbols/browser/outlineModel.zig").getOutlineModelService, .{});
     var eventually_after: ?i64 = time_compat.milliTimestamp() + 2500;
     while (true) {
         const now_ms = time_compat.milliTimestamp();
@@ -721,7 +722,7 @@ pub fn main(init: std.process.Init) !void {
             }
             if (needs_render) timeout = 0;
         }
-        timeout = workbench.outline_models.dispatchTimers(now_ms, timeout);
+        timeout = outline_models.dispatchTimers(now_ms, timeout);
         if (workbench.editorDragTimeout(now_ms)) |drag_timeout| timeout = @min(timeout, drag_timeout);
         if (workbench.gitWantsTick()) timeout = @min(timeout, 200);
         if (workbench.markdownPreviewTimeout(now_ms)) |preview_timeout| {

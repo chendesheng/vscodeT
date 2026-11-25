@@ -67,7 +67,8 @@ pub const WorkbenchContributions = struct {
         });
     }
 
-    pub fn start(self: *WorkbenchContributions, service: lifecycle_mod.ILifecycleService) !void {
+    pub fn start(self: *WorkbenchContributions, accessor: @import("../../platform/instantiation/common/instantiation.zig").ServicesAccessor) !void {
+        const service = (try accessor.get(lifecycle_mod.lifecycle_service_id)).*;
         self.lifecycle = service;
         while (self.entries.items.len > 0) {
             const entry = self.entries.orderedRemove(0);

@@ -770,3 +770,6 @@ comptime {
 comptime {
     _ = @import("./vs/workbench/contrib/tasks/test/browser/abstractTaskService.test.zig");
 }
+comptime {
+    _ = @import("./vs/platform/instantiation/test/common/instantiationService.test.zig");
+}

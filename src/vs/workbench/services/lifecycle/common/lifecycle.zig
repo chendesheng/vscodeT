@@ -22,6 +22,8 @@ pub const Continuation = struct {
     run: *const fn (*anyopaque) anyerror!void,
 };
 
+pub const lifecycle_service_id = @import("../../../../platform/instantiation/common/instantiation.zig").ServiceIdentifier(ILifecycleService, "lifecycleService");
+
 pub const ILifecycleService = struct {
     context: *anyopaque,
     phase_fn: *const fn (*anyopaque) LifecyclePhase,
