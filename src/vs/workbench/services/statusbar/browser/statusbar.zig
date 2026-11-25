@@ -147,6 +147,37 @@ pub const StatusbarCommandExecutor = struct {
     execute: *const fn (context: *anyopaque, command: StatusbarCommand) anyerror!void,
 };
 
+/// The portable focus/navigation and activation subset of IStatusbarService.
+/// Entry creation remains on StatusbarService until the accessor interface
+/// is ported; this navigation interface is sufficient for statusbar actions.
+pub const statusbar_service_id = @import("../../../../platform/instantiation/common/instantiation.zig").ServiceIdentifier(IStatusbarService, "statusbarService");
+
+pub const IStatusbarService = struct {
+    context: *anyopaque,
+    focus_fn: *const fn (*anyopaque, bool) void,
+    focus_next_entry: *const fn (*anyopaque) void,
+    focus_previous_entry: *const fn (*anyopaque) void,
+    is_entry_focused: *const fn (*anyopaque) bool,
+    execute_focused: *const fn (*anyopaque) anyerror!void,
+
+    pub fn focus(self: IStatusbarService, preserve_entry_focus: bool) void {
+        self.focus_fn(self.context, preserve_entry_focus);
+    }
+    pub fn focusNextEntry(self: IStatusbarService) void {
+        self.focus_next_entry(self.context);
+    }
+    pub fn focusPreviousEntry(self: IStatusbarService) void {
+        self.focus_previous_entry(self.context);
+    }
+    pub fn isEntryFocused(self: IStatusbarService) bool {
+        return self.is_entry_focused(self.context);
+    }
+    /// Terminal keyboard activation replaces browser button default action.
+    pub fn executeFocused(self: IStatusbarService) !void {
+        try self.execute_focused(self.context);
+    }
+};
+
 test "statusbar contract: location and override semantics" {
     const location = StatusbarEntryLocation{
         .location = .{ .id = "status.editor.mode", .priority = 10 },

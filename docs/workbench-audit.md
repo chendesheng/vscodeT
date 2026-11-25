@@ -98,7 +98,9 @@ EditorTabsControl now resolves EditorTitleContext through MenuRegistry/MenuServi
 
 Layout restore now owns sidebar/panel container resolution and fallback, including the persisted sidebar ID. Native layout storage receives only allocator, I/O, workspace folders and Layout; reading JSON never opens a hidden pane.
 
-The portable browser Workbench is 292 lines and has no inline tests. The native TerminalWorkbench window is 4,908 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
+Statusbar focus/navigation uses the upstream command IDs and `statusBarFocused` context key through IStatusbarService and the shared keybinding resolver. The terminal-only activation command and existing user-keybinding aliases remain available; the dedicated native dispatcher and fallback key scan were removed. StatusbarPart owns its context menu using configuration and layout service interfaces.
+
+The portable browser Workbench is 292 lines and has no inline tests. The native TerminalWorkbench window is 4,814 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and

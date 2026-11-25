@@ -67,9 +67,87 @@ pub const focus_statusbar_action: @import("../../../../platform/actions/common/a
 };
 
 fn focusStatusBar(_: *anyopaque, accessor: @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor) !void {
-    const layout = @import("../../../services/layout/browser/layoutService.zig");
     (try accessor.get(layout.layout_service_id)).focusPart(.statusbar);
 }
+
+const actions = @import("../../../../platform/actions/common/actions.zig");
+const bindings = @import("../../../../platform/keybinding/common/keybindingsRegistry.zig");
+const key_codes = @import("../../../../base/common/keyCodes.zig");
+const keys = @import("../../../../platform/contextkey/common/contextkey.zig");
+const configuration = @import("../../../../platform/configuration/common/configuration.zig");
+const layout = @import("../../../services/layout/browser/layoutService.zig");
+const editors = @import("../../../services/editor/common/editorService.zig");
+const ServicesAccessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
+
+const status_bar_focused: keys.Expr = .{ .Defined = "statusBarFocused" };
+// The terminal must allow the global Escape Escape zen chord while the bar
+// owns input; there is no separate browser focus-event dispatcher.
+const not_zen: keys.Expr = .{ .Not = "inZenMode" };
+const status_bar_clear_when: keys.Expr = .{ .And = @constCast(&[_]*const keys.Expr{ &status_bar_focused, &not_zen }) };
+const Navigation = enum { previous, next, first, last, clear, execute };
+
+fn navigation(comptime id: []const u8, title: []const u8, comptime operation: Navigation, comptime primary: ?key_codes.KeyCode, comptime secondary: []const u32) actions.Action2 {
+    return .{
+        .command = .{ .id = id, .title = title },
+        .f1 = false,
+        .keybindings = if (primary) |key| &.{.{ .id = id, .weight = @backingInt(bindings.KeybindingWeight.WorkbenchContrib), .when = if (operation == .clear) &status_bar_clear_when else &status_bar_focused, .bindings = .{ .primary = @backingInt(key), .secondary = secondary } }} else &.{},
+        .context = @constCast(&{}),
+        .run_fn = struct {
+            fn run(_: *anyopaque, accessor: ServicesAccessor) !void {
+                const service = try accessor.get(statusbar.statusbar_service_id);
+                switch (operation) {
+                    .previous => service.focusPreviousEntry(),
+                    .next => service.focusNextEntry(),
+                    .first => {
+                        service.focus(false);
+                        service.focusNextEntry();
+                    },
+                    .last => {
+                        service.focus(false);
+                        service.focusPreviousEntry();
+                    },
+                    .clear => {
+                        if (service.isEntryFocused()) {
+                            service.focus(false);
+                        } else if ((try accessor.get(editors.editor_service_id)).activeEditorPane() != null) {
+                            (try accessor.get(layout.layout_service_id)).focusPart(.editor);
+                        }
+                    },
+                    .execute => try service.executeFocused(),
+                }
+            }
+        }.run,
+    };
+}
+
+pub const navigation_actions = [_]actions.Action2{
+    navigation("workbench.statusBar.focusPrevious", "Focus Previous Status Bar Entry", .previous, .LeftArrow, &.{@backingInt(key_codes.KeyCode.UpArrow)}),
+    navigation("workbench.statusBar.focusNext", "Focus Next Status Bar Entry", .next, .RightArrow, &.{@backingInt(key_codes.KeyCode.DownArrow)}),
+    navigation("workbench.statusBar.focusFirst", "Focus First Status Bar Entry", .first, .Home, &.{}),
+    navigation("workbench.statusBar.focusLast", "Focus Last Status Bar Entry", .last, .End, &.{}),
+    navigation("workbench.statusBar.clearFocus", "Clear Status Bar Focus", .clear, .Escape, &.{}),
+    // Enter/Space activation is a native button default action upstream.
+    navigation("workbench.action.statusbar.executeFocused", "Execute Focused Status Bar Entry", .execute, .Enter, &.{@backingInt(key_codes.KeyCode.Space)}),
+    // Keep previous TUI command IDs usable in user keybindings; use upstream
+    // IDs for the defaults and context-key expressions.
+    navigation("workbench.action.statusbar.focusPreviousEntry", "Focus Previous Status Bar Entry", .previous, null, &.{}),
+    navigation("workbench.action.statusbar.focusNextEntry", "Focus Next Status Bar Entry", .next, null, &.{}),
+    navigation("workbench.action.statusbar.focusFirstEntry", "Focus First Status Bar Entry", .first, null, &.{}),
+    navigation("workbench.action.statusbar.focusLastEntry", "Focus Last Status Bar Entry", .last, null, &.{}),
+    navigation("workbench.action.statusbar.escapeFocus", "Clear Status Bar Focus", .clear, null, &.{}),
+};
+
+pub const ToggleStatusbarVisibilityAction = struct {
+    layout_service: layout.IWorkbenchLayoutService,
+    configuration_service: configuration.IConfigurationService,
+
+    pub fn run(self: *@This()) !void {
+        const visible = self.layout_service.isVisible(.statusbar);
+        const had_focus = self.layout_service.hasFocus(.statusbar);
+        try self.configuration_service.updateValue(layout.LayoutSettings.status_bar_visible, .{ .bool = !visible }, .USER);
+        if (had_focus and !self.layout_service.isVisible(.statusbar)) self.layout_service.focusPart(.editor);
+    }
+};
 
 test "statusbarActions: toggle, hide and manage extension" {
     const allocator = std.testing.allocator;

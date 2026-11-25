@@ -163,6 +163,16 @@ pub const StatusbarPart = struct {
         return palette.colorOr(id, fallback);
     }
 
+    pub fn showContextMenu(self: *StatusbarPart, handle: ?EntryHandle, service: @import("../../../../platform/contextview/browser/contextMenuService.zig").IContextMenuService, anchor: @import("../../../../platform/contextview/browser/contextMenuService.zig").Anchor, toggle_bar: @import("statusbarActions.zig").ToggleStatusbarVisibilityAction) !void {
+        const Menu = @import("../../../../platform/contextview/browser/contextMenuService.zig").Menu;
+        const menu = try Menu.init(self.allocator, @as(u8, 0), struct {
+            fn run(_: *u8, _: []const u8) !void {}
+        }.run);
+        errdefer menu.deinit();
+        try self.getContextMenuActions(menu, handle, toggle_bar);
+        try service.showContextMenu(menu, anchor);
+    }
+
     /// A right-click on an empty cell still offers the workbench and entry actions.
     pub fn getContextMenuActions(self: *StatusbarPart, menu: *@import("../../../../platform/contextview/browser/contextMenuHandler.zig").Menu, handle: ?EntryHandle, toggle_bar: anytype) !void {
         const actions = @import("statusbarActions.zig");
@@ -316,6 +326,13 @@ pub const StatusbarPart = struct {
     }
 
     //#region Focus and activation
+
+    pub fn focus(self: *StatusbarPart, preserve_entry_focus: bool) void {
+        self.clearHover();
+        if (preserve_entry_focus) {
+            if (self.lastFocusedHandle()) |handle| self.setFocused(handle);
+        } else self.clearFocus();
+    }
 
     pub fn focusNextEntry(self: *StatusbarPart) ?*Entry {
         return self.model.focusNextEntry();
@@ -809,6 +826,42 @@ pub const StatusbarService = struct {
     pub fn deinit(self: *StatusbarService) void {
         self.main_part.deinit();
         self.allocator.destroy(self.main_part);
+    }
+
+    pub fn interface(self: *StatusbarService) @import("../../../services/statusbar/browser/statusbar.zig").IStatusbarService {
+        return .{
+            .context = self,
+            .focus_fn = focusContext,
+            .focus_next_entry = focusNextContext,
+            .focus_previous_entry = focusPreviousContext,
+            .is_entry_focused = isEntryFocusedContext,
+            .execute_focused = executeFocusedContext,
+        };
+    }
+
+    fn focusContext(context: *anyopaque, preserve: bool) void {
+        const self: *StatusbarService = @ptrCast(@alignCast(context));
+        self.main_part.focus(preserve);
+    }
+
+    fn focusNextContext(context: *anyopaque) void {
+        const self: *StatusbarService = @ptrCast(@alignCast(context));
+        _ = self.main_part.focusNextEntry();
+    }
+
+    fn focusPreviousContext(context: *anyopaque) void {
+        const self: *StatusbarService = @ptrCast(@alignCast(context));
+        _ = self.main_part.focusPreviousEntry();
+    }
+
+    fn isEntryFocusedContext(context: *anyopaque) bool {
+        const self: *StatusbarService = @ptrCast(@alignCast(context));
+        return self.main_part.isEntryFocused();
+    }
+
+    fn executeFocusedContext(context: *anyopaque) !void {
+        const self: *StatusbarService = @ptrCast(@alignCast(context));
+        _ = try self.main_part.executeFocused();
     }
 
     pub fn model(self: *StatusbarService) *StatusbarModel {

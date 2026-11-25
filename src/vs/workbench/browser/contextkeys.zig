@@ -42,6 +42,7 @@ const WindowContextKeys = struct {
     list_focus: contextkeys.IContextKey,
     side_bar_focus: contextkeys.IContextKey,
     status_bar_focus: contextkeys.IContextKey,
+    legacy_status_bar_focus: contextkeys.IContextKey,
     terminal_focus: contextkeys.IContextKey,
     panel_focus: contextkeys.IContextKey,
     active_panel: contextkeys.IContextKey,
@@ -70,7 +71,8 @@ const WindowContextKeys = struct {
             .input_focus = try service.createKey("inputFocus", .{ .boolean = false }),
             .list_focus = try service.createKey("listFocus", .{ .boolean = false }),
             .side_bar_focus = try service.createKey("sideBarFocus", .{ .boolean = false }),
-            .status_bar_focus = try service.createKey("statusBarFocus", .{ .boolean = false }),
+            .status_bar_focus = try service.createKey("statusBarFocused", .{ .boolean = false }),
+            .legacy_status_bar_focus = try service.createKey("statusBarFocus", .{ .boolean = false }),
             .terminal_focus = try service.createKey("terminalFocus", .{ .boolean = false }),
             .panel_focus = try service.createKey("panelFocus", .{ .boolean = false }),
             .active_panel = try service.createKey("activePanel", .{ .string = "" }),
@@ -182,6 +184,7 @@ pub const WorkbenchContextKeysHandler = struct {
         keys.list_focus.set(.{ .boolean = state.sidebar_focused and (!search_active or state.search_results_focused) });
         keys.input_focus.set(.{ .boolean = state.sidebar_focused and search_active and !state.search_results_focused });
         keys.status_bar_focus.set(.{ .boolean = state.statusbar_focused });
+        keys.legacy_status_bar_focus.set(.{ .boolean = state.statusbar_focused });
         keys.terminal_focus.set(.{ .boolean = state.terminal_focused });
         keys.panel_focus.set(.{ .boolean = state.panel_focused });
         keys.active_panel.set(.{ .string = state.active_panel });

@@ -67,7 +67,6 @@ const code_editor_service = @import("../vs/editor/browser/services/codeEditorSer
 const CodeEditorService = @import("../vs/workbench/services/editor/browser/codeEditorService.zig").CodeEditorService;
 const WorkbenchGrid = workbench_layout.WorkbenchGrid;
 const statusbar_mod = @import("../vs/workbench/browser/parts/statusbar/statusbarPart.zig");
-const statusbar_model_mod = @import("../vs/workbench/browser/parts/statusbar/statusbarModel.zig");
 const StatusbarService = statusbar_mod.StatusbarService;
 const EntryAccessor = statusbar_mod.EntryAccessor;
 const statusbar_types = @import("../vs/workbench/services/statusbar/browser/statusbar.zig");
@@ -386,6 +385,7 @@ pub const TerminalWorkbench = struct {
     view_containers_registry: views_mod.ViewContainersRegistry,
     view_descriptor_service: ViewDescriptorService,
     statusbar: StatusbarService,
+    statusbar_api: statusbar_types.IStatusbarService,
     notification_storage: storage_mod.InMemoryStorageService,
     notification_service: *@import("../vs/workbench/services/notification/common/notificationService.zig").NotificationService,
     notification_api: @import("../vs/platform/notification/common/notification.zig").INotificationService,
@@ -433,7 +433,6 @@ pub const TerminalWorkbench = struct {
     tab_service: ?*keybinding_service.KeybindingService,
     tab_command_result: ?TabKeyResult = null,
     global_service: ?*keybinding_service.KeybindingService,
-    statusbar_service: ?*keybinding_service.KeybindingService,
     context_keys: ?*context_key_mod.ContextKeyService,
     configuration_context: @import("../vs/platform/contextkey/browser/contextKeyService.zig").ConfigAwareContextValuesContainer,
     workbench_context: @import("../vs/workbench/browser/contextkeys.zig").WorkbenchContextKeysHandler,
@@ -539,7 +538,6 @@ pub const TerminalWorkbench = struct {
         self.cols = surface.document().cols;
         self.tab_service = null;
         self.global_service = null;
-        self.statusbar_service = null;
         self.context_keys = null;
         self.theme_service = null;
         self.syntax_theme = .{};
@@ -1127,6 +1125,8 @@ pub const TerminalWorkbench = struct {
     fn registerNativeServices(self: *TerminalWorkbench) !void {
         self.context_menu_api = self.context_menu_service.interface();
         _ = try self.services.set(context_menus.context_menu_service_id, &self.context_menu_api);
+        self.statusbar_api = self.statusbar.interface();
+        _ = try self.services.set(statusbar_types.statusbar_service_id, &self.statusbar_api);
         self.sidebar_menus = .{
             .allocator = self.allocator,
             .sidebar = &self.sidebar_part,
@@ -1657,7 +1657,9 @@ pub const TerminalWorkbench = struct {
         try self.commands.registerAction(self.instantiation, @import("../vs/workbench/browser/actions/layoutActions.zig").toggle_sidebar_visibility_action);
         for (@import("../vs/workbench/browser/parts/sidebar/sidebarActions.zig").sidebar_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (activity_bar_mod.switch_sidebar_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        try self.commands.registerAction(self.instantiation, @import("../vs/workbench/browser/parts/statusbar/statusbarActions.zig").focus_statusbar_action);
+        const statusbar_actions = @import("../vs/workbench/browser/parts/statusbar/statusbarActions.zig");
+        try self.commands.registerAction(self.instantiation, statusbar_actions.focus_statusbar_action);
+        for (statusbar_actions.navigation_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (terminal_actions.terminal_actions) |action| try self.commands.registerAction(self.instantiation, action);
         try self.markdown_previews.registerCommands(&self.commands);
         for (media_actions.zoom_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
@@ -1818,7 +1820,6 @@ pub const TerminalWorkbench = struct {
         if (self.global_service) |service| {
             service.deinit();
         }
-        if (self.statusbar_service) |service| service.deinit();
         self.user_keybindings.destroy();
         if (self.context_keys) |service| {
             self.configuration_context.deinit();
@@ -2387,9 +2388,7 @@ pub const TerminalWorkbench = struct {
         if (self.range_highlights) |highlights| highlights.removeHighlightRange();
         if (self.breadcrumbs.activeControl()) |control| control.setFocused(false);
         if (self.statusbar.main_part.focusedHandle() == null) {
-            if (self.statusbar.main_part.lastFocusedHandle()) |handle| {
-                self.statusbar.main_part.setFocused(handle);
-            }
+            self.statusbar_api.focus(true);
             if (self.statusbar.main_part.focusedHandle() == null) {
                 _ = self.statusbar.main_part.focusNextEntry();
             }
@@ -3875,9 +3874,6 @@ pub const TerminalWorkbench = struct {
         for (tab_keybinding_rules) |rule| {
             if (std.mem.eql(u8, rule.id, command)) return true;
         }
-        for (statusbar_keybinding_rules) |rule| {
-            if (std.mem.eql(u8, rule.id, command)) return true;
-        }
         return false;
     }
 
@@ -3900,10 +3896,6 @@ pub const TerminalWorkbench = struct {
         if (self.tab_service) |service| {
             service.deinit();
             self.tab_service = null;
-        }
-        if (self.statusbar_service) |service| {
-            service.deinit();
-            self.statusbar_service = null;
         }
     }
 
@@ -4123,64 +4115,6 @@ pub const TerminalWorkbench = struct {
     fn focusEditorAfterTransfer(context: *anyopaque) void {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
         self.setFocus(.editor);
-    }
-
-    /// Mirrors StatusbarPart.getContextMenuActions, including the empty row.
-    pub fn showStatusbarContextMenu(self: *TerminalWorkbench, handle: ?statusbar_model_mod.EntryHandle, event: *const ui.MouseEvent) !void {
-        const menu = try self.newContextMenu(runTitleMenuAction);
-        errdefer menu.deinit();
-        try self.statusbar.main_part.getContextMenuActions(menu, handle, ToggleStatusbarVisibilityAction{ .workbench = self });
-        try self.showContextMenu(menu, MenuAnchor.mouse(event));
-    }
-
-    pub fn ensureStatusbarService(self: *TerminalWorkbench) !*keybinding_service.KeybindingService {
-        if (self.statusbar_service) |service| return service;
-        self.user_keybindings.ensureLoaded() catch {};
-        const service = try keybinding_service.KeybindingService.initWithOptions(self.allocator, .{
-            .rules = &statusbar_keybinding_rules,
-            .executor = .{ .context = self, .execute = executeStatusbarKeyCommand },
-            .overrides = self.userRemovalOverrides(),
-        });
-        self.statusbar_service = service;
-        return service;
-    }
-
-    fn runStatusbarCommand(self: *TerminalWorkbench, command: []const u8) bool {
-        const part = self.statusbar.main_part;
-        if (std.mem.eql(u8, command, "workbench.action.statusbar.focusPreviousEntry")) {
-            _ = part.focusPreviousEntry();
-            return true;
-        }
-        if (std.mem.eql(u8, command, "workbench.action.statusbar.focusNextEntry")) {
-            _ = part.focusNextEntry();
-            return true;
-        }
-        if (std.mem.eql(u8, command, "workbench.action.statusbar.focusFirstEntry")) {
-            _ = part.focusFirstEntry();
-            return true;
-        }
-        if (std.mem.eql(u8, command, "workbench.action.statusbar.focusLastEntry")) {
-            _ = part.focusLastEntry();
-            return true;
-        }
-        if (std.mem.eql(u8, command, "workbench.action.statusbar.executeFocused")) {
-            _ = part.executeFocused() catch |err| {
-                if (self.activeTab()) |tab| {
-                    tab.editor.setMessage("status bar: {s}", .{@errorName(err)});
-                }
-            };
-            return true;
-        }
-        if (std.mem.eql(u8, command, "workbench.action.statusbar.escapeFocus")) {
-            part.clearHover();
-            if (part.focusedHandle() != null) {
-                part.clearFocus();
-            } else {
-                self.focusEditor();
-            }
-            return true;
-        }
-        return false;
     }
 
     pub fn clearStatusHover(self: *TerminalWorkbench) void {
@@ -4605,16 +4539,6 @@ fn runActivityOverflowAction(self: *TerminalWorkbench, _: *MenuActionContext, id
     _ = try self.showActivityById(id[9..]);
 }
 
-const ToggleStatusbarVisibilityAction = struct {
-    workbench: *TerminalWorkbench,
-
-    pub fn run(self: *@This()) !void {
-        const visible = self.workbench.layout.isVisible(.statusbar);
-        try self.workbench.setUserConfigurationValue(layout_service_mod.LayoutSettings.status_bar_visible, .{ .bool = !visible });
-        if (!self.workbench.geometry().statusBarVisible() and self.workbench.focus == .statusbar) self.workbench.focusEditor();
-    }
-};
-
 fn navigationActiveEditor(context: *anyopaque) ?*Editor {
     const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
     const tab = host.activeTab() orelse return null;
@@ -4704,10 +4628,6 @@ fn problemsFocusEditor(context: *anyopaque) void {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     self.focusEditor();
     if (self.activeTab()) |tab| tab.focusEditor();
-}
-
-fn runTitleMenuAction(self: *TerminalWorkbench, _: *MenuActionContext, id: []const u8) anyerror!void {
-    try self.commands.execute(id);
 }
 
 fn focusWindowEditor(context: *anyopaque) void {
@@ -4830,23 +4750,9 @@ const global_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     } },
 };
 
-const statusbar_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
-    .{ .id = "workbench.action.statusbar.focusPreviousEntry", .weight = 200, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.LeftArrow), .secondary = &.{@backingInt(key_codes.KeyCode.UpArrow)} } },
-    .{ .id = "workbench.action.statusbar.focusNextEntry", .weight = 200, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.RightArrow), .secondary = &.{@backingInt(key_codes.KeyCode.DownArrow)} } },
-    .{ .id = "workbench.action.statusbar.focusFirstEntry", .weight = 200, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Home) } },
-    .{ .id = "workbench.action.statusbar.focusLastEntry", .weight = 200, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.End) } },
-    .{ .id = "workbench.action.statusbar.executeFocused", .weight = 200, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Enter), .secondary = &.{@backingInt(key_codes.KeyCode.Space)} } },
-    .{ .id = "workbench.action.statusbar.escapeFocus", .weight = 200, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Escape) } },
-};
-
 fn executeTabCommand(context: *anyopaque, command_id: []const u8) anyerror!void {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     if (try self.runTabCommand(command_id)) |result| self.tab_command_result = result;
-}
-
-fn executeStatusbarKeyCommand(context: *anyopaque, command_id: []const u8) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    _ = self.runStatusbarCommand(command_id);
 }
 
 fn executeGlobalCommand(context: *anyopaque, command_id: []const u8) anyerror!void {

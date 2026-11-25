@@ -3326,7 +3326,7 @@ test "Workbench: status bar context menu hides an entry" {
     const model = &workbench.statusbar.main_part.model;
     const entry = if (model.findEntry("status.editor.mode")) |found| found else &model.entries()[0];
     const id = entry.id;
-    try workbench.showStatusbarContextMenu(entry.handle, &.{ .kind = .down, .button = .right, .x = 4, .y = 11 });
+    try workbench.statusbar.main_part.showContextMenu(entry.handle, workbench.context_menu_api, .{ .x = 4, .y = 11, .opening_press = true }, .{ .layout_service = workbench.layout_api, .configuration_service = workbench.configuration_api });
     try std.testing.expect(!workbench.isQuickAccessOpen());
     try std.testing.expect(workbench.context_menu_service.current != null);
     for (workbench.context_menu_service.current.?.popup.?.items) |item| {
@@ -9834,4 +9834,36 @@ test "Workbench: restore remembers hidden composites without opening their views
     try std.testing.expectEqualStrings("search", wb.pane_composite_api.getActivePaneComposite(.sidebar).?.id);
     try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, wb.pane_composite_api.getActivePaneComposite(.panel).?.id);
     try std.testing.expectEqual(@as(usize, 2), observer.opens);
+}
+
+test "Workbench: status bar navigation uses upstream context-key command registration" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "status_focus.txt", "x");
+    defer allocator.free(path);
+    const window = try TestWindow.init(allocator, io, &.{path}, 80, 12);
+    defer window.deinit();
+    const wb = window.workbench;
+    const context = (try wb.ensureContextKeys()).interface();
+    wb.focusEditor();
+    try std.testing.expect(!context.getContextKeyValue("statusBarFocused").boolean);
+    try std.testing.expect(wb.commands.get("workbench.statusBar.focusFirst") != null);
+    try std.testing.expect(!try terminal_workbench.handleGlobalKey(wb, &.{ .key = .home }));
+    wb.focusStatusBar();
+    try std.testing.expect(context.getContextKeyValue("statusBarFocused").boolean);
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(wb, &.{ .key = .end }));
+    const last = wb.statusbar.main_part.focusedHandle().?;
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(wb, &.{ .key = .home }));
+    try std.testing.expect(wb.statusbar.main_part.focusedHandle().? != last);
+    // Both the upstream command and the legacy user-binding alias are
+    // registered in the same command registry, not a native switch table.
+    try wb.commands.execute("workbench.action.statusbar.focusLastEntry");
+    try std.testing.expectEqual(last, wb.statusbar.main_part.focusedHandle().?);
+    try wb.commands.execute("workbench.statusBar.clearFocus");
+    try std.testing.expect(!wb.statusbar.main_part.isEntryFocused());
+    try wb.commands.execute("workbench.statusBar.clearFocus");
+    try std.testing.expectEqual(Focus.editor, wb.focus);
+    try std.testing.expect(!context.getContextKeyValue("statusBarFocused").boolean);
 }

@@ -1701,7 +1701,7 @@ pub fn handleStatusbarMouse(self: *Workbench, event: *const ui.MouseEvent) bool 
             if (event.button == .right) {
                 part.clearHover();
                 const hit = part.hitAt(event.x, event.y) catch null;
-                self.showStatusbarContextMenu(if (hit != null and hit.? == .entry) hit.?.entry else null, event) catch {};
+                part.showContextMenu(if (hit != null and hit.? == .entry) hit.?.entry else null, self.context_menu_api, .mouse(event), .{ .layout_service = self.layout_api, .configuration_service = self.configuration_api }) catch {};
                 return true;
             }
             part.clearHover();
@@ -1748,46 +1748,9 @@ pub fn handleStatusbarKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
     }
     if (self.focus != .statusbar) return false;
 
-    const service = self.ensureStatusbarService() catch null;
-    if (service) |host| {
-        if (host.dispatch(event.*)) return true;
-    }
-
-    const part = self.statusbar.main_part;
-    switch (event.key) {
-        .left, .up => _ = part.focusPreviousEntry(),
-        .right, .down => _ = part.focusNextEntry(),
-        .home => _ = part.focusFirstEntry(),
-        .end => _ = part.focusLastEntry(),
-        .escape => {
-            // Keep upstream's Escape Escape exit chord reachable when the
-            // terminal status bar owns focus in zen mode.
-            if (self.layout.isZenModeActive()) return false;
-            part.clearHover();
-            if (part.focusedHandle() != null) {
-                part.clearFocus();
-            } else {
-                self.focusEditor();
-            }
-        },
-        .enter => {
-            _ = part.executeFocused() catch |err| {
-                if (self.activeTab()) |tab| {
-                    tab.editor.setMessage("status bar: {s}", .{@errorName(err)});
-                }
-            };
-        },
-        .char => |ch| {
-            if (ch == ' ') {
-                _ = part.executeFocused() catch |err| {
-                    if (self.activeTab()) |tab| {
-                        tab.editor.setMessage("status bar: {s}", .{@errorName(err)});
-                    }
-                };
-            }
-        },
-        else => {},
-    }
+    // StatusBarFocused selects the upstream keybinding rules in the shared
+    // resolver. Unmatched keys remain consumed by the focused status bar.
+    _ = try handleGlobalKey(self, event);
     return true;
 }
 
