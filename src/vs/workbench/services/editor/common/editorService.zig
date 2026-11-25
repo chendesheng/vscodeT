@@ -17,6 +17,17 @@ pub const OpenOptions = struct {
     force_text: bool = false,
 };
 
+/// Upstream IEditorCloseEvent, with the native pinned state retained for
+/// reopening a terminal editor tab at its previous sequential index.
+pub const IEditorCloseEvent = struct {
+    editor: *EditorInput,
+    group_id: @import("../../../common/editor.zig").GroupIdentifier,
+    index: usize,
+    sticky: bool,
+    pinned: bool,
+    context: @import("../../../common/editor.zig").EditorCloseContext,
+};
+
 pub const IEditorService = struct {
     context: *anyopaque,
     active_editor_pane_fn: *const fn (*anyopaque) ?editor.IVisibleEditorPane,
@@ -24,6 +35,7 @@ pub const IEditorService = struct {
     open_editor_fn: *const fn (*anyopaque, []const u8, OpenOptions) anyerror!void,
     on_did_active_editor_change: *Emitter(?*EditorInput),
     on_did_visible_editors_change: *Emitter(void),
+    on_did_close_editor: *Emitter(IEditorCloseEvent),
 
     pub fn openEditor(self: IEditorService, resource: []const u8, options: OpenOptions) !void {
         try self.open_editor_fn(self.context, resource, options);

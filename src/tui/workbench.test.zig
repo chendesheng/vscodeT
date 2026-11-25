@@ -9335,3 +9335,46 @@ test "Open Previous and Next Editor traverse groups in grid order and skip empty
     try std.testing.expectEqual(left, wb.activePane().?);
     try std.testing.expectEqualStrings("a.txt", wb.activeTab().?.input.getName());
 }
+
+test "Editor close event records the actual sequential index for reopen history" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const a = try seedFile(allocator, io, &tmp, "a.txt", "a");
+    defer allocator.free(a);
+    const b = try seedFile(allocator, io, &tmp, "b.txt", "b");
+    defer allocator.free(b);
+    const c = try seedFile(allocator, io, &tmp, "c.txt", "c");
+    defer allocator.free(c);
+    const window = try TestWindow.init(allocator, io, &.{ a, b, c }, 80, 20);
+    defer window.deinit();
+    const wb = window.workbench;
+    const pane = wb.activePane().?;
+    const tab = pane.tabs.items[0];
+    try std.testing.expectEqualStrings("a.txt", tab.input.getName());
+    _ = try pane.group.model.moveEditor(tab.input, 2);
+    try pane.activateTab(tab);
+    const Event = @import("../vs/workbench/services/editor/common/editorService.zig").IEditorCloseEvent;
+    const Observer = struct {
+        count: usize = 0,
+        index: usize = 0,
+        correct_editor: bool = false,
+        fn closed(event: Event, self: *@This()) !void {
+            self.count += 1;
+            self.index = event.index;
+            self.correct_editor = std.mem.eql(u8, event.editor.getName(), "a.txt") and event.pinned and !event.sticky;
+        }
+    };
+    var observer: Observer = .{};
+    const listener = try wb.editor_api.on_did_close_editor.listen(&observer, Observer.closed);
+    defer wb.editor_api.on_did_close_editor.unlisten(listener);
+    try wb.commands.execute("workbench.action.closeActiveEditor");
+    try std.testing.expectEqual(@as(usize, 1), observer.count);
+    try std.testing.expectEqual(@as(usize, 2), observer.index);
+    try std.testing.expect(observer.correct_editor);
+    const closed = wb.history.closed_editors.items[wb.history.closed_editors.items.len - 1];
+    try std.testing.expectEqual(@as(usize, 2), closed.index);
+    try std.testing.expect(wb.reopenLastClosedEditor());
+    try std.testing.expectEqualStrings("a.txt", pane.group.model.getEditorByIndex(2).?.getName());
+}

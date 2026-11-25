@@ -55,6 +55,7 @@ pub fn EditorPart(comptime GroupView: type) type {
         on_did_add_group: Emitter(*GroupView),
         on_did_remove_group: Emitter(*GroupView),
         on_did_move_group: Emitter(*GroupView),
+        on_did_close_editor: Emitter(@import("../../../services/editor/common/editorService.zig").IEditorCloseEvent),
         visible: bool = true,
         part_options: struct { show_tabs: layout_service.EditorTabsMode = .multiple, breadcrumbs_enabled: bool = false } = .{},
         allocator: Allocator,
@@ -90,6 +91,7 @@ pub fn EditorPart(comptime GroupView: type) type {
                 .on_did_add_group = .init(allocator),
                 .on_did_remove_group = .init(allocator),
                 .on_did_move_group = .init(allocator),
+                .on_did_close_editor = .init(allocator),
                 .base = Part.init(allocator, .editor, Self),
                 .allocator = allocator,
                 .service = service,
@@ -162,6 +164,7 @@ pub fn EditorPart(comptime GroupView: type) type {
             self.on_did_add_group.deinit();
             self.on_did_remove_group.deinit();
             self.on_did_move_group.deinit();
+            self.on_did_close_editor.deinit();
             self.base.deinit();
             for (self.group_views.items) |view| {
                 view.deinit();
@@ -482,6 +485,43 @@ pub fn EditorPart(comptime GroupView: type) type {
             if (source.tabs.items.len == 0) self.collapseGroup(source, host);
             host.layout(host.copy.context);
             try focusGroupView(target);
+        }
+
+        /// EditorGroupView close: close the model, synchronize the mounted
+        /// editor pane and publish the close event while its input is alive.
+        /// A native callback releases the actual view and terminal resources.
+        pub fn closeEditor(self: *Self, pane: *GroupView, tab: anytype, host: TransferHost) !void {
+            const pinned = pane.group.model.isPinned(.{ .editor = tab.input });
+            const result = try pane.group.model.closeEditor(tab.input, .UNKNOWN, true) orelse return;
+            _ = pane.removeTab(tab);
+            pane.syncActivePane();
+            self.on_did_close_editor.fire(.{
+                .editor = result.editor,
+                .group_id = pane.group.id,
+                .index = result.editor_index,
+                .sticky = result.sticky,
+                .pinned = pinned,
+                .context = result.context,
+            }) catch {};
+            host.copy.discard(host.copy.context, tab);
+
+            // A final empty group remains as the editor surface. Otherwise
+            // close an empty group and activate the most recently used
+            // nonempty group, before restoring its visible editor control.
+            if (pane.tabs.items.len == 0) {
+                const ordered = try self.service.getGroups(self.allocator, .MOST_RECENTLY_ACTIVE);
+                defer self.allocator.free(ordered);
+                for (ordered) |group| {
+                    if (group == pane.group) continue;
+                    const candidate = self.viewForGroup(group) orelse continue;
+                    if (candidate.tabs.items.len == 0) continue;
+                    if (self.maximized_group == pane) self.setMaximizedGroup(null);
+                    self.service.activateGroup(group);
+                    self.collapseGroup(pane, host);
+                    break;
+                }
+            }
+            if (self.activeView()) |view| if (view.activeTab()) |active| try active.ensureControllers();
         }
 
         pub fn destroyGroup(self: *Self, pane: *GroupView, host: TransferHost) void {

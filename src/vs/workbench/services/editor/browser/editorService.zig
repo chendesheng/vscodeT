@@ -206,6 +206,7 @@ pub const EditorService = struct {
             }.open,
             .on_did_active_editor_change = self.onDidActiveEditorChange(),
             .on_did_visible_editors_change = self.onDidVisibleEditorsChange(),
+            .on_did_close_editor = &self.part.on_did_close_editor,
         };
     }
 

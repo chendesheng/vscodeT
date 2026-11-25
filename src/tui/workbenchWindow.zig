@@ -3941,46 +3941,7 @@ pub const TerminalWorkbench = struct {
                 if (std.mem.indexOfScalar(*Tab, context.tabs, tab) != null) self.context_menu_service.hideContextMenu();
             }
         }
-        self.history.recordClosedTab(pane, tab);
-        _ = try pane.group.model.closeEditor(tab.input, .UNKNOWN, true);
-        _ = pane.removeTab(tab);
-        pane.syncActivePane();
-
-        if (self.hovered_tab == tab) self.hovered_tab = null;
-        if (!tab.isImage() and tab.terminal_input == null) {
-            self.unregisterWorkingCopy(tab);
-        }
-        self.history.detachHistoryTab(tab);
-        self.detachTabViewHandlers(tab);
-        tab.deinit();
-
-        if (self.tabCount() == 0) return;
-
-        if (self.part.maximized_group == pane and pane.tabs.items.len == 0) self.part.setMaximizedGroup(null);
-
-        if (pane.tabs.items.len == 0) {
-            const groups = try self.service.getGroups(self.allocator, .MOST_RECENTLY_ACTIVE);
-            defer self.allocator.free(groups);
-            var next_group: ?*editor_groups.EditorGroup = null;
-            for (groups) |group| {
-                if (group == pane.group) continue;
-                const candidate = self.paneForGroup(group) orelse continue;
-                if (candidate.tabs.items.len == 0) continue;
-                next_group = group;
-                break;
-            }
-
-            // Collapse the empty group out of the grid when another group can
-            // take focus; the last group stays so the workbench keeps a view.
-            if (next_group) |group| {
-                self.service.activateGroup(group);
-                self.collapseEmptyPane(pane);
-            }
-        }
-
-        if (self.activeTab()) |active| {
-            try active.ensureControllers();
-        }
+        try self.part.closeEditor(pane, tab, self.groupTransferHost());
     }
 
     /// Upstream `toggleExpandGroup`: the group temporarily occupies the whole

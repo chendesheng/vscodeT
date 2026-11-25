@@ -137,6 +137,7 @@ pub const HistoryService = struct {
 
     editor_host: ?EditorHost = null,
     active_listener: ?usize = null,
+    close_listener: ?usize = null,
     visible_listener: ?usize = null,
     history_tab: ?*Tab = null,
     history_selection_listener: ?Tab.SelectionListener = null,
@@ -160,6 +161,7 @@ pub const HistoryService = struct {
         errdefer self.disposeEditorListeners();
         self.active_listener = try host.part.service.on_did_active_editor_change.listen(self, onActiveHistoryEditor);
         self.visible_listener = try host.part.service.on_did_visible_editors_change.listen(self, onHistoryVisibleEditorsChanged);
+        self.close_listener = try host.part.on_did_close_editor.listen(self, onDidCloseEditor);
         try onHistoryVisibleEditorsChanged({}, self);
     }
 
@@ -167,9 +169,11 @@ pub const HistoryService = struct {
         const host = self.editor_host orelse return;
         if (self.active_listener) |id| host.part.service.on_did_active_editor_change.unlisten(id);
         if (self.visible_listener) |id| host.part.service.on_did_visible_editors_change.unlisten(id);
+        if (self.close_listener) |id| host.part.on_did_close_editor.unlisten(id);
         if (self.history_tab) |tab| self.detachHistoryTab(tab);
         self.active_listener = null;
         self.visible_listener = null;
+        self.close_listener = null;
         self.editor_host = null;
     }
 
@@ -183,19 +187,23 @@ pub const HistoryService = struct {
         return pane.activeTab();
     }
 
-    pub fn recordClosedTab(self: *HistoryService, pane: *GroupPane, tab: *Tab) void {
+    /// Upstream handleEditorCloseEventInReopen ignores move/replacement
+    /// events and records the sequential tab index before it disappears.
+    fn onDidCloseEditor(event: @import("../../editor/common/editorService.zig").IEditorCloseEvent, self: *HistoryService) !void {
+        if (event.context == .REPLACE or event.context == .MOVE) return;
         if (!self.in_closed_batch) self.closed_batch_id +%= 1;
-        if (!tab.input.canReopen()) return;
-        const index = pane.indexOfTab(tab) orelse return;
-        const path = self.allocator.dupe(u8, tab.editor.path) catch return;
-        self.recordClosedEditor(.{
+        if (!event.editor.canReopen()) return;
+        const resource = event.editor.resource orelse return;
+        const path = try self.allocator.dupe(u8, resource);
+        errdefer self.allocator.free(path);
+        try self.recordClosedEditor(.{
             .path = path,
-            .group_id = pane.group.id,
-            .index = index,
-            .sticky = pane.group.model.isSticky(.{ .editor = tab.input }),
-            .pinned = pane.group.model.isPinned(.{ .editor = tab.input }),
+            .group_id = event.group_id,
+            .index = event.index,
+            .sticky = event.sticky,
+            .pinned = event.pinned,
             .batch_id = self.closed_batch_id,
-        }) catch self.allocator.free(path);
+        });
     }
 
     fn onActiveHistoryEditor(_: ?*EditorInput, self: *HistoryService) !void {
