@@ -341,19 +341,6 @@ const LayoutNode = grid_mod.Node(*GroupPane);
 /// the cell rectangle it occupies.
 pub const GroupPane = editor_group_view.EditorGroupView(*Tab);
 
-/// The tab a save confirmation is currently acting on. The dialog itself
-/// owns the message/detail strings; these pointers stay valid because the
-/// modal blocks every other close path until the dialog is resolved.
-const CloseTabRequest = struct {
-    pane: *GroupPane,
-    tab: *Tab,
-};
-
-const CloseTabDialog = struct {
-    workbench: *Workbench,
-    request: CloseTabRequest,
-};
-
 const ScmDiscardDialog = struct {
     workbench: *Workbench,
     request: ScmDiscardRequest,
@@ -5666,130 +5653,49 @@ pub const Workbench = struct {
         try self.performCloseTab(pane, tab);
     }
 
-    /// Closes `tab` from `pane`, applying upstream's dirty-close confirmation
-    /// and the empty-pane collapse. Used by Ctrl-W, the tab close cell and
-    /// middle click.
+    /// The group owns dirty-close confirmation; the host supplies disposal
+    /// and focus at the terminal boundary.
     pub fn closeTab(self: *Workbench, pane: *GroupPane, tab: *Tab) !bool {
         if (self.isDialogOpen()) return false;
-        if (self.shouldConfirmClose(pane, tab)) {
-            try self.openSaveConfirm(pane, tab);
-            return false;
-        }
-        try self.performCloseTab(pane, tab);
+        try pane.handleCloseConfirmation(tab, self.dialog_api, self.closeEditorHost());
         return false;
     }
 
-    /// Upstream `EditorGroupView.shouldConfirmClose`: a custom close handler
-    /// wins, otherwise a dirty editor asks unless it is opened elsewhere.
-    /// Saving is synchronous in the terminal editor, so `isSaving()` is always
-    /// false and needs no separate check.
-    fn shouldConfirmClose(self: *Workbench, pane: *GroupPane, tab: *Tab) bool {
-        if (tab.input.close_handler) |handler| {
-            return handler.show_confirm(handler.context);
-        }
-        if (!tab.editor.isDirty()) return false;
-        return !self.isOpenedInAnotherGroup(pane, tab);
-    }
-
-    fn isOpenedInAnotherGroup(self: *const Workbench, pane: *GroupPane, tab: *Tab) bool {
-        for (self.part.group_views.items) |candidate| {
-            if (candidate == pane) continue;
-            if (candidate.group.model.contains(.{ .input = tab.input }, .{})) return true;
-        }
-        return false;
-    }
-
-    /// Reveal the editor before asking for a close confirmation, as upstream.
-    fn openSaveConfirm(self: *Workbench, pane: *GroupPane, tab: *Tab) !void {
-        if (self.isDialogOpen()) return;
-        var prompt = (try dialogs.saveConfirmPrompt(self.allocator, &.{tab.input.getName()})) orelse return;
-        defer prompt.deinit();
-        self.part.active_sash = null;
-        self.clearTabDrag();
-        self.last_tab_click = null;
-        self.service.activateGroup(pane.group);
-        try pane.activateTab(tab);
-        try tab.ensureControllers();
-        self.focusEditor();
-        tab.focusEditor();
-
-        const pending = try self.allocator.create(CloseTabDialog);
-        errdefer self.allocator.destroy(pending);
-        pending.* = .{ .workbench = self, .request = .{ .pane = pane, .tab = tab } };
-        _ = try self.dialog_service.prompt(.{
-            .message = prompt.message,
-            .detail = prompt.detail,
-            .buttons = &.{ prompt.save_label, dialogs.dont_save_label, dialogs.cancel_label },
-        }, .{ .context = pending, .complete = onCloseTabDialog, .dispose = disposeCloseTabDialog });
-    }
-
-    fn onCloseTabDialog(context: *anyopaque, selected: ?usize) void {
-        const pending: *CloseTabDialog = @ptrCast(@alignCast(context));
-        pending.workbench.resolveCloseTab(pending.request, saveConfirmResult(selected)) catch |err|
-            pending.workbench.reportDialogError(err);
-    }
-
-    fn disposeCloseTabDialog(context: *anyopaque) void {
-        const pending: *CloseTabDialog = @ptrCast(@alignCast(context));
-        pending.workbench.allocator.destroy(pending);
-    }
-
-    /// Upstream `AbstractCloseAllAction.run` for the close-window path: collect
-    /// every dirty editor, reveal one per group to help the user decide, and
-    /// ask a single multi-file save confirmation. Ctrl-Q uses this path.
-    fn openQuitConfirm(self: *Workbench) !void {
-        if (self.isDialogOpen()) return;
-
-        var names = std.array_list.Managed([]const u8).init(self.allocator);
-        defer names.deinit();
-        for (self.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                if (tab.editor.isDirty()) try names.append(tab.input.getName());
-            }
-        }
-        if (names.items.len == 0) return;
-
-        var prompt = (try dialogs.saveConfirmPrompt(self.allocator, names.items)) orelse return;
-        defer prompt.deinit();
-
-        self.part.active_sash = null;
-        self.clearTabDrag();
-        self.last_tab_click = null;
-
-        // Upstream reveals the editors to confirm, one per group. The active
-        // group ends up being the last group that had a dirty editor.
-        var reveal_pane: ?*GroupPane = null;
-        for (self.part.group_views.items) |pane| {
-            var dirty_tab: ?*Tab = null;
-            for (pane.tabs.items) |tab| {
-                if (tab.editor.isDirty()) dirty_tab = tab;
-            }
-            if (dirty_tab) |tab| {
-                try pane.activateTab(tab);
-                reveal_pane = pane;
-            }
-        }
-        if (reveal_pane) |pane| self.service.activateGroup(pane.group);
-        if (self.activeTab()) |tab| try tab.ensureControllers();
-        self.focusActiveEditor();
-
-        _ = try self.dialog_service.prompt(.{
-            .message = prompt.message,
-            .detail = prompt.detail,
-            .buttons = &.{ prompt.save_label, dialogs.dont_save_label, dialogs.cancel_label },
-        }, .{ .context = self, .complete = onQuitDialog });
-    }
-
-    fn onQuitDialog(context: *anyopaque, selected: ?usize) void {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        self.resolveQuit(saveConfirmResult(selected)) catch |err| self.reportDialogError(err);
-    }
-
-    fn saveConfirmResult(selected: ?usize) dialogs.ConfirmResult {
-        return switch (selected orelse return .CANCEL) {
-            0 => .SAVE,
-            1 => .DONT_SAVE,
-            else => .CANCEL,
+    fn closeEditorHost(self: *Workbench) GroupPane.CloseHost {
+        return .{
+            .context = self,
+            .prepare_dialog = struct {
+                fn run(context: *anyopaque) void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    host.part.active_sash = null;
+                    host.clearTabDrag();
+                    host.last_tab_click = null;
+                }
+            }.run,
+            .focus_editor = struct {
+                fn run(context: *anyopaque, tab: ?*Tab) void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    if (tab) |target| host.focusEditorAfterDialog(target) else host.focusActiveEditor();
+                }
+            }.run,
+            .is_alive = struct {
+                fn run(context: *anyopaque, pane: *GroupPane, tab: *Tab) bool {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    return host.paneExists(pane) and pane.indexOfTab(tab) != null;
+                }
+            }.run,
+            .close_tab = struct {
+                fn run(context: *anyopaque, pane: *GroupPane, tab: *Tab) !void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    try host.performCloseTab(pane, tab);
+                }
+            }.run,
+            .report_error = struct {
+                fn run(context: *anyopaque, err: anyerror) void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    host.reportDialogError(err);
+                }
+            }.run,
         };
     }
 
@@ -5798,113 +5704,6 @@ pub const Workbench = struct {
             tab.editor.setMessage("Close failed: {s}", .{@errorName(err)});
         }
         self.focusActiveEditor();
-    }
-
-    /// Upstream `doHandleCloseConfirmation`: Save closes only when the save
-    /// leaves the buffer clean; Don't Save discards the buffer and closes;
-    /// Cancel vetoes the close.
-    fn resolveCloseTab(self: *Workbench, close: CloseTabRequest, result: dialogs.ConfirmResult) !void {
-        if (!self.paneExists(close.pane) or close.pane.indexOfTab(close.tab) == null) {
-            self.focusActiveEditor();
-            return;
-        }
-
-        switch (result) {
-            .SAVE => {
-                close.tab.editor.save() catch |err| {
-                    close.tab.editor.setMessage(
-                        "Unable to save {s}: {s}",
-                        .{ close.tab.input.getName(), @errorName(err) },
-                    );
-                    self.focusEditorAfterDialog(close.tab);
-                    return;
-                };
-                if (close.tab.editor.isDirty()) {
-                    // Upstream vetoes the close when the save did not clear
-                    // the dirty state.
-                    self.focusEditorAfterDialog(close.tab);
-                    return;
-                }
-                try self.performCloseTab(close.pane, close.tab);
-            },
-            .DONT_SAVE => {
-                // Upstream tries a normal revert first and falls back to a
-                // soft revert. This tab's single view is destroyed immediately
-                // afterwards, so a failed reload still closes.
-                close.tab.editor.reloadFromDisk() catch {};
-                try self.performCloseTab(close.pane, close.tab);
-            },
-            .CANCEL => {
-                self.focusEditorAfterDialog(close.tab);
-                return;
-            },
-        }
-
-        self.focusActiveEditor();
-    }
-
-    /// Upstream `AbstractCloseAllAction` then `doCloseAll`: save or revert every
-    /// dirty editor, close the whole workbench and let the host exit. A failed
-    /// save vetoes the quit and keeps the window open.
-    fn resolveQuit(self: *Workbench, result: dialogs.ConfirmResult) !void {
-        var save_failure: ?CloseTabRequest = null;
-        switch (result) {
-            .CANCEL => {
-                self.focusActiveEditor();
-                return;
-            },
-            .SAVE => {
-                for (self.part.group_views.items) |pane| {
-                    for (pane.tabs.items) |tab| {
-                        if (!tab.editor.isDirty()) continue;
-                        tab.editor.save() catch |err| {
-                            tab.editor.setMessage(
-                                "Unable to save {s}: {s}",
-                                .{ tab.input.getName(), @errorName(err) },
-                            );
-                            save_failure = .{ .pane = pane, .tab = tab };
-                            break;
-                        };
-                        if (tab.editor.isDirty()) {
-                            save_failure = .{ .pane = pane, .tab = tab };
-                            break;
-                        }
-                    }
-                    if (save_failure != null) break;
-                }
-            },
-            .DONT_SAVE => {
-                for (self.part.group_views.items) |pane| {
-                    for (pane.tabs.items) |tab| {
-                        if (tab.editor.isDirty()) tab.editor.reloadFromDisk() catch {};
-                    }
-                }
-            },
-        }
-
-        if (save_failure) |failure| {
-            self.service.activateGroup(failure.pane.group);
-            try failure.pane.activateTab(failure.tab);
-            try failure.tab.ensureControllers();
-            self.focusEditorAfterDialog(failure.tab);
-            return;
-        }
-
-        try self.closeAllTabs();
-        self.quit_requested = true;
-    }
-
-    fn closeAllTabs(self: *Workbench) !void {
-        while (self.tabCount() > 0) {
-            var closed = false;
-            for (self.part.group_views.items) |pane| {
-                if (pane.tabs.items.len == 0) continue;
-                try self.performCloseTab(pane, pane.tabs.items[0]);
-                closed = true;
-                break;
-            }
-            if (!closed) break;
-        }
     }
 
     fn focusEditorAfterDialog(self: *Workbench, tab: *Tab) void {
@@ -6437,26 +6236,19 @@ pub const Workbench = struct {
         return .unhandled;
     }
 
-    pub fn hasDirtyTabs(self: *const Workbench) bool {
-        for (self.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                if (tab.editor.isDirty()) return true;
-            }
-        }
+    pub fn requestQuit(self: *Workbench) bool {
+        if (self.isDialogOpen()) return false;
+        const CloseAllEditors = @import("parts/editor/editorActions.zig").CloseAllEditorsForWindow;
+        if (!CloseAllEditors.hasDirtyEditors(self.part)) return true;
+        CloseAllEditors.run(self.part, self.dialog_api, self.closeEditorHost(), onQuitAccepted) catch |err| {
+            if (self.activeTab()) |tab| tab.editor.setMessage("Unable to open quit confirmation: {s}", .{@errorName(err)});
+        };
         return false;
     }
 
-    pub fn requestQuit(self: *Workbench) bool {
-        if (self.isDialogOpen()) return false;
-        if (!self.hasDirtyTabs()) return true;
-
-        self.openQuitConfirm() catch |err| {
-            if (self.activeTab()) |tab| {
-                tab.editor.setMessage("Unable to open quit confirmation: {s}", .{@errorName(err)});
-            }
-            return false;
-        };
-        return false;
+    fn onQuitAccepted(context: *anyopaque) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.quit_requested = true;
     }
 
     pub fn cancelSashDrag(self: *Workbench) bool {

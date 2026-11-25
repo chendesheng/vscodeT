@@ -7,7 +7,7 @@
 // one file asks about that file, several ask about the numbered set, and the
 // primary action becomes "Save All". The prompt is a plain value so the TUI
 // dialog widget can own rendering and input; the browser method's
-// `IDialogService.prompt` call is the terminal dialog host's job.
+// `IDialogService.prompt` call is the workbench file dialog service's job.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

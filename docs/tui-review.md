@@ -3,7 +3,7 @@
 This review records the 2026-11-19 working tree. The subsequent workbench split,
 service boundaries, test moves and remaining work are tracked in the
 [workbench port audit](workbench-audit.md).
-The latest extraction also puts terminal tab/sash/quick-input routing and image capability changes in the native host. Notification model, service, center, toast, status and message bridge now follow their upstream owners.
+The latest extraction also puts terminal tab/sash/quick-input routing and image capability changes in the native host. Notification model, service, center, toast, status and message bridge now follow their upstream owners. The dialog queue, extension modal prompts and editor close confirmation also live with their upstream owners.
 The editor and diff panes now receive the native editor view through explicit factories; the src/vs → src/tui import boundary has no exceptions.
 This supersedes the snapshot and file table in
 [`porting-inventory.md`](porting-inventory.md) §0 and §7; that document's

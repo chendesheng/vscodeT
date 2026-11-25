@@ -6,7 +6,8 @@
 > and test map, not for line numbers or "remaining" status.
 > The [workbench port audit](workbench-audit.md) tracks the later browser-shell
 > extraction and the live terminal host. The notification model, service, center,
-> toast/status parts and non-modal extension message bridge have since been ported;
+> toast/status parts, modal/nonmodal extension message bridge and file-dialog
+> confirmation have since been ported;
 > the terminal host routes tab/sash/quick-input and image capability changes.
 > Editor panes receive the view factory from the terminal host; no portable
 > source imports src/tui.

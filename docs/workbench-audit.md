@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 10,459 lines and has no inline tests. There are no direct imports from `src/vs` to `src/tui` anywhere in the tree. Three files import the shell: the terminal host, its integration tests, and the Workbench test fixture. No production feature module imports the shell. All 151 baseline
+The browser shell is 10,251 lines and has no inline tests. There are no direct imports from `src/vs` to `src/tui` anywhere in the tree. Three files import the shell: the terminal host, its integration tests, and the Workbench test fixture. No production feature module imports the shell. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and
@@ -50,6 +50,7 @@ Show All Commands resolves the quick input service through its Action2 handler.
 * Git discovery, CLI initialization, repository and Git-service delegate ownership now live in the native extension Model (extensions/git/src/model.zig); the single-root discovery behavior is preserved. Parent-repository consent, ignored/unsafe repository tracking and multiple open repositories remain unported.
 * Markdown and image preview view controllers and their asynchronous rendering/image ownership now live in their contribution directories. The terminal host supplies the ui image runtime and cell geometry. These features no longer require editorPane to import src/tui.
 * TextDiffEditor reads its diff configuration through IConfigurationService rather than the shell.
+* EditorGroupView owns dirty-close detection, duplicate-group checks, reveal and save/revert veto decisions through EditorInput and the file dialog service. The window-close action uses the same file confirmation, reveals the first dirty editor per group, and saves/reverts before disposing the groups. The async custom-close callback, autosave confirmation buckets and progress service remain unported.
 * EditorGroupView owns persistent editor copying and opening the destination before closing the source for cross-group moves. Only terminal creation, external registration cleanup, drag cancellation and focus are supplied by the host.
 * EditorPart owns the group grid layout, maximized geometry and group chrome settings. Each EditorGroupView updates breadcrumb visibility with its active pane.
 * Creating and moving groups now use Action2 through IEditorGroupsService, with the upstream directional fallback and focus-preserving behavior when creating an empty group from a sidebar. Focus Status Bar resolves IWorkbenchLayoutService.focusPart.

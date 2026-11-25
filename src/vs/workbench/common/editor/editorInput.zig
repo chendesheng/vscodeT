@@ -20,7 +20,8 @@ pub const EditorInputCapabilities = editor.EditorInputCapabilities;
 pub const Verbosity = editor.Verbosity;
 
 /// Terminal adaptation of `IEditorCloseHandler`: the confirm step is provided
-/// by the workbench shell rather than an async dialog service.
+/// by EditorGroupView via the file dialog service for the default prompt;
+/// custom async confirmation remains unported.
 pub const IEditorCloseHandler = struct {
     context: *anyopaque,
     show_confirm: *const fn (context: *anyopaque) bool,

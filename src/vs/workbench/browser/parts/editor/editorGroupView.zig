@@ -37,6 +37,8 @@ const tab_bar = @import("multiEditorTabsControl.zig");
 const editor_groups = @import("../../../services/editor/common/editorGroupsService.zig");
 const editor_input = @import("../../../common/editor/editorInput.zig");
 const editor_mod = @import("../../../common/editor.zig");
+const dialogs = @import("../../../../platform/dialogs/common/dialogs.zig");
+const file_dialogs = @import("../../../services/dialogs/browser/abstractFileDialogService.zig");
 const css = @import("../../../../editor/browser/editorCss.zig");
 
 const EditorInput = editor_input.EditorInput;
@@ -476,6 +478,109 @@ pub fn EditorGroupView(comptime View: type) type {
             tab.focusEditor();
             host.focus_editor(host.context);
             return tab;
+        }
+
+        /// Terminal window hooks for the remaining pane disposal and focus
+        /// boundary. Confirmation, reveal, save and revert belong to the group.
+        pub const CloseHost = struct {
+            context: *anyopaque,
+            prepare_dialog: *const fn (*anyopaque) void,
+            focus_editor: *const fn (*anyopaque, ?View) void,
+            is_alive: *const fn (*anyopaque, *Self, View) bool,
+            close_tab: *const fn (*anyopaque, *Self, View) anyerror!void,
+            report_error: *const fn (*anyopaque, anyerror) void,
+        };
+
+        fn shouldConfirmClose(input: *const EditorInput) bool {
+            if (input.close_handler) |handler| return handler.show_confirm(handler.context);
+            return input.isDirty() and !input.isSaving();
+        }
+
+        fn isOpenedInOtherGroup(self: *Self, input: *EditorInput) bool {
+            for (self.group.service.groups.items) |group| {
+                if (group == self.group) continue;
+                if (group.model.contains(.{ .input = input }, .{})) return true;
+            }
+            return false;
+        }
+
+        /// Upstream handleCloseConfirmation, with the asynchronous result
+        /// delivered by the file dialog service on the window thread.
+        pub fn handleCloseConfirmation(self: *Self, tab: View, dialog_service: dialogs.IDialogService, host: CloseHost) !void {
+            const input = tab.editorInput();
+            if (!shouldConfirmClose(input) or self.isOpenedInOtherGroup(input)) {
+                try host.close_tab(host.context, self, tab);
+                return;
+            }
+            host.prepare_dialog(host.context);
+            self.group.service.activateGroup(self.group);
+            try self.activateTab(tab);
+            try tab.ensureControllers();
+            host.focus_editor(host.context, tab);
+
+            const pending = try self.allocator.create(CloseConfirmation);
+            errdefer self.allocator.destroy(pending);
+            pending.* = .{ .allocator = self.allocator, .pane = self, .tab = tab, .host = host };
+            _ = try file_dialogs.showSaveConfirm(self.allocator, dialog_service, &.{input.getName()}, .{
+                .context = pending,
+                .complete = CloseConfirmation.complete,
+                .dispose = CloseConfirmation.dispose,
+            });
+        }
+
+        const CloseConfirmation = struct {
+            allocator: Allocator,
+            pane: *Self,
+            tab: View,
+            host: CloseHost,
+
+            fn complete(context: *anyopaque, result: dialogs.ConfirmResult) void {
+                const self: *CloseConfirmation = @ptrCast(@alignCast(context));
+                const host = self.host;
+                if (!host.is_alive(host.context, self.pane, self.tab)) {
+                    host.focus_editor(host.context, null);
+                    return;
+                }
+                if (self.pane.doHandleCloseConfirmation(self.tab, result)) {
+                    host.focus_editor(host.context, self.tab);
+                    return;
+                }
+                host.close_tab(host.context, self.pane, self.tab) catch |err| {
+                    host.report_error(host.context, err);
+                    return;
+                };
+                host.focus_editor(host.context, null);
+            }
+
+            fn dispose(context: *anyopaque) void {
+                const self: *CloseConfirmation = @ptrCast(@alignCast(context));
+                self.allocator.destroy(self);
+            }
+        };
+
+        /// Return true if the close is vetoed. The terminal's file inputs save
+        /// synchronously. Autosave-on-focus/window change and custom async
+        /// confirm are still unported; the result is rechecked after the dialog.
+        fn doHandleCloseConfirmation(self: *Self, tab: View, result: dialogs.ConfirmResult) bool {
+            if (result == .CANCEL) return true;
+            const input = tab.editorInput();
+            if (input.close_handler == null and !shouldConfirmClose(input)) return false;
+            switch (result) {
+                .SAVE => {
+                    _ = input.save(self.group.id) catch |err| {
+                        tab.editor.setMessage("Unable to save {s}: {s}", .{ input.getName(), @errorName(err) });
+                        return true;
+                    };
+                    return input.isDirty();
+                },
+                .DONT_SAVE => {
+                    // Fall back to closing the final view when disk revert
+                    // fails, as in the existing terminal soft-revert boundary.
+                    input.revert(self.group.id) catch return false;
+                    return input.isDirty();
+                },
+                .CANCEL => unreachable,
+            }
         }
 
         pub fn addTab(self: *Self, tab: View) !void {

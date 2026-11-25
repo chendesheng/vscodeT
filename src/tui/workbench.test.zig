@@ -4326,6 +4326,8 @@ test "Workbench: Ctrl-Q lists every dirty tab and don't save closes all" {
 
     try std.testing.expect(!workbench.requestQuit());
     try std.testing.expect(workbench.isDialogOpen());
+    // Upstream revealEditorsToConfirm opens the first dirty editor per group.
+    try std.testing.expectEqualStrings("quit_a.txt", workbench.activeTab().?.input.getName());
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try renderFrame(workbench, &out.writer);

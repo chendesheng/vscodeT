@@ -730,13 +730,16 @@ Enter/quick open/CLI/session opens stay pinned, and an edit pins a preview.
 
 `ui/dialog.zig` is the reusable modal message widget. The editor close path
 feeds it the VS Code save confirmation built by
-`src/vs/platform/dialogs/common/dialogs.zig`. It follows the native macOS save
+`src/vs/platform/dialogs/common/dialogs.zig` and queued by the Workbench DialogService. It follows the native macOS save
 sheet from VS Code: a warning glyph above the bold, wrapped
 "Do you want to save the changes you made to …?" message, the
 "Your changes will be lost if you don't save them." detail, and full-width
 buttons stacked vertically. A terminal shorter than the stacked layout turns
 the buttons into one row and drops the icon and blank separators; the dialog is
-centered, bordered and dims every cell outside its rectangle.
+centered, bordered and dims every cell outside its rectangle. Modal extension
+messages share the same queued dialog service, with severity-specific glyphs
+and the upstream cancel choice. When more choices fit vertically, they stack;
+otherwise keyboard navigation brings the focused button into the visible row.
 
 The close path is upstream's `EditorGroupView.doHandleCloseConfirmation`.
 Clicking a tab's close cell, middle-clicking, `Ctrl-W` or the

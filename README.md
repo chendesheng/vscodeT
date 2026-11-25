@@ -759,7 +759,10 @@ console API for raw mode, sizing and input polling.
   content, the close cell and middle click close it, and `Ctrl-W` closes the active tab. A dirty tab first opens VS Code's save confirmation
   (Save / Don't Save / Cancel): Save writes and then closes only if the buffer
   is clean, Don't Save discards the changes, and Cancel or Escape leaves the
-  tab open. The dialog is
+  tab open. Editor groups own confirmation and save/revert decisions through
+  the file-dialog service. Extension modal messages share the dialog queue;
+  arbitrary button counts are supported using a focus-visible compact row.
+  The dialog is
   modal, names the file, dims the rest of the workbench and hides the caret;
   short terminals collapse its vertical buttons to one row.
   Double-clicking a preview tab pins it; double-clicking a pinned

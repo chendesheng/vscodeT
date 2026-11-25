@@ -48,6 +48,7 @@ pub const FileEditorInput = struct {
         self.base.capabilities = 0;
         self.base.is_dirty_fn = isDirty;
         self.base.save_fn = save;
+        self.base.revert_fn = revert;
         self.base.matches_fn = matches;
 
         self.dirty_listener = try editor.on_did_change_dirty.listen(self, onEditorDirty);
@@ -105,6 +106,12 @@ pub const FileEditorInput = struct {
         const self: *FileEditorInput = @ptrCast(@alignCast(base.impl.?));
         try self.editor.save();
         return base;
+    }
+
+    fn revert(base: *EditorInput, group: GroupIdentifier) anyerror!void {
+        _ = group;
+        const self: *FileEditorInput = @ptrCast(@alignCast(base.impl.?));
+        try self.editor.reloadFromDisk();
     }
 
     fn matches(base: *EditorInput, other: *EditorInput) bool {
