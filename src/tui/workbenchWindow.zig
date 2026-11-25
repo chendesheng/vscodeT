@@ -1509,9 +1509,8 @@ pub const TerminalWorkbench = struct {
         };
         for (after_file_actions) |command| try self.commands.register(command);
         for (@import("../vs/workbench/contrib/preferences/browser/preferences.contribution.zig").preferences_actions) |action| try self.commands.registerAction(self.instantiation, action);
+        for (self.group_actions.closeAndReopenActions()) |action| try self.commands.registerAction(self.instantiation, action);
         const after_preferences_actions = [_]commands_mod.CommandInfo{
-            .{ .id = "workbench.action.closeActiveEditor", .label = "Close Editor", .category = "View", .context = self, .run = commandCloseEditor },
-            .{ .id = "workbench.action.reopenClosedEditor", .label = "Reopen Closed Editor", .category = "View", .context = self, .run = commandReopenClosedEditor },
             .{ .id = "breadcrumbs.focusAndSelect", .label = "Focus and Select Breadcrumbs", .category = "View", .context = self, .run = commandFocusAndSelectBreadcrumbs },
             .{ .id = "breadcrumbs.focus", .label = "Focus Breadcrumbs", .category = "View", .context = self, .run = commandFocusBreadcrumbs },
         };
@@ -1541,13 +1540,7 @@ pub const TerminalWorkbench = struct {
         try self.commands.registerAction(self.instantiation, panel_actions.close_panel_action);
         for (self.group_actions.closeEditorsActions()) |action| try self.commands.registerAction(self.instantiation, action);
         try self.commands.registerAction(self.instantiation, self.group_actions.joinAllAction());
-        const after_group_actions = [_]commands_mod.CommandInfo{
-            .{ .id = "workbench.action.lastEditorInGroup", .label = "Last Editor in Group", .category = "View", .context = self, .run = commandLastEditorInGroup },
-            .{ .id = "workbench.action.previousEditor", .label = "Previous Editor", .category = "View", .context = self, .run = commandPreviousEditor },
-            .{ .id = "workbench.action.openEditorAtIndex1", .label = "Open Editor 1", .category = "View", .context = self, .run = commandOpenEditorAtIndex1 },
-            .{ .id = "workbench.action.revertAndCloseActiveEditor", .label = "Revert and Close Editor", .category = "View", .context = self, .run = commandRevertAndCloseActiveEditor },
-        };
-        for (after_group_actions) |command| try self.commands.register(command);
+        for (self.group_actions.navigationActions()) |action| try self.commands.registerAction(self.instantiation, action);
         try self.commands.registerAction(self.instantiation, terminal_actions.editor_action);
         const after_terminal_editor = [_]commands_mod.CommandInfo{
             .{ .id = "workbench.view.explorer", .label = "View: Show Explorer", .category = "View", .context = self, .run = commandViewExplorer },
@@ -3576,22 +3569,7 @@ pub const TerminalWorkbench = struct {
     }
 
     pub fn activateIndex(self: *TerminalWorkbench, index: usize) !void {
-        const pane = self.activePane() orelse return;
-        var ordered = std.array_list.Managed(*Tab).init(self.allocator);
-        defer ordered.deinit();
-        try pane.orderedTabs(self.allocator, &ordered);
-        if (index >= ordered.items.len) return;
-
-        const tab = ordered.items[index];
-        try pane.activateTab(tab);
-        try tab.ensureControllers();
-        self.focusEditor();
-        tab.focusEditor();
-        try tab.refresh();
-        if (tab.terminal_input == null) {
-            try self.history.add(tab.editor.path);
-            self.revealActiveEditor();
-        }
+        try self.group_actions.activateIndex(index);
     }
 
     /// Closes the tab showing `path`, if any. Used by extension tab commands.
@@ -3606,16 +3584,7 @@ pub const TerminalWorkbench = struct {
     }
 
     pub fn switchTab(self: *TerminalWorkbench, delta: isize) !void {
-        const pane = self.activePane() orelse return;
-        var ordered = std.array_list.Managed(*Tab).init(self.allocator);
-        defer ordered.deinit();
-        try pane.orderedTabs(self.allocator, &ordered);
-        if (ordered.items.len == 0) return;
-
-        const current: isize = @intCast(pane.activeIndex(ordered.items));
-        const count: isize = @intCast(ordered.items.len);
-        const next: isize = @mod(current + delta, count);
-        try self.activateIndex(@intCast(next));
+        try self.group_actions.switchTab(delta);
     }
 
     pub fn switchGroup(self: *TerminalWorkbench, delta: isize) !void {
@@ -3746,28 +3715,15 @@ pub const TerminalWorkbench = struct {
     }
 
     pub fn lastEditorInGroup(self: *TerminalWorkbench) !void {
-        const pane = self.activePane() orelse return;
-        var ordered = std.array_list.Managed(*Tab).init(self.allocator);
-        defer ordered.deinit();
-        try pane.orderedTabs(self.allocator, &ordered);
-        if (ordered.items.len == 0) return;
-        const tab = ordered.items[ordered.items.len - 1];
-        try pane.activateTab(tab);
-        try tab.ensureControllers();
-        self.focusEditor();
-        tab.focusEditor();
-        try tab.refresh();
+        try self.group_actions.lastEditorInGroup();
     }
 
     pub fn previousEditor(self: *TerminalWorkbench) !void {
-        try self.switchTab(-1);
+        try self.group_actions.previousEditor();
     }
 
     pub fn revertAndCloseActiveEditor(self: *TerminalWorkbench) !void {
-        const pane = self.activePane() orelse return;
-        const tab = pane.activeTab() orelse return;
-        tab.editor.reloadFromDisk() catch {};
-        _ = try self.closeActive();
+        try self.group_actions.revertAndCloseActiveEditor();
     }
 
     /// Port of `moveActiveEditor` for `:tabmove`.
@@ -3887,17 +3843,8 @@ pub const TerminalWorkbench = struct {
     }
 
     pub fn closeActive(self: *TerminalWorkbench) !bool {
-        self.part.active_sash = null;
-        self.editor_drop_target.clearTabDrag();
-        const pane = self.activePane() orelse return false;
-        // Upstream `workbench.action.closeActiveEditor` falls through to
-        // `workbench.action.closeGroup` when the active group is empty.
-        if (pane.tabs.items.len == 0) {
-            try self.group_actions.closeActiveGroup();
-            return false;
-        }
-        const tab = pane.activeTab() orelse return false;
-        return self.closeTab(pane, tab);
+        try self.group_actions.closeActiveEditor();
+        return false;
     }
 
     /// Closes the active tab without the dirty confirmation. `:q!` uses this;
@@ -3913,8 +3860,7 @@ pub const TerminalWorkbench = struct {
     /// The group owns dirty-close confirmation; the host supplies disposal
     /// and focus at the terminal boundary.
     pub fn closeTab(self: *TerminalWorkbench, pane: *GroupPane, tab: *Tab) !bool {
-        if (self.isDialogOpen()) return false;
-        try pane.handleCloseConfirmation(tab, self.dialog_api, self.closeEditorHost());
+        try self.group_actions.closeEditor(pane, tab);
         return false;
     }
 
@@ -4279,11 +4225,11 @@ pub const TerminalWorkbench = struct {
             return if (try self.closeActive()) .quit else .handled;
         }
         if (std.mem.eql(u8, command, "workbench.action.nextEditor")) {
-            try self.switchTab(1);
+            try self.group_actions.navigateEditor(false);
             return .handled;
         }
         if (std.mem.eql(u8, command, "workbench.action.previousEditor")) {
-            try self.switchTab(-1);
+            try self.group_actions.navigateEditor(true);
             return .handled;
         }
         if (std.mem.eql(u8, command, "workbench.action.focusLeftGroup")) {
@@ -5494,16 +5440,6 @@ fn commandOutlineMoreActions(context: *anyopaque) anyerror!void {
     try self.showContextMenu(menu, self.sidebarMenuAnchor(OutlinePane.more_actions_id));
 }
 
-fn commandCloseEditor(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    _ = try self.closeActive();
-}
-
-fn commandReopenClosedEditor(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    _ = self.reopenLastClosedEditor();
-}
-
 fn focusWindowEditor(context: *anyopaque) void {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     self.focusEditor();
@@ -5537,26 +5473,6 @@ fn commandNavigateDown(context: *anyopaque) anyerror!void {
 fn commandMaximizeEditor(context: *anyopaque) anyerror!void {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     self.maximizeActiveGroup();
-}
-
-fn commandLastEditorInGroup(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try self.lastEditorInGroup();
-}
-
-fn commandPreviousEditor(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try self.previousEditor();
-}
-
-fn commandOpenEditorAtIndex1(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try self.activateIndex(0);
-}
-
-fn commandRevertAndCloseActiveEditor(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try self.revertAndCloseActiveEditor();
 }
 
 fn commandGithubPublish(context: *anyopaque) anyerror!void {

@@ -9293,3 +9293,45 @@ test "Close All Editors confirms all dirty editors together and records one reop
     try std.testing.expect(wb.reopenLastClosedEditor());
     try std.testing.expectEqual(@as(usize, 2), wb.tabCount());
 }
+
+test "Open Previous and Next Editor traverse groups in grid order and skip empty groups" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const a = try seedFile(allocator, io, &tmp, "a.txt", "a");
+    defer allocator.free(a);
+    const b = try seedFile(allocator, io, &tmp, "b.txt", "b");
+    defer allocator.free(b);
+    const c = try seedFile(allocator, io, &tmp, "c.txt", "c");
+    defer allocator.free(c);
+    const window = try TestWindow.init(allocator, io, &.{ a, b }, 80, 20);
+    defer window.deinit();
+    const wb = window.workbench;
+    const left = wb.activePane().?;
+    try wb.activateIndex(1);
+    try wb.splitActive(.horizontal);
+    const right = wb.activePane().?;
+    try wb.openPath(c);
+    try wb.activateIndex(0);
+    try std.testing.expectEqualStrings("b.txt", wb.activeTab().?.input.getName());
+    try wb.commands.execute("workbench.action.previousEditor");
+    try std.testing.expectEqual(left, wb.activePane().?);
+    try std.testing.expectEqualStrings("b.txt", wb.activeTab().?.input.getName());
+    try wb.group_actions.navigateEditor(false);
+    try std.testing.expectEqual(right, wb.activePane().?);
+    try std.testing.expectEqualStrings("b.txt", wb.activeTab().?.input.getName());
+
+    // Terminal :tabprevious still wraps only inside the active group.
+    try wb.switchTab(-1);
+    try std.testing.expectEqual(right, wb.activePane().?);
+    try std.testing.expectEqualStrings("c.txt", wb.activeTab().?.input.getName());
+    const empty = try wb.group_actions.newEmptyGroup(.RIGHT);
+    try std.testing.expectEqual(@as(usize, 0), empty.tabs.items.len);
+    try wb.commands.execute("workbench.action.previousEditor");
+    try std.testing.expectEqual(right, wb.activePane().?);
+    try std.testing.expectEqualStrings("c.txt", wb.activeTab().?.input.getName());
+    try wb.group_actions.navigateEditor(false);
+    try std.testing.expectEqual(left, wb.activePane().?);
+    try std.testing.expectEqualStrings("a.txt", wb.activeTab().?.input.getName());
+}

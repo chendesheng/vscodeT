@@ -458,6 +458,104 @@ pub const GroupActions = struct {
         try self.part.splitEditor(source, direction, self.transfer);
     }
 
+    /// AbstractNavigateEditorAction: resolve an editor within the active
+    /// group first, then traverse adjacent nonempty groups in grid order.
+    pub fn navigateEditor(self: *GroupActions, previous: bool) !void {
+        const service = self.part.interface();
+        const active = service.activeGroup() orelse return;
+        const index = active.activeEditorIndex();
+        if (previous) {
+            if (index) |i| if (i > 0) return self.openEditorAt(active, i - 1, true);
+        } else {
+            const next = if (index) |i| i + 1 else 0;
+            if (next < active.count()) return self.openEditorAt(active, next, true);
+        }
+        var current = active;
+        while (true) {
+            current = (try service.findGroup(.{ .location = if (previous) .previous else .next }, current, true)) orelse return;
+            if (current.count() != 0) return self.openEditorAt(current, if (previous) current.count() - 1 else 0, true);
+            if (current.id == active.id) return;
+        }
+    }
+
+    /// Terminal :tabnext/:tabprevious remain within the current group.
+    pub fn switchTab(self: *GroupActions, delta: isize) !void {
+        const group = self.part.interface().activeGroup() orelse return;
+        if (group.count() == 0) return;
+        const current: isize = @intCast(group.activeEditorIndex() orelse 0);
+        const count: isize = @intCast(group.count());
+        try self.openEditorAt(group, @intCast(@mod(current + delta, count)), true);
+    }
+
+    fn openEditorAt(self: *GroupActions, group: groups.IEditorGroup, index: usize, record_history: bool) !void {
+        const input = group.getEditorByIndex(index) orelse return;
+        try group.openEditor(input);
+        if (record_history) if (self.part.activeView()) |pane| {
+            if (pane.activeTab()) |tab| if (tab.terminal_input == null) try self.history.add(tab.editor.path);
+        };
+    }
+
+    pub fn activateIndex(self: *GroupActions, index: usize) !void {
+        const group = self.part.interface().activeGroup() orelse return;
+        try self.openEditorAt(group, index, true);
+    }
+
+    pub fn lastEditorInGroup(self: *GroupActions) !void {
+        const group = self.part.interface().activeGroup() orelse return;
+        if (group.count() != 0) try self.openEditorAt(group, group.count() - 1, false);
+    }
+
+    pub fn previousEditor(self: *GroupActions) !void {
+        try self.navigateEditor(true);
+    }
+
+    pub fn closeEditor(self: *GroupActions, pane: *GroupView, tab: *Tab) !void {
+        if (self.dialog_service.hasDialog() or tab.input.hasCapability(Capabilities.CannotClose)) return;
+        try pane.handleCloseConfirmation(tab, self.dialog_service.*, self.close_host);
+    }
+
+    pub fn closeActiveEditor(self: *GroupActions) !void {
+        self.close_host.prepare_dialog(self.close_host.context);
+        const pane = self.part.activeView() orelse return;
+        if (pane.tabs.items.len == 0) return self.closeActiveGroup();
+        const tab = pane.activeTab() orelse return;
+        try self.closeEditor(pane, tab);
+    }
+
+    pub fn revertAndCloseActiveEditor(self: *GroupActions) !void {
+        const pane = self.part.activeView() orelse return;
+        const tab = pane.activeTab() orelse return;
+        if (self.dialog_service.hasDialog() or tab.input.hasCapability(Capabilities.CannotClose)) return;
+        self.close_host.prepare_dialog(self.close_host.context);
+        // Normal revert first, soft-revert/close fallback when the disk
+        // resource cannot be reloaded, matching RevertAndCloseEditorAction.
+        tab.input.revert(pane.group.id) catch {
+            try self.close_host.close_tab(self.close_host.context, pane, tab);
+            return;
+        };
+        try self.closeEditor(pane, tab);
+    }
+
+    pub fn reopenLastClosedEditor(self: *GroupActions) !void {
+        _ = self.history.reopenLastClosedEditor();
+    }
+
+    pub fn closeAndReopenActions(self: *GroupActions) [2]actions.Action2 {
+        return .{
+            self.action("workbench.action.closeActiveEditor", "Close Editor", closeActiveEditor, .{}),
+            self.action("workbench.action.reopenClosedEditor", "Reopen Closed Editor", reopenLastClosedEditor, .{}),
+        };
+    }
+
+    pub fn navigationActions(self: *GroupActions) [4]actions.Action2 {
+        return .{
+            self.action("workbench.action.lastEditorInGroup", "Last Editor in Group", lastEditorInGroup, .{}),
+            self.action("workbench.action.previousEditor", "Previous Editor", previousEditor, .{}),
+            self.action("workbench.action.openEditorAtIndex1", "Open Editor 1", activateIndex, .{0}),
+            self.action("workbench.action.revertAndCloseActiveEditor", "Revert and Close Editor", revertAndCloseActiveEditor, .{}),
+        };
+    }
+
     pub fn closeAllEditors(self: *GroupActions) !void {
         try AbstractCloseAllAction.run(self.part, self.dialog_service.*, self.close_host, .all, self.history, null);
     }

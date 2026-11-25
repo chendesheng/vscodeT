@@ -631,12 +631,44 @@ pub fn EditorGroupView(comptime View: type) type {
         }
 
         pub fn interface(self: *Self) editor_groups.IEditorGroup {
-            return .{ .context = self, .id = self.group.id, .focus_fn = struct {
-                fn focus(context: *anyopaque) void {
-                    const view: *Self = @ptrCast(@alignCast(context));
-                    view.focus();
-                }
-            }.focus };
+            return .{
+                .context = self,
+                .id = self.group.id,
+                .focus_fn = struct {
+                    fn focus(context: *anyopaque) void {
+                        const view: *Self = @ptrCast(@alignCast(context));
+                        view.focus();
+                    }
+                }.focus,
+                .count_fn = struct {
+                    fn count(context: *anyopaque) usize {
+                        const view: *Self = @ptrCast(@alignCast(context));
+                        return view.group.model.count();
+                    }
+                }.count,
+                .active_index_fn = struct {
+                    fn activeIndex(context: *anyopaque) ?usize {
+                        const view: *Self = @ptrCast(@alignCast(context));
+                        return view.group.model.indexOf(.{ .input = view.group.model.activeEditor() orelse return null });
+                    }
+                }.activeIndex,
+                .get_editor_by_index = struct {
+                    fn get(context: *anyopaque, index: usize) ?*EditorInput {
+                        const view: *Self = @ptrCast(@alignCast(context));
+                        return view.group.model.getEditorByIndex(index);
+                    }
+                }.get,
+                .open_editor = struct {
+                    fn open(context: *anyopaque, input: *EditorInput) !void {
+                        const view: *Self = @ptrCast(@alignCast(context));
+                        const tab = view.tabForInput(input) orelse return;
+                        try view.activateTab(tab);
+                        if (@hasDecl(@typeInfo(View).pointer.child, "ensureControllers")) try tab.ensureControllers();
+                        view.focus();
+                        if (@hasDecl(@typeInfo(View).pointer.child, "refresh")) try tab.refresh();
+                    }
+                }.open,
+            };
         }
 
         /// Upstream `EditorGroupView.focus()`: pass focus to the active editor

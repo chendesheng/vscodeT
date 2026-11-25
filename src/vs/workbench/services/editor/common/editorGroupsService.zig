@@ -49,6 +49,26 @@ pub const IEditorGroup = struct {
     context: *anyopaque,
     id: GroupIdentifier,
     focus_fn: *const fn (*anyopaque) void,
+    count_fn: *const fn (*anyopaque) usize,
+    active_index_fn: *const fn (*anyopaque) ?usize,
+    get_editor_by_index: *const fn (*anyopaque, usize) ?*EditorInput,
+    open_editor: *const fn (*anyopaque, *EditorInput) anyerror!void,
+
+    pub fn count(self: IEditorGroup) usize {
+        return self.count_fn(self.context);
+    }
+
+    pub fn activeEditorIndex(self: IEditorGroup) ?usize {
+        return self.active_index_fn(self.context);
+    }
+
+    pub fn getEditorByIndex(self: IEditorGroup, index: usize) ?*EditorInput {
+        return self.get_editor_by_index(self.context, index);
+    }
+
+    pub fn openEditor(self: IEditorGroup, input: *EditorInput) !void {
+        try self.open_editor(self.context, input);
+    }
 
     pub fn focus(self: IEditorGroup) void {
         self.focus_fn(self.context);
