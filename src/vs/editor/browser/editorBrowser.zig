@@ -18,6 +18,16 @@ const ui = @import("ui");
 const Position = @import("../common/core/position.zig").Position;
 const Range = @import("../common/core/range.zig").Range;
 
+/// Terminal adaptation of the editor's focused widget key-event target.
+pub const IEditorKeyTarget = struct {
+    context: *anyopaque,
+    dispatch_fn: *const fn (*anyopaque, *ui.KeyEvent) bool,
+
+    pub fn dispatchKey(self: IEditorKeyTarget, event: *ui.KeyEvent) bool {
+        return self.dispatch_fn(self.context, event);
+    }
+};
+
 /// Mirrors upstream `OverlayWidgetPositionPreference`.
 pub const OverlayWidgetPositionPreference = enum {
     top_right_corner,

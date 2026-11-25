@@ -12,7 +12,7 @@ const std = @import("std");
 const ui = @import("ui");
 const Editor = @import("./vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const View = @import("./tui/editorView.zig").View;
-const editorInputDispatch = @import("./tui/editorInputDispatch.zig");
+const editorInputDispatch = @import("./vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminalInput.zig");
 const Range = @import("./vs/editor/common/core/range.zig").Range;
 
 const input = ui.input;

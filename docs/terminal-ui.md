@@ -308,6 +308,9 @@ Lightpanda's `EventTarget`/`EventManager` and TermDOM's browser layer:
   path is captured before the target phase, so reparenting a node in a handler
   does not change the ancestors still notified. Removing a focused subtree
   clears `activeElement` silently, as the references do.
+- The decoded editor key path is in `codeEditorWidgetTerminalInput.zig`;
+  the terminal view implements `IEditorKeyTarget` for focused widget events.
+  The host still owns raw input decoding and quit.
 - `ui/input.zig` decodes terminal bytes into key and mouse events: printable
   runs, control bytes, cursor/editing keys (including modifier parameters),
   bracketed paste, and SGR mouse reports (`CSI < b ; x ; y M/m`). Text runs

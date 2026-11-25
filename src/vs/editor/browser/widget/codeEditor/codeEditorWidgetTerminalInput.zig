@@ -1,20 +1,21 @@
-//! Terminal key-event dispatch shared by the TUI read loop and the wasm host.
+//! Terminal input adapter for CodeEditorWidget.trigger and viewUserInputEvents
+//! in `src/vs/editor/browser/widget/codeEditor/codeEditorWidget.ts`.
 //!
-//! The byte-to-`ui.input.KeyEvent` decoding stays in `ui/input.zig`; this module
-//! maps a decoded key to the editor command or edit operation that the terminal
-//! host performs. It deliberately has no terminal, workbench or OS dependency so
-//! the same behavior backs the native TUI and the browser demo.
+//! Translates an already-decoded ui KeyEvent into editor commands and type/paste
+//! operations. Raw input, terminal quit and the read loop remain in src/tui;
+//! widget dispatch uses the view's explicit key-target interface. Terminal
+//! bracketed paste and the legacy navigation fallbacks are adaptations to input
+//! with no browser keyboard/composition event source.
 
 const std = @import("std");
-const Editor = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const Editor = @import("codeEditorWidgetTerminal.zig").Editor;
 const input = @import("ui").input;
-const View = @import("./editorView.zig").View;
-const ContentHoverController = @import("../vs/editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
-const WordHighlighterContribution = @import("../vs/editor/contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
-const SuggestController = @import("../vs/editor/contrib/suggest/browser/suggestController.zig").SuggestController;
+const IEditorKeyTarget = @import("../../editorBrowser.zig").IEditorKeyTarget;
+const ContentHoverController = @import("../../../contrib/hover/browser/contentHoverController.zig").ContentHoverController;
+const WordHighlighterContribution = @import("../../../contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
+const SuggestController = @import("../../../contrib/suggest/browser/suggestController.zig").SuggestController;
 
-/// Returns true when Ctrl+Q should terminate the host (the TUI handles it,
-/// the browser demo ignores it).
+/// Host shortcut identity; the host alone decides whether to quit.
 pub fn isCtrlQ(event: input.KeyEvent) bool {
     return isCtrlChar(event, 'q');
 }
@@ -27,8 +28,8 @@ pub fn isCtrlChar(event: input.KeyEvent, wanted: u21) bool {
     };
 }
 
-/// Dispatches one decoded key event to the editor. Returns true when the event
-/// should quit the terminal host (only Ctrl+Q does).
+/// Dispatch one decoded editor event. The legacy bool result is always false;
+/// host-level actions have already been handled by the caller.
 pub fn dispatch(editor: *Editor, event: input.KeyEvent, is_pasting: *bool) bool {
     if (!isCtrlQ(event)) editor.clearMessage();
 
@@ -154,9 +155,9 @@ pub fn dispatch(editor: *Editor, event: input.KeyEvent, is_pasting: *bool) bool 
 }
 
 /// Runs the editor contributions and editor command for a decoded key.
-/// Returns true when the key requests a host quit.
+/// The result is false: host quit is handled before this editor dispatch.
 pub fn handleKeyEvent(
-    view: *View,
+    view: IEditorKeyTarget,
     hover: *ContentHoverController,
     word_highlighter: *WordHighlighterContribution,
     suggest: ?*SuggestController,

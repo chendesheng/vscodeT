@@ -8,7 +8,7 @@ const ui = @import("ui");
 const input = ui.input;
 const terminal_input = @import("../vs/workbench/contrib/terminal/browser/terminalInput.zig");
 const Editor = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
-const editorInputDispatch = @import("./editorInputDispatch.zig");
+const editorInputDispatch = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminalInput.zig");
 const handleKeyEvent = editorInputDispatch.handleKeyEvent;
 const View = @import("./editorView.zig").View;
 const terminal_workbench = @import("workbench.zig");
@@ -1440,7 +1440,7 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
     var open_events = try ui.input.decodeKeys(allocator, "\x06");
     defer open_events.deinit(allocator);
     for (open_events.items) |*event| {
-        try std.testing.expect(!try handleKeyEvent(view, hover, word_highlighter, null, editor, event, &pasting, 0, null));
+        try std.testing.expect(!try handleKeyEvent(view.interface(), hover, word_highlighter, null, editor, event, &pasting, 0, null));
     }
 
     try std.testing.expect(find.isOpen());
@@ -1460,7 +1460,7 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
     var close_events = try ui.input.decodeKeys(allocator, "\x1b");
     defer close_events.deinit(allocator);
     for (close_events.items) |*event| {
-        try std.testing.expect(!try handleKeyEvent(view, hover, word_highlighter, null, editor, event, &pasting, 0, null));
+        try std.testing.expect(!try handleKeyEvent(view.interface(), hover, word_highlighter, null, editor, event, &pasting, 0, null));
     }
     try std.testing.expect(!find.isOpen());
 

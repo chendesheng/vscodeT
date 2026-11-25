@@ -982,6 +982,15 @@ pub const View = struct {
         }
     }
 
+    pub fn interface(self: *View) editorBrowser.IEditorKeyTarget {
+        return .{ .context = self, .dispatch_fn = struct {
+            fn dispatch(context: *anyopaque, event: *ui.KeyEvent) bool {
+                const view: *View = @ptrCast(@alignCast(context));
+                return view.dispatchKey(event);
+            }
+        }.dispatch };
+    }
+
     /// Sends the event through the widget document when a widget owns focus.
     /// Returns true when a listener consumed it, so the editor must not also
     /// handle the key.

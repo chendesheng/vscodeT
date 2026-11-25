@@ -15,7 +15,7 @@ const ui = @import("ui");
 const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const View = @import("../../../../../tui/editorView.zig").View;
 const Cell = @import("../../../../../tui/editorView.zig").Cell;
-const editor_input_dispatch = @import("../../../../../tui/editorInputDispatch.zig");
+const editor_input_dispatch = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminalInput.zig");
 const FileEditorInput = @import("../../../contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
 const EditorInput = @import("../../../common/editor/editorInput.zig").EditorInput;
 const DiffView = @import("./textDiffEditor.zig").DiffView;
@@ -333,7 +333,7 @@ pub const Tab = struct {
         try self.ensureControllers();
         const controllers = self.controllers orelse return false;
         return editor_input_dispatch.handleKeyEvent(
-            self.view,
+            self.view.interface(),
             controllers.hover,
             controllers.word_highlighter,
             controllers.suggest,
