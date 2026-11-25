@@ -10,6 +10,9 @@ pub const Part = struct {
     id: service.Parts,
     on_did_visibility_change: Emitter(bool),
     bounds: ?ui.Rect = null,
+    parent: ?*ui.Node = null,
+    content_area: ?*ui.Node = null,
+    create_content_area: ?*const fn (*Part, *ui.Node) anyerror!*ui.Node = null,
     registration: IDisposable = .none,
     resize_primary: ?*const fn (*Part, usize) anyerror!usize = null,
     read_visible: *const fn (*const Part) bool,
@@ -34,8 +37,27 @@ pub const Part = struct {
         self.registration = try layout_service.registerPart(self);
     }
 
+    pub fn create(self: *Part, parent: *ui.Node) !void {
+        self.parent = parent;
+        if (self.create_content_area) |create_area| self.content_area = try create_area(self, parent);
+    }
+
+    pub fn getContainer(self: *const Part) ?*ui.Node {
+        return self.parent;
+    }
+
     pub fn layout(self: *Part, width: f64, height: f64, top: f64, left: f64) void {
         self.bounds = .{ .w = width, .h = height, .y = top, .x = left };
+        if (self.parent) |container| {
+            const style = ui.Style{
+                .position = .absolute,
+                .left = .{ .cells = left },
+                .top = .{ .cells = top },
+                .width = .{ .cells = width },
+                .height = .{ .cells = height },
+            };
+            if (!std.meta.eql(container.asElement().style, style)) container.setStyle(style);
+        }
     }
 
     pub fn setVisible(self: *Part, visible: bool) !void {

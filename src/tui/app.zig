@@ -603,7 +603,7 @@ pub fn main(init: std.process.Init) !void {
     defer if (layout_storage) |*storage| storage.deinit();
     var saved_layout: ?@import("../vs/workbench/browser/layout.zig").Layout.WorkspaceState = null;
     if (layout_storage) |*storage| {
-        if (storage.load(false)) |saved| {
+        if (storage.load(workbench.layout.reset_layout)) |saved| {
             saved_layout = saved;
             _ = try workbench.lifecycle.on_will_shutdown.listen(storage, LayoutStorage.save);
         } else |err| report(log_service, "layout restore failed: {s}", .{@errorName(err)});

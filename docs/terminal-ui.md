@@ -739,6 +739,12 @@ Enter/Space and cancels with Escape. The hardware caret is hidden while it is
 open. The browser dialog's action-bar close button, custom body/footer,
 checkbox, inputs, dropdown and shadow are not ported.
 
+The workbench creates its main document and editor part during startup. Every
+editor group mounts its active pane and watermark under that part's grid.
+Workbenches can attach registered stylesheet class IDs to the main container
+through `IWorkbenchOptions.extra_classes`. Terminal cells supply font metrics.
+The side bar, activity bar, bottom panel and status bar still paint separately.
+
 ### Native context menus
 
 `ui/contextmenu.zig` is the reusable native context menu. It mirrors the item

@@ -60,6 +60,7 @@ pub fn EditorPart(comptime GroupView: type) type {
         service: *editor_groups.EditorGroupsService,
         group_views: std.array_list.Managed(*GroupView),
         root: *LayoutNode,
+        grid_element: ?*ui.Node = null,
         /// Cell-border terminals draw dividers on cell edges. The glyph
         /// fallback needs a gutter cell.
         cell_borders: bool = false,
@@ -92,6 +93,7 @@ pub fn EditorPart(comptime GroupView: type) type {
                 .group_views = std.array_list.Managed(*GroupView).init(allocator),
                 .root = undefined,
             };
+            self.base.create_content_area = createContentArea;
             errdefer self.base.deinit();
             errdefer self.group_views.deinit();
 
@@ -115,6 +117,19 @@ pub fn EditorPart(comptime GroupView: type) type {
                 }
             }
             return self;
+        }
+
+        fn createContentArea(base: *Part, parent: *ui.Node) !*ui.Node {
+            const self: *Self = @fieldParentPtr("base", base);
+            const css = @import("../../../../editor/browser/editorCss.zig");
+            const container = try parent.document.createElement(.div);
+            try container.addClass(css.editor_group.Class.grid_view_container);
+            _ = try parent.appendChild(container);
+            const grid_element = try parent.document.createElement(.div);
+            try grid_element.addClass(css.gridview.Class.monaco_grid_view);
+            _ = try container.appendChild(grid_element);
+            self.grid_element = grid_element;
+            return container;
         }
 
         pub fn setVisible(self: *Self, visible: bool) !void {

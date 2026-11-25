@@ -497,6 +497,12 @@ const MenuActionContext = struct {
     view_id: ?[]const u8 = null,
 };
 
+pub const IWorkbenchOptions = struct {
+    /// Class IDs in the terminal document stylesheet.
+    extra_classes: []const u16 = &.{},
+    reset_layout: bool = false,
+};
+
 pub const Workbench = struct {
     const WindowTimer = @import("../../base/common/async.zig").WindowTimer;
     restore_timer: ?*WindowTimer,
@@ -526,7 +532,7 @@ pub const Workbench = struct {
     part: *editor_part.EditorPart(GroupPane),
     frame: ui.Frame,
     editor_surface: ?ui.Surface = null,
-    editor_grid: *ui.Node = undefined,
+
     editor_drag: EditorDrag = .{},
     drag_target: ?DropOverlay = null,
     drag_tab_drop: ?TabDrop = null,
@@ -719,11 +725,20 @@ pub const Workbench = struct {
         cols: usize,
         rows: usize,
     ) !*Workbench {
-        const self = try initWorkbench(allocator, io, cols, rows, null);
+        return initWithOptions(allocator, io, paths, cols, rows, .{}, null);
+    }
+
+    pub fn initWithOptions(allocator: Allocator, io: Io, paths: []const []const u8, cols: usize, rows: usize, options: IWorkbenchOptions, state: ?PreviousState) !*Workbench {
+        const self = try initWorkbench(allocator, io, cols, rows, state);
         errdefer self.deinit();
-        try self.startup();
+        self.layout.reset_layout = options.reset_layout;
+        try self.startup(options);
+        if (state != null) {
+            try self.restoreEditors();
+            self.layoutAll();
+        }
         for (paths) |path| try self.openPath(path);
-        try self.part.when_restored.open(allocator);
+        if (state == null) try self.part.when_restored.open(allocator);
         return self;
     }
 
@@ -748,15 +763,10 @@ pub const Workbench = struct {
         cols: usize,
         rows: usize,
     ) !*Workbench {
-        const self = try initWorkbench(allocator, io, cols, rows, .{ .data = data, .registry = registry });
-        errdefer self.deinit();
-        try self.startup();
-        try self.restoreEditors();
-        self.layoutAll();
-        return self;
+        return initWithOptions(allocator, io, &.{}, cols, rows, .{}, .{ .data = data, .registry = registry });
     }
 
-    const PreviousState = struct {
+    pub const PreviousState = struct {
         data: editor_groups.SerializedEditorPart,
         registry: *editor_factory.EditorFactoryRegistry,
     };
@@ -917,10 +927,11 @@ pub const Workbench = struct {
         return self;
     }
 
-    fn startup(self: *Workbench) !void {
+    fn startup(self: *Workbench, options: IWorkbenchOptions) !void {
         try self.instantiation.invokeFunction(startContributions, .{&self.contributions});
         _ = try self.ensureContextKeys();
         try self.registerListeners();
+        try self.renderWorkbench(options);
         try self.layout.createWorkbenchLayout();
         self.layoutAll();
     }
@@ -3896,7 +3907,7 @@ pub const Workbench = struct {
             if (!visible) self.layout.workbench_grid.onSashEnd();
         }
         self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
-        self.layout.layout(self.workbenchGridLayout(), self.statusBarRect());
+        self.layout.layout(self.cols, self.rows, self.workbenchGridLayout(), self.statusBarRect());
         const rect = self.editorLayoutRect();
         for (self.part.group_views.items) |pane| {
             const suppress_breadcrumbs = if (pane.activeTab()) |tab| tab.terminal_input != null or tab.search_editor_input != null or tab.markdown_panel != null else false;
@@ -10542,7 +10553,8 @@ pub const Workbench = struct {
         return watermark.handleKey(event);
     }
 
-    fn renderWatermarkShortcuts(self: *Workbench, watermark: *editor_group_watermark.EditorGroupWatermark) !void {
+    fn renderWatermarkShortcuts(context: *anyopaque, watermark: *editor_group_watermark.EditorGroupWatermark) !void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
         const service = try self.ensureGlobalService();
         var labels: [editor_group_watermark.entries.len]?[]const u8 = @splat(null);
         for (editor_group_watermark.entries, &labels) |entry, *label| {
@@ -10574,66 +10586,44 @@ pub const Workbench = struct {
         };
     }
 
+    fn renderWorkbench(self: *Workbench, options: IWorkbenchOptions) !void {
+        self.editor_surface = try ui.Surface.init(self.allocator, .{ .cols = self.cols, .rows = self.rows, .measure_width = cell_metrics.measureCodepoint });
+        const doc = self.editor_surface.?.document();
+        try editor_css.registerWorkbench(doc);
+        const main = try doc.createElement(.div);
+        try main.addClass(editor_css.workbench.Class.monaco_workbench);
+        try main.addClass(switch (@import("builtin").os.tag) {
+            .windows => editor_css.workbench.Class.windows,
+            .macos => editor_css.workbench.Class.mac,
+            else => editor_css.workbench.Class.linux,
+        });
+        for (options.extra_classes) |class| try main.addClass(class);
+        self.layout.main_container = main;
+        const container = try createPart(main, .editor, "main", editor_css.part.Class.editor);
+        const editor = try self.layout.getPart(.editor);
+        try editor.create(container);
+        doc.setRoot(main);
+    }
+
+    fn createPart(main: *ui.Node, comptime id: workbench_layout.Parts, role: []const u8, class: editor_css.part.Class) !*ui.Node {
+        const element = try main.document.createElement(.div);
+        try element.setAttribute("id", "workbench.parts." ++ @tagName(id));
+        try element.setAttribute("role", role);
+        try element.addClass(editor_css.part.Class.part);
+        try element.addClass(class);
+        _ = try main.appendChild(element);
+        return element;
+    }
+
     fn synchronizeEditorDom(self: *Workbench) !*ui.Surface {
-        if (self.editor_surface == null) {
-            self.editor_surface = try ui.Surface.init(self.allocator, .{
-                .cols = self.cols,
-                .rows = self.rows,
-                .measure_width = cell_metrics.measureCodepoint,
-            });
-            errdefer {
-                self.editor_surface.?.deinit();
-                self.editor_surface = null;
-            }
-            const doc = self.editor_surface.?.document();
-            try editor_css.registerWorkbench(doc);
-            const root = try doc.createElement(.div);
-            root.setStyle(.{ .position = .absolute });
-            try root.addClass(editor_css.editor_group.Class.grid_view_container);
-            doc.setRoot(root);
-            const grid = try doc.createElement(.div);
-            try grid.addClass(editor_css.gridview.Class.monaco_grid_view);
-            _ = try root.appendChild(grid);
-            self.editor_grid = grid;
-        }
         const surface = &self.editor_surface.?;
         try surface.resize(self.cols, self.rows);
         surface.border_capabilities = self.part.cell_border_capabilities;
+        const colors = self.watermarkColors();
         const show_tips = self.part.count() == 1 and self.findBoolSetting(editor_group_watermark.settings_key, true);
         for (self.part.group_views.items) |pane| {
             const visible = self.part.maximized_group == null or self.part.maximized_group == pane;
-            const active = pane.activeTab();
-            const suppress_breadcrumbs = if (active) |tab| tab.terminal_input != null or tab.search_editor_input != null or tab.markdown_panel != null else false;
-            if (pane.breadcrumbs_suppressed != suppress_breadcrumbs) {
-                pane.breadcrumbs_suppressed = suppress_breadcrumbs;
-                pane.layout();
-            }
-            try pane.layoutDom(self.editor_grid, visible);
-            if (!visible) continue;
-            const container = pane.dom.?.editor_container;
-            const width = ui.cell.snap(pane.rect.w);
-            const group_height = ui.cell.snap(pane.rect.h);
-            const height = group_height -| pane.chromeHeight();
-            if (pane.isEmpty() and pane.watermark == null) {
-                pane.watermark = try editor_group_watermark.EditorGroupWatermark.init(pane.dom.?.group);
-            }
-            if (pane.watermark) |*watermark| {
-                if (pane.isEmpty() and show_tips and watermark.shortcuts == null) try self.renderWatermarkShortcuts(watermark);
-                watermark.layout(width, group_height, pane.isEmpty(), show_tips, self.watermarkColors());
-            }
-            if (active) |tab| {
-                if (width == 0 or height == 0) continue;
-                try tab.mount(
-                    surface,
-                    container,
-                    ui.cell.snap(pane.rect.x),
-                    ui.cell.snap(pane.rect.y) + pane.chromeHeight(),
-                    width,
-                    height,
-                );
-            } else if (container.first_child) |child| {
-                _ = container.removeChild(child);
-            }
+            try pane.layoutEditorArea(self.part.grid_element.?, self.part.base.bounds.?, surface, visible, show_tips, colors, .{ .context = self, .render = renderWatermarkShortcuts });
         }
         return surface;
     }

@@ -8066,3 +8066,47 @@ test "workbench shutdown cancels outstanding restore and idle callbacks" {
         try std.testing.expectEqual(if (restoring) Phase.Ready else Phase.Restored, wb.lifecycle.phase);
     }
 }
+
+test "workbench startup creates the live editor part and applies extraClasses before the first frame" {
+    const extra: u16 = 0x00ef;
+    const wb = try Workbench.initWithOptions(std.testing.allocator, std.testing.io, &.{}, 80, 24, .{ .extra_classes = &.{extra} }, null);
+    defer wb.deinit();
+    const main = wb.editor_surface.?.document().root.?;
+    try std.testing.expect(main.hasClass(editor_css.workbench.Class.monaco_workbench));
+    try std.testing.expect(main.hasClass(extra));
+    const part = try wb.layout.getPart(.editor);
+    const editor = part.getContainer().?;
+    try std.testing.expectEqual(main, editor.parent.?);
+    try std.testing.expect(editor.hasClass(editor_css.part.Class.part));
+    try std.testing.expect(editor.hasClass(editor_css.part.Class.editor));
+    try std.testing.expectEqualStrings("workbench.parts.editor", editor.getAttribute("id").?);
+    try std.testing.expectEqualStrings("main", editor.getAttribute("role").?);
+    try std.testing.expectEqual(editor, part.content_area.?.parent.?);
+    try std.testing.expectEqual(part.content_area.?, wb.part.grid_element.?.parent.?);
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try wb.render(&out.writer);
+    try std.testing.expectEqual(wb.part.grid_element.?, wb.activePane().?.dom.?.split_view.parent.?);
+    const tree = wb.editor_surface.?.box_tree;
+    try std.testing.expectEqual(part.bounds.?, tree.find(editor).?.rect);
+    try std.testing.expectEqual(wb.activePane().?.rect, tree.find(wb.activePane().?.dom.?.split_view).?.rect);
+    try wb.resize(95, 30);
+    try wb.render(&out.writer);
+    try std.testing.expectEqual(@as(f64, 95), tree.find(main).?.rect.w);
+    try std.testing.expectEqual(@as(f64, 30), tree.find(main).?.rect.h);
+    try std.testing.expectEqual(part.bounds.?, tree.find(editor).?.rect);
+    try std.testing.expectEqual(main, wb.editor_surface.?.document().root.?);
+}
+
+test "resetLayout ignores saved workspace visibility and profile sizes while restoring the editor" {
+    const wb = try Workbench.initWithOptions(std.testing.allocator, std.testing.io, &.{}, 80, 24, .{ .reset_layout = true }, null);
+    defer wb.deinit();
+    const before = wb.layout.size(.sidebar);
+    try wb.layout.restorePartSizes(.{ .@"workbench.sideBar.size" = before + 10 });
+    try std.testing.expectEqual(before, wb.layout.size(.sidebar));
+    const visible = wb.layout.isVisible(.sidebar);
+    try wb.layout.restoreParts(.{ .@"workbench.sideBar.hidden" = visible, .@"workbench.editor.centered" = true }, &wb.part.when_restored);
+    try std.testing.expectEqual(visible, wb.layout.isVisible(.sidebar));
+    try std.testing.expect(!wb.layout.isMainEditorCentered());
+    try std.testing.expect(wb.layout.isRestored());
+}

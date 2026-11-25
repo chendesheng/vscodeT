@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 14,667 lines and has no inline tests. All 151 baseline
+The browser shell is 14,657 lines and has no inline tests. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records 256 command IDs with labels, categories and visibility for empty and
@@ -39,6 +39,12 @@ Show All Commands resolves the quick input service through its Action2 handler.
   save the active group ID and recent activation order. Closing the active
   group selects the previously active group. EditorPart saves and restores the
   SerializableGrid, including nested splits, proportions and the maximized leaf.
+* Startup creates the main workbench document and the editor part through the
+  registered Part before laying out the grid. EditorPart creates the grid
+  container and EditorGroupView mounts its pane and watermark. The other
+  terminal parts still have independent paint surfaces.
+* The workbench options accept extra stylesheet class IDs and a layout reset.
+  A reset skips stored profile sizes and workspace layout state.
 * HistoryService merges stored and already-open files in MRU order. The terminal
   persists the legacy navigation and closed-editor records on shutdown.
 * The layout service registers live parts and emits visibility, zen-mode and

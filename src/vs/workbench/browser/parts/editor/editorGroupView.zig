@@ -42,6 +42,11 @@ const css = @import("../../../../editor/browser/editorCss.zig");
 const EditorInput = editor_input.EditorInput;
 const EditorsOrder = editor_mod.EditorsOrder;
 
+pub const WatermarkShortcuts = struct {
+    context: *anyopaque,
+    render: *const fn (*anyopaque, *EditorGroupWatermark) anyerror!void,
+};
+
 /// Hit rectangle of one visible tab in the terminal tab strip. The browser
 /// derives the same information from DOM tab elements.
 pub const TabHit = struct {
@@ -110,7 +115,7 @@ pub fn EditorGroupView(comptime View: type) type {
             self.tabs.deinit();
         }
 
-        pub fn layoutDom(self: *Self, grid: *ui.Node, visible: bool) !void {
+        fn layoutDom(self: *Self, grid: *ui.Node, part_bounds: ui.Rect, visible: bool) !void {
             if (self.dom == null) self.dom = try GroupDom.create(grid);
             const dom = self.dom.?;
             if (visible) {
@@ -123,8 +128,8 @@ pub fn EditorGroupView(comptime View: type) type {
             }
             const chrome: f64 = @floatFromInt(self.chromeHeight());
             setStyleIfChanged(dom.split_view, .{
-                .left = .{ .cells = self.rect.x },
-                .top = .{ .cells = self.rect.y },
+                .left = .{ .cells = self.rect.x - part_bounds.x },
+                .top = .{ .cells = self.rect.y - part_bounds.y },
                 .width = .{ .cells = self.rect.w },
                 .height = .{ .cells = self.rect.h },
             });
@@ -140,6 +145,51 @@ pub fn EditorGroupView(comptime View: type) type {
                 try dom.editor_container.addClass(css.editor_group.Class.empty_editor_container);
             } else if (dom.editor_container.hasClass(css.editor_group.Class.empty_editor_container)) {
                 dom.editor_container.removeClass(css.editor_group.Class.empty_editor_container);
+            }
+        }
+
+        /// Layout and mount the active editor pane into its group container.
+        pub fn layoutEditorArea(
+            self: *Self,
+            grid: *ui.Node,
+            part_bounds: ui.Rect,
+            surface: *ui.Surface,
+            visible: bool,
+            show_tips: bool,
+            colors: @import("editorGroupWatermark.zig").Colors,
+            shortcuts: WatermarkShortcuts,
+        ) !void {
+            const active = self.activeTab();
+            const suppress_breadcrumbs = if (active) |tab| tab.terminal_input != null or tab.search_editor_input != null or tab.markdown_panel != null else false;
+            if (self.breadcrumbs_suppressed != suppress_breadcrumbs) {
+                self.breadcrumbs_suppressed = suppress_breadcrumbs;
+                self.layout();
+            }
+            try self.layoutDom(grid, part_bounds, visible);
+            if (!visible) return;
+            const container = self.dom.?.editor_container;
+            const width = ui.cell.snap(self.rect.w);
+            const group_height = ui.cell.snap(self.rect.h);
+            const height = group_height -| self.chromeHeight();
+            if (self.isEmpty() and self.watermark == null) {
+                self.watermark = try EditorGroupWatermark.init(self.dom.?.group);
+            }
+            if (self.watermark) |*watermark| {
+                if (self.isEmpty() and show_tips and watermark.shortcuts == null) try shortcuts.render(shortcuts.context, watermark);
+                watermark.layout(width, group_height, self.isEmpty(), show_tips, colors);
+            }
+            if (active) |tab| {
+                if (width == 0 or height == 0) return;
+                try tab.mount(
+                    surface,
+                    container,
+                    ui.cell.snap(self.rect.x),
+                    ui.cell.snap(self.rect.y) + self.chromeHeight(),
+                    width,
+                    height,
+                );
+            } else if (container.first_child) |child| {
+                _ = container.removeChild(child);
             }
         }
 

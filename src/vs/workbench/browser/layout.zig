@@ -141,6 +141,8 @@ pub const Layout = struct {
     when_restored: Barrier = .{},
     parts: std.EnumArray(Parts, ?Binding) = .initFill(null),
     grid_ready: bool = false,
+    reset_layout: bool = false,
+    main_container: ?*ui.Node = null,
     on_did_change_part_visibility: Emitter(layout_service.IPartVisibilityChangeEvent),
     allocator: Allocator,
     states: [8]PartState = .{ .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{} },
@@ -255,7 +257,13 @@ pub const Layout = struct {
         return if (self.statusBarVisible(rows)) rows - 1 else rows;
     }
 
-    pub fn layout(self: *Layout, rects: WorkbenchGrid.Rects, statusbar: ui.Rect) void {
+    pub fn layout(self: *Layout, cols: usize, rows: usize, rects: WorkbenchGrid.Rects, statusbar: ui.Rect) void {
+        if (self.main_container) |container| {
+            var style = container.asElement().style;
+            style.width = .{ .cells = @floatFromInt(cols) };
+            style.height = .{ .cells = @floatFromInt(rows) };
+            if (!std.meta.eql(container.asElement().style, style)) container.setStyle(style);
+        }
         self.layoutPart(.activitybar, rects.activity_bar);
         self.layoutPart(.sidebar, rects.sidebar);
         self.layoutPart(.editor, rects.editor);
@@ -363,7 +371,7 @@ pub const Layout = struct {
     }
 
     pub fn restoreParts(self: *Layout, saved: ?WorkspaceState, editors_restored: *Barrier) !void {
-        const state_result = if (saved) |state| self.restorePartState(state) else {};
+        const state_result = if (!self.reset_layout and saved != null) self.restorePartState(saved.?) else {};
         // The native layout builds group views and opens pane composites
         // synchronously. Editor resolution has its own completion boundary.
         const ready_result = self.when_ready.open(self.allocator);
@@ -382,6 +390,7 @@ pub const Layout = struct {
     }
 
     pub fn restorePartSizes(self: *Layout, state: ProfileState) !void {
+        if (self.reset_layout) return;
         if (state.@"workbench.sideBar.size") |size_in_cells| try self.setSize(.sidebar, size_in_cells);
         if (state.@"workbench.panel.size") |size_in_cells| try self.setSize(.panel, size_in_cells);
     }
