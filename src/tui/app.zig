@@ -903,7 +903,7 @@ pub fn main(init: std.process.Init) !void {
                     }
                     if (current.markdown_preview) |preview| {
                         if (preview.handleMouse(adjusted, now_ms)) |line| {
-                            try workbench.showMarkdownSource();
+                            try workbench.markdown_previews.showSource();
                             if (workbench.activeTab()) |source| {
                                 try source.editor.setSelection(Range.init(line, 1, line, 1));
                                 _ = source.editor.revealLine(line, .CenterIfOutsideViewport);

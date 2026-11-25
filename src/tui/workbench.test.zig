@@ -521,7 +521,7 @@ test "Workbench: markdown preview toggle changes the current editor in place" {
     try std.testing.expectEqual(@as(u32, 0x25EB), grid.cluster[grid.index(hit.start, row)]);
     try std.testing.expectEqual(@as(u32, 0x2315), grid.cluster[grid.index(hit.start + 1, row)]);
 
-    try workbench.toggleMarkdownPreview(pane);
+    try workbench.markdown_previews.togglePreview(pane);
     try std.testing.expect(tab.markdown_preview != null);
     try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
 
@@ -565,7 +565,7 @@ test "Workbench: markdown preview title action is absent for plain text" {
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
     try std.testing.expect(pane.title_action_hit == null);
-    try workbench.toggleMarkdownPreview(pane);
+    try workbench.markdown_previews.togglePreview(pane);
     try std.testing.expect(pane.activeTab().?.markdown_preview == null);
 }
 
@@ -589,7 +589,7 @@ test "Workbench: markdown preview follows editor scroll and can reveal the edito
     defer workbench_window.deinit();
     const pane = workbench.activePane().?;
     const tab = pane.activeTab().?;
-    try workbench.showMarkdownPreviewToSide();
+    try workbench.markdown_previews.openDynamicPreview(true);
     const preview_tab = workbench.activeTab().?;
     try std.testing.expect(preview_tab.markdown_preview != null);
 
@@ -5086,7 +5086,7 @@ test "Workbench: markdown preview shows displayable images" {
     defer workbench_window.deinit();
     const pane = workbench.activePane().?;
     const tab = pane.activeTab().?;
-    try workbench.toggleMarkdownPreview(pane);
+    try workbench.markdown_previews.togglePreview(pane);
     try std.testing.expect(tab.markdown_preview != null);
 
     // Without placeholder support the alt text is preserved and no image is
@@ -5795,7 +5795,7 @@ test "Workbench: markdown preview to the side uses an ordinary editor group and 
         try renderFrame(wb, &out.writer);
         try std.testing.expectEqual(ui.cell.snap(target.rect.w), preview.markdown_preview.?.width);
 
-        try wb.showMarkdownSource();
+        try wb.commands.execute("markdown.showSource");
         try std.testing.expectEqual(source_group, wb.activePane().?);
         try source.editor.insertText("LiveEdit");
         while (wb.window_events.nextTimeout(time_compat.milliTimestamp() + 350, 1) == 0) _ = wb.window_events.dispatch(time_compat.milliTimestamp() + 350);
@@ -5805,17 +5805,17 @@ test "Workbench: markdown preview to the side uses an ordinary editor group and 
         try std.testing.expect(std.mem.indexOf(u8, rendered, "LiveEdit") != null);
         try wb.openPath(other);
         try std.testing.expectEqualStrings("Preview other.md", preview.input.getName());
-        try wb.showMarkdownPreviewToSide();
+        try wb.commands.execute("markdown.showPreviewToSide");
         try std.testing.expectEqual(preview, wb.activeTab().?);
         try std.testing.expectEqual(@as(usize, 1), target.count());
         // Closing the active source retargets the unlocked panel to the
         // remaining Markdown tab, just like selecting it explicitly.
-        try wb.showMarkdownSource();
+        try wb.markdown_previews.showSource();
         _ = try wb.closeActive();
         wb.service.activateGroup(target.group);
         try wb.focusActiveGroup();
         try std.testing.expectEqualStrings("Preview source.md", preview.input.getName());
-        try wb.showMarkdownSource();
+        try wb.markdown_previews.showSource();
         try std.testing.expect(wb.activeTab().?.file_input != null);
         wb.service.activateGroup(target.group);
         try wb.focusActiveGroup();
@@ -5850,13 +5850,13 @@ test "Workbench: markdown side preview reuses a group below and survives closing
     try std.testing.expectEqual(below, wb.activePane().?);
     try std.testing.expectEqual(@as(usize, 2), wb.groupCount());
     const preview = wb.activeTab().?;
-    try wb.showMarkdownSource();
+    try wb.markdown_previews.showSource();
     const document = wb.activeTab().?.editor.model;
     _ = try wb.closeActive();
     try std.testing.expectEqual(@as(usize, 1), wb.groupCount());
     try std.testing.expectEqual(preview, wb.activeTab().?);
     try std.testing.expectEqual(document, preview.markdown_preview.?.editor.model);
-    try wb.showMarkdownSource();
+    try wb.markdown_previews.showSource();
     try std.testing.expect(wb.activeTab().?.isMarkdown());
     try std.testing.expectEqual(document, wb.activeTab().?.editor.model);
 }

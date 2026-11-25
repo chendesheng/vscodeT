@@ -1133,7 +1133,7 @@ pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
                         }
                     }
                     if (pane.activeTab()) |tab| {
-                        if (tab.markdown_preview != null) self.showMarkdownSource() catch {} else self.openMarkdownPanel(!event.mods.alt) catch {};
+                        if (tab.markdown_preview != null) self.markdown_previews.showSource() catch {} else self.markdown_previews.openDynamicPreview(!event.mods.alt) catch {};
                     }
                     self.focusEditor();
                     return true;
