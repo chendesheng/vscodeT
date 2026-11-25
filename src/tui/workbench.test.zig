@@ -3598,6 +3598,10 @@ test "Workbench: files.associations change the opened editor language" {
     try workbench.openPath(path);
 
     try std.testing.expectEqualStrings("zig", workbench.activeTab().?.editor.languageId());
+    // Removing the key reclassifies the already-open editor immediately,
+    // before a key press, frame or filesystem watcher notification.
+    try workbench.setUserConfigurationValue("files.associations", null);
+    try std.testing.expectEqualStrings("plaintext", workbench.activeTab().?.editor.languageId());
 }
 
 test "Workbench: starts a workspace file watcher for absolute folders" {
@@ -9125,4 +9129,27 @@ test "Editor actions resolve the same mounted contribution through getContributi
     try std.testing.expectEqual(tab.controllers.?.word_highlighter, tab.editor.getContribution(Words).?);
     try wb.commands.execute("actions.find");
     try std.testing.expect(tab.controllers.?.find.state.is_revealed);
+}
+
+test "Workbench: configuration events update a mounted markdown preview" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "preview.md", "# Preview");
+    defer allocator.free(path);
+    const settings = try seedFile(allocator, io, &tmp, "settings.json", "{}");
+    defer allocator.free(settings);
+    const window = try TestWindow.init(allocator, io, &.{path}, 60, 15);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.setUserSettingsPaths(&.{settings});
+    const pane = wb.activePane().?;
+    try wb.markdown_previews.togglePreview(pane);
+    const preview = pane.activeTab().?.markdown_preview.?;
+    try std.testing.expect(preview.options.scroll_preview_with_editor);
+    try wb.setUserConfigurationValue("markdown.preview.scrollPreviewWithEditor", .{ .bool = false });
+    try std.testing.expect(!preview.options.scroll_preview_with_editor);
+    try wb.setUserConfigurationValue("markdown.preview.scrollPreviewWithEditor", null);
+    try std.testing.expect(preview.options.scroll_preview_with_editor);
 }

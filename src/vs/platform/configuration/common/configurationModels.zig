@@ -347,6 +347,92 @@ pub const ConfigurationModel = struct {
     }
 };
 
+/// Port of compareConfigurationContents and compare: compare the normalized
+/// keys and override values before the service replaces the old models.
+/// The returned change owns its key strings in the caller's event arena.
+pub const ConfigurationChange = struct {
+    allocator: Allocator,
+    keys: std.array_list.Managed([]const u8),
+    overrides: std.array_list.Managed(configuration.OverrideChange),
+
+    pub fn init(arena: Allocator) ConfigurationChange {
+        return .{
+            .allocator = arena,
+            .keys = .init(arena),
+            .overrides = .init(arena),
+        };
+    }
+
+    pub fn compare(self: *ConfigurationChange, from: ?*const ConfigurationModel, to: ?*const ConfigurationModel) !void {
+        const before = if (from) |model| model.getKeys() else &.{};
+        const after = if (to) |model| model.getKeys() else &.{};
+        const empty: Value = .{ .object = .empty };
+        try compareConfigurationContents(&self.keys, before, after, if (from) |model| &model.contents else &empty, if (to) |model| &model.contents else &empty);
+
+        var identifiers = std.array_list.Managed([]const u8).init(self.allocator);
+        for ([_]?*const ConfigurationModel{ from, to }) |maybe_model| {
+            const model = maybe_model orelse continue;
+            for (model.overrides) |override_value| {
+                for (override_value.identifiers) |identifier| try appendUnique(&identifiers, identifier);
+            }
+        }
+        for (identifiers.items) |identifier| {
+            var old = try overrideContents(self.allocator, from, identifier);
+            defer old.deinit();
+            var new = try overrideContents(self.allocator, to, identifier);
+            defer new.deinit();
+            var keys = std.array_list.Managed([]const u8).init(self.allocator);
+            try compareConfigurationContents(&keys, old.getKeys(), new.getKeys(), &old.contents, &new.contents);
+            if (keys.items.len == 0) continue;
+            for (self.overrides.items) |*entry| {
+                if (!std.mem.eql(u8, identifier, entry.identifier)) continue;
+                for (entry.keys) |key| try appendUnique(&keys, key);
+                entry.keys = keys.items;
+                break;
+            } else {
+                try self.overrides.append(.{ .identifier = identifier, .keys = keys.items });
+            }
+        }
+    }
+
+    pub fn event(self: *const ConfigurationChange, source: configuration.ConfigurationTarget) configuration.Change {
+        return .{ .source = source, .keys = self.keys.items, .overrides = self.overrides.items };
+    }
+};
+
+fn appendUnique(list: *std.array_list.Managed([]const u8), key: []const u8) !void {
+    if (!containsIdentifier(list.items, key)) try list.append(try list.allocator.dupe(u8, key));
+}
+
+fn compareConfigurationContents(keys: *std.array_list.Managed([]const u8), from: []const []const u8, to: []const []const u8, old: *const Value, new: *const Value) !void {
+    for (to) |key| if (!containsIdentifier(from, key)) try appendUnique(keys, key);
+    for (from) |key| if (!containsIdentifier(to, key)) try appendUnique(keys, key);
+    for (from) |key| {
+        if (!containsIdentifier(to, key)) continue;
+        const previous = configuration.getConfigurationValue(old, key);
+        const current = configuration.getConfigurationValue(new, key);
+        const equal = if (previous) |a| if (current) |b| configuration.jsonValuesEqual(a.*, b.*) else false else current == null;
+        if (!equal) try appendUnique(keys, key);
+    }
+}
+
+fn overrideContents(allocator: Allocator, model: ?*const ConfigurationModel, identifier: []const u8) !ConfigurationModel {
+    var result = try ConfigurationModel.initEmpty(allocator);
+    errdefer result.deinit();
+    const source = model orelse return result;
+    const arena = result.arena.allocator();
+    // getContentsForOverrideIdentifer: matching combined identifiers first,
+    // then the individual identifier.
+    for ([_]bool{ false, true }) |single| {
+        for (source.overrides) |value| {
+            if ((value.identifiers.len == 1) != single or !containsIdentifier(value.identifiers, identifier)) continue;
+            try configuration.mergeInto(arena, &result.contents, value.contents);
+            for (value.keys) |key| if (!result.hasKey(key)) try result.keys.append(try arena.dupe(u8, key));
+        }
+    }
+    return result;
+}
+
 fn containsIdentifier(identifiers: []const []const u8, identifier: []const u8) bool {
     for (identifiers) |candidate| {
         if (std.mem.eql(u8, candidate, identifier)) return true;

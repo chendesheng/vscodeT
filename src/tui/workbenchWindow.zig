@@ -2026,6 +2026,8 @@ pub const TerminalWorkbench = struct {
         self.breadcrumbs.detachServices();
         if (self.configuration) |configuration| {
             if (self.terminal_service) |service| service.options.configuration = null;
+            self.markdown_previews.detachConfiguration();
+            if (self.search_window.view) |view| view.detachConfiguration();
             self.git_model.detachConfiguration();
             self.scm.detachConfiguration();
             if (self.theme_service) |service| service.detachConfiguration();
@@ -2087,6 +2089,8 @@ pub const TerminalWorkbench = struct {
                 self.settings_watcher = null;
             }
             if (self.terminal_service) |service| service.options.configuration = null;
+            self.markdown_previews.detachConfiguration();
+            if (self.search_window.view) |view| view.detachConfiguration();
             self.git_model.detachConfiguration();
             self.scm.detachConfiguration();
             if (self.theme_service) |service| service.detachConfiguration();
@@ -2095,6 +2099,7 @@ pub const TerminalWorkbench = struct {
             self.configuration = null;
             try self.ensureConfiguration();
             self.configureJsonLanguage();
+            self.applyConfiguredLanguageAssociationsToAllEditors();
             try self.layout.onZenModeConfigurationChange(null);
             self.applyEditorSettingsToAllTabs();
             self.layoutAll();
@@ -2133,13 +2138,14 @@ pub const TerminalWorkbench = struct {
         try themes.setConfiguration(self.configuration.?);
         try self.git_model.setConfiguration(self.configuration);
         try self.scm.setConfiguration(self.configuration);
+        try self.markdown_previews.attachConfiguration(self.configuration.?);
+        if (self.search_window.view) |view| try view.attachConfiguration(self.configuration.?);
         if (self.core.notification_controller) |controller| try controller.attachConfiguration(self.configuration);
         try self.configuration.?.onDidChangeConfiguration(self, onWorkbenchConfigurationChange);
         if (self.declarative) |catalog| try self.applyExtensionDefaults(catalog);
         if (self.terminal_service) |service| service.options.configuration = self.configuration;
         self.settings_watcher = SettingsWatcher.init(self.allocator, self.io, self.configuration.?, try self.ensureFileService(), &self.window_events) catch null;
         if (self.settings_watcher) |watcher| {
-            watcher.setOnReload(.{ .context = self, .callback = onSettingsReloaded });
             watcher.setAsyncIo(self.async_io);
         }
         try self.breadcrumbs.attachServices(self.workspace, self.configuration);
@@ -2162,15 +2168,8 @@ pub const TerminalWorkbench = struct {
         {
             try self.layout.centerMainEditorLayout(self.layout.isMainEditorCentered(), false);
         }
+        if (config.affectsConfiguration(change, "files.associations")) self.applyConfiguredLanguageAssociationsToAllEditors();
         if (config.affectsConfiguration(change, "editor")) self.applyEditorSettingsToAllTabs();
-    }
-
-    fn onSettingsReloaded(context: *anyopaque) void {
-        const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-        self.applyConfiguredLanguageAssociationsToAllEditors();
-        if (self.search_window.view) |view| view.onConfigurationChanged();
-        self.markdown_previews.updateConfiguration();
-        if (self.git_model.repository != null) self.refreshGitStatus();
     }
 
     fn editorSettingsReader(self: *TerminalWorkbench) terminal_editor_config.Reader {

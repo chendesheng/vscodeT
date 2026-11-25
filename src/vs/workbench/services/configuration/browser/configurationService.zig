@@ -161,8 +161,32 @@ pub const ConfigurationService = struct {
     /// Updates workspace trust and reloads the effective configuration.
     pub fn updateWorkspaceTrust(self: *ConfigurationService, trusted: bool) !void {
         if (self.trusted == trusted) return;
+        // Upstream reparses the cached workspace models and notifies the
+        // restricted keys affected by the trust transition. This port keeps
+        // the raw models and filters them when resolving values, so the
+        // cached keys are sufficient; no disk reload is needed.
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        var changed_keys: std.StringArrayHashMapUnmanaged(void) = .empty;
+        try self.collectTrustChangedKeys(arena.allocator(), &changed_keys, &self.user, false);
+        try self.collectTrustChangedKeys(arena.allocator(), &changed_keys, &self.workspace_model, true);
+        var folders = self.folders.valueIterator();
+        while (folders.next()) |model| try self.collectTrustChangedKeys(arena.allocator(), &changed_keys, model.*, true);
         self.trusted = trusted;
-        try self.reload();
+        if (changed_keys.count() != 0) self.change_emitter.fire(.{ .source = .WORKSPACE, .keys = changed_keys.keys() }) catch {};
+    }
+
+    fn collectTrustChangedKeys(self: *ConfigurationService, allocator: Allocator, changed_keys: *std.StringArrayHashMapUnmanaged(void), model: *const ConfigurationModel, workspace_scope: bool) !void {
+        for (model.getKeys()) |key| try self.collectTrustChangedKey(allocator, changed_keys, key, workspace_scope);
+        for (model.overrides) |override| {
+            for (override.keys) |key| try self.collectTrustChangedKey(allocator, changed_keys, key, workspace_scope);
+        }
+    }
+
+    fn collectTrustChangedKey(self: *ConfigurationService, allocator: Allocator, changed_keys: *std.StringArrayHashMapUnmanaged(void), key: []const u8, workspace_scope: bool) !void {
+        const property = self.registry.getConfigurationProperties().get(key);
+        if (if (property) |registered| registered.restricted else workspace_scope)
+            try changed_keys.put(allocator, try allocator.dupe(u8, key), {});
     }
 
     pub fn onDidChangeConfiguration(
@@ -310,6 +334,24 @@ pub const ConfigurationService = struct {
             try new_folder_consolidated.put(entry.key_ptr.*, consolidated);
         }
 
+        // Compare the old and new scopes before releasing their arenas. Like
+        // upstream's compareAndUpdate*Configuration, removed settings and
+        // override changes count, but unchanged settings do not.
+        var change_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer change_arena.deinit();
+        var change = configurationModels.ConfigurationChange.init(change_arena.allocator());
+        try change.compare(&self.defaults, &new_defaults);
+        try change.compare(&self.user, &new_user);
+        try change.compare(&self.workspace_model, &new_workspace);
+        var previous_folders = self.folders.iterator();
+        while (previous_folders.next()) |entry| {
+            try change.compare(entry.value_ptr.*, new_folders.get(entry.key_ptr.*));
+        }
+        var current_folders = new_folders.iterator();
+        while (current_folders.next()) |entry| {
+            if (!self.folders.contains(entry.key_ptr.*)) try change.compare(null, entry.value_ptr.*);
+        }
+
         // Commit. No fallible operations follow, so the errdefers above do not
         // run after the old models are released.
         self.defaults.deinit();
@@ -326,7 +368,10 @@ pub const ConfigurationService = struct {
         self.workspace_consolidated.deinit();
         self.workspace_consolidated = new_workspace_consolidated;
 
-        self.fireChangeEvent();
+        // A native file-watcher reload reads all scopes in a single batch.
+        // Preserve its single notification, with the merged affected keys.
+        if (change.keys.items.len != 0 or change.overrides.items.len != 0)
+            self.change_emitter.fire(change.event(.USER)) catch {};
     }
 
     fn userModelFromSources(self: *ConfigurationService, sources: *const Sources) !ConfigurationModel {
@@ -656,24 +701,6 @@ pub const ConfigurationService = struct {
     fn readSettingsFile(self: *ConfigurationService, path: []const u8) !?[]u8 {
         return readSettingsFileOpt(self.allocator, self.io, path);
     }
-
-    fn fireChangeEvent(self: *ConfigurationService) void {
-        var affected_keys = std.array_list.Managed([]const u8).init(self.allocator);
-        defer affected_keys.deinit();
-
-        for (self.defaults.getKeys()) |key| appendUnique(&affected_keys, key) catch return;
-        for (self.user.getKeys()) |key| appendUnique(&affected_keys, key) catch return;
-        for (self.workspace_model.getKeys()) |key| appendUnique(&affected_keys, key) catch return;
-        var iterator = self.folders.valueIterator();
-        while (iterator.next()) |model| {
-            for (model.*.getKeys()) |key| appendUnique(&affected_keys, key) catch return;
-        }
-
-        self.change_emitter.fire(.{
-            .source = .USER,
-            .keys = affected_keys.items,
-        }) catch {};
-    }
 };
 
 fn emptyModelJson(arena: Allocator) !Value {
@@ -717,13 +744,6 @@ fn fileUriJson(arena: Allocator, path: []const u8) !Value {
     try object.put(arena, "query", .{ .string = "" });
     try object.put(arena, "fragment", .{ .string = "" });
     return .{ .object = object };
-}
-
-fn appendUnique(list: *std.array_list.Managed([]const u8), key: []const u8) !void {
-    for (list.items) |existing| {
-        if (std.mem.eql(u8, existing, key)) return;
-    }
-    try list.append(key);
 }
 
 fn mergeModels(

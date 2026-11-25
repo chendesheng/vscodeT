@@ -26,7 +26,13 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The portable browser Workbench is 258 lines and has no inline tests. The native TerminalWorkbench window is 6,138 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
+Configuration reloads now compare the old and new scope contents and language
+overrides before emitting changes, including removed settings. The search and
+Markdown preview owners subscribe directly to configuration events and rebind
+their listeners when the native workspace configuration service is replaced.
+The native settings-watcher callback no longer dispatches feature reloads.
+
+The portable browser Workbench is 258 lines and has no inline tests. The native TerminalWorkbench window is 6,137 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and

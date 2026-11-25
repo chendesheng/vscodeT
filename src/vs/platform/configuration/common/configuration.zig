@@ -118,7 +118,15 @@ pub const IConfigurationService = struct {
 /// change affects both the key itself and its descendants, and a changed child
 /// affects its ancestors.
 pub fn affectsConfiguration(change: Change, section: []const u8) bool {
-    for (change.keys) |key| {
+    if (affectsKeys(change.keys, section)) return true;
+    for (change.overrides) |override_change| {
+        if (affectsKeys(override_change.keys, section)) return true;
+    }
+    return false;
+}
+
+fn affectsKeys(keys: []const []const u8, section: []const u8) bool {
+    for (keys) |key| {
         if (std.mem.eql(u8, key, section)) return true;
         if (isPathPrefix(key, section)) return true;
         if (isPathPrefix(section, key)) return true;
@@ -129,7 +137,7 @@ pub fn affectsConfiguration(change: Change, section: []const u8) bool {
 /// Override-aware `affectsConfiguration`: language-override changes only affect
 /// a query that names the same override identifier.
 pub fn affectsConfigurationWithOverrides(change: Change, section: []const u8, override_identifier: ?[]const u8) bool {
-    if (affectsConfiguration(change, section)) return true;
+    if (affectsKeys(change.keys, section)) return true;
     const identifier = override_identifier orelse return false;
     for (change.overrides) |override_change| {
         if (!std.mem.eql(u8, override_change.identifier, identifier)) continue;

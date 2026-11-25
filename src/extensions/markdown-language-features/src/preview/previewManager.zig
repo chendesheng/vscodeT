@@ -27,12 +27,30 @@ pub const MarkdownPreviewManager = struct {
     layout: *const fn (*anyopaque) void,
     focus_editor: *const fn (*anyopaque) void,
     active_editor_listener: ?usize = null,
+    configuration_listener: ?struct { service: *ConfigurationService, id: usize } = null,
+
+    pub fn attachConfiguration(self: *MarkdownPreviewManager, service: *ConfigurationService) !void {
+        self.detachConfiguration();
+        self.configuration_listener = .{ .service = service, .id = try service.listenConfigurationChange(self, onConfigurationChanged) };
+        self.updateConfiguration();
+    }
+
+    pub fn detachConfiguration(self: *MarkdownPreviewManager) void {
+        if (self.configuration_listener) |listener| listener.service.unlistenConfigurationChange(listener.id);
+        self.configuration_listener = null;
+    }
+
+    fn onConfigurationChanged(change: @import("../../../../vs/platform/configuration/common/configuration.zig").Change, self: *MarkdownPreviewManager) !void {
+        const config = @import("../../../../vs/platform/configuration/common/configuration.zig");
+        if (config.affectsConfiguration(change, "markdown")) self.updateConfiguration();
+    }
 
     pub fn registerListeners(self: *MarkdownPreviewManager) !void {
         self.active_editor_listener = try self.part.service.on_did_active_editor_change.listen(self, onDidChangeActiveTextEditor);
     }
 
     pub fn deinit(self: *MarkdownPreviewManager) void {
+        self.detachConfiguration();
         if (self.active_editor_listener) |listener| self.part.service.on_did_active_editor_change.unlisten(listener);
         self.active_editor_listener = null;
     }

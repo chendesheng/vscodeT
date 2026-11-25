@@ -148,6 +148,7 @@ pub const SearchView = struct {
     allocator: Allocator,
     workspace: *WorkspaceContextService,
     configuration: *ConfigurationService,
+    configuration_listener: ?usize = null,
     host: Host,
     controller: *Controller,
     model: *SearchModel,
@@ -258,10 +259,12 @@ pub const SearchView = struct {
             .on_replace_all = onWidgetReplaceAll,
         };
         try self.setWidgetValueFromSelection();
+        try self.attachConfiguration(configuration);
         return self;
     }
 
     pub fn deinit(self: *SearchView) void {
+        self.detachConfiguration();
         self.detachActivity();
         self.clearHighlight();
         self.clearReplaceConfirmation();
@@ -549,9 +552,30 @@ pub const SearchView = struct {
         self.controller.workspace = workspace;
     }
 
-    pub fn onConfigurationChanged(self: *SearchView) void {
+    pub fn attachConfiguration(self: *SearchView, service: *ConfigurationService) !void {
+        self.detachConfiguration();
+        self.configuration = service;
+        self.controller.configuration = service;
+        self.configuration_listener = try service.listenConfigurationChange(self, onConfigurationChanged);
         self.controller.onConfigurationChanged();
         self.rebuildRows();
+    }
+
+    pub fn detachConfiguration(self: *SearchView) void {
+        if (self.configuration_listener) |id| self.configuration.unlistenConfigurationChange(id);
+        self.configuration_listener = null;
+    }
+
+    fn onConfigurationChanged(change: configuration_mod.Change, self: *SearchView) !void {
+        const config = @import("../../../../platform/configuration/common/configuration.zig");
+        if (config.affectsConfiguration(change, "search") or
+            config.affectsConfiguration(change, "files.exclude") or
+            config.affectsConfiguration(change, "files.encoding"))
+        {
+            self.controller.onConfigurationChanged();
+        } else if (config.affectsConfiguration(change, "workbench.tree")) {
+            self.rebuildRows();
+        }
     }
 
     fn clearHighlight(self: *SearchView) void {

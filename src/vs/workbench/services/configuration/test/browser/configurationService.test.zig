@@ -215,6 +215,50 @@ test "ConfigurationService: reload emits a change event" {
     );
 }
 
+test "ConfigurationService: reload reports added removed updated and override keys only" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, ".vscode");
+    try writeFile(&tmp, io, ".vscode/settings.json",
+        \\{"files.associations":{"*.foo":"zig"}, "editor.tabSize":2, "editor.insertSpaces":true, "[zig]":{"editor.tabSize":4}}
+    );
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = try absoluteRoot(&tmp, io, &buffer);
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const service = try ConfigurationService.init(allocator, io, context, .{});
+    defer service.deinit();
+    const config = @import("../../../../../platform/configuration/common/configuration.zig");
+    const Listener = struct {
+        count: usize = 0,
+        valid: bool = false,
+        fn changed(change: service_mod.Change, self: *@This()) !void {
+            self.count += 1;
+            self.valid = change.keys.len == 3 and
+                config.affectsConfiguration(change, "files.associations") and
+                config.affectsConfiguration(change, "editor.tabSize") and
+                config.affectsConfiguration(change, "files.eol") and
+                !config.affectsConfiguration(change, "editor.insertSpaces") and
+                config.affectsConfigurationWithOverrides(change, "editor.wordWrap", "zig") and
+                !config.affectsConfigurationWithOverrides(change, "editor.wordWrap", "python");
+        }
+    };
+    var listener: Listener = .{};
+    try service.onDidChangeConfiguration(&listener, Listener.changed);
+    try service.reload();
+    try std.testing.expectEqual(@as(usize, 0), listener.count);
+    try writeFile(&tmp, io, ".vscode/settings.json",
+        \\{"editor.tabSize":6, "editor.insertSpaces":true, "files.eol":"lf", "[zig]":{"editor.tabSize":4,"editor.wordWrap":"on"}}
+    );
+    try service.reload();
+    try std.testing.expectEqual(@as(usize, 1), listener.count);
+    try std.testing.expect(listener.valid);
+    try service.reload();
+    try std.testing.expectEqual(@as(usize, 1), listener.count);
+}
+
 test "ConfigurationService: settings files accept comments and trailing commas" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
