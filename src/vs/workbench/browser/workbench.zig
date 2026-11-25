@@ -1713,18 +1713,6 @@ pub const Workbench = struct {
         return self.quick_access.isOpen();
     }
 
-    pub fn onSearchEditorChanged(self: *Workbench) void {
-        if (self.search_view) |view| {
-            view.onEditorChanged(self.activeEditorInfo());
-        }
-    }
-
-    fn activeEditorInfo(self: *Workbench) ?search_view_mod.EditorInfo {
-        const tab = self.activeTab() orelse return null;
-        if (tab.search_editor_input != null) return null;
-        return .{ .path = tab.editor.path, .version = tab.editor.model.getVersionId() };
-    }
-
     pub fn findInFiles(self: *Workbench) !void {
         const search = @import("../contrib/search/browser/searchActionsBase.zig");
         if (try search.openSearchView(self.views_api, true)) |view| try search.findInFiles(view);
@@ -2501,6 +2489,7 @@ pub const Workbench = struct {
     }
 
     fn registerWorkingCopy(self: *Workbench, tab: *Tab) void {
+        if (self.search_view) |view| view.model.result.onModelAdded(tab.editor.path, tab.editor.model) catch {};
         self.working_copy_service.registerWorkingCopy(tui_editor_mod.workingCopyInterface(tab.editor)) catch {};
     }
 
@@ -2665,11 +2654,11 @@ pub const Workbench = struct {
                 .apply_edits = searchApplyEdits,
                 .save_file = searchSaveFile,
                 .active_selection_text = searchActiveSelectionText,
-                .active_editor = searchActiveEditorInfo,
                 .confirm_replace_all = searchConfirmReplaceAll,
             },
         );
         errdefer view.deinit();
+        view.model.result.model_host = .{ .context = self, .get = searchTextModel, .queue = &self.search_events };
         self.search_service = service;
         view.model.delivery.attach(&self.search_events, view, SearchView.dispatchSearch);
         self.search_view = view;
@@ -13174,9 +13163,10 @@ fn searchConfirmReplaceAll(context: *anyopaque, message: []const u8) !void {
     self.pointer = .default;
 }
 
-fn searchActiveEditorInfo(context: *anyopaque) ?search_view_mod.EditorInfo {
+fn searchTextModel(context: *anyopaque, path: []const u8) ?*@import("../../editor/common/model/textModel.zig").TextModel {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    return self.activeEditorInfo();
+    const input = self.findOpenInput(path) orelse return null;
+    return input.editor.model;
 }
 
 fn commandOpenNewSearchEditor(context: *anyopaque) anyerror!void {

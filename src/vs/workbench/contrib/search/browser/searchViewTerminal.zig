@@ -74,11 +74,6 @@ const base_scrollbar_thumb_color = ui.Color{ .r = 105, .g = 108, .b = 122 };
 
 pub const Action = enum { unhandled, handled, focus_editor };
 
-pub const EditorInfo = struct {
-    path: []const u8,
-    version: u32,
-};
-
 /// Workbench integration points. The search view does not import the
 /// workbench; the terminal shell implements these callbacks.
 pub const Host = struct {
@@ -92,7 +87,6 @@ pub const Host = struct {
     apply_edits: *const fn (context: *anyopaque, path: []const u8, edits: []const Edit) anyerror!void,
     save_file: *const fn (context: *anyopaque, path: []const u8) anyerror!void,
     active_selection_text: *const fn (context: *anyopaque, allocator: Allocator) anyerror!?[]u8,
-    active_editor: *const fn (context: *anyopaque) ?EditorInfo,
     confirm_replace_all: *const fn (context: *anyopaque, message: []const u8) anyerror!void,
 };
 
@@ -176,7 +170,6 @@ pub const SearchView = struct {
     header_rows: usize = 1,
     focus_field: Field = .search,
     results_focused: bool = false,
-    suppress_refresh: bool = false,
     panel_focused: bool = false,
     started_once: bool = false,
     replace_confirmation: ?controller_mod.ReplaceAllRequest = null,
@@ -224,7 +217,6 @@ pub const SearchView = struct {
                 .active_selection_text = hostActiveSelectionText,
                 .extra_files = hostExtraFiles,
                 .free_paths = hostFreePaths,
-                .active_editor = hostActiveEditor,
             },
             .{
                 .context = self,
@@ -503,14 +495,6 @@ pub const SearchView = struct {
         self.rebuildRows();
     }
 
-    pub fn onEditorChanged(self: *SearchView, info: ?EditorInfo) void {
-        if (self.suppress_refresh) return;
-        self.controller.onEditorChanged(if (info) |value| .{
-            .path = value.path,
-            .version = value.version,
-        } else null);
-    }
-
     pub fn setWorkspace(self: *SearchView, workspace: *WorkspaceContextService) void {
         self.workspace = workspace;
         self.controller.workspace = workspace;
@@ -734,8 +718,6 @@ pub const SearchView = struct {
     fn replaceSelected(self: *SearchView) void {
         if (!self.model.isReplaceActive()) return;
         const row = self.selectedRow() orelse return;
-        self.suppress_refresh = true;
-        defer self.suppress_refresh = false;
         self.controller.replaceElement(row) catch {
             self.controller.reportReplaceError();
             self.rebuildRows();
@@ -1492,11 +1474,6 @@ pub const SearchView = struct {
         self.panel_focused = true;
         self.setControllerFocusFromField();
     }
-
-    pub fn activeEditorInfo(self: *SearchView) ?EditorInfo {
-        _ = self;
-        return null;
-    }
 };
 
 pub fn resolveWidgetColors(palette: ?*const theme_colors_mod.ThemeColors, background: ui.Color, foreground: ui.Color) widget_mod.Colors {
@@ -1754,12 +1731,6 @@ fn hostExtraFiles(context: *anyopaque, allocator: Allocator) anyerror![][]u8 {
 fn hostFreePaths(context: *anyopaque, allocator: Allocator, paths: [][]u8) void {
     const self: *SearchView = @ptrCast(@alignCast(context));
     self.host.free_paths(self.host.context, allocator, paths);
-}
-
-fn hostActiveEditor(context: *anyopaque) ?controller_mod.EditorInfo {
-    const self: *SearchView = @ptrCast(@alignCast(context));
-    const info = self.host.active_editor(self.host.context) orelse return null;
-    return .{ .path = info.path, .version = info.version };
 }
 
 fn pointInRect(rect: ui.Rect, x: usize, y: usize) bool {

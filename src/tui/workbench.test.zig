@@ -1781,7 +1781,6 @@ test "Workbench: opening a search result from another file does not restart the 
     defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
-    workbench.onSearchEditorChanged();
     try workbench.findInFiles();
     const view = workbench.search_view.?;
     try view.widget.setValue(.search, "alpha");
@@ -1807,12 +1806,53 @@ test "Workbench: opening a search result from another file does not restart the 
     const enter = ui.KeyEvent{ .key = .enter };
     try std.testing.expectEqual(@as(@TypeOf(view.handleKey(&enter)), .handled), view.handleKey(&enter));
 
-    // The app reports the newly active editor after the click. Switching to
-    // another file is not a content change, so it must not schedule a query.
-    workbench.onSearchEditorChanged();
+    // Navigating to the match leaves the current search intact.
     _ = workbench.search_events.dispatch(@import("../vs/base/common/timeCompat.zig").milliTimestamp() + 600);
     try std.testing.expect(!view.model.isSearching());
     try std.testing.expectEqual(@as(usize, 2), view.model.result.count());
+}
+
+test "Workbench: an inactive result model updates only its file and can regain matches" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const a = try seedFile(allocator, io, &tmp, "one.txt", "alpha");
+    defer allocator.free(a);
+    const b = try seedFile(allocator, io, &tmp, "two.txt", "alpha");
+    defer allocator.free(b);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    const window = try TestWindow.init(allocator, io, &.{ a, b }, 80, 20);
+    defer window.deinit();
+    const w = window.workbench;
+    try w.initSidebar(root);
+    try w.findInFiles();
+    const view = w.search_view.?;
+    try view.widget.setValue(.search, "alpha");
+    try view.startSearch();
+    try waitForSearch(w);
+    try std.testing.expectEqual(2, view.matchCount());
+    const files = try view.model.result.matches(allocator);
+    defer allocator.free(files);
+    const editor = w.findOpenInput(a).?.editor;
+    const edited = if (files[0].model == editor.model) files[0] else files[1];
+    const other = if (edited == files[0]) files[1] else files[0];
+    const original_match = other.matches()[0];
+    try std.testing.expect(edited.model == editor.model);
+    if (w.activeTab().?.editor == editor) try w.switchTab(1);
+    try std.testing.expect(w.activeTab().?.editor != editor);
+    try editor.applyTextEdits(&.{.{ .range = .init(1, 1, 1, 6), .text = "beta" }}, &.{});
+    const deadline = edited.scheduler.at orelse return error.MissingFileMatchUpdate;
+    try std.testing.expect(!w.search_events.dispatch(deadline - 1));
+    try std.testing.expectEqual(2, view.matchCount());
+    try std.testing.expect(w.search_events.dispatch(deadline));
+    try std.testing.expectEqual(1, view.matchCount());
+    try editor.applyTextEdits(&.{.{ .range = .init(1, 1, 1, 5), .text = "alpha alpha" }}, &.{});
+    try std.testing.expect(w.search_events.dispatch(edited.scheduler.at.?));
+    try std.testing.expectEqual(3, view.matchCount());
+    try std.testing.expect(other.matches()[0] == original_match);
+    try std.testing.expect(!view.model.isSearching());
 }
 
 test "Workbench: search chevron and replace all confirmation update an open editor" {
@@ -2869,7 +2909,6 @@ test "Workbench: search editor shows query controls and reruns with independent 
     const tab = workbench.activeTab().?;
     const input = tab.search_editor_input.?;
     const query = input.search_editor;
-    workbench.onSearchEditorChanged();
     try std.testing.expectEqualStrings("alpha", query.form.value(.search));
     try std.testing.expectEqual(@as(usize, 1), query.form.contextLines());
 
@@ -2952,11 +2991,9 @@ test "Workbench: search editor shows query controls and reruns with independent 
     try std.testing.expect(workbench.activeTab() == tab);
     query.query_focused = true;
     query.form.focusField(.search);
-    workbench.onSearchEditorChanged();
     try query.form.setValue(.search, "");
     try std.testing.expect(workbench.handleSearchEditorKey(&enter));
     try waitForSearch(workbench);
-    workbench.onSearchEditorChanged();
     try std.testing.expect(sidebar.controller.refresh_at == null);
     try std.testing.expectEqualStrings("alpha", sidebar.widget.value(.search));
     try std.testing.expectEqual(@as(usize, 1), sidebar.matchCount());

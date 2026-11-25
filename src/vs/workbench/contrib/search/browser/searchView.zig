@@ -72,11 +72,6 @@ pub const Widget = struct {
     cycle_focus: *const fn (context: *anyopaque, backwards: bool) void,
 };
 
-pub const EditorInfo = struct {
-    path: []const u8,
-    version: u32,
-};
-
 pub const Host = struct {
     context: *anyopaque,
     open_match: *const fn (context: *anyopaque, path: []const u8, range: ?Range, preserve_focus: bool, side_by_side: bool) anyerror!void,
@@ -86,7 +81,6 @@ pub const Host = struct {
     active_selection_text: *const fn (context: *anyopaque, allocator: Allocator) anyerror!?[]u8,
     extra_files: *const fn (context: *anyopaque, allocator: Allocator) anyerror![][]u8,
     free_paths: *const fn (context: *anyopaque, allocator: Allocator, paths: [][]u8) void,
-    active_editor: *const fn (context: *anyopaque) ?EditorInfo,
 };
 
 pub const ReplaceAllRequest = struct {
@@ -139,9 +133,6 @@ pub const SearchView = struct {
     last_search_count: usize = 0,
     last_search_files: usize = 0,
     pending_replace_all: ?ReplaceAllRequest = null,
-    last_editor_path: std.array_list.Managed(u8),
-    last_editor_version: u32 = 0,
-    suppress_refresh: bool = false,
 
     pub fn init(
         allocator: Allocator,
@@ -173,15 +164,14 @@ pub const SearchView = struct {
             }),
             .view_mode = view_mode,
             .messages = std.array_list.Managed(Message).init(allocator),
-            .last_editor_path = std.array_list.Managed(u8).init(allocator),
         };
+        try model.result.listen(self, onResultChanged);
         return self;
     }
 
     pub fn deinit(self: *SearchView) void {
         self.clearMessages();
         self.messages.deinit();
-        self.last_editor_path.deinit();
         self.model.deinit();
         self.allocator.destroy(self);
     }
@@ -484,6 +474,13 @@ pub const SearchView = struct {
         self.updateSearchResultCount(true);
     }
 
+    fn onResultChanged(change: tree.ChangeEvent, self: *SearchView) !void {
+        if (change.force_update_model) {
+            self.updateSearchResultCount(self.state == .idle);
+            self.viewer.refreshView();
+        }
+    }
+
     fn updateSearchResultCount(self: *SearchView, final: bool) void {
         const count = self.model.result.count();
         const file_count = self.model.result.fileCount();
@@ -688,28 +685,6 @@ pub const SearchView = struct {
             .heading => {},
         }
         self.viewer.refreshView();
-    }
-
-    pub fn onEditorChanged(self: *SearchView, info: ?EditorInfo) void {
-        defer self.scheduleDeadline();
-        const current = info orelse return;
-        const same_path = std.mem.eql(u8, self.last_editor_path.items, current.path);
-        if (same_path and current.version == self.last_editor_version) return;
-
-        self.last_editor_version = current.version;
-        self.last_editor_path.clearRetainingCapacity();
-        self.last_editor_path.appendSlice(current.path) catch {};
-
-        // Upstream binds a result's text model and refreshes only that file's
-        // matches when its content changes. Opening/navigating to a result is
-        // not a content change and must not restart the query. The terminal
-        // panel still refreshes the whole search for edits, but only after the
-        // same editor's version changes; switching editors is ignored here.
-        if (!same_path) return;
-        if (self.suppress_refresh) return;
-        if (self.model.query == null) return;
-        if (self.model.result.isEmpty()) return;
-        self.refresh_at = time_compat.milliTimestamp() + 500;
     }
 
     pub fn onConfigurationChanged(self: *SearchView) void {

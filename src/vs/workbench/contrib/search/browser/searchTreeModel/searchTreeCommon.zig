@@ -13,6 +13,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const search = @import("../../../../services/search/common/search.zig");
+pub const TextModel = @import("../../../../../editor/common/model/textModel.zig").TextModel;
 const TextQuery = search.TextQuery;
 const TextSearchMatch = search.TextSearchMatch;
 const SearchRange = search.SearchRange;
@@ -33,6 +34,7 @@ pub const ChangeEvent = struct {
     added: bool = false,
     removed: bool = false,
     clearing_all: bool = false,
+    force_update_model: bool = false,
 };
 
 pub const Node = union(enum) {
@@ -270,164 +272,7 @@ fn textOfLine(lines: []const []u8, line_index: usize, start: usize, end: usize) 
 // FileMatch
 // ---------------------------------------------------------------------------
 
-pub const FileMatch = struct {
-    allocator: Allocator,
-    path: []u8,
-    name: []u8,
-    id: []u8,
-    parent_folder: *FolderMatch,
-    matches_list: std.array_list.Managed(*Match),
-    match_map: std.StringHashMap(*Match),
-    contexts: std.AutoHashMap(usize, []u8),
-    selected: ?*Match = null,
-    on_change: Emitter(ChangeEvent),
-    on_dispose: Emitter(void),
-
-    pub fn create(allocator: Allocator, path: []const u8, parent_folder: *FolderMatch) !*FileMatch {
-        const self = try allocator.create(FileMatch);
-        errdefer allocator.destroy(self);
-        const path_copy = try allocator.dupe(u8, path);
-        errdefer allocator.free(path_copy);
-        const name = try allocator.dupe(u8, std.fs.path.basename(path));
-        errdefer allocator.free(name);
-        const id = try std.fmt.allocPrint(allocator, "{s}{s}", .{ FILE_MATCH_PREFIX, path });
-        errdefer allocator.free(id);
-        self.* = .{
-            .allocator = allocator,
-            .path = path_copy,
-            .name = name,
-            .id = id,
-            .parent_folder = parent_folder,
-            .matches_list = std.array_list.Managed(*Match).init(allocator),
-            .match_map = std.StringHashMap(*Match).init(allocator),
-            .contexts = std.AutoHashMap(usize, []u8).init(allocator),
-            .on_change = Emitter(ChangeEvent).init(allocator),
-            .on_dispose = Emitter(void).init(allocator),
-        };
-        return self;
-    }
-
-    pub fn deinit(self: *FileMatch) void {
-        self.on_dispose.fire({}) catch {};
-        for (self.matches_list.items) |match| match.deinit();
-        self.matches_list.deinit();
-        self.match_map.deinit();
-        var context_iterator = self.contexts.valueIterator();
-        while (context_iterator.next()) |value| self.allocator.free(value.*);
-        self.contexts.deinit();
-        self.on_change.deinit();
-        self.on_dispose.deinit();
-        self.allocator.free(self.path);
-        self.allocator.free(self.name);
-        self.allocator.free(self.id);
-        self.allocator.destroy(self);
-    }
-
-    pub fn createMatches(self: *FileMatch, results: []const TextSearchMatch) !void {
-        for (results) |raw| {
-            for (raw.range_locations) |location| {
-                const match = try Match.create(
-                    self.allocator,
-                    self,
-                    raw.preview_text,
-                    location.preview,
-                    location.source,
-                );
-                try self.add(match, false);
-            }
-        }
-    }
-
-    pub fn addContexts(self: *FileMatch, contexts: []const search.TextSearchContext) !void {
-        for (contexts) |context| {
-            const copy = try self.allocator.dupe(u8, context.text);
-            errdefer self.allocator.free(copy);
-            const result = try self.contexts.getOrPut(context.line_number);
-            if (result.found_existing) self.allocator.free(result.value_ptr.*);
-            result.value_ptr.* = copy;
-        }
-    }
-
-    pub fn contextForLine(self: *const FileMatch, line_number: usize) ?[]const u8 {
-        return self.contexts.get(line_number);
-    }
-
-    pub fn add(self: *FileMatch, match: *Match, trigger: bool) !void {
-        if (self.match_map.contains(match.id)) {
-            match.deinit();
-            return;
-        }
-        try self.matches_list.append(match);
-        try self.match_map.put(match.id, match);
-        if (trigger) self.notify(true, false);
-    }
-
-    pub fn remove(self: *FileMatch, match: *Match) void {
-        for (self.matches_list.items, 0..) |candidate, index| {
-            if (candidate == match) {
-                _ = self.matches_list.orderedRemove(index);
-                _ = self.match_map.remove(match.id);
-                if (self.selected == match) self.selected = null;
-                match.deinit();
-                self.notify(false, true);
-                return;
-            }
-        }
-    }
-
-    pub fn removeAll(self: *FileMatch) void {
-        for (self.matches_list.items) |match| match.deinit();
-        self.matches_list.clearRetainingCapacity();
-        self.match_map.clearRetainingCapacity();
-        self.selected = null;
-        self.notify(false, true);
-    }
-
-    pub fn setSelectedMatch(self: *FileMatch, match: ?*Match) void {
-        if (match) |value| {
-            if (!self.match_map.contains(value.id)) return;
-        }
-        self.selected = match;
-    }
-
-    pub fn getSelectedMatch(self: *const FileMatch) ?*Match {
-        return self.selected;
-    }
-
-    pub fn isMatchSelected(self: *const FileMatch, match: *const Match) bool {
-        return self.selected == match;
-    }
-
-    pub fn matches(self: *const FileMatch) []*Match {
-        return self.matches_list.items;
-    }
-
-    pub fn textMatches(self: *const FileMatch) []*Match {
-        return self.matches_list.items;
-    }
-
-    pub fn count(self: *const FileMatch) usize {
-        return self.matches_list.items.len;
-    }
-
-    pub fn hasChildren(self: *const FileMatch) bool {
-        return self.matches_list.items.len > 0;
-    }
-
-    pub fn resource(self: *const FileMatch) []const u8 {
-        return self.path;
-    }
-
-    pub fn parent(self: *FileMatch) *FolderMatch {
-        return self.parent_folder;
-    }
-
-    pub fn notify(self: *FileMatch, added: bool, removed: bool) void {
-        const elements = [1]*FileMatch{self};
-        emit(&self.on_change, .{ .elements = elements[0..], .added = added, .removed = removed });
-        self.parent_folder.onFileChanged(self, removed);
-    }
-};
+pub const FileMatch = @import("fileMatch.zig").FileMatch;
 
 // ---------------------------------------------------------------------------
 // FolderMatch
@@ -492,7 +337,8 @@ pub const FolderMatch = struct {
 
     pub fn deinit(self: *FolderMatch) void {
         self.on_dispose.fire({}) catch {};
-        for (self.files.items) |file| file.deinit();
+        var owned_files = self.file_map.valueIterator();
+        while (owned_files.next()) |file| file.*.deinit();
         for (self.folders.items) |folder| folder.deinit();
         self.files.deinit();
         self.folders.deinit();
@@ -570,6 +416,9 @@ pub const FolderMatch = struct {
         errdefer file.deinit();
         try file.createMatches(results);
         try file.addContexts(contexts);
+        if (self.heading.parent_result.model_host) |host| {
+            if (host.get(host.context, path)) |model| try file.bindModel(model);
+        }
         try self.addFile(file);
         if (!silent and file.count() > 0) file.notify(true, false);
     }
@@ -591,8 +440,9 @@ pub const FolderMatch = struct {
     }
 
     pub fn addFile(self: *FolderMatch, file: *FileMatch) !void {
-        try self.files.append(file);
+        try self.files.ensureUnusedCapacity(1);
         try self.file_map.put(file.path, file);
+        self.files.appendAssumeCapacity(file);
     }
 
     pub fn addFolder(self: *FolderMatch, folder: *FolderMatch) !void {
@@ -635,6 +485,20 @@ pub const FolderMatch = struct {
                 return;
             }
         }
+    }
+
+    // file_map owns zero-match files while their model listener can restore them.
+    pub fn onModelMatchesUpdated(self: *FolderMatch, file: *FileMatch) void {
+        const visible = std.mem.indexOfScalar(*FileMatch, self.files.items, file);
+        const empty = file.count() == 0;
+        if (empty) {
+            if (visible) |index| _ = self.files.orderedRemove(index);
+        } else if (visible == null) {
+            self.files.append(file) catch return;
+        }
+        const event = ChangeEvent{ .elements = &.{file}, .added = !empty and visible == null, .removed = empty and visible != null, .force_update_model = true };
+        emit(&self.on_change, event);
+        self.heading.notifyChange(event);
     }
 
     pub fn onFileChanged(self: *FolderMatch, file: *FileMatch, removed: bool) void {
@@ -683,7 +547,8 @@ pub const FolderMatch = struct {
     }
 
     pub fn clear(self: *FolderMatch) void {
-        for (self.files.items) |file| file.deinit();
+        var owned_files = self.file_map.valueIterator();
+        while (owned_files.next()) |file| file.*.deinit();
         for (self.folders.items) |folder| folder.deinit();
         self.files.clearRetainingCapacity();
         self.folders.clearRetainingCapacity();
@@ -878,7 +743,14 @@ pub const SearchResult = struct {
     id: []u8,
     heading: *TextSearchHeading,
     query: ?*const TextQuery = null,
+    model_host: ?ModelHost = null,
     on_change: Emitter(ChangeEvent),
+
+    pub const ModelHost = struct {
+        context: *anyopaque,
+        get: *const fn (*anyopaque, []const u8) ?*TextModel,
+        queue: *@import("../../../../services/search/common/searchDispatch.zig").Queue,
+    };
 
     pub fn create(allocator: Allocator) !*SearchResult {
         const self = try allocator.create(SearchResult);
@@ -912,6 +784,11 @@ pub const SearchResult = struct {
 
     pub fn clear(self: *SearchResult) void {
         self.heading.clear();
+    }
+
+    pub fn onModelAdded(self: *SearchResult, path: []const u8, model: *TextModel) !void {
+        const folder = self.heading.getFolderMatch(path) orelse return;
+        if (folder.getDownstreamFileMatch(path)) |file| try file.bindModel(model);
     }
 
     pub fn matches(self: *SearchResult, allocator: Allocator) ![]*FileMatch {

@@ -784,7 +784,6 @@ pub fn main(init: std.process.Init) !void {
             if (resized or (needs_render and !coalesce_token_frame)) {
                 if (workbench.activeTab()) |current| {
                     current.onEditorChanged(now_ms);
-                    workbench.onSearchEditorChanged();
                     try current.refresh();
                 }
                 workbench.refreshStatus();
@@ -1022,7 +1021,6 @@ pub fn main(init: std.process.Init) !void {
             if (workbench.activeTab()) |current| {
                 if (!current.isImage()) {
                     current.onEditorChanged(time_compat.milliTimestamp());
-                    workbench.onSearchEditorChanged();
                     try current.refresh();
                 } else {
                     try current.refresh();
