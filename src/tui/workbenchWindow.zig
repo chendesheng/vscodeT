@@ -1357,6 +1357,8 @@ pub const TerminalWorkbench = struct {
             }.run,
             .handle_mouse = outlinePaneHandleMouse,
             .title_actions = outlinePaneTitleActions,
+            .set_visible = outlinePaneViewVisible,
+            .set_body_visible = outlinePaneBodyVisible,
             .append_secondary_actions = struct {
                 fn run(context: *anyopaque, menu: *Menu, service: *@import("../vs/platform/actions/common/menuService.zig").MenuService, keys: @import("../vs/platform/contextkey/common/contextkey.zig").IContext) !void {
                     const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
@@ -2719,6 +2721,7 @@ pub const TerminalWorkbench = struct {
         self.marker_listener = listener;
         if (self.markers_status) |status| status.attach(marker_service);
         if (self.problems_view) |*view| view.setService(marker_service);
+        if (self.outline_view) |view| try view.attachMarkerService(marker_service);
 
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
@@ -2730,7 +2733,6 @@ pub const TerminalWorkbench = struct {
 
     fn onMarkersChanged(_: MarkerChangeEvent, self: *TerminalWorkbench) !void {
         try self.syncPanelContainerVisibility();
-        if (self.outline_view) |view| view.refresh() catch {};
     }
 
     /// Applies declarative language/grammar contributions to the open tabs and
@@ -3648,9 +3650,7 @@ pub const TerminalWorkbench = struct {
     /// while the editor is still alive.
     fn detachTabViewHandlers(self: *TerminalWorkbench, tab: *Tab) void {
         if (self.context_keys != null) self.workbench_context.detachEditor(tab.editor);
-        if (self.outline_view) |view| {
-            if (view.editor == tab.editor) view.setEditor(null) catch {};
-        }
+        if (self.outline_view) |view| view.detachDisposedEditor(tab.editor);
     }
 
     fn performCloseTab(self: *TerminalWorkbench, pane: *GroupPane, tab: *Tab) !void {
@@ -3815,6 +3815,7 @@ pub const TerminalWorkbench = struct {
         if (self.search_window.view) |view| view.setThemeColors(palette);
         if (self.scm.changes) |view| view.setThemeColors(palette);
         if (self.scm.history) |view| view.setThemeColors(palette);
+        if (self.outline_view) |view| view.setThemeColors(palette);
         self.breadcrumbs.setThemeColors(palette);
         self.dialog_handler.setThemeColors(palette);
         self.statusbar.main_part.setThemeColors(palette);
@@ -4171,7 +4172,6 @@ pub const TerminalWorkbench = struct {
             container.setActive("outline");
         }
         if (focus) self.focusSidebar();
-        self.syncOutlineView() catch {};
         if (focus) if (self.outline_view) |view| view.setPaneFocused(true);
         self.updateSidebarTitleActions();
     }
@@ -4195,22 +4195,11 @@ pub const TerminalWorkbench = struct {
         }, &self.outline_service);
         errdefer view.deinit();
         try view.registerList(&self.lists);
+        try view.attachMarkerService(self.marker_service);
         view.setThemeColors(self.theme_palette);
         view.setBorderRendering(self.part.cell_borders);
         self.outline_view = view;
         return view;
-    }
-
-    fn syncOutlineView(self: *TerminalWorkbench) !void {
-        const tab = self.activeTab();
-        const editor: ?*Editor = if (tab) |active| blk: {
-            if (active.isImage() or active.isDiff()) break :blk null;
-            break :blk active.editor;
-        } else null;
-        const view = try self.ensureOutlineView();
-        view.setThemeColors(self.theme_palette);
-        view.setBorderRendering(self.part.cell_borders);
-        if (view.editor != editor) try view.setEditor(editor);
     }
 
     pub fn requestFrame(self: *TerminalWorkbench) void {
@@ -4312,38 +4301,43 @@ fn explorerPaneTitleActions(_: *anyopaque) []const views_mod.TitleAction {
 
 fn outlinePaneRenderBody(context: *anyopaque, grid: *ui.CellGrid, rect: ui.Rect, focused: bool) !void {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    self.syncOutlineView() catch {};
-    if (self.outline_view) |view| {
-        view.setThemeColors(self.theme_palette);
-        try view.render(grid, rect, focused);
-    }
+    if (self.outline_view) |view| try view.render(grid, rect, focused);
 }
 
 fn outlinePaneHandleKey(context: *anyopaque, event: *ui.KeyEvent) !bool {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    self.syncOutlineView() catch {};
     if (self.outline_view) |view| return view.handleKey(event);
     return false;
 }
 
 fn outlinePaneHandleMouse(context: *anyopaque, event: *const ui.MouseEvent, rect: ui.Rect) !bool {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    self.syncOutlineView() catch {};
     if (self.outline_view) |view| return view.handleMouse(event, rect);
     return false;
 }
 
 fn outlinePaneTitleActions(context: *anyopaque) []const views_mod.TitleAction {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    self.syncOutlineView() catch return &.{};
     if (self.outline_view) |view| return view.titleActions();
-    return &.{};
+    return OutlinePane.empty_title_actions;
+}
+
+fn outlinePaneViewVisible(context: *anyopaque, visible: bool) void {
+    if (!visible) return;
+    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
+    _ = self.ensureOutlineView() catch return;
+}
+
+fn outlinePaneBodyVisible(context: *anyopaque, visible: bool) void {
+    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
+    const view = if (visible) self.ensureOutlineView() catch return else self.outline_view orelse return;
+    view.setBodyVisible(visible, self.editor_api) catch {};
 }
 
 fn outlineActiveEditor(context: *anyopaque) ?OutlineEditor {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     const tab = self.activeTab() orelse return null;
-    if (tab.isImage() or tab.markdown_panel != null or tab.terminal_input != null) return null;
+    if (tab.isImage() or tab.isDiff() or tab.markdown_panel != null or tab.terminal_input != null) return null;
     return .{
         .context = @ptrCast(tab),
         .control = tab.editor,

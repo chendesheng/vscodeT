@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Emitter = @import("../../../../base/common/event.zig").Emitter;
 
 pub const ViewDescriptor = struct {
     id: []const u8,
@@ -83,37 +84,68 @@ pub const ViewContainerModel = struct {
     container: ViewContainer,
     views: std.array_list.Managed(ViewDescriptor),
     active_view: ?[]const u8 = null,
+    // The terminal model owns the collapsed flag that upstream ViewPane
+    // otherwise keeps in its DOM-backed Pane. Notify the mounted container
+    // at mutation time, not on a later layout/render pass.
+    on_did_add_visible_view_descriptors: Emitter(void),
+    on_did_remove_visible_view_descriptors: Emitter(void),
+    on_did_move_visible_view_descriptors: Emitter(void),
+    on_did_change_collapsed: Emitter(void),
+    on_did_restore_state: Emitter(void),
 
     pub fn init(allocator: Allocator, container: ViewContainer) ViewContainerModel {
         return .{
             .allocator = allocator,
             .container = container,
             .views = std.array_list.Managed(ViewDescriptor).init(allocator),
+            .on_did_add_visible_view_descriptors = .init(allocator),
+            .on_did_remove_visible_view_descriptors = .init(allocator),
+            .on_did_move_visible_view_descriptors = .init(allocator),
+            .on_did_change_collapsed = .init(allocator),
+            .on_did_restore_state = .init(allocator),
         };
     }
 
     pub fn deinit(self: *ViewContainerModel) void {
+        self.on_did_add_visible_view_descriptors.deinit();
+        self.on_did_remove_visible_view_descriptors.deinit();
+        self.on_did_move_visible_view_descriptors.deinit();
+        self.on_did_change_collapsed.deinit();
+        self.on_did_restore_state.deinit();
         self.views.deinit();
+    }
+
+    fn descriptorVisible(view: ViewDescriptor) bool {
+        return view.in_container and view.available and view.visible;
+    }
+
+    fn fireVisibilityChange(self: *ViewContainerModel, before: bool, after: bool) void {
+        if (before == after) return;
+        if (after) self.on_did_add_visible_view_descriptors.fire({}) catch {} else self.on_did_remove_visible_view_descriptors.fire({}) catch {};
     }
 
     pub fn addView(self: *ViewContainerModel, view: ViewDescriptor) !void {
         for (self.views.items) |*existing| {
             if (std.mem.eql(u8, existing.id, view.id)) {
+                const before = descriptorVisible(existing.*);
+                const collapsed_changed = existing.collapsed != view.collapsed;
                 existing.* = view;
+                self.fireVisibilityChange(before, descriptorVisible(view));
+                if (collapsed_changed) self.on_did_change_collapsed.fire({}) catch {};
                 return;
             }
         }
         try self.views.append(view);
-        if (self.active_view == null and view.visible) self.active_view = view.id;
+        if (self.active_view == null and descriptorVisible(view)) self.active_view = view.id;
+        self.fireVisibilityChange(false, descriptorVisible(view));
     }
 
     pub fn removeView(self: *ViewContainerModel, id: []const u8) void {
         for (self.views.items, 0..) |view, index| {
             if (std.mem.eql(u8, view.id, id)) {
                 _ = self.views.orderedRemove(index);
-                if (self.active_view != null and std.mem.eql(u8, self.active_view.?, id)) {
-                    self.active_view = null;
-                }
+                if (self.active_view != null and std.mem.eql(u8, self.active_view.?, id)) self.active_view = null;
+                self.fireVisibilityChange(descriptorVisible(view), false);
                 return;
             }
         }
@@ -122,7 +154,10 @@ pub const ViewContainerModel = struct {
     pub fn setVisible(self: *ViewContainerModel, id: []const u8, visible: bool) void {
         for (self.views.items) |*view| {
             if (std.mem.eql(u8, view.id, id)) {
+                if (view.visible == visible) return;
+                const before = descriptorVisible(view.*);
                 view.visible = visible;
+                self.fireVisibilityChange(before, descriptorVisible(view.*));
                 return;
             }
         }
@@ -152,7 +187,9 @@ pub const ViewContainerModel = struct {
     pub fn setCollapsed(self: *ViewContainerModel, id: []const u8, collapsed: bool) void {
         for (self.views.items) |*view| {
             if (std.mem.eql(u8, view.id, id)) {
+                if (view.collapsed == collapsed) return;
                 view.collapsed = collapsed;
+                self.on_did_change_collapsed.fire({}) catch {};
                 return;
             }
         }
@@ -184,7 +221,7 @@ pub const ViewContainerModel = struct {
         for (self.views.items) |*view| {
             if (!std.mem.eql(u8, view.id, id)) continue;
             if (view.in_container and view.available and view.can_toggle_visibility and (!view.visible or visible_count > 1)) {
-                view.visible = !view.visible;
+                self.setVisible(id, !view.visible);
             }
             return;
         }
@@ -215,6 +252,7 @@ pub const ViewContainerModel = struct {
         const view = self.views.orderedRemove(first);
         self.views.insertAssumeCapacity(insertion, view);
         for (self.views.items, 0..) |*item, index| item.order = index;
+        self.on_did_move_visible_view_descriptors.fire({}) catch {};
     }
 
     pub fn canMoveTo(self: *const ViewContainerModel, id: []const u8, target: *const ViewContainerModel) bool {
@@ -235,12 +273,16 @@ pub const ViewContainerModel = struct {
             if (!std.mem.eql(u8, source.id, id)) continue;
             for (target.views.items) |*destination| {
                 if (!std.mem.eql(u8, destination.id, id)) continue;
+                const source_visible = descriptorVisible(source.*);
+                const target_visible = descriptorVisible(destination.*);
                 destination.* = source.*;
                 destination.visible = true;
                 destination.collapsed = false;
                 destination.order = order;
                 destination.size = null;
                 source.in_container = false;
+                self.fireVisibilityChange(source_visible, false);
+                target.fireVisibilityChange(target_visible, descriptorVisible(destination.*));
                 return true;
             }
         }
@@ -248,6 +290,7 @@ pub const ViewContainerModel = struct {
     }
 
     pub fn restoreState(self: *ViewContainerModel, states: []const ViewState) void {
+        defer self.on_did_restore_state.fire({}) catch {};
         for (self.views.items) |*view| {
             for (states) |state| {
                 if (!std.mem.eql(u8, state.id, view.id)) continue;

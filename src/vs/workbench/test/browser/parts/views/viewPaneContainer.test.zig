@@ -342,3 +342,58 @@ test "ViewPaneContainer: a sash resizes the nearest expanded panes and dragging 
     try testing.expectEqual(@as(usize, 0), container.sashes.items[0].first);
     try testing.expectEqual(@as(usize, 2), container.sashes.items[0].second);
 }
+
+test "ViewPaneContainer: body visibility follows collapse, descriptor and composite events without layout" {
+    const allocator = testing.allocator;
+    var model = model_mod.ViewContainerModel.init(allocator, .{ .id = "test", .title = "Views", .icon = "" });
+    defer model.deinit();
+    try model.addView(.{ .id = "first", .name = "First", .order = 0 });
+    try model.addView(.{ .id = "second", .name = "Second", .order = 1, .collapsed = true });
+    const Probe = struct {
+        visible: bool = false,
+        body: bool = false,
+        changes: usize = 0,
+        fn visibleChanged(context: *anyopaque, visible: bool) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.visible = visible;
+        }
+        fn bodyChanged(context: *anyopaque, visible: bool) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.body = visible;
+            self.changes += 1;
+        }
+        fn render(_: *anyopaque, _: *ui.CellGrid, _: ui.Rect, _: bool) !void {}
+        fn actions(_: *anyopaque) []const views.TitleAction {
+            return &.{};
+        }
+    };
+    var first = Probe{};
+    var second = Probe{};
+    const panes = [_]container_mod.Pane{
+        .{ .id = "first", .title = "First", .context = &first, .render_body = Probe.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = Probe.actions, .set_visible = Probe.visibleChanged, .set_body_visible = Probe.bodyChanged },
+        .{ .id = "second", .title = "Second", .context = &second, .render_body = Probe.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = Probe.actions, .set_visible = Probe.visibleChanged, .set_body_visible = Probe.bodyChanged },
+    };
+    const container = try container_mod.ViewPaneContainer.init(allocator, &model, &panes);
+    defer {
+        container.deinit();
+        allocator.destroy(container);
+    }
+    container.setVisible(true);
+    try testing.expect(first.visible and first.body);
+    try testing.expect(second.visible and !second.body);
+    model.setCollapsed("second", false);
+    try testing.expect(second.body);
+    model.setCollapsed("second", true);
+    try testing.expect(!second.body);
+    model.setVisible("first", false);
+    try testing.expect(!first.visible and !first.body);
+    // A single merged view has no collapsible header.
+    try testing.expect(second.visible and second.body);
+    container.setVisible(false);
+    try testing.expect(!second.visible and !second.body);
+    const changes = second.changes;
+    try container.layout(.{ .x = 0, .y = 0, .w = 20, .h = 10 });
+    try testing.expectEqual(changes, second.changes);
+    container.setVisible(true);
+    try testing.expect(second.visible and second.body);
+}

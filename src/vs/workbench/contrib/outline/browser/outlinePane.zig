@@ -60,6 +60,9 @@ const SortContext = struct {
 const OutlineTree = data_tree_mod.DataTree(*const TreeElement);
 
 const list_service = @import("../../../../platform/list/browser/listService.zig");
+const SignalSubscription = @import("../../../../base/common/event.zig").SignalSubscription;
+const editor_service = @import("../../../services/editor/common/editorService.zig");
+const MarkerService = @import("../../../../platform/markers/common/markerService.zig").MarkerService;
 
 pub const OutlinePane = struct {
     pub const ID = @import("outline.zig").outline_id;
@@ -75,6 +78,12 @@ pub const OutlinePane = struct {
     root: TreeElement = undefined,
     tree_arena: std.heap.ArenaAllocator,
     editor: ?*Editor = null,
+    body_visible: bool = false,
+    active_editor_listener: ?SignalSubscription = null,
+    visible_editor_listener: ?SignalSubscription = null,
+    outline_service_listener: ?SignalSubscription = null,
+    marker_service: ?*MarkerService = null,
+    marker_listener: ?SignalSubscription = null,
     view_handler: ViewEventHandler = .{},
     handler_attached: bool = false,
     filter_text: std.array_list.Managed(u8),
@@ -126,6 +135,7 @@ pub const OutlinePane = struct {
     }
 
     pub fn deinit(self: *OutlinePane) void {
+        self.detachBodyListeners();
         self.list_focus.deinit();
         self.detachEditor();
         self.disposeOutline();
@@ -137,6 +147,10 @@ pub const OutlinePane = struct {
     }
 
     pub const more_actions_id = "outline.moreActions";
+    pub const empty_title_actions: []const views.TitleAction = &.{
+        .{ .id = "outline.collapse", .label = "Collapse All", .glyph = 0xeac5 },
+        .{ .id = more_actions_id, .label = "More Actions", .glyph = 0xea7c },
+    };
 
     pub fn titleActions(self: *OutlinePane) []const views.TitleAction {
         const all_collapsed = self.isAllCollapsed();
@@ -187,8 +201,75 @@ pub const OutlinePane = struct {
         if (!focused) self.tree.tree.view.clearHover();
     }
 
-    /// Rebinds the pane to the active editor. Called by the workbench when the
-    /// active tab or group changes; the editor's view events then drive cursor
+    /// Upstream onDidChangeBodyVisibility suspends editor and outline service
+    /// subscriptions while the body is hidden. The mounted-pane event is the
+    /// terminal counterpart of onDidChangeControl for a newly opened input.
+    pub fn setBodyVisible(self: *OutlinePane, visible: bool, editors: editor_service.IEditorService) !void {
+        if (self.body_visible == visible) return;
+        self.body_visible = visible;
+        if (!visible) {
+            self.detachBodyListeners();
+            self.detachEditor();
+            self.disposeOutline();
+            return;
+        }
+        errdefer {
+            self.body_visible = false;
+            self.detachBodyListeners();
+            self.detachEditor();
+            self.disposeOutline();
+        }
+        self.active_editor_listener = try editors.on_did_active_editor_change.listenSignal(self, handleEditorChanged);
+        self.visible_editor_listener = try editors.on_did_visible_editors_change.listenSignal(self, handleEditorChanged);
+        self.outline_service_listener = try self.outline_service.on_did_change.listenSignal(self, handleOutlineServiceChanged);
+        if (self.marker_service) |markers| self.marker_listener = try markers.on_marker_changed.listenSignal(self, handleOutlineServiceChanged);
+        try self.handleEditorChanged();
+        if (self.editor == null) try self.refresh();
+    }
+
+    pub fn attachMarkerService(self: *OutlinePane, service: ?*MarkerService) !void {
+        if (self.marker_listener) |listener| listener.dispose();
+        self.marker_listener = null;
+        self.marker_service = service;
+        if (self.body_visible) if (service) |markers| {
+            self.marker_listener = try markers.on_marker_changed.listenSignal(self, handleOutlineServiceChanged);
+        };
+    }
+
+    fn detachBodyListeners(self: *OutlinePane) void {
+        if (self.active_editor_listener) |listener| listener.dispose();
+        if (self.visible_editor_listener) |listener| listener.dispose();
+        if (self.outline_service_listener) |listener| listener.dispose();
+        if (self.marker_listener) |listener| listener.dispose();
+        self.active_editor_listener = null;
+        self.visible_editor_listener = null;
+        self.outline_service_listener = null;
+        self.marker_listener = null;
+    }
+
+    fn handleEditorChanged(self: *OutlinePane) !void {
+        const pane = self.host.active_editor(self.host.context);
+        try self.setEditor(if (pane) |value| value.control else null);
+        self.host.request_render(self.host.context);
+    }
+
+    fn handleOutlineServiceChanged(self: *OutlinePane) !void {
+        const previous = self.editor;
+        try self.handleEditorChanged();
+        if (self.editor == previous) try self.refresh();
+        self.host.request_render(self.host.context);
+    }
+
+    /// A disposed native editor cannot retain view-event listeners, even if
+    /// its group is being merged without changing the logical active input.
+    pub fn detachDisposedEditor(self: *OutlinePane, editor: *Editor) void {
+        if (self.editor != editor) return;
+        self.detachEditor();
+        self.disposeOutline();
+    }
+
+    /// Rebinds the pane in response to the active/mounted-editor event;
+    /// the editor's view events then drive cursor
     /// following and content rebuilds.
     pub fn setEditor(self: *OutlinePane, editor: ?*Editor) !void {
         if (self.editor == editor) return;

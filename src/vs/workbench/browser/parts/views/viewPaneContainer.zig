@@ -16,6 +16,7 @@ const theme_colors_mod = @import("../../themeColors.zig");
 const Menu = @import("../../../../platform/contextview/browser/contextMenuHandler.zig").Menu;
 const MenuService = @import("../../../../platform/actions/common/menuService.zig").MenuService;
 const IContext = @import("../../../../platform/contextkey/common/contextkey.zig").IContext;
+const SignalSubscription = @import("../../../../base/common/event.zig").SignalSubscription;
 
 pub const Pane = struct {
     id: []const u8,
@@ -24,6 +25,8 @@ pub const Pane = struct {
     render_body: *const fn (context: *anyopaque, grid: *ui.CellGrid, rect: ui.Rect, focused: bool) anyerror!void,
     handle_key: *const fn (context: *anyopaque, event: *ui.KeyEvent) anyerror!bool,
     set_focused: ?*const fn (*anyopaque, bool) void = null,
+    set_visible: ?*const fn (*anyopaque, bool) void = null,
+    set_body_visible: ?*const fn (*anyopaque, bool) void = null,
     append_secondary_actions: ?*const fn (*anyopaque, *Menu, *MenuService, IContext) anyerror!void = null,
     handle_mouse: *const fn (context: *anyopaque, event: *const ui.MouseEvent, rect: ui.Rect) anyerror!bool,
     title_actions: *const fn (context: *anyopaque) []const views.TitleAction,
@@ -89,12 +92,17 @@ const SashDrag = struct {
 };
 
 pub const ViewPaneContainer = struct {
+    const PaneVisibility = struct { view: bool = false, body: bool = false };
+
     allocator: Allocator,
     model: *model_mod.ViewContainerModel,
     panes: []const Pane,
     headers: std.array_list.Managed(view_pane.Header),
     sections: std.array_list.Managed(Section),
     active_id: ?[]const u8 = null,
+    visible: bool = false,
+    visibility: []PaneVisibility,
+    model_listeners: [5]?SignalSubscription = @splat(null),
     merge_view_with_container_when_single_view: bool = true,
     always_show_header_actions: bool = false,
     focused_header: ?[]const u8 = null,
@@ -120,10 +128,14 @@ pub const ViewPaneContainer = struct {
     ) !*ViewPaneContainer {
         const self = try allocator.create(ViewPaneContainer);
         errdefer allocator.destroy(self);
+        const visibility = try allocator.alloc(PaneVisibility, panes.len);
+        errdefer allocator.free(visibility);
+        @memset(visibility, .{});
         self.* = .{
             .allocator = allocator,
             .model = model,
             .panes = panes,
+            .visibility = visibility,
             .headers = std.array_list.Managed(view_pane.Header).init(allocator),
             .sections = std.array_list.Managed(Section).init(allocator),
         };
@@ -131,17 +143,26 @@ pub const ViewPaneContainer = struct {
             for (self.headers.items) |*header| header.deinit();
             self.headers.deinit();
             self.sections.deinit();
+            for (self.model_listeners) |listener| if (listener) |value| value.dispose();
         }
         for (panes) |pane| {
             try self.headers.append(view_pane.Header.init(allocator, pane.title));
         }
         self.active_id = model.activeView();
+        self.model_listeners[0] = try model.on_did_add_visible_view_descriptors.listenSignal(self, onModelVisibilityChanged);
+        self.model_listeners[1] = try model.on_did_remove_visible_view_descriptors.listenSignal(self, onModelVisibilityChanged);
+        self.model_listeners[2] = try model.on_did_move_visible_view_descriptors.listenSignal(self, onModelVisibilityChanged);
+        self.model_listeners[3] = try model.on_did_change_collapsed.listenSignal(self, onModelVisibilityChanged);
+        self.model_listeners[4] = try model.on_did_restore_state.listenSignal(self, onModelVisibilityChanged);
         return self;
     }
 
     /// Releases the header surfaces and lists. The owner destroys the struct,
     /// matching the other terminal view objects.
     pub fn deinit(self: *ViewPaneContainer) void {
+        self.setVisible(false);
+        for (self.model_listeners) |listener| if (listener) |value| value.dispose();
+        self.allocator.free(self.visibility);
         for (self.headers.items) |*header| header.deinit();
         self.headers.deinit();
         self.sections.deinit();
@@ -150,13 +171,44 @@ pub const ViewPaneContainer = struct {
         self.* = undefined;
     }
 
+    /// ViewPane.onDidChangeBodyVisibility: an expanded view is visible only
+    /// when its containing composite is visible. The single merged view has
+    /// no collapsible header and is always expanded. Model mutations and
+    /// composite visibility events drive this transition, never rendering.
+    pub fn setVisible(self: *ViewPaneContainer, visible: bool) void {
+        if (self.visible == visible) return;
+        self.visible = visible;
+        self.updateBodyVisibility();
+    }
+
+    fn onModelVisibilityChanged(self: *ViewPaneContainer) !void {
+        self.updateBodyVisibility();
+        self.updateFocusedBody();
+    }
+
+    fn updateBodyVisibility(self: *ViewPaneContainer) void {
+        var count: usize = 0;
+        for (self.model.views.items) |view| {
+            if (view.in_container and view.available and view.visible) count += 1;
+        }
+        const merged = count == 1 and self.merge_view_with_container_when_single_view;
+        for (self.panes, 0..) |pane, index| {
+            const view_visible = self.visible and self.model.isVisible(pane.id);
+            const body_visible = view_visible and (merged or !self.model.isCollapsed(pane.id));
+            const previous = self.visibility[index];
+            self.visibility[index] = .{ .view = view_visible, .body = body_visible };
+            if (previous.view != view_visible) if (pane.set_visible) |callback| callback(pane.context, view_visible);
+            if (previous.body != body_visible) if (pane.set_body_visible) |callback| callback(pane.context, body_visible);
+        }
+    }
+
     pub fn setFocused(self: *ViewPaneContainer, focused: bool) void {
         self.focused = focused;
         self.updateFocusedBody();
     }
 
     fn updateFocusedBody(self: *ViewPaneContainer) void {
-        const next = if (self.focused and self.focused_header == null and self.active_id != null and !self.model.isCollapsed(self.active_id.?)) self.active_id else null;
+        const next = if (self.focused and self.focused_header == null and self.active_id != null and self.model.isVisible(self.active_id.?) and !self.model.isCollapsed(self.active_id.?)) self.active_id else null;
         if (next == null and self.focused_body == null) return;
         if (next) |id| if (idEquals(self.focused_body, id)) return;
         if (self.focused_body) |id| if (self.paneIndex(id)) |index| {

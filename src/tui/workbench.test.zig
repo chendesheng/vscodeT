@@ -8041,8 +8041,24 @@ test "Workbench: closing the active tab detaches the outline editor handler" {
     try std.testing.expect(view.editor == old_editor);
 
     _ = try workbench.closeActive();
-    try std.testing.expect(view.editor == null);
     try std.testing.expect(workbench.activeTab() != null);
+    // The old editor is detached and the replacement active pane is bound
+    // synchronously through the editor service, before any render/input.
+    try std.testing.expect(view.editor != old_editor);
+    try std.testing.expectEqual(workbench.activeTab().?.editor, view.editor.?);
+    workbench.explorer_container.?.model.setCollapsed("outline", true);
+    try std.testing.expect(!view.body_visible);
+    try std.testing.expect(view.editor == null);
+    try workbench.openPath(path_a);
+    try std.testing.expect(view.editor == null);
+    workbench.explorer_container.?.model.setCollapsed("outline", false);
+    try std.testing.expect(view.body_visible);
+    try std.testing.expectEqual(workbench.activeTab().?.editor, view.editor.?);
+    try workbench.layout.setPartHidden(true, .sidebar);
+    try std.testing.expect(!view.body_visible and view.editor == null);
+    try workbench.layout.setPartHidden(false, .sidebar);
+    try std.testing.expect(view.body_visible);
+    try std.testing.expectEqual(workbench.activeTab().?.editor, view.editor.?);
 }
 
 test "Workbench: git scm integration, diff tabs and read-only snapshots" {

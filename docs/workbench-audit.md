@@ -108,7 +108,9 @@ PanelPart now renders the upstream PanelTitle navigation actions through a live 
 
 The terminal, built-in extension and Node extension-host service factories now live in `src/tui/workbenchServices.zig`. The portable service contracts no longer construct a generic adapter from the native window type. Native application startup supplies the explicit contracts; the generic owner test harness gets the same contract from its window.
 
-The portable browser Workbench is 292 lines and has no inline tests. The native TerminalWorkbench window is 4,622 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
+OutlinePane now subscribes to active/visible-editor, outline-creator and marker events while its body is visible. ViewContainerModel descriptor/collapse events and SidebarPart composite visibility drive ViewPaneContainer body visibility; the native render and input paths no longer synchronize the outline by reading editor state.
+
+The portable browser Workbench is 292 lines and has no inline tests. The native TerminalWorkbench window is 4,616 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and

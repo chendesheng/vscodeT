@@ -117,9 +117,11 @@ pub const SidebarPart = struct {
 
     pub fn registerViewPaneContainer(self: *SidebarPart, container: *ViewPaneContainer) !void {
         try self.view_pane_containers.putNoClobber(self.allocator, container.model.container.id, container);
+        container.setVisible(self.visible and self.pane.active_id != null and std.mem.eql(u8, self.pane.active_id.?, container.model.container.id));
     }
 
     pub fn unregisterViewPaneContainer(self: *SidebarPart, container: *ViewPaneContainer) void {
+        container.setVisible(false);
         _ = self.view_pane_containers.remove(container.model.container.id);
     }
 
@@ -194,6 +196,11 @@ pub const SidebarPart = struct {
         self.activity_bar = bar;
     }
 
+    fn setActiveContainerVisible(self: *SidebarPart, visible: bool) void {
+        const id = self.pane.active_id orelse return;
+        if (self.getViewPaneContainer(id)) |container| container.setVisible(visible);
+    }
+
     fn focusActiveContainer(self: *SidebarPart, focused: bool) void {
         const id = self.pane.active_id orelse return;
         if (self.getViewPaneContainer(id)) |container| container.setFocused(focused);
@@ -207,6 +214,7 @@ pub const SidebarPart = struct {
     pub fn setVisible(self: *SidebarPart, visible: bool) !void {
         if (self.visible == visible) return;
         self.visible = visible;
+        self.setActiveContainerVisible(visible);
         self.focusActiveContainer(self.focused and visible);
         try self.pane.setVisible(visible);
         try self.base.setVisible(visible);
@@ -306,6 +314,8 @@ pub const SidebarPart = struct {
     }
 
     pub fn openPaneComposite(self: *SidebarPart, id: []const u8) !bool {
+        if (self.pane.getPaneComposite(id) == null) return false;
+        if (self.pane.active_id != null and !std.mem.eql(u8, self.pane.active_id.?, id)) self.setActiveContainerVisible(false);
         self.focusActiveContainer(false);
         const opened = try self.pane.openPaneComposite(id, true);
         if (opened == null) return false;
@@ -314,6 +324,7 @@ pub const SidebarPart = struct {
             try self.base.setVisible(true);
             try self.on_did_change.fire({});
         }
+        self.setActiveContainerVisible(true);
         self.focusActiveContainer(self.focused);
         return true;
     }
@@ -323,6 +334,7 @@ pub const SidebarPart = struct {
     }
 
     pub fn hideActivePaneComposite(self: *SidebarPart) !void {
+        self.setActiveContainerVisible(false);
         self.focusActiveContainer(false);
         if (self.visible) {
             self.visible = false;
