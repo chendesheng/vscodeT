@@ -1915,8 +1915,7 @@ pub fn Tests(comptime factory: anytype) type {
             closed.addWorkingCopyContentListener(content_listener);
             closed.addScrollListener(scroll_listener);
             _ = try tab.listenWillDispose(&detach, Detach.onDispose);
-            const ctrl_w = ui.KeyEvent{ .key = .{ .char = 'w' }, .mods = .{ .ctrl = true } };
-            try std.testing.expect((try workbench.handleTabKey(&ctrl_w)) == .handled);
+            try workbench.commands.execute("workbench.action.closeActiveEditor");
             try std.testing.expect(detach.editor == null);
             try std.testing.expectEqual(@as(usize, 1), detach.count);
         }

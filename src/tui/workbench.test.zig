@@ -93,7 +93,7 @@ fn clickStatusEntry(workbench: *Workbench, id: []const u8) !bool {
                         .y = y,
                         .button = .left,
                     };
-                    return workbench.handleStatusbarMouse(&event);
+                    return terminal_workbench.handleStatusbarMouse(workbench, &event);
                 },
                 .part => {},
             }
@@ -224,13 +224,13 @@ test "Workbench: empty editor renders the watermark and runs its shortcuts" {
     const label_x = commands_row.first_child.?.next.?.asElement().rect.x;
     try std.testing.expectEqual(label_x, terminal_row.first_child.?.next.?.asElement().rect.x);
     try std.testing.expectEqual(label_x, search_row.first_child.?.next.?.asElement().rect.x);
-    try std.testing.expect(workbench.handleWatermarkKey(&.{ .key = .tab }));
+    try std.testing.expect(terminal_workbench.handleWatermarkKey(workbench, &.{ .key = .tab }));
     try std.testing.expectEqual(commands_row, watermark.root.document.focusedElement().?);
-    try std.testing.expect(workbench.handleWatermarkKey(&.{ .key = .down }));
+    try std.testing.expect(terminal_workbench.handleWatermarkKey(workbench, &.{ .key = .down }));
     try std.testing.expectEqual(terminal_row, watermark.root.document.focusedElement().?);
-    try std.testing.expect(workbench.handleWatermarkKey(&.{ .key = .up }));
+    try std.testing.expect(terminal_workbench.handleWatermarkKey(workbench, &.{ .key = .up }));
     try std.testing.expectEqual(commands_row, watermark.root.document.focusedElement().?);
-    try std.testing.expect(workbench.handleWatermarkKey(&.{ .key = .enter }));
+    try std.testing.expect(terminal_workbench.handleWatermarkKey(workbench, &.{ .key = .enter }));
     try std.testing.expect(workbench.quick_access.isOpen());
     var escape = ui.KeyEvent{ .key = .escape };
     _ = try terminal_workbench.handleQuickAccessKey(workbench, &escape);
@@ -293,7 +293,7 @@ test "Workbench: watermark tips respond to resized panes, settings, and keybindi
     defer allocator.free(inactive);
     try std.testing.expect(std.mem.indexOf(u8, inactive, "▗▄██▙▄▖") != null);
     try std.testing.expect(std.mem.indexOf(u8, inactive, "Show All Commands") == null);
-    try std.testing.expect(!workbench.handleWatermarkKey(&.{ .key = .tab }));
+    try std.testing.expect(!terminal_workbench.handleWatermarkKey(workbench, &.{ .key = .tab }));
 }
 
 test "Workbench: threaded tokenizer shuts down after tabs" {
@@ -414,10 +414,10 @@ test "Workbench: opens two files, switches tabs and closes them" {
     try std.testing.expectEqualStrings("b.txt", workbench.activeTab().?.input.getName());
 
     const ctrl_w = ui.KeyEvent{ .key = .{ .char = 'w' }, .mods = .{ .ctrl = true } };
-    try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&ctrl_w));
+    try std.testing.expectEqual(TabKeyResult.handled, try terminal_workbench.handleTabKey(workbench, &ctrl_w));
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
     try std.testing.expectEqualStrings("a.txt", workbench.activeTab().?.input.getName());
-    try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&ctrl_w));
+    try std.testing.expectEqual(TabKeyResult.handled, try terminal_workbench.handleTabKey(workbench, &ctrl_w));
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
 }
 
@@ -443,7 +443,7 @@ test "Workbench: ownsEditor follows tab ownership across close" {
 
     try workbench.activeTab().?.ensureControllers();
     const ctrl_w = ui.KeyEvent{ .key = .{ .char = 'w' }, .mods = .{ .ctrl = true } };
-    try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&ctrl_w));
+    try std.testing.expectEqual(TabKeyResult.handled, try terminal_workbench.handleTabKey(workbench, &ctrl_w));
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
     // `closed` is only compared, never dereferenced: the tab close freed it.
     try std.testing.expect(!ownsEditor(workbench, closed));
@@ -526,9 +526,9 @@ test "Workbench: markdown preview toggle changes the current editor in place" {
     try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
 
     var close_key = ui.KeyEvent{ .key = .{ .char = 'v' }, .mods = .{ .ctrl = true, .shift = true } };
-    try std.testing.expect(try workbench.handleGlobalKey(&close_key));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &close_key));
     try std.testing.expect(tab.markdown_preview == null);
-    try std.testing.expect(try workbench.handleGlobalKey(&close_key));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &close_key));
     try std.testing.expect(tab.markdown_preview != null);
     try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "Title") != null);
@@ -752,7 +752,7 @@ test "Workbench: editor group focus stays put when wheeling over another pane" {
     const y = ui.cell.snap(left.rect.y) + left.chromeHeight();
     var wheel = ui.MouseEvent{ .kind = .wheel, .x = x, .y = y, .delta_y = 3 };
     try std.testing.expect(!terminal_workbench.handleTabMouse(workbench, &wheel));
-    const target = workbench.editorMouseEvent(wheel) orelse return error.TestExpectedWheelTarget;
+    const target = terminal_workbench.editorMouseEvent(workbench, wheel) orelse return error.TestExpectedWheelTarget;
     try std.testing.expectEqual(left_tab, target.tab);
     const hit = (try surface.elementFromPoint(x, y)) orelse return error.TestExpectedWheelTarget;
     surface.document().dispatchMouse(hit, &wheel);
@@ -789,12 +789,12 @@ test "Workbench: editor group focus, new group and close group commands" {
     try std.testing.expect(second.activeTab() == null);
 
     const first_group = ui.KeyEvent{ .key = .{ .char = '1' }, .mods = .{ .ctrl = true } };
-    try std.testing.expect(try workbench.handleGlobalKey(&first_group));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &first_group));
     try std.testing.expectEqual(first, workbench.activePane().?);
     const chord = ui.KeyEvent{ .key = .{ .char = 'k' }, .mods = .{ .ctrl = true } };
     const right = ui.KeyEvent{ .key = .right, .mods = .{ .ctrl = true } };
-    try std.testing.expect(try workbench.handleGlobalKey(&chord));
-    try std.testing.expect(try workbench.handleGlobalKey(&right));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &chord));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &right));
     try std.testing.expectEqual(second, workbench.activePane().?);
 
     _ = try workbench.commands.execute("workbench.action.focusLeftGroup");
@@ -1257,7 +1257,7 @@ test "Workbench: dragging a tab into a pane moves it there" {
 
     var up = move;
     up.kind = .up;
-    try std.testing.expect(workbench.handleTabDragMouse(&up));
+    try std.testing.expect(terminal_workbench.handleTabDragMouse(workbench, &up));
 
     try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
     try std.testing.expectEqual(@as(usize, 1), workbench.part.group_views.items.len);
@@ -1312,7 +1312,7 @@ test "Workbench: dragging over a tab strip previews the insertion and reorders o
 
     var up = move;
     up.kind = .up;
-    try std.testing.expect(workbench.handleTabDragMouse(&up));
+    try std.testing.expect(terminal_workbench.handleTabDragMouse(workbench, &up));
 
     try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
@@ -1374,7 +1374,7 @@ test "Workbench: dropping a tab on another strip inserts at the previewed index"
 
     var up = move;
     up.kind = .up;
-    try std.testing.expect(workbench.handleTabDragMouse(&up));
+    try std.testing.expect(terminal_workbench.handleTabDragMouse(workbench, &up));
 
     // The source group empties and collapses; the target keeps the insert order.
     try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
@@ -1645,16 +1645,16 @@ test "Workbench: sidebar renders and opens a file" {
 
     const explorer_body = workbench.explorer_container.?.bodyRect("explorer").?;
     const click = ui.MouseEvent{ .kind = .down, .x = 4, .y = ui.cell.snap(explorer_body.y) + 1 };
-    try std.testing.expect(workbench.handleSidebarMouse(&click));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &click));
     pumpOpenForTests(workbench);
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
     try std.testing.expectEqualStrings("side_open.txt", workbench.activeTab().?.input.getName());
     try std.testing.expectEqual(Focus.editor, workbench.focus);
 
     const ctrl_b = ui.KeyEvent{ .key = .{ .char = 'b' }, .mods = .{ .ctrl = true } };
-    try std.testing.expect(try workbench.handleSidebarKey(&ctrl_b));
+    try std.testing.expect(try terminal_workbench.handleSidebarKey(workbench, &ctrl_b));
     try std.testing.expect(!workbench.layout.isVisible(.sidebar));
-    try std.testing.expect(try workbench.handleSidebarKey(&ctrl_b));
+    try std.testing.expect(try terminal_workbench.handleSidebarKey(workbench, &ctrl_b));
     try std.testing.expect(workbench.layout.isVisible(.sidebar));
 }
 
@@ -1931,7 +1931,7 @@ test "Workbench: search chevron and replace all confirmation update an open edit
         .y = y + ui.cell.snap(control.y),
     };
     try std.testing.expect(!view.widget.replace_visible);
-    try std.testing.expect(workbench.handleSidebarMouse(&down));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &down));
     try std.testing.expect(view.widget.replace_visible);
     try view.widget.setValue(.search, "alpha");
     try view.widget.setValue(.replace, "omega");
@@ -1947,15 +1947,15 @@ test "Workbench: search chevron and replace all confirmation update an open edit
         .x = x + ui.cell.snap(replace_all.x),
         .y = y + ui.cell.snap(replace_all.y),
     };
-    try std.testing.expect(workbench.handleSidebarMouse(&click));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &click));
     try std.testing.expect(view.replace_confirmation != null);
     try std.testing.expectEqual(@as(usize, 2), view.matchCount());
     var escape = ui.KeyEvent{ .key = .escape };
-    try std.testing.expect(workbench.handleDialogKey(&escape));
+    try std.testing.expect(terminal_workbench.handleDialogKey(workbench, &escape));
     try std.testing.expect(view.replace_confirmation == null);
-    try std.testing.expect(workbench.handleSidebarMouse(&click));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &click));
     var enter = ui.KeyEvent{ .key = .enter };
-    try std.testing.expect(workbench.handleDialogKey(&enter));
+    try std.testing.expect(terminal_workbench.handleDialogKey(workbench, &enter));
 
     const tab = workbench.activeTab().?;
     var content = try tab.editor.model.getValue(null, false);
@@ -1984,7 +1984,7 @@ test "Workbench: activity bar switches view containers" {
     workbench.focusSidebar();
 
     const search_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 2 };
-    try std.testing.expect(workbench.handleSidebarMouse(&search_click));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &search_click));
     try std.testing.expectEqual(@as(usize, 1), workbench.activeActivity());
 
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -1994,7 +1994,7 @@ test "Workbench: activity bar switches view containers" {
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "No results") != null or std.mem.indexOf(u8, out.written(), "Search") != null);
 
     const scm_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 3 };
-    try std.testing.expect(workbench.handleSidebarMouse(&scm_click));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &scm_click));
     try std.testing.expectEqual(@as(usize, 2), workbench.activeActivity());
     out.clearRetainingCapacity();
     try renderFrame(workbench, &out.writer);
@@ -2005,7 +2005,7 @@ test "Workbench: activity bar switches view containers" {
     // as an editor tab, which is not ported. A click below the last entry
     // changes nothing.
     const empty_rail_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 4 };
-    try std.testing.expect(workbench.handleSidebarMouse(&empty_rail_click));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &empty_rail_click));
     try std.testing.expectEqual(@as(usize, 2), workbench.activeActivity());
     try std.testing.expectEqual(@as(usize, 3), workbench.activity_bar_part.count());
 
@@ -2015,7 +2015,7 @@ test "Workbench: activity bar switches view containers" {
     try std.testing.expect(!workbench.panelShown());
 
     const alt_1 = ui.KeyEvent{ .key = .{ .char = '1' }, .mods = .{ .alt = true } };
-    try std.testing.expect(try workbench.handleSidebarKey(&alt_1));
+    try std.testing.expect(try terminal_workbench.handleSidebarKey(workbench, &alt_1));
     try std.testing.expectEqual(@as(usize, 0), workbench.activeActivity());
 }
 
@@ -2092,14 +2092,14 @@ test "Workbench: zen mode keybindings toggle and exit" {
     defer workbench_window.deinit();
 
     const ctrl_k = ui.KeyEvent{ .key = .{ .char = 'k' }, .mods = .{ .ctrl = true } };
-    try std.testing.expect(try workbench.handleGlobalKey(&ctrl_k));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &ctrl_k));
     const z = ui.KeyEvent{ .key = .{ .char = 'z' } };
-    try std.testing.expect(try workbench.handleGlobalKey(&z));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &z));
     try std.testing.expect(workbench.layout.isZenModeActive());
 
     const escape = ui.KeyEvent{ .key = .escape };
-    try std.testing.expect(try workbench.handleGlobalKey(&escape));
-    try std.testing.expect(try workbench.handleGlobalKey(&escape));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &escape));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &escape));
     try std.testing.expect(!workbench.layout.isZenModeActive());
 }
 
@@ -2153,13 +2153,13 @@ test "Workbench: Problems panel, status count and range highlight" {
     try std.testing.expect(workbench.range_highlights.?.highlighted);
 
     const down = ui.KeyEvent{ .key = .down };
-    try std.testing.expect(try workbench.handlePanelKey(&down));
+    try std.testing.expect(try terminal_workbench.handlePanelKey(workbench, &down));
     try std.testing.expectEqual(Focus.problems, workbench.focus);
     try std.testing.expectEqual(@as(usize, 3), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
     try std.testing.expect(workbench.range_highlights.?.highlighted);
-    try std.testing.expect(try workbench.handlePanelKey(&.{ .key = .up }));
+    try std.testing.expect(try terminal_workbench.handlePanelKey(workbench, &.{ .key = .up }));
     const enter = ui.KeyEvent{ .key = .enter };
-    try std.testing.expect(try workbench.handlePanelKey(&enter));
+    try std.testing.expect(try terminal_workbench.handlePanelKey(workbench, &enter));
     try std.testing.expectEqual(@as(usize, 2), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
     try std.testing.expect(!workbench.range_highlights.?.highlighted);
 }
@@ -2217,16 +2217,16 @@ test "Workbench: panel composite bar hosts Problems beside the Terminal" {
 
     // Ctrl-J closes and re-opens the panel with its last active container.
     const ctrl_j = ui.KeyEvent{ .key = .{ .char = 'j' }, .mods = .{ .ctrl = true } };
-    try std.testing.expect(try workbench.handleGlobalKey(&ctrl_j));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &ctrl_j));
     try std.testing.expect(!workbench.panelShown());
-    try std.testing.expect(try workbench.handleGlobalKey(&ctrl_j));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &ctrl_j));
     try std.testing.expect(workbench.panelShown());
 
     // Ctrl-Shift-M toggles Problems through the registered keybinding.
     const ctrl_shift_m = ui.KeyEvent{ .key = .{ .char = 'm' }, .mods = .{ .ctrl = true, .shift = true } };
-    try std.testing.expect(try workbench.handleGlobalKey(&ctrl_shift_m));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &ctrl_shift_m));
     try std.testing.expect(!workbench.panelShown());
-    try std.testing.expect(try workbench.handleGlobalKey(&ctrl_shift_m));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &ctrl_shift_m));
     try std.testing.expect(workbench.panelShown());
     try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, workbench.activePanelId());
 
@@ -2290,7 +2290,7 @@ test "Workbench: opens a folder workspace with no initial tabs" {
 
     const explorer_body = workbench.explorer_container.?.bodyRect("explorer").?;
     const click = ui.MouseEvent{ .kind = .down, .x = 4, .y = ui.cell.snap(explorer_body.y) };
-    try std.testing.expect(workbench.handleSidebarMouse(&click));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &click));
     pumpOpenForTests(workbench);
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
     try std.testing.expectEqualStrings("folder_file.txt", workbench.activeTab().?.input.getName());
@@ -2572,9 +2572,9 @@ test "Workbench: list keybindings route to the focused sidebar" {
     var j = ui.KeyEvent{ .key = .{ .char = 'j' } };
     // The binding is gated by `listFocus`; the editor does not match it.
     workbench.focusEditor();
-    try std.testing.expect(!(try workbench.handleGlobalKey(&j)));
+    try std.testing.expect(!(try terminal_workbench.handleGlobalKey(workbench, &j)));
     workbench.focusSidebar();
-    try std.testing.expect(try workbench.handleGlobalKey(&j));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &j));
 
     // File-service notifications schedule the user-keybinding owner's reload
     // independently of settings.json, even while the editor is idle.
@@ -2590,9 +2590,9 @@ test "Workbench: list keybindings route to the focused sidebar" {
         std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(old != workbench.user_keybindings.current);
-    try std.testing.expect(!(try workbench.handleGlobalKey(&j)));
+    try std.testing.expect(!(try terminal_workbench.handleGlobalKey(workbench, &j)));
     var k = ui.KeyEvent{ .key = .{ .char = 'k' } };
-    try std.testing.expect(try workbench.handleGlobalKey(&k));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &k));
 }
 
 test "Workbench: color theme settings load a registered theme palette" {
@@ -2780,28 +2780,28 @@ test "Workbench: user keybindings override defaults, honor when and removals" {
     workbench.focusEditor();
 
     const ctrl_alt_g = ui.KeyEvent{ .key = .{ .char = 'g' }, .mods = .{ .ctrl = true, .alt = true } };
-    try std.testing.expect(try workbench.handleGlobalKey(&ctrl_alt_g));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &ctrl_alt_g));
     try std.testing.expect(workbench.isQuickAccessOpen());
     try closeQuickAccess(workbench);
 
     // A user binding with the same chord as a default wins.
     var ctrl_b = ui.KeyEvent{ .key = .{ .char = 'b' }, .mods = .{ .ctrl = true } };
-    try std.testing.expect(try workbench.handleGlobalKey(&ctrl_b));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &ctrl_b));
     try std.testing.expect(workbench.isQuickAccessOpen());
     try closeQuickAccess(workbench);
 
     // `when` clauses use the shared context keys.
     const ctrl_alt_n = ui.KeyEvent{ .key = .{ .char = 'n' }, .mods = .{ .ctrl = true, .alt = true } };
-    try std.testing.expect(try workbench.handleGlobalKey(&ctrl_alt_n));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &ctrl_alt_n));
     try std.testing.expect(workbench.isQuickAccessOpen());
     try closeQuickAccess(workbench);
     const ctrl_alt_m = ui.KeyEvent{ .key = .{ .char = 'm' }, .mods = .{ .ctrl = true, .alt = true } };
-    try std.testing.expect(!(try workbench.handleGlobalKey(&ctrl_alt_m)));
+    try std.testing.expect(!(try terminal_workbench.handleGlobalKey(workbench, &ctrl_alt_m)));
     try std.testing.expect(!workbench.isQuickAccessOpen());
 
     // Unknown commands are filtered so they cannot swallow typing.
     const ctrl_alt_u = ui.KeyEvent{ .key = .{ .char = 'u' }, .mods = .{ .ctrl = true, .alt = true } };
-    try std.testing.expect(!(try workbench.handleGlobalKey(&ctrl_alt_u)));
+    try std.testing.expect(!(try terminal_workbench.handleGlobalKey(workbench, &ctrl_alt_u)));
 
     // Reloading applies removals: Ctrl+B no longer resolves globally.
     try writeKeybindingsFile(&tmp, io, keybindings_path, allocator,
@@ -2810,8 +2810,8 @@ test "Workbench: user keybindings override defaults, honor when and removals" {
         \\]
     );
     try workbench.setKeybindingsPaths(&.{keybindings_path});
-    try std.testing.expect(!(try workbench.handleGlobalKey(&ctrl_b)));
-    try std.testing.expect(!(try workbench.handleGlobalKey(&ctrl_alt_g)));
+    try std.testing.expect(!(try terminal_workbench.handleGlobalKey(workbench, &ctrl_b)));
+    try std.testing.expect(!(try terminal_workbench.handleGlobalKey(workbench, &ctrl_alt_g)));
 }
 
 test "Find reads language options before paint and observes settings changes immediately" {
@@ -3012,8 +3012,8 @@ test "Workbench: search editor shows query controls and reruns with independent 
         .y = ui.cell.snap(pane.rect.y) + pane.chromeHeight() + query.headerRows() + 2,
     };
     for ([_]bool{ false, true }) |visible| {
-        try std.testing.expect(!workbench.handleSearchEditorMouse(&fold_click));
-        var target = workbench.editorMouseEvent(fold_click).?;
+        try std.testing.expect(!terminal_workbench.handleSearchEditorMouse(workbench, &fold_click));
+        var target = terminal_workbench.editorMouseEvent(workbench, fold_click).?;
         try std.testing.expect(try target.tab.view.dispatchMouse(&target.event));
         try std.testing.expectEqual(visible, tab.editor.isModelLineVisible(4));
         try renderFrame(workbench, &rendered.writer);
@@ -3023,7 +3023,7 @@ test "Workbench: search editor shows query controls and reruns with independent 
 
     try query.form.setValue(.search, "beta");
     var enter = ui.KeyEvent{ .key = .enter };
-    try std.testing.expect(workbench.handleSearchEditorKey(&enter));
+    try std.testing.expect(terminal_workbench.handleSearchEditorKey(workbench, &enter));
     try waitForSearch(workbench);
     try std.testing.expect(workbench.activeTab() == tab);
     try std.testing.expectEqualStrings("Search: beta", input.base.getName());
@@ -3041,7 +3041,7 @@ test "Workbench: search editor shows query controls and reruns with independent 
     }
 
     const toggle = query.form.controlRect(.toggle_context).?;
-    try std.testing.expect(workbench.handleSearchEditorMouse(&.{
+    try std.testing.expect(terminal_workbench.handleSearchEditorMouse(workbench, &.{
         .kind = .down,
         .button = .left,
         .x = ui.cell.snap(pane.rect.x + toggle.x),
@@ -3057,7 +3057,7 @@ test "Workbench: search editor shows query controls and reruns with independent 
     try renderFrame(workbench, &rendered.writer);
     query.form.focusField(.includes);
     try query.form.setValue(.includes, "*.zig");
-    try std.testing.expect(workbench.handleSearchEditorKey(&enter));
+    try std.testing.expect(terminal_workbench.handleSearchEditorKey(workbench, &enter));
     try waitForSearch(workbench);
     try renderFrame(workbench, &rendered.writer);
     tab.view.invalidate();
@@ -3067,12 +3067,12 @@ test "Workbench: search editor shows query controls and reruns with independent 
     defer allocator.free(no_results_row);
     try std.testing.expect(std.mem.indexOf(u8, no_results_row, "No Results") != null);
     try query.form.setValue(.includes, "");
-    try std.testing.expect(workbench.handleSearchEditorKey(&enter));
+    try std.testing.expect(terminal_workbench.handleSearchEditorKey(workbench, &enter));
     try waitForSearch(workbench);
 
     query.setQueryFocused(false);
     try tab.editor.setCursorPosition(.{ .lineNumber = 4, .column = 6 });
-    try std.testing.expect(workbench.handleSearchEditorKey(&enter));
+    try std.testing.expect(terminal_workbench.handleSearchEditorKey(workbench, &enter));
     try std.testing.expect(workbench.activeTab() != tab);
     try std.testing.expectEqual(@as(usize, 4), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
 
@@ -3081,7 +3081,7 @@ test "Workbench: search editor shows query controls and reruns with independent 
     query.setQueryFocused(true);
     query.form.focusField(.search);
     try query.form.setValue(.search, "");
-    try std.testing.expect(workbench.handleSearchEditorKey(&enter));
+    try std.testing.expect(terminal_workbench.handleSearchEditorKey(workbench, &enter));
     try waitForSearch(workbench);
     try std.testing.expect(sidebar.controller.refresh_at == null);
     try std.testing.expectEqualStrings("alpha", sidebar.widget.value(.search));
@@ -3182,7 +3182,7 @@ test "Workbench: wheel scrolls search results without moving the selection" {
     const x = ui.cell.snap(view.last_rect.x) + 2;
     const y = ui.cell.snap(view.last_rect.y) + view.results_y + 1;
     const wheel = ui.MouseEvent{ .kind = .wheel, .x = x, .y = y, .delta_y = 1 };
-    try std.testing.expect(workbench.handleSidebarMouse(&wheel));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &wheel));
     try std.testing.expect(view.scroll > scroll_before);
     try std.testing.expectEqual(selected_before, view.selected);
 
@@ -3225,7 +3225,7 @@ test "Workbench: search input focus follows presses, not hover" {
     const x = ui.cell.snap(view.last_rect.x) + 2;
     const y = ui.cell.snap(view.last_rect.y) + view.header_rows + view.widget.layout.search_y;
     var hover = ui.MouseEvent{ .kind = .move, .x = x, .y = y };
-    try std.testing.expect(workbench.handleSidebarMouse(&hover));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &hover));
     try std.testing.expect(view.panel_focused);
     try std.testing.expectEqual(search_widget_mod.Field.replace, view.widget.focus_field);
     out.clearRetainingCapacity();
@@ -3235,7 +3235,7 @@ test "Workbench: search input focus follows presses, not hover" {
 
     // A press does move focus and the caret.
     var down = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
-    try std.testing.expect(workbench.handleSidebarMouse(&down));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &down));
     try std.testing.expectEqual(search_widget_mod.Field.search, view.widget.focus_field);
     out.clearRetainingCapacity();
     try renderFrame(workbench, &out.writer);
@@ -3359,11 +3359,11 @@ test "Workbench: status bar spans the window and shows editor state" {
     try std.testing.expect(cursorCell(workbench) == null);
 
     const right = ui.KeyEvent{ .key = .right };
-    try std.testing.expect(try workbench.handleStatusbarKey(&right));
+    try std.testing.expect(try terminal_workbench.handleStatusbarKey(workbench, &right));
     const escape = ui.KeyEvent{ .key = .escape };
-    try std.testing.expect(try workbench.handleStatusbarKey(&escape));
+    try std.testing.expect(try terminal_workbench.handleStatusbarKey(workbench, &escape));
     try std.testing.expect(workbench.statusbar.main_part.focusedHandle() == null);
-    try std.testing.expect(try workbench.handleStatusbarKey(&escape));
+    try std.testing.expect(try terminal_workbench.handleStatusbarKey(workbench, &escape));
     try std.testing.expectEqual(Focus.editor, workbench.focus);
 }
 
@@ -3380,9 +3380,9 @@ test "Workbench: Ctrl-Alt-S toggles status bar focus" {
     defer workbench_window.deinit();
 
     const toggle = ui.KeyEvent{ .key = .{ .char = 's' }, .mods = .{ .ctrl = true, .alt = true } };
-    try std.testing.expect(try workbench.handleStatusbarKey(&toggle));
+    try std.testing.expect(try terminal_workbench.handleStatusbarKey(workbench, &toggle));
     try std.testing.expectEqual(Focus.statusbar, workbench.focus);
-    try std.testing.expect(try workbench.handleStatusbarKey(&toggle));
+    try std.testing.expect(try terminal_workbench.handleStatusbarKey(workbench, &toggle));
     try std.testing.expectEqual(Focus.editor, workbench.focus);
 }
 
@@ -3438,7 +3438,7 @@ test "Workbench: clicking a status entry focuses it and runs its command" {
     }
     const click_x = hit_x orelse return error.StatusEntryNotFound;
     var click = ui.MouseEvent{ .kind = .down, .x = click_x, .y = y, .button = .left };
-    try std.testing.expect(workbench.handleStatusbarMouse(&click));
+    try std.testing.expect(terminal_workbench.handleStatusbarMouse(workbench, &click));
     try std.testing.expectEqual(@as(usize, 1), state.hits);
     try std.testing.expectEqual(Focus.statusbar, workbench.focus);
     try std.testing.expectEqual(accessor.handle, workbench.statusbar.main_part.focusedHandle().?);
@@ -3567,11 +3567,11 @@ test "workbench: global shortcuts dispatch through the keybinding registry" {
     defer workbench_window.deinit();
 
     var ctrl_p = ui.KeyEvent{ .key = .{ .char = 'p' }, .mods = .{ .ctrl = true } };
-    try std.testing.expect(try workbench.handleGlobalKey(&ctrl_p));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &ctrl_p));
     try std.testing.expect(workbench.isQuickAccessOpen());
 
     // While quick access owns the keyboard the global host steps aside.
-    try std.testing.expect(!(try workbench.handleGlobalKey(&ctrl_p)));
+    try std.testing.expect(!(try terminal_workbench.handleGlobalKey(workbench, &ctrl_p)));
 }
 
 test "Workbench: files.associations change the opened editor language" {
@@ -3809,9 +3809,9 @@ test "Workbench: decoded divider drag resizes the split" {
         switch (item.*) {
             .key, .focus => return error.TestUnexpectedResult,
             .mouse => |*mouse| {
-                if (workbench.handleTabDragMouse(mouse)) continue;
+                if (terminal_workbench.handleTabDragMouse(workbench, mouse)) continue;
                 if (terminal_workbench.handleQuickAccessMouse(workbench, mouse)) continue;
-                if (workbench.handleStatusbarMouse(mouse)) continue;
+                if (terminal_workbench.handleStatusbarMouse(workbench, mouse)) continue;
                 if (terminal_workbench.handleSashMouse(workbench, mouse)) continue;
             },
         }
@@ -3894,9 +3894,9 @@ test "Workbench: decoded divider drag resizes a vertical split" {
         switch (item.*) {
             .key, .focus => return error.TestUnexpectedResult,
             .mouse => |*mouse| {
-                if (workbench.handleTabDragMouse(mouse)) continue;
+                if (terminal_workbench.handleTabDragMouse(workbench, mouse)) continue;
                 if (terminal_workbench.handleQuickAccessMouse(workbench, mouse)) continue;
-                if (workbench.handleStatusbarMouse(mouse)) continue;
+                if (terminal_workbench.handleStatusbarMouse(workbench, mouse)) continue;
                 if (terminal_workbench.handleSashMouse(workbench, mouse)) continue;
             },
         }
@@ -4040,7 +4040,7 @@ test "Workbench: breadcrumb row shows the workspace-relative path" {
         }
     }
     var escape = ui.KeyEvent{ .key = .escape };
-    try std.testing.expect(workbench.handleBreadcrumbPopupKey(&escape));
+    try std.testing.expect(terminal_workbench.handleBreadcrumbPopupKey(workbench, &escape));
     try std.testing.expect(!workbench.breadcrumbPopupVisible());
 }
 
@@ -4162,7 +4162,7 @@ test "Workbench: closing a dirty tab asks, cancel keeps it and save closes it" {
 
     // Escape cancels the close and leaves the buffer dirty.
     var escape = ui.KeyEvent{ .key = .escape };
-    try std.testing.expect(workbench.handleDialogKey(&escape));
+    try std.testing.expect(terminal_workbench.handleDialogKey(workbench, &escape));
     try std.testing.expect(!workbench.isDialogOpen());
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
     try std.testing.expect(workbench.activeTab().?.editor.isDirty());
@@ -4179,7 +4179,7 @@ test "Workbench: closing a dirty tab asks, cancel keeps it and save closes it" {
     try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &click3));
     try std.testing.expect(workbench.isDialogOpen());
     var enter = ui.KeyEvent{ .key = .enter };
-    try std.testing.expect(workbench.handleDialogKey(&enter));
+    try std.testing.expect(terminal_workbench.handleDialogKey(workbench, &enter));
     try std.testing.expect(!workbench.isDialogOpen());
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
 
@@ -4217,9 +4217,9 @@ test "Workbench: don't save closes a dirty tab without writing" {
     try std.testing.expect(workbench.isDialogOpen());
 
     var down = ui.KeyEvent{ .key = .down };
-    try std.testing.expect(workbench.handleDialogKey(&down));
+    try std.testing.expect(terminal_workbench.handleDialogKey(workbench, &down));
     var enter = ui.KeyEvent{ .key = .enter };
-    try std.testing.expect(workbench.handleDialogKey(&enter));
+    try std.testing.expect(terminal_workbench.handleDialogKey(workbench, &enter));
     try std.testing.expect(!workbench.isDialogOpen());
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
 
@@ -4244,12 +4244,12 @@ test "Workbench: Ctrl-W on a dirty tab opens the save confirmation" {
     try workbench.activeTab().?.editor.insertText("x");
 
     var ctrl_w = ui.KeyEvent{ .key = .{ .char = 'w' }, .mods = .{ .ctrl = true } };
-    try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&ctrl_w));
+    try std.testing.expectEqual(TabKeyResult.handled, try terminal_workbench.handleTabKey(workbench, &ctrl_w));
     try std.testing.expect(workbench.isDialogOpen());
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
 
     var escape = ui.KeyEvent{ .key = .escape };
-    try std.testing.expect(workbench.handleDialogKey(&escape));
+    try std.testing.expect(terminal_workbench.handleDialogKey(workbench, &escape));
     try std.testing.expect(!workbench.isDialogOpen());
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
 }
@@ -4286,7 +4286,7 @@ test "Workbench: Ctrl-Q quits clean and confirms one dirty tab" {
 
     // Cancel keeps the window and the dirty tab.
     var escape = ui.KeyEvent{ .key = .escape };
-    try std.testing.expect(workbench.handleDialogKey(&escape));
+    try std.testing.expect(terminal_workbench.handleDialogKey(workbench, &escape));
     try std.testing.expect(!workbench.shouldQuit());
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
     try std.testing.expect(workbench.activeTab().?.editor.isDirty());
@@ -4295,7 +4295,7 @@ test "Workbench: Ctrl-Q quits clean and confirms one dirty tab" {
     try std.testing.expect(!workbench.requestQuit());
     try std.testing.expect(workbench.isDialogOpen());
     var enter = ui.KeyEvent{ .key = .enter };
-    try std.testing.expect(workbench.handleDialogKey(&enter));
+    try std.testing.expect(terminal_workbench.handleDialogKey(workbench, &enter));
     try std.testing.expect(!workbench.isDialogOpen());
     try std.testing.expect(workbench.shouldQuit());
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
@@ -4341,9 +4341,9 @@ test "Workbench: Ctrl-Q lists every dirty tab and don't save closes all" {
 
     // Down moves focus to Don't Save; Enter discards both tabs and quits.
     var down = ui.KeyEvent{ .key = .down };
-    try std.testing.expect(workbench.handleDialogKey(&down));
+    try std.testing.expect(terminal_workbench.handleDialogKey(workbench, &down));
     var enter = ui.KeyEvent{ .key = .enter };
-    try std.testing.expect(workbench.handleDialogKey(&enter));
+    try std.testing.expect(terminal_workbench.handleDialogKey(workbench, &enter));
     try std.testing.expect(workbench.shouldQuit());
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
 
@@ -4504,11 +4504,11 @@ test "Workbench: double click still pins after a jittery drag starts" {
 
     // Hand jitter turns the pending click into a drag before the second press.
     var jitter = ui.MouseEvent{ .kind = .move, .x = x + 3, .y = y, .button = .left };
-    try std.testing.expect(workbench.handleTabDragMouse(&jitter));
+    try std.testing.expect(terminal_workbench.handleTabDragMouse(workbench, &jitter));
     try std.testing.expect(workbench.editor_drag.active);
 
     var second = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
-    try std.testing.expect(!workbench.handleTabDragMouse(&second));
+    try std.testing.expect(!terminal_workbench.handleTabDragMouse(workbench, &second));
     try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &second));
     try std.testing.expect(pane.group.model.isPinned(.{ .editor = workbench.activeTab().?.input }));
 }
@@ -4706,12 +4706,12 @@ test "Workbench: F12 and Shift+F12 dispatch through keybindings" {
 
     const tab = workbench.activeTab().?;
     var f12 = ui.KeyEvent{ .key = .f12 };
-    try std.testing.expect(try workbench.handleGlobalKey(&f12));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &f12));
     try std.testing.expectEqual(@as(usize, 2), tab.editor.modelCursorPosition().lineNumber);
 
     try tab.editor.setCursorPosition(Position.init(1, 1));
     var shift_f12 = ui.KeyEvent{ .key = .f12, .mods = .{ .shift = true } };
-    try std.testing.expect(try workbench.handleGlobalKey(&shift_f12));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &shift_f12));
     try std.testing.expect(workbench.quick_access.isOpen());
     workbench.quick_access.inputService().hide();
 }
@@ -4803,15 +4803,15 @@ test "Workbench: new terminal creates one tab and hover does not act" {
         if (plus_x >= ui.cell.snap(panel.right())) return error.TestUnexpectedResult;
     }
     var move = ui.MouseEvent{ .kind = .move, .x = plus_x, .y = title_y };
-    try std.testing.expect(workbench.handleTerminalMouse(&move));
+    try std.testing.expect(terminal_workbench.handleTerminalMouse(workbench, &move));
     try std.testing.expectEqual(@as(usize, 1), workbench.terminalCount());
 
     var right = ui.MouseEvent{ .kind = .down, .button = .right, .x = plus_x, .y = title_y };
-    try std.testing.expect(workbench.handleTerminalMouse(&right));
+    try std.testing.expect(terminal_workbench.handleTerminalMouse(workbench, &right));
     try std.testing.expectEqual(@as(usize, 1), workbench.terminalCount());
 
     var click = ui.MouseEvent{ .kind = .down, .button = .left, .x = plus_x, .y = title_y };
-    try std.testing.expect(workbench.handleTerminalMouse(&click));
+    try std.testing.expect(terminal_workbench.handleTerminalMouse(workbench, &click));
     try std.testing.expectEqual(@as(usize, 2), workbench.terminalCount());
     // Both terminals resize when the second instance reveals the side list.
     const with_tabs = view.layoutForService(panel, service);
@@ -4826,15 +4826,15 @@ test "Workbench: new terminal creates one tab and hover does not act" {
     // The tab strip switches on a left press only.
     try std.testing.expectEqual(@as(usize, 1), service.group.active);
     var tab_move = ui.MouseEvent{ .kind = .move, .x = ui.cell.snap(with_tabs.tabs.x) + 1, .y = ui.cell.snap(with_tabs.tabs.y) };
-    try std.testing.expect(workbench.handleTerminalMouse(&tab_move));
+    try std.testing.expect(terminal_workbench.handleTerminalMouse(workbench, &tab_move));
     try std.testing.expectEqual(@as(usize, 1), service.group.active);
     var tab_right = ui.MouseEvent{ .kind = .down, .button = .right, .x = ui.cell.snap(with_tabs.tabs.x) + 1, .y = ui.cell.snap(with_tabs.tabs.y) };
-    try std.testing.expect(workbench.handleTerminalMouse(&tab_right));
+    try std.testing.expect(terminal_workbench.handleTerminalMouse(workbench, &tab_right));
     try std.testing.expectEqual(@as(usize, 1), service.group.active);
     var escape: ui.KeyEvent = .{ .key = .escape };
     try std.testing.expect(workbench.context_menu_service.handleKey(&escape));
     var tab_click = ui.MouseEvent{ .kind = .down, .button = .left, .x = ui.cell.snap(with_tabs.tabs.x) + 1, .y = ui.cell.snap(with_tabs.tabs.y) };
-    try std.testing.expect(workbench.handleTerminalMouse(&tab_click));
+    try std.testing.expect(terminal_workbench.handleTerminalMouse(workbench, &tab_click));
     try std.testing.expectEqual(@as(usize, 0), service.group.active);
 }
 
@@ -4881,7 +4881,7 @@ test "Workbench: wheel scrolls the terminal viewport without moving focus" {
         .y = ui.cell.snap(content.y) + 1,
         .delta_y = -3,
     };
-    try std.testing.expect(workbench.handleTerminalMouse(&wheel_up));
+    try std.testing.expect(terminal_workbench.handleTerminalMouse(workbench, &wheel_up));
     try std.testing.expect(workbench.focus == .editor);
     try terminal_view.paint(&instance.emulator, &grid, local_rect);
     const scrolled_top = try grid.rowText(allocator, 0);
@@ -4895,7 +4895,7 @@ test "Workbench: wheel scrolls the terminal viewport without moving focus" {
         .y = ui.cell.snap(content.y) + 1,
         .delta_y = 3,
     };
-    try std.testing.expect(workbench.handleTerminalMouse(&wheel_down));
+    try std.testing.expect(terminal_workbench.handleTerminalMouse(workbench, &wheel_down));
     try terminal_view.paint(&instance.emulator, &grid, local_rect);
     const returned_top = try grid.rowText(allocator, 0);
     defer allocator.free(returned_top);
@@ -4908,7 +4908,7 @@ test "Workbench: wheel scrolls the terminal viewport without moving focus" {
         .x = ui.cell.snap(content.x) + 1,
         .y = ui.cell.snap(content.y) + 1,
     };
-    try std.testing.expect(workbench.handleTerminalMouse(&click));
+    try std.testing.expect(terminal_workbench.handleTerminalMouse(workbench, &click));
     try std.testing.expect(workbench.focus == .terminal);
     try std.testing.expect(instance.view_focused);
 }
@@ -5246,7 +5246,7 @@ test "Workbench: Explorer expands a directory symlink and opens a file inside" {
         .y = top + (RowPosition.find(sidebar, link) orelse return error.TestUnexpectedResult),
         .button = .left,
     };
-    try std.testing.expect(workbench.handleSidebarMouse(&link_click));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &link_click));
     try std.testing.expect(sidebar.hasPendingLoad());
     var load_waited: usize = 0;
     while (!sidebar.pollLoad() and load_waited < 2000) : (load_waited += 1) {
@@ -5265,7 +5265,7 @@ test "Workbench: Explorer expands a directory symlink and opens a file inside" {
         .y = top + (RowPosition.find(sidebar, inner_item) orelse return error.TestUnexpectedResult),
         .button = .left,
     };
-    try std.testing.expect(workbench.handleSidebarMouse(&inner_click));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &inner_click));
     pumpOpenForTests(workbench);
     const tab = workbench.activeTab() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings(inner_path, tab.editor.path);
@@ -5337,15 +5337,15 @@ test "Workbench: explorer sticky headers pin the folder ancestors" {
     // Tab moves the focus into the sticky widget; Escape leaves the widget
     // before the side bar returns focus to the editor.
     var tab = ui.KeyEvent{ .key = .tab };
-    try std.testing.expect(try workbench.handleSidebarKey(&tab));
+    try std.testing.expect(try terminal_workbench.handleSidebarKey(workbench, &tab));
     try std.testing.expect(sidebar.tree.stickyScrollFocused());
     var escape = ui.KeyEvent{ .key = .escape };
-    try std.testing.expect(try workbench.handleSidebarKey(&escape));
+    try std.testing.expect(try terminal_workbench.handleSidebarKey(workbench, &escape));
     try std.testing.expect(!sidebar.tree.stickyScrollFocused());
     try std.testing.expectEqual(Focus.sidebar, workbench.focus);
 
     // A second Escape leaves the side bar for the editor, as before.
-    try std.testing.expect(try workbench.handleSidebarKey(&escape));
+    try std.testing.expect(try terminal_workbench.handleSidebarKey(workbench, &escape));
     try std.testing.expectEqual(Focus.editor, workbench.focus);
 }
 
@@ -5839,8 +5839,8 @@ test "Workbench: markdown side preview reuses a group below and survives closing
     try wb.focusActiveGroup();
     const ctrl_k = ui.KeyEvent{ .key = .{ .char = 'k' }, .mods = .{ .ctrl = true } };
     const v = ui.KeyEvent{ .key = .{ .char = 'v' } };
-    try std.testing.expect(try wb.handleGlobalKey(&ctrl_k));
-    try std.testing.expect(try wb.handleGlobalKey(&v));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(wb, &ctrl_k));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(wb, &v));
     try std.testing.expectEqual(below, wb.activePane().?);
     try std.testing.expectEqual(@as(usize, 2), wb.groupCount());
     const preview = wb.activeTab().?;
@@ -5920,7 +5920,7 @@ test "terminal F1 executes ShowAllCommandsAction through quick input" {
         var decoded = try ui.input.decodeKeys(std.testing.allocator, sequence);
         defer decoded.deinit(std.testing.allocator);
         try std.testing.expectEqual(1, decoded.items.len);
-        try std.testing.expect(try workbench.handleGlobalKey(&decoded.items[0]));
+        try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &decoded.items[0]));
         try std.testing.expect(workbench.isQuickAccessOpen());
         try std.testing.expectEqualStrings(">", workbench.quick_access.controller.pickerRef().value.items);
         workbench.quick_access.controller.hide();
@@ -6003,7 +6003,7 @@ test "Workbench: clicking a pane body focuses its group" {
     try std.testing.expect(!terminal_workbench.handleTabMouse(workbench, &click));
     try std.testing.expect(workbench.activePane().? == first);
     try std.testing.expect(workbench.activeTab() == first.activeTab());
-    var target = workbench.editorMouseEvent(click) orelse return error.TestUnexpectedResult;
+    var target = terminal_workbench.editorMouseEvent(workbench, click) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(first.activeTab().?, target.tab);
     try std.testing.expectEqual(@as(usize, 2), target.event.x);
     try std.testing.expectEqual(@as(usize, 1), target.event.y);
@@ -6023,7 +6023,7 @@ test "Workbench: clicking a pane body focuses its group" {
     try std.testing.expect(!terminal_workbench.handleTabMouse(workbench, &click));
     try std.testing.expect(workbench.activePane().? == second);
     try std.testing.expect(workbench.activeTab() == second.activeTab());
-    target = workbench.editorMouseEvent(click) orelse return error.TestUnexpectedResult;
+    target = terminal_workbench.editorMouseEvent(workbench, click) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(second.activeTab().?, target.tab);
     try std.testing.expectEqual(@as(usize, 2), target.event.x);
     try std.testing.expectEqual(@as(usize, 1), target.event.y);
@@ -6265,7 +6265,7 @@ test "Workbench: dropping a tab on a pane edge tiles a new pane" {
 
     var up = move;
     up.kind = .up;
-    try std.testing.expect(workbench.handleTabDragMouse(&up));
+    try std.testing.expect(terminal_workbench.handleTabDragMouse(workbench, &up));
 
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
     try std.testing.expectEqual(@as(usize, 2), workbench.part.group_views.items.len);
@@ -6614,7 +6614,7 @@ test "Workbench: activity bar top moves the composite bar into the side bar" {
 
     // Clicking a composite bar item switches the view container.
     const search_click = ui.MouseEvent{ .kind = .down, .x = 4, .y = 0 };
-    try std.testing.expect(workbench.handleSidebarMouse(&search_click));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &search_click));
     try std.testing.expectEqual(@as(usize, 1), workbench.activeActivity());
 
     out.clearRetainingCapacity();
@@ -6658,7 +6658,7 @@ test "Workbench: closing the side bar keeps the activity bar" {
     const closed_grid = workbench.frame.present();
     try std.testing.expectEqual(@as(u32, '\u{f07b}'), closed_grid.cluster[closed_grid.index(1, 1)]);
     const rail_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 1 };
-    try std.testing.expect(workbench.handleSidebarMouse(&rail_click));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &rail_click));
     try std.testing.expect(workbench.sidebar_part.isVisible());
 
     _ = try workbench.commands.execute("workbench.action.closeSidebar");
@@ -6685,7 +6685,7 @@ test "Workbench: status bar escape clears the hover tooltip" {
     part.setHovered(entry.handle);
     try std.testing.expect(part.hovered != null);
 
-    try std.testing.expect(try workbench.handleStatusbarKey(&.{ .key = .escape }));
+    try std.testing.expect(try terminal_workbench.handleStatusbarKey(workbench, &.{ .key = .escape }));
     try std.testing.expect(part.hovered == null);
 }
 
@@ -6757,9 +6757,9 @@ test "Workbench: terminal splits share one group and preserve panel geometry on 
 
     const divider = ui.cell.snap(first.right());
     const y = ui.cell.snap(first.y);
-    try std.testing.expect(workbench.handleTerminalMouse(&.{ .kind = .down, .button = .left, .x = divider, .y = y }));
-    try std.testing.expect(workbench.handleTerminalMouse(&.{ .kind = .move, .button = .left, .x = divider + 5, .y = y }));
-    try std.testing.expect(workbench.handleTerminalMouse(&.{ .kind = .up, .button = .left, .x = divider + 5, .y = y }));
+    try std.testing.expect(terminal_workbench.handleTerminalMouse(workbench, &.{ .kind = .down, .button = .left, .x = divider, .y = y }));
+    try std.testing.expect(terminal_workbench.handleTerminalMouse(workbench, &.{ .kind = .move, .button = .left, .x = divider + 5, .y = y }));
+    try std.testing.expect(terminal_workbench.handleTerminalMouse(workbench, &.{ .kind = .up, .button = .left, .x = divider + 5, .y = y }));
     try std.testing.expect(service.at(0).?.cols > ui.cell.snap(first.w));
     try std.testing.expect(service.at(1).?.cols < ui.cell.snap(second.w));
 
@@ -7043,7 +7043,7 @@ test "Workbench: dragging the sash above the bottom panel resizes it" {
     try std.testing.expect(panel_part_mod.hitTest(&workbench.panel_part, title, x, y) != null);
     const title_press = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
     try std.testing.expect(!terminal_workbench.handleSashMouse(workbench, &title_press));
-    try std.testing.expect(workbench.handlePanelMouse(&title_press));
+    try std.testing.expect(terminal_workbench.handlePanelMouse(workbench, &title_press));
 
     const panel = workbench.panel_part.base.bounds.?;
     const divider_x = ui.cell.snap(panel.x + panel.w / 2);
@@ -7086,8 +7086,8 @@ test "Workbench: right sidebar moves its rail, hit targets and snapping sash tog
     try std.testing.expectEqual(rects.sidebar.right(), rects.activity_bar.x);
     try std.testing.expectEqual(@as(f64, 90), rects.activity_bar.right());
     try std.testing.expectEqual(rects.sidebar, wb.sidebar_part.base.bounds.?);
-    try std.testing.expect(!wb.handleSidebarMouse(&.{ .x = 1, .y = 2, .kind = .move }));
-    try std.testing.expect(wb.handleSidebarMouse(&.{ .x = 89, .y = 1, .kind = .move }));
+    try std.testing.expect(!terminal_workbench.handleSidebarMouse(wb, &.{ .x = 1, .y = 2, .kind = .move }));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(wb, &.{ .x = 89, .y = 1, .kind = .move }));
     var frame = std.Io.Writer.Allocating.init(allocator);
     defer frame.deinit();
     try renderFrame(wb, &frame.writer);
@@ -7403,7 +7403,7 @@ test "Workbench: side bar part paints the title and runs its actions" {
         }
     }
     const clear_click = ui.MouseEvent{ .kind = .down, .button = .left, .x = clear_x.?, .y = title_y };
-    try std.testing.expect(workbench.handleSidebarMouse(&clear_click));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &clear_click));
     try std.testing.expectEqual(@as(usize, 0), view.rows.items.len);
 
     const details = view.widget.controlRect(.more).?;
@@ -7414,7 +7414,7 @@ test "Workbench: side bar part paints the title and runs its actions" {
         .y = ui.cell.snap(view.last_rect.y + details.y),
     };
     try std.testing.expect(details_click.y > title_y);
-    try std.testing.expect(workbench.handleSidebarMouse(&details_click));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &details_click));
     try std.testing.expectEqual(!details_before, view.widget.details_visible);
     try std.testing.expectEqual(search_widget_mod.Field.includes, view.widget.focus_field);
 }
@@ -7457,7 +7457,7 @@ test "Workbench: search guides, preview ellipses and the Open in editor link" {
     try std.testing.expect(std.mem.indexOf(u8, snippet, "alpha") != null);
 
     const move = ui.MouseEvent{ .kind = .move, .x = x + 4, .y = y };
-    try std.testing.expect(workbench.handleSidebarMouse(&move));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &move));
     try renderFrame(workbench, &out.writer);
     const hovered = workbench.frame.present();
     try std.testing.expectEqual(@as(u32, '│'), hovered.cluster[hovered.index(x, y)]);
@@ -7470,13 +7470,13 @@ test "Workbench: search guides, preview ellipses and the Open in editor link" {
     const status = try hovered.rowText(allocator, link_y);
     defer allocator.free(status);
     try std.testing.expect(std.mem.indexOf(u8, status, "2 results in 1 file - Open in editor") != null);
-    try std.testing.expect(workbench.handleSidebarMouse(&.{ .kind = .move, .x = link_x, .y = link_y }));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &.{ .kind = .move, .x = link_x, .y = link_y }));
     try std.testing.expectEqual(ui.Pointer.pointer, workbench.pointer);
     try renderFrame(workbench, &out.writer);
     const after_hover = workbench.frame.present();
     try std.testing.expectEqual(@as(u32, ' '), after_hover.cluster[after_hover.index(x, y)]);
 
-    try std.testing.expect(workbench.handleSidebarMouse(&.{ .kind = .down, .button = .left, .x = link_x, .y = link_y }));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &.{ .kind = .down, .button = .left, .x = link_x, .y = link_y }));
     const snapshot = workbench.activeTab().?;
     try std.testing.expectEqualStrings("Search: alpha", snapshot.input.getName());
     try std.testing.expect(snapshot.editor.read_only);
@@ -7550,7 +7550,7 @@ test "Workbench: search aligns nested guides and keeps the link inline at the re
     try std.testing.expectEqual(@as(u32, '⌄'), grid.cluster[grid.index(folder_col, y)]);
     try std.testing.expectEqual(@as(u32, '⌄'), grid.cluster[grid.index(file_col, y + 1)]);
     const move = ui.MouseEvent{ .kind = .move, .x = x + 5, .y = y + 2 };
-    try std.testing.expect(workbench.handleSidebarMouse(&move));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &move));
     try renderFrame(workbench, &out.writer);
     const hovered = workbench.frame.present();
     try std.testing.expect(hovered.borderSetAt(folder_col, y + 1).strokeAt(ui.cell_border.Segment.v_top) != null);
@@ -7891,13 +7891,13 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
             .x = ui.cell.snap(header.x) + 2,
             .y = ui.cell.snap(header.y),
         };
-        try std.testing.expect(workbench.handleSidebarMouse(&hover));
+        try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &hover));
         try std.testing.expect(!workbench.scm_view_model.?.isCollapsed("changes"));
         hover.kind = .click;
         hover.button = .left;
-        try std.testing.expect(workbench.handleSidebarMouse(&hover));
+        try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &hover));
         try std.testing.expect(workbench.scm_view_model.?.isCollapsed("changes"));
-        try std.testing.expect(workbench.handleSidebarMouse(&hover));
+        try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &hover));
         try std.testing.expect(!workbench.scm_view_model.?.isCollapsed("changes"));
     }
 
@@ -7930,7 +7930,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try renderFrame(workbench, &hover_frame.writer);
     const graph_body = workbench.scm_container.?.bodyRect("graph") orelse return error.TestExpectedGraphBody;
     var body_move = ui.MouseEvent{ .kind = .move, .x = ui.cell.snap(graph_body.x) + 2, .y = ui.cell.snap(graph_body.y) };
-    try std.testing.expect(workbench.handleSidebarMouse(&body_move));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &body_move));
     try std.testing.expect(history_view.hoveredRow() != null);
     try std.testing.expect(history_view.hoverContent() != null);
     history_view.clearHover();
@@ -8023,11 +8023,11 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     // Navigation keys are TUI-specific (Alt-Up/Alt-Down).
     const before_change = tab.diff.?.widget.current_change;
     const next_key = ui.KeyEvent{ .key = .down, .mods = .{ .alt = true } };
-    const result = try workbench.handleTabKey(&next_key);
+    const result = try terminal_workbench.handleTabKey(workbench, &next_key);
     try std.testing.expectEqual(TabKeyResult.handled, result);
     try std.testing.expect(tab.diff.?.widget.current_change != before_change);
     const previous_key = ui.KeyEvent{ .key = .up, .mods = .{ .alt = true } };
-    try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&previous_key));
+    try std.testing.expectEqual(TabKeyResult.handled, try terminal_workbench.handleTabKey(workbench, &previous_key));
     try std.testing.expectEqual(before_change, tab.diff.?.widget.current_change);
 
     // Save/revert are inert for a diff tab (the read-only snapshot editor
@@ -8211,7 +8211,7 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
     const header_end = header_start + ui.cell.snap(header.w);
     const header_surface = &(container.headers.items[3].surface orelse return error.TestExpectedScmContainer);
     var over_title = ui.MouseEvent{ .kind = .move, .x = header_start + 1, .y = graph_header_y };
-    try std.testing.expect(workbench.handleSidebarMouse(&over_title));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &over_title));
     try std.testing.expect(!container.model.isCollapsed("graph"));
     for (container.headers.items[3].nodes.items) |entry| {
         if (entry.id.len != 0) try std.testing.expect(!entry.node.isHovered());
@@ -8229,7 +8229,7 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
     try std.testing.expect(action_x != null);
     const mode_before = view.view_mode;
     var over_action = ui.MouseEvent{ .kind = .move, .x = action_x.?, .y = graph_header_y };
-    try std.testing.expect(workbench.handleSidebarMouse(&over_action));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &over_action));
     try std.testing.expectEqual(mode_before, view.view_mode);
     try std.testing.expect(!container.model.isCollapsed("graph"));
     const hovered = header_surface.document().hoverTarget();
@@ -8241,7 +8241,7 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
     try std.testing.expect(on_action);
 
     const graph_press = ui.MouseEvent{ .kind = .down, .button = .left, .x = action_x.?, .y = graph_header_y };
-    try std.testing.expect(workbench.handleSidebarMouse(&graph_press));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &graph_press));
     try std.testing.expect(workbench.context_menu_service.current != null);
     const graph_menu = workbench.context_menu_service.current.?.popup.?;
     try std.testing.expect(!workbench.isQuickAccessOpen());
@@ -8267,14 +8267,14 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
     try std.testing.expectEqual(.list, changes.viewMode());
 
     const header_context = ui.MouseEvent{ .kind = .down, .button = .right, .x = header_start + 1, .y = graph_header_y };
-    try std.testing.expect(workbench.handleSidebarMouse(&header_context));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &header_context));
     const view_items = workbench.context_menu_service.current.?.popup.?.items;
     try std.testing.expectEqualStrings("Graph", view_items[view_items.len - 1].label);
     try std.testing.expect(view_items[view_items.len - 1].checked);
     try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .escape }));
 
     // Moving back over the title clears the action hover.
-    try std.testing.expect(workbench.handleSidebarMouse(&over_title));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &over_title));
     for (container.headers.items[3].nodes.items) |entry| {
         if (entry.id.len != 0) try std.testing.expect(!entry.node.isHovered());
     }
@@ -8282,12 +8282,12 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
     // The left click toggles the section; a second click restores it for the
     // Load More click below.
     var header_click = ui.MouseEvent{ .kind = .click, .x = header_start + 1, .y = graph_header_y, .button = .left };
-    try std.testing.expect(workbench.handleSidebarMouse(&header_click));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &header_click));
     try std.testing.expect(container.model.isCollapsed("graph"));
     try renderFrame(workbench, &out.writer);
     const collapsed_y = ui.cell.snap(container.sections.items[1].header_rect.y);
     var expand_click = ui.MouseEvent{ .kind = .click, .x = header_start + 1, .y = collapsed_y, .button = .left };
-    try std.testing.expect(workbench.handleSidebarMouse(&expand_click));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &expand_click));
     try std.testing.expect(!container.model.isCollapsed("graph"));
     try renderFrame(workbench, &out.writer);
 
@@ -8296,7 +8296,7 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
     const x = ui.cell.snap(body.x) + 2;
     const y = ui.cell.snap(body.y) + 2;
     var click = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
-    try std.testing.expect(workbench.handleSidebarMouse(&click));
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &click));
     try std.testing.expectEqual(@as(usize, 4), view.rows.items.len);
 }
 
@@ -8329,7 +8329,7 @@ fn sendDragMouse(workbench: *Workbench, report: usize, x: usize, y: usize, relea
     defer decoded.deinit(workbench.allocator);
     try std.testing.expectEqual(@as(usize, 1), decoded.items.len);
     const mouse = &decoded.items[0].mouse;
-    if (workbench.handleTabDragMouse(mouse)) return;
+    if (terminal_workbench.handleTabDragMouse(workbench, mouse)) return;
     if (terminal_workbench.handleSashMouse(workbench, mouse)) return;
     _ = terminal_workbench.handleTabMouse(workbench, mouse);
 }

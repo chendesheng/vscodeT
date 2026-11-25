@@ -473,7 +473,7 @@ test "benchmark: explorer sidebar scroll" {
     for (0..frames) |_| {
         const start = nowUs(io);
         const wheel = ui.MouseEvent{ .kind = .wheel, .x = x, .y = y, .delta_y = 1 };
-        _ = workbench.handleSidebarMouse(&wheel);
+        _ = terminal_workbench.handleSidebarMouse(workbench, &wheel);
         try renderFrame(workbench, &out.writer);
         out.clearRetainingCapacity();
         const elapsed = nowUs(io) - start;

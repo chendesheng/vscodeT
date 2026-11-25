@@ -9,6 +9,14 @@ const terminal_input = @import("../vs/workbench/contrib/terminal/browser/termina
 const time_compat = @import("../vs/base/common/timeCompat.zig");
 const shell = @import("../vs/workbench/browser/workbench.zig");
 pub const Workbench = shell.Workbench;
+const TabKeyResult = shell.TabKeyResult;
+const GroupPane = shell.GroupPane;
+const Tab = @import("../vs/workbench/browser/parts/editor/editorPane.zig").Tab;
+const editor_css = @import("../vs/editor/browser/editorCss.zig");
+const terminal_service_mod = @import("../vs/workbench/contrib/terminal/browser/terminalService.zig");
+const terminal_panel = @import("../vs/workbench/contrib/terminal/browser/terminalTabbedView.zig");
+const view_pane_container_mod = @import("../vs/workbench/browser/parts/views/viewPaneContainer.zig");
+const MenuAnchor = @import("../vs/platform/contextview/browser/contextMenuService.zig").Anchor;
 const WorkbenchGrid = @import("../vs/workbench/browser/layout.zig").WorkbenchGrid;
 const activity_bar_mod = @import("../vs/workbench/browser/parts/activitybar/activitybarPart.zig");
 const sidebar_part_mod = @import("../vs/workbench/browser/parts/sidebar/sidebarPart.zig");
@@ -162,7 +170,7 @@ pub const TerminalWorkbench = struct {
                 switch (try terminal_input.takePaste(w.allocator, &self.input_buffer)) {
                     .taken => |bytes| {
                         defer w.allocator.free(bytes);
-                        try w.pasteTerminal(bytes);
+                        try pasteTerminal(w, bytes);
                         pasted = true;
                     },
                     .incomplete => return .{ .decoded = .{ .items = .empty, .consumed = 0 }, .pasted = pasted },
@@ -895,7 +903,7 @@ pub fn handleSashMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
     if (!self.quick_access.isOpen() and self.sidebarShown()) {
         if (self.activeSidebarViewContainer()) |container| {
             if (container.header_press != null and (event.kind == .move or event.kind == .up)) {
-                return self.handleSidebarPaneHeader(container, event, .{});
+                return handleSidebarPaneHeader(self, container, event, .{});
             }
             if (container.sash_dragging != null and container.handleSashMouse(event)) {
                 self.pointer = sash_css.pointer(.horizontal);
@@ -903,7 +911,7 @@ pub fn handleSashMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
             }
         }
     }
-    if (self.layout.workbench_grid.activeSash() != null) return self.handleWorkbenchSashMouse(event);
+    if (self.layout.workbench_grid.activeSash() != null) return handleWorkbenchSashMouse(self, event);
     if (if (self.part.maximized_group == null) self.part.active_sash else null) |split| {
         switch (event.kind) {
             .move => {
@@ -936,7 +944,7 @@ pub fn handleSashMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         }
     }
 
-    if (self.handleWorkbenchSashMouse(event)) return true;
+    if (handleWorkbenchSashMouse(self, event)) return true;
     if (!self.quick_access.isOpen() and self.sidebarShown()) {
         if (self.activeSidebarViewContainer()) |container| {
             if (container.handleSashMouse(event)) {
@@ -967,7 +975,7 @@ pub fn handleSashMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
 }
 
 pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
-    if (self.handleTabDragMouse(event)) return true;
+    if (handleTabDragMouse(self, event)) return true;
     if (!WorkbenchGrid.Rects.inColumn(self.workbenchGridLayout().editor, event.x)) return false;
 
     const pane = self.part.viewAt(event.x, event.y) orelse {
@@ -1281,4 +1289,1031 @@ fn invalidateImageParts(self: *Workbench) void {
             }
         }
     }
+}
+
+// Terminal-only input routing. Portable actions and part state remain with
+// the workbench services and view contributions.
+pub fn handleTerminalKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
+    if (self.isDialogOpen() or self.quick_access.isOpen()) return false;
+    if (self.focus == .terminal and self.terminalPanelActive()) {
+        if (self.terminal_tabbed_view.tab_list.focused) {
+            switch (event.key) {
+                .up => self.focusTerminalListRow(false),
+                .down => self.focusTerminalListRow(true),
+                .delete => if (self.terminal_service) |service| try self.killTerminalTabs(service.group.active),
+                .enter, .escape, .tab => self.terminal_tabbed_view.setListFocused(false),
+                else => {},
+            }
+            return true;
+        }
+        if (event.mods.alt and !event.mods.shift) {
+            switch (event.key) {
+                .left, .up => if (self.focusPanelPane(false)) return true,
+                .right, .down => if (self.focusPanelPane(true)) return true,
+                else => {},
+            }
+        }
+        if (event.mods.ctrl and !event.mods.alt and !event.mods.shift) {
+            switch (event.key) {
+                .page_up => {
+                    self.focusPreviousTerminal();
+                    return true;
+                },
+                .page_down => {
+                    self.focusNextTerminal();
+                    return true;
+                },
+                else => {},
+            }
+        }
+    }
+    const instance = self.focusedTerminal() orelse return self.focus == .terminal and self.terminalPanelActive();
+    if (event.mods.ctrl and !event.mods.alt and event.key == .char and (event.key.char == ' ' or event.key.char == 0)) {
+        const suggest = "workbench.action.terminal.requestCompletions";
+        const enabled = if (self.configuration) |config| config.getBool("terminal.integrated.suggest.enabled", true) else true;
+        if (enabled and instance.shell_type != null and instance.emulator.isAtShellInput() and self.commands.get(suggest) != null) {
+            try self.commands.execute(suggest);
+            return true;
+        }
+    }
+
+    if (event.mods.alt and event.mods.shift and !event.mods.ctrl) {
+        switch (event.key) {
+            .up => {
+                self.resizeTerminalPanel(1);
+                return true;
+            },
+            .down => {
+                self.resizeTerminalPanel(-1);
+                return true;
+            },
+            .char => |ch| switch (ch) {
+                'T' => {
+                    self.toggleTerminal() catch {};
+                    return true;
+                },
+                'N' => {
+                    self.newTerminal() catch {};
+                    return true;
+                },
+                'W' => {
+                    self.killTerminal() catch {};
+                    return true;
+                },
+                else => {},
+            },
+            else => {},
+        }
+    }
+
+    if (try handleGlobalKey(self, event)) return true;
+
+    var out = std.array_list.Managed(u8).init(self.allocator);
+    defer out.deinit();
+    self.terminal_input.key(&instance.emulator, event.*, &out) catch return true;
+    if (out.items.len > 0) {
+        instance.writeInput(out.items);
+        instance.scrollToBottom();
+    }
+    // The shell owns the focused keyboard. Even keys that produce no bytes
+    // (for example bracketed-paste markers) must not fall through to the
+    // editor beneath the panel.
+    return true;
+}
+
+pub fn handleTerminalMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+    const service = self.terminal_service orelse return false;
+    const left_press = event.kind == .down and event.button == .left;
+    if (self.terminalPanelActive()) {
+        const rect = self.panelRect();
+        if (self.terminal_tabbed_view.handleMouse(service, rect, panel_part_mod.titleContentEnd(&self.panel_part, rect), event, time_compat.milliTimestamp(), .{
+            .context = self,
+            .pointer = &self.pointer,
+            .focus_panel = focusTerminalTabbedView,
+            .dispatch = dispatchTerminalTabbedViewAction,
+        })) |handled| return handled;
+    }
+    const pane = self.part.viewAt(event.x, event.y) orelse return false;
+    const tab = pane.activeTab() orelse return false;
+    const instance = tab.terminalInstance() orelse return false;
+    const chrome: f64 = @floatFromInt(pane.chromeHeight());
+    const rect: ui.Rect = .{ .x = pane.rect.x, .y = pane.rect.y + chrome, .w = pane.rect.w, .h = @max(0, pane.rect.h - chrome) };
+    if (!terminal_panel.contains(rect, event.x, event.y)) return false;
+    if (left_press) {
+        self.service.activateGroup(pane.group);
+        self.focusEditor();
+    }
+    return routeTerminalMouse(self, instance, rect, event);
+}
+
+fn focusTerminalTabbedView(context: *anyopaque) void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.setFocus(.terminal);
+}
+
+fn dispatchTerminalTabbedViewAction(context: *anyopaque, action: terminal_panel.TerminalTabbedView.MouseAction, event: *const ui.MouseEvent) bool {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    switch (action) {
+        .sync_size => self.syncTerminalSize(),
+        .move_to_editor => |source| {
+            const pane = self.part.viewAt(event.x, event.y) orelse return false;
+            const service = self.terminal_service orelse return false;
+            if (service.at(source) == null) return false;
+            self.movePanelInstanceToEditor(service, pane, source) catch {};
+        },
+        .kill_panel => |index| self.killPanelTerminal(index) catch {},
+        .tab_menu => |index| self.showTerminalTabMenu(index, event) catch {},
+        .new_terminal => self.newPanelTerminal() catch {},
+        .profiles => self.showTerminalProfileMenu(null, event) catch {},
+        .terminal_picker => self.showTerminalSwitchMenu(event) catch {},
+        .split_tabs => |index| self.splitTerminalTabs(index) catch {},
+        .kill_tabs => |index| self.killTerminalTabs(index) catch {},
+        .tab_list_menu => self.showTerminalTabListMenu(event) catch {},
+        .content => |pane| return routeTerminalMouse(self, self.terminal_service.?.at(pane.index).?, pane.rect, event),
+    }
+    return true;
+}
+
+fn routeTerminalMouse(self: *Workbench, instance: *terminal_service_mod.TerminalInstance, content: ui.Rect, event: *const ui.MouseEvent) bool {
+    self.pointer = .text;
+    var local = event.*;
+    local.x -= ui.cell.snap(content.x);
+    local.y -= ui.cell.snap(content.y);
+    if ((event.kind == .wheel or event.kind == .down or event.kind == .up or event.kind == .move) and
+        !instance.emulator.mouseReporting())
+    {
+        if (event.kind == .wheel) {
+            instance.scroll(event.delta_y);
+        }
+        return true;
+    }
+    var out = std.array_list.Managed(u8).init(self.allocator);
+    defer out.deinit();
+    const written = self.terminal_input.mouse(
+        &instance.emulator,
+        local,
+        instance.cols,
+        instance.rows,
+        &out,
+    ) catch false;
+    if (written) instance.writeInput(out.items);
+    return true;
+}
+
+/// Workbench-global shortcuts through the abstract keybinding service.
+/// Skipped while quick access owns the keyboard so Ctrl+P keeps cycling
+/// the open picker.
+pub fn handleGlobalKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
+    _ = try self.ensureContextKeys();
+    self.updateContextKeys();
+    if (self.quick_access.isOpen()) return false;
+    self.suppress_global_command = false;
+    // Ctrl-] is the TUI-specific definition alias. F12 and its modified
+    // variants are registered in the global keybinding rules below.
+    if (!self.terminalFocused() and isCtrlChar(event, ']')) {
+        if (try self.revealDefinition()) return true;
+    }
+    const service = try self.ensureGlobalService();
+    const handled = service.dispatch(event.*);
+    if (self.suppress_global_command) {
+        self.suppress_global_command = false;
+        return false;
+    }
+    return handled;
+}
+
+pub fn handleTabKey(self: *Workbench, event: *const ui.KeyEvent) !TabKeyResult {
+    self.tab_command_result = null;
+    const service = try self.ensureTabService();
+    if (service.dispatch(event.*)) {
+        if (self.tab_command_result) |result| return result;
+        return .handled;
+    }
+
+    if (isCtrlChar(event, 'w')) {
+        return if (try self.closeActive()) .quit else .handled;
+    }
+
+    if (event.mods.alt and !event.mods.ctrl and !event.mods.shift) {
+        switch (event.key) {
+            .down => {
+                if (self.activeTab()) |tab| {
+                    if (tab.nextDiffChange()) return .handled;
+                }
+            },
+            .up => {
+                if (self.activeTab()) |tab| {
+                    if (tab.previousDiffChange()) return .handled;
+                }
+            },
+            .char => |ch| {
+                if (ch == '\\') {
+                    try self.splitActive(.horizontal);
+                    return .handled;
+                }
+            },
+            else => {},
+        }
+    }
+    if (event.mods.alt and event.mods.shift and !event.mods.ctrl) {
+        switch (event.key) {
+            .char => |ch| {
+                if (ch == '|' or ch == '\\') {
+                    try self.splitActive(.vertical);
+                    return .handled;
+                }
+            },
+            else => {},
+        }
+    }
+
+    if (event.mods.ctrl and !event.mods.alt and !event.mods.shift) {
+        switch (event.key) {
+            .page_up => {
+                try self.switchTab(-1);
+                return .handled;
+            },
+            .page_down => {
+                try self.switchTab(1);
+                return .handled;
+            },
+            else => {},
+        }
+    }
+
+    if (event.mods.ctrl and event.mods.alt and !event.mods.shift) {
+        switch (event.key) {
+            .left => {
+                try self.switchGroup(-1);
+                return .handled;
+            },
+            .right => {
+                try self.switchGroup(1);
+                return .handled;
+            },
+            else => {},
+        }
+    }
+
+    if (event.mods.alt and !event.mods.ctrl and !event.mods.shift) {
+        switch (event.key) {
+            .char => |ch| {
+                if (ch >= '1' and ch <= '9') {
+                    try self.activateIndex(ch - '1');
+                    return .handled;
+                }
+            },
+            else => {},
+        }
+    }
+
+    return .unhandled;
+}
+
+/// Mouse adapter for the workbench grid's SplitView boundaries.
+pub fn handleWorkbenchSashMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+    if (self.quick_access.isOpen() or event.kind == .wheel) return false;
+    const grid = &self.layout.workbench_grid;
+    if (grid.activeSash()) |sash| {
+        if (event.kind == .down) return true;
+        if (grid.drag.?.click_y != event.y) grid.drag.?.click_y = null;
+        if (sash == .sidebar and event.kind == .move and grid.drag.?.state.alt != event.mods.alt) {
+            // Terminals report modifier changes with the next mouse motion.
+            const previous = grid.drag.?.current;
+            startWorkbenchSash(self, sash, previous, event.mods.alt);
+        }
+        const size = grid.onSashChange(sash.coordinate(event.x, event.y));
+        switch (sash) {
+            .sidebar => {
+                const visible = size != 0;
+                const changed = self.layout.isVisible(.sidebar) != visible;
+                if (changed) {
+                    // ViewItem.setVisible caches the size at pointer-down.
+                    if (!visible) {
+                        self.layout.setSize(.sidebar, grid.drag.?.state.sizes[grid.drag.?.fixed_index] -| self.sidebarFrameInset()) catch return true;
+                        if (self.focus == .sidebar) self.focusEditor();
+                    }
+                    self.setSidebarVisible(visible) catch return true;
+                }
+                const width = size -| self.sidebarFrameInset();
+                if (visible and width != self.layout.size(.sidebar)) {
+                    self.layout.setSize(.sidebar, width) catch return true;
+                    self.layoutAll();
+                } else if (changed) self.layoutAll();
+            },
+            .panel => self.resizePanelTo(size),
+        }
+        if (event.kind == .up or event.kind == .click) {
+            const click = sash == .sidebar and grid.drag.?.click_y != null and self.sidebarShown();
+            grid.onSashEnd();
+            const last = grid.last_sidebar_click;
+            grid.last_sidebar_click = null;
+            if (click) {
+                const now = time_compat.milliTimestamp();
+                if (last != null and last.?.x == event.x and last.?.y == event.y and now - last.?.time <= 400) {
+                    self.resetSidebarSash() catch return true;
+                } else grid.last_sidebar_click = .{ .x = event.x, .y = event.y, .time = now };
+            }
+            const hovered = self.workbenchSashAt(event.x, event.y);
+            self.hovered_sash = if (hovered) |hit| .{ .workbench = hit } else null;
+            self.pointer = if (hovered) |hit| self.workbenchSashPointer(hit) else .default;
+        } else {
+            self.pointer = self.workbenchSashPointer(sash);
+        }
+        return true;
+    }
+
+    const sash = self.workbenchSashAt(event.x, event.y) orelse return false;
+    self.pointer = self.workbenchSashPointer(sash);
+    if (event.kind == .move) {
+        self.hovered_sash = .{ .workbench = sash };
+        if (sash == .panel) self.panel_part.setHovered(null);
+    }
+    if (event.kind == .down and event.button == .left) {
+        startWorkbenchSash(self, sash, sash.coordinate(event.x, event.y), event.mods.alt);
+        grid.drag.?.click_y = event.y;
+    }
+    return true;
+}
+
+fn startWorkbenchSash(self: *Workbench, sash: WorkbenchGrid.Sash, coordinate: usize, alt: bool) void {
+    const limits: WorkbenchGrid.Limits = switch (sash) {
+        .sidebar => .{ .minimum = self.sidebarMinimum(), .maximum = self.sidebar_part.maximum_width +| self.sidebarFrameInset() },
+        .panel => self.panelHeightLimits(),
+    };
+    self.layout.workbench_grid.onSashStart(sash, coordinate, self.workbenchGridLayout(), limits, if (sash == .sidebar) self.editorColumnMinimum() else 0, alt);
+}
+
+/// Routes pointer input on the workbench status row. The row is outside
+/// every editor pane, so it is handled before sash/sidebar/editor routing.
+pub fn handleStatusbarMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+    if (!self.statusBarVisible()) return false;
+    const rect = self.statusBarRect();
+    const part = self.statusbar.main_part;
+    if (event.y != ui.cell.snap(rect.y)) {
+        if (event.kind == .move) part.clearHover();
+        return false;
+    }
+    switch (event.kind) {
+        .move => {
+            const hit = part.hitAt(event.x, event.y) catch null;
+            if (hit) |value| {
+                switch (value) {
+                    .entry => |handle| part.setHovered(handle),
+                    .part => part.clearHover(),
+                }
+            } else {
+                part.clearHover();
+            }
+            self.pointer = part.pointerAt(event.x, event.y) catch .default;
+            self.leaveEditorHover();
+            return true;
+        },
+        .down => {
+            self.leaveEditorHover();
+            if (event.button == .right) {
+                part.clearHover();
+                const hit = part.hitAt(event.x, event.y) catch null;
+                self.showStatusbarContextMenu(if (hit != null and hit.? == .entry) hit.?.entry else null, event) catch {};
+                return true;
+            }
+            part.clearHover();
+            self.focusStatusBar();
+            self.pointer = part.pointerAt(event.x, event.y) catch .default;
+            if (part.hitAt(event.x, event.y) catch null) |hit| {
+                switch (hit) {
+                    .entry => |handle| {
+                        part.setFocused(handle);
+                        _ = part.executeEntry(handle) catch |err| {
+                            if (self.activeTab()) |tab| {
+                                tab.editor.setMessage("status bar: {s}", .{@errorName(err)});
+                            }
+                        };
+                    },
+                    .part => part.clearFocus(),
+                }
+            } else {
+                part.clearFocus();
+            }
+            return true;
+        },
+        .up, .click => {
+            self.pointer = part.pointerAt(event.x, event.y) catch .default;
+            return true;
+        },
+        .wheel => return true,
+    }
+}
+
+/// Keyboard input while the status bar owns focus. `Ctrl-Alt-S` is a
+/// TUI-specific shortcut for the upstream `focusStatusBar` command because
+/// the TUI does not port F6 part navigation.
+pub fn handleStatusbarKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
+    if (event.mods.ctrl and event.mods.alt and !event.mods.shift) {
+        if (event.key == .char and (event.key.char == 's' or event.key.char == 'S')) {
+            if (self.focus == .statusbar) {
+                self.focusEditor();
+            } else {
+                self.focusStatusBar();
+            }
+            return true;
+        }
+    }
+    if (self.focus != .statusbar) return false;
+
+    const service = self.ensureStatusbarService() catch null;
+    if (service) |host| {
+        if (host.dispatch(event.*)) return true;
+    }
+
+    const part = self.statusbar.main_part;
+    switch (event.key) {
+        .left, .up => _ = part.focusPreviousEntry(),
+        .right, .down => _ = part.focusNextEntry(),
+        .home => _ = part.focusFirstEntry(),
+        .end => _ = part.focusLastEntry(),
+        .escape => {
+            // Keep upstream's Escape Escape exit chord reachable when the
+            // terminal status bar owns focus in zen mode.
+            if (self.layout.isZenModeActive()) return false;
+            part.clearHover();
+            if (part.focusedHandle() != null) {
+                part.clearFocus();
+            } else {
+                self.focusEditor();
+            }
+        },
+        .enter => {
+            _ = part.executeFocused() catch |err| {
+                if (self.activeTab()) |tab| {
+                    tab.editor.setMessage("status bar: {s}", .{@errorName(err)});
+                }
+            };
+        },
+        .char => |ch| {
+            if (ch == ' ') {
+                _ = part.executeFocused() catch |err| {
+                    if (self.activeTab()) |tab| {
+                        tab.editor.setMessage("status bar: {s}", .{@errorName(err)});
+                    }
+                };
+            }
+        },
+        else => {},
+    }
+    return true;
+}
+
+pub fn handleSidebarKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
+    if (isCtrlChar(event, 'b')) {
+        try self.toggleSidebar();
+        return true;
+    }
+
+    // A normal terminal cannot distinguish Ctrl-Shift-F from Ctrl-F, so
+    // the TUI exposes Find in Files as Alt-F.
+    if (event.mods.alt and !event.mods.ctrl and !event.mods.shift and event.key == .char) {
+        const ch = event.key.char;
+        if (ch == 'f' or ch == 'F') {
+            try self.showActivity(1);
+            if (self.search_view) |view| {
+                view.seedFromSelection() catch {};
+                view.focus();
+            }
+            return true;
+        }
+    }
+
+    if (self.focus != .sidebar or !self.sidebarShown()) return false;
+
+    // Let the global Escape Escape chord exit zen mode when the side bar
+    // was reopened while zen mode is active.
+    if (event.key == .escape and self.layout.isZenModeActive()) return false;
+    if (event.key == .escape) {
+        if (self.activeSidebarViewContainer()) |container| {
+            if (container.header_press != null) {
+                container.cancelHeaderDrag();
+                return true;
+            }
+        }
+    }
+    if (event.key == .escape and !std.mem.eql(u8, self.activity_bar_part.active_id orelse "", "search")) {
+        // A focused sticky-scroll widget is the innermost focus target;
+        // Escape leaves it before leaving the side bar (upstream leaves it
+        // with Tab, which is the same terminal focus-traversal key).
+        const active = self.activity_bar_part.active_id orelse "";
+        if (std.mem.eql(u8, active, "explorer")) {
+            if (self.sidebar) |sidebar| {
+                if (sidebar.tree.stickyScrollFocused()) {
+                    sidebar.tree.clearStickyScrollFocus();
+                    return true;
+                }
+            }
+        }
+        self.focusEditor();
+        if (self.activeTab()) |tab| tab.focusEditor();
+        return true;
+    }
+
+    if (event.mods.alt and !event.mods.ctrl and !event.mods.shift) {
+        switch (event.key) {
+            .char => |ch| {
+                if (ch >= '1' and ch <= '9') {
+                    try self.showActivity(ch - '1');
+                    return true;
+                }
+            },
+            else => {},
+        }
+    }
+
+    const active_id = self.activity_bar_part.active_id orelse "";
+    if (std.mem.eql(u8, active_id, "scm")) {
+        if (self.scm_container) |container| {
+            _ = container.handleKey(@constCast(event)) catch {};
+        } else if (self.scm.changes) |view| {
+            _ = view.handleKey(@constCast(event)) catch {};
+        }
+        return true;
+    }
+    if (std.mem.eql(u8, active_id, "search")) {
+        if (self.search_view) |view| {
+            switch (view.handleKey(event)) {
+                .handled => return true,
+                .focus_editor => {
+                    self.focusEditor();
+                    if (self.activeTab()) |tab| tab.focusEditor();
+                    return true;
+                },
+                .unhandled => return true,
+            }
+        }
+        return true;
+    }
+    if (!std.mem.eql(u8, active_id, "explorer")) {
+        const current = self.activeActivity();
+        if (event.key == .up) try self.showActivity(self.activity_bar_part.next(current, -1));
+        if (event.key == .down) try self.showActivity(self.activity_bar_part.next(current, 1));
+        return true;
+    }
+
+    if (self.explorer_container) |container| {
+        _ = container.handleKey(@constCast(event)) catch {};
+        return true;
+    }
+    if (self.sidebar == null) return false;
+    switch (try self.sidebar.?.handleKey(event)) {
+        .open => |path| {
+            self.requestOpenPath(path);
+            self.setFocus(.editor);
+            return true;
+        },
+        .handled, .none => return true,
+    }
+}
+
+pub fn handleSidebarPaneHeader(
+    self: *Workbench,
+    container: *view_pane_container_mod.ViewPaneContainer,
+    event: *const ui.MouseEvent,
+    content: ui.Rect,
+) bool {
+    const target = if (event.kind == .move or event.kind == .up)
+        self.sidebar_part.dropDestination(self.sidebarRect(), self.activityRect(), event.x, event.y)
+    else
+        null;
+    if (event.kind == .up and container.handleHeaderDrop(event, target, &self.view_descriptor_service)) {
+        self.pointer = .default;
+        return true;
+    }
+    const outcome = container.handleHeaderMouse(event, content) orelse return false;
+    if (event.kind == .move) _ = container.handleHeaderDrop(event, target, &self.view_descriptor_service);
+    if (event.kind == .down) {
+        self.setFocus(.sidebar);
+        if (self.scm.changes) |view| view.blurInput();
+    }
+    switch (outcome) {
+        .handled => self.pointer = if (container.dragging_header) .grabbing else .pointer,
+        .action => |id| self.runSidebarTitleAction(id, event),
+        .context_menu => |id| self.showSidebarViewMenu(container, .header, id, MenuAnchor.mouse(event)) catch {},
+    }
+    return true;
+}
+
+pub fn handleSidebarMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+    // The activity bar stays clickable while the side bar is hidden; an
+    // entry click reveals the side bar again, like upstream.
+    if (WorkbenchGrid.Rects.inColumn(self.activityRect(), event.x)) {
+        if (event.kind == .wheel) return true;
+        if (event.kind == .move) self.clearSidebarViewHover();
+        const activity_rect = self.activityRect();
+        const hit = activity_bar_mod.hitAt(&self.activity_bar_part, event.x, event.y, activity_rect);
+        self.pointer = if (hit != null) .pointer else .default;
+        if (event.kind == .down) {
+            if (activity_bar_mod.overflowHitAt(&self.activity_bar_part, event.x, event.y, activity_rect)) {
+                self.showActivityOverflowMenu(event) catch {};
+            } else if (hit) |index| {
+                self.showActivity(index) catch {};
+            }
+        }
+        return true;
+    }
+
+    if (!self.sidebarShown()) {
+        if (event.kind == .move) self.clearSidebarViewHover();
+        return false;
+    }
+
+    if (!WorkbenchGrid.Rects.inColumn(self.sidebarFrameRect(), event.x) or event.y >= self.workbenchRows()) {
+        if (event.kind == .move) self.clearSidebarViewHover();
+        return false;
+    }
+
+    // The side bar title chrome (header composite bar, title and footer):
+    // title actions and the composite bar items only exist there, so the
+    // rest of the side bar keeps routing events to its view.
+    const rect = self.sidebarRect();
+    if (event.x < ui.cell.snap(rect.x) or event.x >= ui.cell.snap(rect.right()) or
+        event.y < ui.cell.snap(rect.y) or event.y >= ui.cell.snap(rect.bottom()))
+    {
+        if (event.kind == .move) {
+            self.clearSidebarViewHover();
+            sidebar_part_mod.setHovered(&self.sidebar_part, null);
+        }
+        return true;
+    }
+    const content = sidebar_part_mod.contentRect(&self.sidebar_part, rect);
+    const content_top = ui.cell.snap(content.y);
+    const content_height = ui.cell.snap(content.h);
+    const in_chrome = content_height == 0 or
+        event.y < content_top or
+        event.y >= content_top + content_height;
+    if (in_chrome) {
+        if (event.kind == .down and event.button == .right) {
+            if (self.activeSidebarViewContainer()) |container| self.showSidebarViewMenu(container, .container, null, MenuAnchor.mouse(event)) catch {};
+            return true;
+        }
+        if (event.kind == .move) {
+            self.clearSidebarViewHover();
+            const hit = sidebar_part_mod.hitTest(&self.sidebar_part, rect, event.x, event.y);
+            sidebar_part_mod.setHovered(&self.sidebar_part, hit);
+            self.pointer = if (hit != null) .pointer else .default;
+            return true;
+        }
+        if (sidebar_part_mod.hitTest(&self.sidebar_part, rect, event.x, event.y)) |hit| {
+            self.pointer = .pointer;
+            if (event.kind == .down) switch (hit) {
+                .action => |id| self.runSidebarTitleAction(id, event),
+                .composite => |id| {
+                    _ = self.showActivityById(id) catch {};
+                },
+            };
+            return true;
+        }
+        // A click on the chrome without an action only moves focus into
+        // the part, like the browser title area.
+        if (event.kind != .wheel) self.pointer = .default;
+        if (event.kind == .down) self.setFocus(.sidebar);
+        return true;
+    }
+
+    if (event.kind == .move) sidebar_part_mod.setHovered(&self.sidebar_part, null);
+    if (event.kind == .down) self.setFocus(.sidebar);
+    const active_id = self.activity_bar_part.active_id orelse "";
+    if (self.activeSidebarViewContainer()) |container| {
+        if (handleSidebarPaneHeader(self, container, event, content)) return true;
+        const hit = container.hitTest(content, event.x, event.y);
+        const body_id = if (hit != null and hit.? == .body) hit.?.body else "";
+        if (event.kind == .move) {
+            container.setHoveredAt(event.x, event.y);
+            updateSidebarBodyHover(self, body_id, event, container);
+            if (hit != null and (hit.? == .action or hit.? == .toggle)) self.pointer = .pointer;
+            return true;
+        }
+        if (std.mem.eql(u8, body_id, "explorer")) {
+            if (explorerPreviewPress(event)) container.setActive(body_id);
+            return handleExplorerBodyMouse(self, event);
+        }
+        if (body_id.len > 0) _ = container.handleMouse(event, content) catch false;
+        return true;
+    }
+    if (std.mem.eql(u8, active_id, "scm")) {
+        if (self.scm.changes) |view| _ = view.handleMouse(@constCast(event), content) catch false;
+        return true;
+    }
+    if (std.mem.eql(u8, active_id, "search")) {
+        if (self.search_view) |view| {
+            _ = view.handleMouse(event);
+            if (event.kind == .move) self.pointer = view.pointerAt(event.x, event.y);
+        }
+        return true;
+    }
+    if (std.mem.eql(u8, active_id, "explorer")) return handleExplorerBodyMouse(self, event);
+    return true;
+}
+
+fn updateSidebarBodyHover(
+    self: *Workbench,
+    id: []const u8,
+    event: *const ui.MouseEvent,
+    container: *view_pane_container_mod.ViewPaneContainer,
+) void {
+    self.pointer = .default;
+    if (self.sidebar) |sidebar| {
+        if (!std.mem.eql(u8, id, "explorer")) sidebar.clearHover();
+    }
+    if (self.outline_view) |view| {
+        if (!std.mem.eql(u8, id, "outline")) view.clearHover();
+    }
+    if (self.scm.changes) |view| {
+        if (!std.mem.eql(u8, id, "changes")) view.clearHover();
+    }
+    if (self.scm.history) |view| {
+        if (!std.mem.eql(u8, id, "graph")) view.clearHover();
+    }
+    const rect = container.bodyRect(id) orelse return;
+    _ = container.handleMouse(event, rect) catch false;
+    if (std.mem.eql(u8, id, "explorer")) {
+        if (self.sidebar) |sidebar| self.pointer = if (sidebar.hasHoveredRow()) .pointer else .default;
+    } else if (std.mem.eql(u8, id, "outline")) {
+        if (self.outline_view) |view| self.pointer = if (view.hasHoveredRow()) .pointer else .default;
+    } else if (std.mem.eql(u8, id, "changes")) {
+        if (self.scm.changes) |view| self.pointer = view.pointerAt(event, rect);
+    } else if (std.mem.eql(u8, id, "graph")) {
+        if (self.scm.history) |view| self.pointer = view.pointerAt();
+    }
+}
+
+fn handleExplorerBodyMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+    const sidebar = self.sidebar orelse return false;
+    if (event.kind == .move) {
+        _ = sidebar.handleMouse(event);
+        self.pointer = if (sidebar.hasHoveredRow()) .pointer else .default;
+        return true;
+    }
+    if (event.kind == .wheel) {
+        _ = sidebar.handleMouse(event);
+        return true;
+    }
+    if (explorerPreviewPress(event)) {
+        if (sidebar.handleClickPreview(event.x, event.y) catch null) |path| {
+            // A single Explorer click opens a preview through the async
+            // text-open job, like Enter. The status hint reports a failed
+            // read when the read completes.
+            self.requestOpenPathWithOptions(path, .{ .pinned = false });
+            self.setFocus(.editor);
+        }
+    }
+    return true;
+}
+
+fn explorerPreviewPress(event: *const ui.MouseEvent) bool {
+    return event.kind == .down and (event.button == .left or event.button == .none);
+}
+
+/// The panel title and the active panel view's input. Terminal content is
+/// left to `handleTerminalMouse` so the emulator keeps mouse reporting.
+pub fn handlePanelMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+    if (!self.panelShown()) return false;
+    const list = &self.terminal_tabbed_view.tab_list;
+    if ((list.dragged_instance != null or list.dragging_sash or list.dragging_pane_sash != null) and
+        (event.kind == .up or event.kind == .move))
+    {
+        if (handleTerminalMouse(self, event)) return true;
+    }
+    const rect = self.panelRect();
+    const rect_x = ui.cell.snap(rect.x);
+    const rect_y = ui.cell.snap(rect.y);
+    const rect_width = ui.cell.snap(rect.w);
+    const rect_height = ui.cell.snap(rect.h);
+    if (rect_width == 0 or rect_height == 0) return false;
+    if (event.x < rect_x or event.x >= rect_x + rect_width) {
+        self.panel_part.setHovered(null);
+        return false;
+    }
+    if (event.y < rect_y or event.y >= rect_y + rect_height) {
+        self.panel_part.setHovered(null);
+        return false;
+    }
+
+    if (event.y == rect_y) {
+        if (self.terminalPanelActive() and handleTerminalMouse(self, event)) return true;
+        const hit = panel_part_mod.hitTest(&self.panel_part, rect, event.x, event.y);
+        if (event.kind == .move) self.panel_part.setHovered(hit);
+        if (event.kind != .wheel) self.pointer = if (hit != null) .pointer else .default;
+        if (event.kind == .down and event.button == .left) {
+            if (hit) |id| _ = self.openPanelContainer(id) catch {};
+        }
+        return true;
+    }
+
+    self.panel_part.setHovered(null);
+    if (std.mem.eql(u8, self.activePanelId(), PROBLEMS_CONTAINER_ID)) {
+        if (event.kind == .down) {
+            self.setFocus(.problems);
+            self.updateProblemsHighlight();
+        }
+        const content = panel_part_mod.contentRect(rect);
+        if (self.problems_view) |*view| _ = view.handleMouse(event, content, .{ .show_header = false }) catch false;
+        return true;
+    }
+    return false;
+}
+
+/// Key routing for the Problems list in the panel. Terminal keys stay with
+/// `handleTerminalKey`.
+pub fn handlePanelKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
+    if (!self.panelShown()) return false;
+    if (self.focus != .problems) return false;
+    if (!std.mem.eql(u8, self.activePanelId(), PROBLEMS_CONTAINER_ID)) return false;
+    if (event.key == .escape) {
+        // Let the global Escape Escape chord exit zen mode when the panel
+        // was reopened while zen mode is active.
+        if (self.layout.isZenModeActive()) return false;
+        self.focusEditor();
+        if (self.activeTab()) |tab| tab.focusEditor();
+        return true;
+    }
+    if (self.problems_view) |*view| {
+        _ = view.handleKey(@constCast(event)) catch {};
+    }
+    return true;
+}
+
+/// Resolves the editor instance through the workbench's shared box tree.
+/// Editors still consume mouse coordinates relative to their own viewport.
+pub fn handleSearchEditorKey(self: *Workbench, event: *ui.KeyEvent) bool {
+    if (self.focus != .editor) return false;
+    const tab = self.activeTab() orelse return false;
+    const input = tab.search_editor_input orelse return false;
+    const query = input.search_editor;
+    if (event.key == .enter and !event.mods.alt and !event.mods.ctrl and !query.query_focused) {
+        return shell.searchEditorOpenTarget(self, tab);
+    }
+    return query.handleKey(event);
+}
+
+pub fn handleSearchEditorMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+    const pane = self.part.viewAt(event.x, event.y) orelse return false;
+    const tab = pane.activeTab() orelse return false;
+    const input = tab.search_editor_input orelse return false;
+    const query = input.search_editor;
+    const top = ui.cell.snap(pane.rect.y) + pane.chromeHeight();
+    if (event.y < top) return false;
+    const activate = event.kind == .down and event.button == .left;
+    if (event.y >= top + query.headerRows()) {
+        query.form.clearHover();
+        if (activate) {
+            query.setQueryFocused(false);
+            if (event.x -| ui.cell.snap(pane.rect.x) < tab.editor.gutterWidth()) {
+                query.last_result_click = null;
+                return false;
+            }
+            const now = time_compat.milliTimestamp();
+            const previous = query.last_result_click;
+            query.last_result_click = .{ .x = event.x, .y = event.y, .at = now };
+            const behavior = if (self.configuration) |configuration|
+                configuration.getValue("search.searchEditor.doubleClickBehaviour", .{})
+            else
+                null;
+            const go_to_location = behavior == null or behavior.?.* != .string or
+                std.mem.eql(u8, behavior.?.string, "goToLocation");
+            if (go_to_location and previous != null and previous.?.x == event.x and previous.?.y == event.y and now - previous.?.at <= 500) {
+                query.last_result_click = null;
+                return shell.searchEditorOpenTarget(self, tab);
+            }
+        }
+        return false;
+    }
+    if (event.kind == .wheel) return false;
+    var local = event.*;
+    local.x -|= ui.cell.snap(pane.rect.x);
+    local.y -= top;
+    if (activate) {
+        self.service.activateGroup(pane.group);
+        self.focusEditor();
+        query.setQueryFocused(true);
+    }
+    _ = query.form.handleMouse(local.x, local.y, &local);
+    self.pointer = query.form.pointerAt(local.x, local.y);
+    return true;
+}
+
+pub fn handleBreadcrumbsKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
+    if (self.focus != .breadcrumbs) return false;
+    const control = self.breadcrumbs_control orelse {
+        self.focusEditor();
+        return false;
+    };
+    switch (event.key) {
+        .left => {
+            control.focusPrevious();
+            return true;
+        },
+        .right => {
+            control.focusNext();
+            return true;
+        },
+        .enter, .down => {
+            _ = control.selectFocused() catch {};
+            return true;
+        },
+        .escape => {
+            _ = control.escapeFocus();
+            return true;
+        },
+        .char => |ch| {
+            if (ch == ' ') {
+                _ = control.revealFocused() catch {};
+                return true;
+            }
+            return true;
+        },
+        else => return true,
+    }
+}
+
+pub fn handleDialogKey(self: *Workbench, event: *ui.KeyEvent) bool {
+    return self.dialog_handler.handleKey(event);
+}
+
+pub fn handleDialogMouse(self: *Workbench, event: *ui.MouseEvent) bool {
+    if (!self.isDialogOpen()) return false;
+    self.pointer = self.dialog_handler.pointerAt(event.x, event.y);
+    return self.dialog_handler.handleMouse(event);
+}
+
+pub fn handleBreadcrumbPopupKey(self: *Workbench, event: *const ui.KeyEvent) bool {
+    const popup = self.breadcrumb_popup orelse return false;
+    if (!popup.isVisible()) return false;
+    _ = popup.handleKey(event);
+    self.requestFrame();
+    return true;
+}
+
+pub fn handleBreadcrumbPopupMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+    const popup = self.breadcrumb_popup orelse return false;
+    if (!popup.isVisible()) return false;
+    _ = popup.handleMouse(event);
+    self.requestFrame();
+    return true;
+}
+
+/// Routes a claimed drag before ordinary workbench mouse targets.
+pub fn handleTabDragMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+    return self.editor_drag.handleMouse(self, event.*);
+}
+
+pub fn editorMouseEvent(self: *Workbench, event: ui.MouseEvent) ?struct { tab: *Tab, event: ui.MouseEvent } {
+    if (event.x >= self.cols or event.y >= self.rows or !WorkbenchGrid.Rects.inColumn(self.workbenchGridLayout().editor, event.x)) return null;
+    const surface = self.synchronizeEditorDom() catch return null;
+    const target = (surface.elementFromPoint(event.x, event.y) catch null) orelse return null;
+    const pane = editorGroupAtNode(self, target) orelse return null;
+    if (event.kind != .wheel and pane.group != self.service.activeGroup()) return null;
+    const y = ui.cell.snap(pane.rect.y);
+    const chrome = pane.chromeHeight();
+    if (event.y >= y and event.y < y + chrome) return null;
+    const tab = pane.activeTab() orelse return null;
+
+    var adjusted = event;
+    adjusted.x -|= ui.cell.snap(pane.rect.x);
+    adjusted.y -|= y + chrome;
+    return .{ .tab = tab, .event = adjusted };
+}
+
+fn editorGroupAtNode(self: *Workbench, target: *ui.Node) ?*GroupPane {
+    var current: ?*ui.Node = target;
+    while (current) |node| : (current = node.parent) {
+        if (!node.hasClass(editor_css.editor_group.Class.editor_group_container)) continue;
+        for (self.part.group_views.items) |pane| {
+            if (pane.dom.?.group == node) return pane;
+        }
+    }
+    return null;
+}
+
+pub fn handleWatermarkKey(self: *Workbench, event: *const ui.KeyEvent) bool {
+    if (self.focus != .editor or self.quick_access.isOpen()) return false;
+    const pane = self.activePane() orelse return false;
+    if (!pane.isEmpty()) return false;
+    const watermark = if (pane.watermark) |*view| view else return false;
+    return watermark.handleKey(event);
+}
+
+pub fn pasteTerminal(self: *Workbench, content: []const u8) !void {
+    const instance = self.focusedTerminal() orelse return;
+    var out = std.array_list.Managed(u8).init(self.allocator);
+    defer out.deinit();
+    try self.terminal_input.paste(&instance.emulator, self.allocator, content, &out);
+    if (out.items.len == 0) return;
+    instance.writeInput(out.items);
+    instance.scrollToBottom();
+}
+
+fn isCtrlChar(event: *const ui.KeyEvent, wanted: u21) bool {
+    if (!event.mods.ctrl or event.mods.alt or event.mods.shift) return false;
+    return switch (event.key) {
+        .char => |ch| ch == wanted,
+        else => false,
+    };
 }

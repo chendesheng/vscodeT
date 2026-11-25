@@ -757,12 +757,12 @@ pub fn main(init: std.process.Init) !void {
                     }
                     // The save confirmation is modal: it owns every key,
                     // including the global quit shortcut.
-                    if (workbench.handleDialogKey(event)) {
+                    if (terminal_workbench.handleDialogKey(workbench, event)) {
                         if (workbench.shouldQuit()) return;
                         continue;
                     }
                     if (workbench.context_menu_service.handleKey(event)) continue;
-                    if (workbench.handleBreadcrumbPopupKey(event)) continue;
+                    if (terminal_workbench.handleBreadcrumbPopupKey(workbench, event)) continue;
                     if (isCtrlQ(event.*)) {
                         if (workbench.requestQuit()) return;
                         continue;
@@ -771,14 +771,14 @@ pub fn main(init: std.process.Init) !void {
 
                     if (try terminal_workbench.handleQuickAccessKey(workbench, event)) continue;
                     if (workbench.notification_controller) |controller| if (controller.handleKey(event)) continue;
-                    if (try workbench.handleTerminalKey(event)) continue;
-                    if (try workbench.handlePanelKey(event)) continue;
-                    if (try workbench.handleSidebarKey(event)) {
+                    if (try terminal_workbench.handleTerminalKey(workbench, event)) continue;
+                    if (try terminal_workbench.handlePanelKey(workbench, event)) continue;
+                    if (try terminal_workbench.handleSidebarKey(workbench, event)) {
                         sidebar_event_count += 1;
                         continue;
                     }
-                    if (try workbench.handleStatusbarKey(event)) continue;
-                    if (workbench.handleSearchEditorKey(event)) {
+                    if (try terminal_workbench.handleStatusbarKey(workbench, event)) continue;
+                    if (terminal_workbench.handleSearchEditorKey(workbench, event)) {
                         needs_render = true;
                         continue;
                     }
@@ -794,15 +794,15 @@ pub fn main(init: std.process.Init) !void {
                             continue;
                         }
                     }
-                    if (try workbench.handleGlobalKey(event)) continue;
+                    if (try terminal_workbench.handleGlobalKey(workbench, event)) continue;
 
-                    switch (try workbench.handleTabKey(event)) {
+                    switch (try terminal_workbench.handleTabKey(workbench, event)) {
                         .quit => return,
                         .handled => continue,
                         .unhandled => {},
                     }
-                    if (try workbench.handleBreadcrumbsKey(event)) continue;
-                    if (workbench.handleWatermarkKey(event)) continue;
+                    if (try terminal_workbench.handleBreadcrumbsKey(workbench, event)) continue;
+                    if (terminal_workbench.handleWatermarkKey(workbench, event)) continue;
 
                     const current = workbench.activeTab() orelse continue;
                     if (current.markdown_preview) |preview| {
@@ -852,25 +852,25 @@ pub fn main(init: std.process.Init) !void {
                     // release keeps the shape the last move established, so a
                     // click on a row does not flicker back to the arrow.
                     if (event.kind == .move) terminal_workbench.beginMousePointer(workbench);
-                    if (workbench.handleDialogMouse(event)) {
+                    if (terminal_workbench.handleDialogMouse(workbench, event)) {
                         if (workbench.shouldQuit()) return;
                         continue;
                     }
                     if (workbench.context_menu_service.handleMouse(event, &workbench.pointer)) continue;
-                    if (workbench.handleBreadcrumbPopupMouse(event)) continue;
-                    if (workbench.handleTabDragMouse(event)) continue;
+                    if (terminal_workbench.handleBreadcrumbPopupMouse(workbench, event)) continue;
+                    if (terminal_workbench.handleTabDragMouse(workbench, event)) continue;
                     if (terminal_workbench.handleQuickAccessMouse(workbench, event)) continue;
                     if (workbench.notification_controller) |controller| if (controller.handleMouse(event)) continue;
                     if (terminal_workbench.handleSashMouse(workbench, event)) continue;
-                    if (workbench.handleStatusbarMouse(event)) continue;
-                    if (workbench.handlePanelMouse(event)) continue;
-                    if (workbench.handleSidebarMouse(event)) {
+                    if (terminal_workbench.handleStatusbarMouse(workbench, event)) continue;
+                    if (terminal_workbench.handlePanelMouse(workbench, event)) continue;
+                    if (terminal_workbench.handleSidebarMouse(workbench, event)) {
                         sidebar_event_count += 1;
                         continue;
                     }
                     if (terminal_workbench.handleTabMouse(workbench, event)) continue;
-                    if (workbench.handleTerminalMouse(event)) continue;
-                    if (workbench.handleSearchEditorMouse(event)) {
+                    if (terminal_workbench.handleTerminalMouse(workbench, event)) continue;
+                    if (terminal_workbench.handleSearchEditorMouse(workbench, event)) {
                         needs_render = true;
                         continue;
                     }
@@ -878,7 +878,7 @@ pub fn main(init: std.process.Init) !void {
                     // The editor pane resolves text/pointer/resize shapes from
                     // the surface's style tree before the event is routed.
                     terminal_workbench.updateMousePointer(workbench, event.*);
-                    var target = workbench.editorMouseEvent(event.*) orelse continue;
+                    var target = terminal_workbench.editorMouseEvent(workbench, event.*) orelse continue;
                     const current = target.tab;
                     const adjusted = &target.event;
                     if (current.isImage()) {
