@@ -213,6 +213,7 @@ pub const ContentHoverController = struct {
                 .request_frame = widgetRequestFrame,
                 .hide = widgetHide,
                 .focus_editor = widgetFocusEditor,
+                .state_changed = widgetStateChanged,
             },
             .coordinates = self.host.coordinates orelse HoverCoordinatesHost{
                 .context = self,
@@ -314,6 +315,11 @@ pub const ContentHoverController = struct {
     fn widgetHide(context: *anyopaque) void {
         const self: *ContentHoverController = @ptrCast(@alignCast(context));
         self.hideContentHover();
+    }
+
+    fn widgetStateChanged(context: *anyopaque, visible: bool, focused: bool) void {
+        const self: *ContentHoverController = @ptrCast(@alignCast(context));
+        if (self.editor) |editor| editor.setHoverState(visible, focused);
     }
 
     fn widgetFocusEditor(context: *anyopaque) void {
@@ -420,6 +426,12 @@ pub const ContentHoverController = struct {
 
     /// Returns true when the key was consumed by the hover.
     pub fn onKeyDown(self: *ContentHoverController, event: *ui.KeyEvent) bool {
+        return self.onKeyDownWithResolution(event, null);
+    }
+
+    /// Upstream softDispatch keeps a chord prefix and resolved hover actions
+    /// from hiding the hover before the normal keybinding dispatcher runs.
+    pub fn onKeyDownWithResolution(self: *ContentHoverController, event: *ui.KeyEvent, resolution: ?@import("../../../../platform/keybinding/common/keybindingResolver.zig").ResolutionResult) bool {
         if (!self.wrapper.model_attached or self.ignore_mouse_events) return false;
 
         if (self.settings.enabled == .on_keyboard_modifier and
@@ -428,6 +440,15 @@ pub const ContentHoverController = struct {
         {
             if (!self.wrapper.isVisible()) _ = self.wrapper.showsOrWillShow(self.last_mouse_event.?);
             return false;
+        }
+
+        if (resolution) |resolved| {
+            if (resolved.kind == .MoreChordsNeeded) return false;
+            if (resolved.kind == .KbFound and self.wrapper.isVisible()) {
+                const id = resolved.commandId orelse "";
+                const ids = @import("hoverActionIds.zig");
+                if (std.mem.eql(u8, id, ids.SHOW_OR_FOCUS_HOVER_ACTION_ID) or std.mem.eql(u8, id, ids.INCREASE_HOVER_VERBOSITY_ACTION_ID) or std.mem.eql(u8, id, ids.DECREASE_HOVER_VERBOSITY_ACTION_ID)) return false;
+            }
         }
 
         // A focused hover owns the keyboard through the widget listener.

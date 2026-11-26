@@ -203,4 +203,6 @@ pub fn registerEditorNavigationActions(commands: *CommandRegistry, instantiation
     for (navigation.actionDescriptors()) |action| try commands.registerEditorAction(instantiation, action);
     try commands.registerEditorAction(instantiation, quick_access.actionDescriptor());
     try commands.registerEditorAction(instantiation, hover_actions.show_or_focus_hover_action);
+    try commands.registerEditorAction(instantiation, hover_actions.hide_hover_action);
+    for (hover_actions.scroll_actions) |action| try commands.registerEditorAction(instantiation, action);
 }

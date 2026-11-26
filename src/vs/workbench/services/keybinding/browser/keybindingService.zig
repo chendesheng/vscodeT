@@ -177,6 +177,13 @@ pub const KeybindingService = struct {
         return prevented or self.last_command != null or self.service.inChordMode();
     }
 
+    /// Resolve the same key without consuming a chord or executing a command.
+    pub fn softDispatch(self: *KeybindingService, event: input.KeyEvent) @import("../../../../platform/keybinding/common/keybindingResolver.zig").ResolutionResult {
+        const resolver = @import("../../../../platform/keybinding/common/keybindingResolver.zig");
+        const keyboard = toKeyboardEvent(event) orelse return resolver.no_matching_kb;
+        return self.service.softDispatch(self.allocator, keyboard) catch resolver.no_matching_kb;
+    }
+
     pub fn lastCommand(self: *const KeybindingService) ?[]const u8 {
         return self.last_command;
     }

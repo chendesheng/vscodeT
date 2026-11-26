@@ -1,0 +1,19 @@
+// Port of `src/vs/editor/contrib/hover/browser/hoverActionIds.ts`.
+pub const SHOW_OR_FOCUS_HOVER_ACTION_ID = "editor.action.showHover";
+pub const SHOW_DEFINITION_PREVIEW_HOVER_ACTION_ID = "editor.action.showDefinitionPreviewHover";
+pub const HIDE_HOVER_ACTION_ID = "editor.action.hideHover";
+pub const SCROLL_UP_HOVER_ACTION_ID = "editor.action.scrollUpHover";
+pub const SCROLL_DOWN_HOVER_ACTION_ID = "editor.action.scrollDownHover";
+pub const SCROLL_LEFT_HOVER_ACTION_ID = "editor.action.scrollLeftHover";
+pub const SCROLL_RIGHT_HOVER_ACTION_ID = "editor.action.scrollRightHover";
+pub const PAGE_UP_HOVER_ACTION_ID = "editor.action.pageUpHover";
+pub const PAGE_DOWN_HOVER_ACTION_ID = "editor.action.pageDownHover";
+pub const GO_TO_TOP_HOVER_ACTION_ID = "editor.action.goToTopHover";
+pub const GO_TO_BOTTOM_HOVER_ACTION_ID = "editor.action.goToBottomHover";
+pub const INCREASE_HOVER_VERBOSITY_ACTION_ID = "editor.action.increaseHoverVerbosityLevel";
+pub const INCREASE_HOVER_VERBOSITY_ACTION_LABEL = "Increase Hover Verbosity Level";
+pub const DECREASE_HOVER_VERBOSITY_ACTION_ID = "editor.action.decreaseHoverVerbosityLevel";
+pub const DECREASE_HOVER_VERBOSITY_ACTION_LABEL = "Decrease Hover Verbosity Level";
+pub const INCREASE_HOVER_VERBOSITY_ACCESSIBLE_ACTION_ID = "editor.action.increaseHoverVerbosityLevelFromAccessibleView";
+pub const DECREASE_HOVER_VERBOSITY_ACCESSIBLE_ACTION_ID = "editor.action.decreaseHoverVerbosityLevelFromAccessibleView";
+pub const HIDE_LONG_LINE_WARNING_HOVER_ACTION_ID = "editor.action.hideLongLineWarningHover";

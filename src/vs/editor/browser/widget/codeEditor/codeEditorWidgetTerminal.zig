@@ -730,6 +730,7 @@ pub const Editor = struct {
     on_did_layout_change: Emitter(void),
     on_did_change_code_lens_provider: Emitter(bool),
     on_did_change_word_highlights: Emitter(bool),
+    on_did_change_hover_state: Emitter(void),
     on_did_mouse_event: Emitter(editorBrowser.EditorMouseEvent),
     on_did_key_down: Emitter(*input.KeyEvent),
     on_did_change_quick_diff_context: Emitter(void),
@@ -741,6 +742,8 @@ pub const Editor = struct {
 
     has_code_lens_provider: bool = false,
     has_word_highlights: bool = false,
+    hover_visible: bool = false,
+    hover_focused: bool = false,
     screen_width: usize,
     screen_height: usize,
     /// Terminal default is soft wrap on; a configured `editor.wordWrap`
@@ -1027,6 +1030,7 @@ pub const Editor = struct {
             .on_did_layout_change = .init(allocator),
             .on_did_change_code_lens_provider = .init(allocator),
             .on_did_change_word_highlights = .init(allocator),
+            .on_did_change_hover_state = .init(allocator),
             .on_did_mouse_event = .init(allocator),
             .on_did_key_down = .init(allocator),
             .on_did_change_quick_diff_context = .init(allocator),
@@ -1959,6 +1963,7 @@ pub const Editor = struct {
         self.on_did_layout_change.deinit();
         self.on_did_change_code_lens_provider.deinit();
         self.on_did_change_word_highlights.deinit();
+        self.on_did_change_hover_state.deinit();
         self.on_did_mouse_event.deinit();
         self.on_did_key_down.deinit();
         self.on_did_change_quick_diff_context.deinit();
@@ -2480,6 +2485,13 @@ pub const Editor = struct {
         if (self.dirty_diff_visible == visible) return;
         self.dirty_diff_visible = visible;
         self.on_did_change_quick_diff_context.fire({}) catch {};
+    }
+
+    pub fn setHoverState(self: *Editor, visible: bool, focused: bool) void {
+        if (self.hover_visible == visible and self.hover_focused == focused) return;
+        self.hover_visible = visible;
+        self.hover_focused = focused;
+        self.on_did_change_hover_state.fire({}) catch {};
     }
 
     pub fn setHasWordHighlights(self: *Editor, has_highlights: bool) void {

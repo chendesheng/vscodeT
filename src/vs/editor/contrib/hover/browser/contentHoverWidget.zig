@@ -10,8 +10,6 @@
 // Browser-only pieces that are intentionally absent, documented in
 // `README.md` and `docs/terminal-ui.md`:
 //  * sash resizing and the `ResizableContentWidget` minimum/maximum geometry,
-//  * the context-key `hoverVisible`/`hoverFocused` keys (no context-key
-//    service),
 //  * the accessible-view hint and screen-reader announcements.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -42,6 +40,7 @@ pub const ContentHoverWidgetHost = struct {
     request_frame: *const fn (context: *anyopaque) void,
     hide: *const fn (context: *anyopaque) void,
     focus_editor: *const fn (context: *anyopaque) void,
+    state_changed: ?*const fn (context: *anyopaque, visible: bool, focused: bool) void = null,
 };
 
 pub const ContentHoverWidget = struct {
@@ -109,6 +108,7 @@ pub const ContentHoverWidget = struct {
         self.focused = was_focused;
         self.minimum_width = 1;
         self.minimum_height = 1;
+        self.publishState();
         self.host.request_frame(self.host.context);
     }
 
@@ -121,6 +121,7 @@ pub const ContentHoverWidget = struct {
     /// Focuses the box; the view re-focuses `focus_node` after each rebuild.
     pub fn focus(self: *ContentHoverWidget) void {
         self.focused = true;
+        self.publishState();
         self.host.request_frame(self.host.context);
     }
 
@@ -129,6 +130,7 @@ pub const ContentHoverWidget = struct {
     pub fn hide(self: *ContentHoverWidget) void {
         if (self.rendered == null) return;
         self.clearRendered();
+        self.publishState();
         self.layout(self.last_cols);
         self.host.request_frame(self.host.context);
     }
@@ -204,6 +206,10 @@ pub const ContentHoverWidget = struct {
     pub fn scrollRight(self: *ContentHoverWidget) void {
         _ = self;
         // See `scrollLeft`.
+    }
+
+    fn publishState(self: *ContentHoverWidget) void {
+        if (self.host.state_changed) |changed| changed(self.host.context, self.isVisible(), self.isFocused());
     }
 
     fn clearRendered(self: *ContentHoverWidget) void {
@@ -406,6 +412,7 @@ pub const ContentHoverWidget = struct {
                 // the hover, matching upstream's focus-out behavior.
                 event.preventDefault();
                 self.focused = false;
+                self.publishState();
                 self.host.focus_editor(self.host.context);
             },
             else => {},
@@ -416,6 +423,7 @@ pub const ContentHoverWidget = struct {
         _ = event;
         const self: *ContentHoverWidget = @ptrCast(@alignCast(context orelse return));
         self.focused = true;
+        self.publishState();
         self.host.request_frame(self.host.context);
     }
 
@@ -423,6 +431,7 @@ pub const ContentHoverWidget = struct {
         _ = event;
         const self: *ContentHoverWidget = @ptrCast(@alignCast(context orelse return));
         self.focused = false;
+        self.publishState();
         self.host.request_frame(self.host.context);
     }
 };

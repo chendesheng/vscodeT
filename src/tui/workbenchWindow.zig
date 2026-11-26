@@ -3446,7 +3446,11 @@ pub const TerminalWorkbench = struct {
         tab.ensureControllers() catch return false;
         const controllers = tab.controllers orelse return false;
         controllers.editor.onBeforeInteractionEvent();
-        if (controllers.hover) |hover| _ = hover.onKeyDown(event);
+        if (controllers.hover) |hover| {
+            _ = self.ensureContextKeys() catch return false;
+            const service = self.ensureGlobalService() catch return false;
+            _ = hover.onKeyDownWithResolution(event, service.softDispatch(event.*));
+        }
         return !tab.view.hasEditorFocus();
     }
 

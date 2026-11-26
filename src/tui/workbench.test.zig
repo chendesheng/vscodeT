@@ -5719,9 +5719,13 @@ test "Workbench: content widgets show diagnostics in a rounded hover" {
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
     try tab.editor.setCursorPosition(Position.init(2, 2));
+    const keys = (try workbench.ensureContextKeys()).interface();
+    try std.testing.expect(!keys.getContextKeyValue("hoverVisible").boolean);
     try std.testing.expect(try workbench.showHover());
     const controllers = tab.controllers orelse return error.TestUnexpectedResult;
     try std.testing.expect(controllers.hover.?.isVisible());
+    try std.testing.expect(keys.getContextKeyValue("hoverVisible").boolean);
+    try std.testing.expect(!keys.getContextKeyValue("hoverFocused").boolean);
     const content = controllers.hover.?.widget().getWidgetContent() orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, content, "Error: boom") != null);
 
@@ -5746,6 +5750,19 @@ test "Workbench: content widgets show diagnostics in a rounded hover" {
     const native_text = try frameText(allocator, &workbench.frame);
     defer allocator.free(native_text);
     try std.testing.expect(std.mem.indexOf(u8, native_text, "boom") != null);
+    var prefix: ui.KeyEvent = .{ .key = .{ .char = 'k' }, .mods = .{ .ctrl = true } };
+    _ = workbench.notifyEditorKeyDown(&prefix);
+    try std.testing.expect(keys.getContextKeyValue("hoverVisible").boolean);
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &prefix));
+    var show: ui.KeyEvent = .{ .key = .{ .char = 'i' }, .mods = .{ .ctrl = true } };
+    _ = workbench.notifyEditorKeyDown(&show);
+    try std.testing.expect(keys.getContextKeyValue("hoverVisible").boolean);
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &show));
+    try std.testing.expect(keys.getContextKeyValue("hoverFocused").boolean);
+    try workbench.commands.execute("editor.action.goToBottomHover");
+    try workbench.commands.execute("editor.action.hideHover");
+    try std.testing.expect(!keys.getContextKeyValue("hoverVisible").boolean);
+    try std.testing.expect(!keys.getContextKeyValue("hoverFocused").boolean);
 }
 
 test "Workbench: tab overflow lists clipped tabs" {
