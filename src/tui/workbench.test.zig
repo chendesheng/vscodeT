@@ -12580,3 +12580,40 @@ test "Diff editor glyph hover follows real pane mouse targets, settings and boun
     wb.leaveEditorHover();
     try std.testing.expect(!original_widget.visible and !modified_widget.visible);
 }
+
+test "Word highlights drive the active editor context and upstream F7 action before rendering" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(a, io, &tmp, "highlights.txt", "word word word\n");
+    defer a.free(path);
+    const other = try seedFile(a, io, &tmp, "other.txt", "different\n");
+    defer a.free(other);
+    const window = try TestWindow.init(a, io, &.{path}, 100, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    const keys = (try wb.ensureContextKeys()).interface();
+    const tab = wb.activeTab().?;
+    const contribution = tab.controllers.?.word_highlighter;
+    try std.testing.expect(!keys.getContextKeyValue("hasWordHighlights").boolean);
+    const f7: ui.KeyEvent = .{ .key = .f7 };
+    try std.testing.expect(!try terminal_workbench.handleGlobalKey(wb, &f7));
+    contribution.trigger();
+    try std.testing.expect(tab.editor.has_word_highlights);
+    try std.testing.expect(keys.getContextKeyValue("hasWordHighlights").boolean);
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(wb, &f7));
+    try std.testing.expectEqual(Position.init(1, 6), tab.editor.modelCursorPosition());
+    const previous: ui.KeyEvent = .{ .key = .f7, .mods = .{ .shift = true } };
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(wb, &previous));
+    try std.testing.expectEqual(Position.init(1, 1), tab.editor.modelCursorPosition());
+    contribution.stopHighlighting();
+    try std.testing.expect(!keys.getContextKeyValue("hasWordHighlights").boolean);
+    try wb.commands.execute("editor.action.wordHighlight.trigger");
+    try std.testing.expect(contribution.word_highlighter.?.pending_deadline_ms != null);
+    try std.testing.expect(!keys.getContextKeyValue("hasWordHighlights").boolean);
+    contribution.trigger();
+    try std.testing.expect(keys.getContextKeyValue("hasWordHighlights").boolean);
+    try wb.openPath(other);
+    try std.testing.expect(!keys.getContextKeyValue("hasWordHighlights").boolean);
+}

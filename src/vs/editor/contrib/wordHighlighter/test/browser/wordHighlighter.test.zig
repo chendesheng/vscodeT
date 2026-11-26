@@ -760,3 +760,30 @@ test "DocumentHighlightProviders: a sequential request skips disposed registrati
     try std.testing.expectEqual(1, calls.items.len);
     try std.testing.expect(receiver.result.?.get(text.model.uri()) == null);
 }
+
+test "WordHighlighterContribution: independently delays query and decoration render" {
+    const a = std.testing.allocator;
+    defer wordCharacterClassifier.freeWordClassifierCache();
+    const harness = try Harness.init(a, "word word word", .{ .delay_ms = 100 });
+    defer harness.deinit();
+    const run = harness.deadline().?;
+    try std.testing.expect(!harness.queue.dispatch(run));
+    try std.testing.expectEqual(0, harness.capture.decorations.items.len);
+    const render = harness.deadline().?;
+    try std.testing.expectEqual(run + 100, render);
+    try std.testing.expect(!harness.queue.dispatch(render - 1));
+    try std.testing.expect(harness.queue.dispatch(render));
+    try std.testing.expectEqual(3, harness.capture.decorations.items.len);
+}
+
+test "WordHighlighterContribution: outside-viewport navigation centers the selected occurrence" {
+    const a = std.testing.allocator;
+    defer wordCharacterClassifier.freeWordClassifierCache();
+    const harness = try Harness.init(a, "word\na\nb\nc\nd\ne\nf\ng\nh\nword\ni\nj\nk\nl\nm\n", .{});
+    defer harness.deinit();
+    try std.testing.expect(harness.dispatchDeadline());
+    harness.contribution.moveNext();
+    try std.testing.expectEqual(Position.init(10, 1), harness.editor.modelCursorPosition());
+    const row = harness.editor.visibleRowOfViewLine(harness.editor.viewPositionOfModelPosition(Position.init(10, 1)).lineNumber).?;
+    try std.testing.expect(row > 0 and row + 1 < harness.editor.textHeight());
+}

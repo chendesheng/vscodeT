@@ -729,6 +729,7 @@ pub const Editor = struct {
     on_will_dispose: Emitter(void),
     on_did_layout_change: Emitter(void),
     on_did_change_code_lens_provider: Emitter(bool),
+    on_did_change_word_highlights: Emitter(bool),
     on_did_mouse_event: Emitter(editorBrowser.EditorMouseEvent),
     on_did_key_down: Emitter(*input.KeyEvent),
     on_did_change_quick_diff_context: Emitter(void),
@@ -739,6 +740,7 @@ pub const Editor = struct {
     focused_embedded: ?EmbeddedEditorFocus = null,
 
     has_code_lens_provider: bool = false,
+    has_word_highlights: bool = false,
     screen_width: usize,
     screen_height: usize,
     /// Terminal default is soft wrap on; a configured `editor.wordWrap`
@@ -1024,6 +1026,7 @@ pub const Editor = struct {
             .on_will_dispose = .init(allocator),
             .on_did_layout_change = .init(allocator),
             .on_did_change_code_lens_provider = .init(allocator),
+            .on_did_change_word_highlights = .init(allocator),
             .on_did_mouse_event = .init(allocator),
             .on_did_key_down = .init(allocator),
             .on_did_change_quick_diff_context = .init(allocator),
@@ -1955,6 +1958,7 @@ pub const Editor = struct {
         self.on_did_change_dirty.deinit();
         self.on_did_layout_change.deinit();
         self.on_did_change_code_lens_provider.deinit();
+        self.on_did_change_word_highlights.deinit();
         self.on_did_mouse_event.deinit();
         self.on_did_key_down.deinit();
         self.on_did_change_quick_diff_context.deinit();
@@ -2476,6 +2480,12 @@ pub const Editor = struct {
         if (self.dirty_diff_visible == visible) return;
         self.dirty_diff_visible = visible;
         self.on_did_change_quick_diff_context.fire({}) catch {};
+    }
+
+    pub fn setHasWordHighlights(self: *Editor, has_highlights: bool) void {
+        if (self.has_word_highlights == has_highlights) return;
+        self.has_word_highlights = has_highlights;
+        self.on_did_change_word_highlights.fire(has_highlights) catch {};
     }
 
     pub fn setHasCodeLensProvider(self: *Editor, has_provider: bool) void {
@@ -4953,9 +4963,15 @@ pub const Editor = struct {
         try self.applyCommandResult(after);
     }
 
-    pub fn setCursorPosition(self: *Editor, position: Position) !void {
+    /// Upstream ICodeEditor.setPosition changes the cursor without revealing
+    /// it. Commands such as word-highlight navigation own their reveal policy.
+    pub fn setPosition(self: *Editor, position: Position) !void {
         self.closeTypingGroup();
         try self.updateSelectionsFromApi(&[_]Selection{Selection.init(position.lineNumber, position.column, position.lineNumber, position.column)});
+    }
+
+    pub fn setCursorPosition(self: *Editor, position: Position) !void {
+        try self.setPosition(position);
         self.ensureCursorVisible();
     }
 

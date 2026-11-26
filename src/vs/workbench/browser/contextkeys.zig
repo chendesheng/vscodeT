@@ -71,6 +71,7 @@ const WindowContextKeys = struct {
     editor_tab_moves_focus: contextkeys.IContextKey,
     editor_lang_id: contextkeys.IContextKey,
     editor_has_code_lens_provider: contextkeys.IContextKey,
+    has_word_highlights: contextkeys.IContextKey,
     quick_diff_decoration_count: contextkeys.IContextKey,
     dirty_diff_visible: contextkeys.IContextKey,
     active_custom_editor_id: contextkeys.IContextKey,
@@ -119,6 +120,7 @@ const WindowContextKeys = struct {
             .diff_original_uri = try service.createKey("diffEditorOriginalUri", .{ .string = "" }),
             .diff_modified_uri = try service.createKey("diffEditorModifiedUri", .{ .string = "" }),
             .editor_has_code_lens_provider = try service.createKey("editorHasCodeLensProvider", .{ .boolean = false }),
+            .has_word_highlights = try service.createKey("hasWordHighlights", .{ .boolean = false }),
             .quick_diff_decoration_count = try service.createKey("quickDiffDecorationCount", .{ .number = 0 }),
             .dirty_diff_visible = try service.createKey("dirtyDiffVisible", .{ .boolean = false }),
             .editor_lang_id = try service.createKey("editorLangId", .{ .string = "" }),
@@ -162,6 +164,7 @@ pub const WorkbenchContextKeysHandler = struct {
     language_listener: ?usize = null,
     read_only_listener: ?usize = null,
     code_lens_provider_listener: ?usize = null,
+    word_highlights_listener: ?usize = null,
     quick_diff_context_listener: ?usize = null,
     working_copy_service: *WorkingCopyService,
     dirty_working_copies: contextkeys.IContextKey,
@@ -309,8 +312,11 @@ pub const WorkbenchContextKeysHandler = struct {
         errdefer active.on_did_change_read_only.unlisten(read_only_listener);
         self.code_lens_provider_listener = try active.on_did_change_code_lens_provider.listen(self, onCodeLensProviderChanged);
         errdefer active.on_did_change_code_lens_provider.unlisten(self.code_lens_provider_listener.?);
+        self.word_highlights_listener = try active.on_did_change_word_highlights.listen(self, onWordHighlightsChanged);
+        errdefer active.on_did_change_word_highlights.unlisten(self.word_highlights_listener.?);
         self.quick_diff_context_listener = try active.on_did_change_quick_diff_context.listen(self, onQuickDiffContextChanged);
         self.window_keys.editor_has_code_lens_provider.set(.{ .boolean = active.has_code_lens_provider });
+        self.window_keys.has_word_highlights.set(.{ .boolean = active.has_word_highlights });
         self.updateQuickDiffContext(active);
         self.read_only_listener = read_only_listener;
         self.language_listener = language_listener;
@@ -322,6 +328,9 @@ pub const WorkbenchContextKeysHandler = struct {
         if (self.language_listener) |listener| editor.model.removeDidChangeLanguageListener(listener);
         if (self.read_only_listener) |listener| editor.on_did_change_read_only.unlisten(listener);
         if (self.code_lens_provider_listener) |listener| editor.on_did_change_code_lens_provider.unlisten(listener);
+        if (self.word_highlights_listener) |listener| editor.on_did_change_word_highlights.unlisten(listener);
+        self.word_highlights_listener = null;
+        self.window_keys.has_word_highlights.set(.{ .boolean = false });
         if (self.quick_diff_context_listener) |listener| editor.on_did_change_quick_diff_context.unlisten(listener);
         self.quick_diff_context_listener = null;
         self.window_keys.quick_diff_decoration_count.set(.{ .number = 0 });
@@ -335,6 +344,10 @@ pub const WorkbenchContextKeysHandler = struct {
 
     fn onLanguageChanged(_: ModelLanguageChangedEvent, self: *@This()) !void {
         if (self.active_editor) |editor| self.window_keys.editor_lang_id.set(.{ .string = if (self.language_visible) editor.languageId() else "" });
+    }
+
+    fn onWordHighlightsChanged(has_highlights: bool, self: *@This()) !void {
+        self.window_keys.has_word_highlights.set(.{ .boolean = has_highlights });
     }
 
     fn onCodeLensProviderChanged(has_provider: bool, self: *@This()) !void {

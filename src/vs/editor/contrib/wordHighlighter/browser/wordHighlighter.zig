@@ -3,7 +3,9 @@
 // explicitly; registered code editors and cancellable provider callbacks drive
 // it, rather than a process-global singleton. Model decoration owner 3 is the
 // terminal equivalent of the shared URI decoration ID map. Terminal navigation
-// additionally supports Alt-N / Alt-Shift-N (see README.md).
+// additionally supports Alt-N / Alt-Shift-N (see README.md). The upstream
+// ARIA live-region announcement has no terminal screen-reader channel. The
+// navigation and centered reveal are retained; no status message is invented.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
@@ -460,6 +462,7 @@ pub const WordHighlighterSession = struct {
             // of this resource detaches, while this editor loses its ranges.
             highlighter.ranges.clearRetainingCapacity();
             highlighter.decorations.clearRetainingCapacity();
+            highlighter.editor.setHasWordHighlights(false);
         }
     }
 };
@@ -481,6 +484,7 @@ pub const WordHighlighter = struct {
     pending_documents: std.ArrayList(*@import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").EditorDocument) = .empty,
     pending_result: ?*OccurrenceResult = null,
     minimum_render_time: i64 = 0,
+    pending_render_delay: u64 = 0,
     computing_now: ?i64 = null,
     last_render_changed: bool = false,
     pending_deadline_ms: ?i64 = null,
@@ -613,7 +617,7 @@ pub const WordHighlighter = struct {
             session.begin(self, position, preserved);
         } else if (preserved == null) _ = self.clearDecorations();
         self.pending_position = position;
-        self.minimum_render_time = now_ms + @as(i64, @intCast(render_delay));
+        self.pending_render_delay = render_delay;
         self.setDeadline(now_ms + @as(i64, @intCast(run_delay)));
     }
 
@@ -687,6 +691,7 @@ pub const WordHighlighter = struct {
 
     fn computeAt(self: *WordHighlighter, position: Position, now_ms: i64) bool {
         self.computing_now = now_ms;
+        self.minimum_render_time = now_ms + @as(i64, @intCast(self.pending_render_delay));
         defer self.computing_now = null;
         self.last_render_changed = false;
         const others = if (self.session) |session| session.otherModels(self, self.allocator) catch return false else &.{};
@@ -779,6 +784,7 @@ pub const WordHighlighter = struct {
         if (had_decorations or self.decorations.items.len > 0) {
             self.host.set_decorations(self.host.decoration_context orelse self.host.context, self.decorations.items);
         }
+        self.editor.setHasWordHighlights(self.decorations.items.len > 0);
         self.host.request_frame(self.host.context);
         return had_decorations or self.decorations.items.len > 0;
     }
@@ -788,6 +794,7 @@ pub const WordHighlighter = struct {
     }
 
     fn clearDecorations(self: *WordHighlighter) bool {
+        self.editor.setHasWordHighlights(false);
         if (self.decorations.items.len == 0 and self.ranges.items.len == 0) return false;
         self.decorations.clearRetainingCapacity();
         self.ranges.clearRetainingCapacity();
@@ -832,12 +839,13 @@ pub const WordHighlighter = struct {
         }
 
         const count: isize = @intCast(self.ranges.items.len);
-        const index: isize = if (current) |value| @intCast(value) else (if (delta > 0) -1 else 0);
+        const index: isize = if (current) |value| @intCast(value) else -1;
         const next = @mod(index + delta, count);
         const destination = self.ranges.items[@intCast(next)];
         self.ignore_position_change_event = true;
         defer self.ignore_position_change_event = false;
-        self.editor.setCursorPosition(destination.getStartPosition()) catch return false;
+        self.editor.setPosition(destination.getStartPosition()) catch return false;
+        _ = self.editor.revealRange(destination, .CenterIfOutsideViewport);
         self.editor.ensureCursorVisible();
         return true;
     }
@@ -1068,14 +1076,26 @@ pub const execute_provider_action: platform_actions.Action2 = .{
     }.run,
 };
 
-pub const trigger_action = EditorCommand.action(.{ .id = "editor.action.wordHighlight.trigger", .title = "Trigger Symbol Highlight", .category = "Go" }, false, triggerAction);
+const contextkey = @import("../../../../platform/contextkey/common/contextkey.zig");
+const key_codes = @import("../../../../base/common/keyCodes.zig");
+const keybindings = @import("../../../../platform/keybinding/common/keybindingsRegistry.zig");
+const has_word_highlights = contextkey.Expr{ .Defined = "hasWordHighlights" };
+const editor_text_focus = contextkey.Expr{ .Defined = "editorTextFocus" };
+
+pub const trigger_action = EditorCommand.action(.{ .id = "editor.action.wordHighlight.trigger", .title = "Trigger Symbol Highlight" }, false, triggerAction);
 pub const navigation_actions = [_]platform_actions.Action2{
-    EditorCommand.action(.{ .id = "editor.action.wordHighlight.next", .title = "Go to Next Symbol Highlight", .category = "Go" }, false, nextAction),
-    EditorCommand.action(.{ .id = "editor.action.wordHighlight.prev", .title = "Go to Previous Symbol Highlight", .category = "Go" }, false, previousAction),
+    navigationAction("editor.action.wordHighlight.next", "Go to Next Symbol Highlight", @backingInt(key_codes.KeyCode.F7), nextAction),
+    navigationAction("editor.action.wordHighlight.prev", "Go to Previous Symbol Highlight", key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.F7), previousAction),
 };
 
+fn navigationAction(comptime id: []const u8, comptime title: []const u8, comptime key: u32, comptime run: fn (*Editor) anyerror!void) platform_actions.Action2 {
+    var action = EditorCommand.action(.{ .id = id, .title = title, .precondition = &has_word_highlights }, false, run);
+    action.keybindings = &.{.{ .id = id, .weight = @backingInt(keybindings.KeybindingWeight.EditorContrib), .when = &editor_text_focus, .bindings = .{ .primary = key } }};
+    return action;
+}
+
 fn triggerAction(editor: *Editor) !void {
-    if (editor.getContribution(WordHighlighterContribution)) |controller| controller.trigger();
+    if (editor.getContribution(WordHighlighterContribution)) |controller| controller.restoreViewState(true);
 }
 
 fn nextAction(editor: *Editor) !void {
