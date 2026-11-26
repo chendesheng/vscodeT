@@ -412,6 +412,8 @@ pub const TerminalWorkbench = struct {
         request: *const fn (*anyopaque) void,
     } = null,
     context_menu_service: context_menus.ContextMenuService,
+    accessible_view: @import("../vs/workbench/contrib/accessibility/browser/accessibleView.zig").AccessibleViewService,
+    accessible_view_api: @import("../vs/platform/accessibility/browser/accessibleView.zig").IAccessibleViewService,
     clipboard_service: @import("clipboardService.zig").ClipboardService,
     clipboard_api: @import("../vs/platform/clipboard/common/clipboardService.zig").IClipboardService,
     context_menu_api: context_menus.IContextMenuService,
@@ -533,6 +535,10 @@ pub const TerminalWorkbench = struct {
         self.frame_scheduler = null;
         self.context_menu_service = .init(allocator, self, reportMenuError);
         errdefer self.context_menu_service.deinit();
+        self.accessible_view = .init(allocator, io, view_factory, .{ .context = self, .request_frame = requestWorkbenchFrame, .lookup_keybinding = accessibilityKeybindingLabel, .visibility_changed = accessibilityVisibilityChanged });
+        errdefer self.accessible_view.deinit();
+        try @import("../vs/workbench/workbench.common.main.zig").registerAccessibleViews(&self.accessible_view.registry);
+        self.accessible_view_api = self.accessible_view.interface();
         self.clipboard_service = .init(allocator);
         errdefer self.clipboard_service.deinit();
         self.clipboard_api = self.clipboard_service.interface();
@@ -1165,6 +1171,8 @@ pub const TerminalWorkbench = struct {
         _ = try self.services.set(dialogs.dialog_service_id, &self.dialog_api);
         self.configuration_api = self.configuration_binding.interface();
         _ = try self.services.set(@import("../vs/platform/configuration/common/configuration.zig").configuration_service_id, &self.configuration_api);
+        try self.accessible_view.bindServices(self.configuration_api, self.editor_api, self.clipboard_api);
+        _ = try self.services.set(@import("../vs/platform/accessibility/browser/accessibleView.zig").accessible_view_service_id, &self.accessible_view_api);
         self.host_api = self.host_service.interface();
         self.storage_api = self.notification_storage.interface();
         _ = try self.services.set(@import("../vs/workbench/services/host/browser/host.zig").host_service_id, &self.host_api);
@@ -1608,6 +1616,7 @@ pub const TerminalWorkbench = struct {
     }
 
     pub fn deinit(self: *TerminalWorkbench) void {
+        self.accessible_view.deinit();
         self.sidebar_part.setFocused(false);
         for (self.focus_subscriptions) |subscription| if (subscription) |value| value.dispose();
         if (self.terminal_focus_subscription) |subscription| subscription.dispose();
@@ -1961,6 +1970,7 @@ pub const TerminalWorkbench = struct {
                     theme_configuration_mod.defaults_json,
                     workbench_configuration.defaults_json,
                     zen_mode_contribution.defaults_json,
+                    @import("../vs/workbench/contrib/accessibility/browser/accessibilityConfiguration.zig").defaults_json,
                 },
             },
         );
@@ -3478,6 +3488,7 @@ pub const TerminalWorkbench = struct {
         try self.terminal_context.init(service.interface(), self.part, &self.panel_part, self.layout.interface());
         errdefer self.terminal_context.deinit();
         if (self.terminal_service) |terminal| try self.terminal_context.attach(terminal);
+        try self.accessible_view.bindContextKeys(service.interface());
         self.context_keys = service;
         self.commands.context_keys = service.interface();
         self.updateContextKeys();
@@ -3509,7 +3520,7 @@ pub const TerminalWorkbench = struct {
             .language_id = if (target) |editor| editor.languageId() else "",
             .custom_editor_id = if (markdown_preview and active.?.file_input != null) "vscode.markdown.preview.editor" else "",
             .editor_focused = self.focus == .editor,
-            .editor_text_focused = self.focus == .editor and !terminal_editor and !markdown_preview and !self.isDialogOpen() and !self.quick_access.isOpen() and !(if (active) |tab| if (tab.diff) |diff| diff.widget.accessible_viewer.visible() else false else false),
+            .editor_text_focused = self.focus == .editor and !terminal_editor and !markdown_preview and !self.isDialogOpen() and !self.quick_access.isOpen() and !self.accessible_view.visible() and !(if (active) |tab| if (tab.diff) |diff| diff.widget.accessible_viewer.visible() else false else false),
             .sidebar_focused = self.focus == .sidebar and geometry_value.sidebarShown(),
             .sidebar_visible = geometry_value.sidebarShown(),
             .active_activity = self.activity_bar_part.active_id orelse "",
@@ -3631,6 +3642,7 @@ pub const TerminalWorkbench = struct {
         if (self.outline_view) |view| view.setThemeColors(palette);
         self.breadcrumbs.setThemeColors(palette);
         self.dialog_handler.setThemeColors(palette);
+        self.accessible_view.setThemeColors(palette);
         self.statusbar.main_part.setThemeColors(palette);
         self.quick_access.setThemeColors(palette);
         for (self.part.group_views.items) |pane| {
@@ -4197,15 +4209,30 @@ fn hasActiveEditor(context: *anyopaque) bool {
     return self.activeTab() != null;
 }
 
+fn lookupCommandBinding(self: *TerminalWorkbench, arena: Allocator, id: []const u8) !?@import("../vs/base/common/keybindings.zig").ResolvedKeybinding {
+    const global = try self.ensureGlobalService();
+    return try global.service.lookupKeybinding(arena, id, false) orelse try (try self.ensureTabService()).service.lookupKeybinding(arena, id, false) orelse blk: {
+        const tab = self.activeTab() orelse return null;
+        if (tab.isDiff()) return null;
+        break :blk try tab.editor.lookupShortcut(id) orelse return null;
+    };
+}
+
 fn quickLookupKeycaps(context: *anyopaque, arena: Allocator, id: []const u8) anyerror![]const []const u8 {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    const global = try self.ensureGlobalService();
-    const binding = try global.service.lookupKeybinding(arena, id, false) orelse try (try self.ensureTabService()).service.lookupKeybinding(arena, id, false) orelse blk: {
-        const tab = self.activeTab() orelse return &.{};
-        if (tab.isDiff()) return &.{};
-        break :blk try tab.editor.lookupShortcut(id) orelse return &.{};
-    };
+    const binding = (try lookupCommandBinding(self, arena, id)) orelse return &.{};
     return @import("../vs/workbench/browser/quickaccess.zig").keycaps(arena, binding);
+}
+
+fn accessibilityKeybindingLabel(context: *anyopaque, arena: Allocator, id: []const u8) !?[]const u8 {
+    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
+    const binding = (try lookupCommandBinding(self, arena, id)) orelse return null;
+    return binding.getAriaLabel();
+}
+
+fn accessibilityVisibilityChanged(context: *anyopaque) void {
+    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
+    self.updateContextKeys();
 }
 
 fn quickGetExcludes(context: *anyopaque, allocator: Allocator) anyerror![]glob.ExcludeEntry {

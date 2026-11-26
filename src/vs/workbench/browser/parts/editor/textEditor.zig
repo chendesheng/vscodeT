@@ -122,7 +122,7 @@ pub const TextEditorConfiguration = struct {
 
     fn onConfigurationChanged(change: config.Change, self: *TextEditorConfiguration) !void {
         if (self.configuration.service == null) return;
-        if (config.affectsConfiguration(change, "editor") or config.affectsConfiguration(change, "diffEditor") or
+        if (config.affectsConfiguration(change, "editor") or config.affectsConfiguration(change, "diffEditor") or config.affectsConfiguration(change, "accessibility.verbosity.diffEditor") or
             (change.source == .DEFAULT and change.keys.len == 0))
             self.applyToAllTabs();
     }

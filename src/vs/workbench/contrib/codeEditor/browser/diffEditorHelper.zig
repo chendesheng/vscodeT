@@ -27,6 +27,14 @@ pub const DiffEditorHelperContribution = struct {
         errdefer allocator.destroy(self);
         const configuration = try accessor.get(resource_config.text_resource_configuration_service_id);
         const notifications = try accessor.get(notification.notification_service_id);
+        if (diff.set_accessibility_help_keybinding) |set| {
+            const api = @import("../../../../platform/accessibility/browser/accessibleView.zig");
+            if (accessor.get(api.accessible_view_service_id)) |accessible| {
+                var arena = std.heap.ArenaAllocator.init(allocator);
+                defer arena.deinit();
+                try set(diff.context, try accessible.lookupKeybindingLabel(arena.allocator(), "editor.action.accessibilityHelp"));
+            } else |_| {}
+        }
         self.* = .{ .allocator = allocator, .diff = diff, .configuration = configuration.*, .notifications = notifications.*, .widget = .{ .floating = .{ .label = "Show Whitespace Differences", .context = self, .on_click = showWhitespace } } };
         const emitter = diff.on_did_update_diff orelse return error.DiffEventMissing;
         self.listener = try emitter.listen(self, onDidUpdateDiff);

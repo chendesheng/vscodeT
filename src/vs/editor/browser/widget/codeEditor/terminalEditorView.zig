@@ -71,6 +71,7 @@ pub const IEditorView = struct {
         applySubEditorOptionOverrides: *const fn (*anyopaque, ?bool, ?bool, ?bool) void,
         inheritEmbeddedOptions: *const fn (*anyopaque, *const TerminalViewHost) void,
         applyLineNumbersOverride: *const fn (*anyopaque, editor_options.RenderLineNumbersType) anyerror!void,
+        setAriaLabel: *const fn (*anyopaque, []const u8) anyerror!void,
         setThemeColors: *const fn (*anyopaque, ?*const theme_colors_mod.ThemeColors) void,
         setMarkerSelectionHighlights: *const fn (*anyopaque, []const editorBrowser.Decoration) anyerror!void,
         setSearchHighlights: *const fn (*anyopaque, []const editorBrowser.Decoration) anyerror!void,
@@ -206,6 +207,10 @@ pub const IEditorView = struct {
 
     pub fn applyLineNumbersOverride(self: *IEditorView, render_type: editor_options.RenderLineNumbersType) anyerror!void {
         return self.vtable.applyLineNumbersOverride(self.context, render_type);
+    }
+
+    pub fn setAriaLabel(self: *IEditorView, label: []const u8) !void {
+        try self.vtable.setAriaLabel(self.context, label);
     }
 
     pub fn setThemeColors(self: *IEditorView, palette: ?*const theme_colors_mod.ThemeColors) void {
@@ -381,6 +386,10 @@ pub const IEditorView = struct {
                 const view: *Native = @ptrCast(@alignCast(context));
                 return view.applyLineNumbersOverride(render_type);
             }
+            fn setAriaLabel(context: *anyopaque, label: []const u8) !void {
+                const view: *Native = @ptrCast(@alignCast(context));
+                try view.setAriaLabel(label);
+            }
             fn setThemeColors(context: *anyopaque, palette: ?*const theme_colors_mod.ThemeColors) void {
                 const view: *Native = @ptrCast(@alignCast(context));
                 return view.setThemeColors(palette);
@@ -457,6 +466,7 @@ pub const IEditorView = struct {
                 .applySubEditorOptionOverrides = @This().applySubEditorOptionOverrides,
                 .inheritEmbeddedOptions = @This().inheritEmbeddedOptions,
                 .applyLineNumbersOverride = @This().applyLineNumbersOverride,
+                .setAriaLabel = @This().setAriaLabel,
                 .setThemeColors = @This().setThemeColors,
                 .setMarkerSelectionHighlights = @This().setMarkerSelectionHighlights,
                 .setSearchHighlights = @This().setSearchHighlights,

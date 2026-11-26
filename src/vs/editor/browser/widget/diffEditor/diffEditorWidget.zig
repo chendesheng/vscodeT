@@ -163,6 +163,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         original_label: []u8,
         modified_label: []u8,
         options: Options,
+        accessibility_help_keybinding: ?[]u8 = null,
         inline_mode: bool = false,
         width_based_layout: diff_editor_options.WidthBasedLayout = .{},
         smooth_resize: SmoothResize = .{},
@@ -221,8 +222,32 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .get_computation_result = getDiffComputationResult,
                 .get_modified_control = getModifiedControl,
                 .get_max_computation_time = getMaxComputationTime,
+                .focus_modified = focusModifiedControl,
+                .set_accessibility_help_keybinding = setHelpKeybinding,
                 .is_embedded = self.options.is_in_embedded_editor,
             };
+        }
+
+        fn setHelpKeybinding(context: *anyopaque, label: ?[]const u8) !void {
+            const self: *Self = @ptrCast(@alignCast(context));
+            const copy = if (label) |value| try self.allocator.dupe(u8, value) else null;
+            if (self.accessibility_help_keybinding) |old| self.allocator.free(old);
+            self.accessibility_help_keybinding = copy;
+            try self.updateAriaLabels();
+        }
+
+        fn updateAriaLabels(self: *Self) !void {
+            const label = try diff_editor_editors.updateAriaLabel(self.allocator, "Editor content", self.options.accessibility_verbose, self.accessibility_help_keybinding);
+            defer self.allocator.free(label);
+            try self.original_view.setAriaLabel(label);
+            try self.modified_view.setAriaLabel(label);
+        }
+
+        fn focusModifiedControl(context: *anyopaque) void {
+            const self: *Self = @ptrCast(@alignCast(context));
+            self.setFocus(.modified);
+            self.modified_view.focusEditor();
+            self.setEditorFocused(true);
         }
 
         fn getDiffComputationResult(context: *anyopaque) ?@import("../../editorBrowser.zig").DiffComputationResult {
@@ -534,6 +559,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             allocator.free(self.original_label);
             allocator.free(self.modified_label);
             if (self.message) |message| allocator.free(message);
+            if (self.accessibility_help_keybinding) |key| allocator.free(key);
             allocator.destroy(self);
         }
 
@@ -568,6 +594,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             }
             self.width_based_layout.updateOptions(old, options);
             self.options = options;
+            if (old.accessibility_verbose != options.accessibility_verbose) try self.updateAriaLabels();
             self.original_editor.setReadOnly(!options.original_editable);
             self.modified_editor.setReadOnly(options.read_only);
             if (old.read_only != options.read_only) try self.gutter_toolbar.refreshMenus();

@@ -42,6 +42,7 @@ pub fn computeConfigurationForResource(configuration_service: ?configuration_mod
     var options = snapshotOptions(.{});
     if (configuration_service) |configuration| {
         options.diff_code_lens = boolSetting(configuration, overrides, "diffEditor.codeLens", false);
+        options.accessibility_verbose = boolSetting(configuration, overrides, "accessibility.verbosity.diffEditor", false);
         options.show_empty_decorations = boolSetting(configuration, overrides, "diffEditor.experimental.showEmptyDecorations", true);
         options.use_true_inline_view = boolSetting(configuration, overrides, "diffEditor.experimental.useTrueInlineView", false);
         options.ignore_trim_whitespace = boolSetting(configuration, overrides, "diffEditor.ignoreTrimWhitespace", true);

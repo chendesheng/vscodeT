@@ -34,6 +34,15 @@ pub fn applySubEditorOptions(original: anytype, modified: anytype, side_by_side:
     modified.applySubEditorOptionOverrides(null, if (hide_unchanged) false else null, diff_code_lens);
 }
 
+/// Upstream _updateAriaLabel. The base label remains stable when verbosity
+/// changes, so no navigation tip accumulates across option updates.
+pub fn updateAriaLabel(allocator: std.mem.Allocator, aria_label: []const u8, verbose: bool, help_keybinding: ?[]const u8) ![]u8 {
+    if (verbose) if (help_keybinding) |key| {
+        return std.fmt.allocPrint(allocator, "{s} use {s} to open the accessibility help.", .{ aria_label, key });
+    };
+    return allocator.dupe(u8, aria_label);
+}
+
 pub const PaneWidths = struct {
     original: usize,
     modified: usize,

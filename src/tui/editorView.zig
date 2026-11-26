@@ -553,6 +553,7 @@ pub const View = struct {
     terminal_view_host: *TerminalViewHost,
     /// Active color-theme palette; null keeps the standalone fallback colors.
     theme_colors: ?*const theme_colors_mod.ThemeColors = null,
+    aria_label: ?[]u8 = null,
     /// Interned paint styles for visible text runs, keyed by the CSS-class
     /// analogue. Cleared when the theme changes.
     paint_styles: std.HashMapUnmanaged(PaintStyleKey, *const ui.style.PaintStyle, PaintStyleKey.Context, 80) = .empty,
@@ -613,6 +614,7 @@ pub const View = struct {
         self.clearPaintStyles();
         self.paint_styles.deinit(self.allocator);
         self.configuration_listeners.deinit();
+        if (self.aria_label) |label| self.allocator.free(label);
         _ = self.terminal_view_host.viewRef().removeContentWidget("glyph-tooltip");
         self.terminal_view_host.deinit();
         if (self.mount) |mount| {
@@ -1313,6 +1315,18 @@ pub const View = struct {
     /// them because the registry colors are cached per document.
     pub fn themeColors(self: *View) ?*const theme_colors_mod.ThemeColors {
         return self.theme_colors;
+    }
+
+    /// The terminal DOM retains editor accessibility metadata even though
+    /// it cannot expose the browser's platform accessibility tree.
+    pub fn setAriaLabel(self: *View, label: []const u8) !void {
+        if (std.mem.eql(u8, self.aria_label orelse "Editor content", label)) return;
+        const copy = try self.allocator.dupe(u8, label);
+        errdefer self.allocator.free(copy);
+        if (self.root_node) |root| try root.setAttribute("aria-label", label);
+        if (self.aria_label) |old| self.allocator.free(old);
+        self.aria_label = copy;
+        self.invalidate();
     }
 
     pub fn setThemeColors(self: *View, palette: ?*const theme_colors_mod.ThemeColors) void {
@@ -2035,6 +2049,7 @@ pub const View = struct {
             self.root_node = root;
             self.resetChromeRoots();
             try root.addClass(editor_css.code_editor.Class.monaco_editor);
+            try root.setAttribute("aria-label", self.aria_label orelse "Editor content");
             root.setStyle(.{
                 .position = .absolute,
                 .left = .{ .cells = if (self.mount) |mount| @floatFromInt(mount.left) else 0 },

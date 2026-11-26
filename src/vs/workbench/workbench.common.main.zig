@@ -13,6 +13,10 @@ pub fn createServices(allocator: std.mem.Allocator) !ServiceCollection {
     return services;
 }
 
+pub fn registerAccessibleViews(registry: *@import("../platform/accessibility/browser/accessibleViewRegistry.zig").AccessibleViewRegistry) !void {
+    try registry.register(@import("contrib/codeEditor/browser/diffEditorAccessibilityHelp.zig").DiffEditorAccessibilityHelp.registration);
+}
+
 pub fn registerConfigurationMigrations(registry: *@import("common/configuration.zig").ConfigurationMigrationRegistry) !void {
     try registry.registerConfigurationMigrations(&@import("contrib/codeEditor/browser/diffEditorHelper.zig").configuration_migrations);
 }
@@ -141,6 +145,7 @@ pub fn registerActions(commands: *CommandRegistry, instantiation: *Instantiation
     try quick_diff_widget.registerGoMenu(&commands.menus);
     for (@import("browser/parts/editor/diffEditorCommands.zig").diff_actions) |action| try commands.registerAction(instantiation, action);
     for (@import("../editor/browser/widget/diffEditor/commands.zig").diff_actions) |action| try commands.registerAction(instantiation, action);
+    for (@import("contrib/accessibility/browser/accessibleViewActions.zig").accessible_view_actions) |action| try commands.registerAction(instantiation, action);
     try @import("browser/parts/editor/editor.contribution.zig").registerDiffEditorTitle(&commands.menus);
     try commands.registerAction(instantiation, @import("browser/actions/layoutActions.zig").toggle_sidebar_visibility_action);
     for (@import("browser/parts/sidebar/sidebarActions.zig").sidebar_actions) |action| try commands.registerAction(instantiation, action);

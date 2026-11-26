@@ -276,6 +276,7 @@ pub fn cursorCell(workbench: *Workbench) ?@import("editorView.zig").Cell {
     if (workbench.quick_access.isOpen()) return null;
     if (workbench.isDialogOpen() or workbench.context_menu_service.current != null) return null;
     if (workbench.breadcrumbs.pickerVisible()) return null;
+    if (workbench.accessible_view.visible()) return workbench.accessible_view.cursorCell();
     if (workbench.focus == .terminal) {
         if (!workbench.terminalVisible()) return null;
         const service = workbench.terminal_service orelse return null;
@@ -391,6 +392,7 @@ fn paintOverlaysAndStatus(self: *Workbench) !void {
     }
     if (self.core.notification_controller) |controller| try controller.render(self.editor_surface.document(), &self.frame.next, self.theme_palette);
     if (self.scm.history) |graph| try graph.renderHover(&self.frame.next, self.geometry().workbenchGridLayout().editor_column, self.layout_api.getSideBarPosition(), self.part.cell_borders, self.part.cell_border_capabilities);
+    try self.accessible_view.render(&self.frame.next);
     if (self.quick_access.isOpen()) {
         self.quick_access.widget.caps = if (self.part.cell_borders) self.part.cell_border_capabilities else .{};
         self.quick_access.widget.open_to_bottom = self.preferredSideBySideDirection() == .DOWN;

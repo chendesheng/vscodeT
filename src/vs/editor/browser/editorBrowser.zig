@@ -56,6 +56,8 @@ pub const IDiffEditor = struct {
     get_computation_result: ?*const fn (*anyopaque) ?DiffComputationResult = null,
     get_modified_control: ?*const fn (*anyopaque) ModifiedDiffControl = null,
     get_max_computation_time: ?*const fn (*anyopaque) i64 = null,
+    focus_modified: ?*const fn (*anyopaque) void = null,
+    set_accessibility_help_keybinding: ?*const fn (*anyopaque, ?[]const u8) anyerror!void = null,
     is_embedded: bool = false,
 
     pub fn getDiffComputationResult(self: IDiffEditor) ?DiffComputationResult {

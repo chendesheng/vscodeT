@@ -781,6 +781,10 @@ pub fn main(init: std.process.Init) !void {
                     }
                     if (workbench.context_menu_service.handleKey(event)) continue;
                     if (terminal_workbench.handleBreadcrumbPopupKey(workbench, event)) continue;
+                    if (workbench.accessible_view.visible() and !workbench.quick_access.isOpen()) {
+                        if (event.key != .escape and try terminal_workbench.handleGlobalKey(workbench, event)) continue;
+                        if (try workbench.accessible_view.handleKey(event)) continue;
+                    }
                     if (isCtrlQ(event.*)) {
                         if (workbench.requestQuit()) return;
                         continue;
@@ -881,6 +885,7 @@ pub fn main(init: std.process.Init) !void {
                     }
                     if (workbench.context_menu_service.handleMouse(event, &workbench.pointer)) continue;
                     if (terminal_workbench.handleBreadcrumbPopupMouse(workbench, event)) continue;
+                    if (!workbench.quick_access.isOpen() and try workbench.accessible_view.handleMouse(event, &workbench.pointer)) continue;
                     if (terminal_workbench.handleTabDragMouse(workbench, event)) continue;
                     if (terminal_workbench.handleQuickAccessMouse(workbench, event)) continue;
                     if (workbench.core.notification_controller) |controller| if (controller.handleMouse(event)) continue;
