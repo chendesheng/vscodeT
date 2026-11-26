@@ -11431,7 +11431,7 @@ test "Workbench: serialize and restore multiple diff file list preferences befor
     defer registry.deinit();
     var serializer = input_mod.MultiDiffEditorSerializer.init(allocator);
     try registry.registerEditorSerializer(input_mod.ID, serializer.interface());
-    const options: @import("../vs/workbench/browser/workbench.zig").IWorkbenchOptions = .{
+    const options: shell.IWorkbenchOptions = .{
         .initial_user_settings_paths = &.{settings_path},
         .profile_storage_path = profile_path,
     };

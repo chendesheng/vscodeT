@@ -93,7 +93,7 @@ pub fn startWorkbench(allocator: std.mem.Allocator, io: std.Io, surface: *ui.Sur
     return startWorkbenchWithOptions(allocator, io, surface, paths, previous, .{});
 }
 
-fn startWorkbenchWithOptions(allocator: std.mem.Allocator, io: std.Io, surface: *ui.Surface, paths: []const []const u8, previous: ?Workbench.PreviousState, options: @import("../vs/workbench/browser/workbench.zig").IWorkbenchOptions) !*Workbench {
+fn startWorkbenchWithOptions(allocator: std.mem.Allocator, io: std.Io, surface: *ui.Surface, paths: []const []const u8, previous: ?Workbench.PreviousState, options: @import("./workbenchWindow.zig").IWorkbenchOptions) !*Workbench {
     var services = try @import("../vs/workbench/workbench.common.main.zig").createServices(allocator);
     defer services.deinit();
     const workbench = try Workbench.init(allocator, io, @import("./editorView.zig").View.createHandle, surface, &services, options, previous);
@@ -486,7 +486,7 @@ pub fn main(init: std.process.Init) !void {
 
     const profile_storage_path = if (profile.user_data_dir) |dir| try std.fs.path.join(allocator, &.{ dir, "User", "globalStorage", "storage.state.json" }) else null;
     defer if (profile_storage_path) |path| allocator.free(path);
-    const startup_options: @import("../vs/workbench/browser/workbench.zig").IWorkbenchOptions = .{
+    const startup_options: @import("./workbenchWindow.zig").IWorkbenchOptions = .{
         .initial_user_settings_paths = profile.settings_paths,
         .profile_storage_path = profile_storage_path,
     };
