@@ -1355,13 +1355,18 @@ console API for raw mode, sizing and input polling.
   updates. The extension host mirrors offscreen documents and sends typed
   diff/multi-diff Tabs API events with actual group move and close operations.
   Quick Diff providers return original URIs only; the shared model resolver
-  owns the baselines and the peek reuses their documents. Git is registered
-  as a read-only, case-sensitive filesystem provider: raw buffers, stat,
-  merge-stage and submodule resources, and exact change events use the
-  shared file service. Automatic discovery of other repositories for Git
-  URIs in empty windows remains unported; see the audit.
+  owns the baselines and the peek reuses their documents. Asynchronous
+  extension-host Quick Diff and virtual text providers use the same model
+  references; the model-service lifecycle mirrors even unmounted baselines,
+  and the source-control diff-information API receives versioned mappings.
+  Git is registered as a read-only, case-sensitive filesystem provider:
+  raw buffers, stat, merge-stage and submodule resources, and exact change
+  events use the shared file service. Multiple workspace repositories and
+  configured initialized submodules register independent SCM and Quick Diff
+  sources. Git URIs in empty windows discover the containing repository;
+  initial discovery still uses synchronous native Git status, and worktree
+  discovery, active-repository selection and removal remain partial.
   See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
-  Only one repository per workspace folder is shown.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and
   `src/vs/workbench/contrib/search/browser/searchWidget.zig`) over the upstream-shaped portable view:
   `src/vs/workbench/contrib/search/browser/searchView.zig` owns the query

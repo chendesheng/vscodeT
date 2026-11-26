@@ -185,6 +185,35 @@ cancel on detach. The focused suite passes 490/490 through this checkpoint,
 including actual action registration, header-to-body and reverse traversal,
 and the exact original text copied after a drag outside the deleted-code zone.
 
+### Repository and extension-host Quick Diff checkpoint (2026-11-27)
+
+* The Git model owns independently registered repositories, with exact/root
+  ancestor lookup and resource-scoped filesystem events. Multiple workspace
+  roots and initialized configured submodules register SCM and Quick Diff
+  providers; Git URI resolution in an empty window discovers the repository.
+  The port retains exact Gitlink/submodule URIs, distinguishes deletion
+  conflicts from their surviving merge stage, and uses the old path for
+  renamed index baselines. The upstream Git configuration parser cases cover
+  `.gitmodules`; status events drive the configured, debounced discovery.
+  Initial Git URI repository discovery still invokes synchronous native Git
+  status; worktree discovery, active history repository selection and
+  workspace repository removal need further parity work.
+* Async Quick Diff queries preserve provider priority and cancellation while
+  independently resolving contributed originals. Real extension-host actors
+  now register Quick Diff and virtual text content providers through RPC.
+  Their originals are shared through the URI resolver. `IModelService`
+  registration/removal events mirror the actual unmounted model lifetime
+  without a strong reference cycle; the source-control diff-information API
+  receives the primary original, modified version and change mappings.
+
+The full suite through this checkpoint passed 3,645/3,669 (24 skipped;
+48/48 build steps), the focused repository/submodule view suite passed
+494/494, and the actual Node extension-host suite passed 20/20, including
+an asynchronous contributed Quick Diff provider, a shared virtual baseline
+with URI escaping, in-place content update, and provider disposal.
+Further virtual-model minimal-edit and native widget contribution lifecycle
+work is in progress.
+
 ### Native performance measurements (2026-11-27)
 
 The opt-in `zig build bench-open --summary all` benchmark exercises native
