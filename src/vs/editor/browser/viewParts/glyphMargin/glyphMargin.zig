@@ -349,7 +349,7 @@ pub const GlyphMarginWidgets = struct {
                         .codepoint = glyph.codepoint,
                         .color = glyph.color,
                         .class_name = class_name,
-                        .tooltip = decoration.options.glyphMarginHoverMessage,
+                        .tooltip = if (decoration.options.glyphMarginHoverMessage) |messages| if (messages.len != 0) messages[0] else null else null,
                     },
                     .z_index = z_index,
                 };

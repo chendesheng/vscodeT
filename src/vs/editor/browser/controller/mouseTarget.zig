@@ -46,6 +46,7 @@ pub const TerminalMouseHost = struct {
     /// out in the current frame.
     line_text_width: *const fn (context: *anyopaque, view_line: usize) ?usize,
     position_at_view_point: *const fn (context: *anyopaque, view_line: usize, column: usize) anyerror!Position,
+    glyph_lane_at: *const fn (context: *anyopaque, model_line: usize, column: usize) ?@import("../../common/model.zig").GlyphMarginLane,
 };
 
 /// Port of `MouseTargetFactory.createMouseTarget` for the terminal document.
@@ -100,15 +101,13 @@ pub fn createMouseTarget(host: TerminalMouseHost, x: usize, y: usize) !MouseTarg
     }
     const view_line = host.view_line_at_row(host.context, content_y) orelse geometry.view_line_count + 1;
     if (x < geometry.glyph_width) {
+        const position = try host.position_at_view_point(host.context, @min(view_line, geometry.view_line_count), 0);
         return .{
             .element = element,
             .type = .gutter_glyph_margin,
-            .position = try host.position_at_view_point(
-                host.context,
-                @min(view_line, geometry.view_line_count),
-                0,
-            ),
+            .position = position,
             .mouse_column = mouse_column,
+            .detail = .{ .glyph_margin = .{ .glyphMarginLane = host.glyph_lane_at(host.context, position.lineNumber, x) } },
         };
     }
     if (x < geometry.gutter_width) {

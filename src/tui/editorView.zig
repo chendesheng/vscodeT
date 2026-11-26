@@ -1193,6 +1193,7 @@ pub const View = struct {
             .end_position_at_view_line = mouseEndPositionAtViewLine,
             .line_text_width = mouseLineTextWidth,
             .position_at_view_point = mousePositionAtViewPoint,
+            .glyph_lane_at = mouseGlyphLaneAt,
         }, x, y);
     }
 
@@ -1262,6 +1263,14 @@ pub const View = struct {
     fn mousePositionAtViewPoint(context: *anyopaque, view_line: usize, column: usize) !Position {
         const self: *View = @ptrCast(@alignCast(context));
         return self.editor.positionAtViewPoint(view_line, column);
+    }
+
+    fn mouseGlyphLaneAt(context: *anyopaque, line: usize, column: usize) ?@import("../vs/editor/common/model.zig").GlyphMarginLane {
+        const self: *View = @ptrCast(@alignCast(context));
+        const lanes = self.terminal_view_host.glyph_lanes.getLanesAtLine(self.allocator, line) catch return null;
+        defer self.allocator.free(lanes);
+        if (column >= lanes.len) return null;
+        return lanes[column];
     }
 
     /// The last gutter cell is the fold-control column. It only toggles when
@@ -6599,7 +6608,7 @@ test "View: glyph hover message becomes a content tooltip" {
 
     var options = ModelDecorationOptions.init("glyph-tip", .AlwaysGrowsWhenTypingAtEdges);
     options.glyphMarginClassName = "glyph-error";
-    options.glyphMarginHoverMessage = "glyph message";
+    options.glyphMarginHoverMessage = &.{"glyph message"};
     const deltas = [_]ModelDeltaDecoration{
         .{ .range = Range.init(1, 1, 1, 1), .options = &options },
     };
@@ -6614,6 +6623,7 @@ test "View: glyph hover message becomes a content tooltip" {
 
     const target = try view.mouseTargetAt(0, 0);
     try std.testing.expectEqual(editorBrowser.MouseTargetType.gutter_glyph_margin, target.type);
+    try std.testing.expectEqual(@as(?@import("../vs/editor/common/model.zig").GlyphMarginLane, .Center), target.detail.?.glyph_margin.glyphMarginLane);
     try std.testing.expect(view.terminal_view_host.glyphTooltipAt(1, 0) != null);
     view.setGlyphHover(target);
     try std.testing.expect(view.glyph_tooltip.visible);

@@ -388,6 +388,7 @@ pub const ViewZoneTargetData = struct {
 pub const MouseTargetDetail = union(enum) {
     content_empty: ContentEmptyDetail,
     view_zone: ViewZoneTargetData,
+    glyph_margin: struct { glyphMarginLane: ?@import("../common/model.zig").GlyphMarginLane },
 };
 
 /// Mirrors upstream `IMouseTarget`.

@@ -286,7 +286,7 @@ pub const ContentHoverWidgetWrapper = struct {
             .content_empty => {
                 const detail = switch (target.detail orelse return null) {
                     .content_empty => |value| value,
-                    .view_zone => return null,
+                    .view_zone, .glyph_margin => return null,
                 };
                 // Upstream accepts an empty-area hover when the pointer is
                 // within half a character of the text. Cells are whole units,

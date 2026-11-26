@@ -89,7 +89,7 @@ pub const HideUnchangedRegionsFeature = struct {
     fold_decoration: model_mod.ModelDecorationOptions = blk: {
         var options = model_mod.ModelDecorationOptions.init("Fold Unchanged", .AlwaysGrowsWhenTypingAtEdges);
         options.glyphMarginClassName = "fold-unchanged codicon codicon-fold";
-        options.glyphMarginHoverMessage = "Fold Unchanged Region";
+        options.glyphMarginHoverMessage = &.{"Fold Unchanged Region"};
         options.zIndex = 10001;
         break :blk options;
     },

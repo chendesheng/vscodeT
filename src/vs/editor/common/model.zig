@@ -607,11 +607,11 @@ pub const ModelDecorationOptions = struct {
     blockDoesNotCollapse: ?bool,
     blockPadding: ?[4]usize,
     // Message to be rendered when hovering over the glyph margin decoration.
-    glyphMarginHoverMessage: ?[]const u8,
+    glyphMarginHoverMessage: ?[]const []const u8,
     // Array of MarkdownString to render as the decoration message.
     hoverMessage: ?[]const u8,
     // Array of MarkdownString to render as the line number message.
-    lineNumberHoverMessage: ?[]const u8,
+    lineNumberHoverMessage: ?[]const []const u8,
     // Should the decoration expand to encompass a whole line.
     isWholeLine: ?bool,
     // Always render the decoration (even when the range it encompasses is collapsed).
