@@ -45,6 +45,19 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(widget.modified_editor.isReadOnly());
         }
 
+        test "diffEditorWidget: middle insertion has no model line in the filler zone" {
+            const allocator = testing.allocator;
+            const widget = try DiffEditorWidget.create(View.init, allocator, Io.Threaded.global_single_threaded.io(), "a.txt", "b.txt", "a\nc", "a\nb\nc", "Original", "Modified", 80, 6, .{});
+            defer widget.destroy();
+            try testing.expectEqual(@as(usize, 2), widget.originalModel().getLineCount());
+            try testing.expectEqual(@as(usize, 3), widget.modifiedModel().getLineCount());
+            try testing.expectEqual(@as(?usize, 1), widget.original_editor.viewLineAtViewportRow(0));
+            try testing.expectEqual(@as(?usize, null), widget.original_editor.viewLineAtViewportRow(1));
+            try testing.expectEqual(@as(?usize, 2), widget.original_editor.viewLineAtViewportRow(2));
+            try testing.expectEqual(@as(?usize, 2), widget.original_editor.displayLineNumber(2));
+            try testing.expectEqual(@as(?usize, 2), widget.modified_editor.viewLineAtViewportRow(1));
+        }
+
         test "diffEditorWidget: a leading insertion uses one filler zone and no fake model decorations" {
             const widget = try DiffEditorWidget.create(
                 View.init,

@@ -1,58 +1,16 @@
 // Port of `src/vs/editor/browser/widget/diffEditor/features/overviewRulerFeature.ts`.
 // Terminal adaptation: the two canvas rulers occupy one cell each. Their
 // half-cell marker projection and viewport thumb reuse the editor's overview
-// renderer and ScrollbarState. Snapshot coordinates are mapped through the
-// current editor projection until diff alignment uses real view zones.
+// renderer and ScrollbarState. Markers use the real model ranges converted
+// to the actual vertical offsets, including the diff alignment zones.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const view_model = @import("../diffEditorViewModel.zig");
-const view_zones = @import("../components/diffEditorViewZones/diffEditorViewZones.zig");
-const gutter = @import("./gutterFeature.zig");
-
-pub const Side = enum { original, modified };
-
 /// Terminal defaults for `diffEditorOverview.{inserted,removed}Foreground`
 /// composited over the dark editor background.
 pub const inserted_foreground = [3]u8{ 55, 88, 13 };
 pub const removed_foreground = [3]u8{ 158, 93, 80 };
-
-pub const Marker = struct {
-    side: Side,
-    line_number: usize,
-    kind: gutter.ChangeKind,
-    color: [3]u8,
-};
-
-/// Builds the per-side marker list for the aligned display rows. Original-side
-/// markers cover deletions and modifications; modified-side markers cover
-/// insertions and modifications.
-pub fn collect(allocator: Allocator, aligned: *const view_zones.AlignedRows) ![]Marker {
-    var markers = std.array_list.Managed(Marker).init(allocator);
-    errdefer markers.deinit();
-    for (aligned.mappings) |mapping| {
-        const kind = gutter.changeKind(mapping.source);
-        switch (kind) {
-            .delete, .modify => try markers.append(.{
-                .side = .original,
-                .line_number = mapping.original.startLineNumber,
-                .kind = kind,
-                .color = removed_foreground,
-            }),
-            else => {},
-        }
-        switch (kind) {
-            .add, .modify => try markers.append(.{
-                .side = .modified,
-                .line_number = mapping.modified.startLineNumber,
-                .kind = kind,
-                .color = inserted_foreground,
-            }),
-            else => {},
-        }
-    }
-    return markers.toOwnedSlice();
-}
 
 const ui = @import("ui");
 const Editor = @import("../../codeEditor/codeEditorWidgetTerminal.zig").Editor;
@@ -108,13 +66,10 @@ pub const OverviewRulerFeature = struct {
         self.handler.forceShouldRender();
     }
 
-    fn appendZone(zones: *std.ArrayList(ruler.Decoration), allocator: Allocator, editor: *Editor, rows: ?[]const ?usize, range: LineRange, color: [3]u8) !void {
+    fn appendZone(zones: *std.ArrayList(ruler.Decoration), allocator: Allocator, editor: *Editor, range: LineRange, color: [3]u8) !void {
         if (range.isEmpty() or range.startLineNumber == 0) return;
-        const first = if (rows) |map| blk: {
-            if (range.endLineNumberExclusive - 1 > map.len) return;
-            break :blk map[range.startLineNumber - 1] orelse return;
-        } else range.startLineNumber;
-        const last = if (rows) |map| map[range.endLineNumberExclusive - 2] orelse return else range.endLineNumberExclusive - 1;
+        const first = range.startLineNumber;
+        const last = range.endLineNumberExclusive - 1;
         const start = editor.viewPositionOfModelPosition(.{ .lineNumber = first, .column = 1 }).lineNumber;
         const end = editor.viewPositionOfModelPosition(.{ .lineNumber = last, .column = editor.model.getLineMaxColumn(last) }).lineNumber;
         const layout = editor.viewLayout();
@@ -125,15 +80,15 @@ pub const OverviewRulerFeature = struct {
         try zones.append(allocator, .{ .start_line_number = top + 1, .end_line_number = @max(top + 1, bottom), .color = color, .lane = .full });
     }
 
-    pub fn prepareRender(self: *OverviewRulerFeature, mappings: []const view_model.DiffMapping, original: *Editor, modified: *Editor, original_rows: ?[]const ?usize, modified_rows: ?[]const ?usize, height: usize) !void {
+    pub fn prepareRender(self: *OverviewRulerFeature, mappings: []const view_model.DiffMapping, original: *Editor, modified: *Editor, height: usize) !void {
         if (!self.handler.shouldRender() and self.height == height) return;
         var original_zones: std.ArrayList(ruler.Decoration) = .empty;
         defer original_zones.deinit(self.allocator);
         var modified_zones: std.ArrayList(ruler.Decoration) = .empty;
         defer modified_zones.deinit(self.allocator);
         for (mappings) |mapping| {
-            try appendZone(&original_zones, self.allocator, original, original_rows, mapping.line_range_mapping.original, removed_foreground);
-            try appendZone(&modified_zones, self.allocator, modified, modified_rows, mapping.line_range_mapping.modified, inserted_foreground);
+            try appendZone(&original_zones, self.allocator, original, mapping.line_range_mapping.original, removed_foreground);
+            try appendZone(&modified_zones, self.allocator, modified, mapping.line_range_mapping.modified, inserted_foreground);
         }
         const left = try ruler.render(self.allocator, original_zones.items, &.{}, .{ .canvas_height = height, .outer_height = original.scrollHeight(), .hide_cursor = true });
         errdefer self.allocator.free(left);
@@ -222,18 +177,31 @@ test "overviewRulerFeature: per-side markers for each change kind" {
         .computeMoves = false,
     });
     defer diff_provider.deinitDiff(allocator, &diff);
-    var rows = try view_zones.computeAlignedRows(allocator, lines_original.len, lines_modified.len, diff.changes);
-    defer rows.deinit();
-
-    const markers = try collect(allocator, &rows);
-    defer allocator.free(markers);
-    try std.testing.expect(markers.len >= 2);
+    const original = try Editor.createFromText(allocator, std.testing.io, "a\nb\nc", "a.txt", 40, 8);
+    defer {
+        original.deinit();
+        allocator.destroy(original);
+    }
+    const modified = try Editor.createFromText(allocator, std.testing.io, "a\nB\nc\nd", "b.txt", 40, 8);
+    defer {
+        modified.deinit();
+        allocator.destroy(modified);
+    }
+    const mappings = try allocator.alloc(view_model.DiffMapping, diff.changes.len);
+    defer allocator.free(mappings);
+    for (mappings, diff.changes) |*mapping, change| mapping.* = .{ .line_range_mapping = change };
+    var feature: OverviewRulerFeature = undefined;
+    feature.init(allocator, original, modified);
+    defer feature.deinit(original, modified);
+    try feature.prepareRender(mappings, original, modified, 8);
     var has_original = false;
     var has_modified = false;
-    for (markers) |marker| {
-        if (marker.side == .original) has_original = true;
-        if (marker.side == .modified) has_modified = true;
-    }
+    for (feature.original) |marker| if (marker != null) {
+        has_original = true;
+    };
+    for (feature.modified) |marker| if (marker != null) {
+        has_modified = true;
+    };
     try std.testing.expect(has_original);
     try std.testing.expect(has_modified);
 }

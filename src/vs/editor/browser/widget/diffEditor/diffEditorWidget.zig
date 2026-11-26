@@ -31,7 +31,6 @@ pub const DiffEditorViewModel = diff_view_model.DiffEditorViewModel;
 pub const DiffState = diff_view_model.DiffState;
 pub const IDocumentDiff = diff_view_model.IDocumentDiff;
 pub const DiffAlgorithmName = diff_editor_options.DiffAlgorithmName;
-pub const AlignedRows = view_zones.AlignedRows;
 pub const DiffEditorDecorations = decorations_mod.DiffEditorDecorations;
 
 pub const Options = diff_editor_options.Options;
@@ -215,7 +214,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 },
             );
             errdefer decorations.deinit();
-            try decorations.updateReal(diff_state, normalized_options.show_moves and !is_inline);
+            try decorations.update(diff_state, normalized_options.show_moves and !is_inline);
 
             self.* = .{
                 .allocator = allocator,
@@ -289,7 +288,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 self.setFocus(.modified);
                 self.original_view.detach();
             }
-            try self.decorations.updateReal(self.state().?, self.options.show_moves and !inline_mode);
+            try self.decorations.update(self.state().?, self.options.show_moves and !inline_mode);
         }
 
         pub fn layout(self: *Self, width: usize, height: usize) void {
@@ -455,7 +454,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.decorations.modified_model = self.modified_editor.model;
             self.zones.init(self.allocator, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self.modified_view.terminal_view_host, self.modified_view.lineStyleFunction(), self.modified_view.decorationBitsFunction(), self.options.render_indicators, diff_state.mappings);
             self.applyZoneTheme(self.modified_view.themeColors());
-            try self.decorations.updateReal(diff_state, self.options.show_moves and !self.inline_mode);
+            try self.decorations.update(diff_state, self.options.show_moves and !self.inline_mode);
             self.focused = .modified;
             _ = self.original_view.setFocused(false);
             _ = self.modified_view.setFocused(was_focused);
@@ -522,8 +521,6 @@ pub fn DiffEditorWidget(comptime View: type) type {
                     self.state().?.mappings,
                     self.original_editor,
                     self.modified_editor,
-                    null,
-                    null,
                     h,
                 );
                 const palette = self.modified_view.themeColors();
