@@ -1,0 +1,9 @@
+{
+  "name": "quick-diff-fixture",
+  "publisher": "vscode-textbuffer",
+  "version": "1.0.0",
+  "engines": { "vscode": "^1.147.0" },
+  "main": "./extension.js",
+  "enabledApiProposals": ["quickDiffProvider", "textEditorDiffInformation"],
+  "activationEvents": ["*"]
+}

@@ -62,9 +62,17 @@ pub const TextContentRequest = struct {
 /// loaded models in their scheme after a repository-wide native change.
 pub const ContentChange = union(enum) { all, resources: []const std.Uri };
 
+/// Remote providers resolve on the window dispatcher. The returned text is
+/// borrowed only for the completion callback; cancellation detaches it.
+pub const TextContentListener = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, anyerror!?[]const u8) void,
+};
+
 pub const ITextModelContentProvider = struct {
     context: *anyopaque,
-    capture: *const fn (*anyopaque, std.Uri) anyerror!?TextContentRequest,
+    capture: ?*const fn (*anyopaque, std.Uri) anyerror!?TextContentRequest = null,
+    request_content: ?*const fn (*anyopaque, std.Uri, TextContentListener) anyerror!IDisposable = null,
     on_did_change_content: ?*Emitter(ContentChange) = null,
 };
 
@@ -103,6 +111,7 @@ pub const ITextModelService = struct {
     create_synthetic_document: *const fn (*anyopaque, []const u8, ?[]const u8) anyerror!ModelReference,
     can_handle_resource: *const fn (*anyopaque, std.Uri) bool,
     register_provider: *const fn (*anyopaque, []const u8, ITextModelContentProvider) anyerror!ContentProviderRegistration,
+    update_virtual_content: ?*const fn (*anyopaque, std.Uri, []const u8) anyerror!void = null,
 
     pub fn createModelReference(self: ITextModelService, resource: std.Uri, listener: ModelReferenceListener) !ModelReferenceRequest {
         return self.create_model_reference(self.context, resource, listener);
@@ -126,6 +135,11 @@ pub const ITextModelService = struct {
 
     pub fn registerTextModelContentProvider(self: ITextModelService, scheme: []const u8, provider: ITextModelContentProvider) !ContentProviderRegistration {
         return self.register_provider(self.context, scheme, provider);
+    }
+
+    pub fn updateVirtualContent(self: ITextModelService, resource: std.Uri, text: []const u8) !void {
+        const update = self.update_virtual_content orelse return error.VirtualContentUpdateUnavailable;
+        try update(self.context, resource, text);
     }
 
     pub fn canHandleResource(self: ITextModelService, resource: std.Uri) bool {

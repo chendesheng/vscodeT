@@ -361,6 +361,7 @@ pub const ModelCollection = struct {
         const a = scratch.allocator();
         var wanted = std.StringHashMap(*EditorDocument).init(a);
         for (documents) |document| {
+            if (!document.model.shouldSynchronizeModel()) continue;
             const key = try std_uri.resourceKey(a, document.model.uri());
             const entry = try wanted.getOrPut(key);
             if (!entry.found_existing) entry.value_ptr.* = document;
@@ -369,6 +370,13 @@ pub const ModelCollection = struct {
         while (index < self.documents.items.len) {
             const mirrored = self.documents.items[index];
             const document = wanted.get(mirrored.key);
+            if (!mirrored.retained) {
+                // The actual model service owns this document's lifecycle;
+                // removing a mounted editor is not removing the model.
+                _ = wanted.remove(mirrored.key);
+                index += 1;
+                continue;
+            }
             if (document == null or document.? != mirrored.document) {
                 try self.remove(index);
             } else {
@@ -378,13 +386,48 @@ pub const ModelCollection = struct {
         }
         // Preserve the caller's model ordering in addedDocuments.
         for (documents) |document| {
+            if (!document.model.shouldSynchronizeModel()) continue;
             const key = try std_uri.resourceKey(a, document.model.uri());
-            if (wanted.fetchRemove(key)) |entry| try self.add(entry.value, key);
+            if (wanted.fetchRemove(key)) |entry| try self.add(entry.value, key, true);
         }
     }
 
-    fn add(self: *ModelCollection, document: *EditorDocument, key: []const u8) !void {
-        const mirrored = try MirroredDocument.create(self, document, key);
+    /// The model service sends a small add/remove delta for an actual model,
+    /// even when no code editor displays it. Do not hold a reference which
+    /// would prevent the model service's last-reference disposal event.
+    pub fn addTrackedDocument(self: *ModelCollection, document: *EditorDocument) !void {
+        if (!document.model.shouldSynchronizeModel()) return;
+        const key = try std_uri.resourceKey(self.allocator, document.model.uri());
+        defer self.allocator.free(key);
+        for (self.documents.items, 0..) |mirrored, index| {
+            if (!std.mem.eql(u8, mirrored.key, key)) continue;
+            if (mirrored.document != document) {
+                try self.remove(index);
+                break;
+            }
+            if (mirrored.retained) {
+                mirrored.retained = false;
+                document.release();
+            }
+            return;
+        }
+        try self.add(document, key, false);
+    }
+
+    pub fn removeTrackedModel(self: *ModelCollection, model: *TextModel) void {
+        for (self.documents.items, 0..) |mirrored, index| {
+            if (mirrored.retained or mirrored.document.model != model) continue;
+            self.remove(index) catch {
+                // Transport failure cannot leave a callback on a dying model.
+                _ = self.documents.orderedRemove(index);
+                mirrored.deinit();
+            };
+            return;
+        }
+    }
+
+    fn add(self: *ModelCollection, document: *EditorDocument, key: []const u8, retained: bool) !void {
+        const mirrored = try MirroredDocument.create(self, document, key, retained);
         errdefer mirrored.deinit();
         try self.documents.ensureUnusedCapacity(self.allocator, 1);
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
@@ -408,6 +451,7 @@ pub const ModelCollection = struct {
 const MirroredDocument = struct {
     owner: *ModelCollection,
     document: *EditorDocument,
+    retained: bool,
     copy: WorkingCopy,
     key: []const u8,
     lines: std.array_list.Managed([]u8),
@@ -417,15 +461,15 @@ const MirroredDocument = struct {
     dirty_listener: bool = false,
     save_listener: bool = false,
 
-    fn create(owner: *ModelCollection, document: *EditorDocument, key: []const u8) !*MirroredDocument {
+    fn create(owner: *ModelCollection, document: *EditorDocument, key: []const u8, retained: bool) !*MirroredDocument {
         const a = owner.allocator;
         const self = try a.create(MirroredDocument);
         const owned = a.dupe(u8, key) catch |err| {
             a.destroy(self);
             return err;
         };
-        self.* = .{ .owner = owner, .document = document, .copy = document.interface(), .key = owned, .lines = .init(a), .eol = document.model.getEOL() };
-        self.document.retain();
+        self.* = .{ .owner = owner, .document = document, .retained = retained, .copy = document.interface(), .key = owned, .lines = .init(a), .eol = document.model.getEOL() };
+        if (retained) self.document.retain();
         errdefer self.deinit();
         self.lines = try captureLines(a, document.model);
         self.content_listener = try document.model.onDidChangeContentWithContextId(self, onContent);
@@ -446,7 +490,7 @@ const MirroredDocument = struct {
         if (self.save_listener) self.copy.remove_save_listener(self.copy.context, .{ .context = self, .callback = onSave });
         freeLines(a, &self.lines);
         a.free(self.key);
-        self.document.release();
+        if (self.retained) self.document.release();
         a.destroy(self);
     }
 

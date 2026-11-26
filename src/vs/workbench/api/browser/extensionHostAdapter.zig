@@ -48,6 +48,8 @@ const Position = @import("../../../editor/common/core/position.zig").Position;
 const CursorColumns = @import("../../../editor/common/core/cursorColumns.zig").CursorColumns;
 const ui = @import("ui");
 const MainThreadLanguageFeatures = @import("./mainThreadLanguageFeatures.zig").MainThreadLanguageFeatures;
+const MainThreadQuickDiff = @import("./mainThreadQuickDiff.zig").MainThreadQuickDiff;
+const MainThreadDocumentContentProviders = @import("./mainThreadDocumentContentProviders.zig").MainThreadDocumentContentProviders;
 const languageFeaturesHost = @import("./mainThreadLanguageFeatures.zig").HostProxy;
 const MainThreadDiagnostics = @import("./mainThreadDiagnostics.zig").MainThreadDiagnostics;
 const MainThreadStorage = @import("./mainThreadStorage.zig").MainThreadStorage;
@@ -130,6 +132,8 @@ pub const Extensions = struct {
     needs_render: bool = false,
     editor_service: EditorService,
     active_editor_listener: ?usize = null,
+    model_added_listener: ?usize = null,
+    model_removed_listener: ?usize = null,
     visible_editors_listener: ?usize = null,
     group_model_listener: ?usize = null,
     input_resources_listener: ?usize = null,
@@ -147,6 +151,8 @@ pub const Extensions = struct {
     scroll_listener_editor: ?*Editor = null,
     inline_completions: @import("inlineCompletionSession.zig").Session = undefined,
     language_features_actor: ?MainThreadLanguageFeatures = null,
+    quick_diff_actor: ?MainThreadQuickDiff = null,
+    document_content_actor: ?MainThreadDocumentContentProviders = null,
     diagnostics_actor: ?*MainThreadDiagnostics = null,
     storage_actor: ?MainThreadStorage = null,
     statusbar_actor: ?MainThreadStatusBar = null,
@@ -321,6 +327,17 @@ pub const Extensions = struct {
             break;
         }
         errdefer if (self.terminal_completions) |*session| session.deinit();
+        self.quick_diff_actor = MainThreadQuickDiff.init(allocator, services.quick_diff, services.quick_diff_models, .{
+            .context = self,
+            .request = quickDiffRequestAsync,
+            .notify = quickDiffNotify,
+        });
+        errdefer self.quick_diff_actor.?.deinit();
+        self.document_content_actor = MainThreadDocumentContentProviders.init(allocator, services.text_model_service, .{
+            .context = self,
+            .request = documentContentRequestAsync,
+        });
+        errdefer self.document_content_actor.?.deinit();
         self.registerActors();
         self.initLanguageActors() catch |err| {
             std.log.warn("language feature actors unavailable: {s}", .{@errorName(err)});
@@ -340,6 +357,8 @@ pub const Extensions = struct {
         self.task_actor.deinit();
         self.task_service.deinit();
         self.inline_completions.deinit();
+        if (self.quick_diff_actor) |*actor| actor.deinit();
+        if (self.document_content_actor) |*actor| actor.deinit();
         self.unregisterEditorListeners();
         self.removeActiveDocument() catch {};
         self.models.deinit();
@@ -380,6 +399,10 @@ pub const Extensions = struct {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeLanguageFeatures });
             } else if (nid == 16) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeDiagnostics });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadDocumentContentProviders)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeDocumentContentProviders });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadQuickDiff)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeQuickDiff });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadStorage)) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeStorage });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadStatusBar)) {
@@ -427,32 +450,49 @@ pub const Extensions = struct {
         return self.host.requestSync(allocator, proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostLanguageFeatures), method, args, token, timeout_ms);
     }
 
-    const AsyncLanguageRequest = struct {
+    const AsyncActorRequest = struct {
         owner: *Extensions,
         request_id: u32,
         callback: rpc.ReplyCallback,
 
         fn complete(context: *anyopaque, reply: rpc.Reply) void {
-            const self: *AsyncLanguageRequest = @ptrCast(@alignCast(context));
+            const self: *AsyncActorRequest = @ptrCast(@alignCast(context));
             const allocator = self.owner.allocator;
             const callback = self.callback;
             allocator.destroy(self);
             callback.call(reply);
         }
         fn cancel(context: *anyopaque) void {
-            const self: *AsyncLanguageRequest = @ptrCast(@alignCast(context));
+            const self: *AsyncActorRequest = @ptrCast(@alignCast(context));
             self.owner.host.rpc.cancel(self.request_id);
             self.owner.allocator.destroy(self);
         }
     };
 
     fn languageFeaturesRequestAsync(context: *anyopaque, method: []const u8, args: []const rpc.Arg, callback: rpc.ReplyCallback) !@import("../../../base/common/lifecycle.zig").IDisposable {
+        return requestActorAsync(context, protocol.ExtHostContext.ExtHostLanguageFeatures, method, args, callback);
+    }
+
+    fn quickDiffRequestAsync(context: *anyopaque, method: []const u8, args: []const rpc.Arg, callback: rpc.ReplyCallback) !@import("../../../base/common/lifecycle.zig").IDisposable {
+        return requestActorAsync(context, protocol.ExtHostContext.ExtHostQuickDiff, method, args, callback);
+    }
+
+    fn documentContentRequestAsync(context: *anyopaque, method: []const u8, args: []const rpc.Arg, callback: rpc.ReplyCallback) !@import("../../../base/common/lifecycle.zig").IDisposable {
+        return requestActorAsync(context, protocol.ExtHostContext.ExtHostDocumentContentProviders, method, args, callback);
+    }
+
+    fn requestActorAsync(context: *anyopaque, actor: protocol.ExtHostContext, method: []const u8, args: []const rpc.Arg, callback: rpc.ReplyCallback) !@import("../../../base/common/lifecycle.zig").IDisposable {
         const self: *Extensions = @ptrCast(@alignCast(context));
-        const pending = try self.allocator.create(AsyncLanguageRequest);
+        const pending = try self.allocator.create(AsyncActorRequest);
         errdefer self.allocator.destroy(pending);
         pending.* = .{ .owner = self, .request_id = 0, .callback = callback };
-        pending.request_id = try self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostLanguageFeatures), method, args, @import("../../../base/common/cancellation.zig").CancellationToken.None, .{ .context = pending, .callback = AsyncLanguageRequest.complete });
-        return .{ .context = pending, .disposeFn = AsyncLanguageRequest.cancel };
+        pending.request_id = try self.host.call(proxyIdentifier.identifierFromEnum(actor), method, args, @import("../../../base/common/cancellation.zig").CancellationToken.None, .{ .context = pending, .callback = AsyncActorRequest.complete });
+        return .{ .context = pending, .disposeFn = AsyncActorRequest.cancel };
+    }
+
+    fn quickDiffNotify(context: *anyopaque, method: []const u8, args: []const rpc.Arg) anyerror!void {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        try self.host.notify(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostQuickDiff), method, args);
     }
 
     fn languageFeaturesNotify(context: *anyopaque, method: []const u8, args: []const rpc.Arg) anyerror!void {
@@ -496,6 +536,22 @@ pub const Extensions = struct {
         const key = resource.key(self.allocator) catch return null;
         defer self.allocator.free(key);
         return self.models.modelForResource(key);
+    }
+
+    fn invokeDocumentContentProviders(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+        _ = token;
+        _ = arena;
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        if (self.document_content_actor) |*actor| return actor.invoke(method, args);
+        return .empty;
+    }
+
+    fn invokeQuickDiff(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+        _ = token;
+        _ = arena;
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        if (self.quick_diff_actor) |*actor| return actor.invoke(method, args);
+        return .empty;
     }
 
     fn invokeLanguageFeatures(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
@@ -1037,6 +1093,12 @@ pub const Extensions = struct {
     // for the document mirror and coalesce group-tab changes on the window.
     fn registerEditorListeners(self: *Extensions) !void {
         errdefer self.unregisterEditorListeners();
+        const model_service = self.services.model_service;
+        self.model_added_listener = try model_service.on_model_added.listen(self, onModelAdded);
+        self.model_removed_listener = try model_service.on_model_removed.listen(self, onModelRemoved);
+        const existing = try model_service.getModels(self.allocator);
+        defer self.allocator.free(existing);
+        for (existing) |model| try onModelAdded(model, self);
         self.active_editor_listener = try self.editor_service.onDidActiveEditorChange().listen(self, onActiveEditorChanged);
         self.visible_editors_listener = try self.editor_service.onDidVisibleEditorsChange().listen(self, onVisibleEditorsChanged);
         const part = self.editor_service.part;
@@ -1046,7 +1108,20 @@ pub const Extensions = struct {
         self.remove_group_listener = try part.on_did_remove_group.listen(self, onGroupChanged);
         self.move_group_listener = try part.on_did_move_group.listen(self, onGroupChanged);
     }
+    fn onModelAdded(model: @import("../../../editor/common/services/resolverService.zig").IResolvedTextEditorModel, self: *Extensions) !void {
+        const document: *EditorDocument = @ptrCast(@alignCast(model.context));
+        try self.models.addTrackedDocument(document);
+    }
+
+    fn onModelRemoved(model: @import("../../../editor/common/services/resolverService.zig").IResolvedTextEditorModel, self: *Extensions) !void {
+        self.models.removeTrackedModel(model.textEditorModel);
+    }
+
     fn unregisterEditorListeners(self: *Extensions) void {
+        if (self.model_added_listener) |id| self.services.model_service.on_model_added.unlisten(id);
+        if (self.model_removed_listener) |id| self.services.model_service.on_model_removed.unlisten(id);
+        self.model_added_listener = null;
+        self.model_removed_listener = null;
         if (self.active_editor_listener) |id| self.editor_service.onDidActiveEditorChange().unlisten(id);
         if (self.visible_editors_listener) |id| self.editor_service.onDidVisibleEditorsChange().unlisten(id);
         const part = self.editor_service.part;
@@ -1195,7 +1270,7 @@ pub const Extensions = struct {
             const control = multi.widget.activeControl() orelse return null;
             break :blk control.focusedEditor();
         } else tab.editor;
-        return if (editor.hasModel()) editor else null;
+        return if (editor.hasModel() and editor.model.shouldSynchronizeModel()) editor else null;
     }
 
     fn syncDocumentModels(self: *Extensions) !void {
@@ -2489,6 +2564,110 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqual(diff.original_editor, extensions.active.?.editor);
             diff.setFocus(.modified);
             try std.testing.expectEqual(diff.modified_editor, extensions.active.?.editor);
+        }
+
+        test "Extensions: Quick Diff providers resolve virtual originals and publish source-control information asynchronously" {
+            if (!build_options.e2e) return error.SkipZigTest;
+            const io = time_compat.io;
+            std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+            const a = std.testing.allocator;
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try tmp.dir.writeFile(io, .{ .sub_path = "quickdiff-fixture.txt", .data = "after\nsecond\n" });
+            var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const path = path_buffer[0..try tmp.dir.realPathFile(io, "quickdiff-fixture.txt", &path_buffer)];
+            const window = try TestWindow.init(a, io, &.{path}, 100, 30);
+            defer window.deinit();
+            const wb = window.workbench;
+            try wb.enableLanguageFeatures();
+            const quick_diff = @import("../../contrib/scm/common/quickDiff.zig");
+            const native = struct {
+                fn original(_: *anyopaque, allocator: Allocator, _: std.Uri) !?quick_diff.Original {
+                    const resource: std.Uri = .{ .scheme = "quickdiff-fixture", .path = .{ .raw = "/baseline #?.txt" }, .query = .{ .raw = "source=fixture#query" } };
+                    const encoded = try std_uri.encodedResource(allocator, resource);
+                    errdefer allocator.free(encoded);
+                    return .{ .resource_uri = encoded, .ref_label = try allocator.dupe(u8, "Native baseline") };
+                }
+            };
+            var primary: quick_diff.QuickDiffProvider = .{ .context = @constCast(&{}), .id = "fixture.primary", .label = "Native baseline", .kind = .primary, .get_original_fn = native.original };
+            const registration = try wb.scm.quick_diff_api.?.addQuickDiffProvider(&primary);
+            defer registration.dispose();
+            const extensions = try Extensions.init(a, io, wb.extensionHostServices(), &.{.{ .path = "host/test-fixtures/quick-diff", .is_under_development = true }}, ".cache-ext/data-quickdiff-fixture", "host/dist");
+            defer extensions.deinit();
+            const editor = wb.activeTab().?.editor;
+            const deadline = time_compat.milliTimestamp() + 10_000;
+            while (time_compat.milliTimestamp() < deadline) {
+                _ = extensions.pump();
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                if (extensions.quick_diff_actor.?.providers.count() == 1 and extensions.document_content_actor.?.providers.count() == 1) break;
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expectEqual(@as(usize, 1), extensions.quick_diff_actor.?.providers.count());
+            try std.testing.expectEqual(@as(usize, 1), extensions.document_content_actor.?.providers.count());
+            var reference = (try wb.scm.quick_diff_model_api.?.createQuickDiffModelReference(editor.model.uri(), .{})) orelse return error.TestExpectedQuickDiffModel;
+            defer reference.dispose();
+            const model = reference.object;
+            const Pump = struct {
+                fn settle(host: *Extensions, workbench: @TypeOf(wb), quick: *@import("../../contrib/scm/browser/quickDiffModel.zig").QuickDiffModel, expected: usize) !void {
+                    const limit = time_compat.milliTimestamp() + 10_000;
+                    while (time_compat.milliTimestamp() < limit) {
+                        _ = host.pump();
+                        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                        if (quick.quickDiffs().len == expected and quick.due_at == null and quick.provider_query == null and quick.resolving == null and quick.pending == null) return;
+                        time_compat.sleepMillis(10);
+                    }
+                    return error.QuickDiffDidNotSettle;
+                }
+            };
+            try Pump.settle(extensions, wb, model, 2);
+            try std.testing.expectEqual(@as(usize, 2), model.all_changes.items.len);
+            var baseline: ?*EditorDocument = null;
+            for (model.quickDiffs()) |quick| {
+                const original = model.getDiffEditorModel(quick.id) orelse return error.TestExpectedOriginalModel;
+                if (baseline) |document| try std.testing.expectEqual(document, original.original_document) else baseline = original.original_document;
+            }
+            const original = baseline.?;
+            try std.testing.expectEqualStrings("before", try original.model.borrowLineContent(1));
+            var scratch = std.heap.ArenaAllocator.init(a);
+            defer scratch.deinit();
+            const arena = scratch.allocator();
+            try std.testing.expectEqualStrings("/baseline #?.txt", try std_uri.path(original.model.uri(), arena));
+            try std.testing.expectEqualStrings("source=fixture#query", try std_uri.query(original.model.uri(), arena));
+            const editor_uri = try std_uri.encodedResource(arena, editor.model.uri());
+            const command_id = proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands);
+            const commands = struct {
+                fn call(host: *Extensions, allocator: Allocator, id: @TypeOf(command_id), name: []const u8, value: ?[]const u8) !std.json.Value {
+                    var args = std.array_list.Managed(rpc.Arg).init(allocator);
+                    defer args.deinit();
+                    try args.append(.{ .json = .{ .string = name } });
+                    if (value) |argument| try args.append(.{ .json = .{ .string = argument } });
+                    return host.host.requestSync(allocator, id, "$executeContributedCommand", args.items, null, 5000);
+                }
+            };
+            const documents = try commands.call(extensions, arena, command_id, "fixture.quickDiff.documents", null);
+            try std.testing.expectEqual(@as(usize, 1), documents.array.items.len);
+            try std.testing.expectEqualStrings("before\nsecond\n", documents.array.items[0].object.get("text").?.string);
+            _ = try commands.call(extensions, arena, command_id, "fixture.quickDiff.createInformation", editor_uri);
+            const information = try commands.call(extensions, arena, command_id, "fixture.quickDiff.information", null);
+            try std.testing.expectEqual(@as(i64, editor.model.getVersionId()), information.object.get("documentVersion").?.integer);
+            try std.testing.expect(!information.object.get("isStale").?.bool);
+            try std.testing.expectEqual(@as(usize, 1), information.object.get("changes").?.array.items.len);
+            _ = try commands.call(extensions, arena, command_id, "fixture.quickDiff.update", "after\nsecond\n");
+            const update_deadline = time_compat.milliTimestamp() + 10_000;
+            while (time_compat.milliTimestamp() < update_deadline) {
+                _ = extensions.pump();
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                if (std.mem.eql(u8, "after", try original.model.borrowLineContent(1))) break;
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expectEqualStrings("after", try original.model.borrowLineContent(1));
+            try Pump.settle(extensions, wb, model, 2);
+            try std.testing.expectEqual(@as(usize, 0), model.all_changes.items.len);
+            const updated = try commands.call(extensions, arena, command_id, "fixture.quickDiff.information", null);
+            try std.testing.expectEqual(@as(usize, 0), updated.object.get("changes").?.array.items.len);
+            _ = try commands.call(extensions, arena, command_id, "fixture.quickDiff.dispose", null);
+            try Pump.settle(extensions, wb, model, 1);
+            try std.testing.expectEqual(@as(usize, 0), extensions.quick_diff_actor.?.informations.count());
         }
 
         test "Extensions: multi-diff tabs expose declared pairs and offscreen documents through virtualization" {

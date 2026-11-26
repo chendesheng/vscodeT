@@ -170,7 +170,7 @@ pub const TextModelResolverService = struct {
         if (self.pending.get(key)) |pending| {
             // This event arrived after the immutable provider capture; make
             // one more read after its completion so the new content is not lost.
-            if (pending.source != null) pending.provider_refresh_after = true;
+            if (pending.source != null or pending.async_content != null or pending.result != null) pending.provider_refresh_after = true;
         }
         _ = try self.refreshModelReference(uri, .{ .context = self, .complete = providerRefreshCompleted });
     }
@@ -182,20 +182,27 @@ pub const TextModelResolverService = struct {
         }
     }
 
-    pub fn captureContent(self: *TextModelResolverService, resource: std.Uri) !resolver.TextContentRequest {
+    fn captureBuiltinContent(self: *TextModelResolverService, resource: std.Uri) !?resolver.TextContentRequest {
         // The file service wins, and an already-open file supplies its actual
         // unsaved contents rather than a second read of the disk file.
         if (std.mem.eql(u8, resource.scheme, "file")) {
             if (try self.acquireExisting(resource)) |value| {
                 var reference = value;
                 defer reference.dispose();
-                return CachedContentRequest.create(documentOf(reference), true);
+                return try CachedContentRequest.create(documentOf(reference), true);
             }
-            return FileContentRequest.create(self.io, resource);
+            return try FileContentRequest.create(self.io, resource);
         }
         if (self.file_service) |service| {
-            if (try service.captureRead(resource)) |request| return ProviderContentRequest.create(resource, request);
+            if (try service.captureRead(resource)) |request| return try ProviderContentRequest.create(resource, request);
         }
+        return null;
+    }
+
+    /// Immediate capture used by native provider tests. Model acquisition uses
+    /// the same builtin precedence and provider ordering, including promises.
+    pub fn captureContent(self: *TextModelResolverService, resource: std.Uri) !resolver.TextContentRequest {
+        if (try self.captureBuiltinContent(resource)) |request| return request;
         // Upstream registers most recent content provider first, falling
         // through only when it declines the resource.
         var index = self.providers.items.len;
@@ -203,7 +210,8 @@ pub const TextModelResolverService = struct {
             index -= 1;
             const entry = self.providers.items[index];
             if (!std.mem.eql(u8, entry.scheme, resource.scheme)) continue;
-            if (try entry.provider.capture(entry.provider.context, resource)) |request| return request;
+            if (entry.provider.request_content != null) return error.AsynchronousTextContentProvider;
+            if (entry.provider.capture) |capture| if (try capture(entry.provider.context, resource)) |request| return request;
         }
         if (try self.acquireExisting(resource)) |value| {
             var reference = value;
@@ -211,6 +219,13 @@ pub const TextModelResolverService = struct {
             return CachedContentRequest.create(documentOf(reference), false);
         }
         return error.UnableToResolveResource;
+    }
+
+    pub fn updateVirtualContent(self: *TextModelResolverService, resource: std.Uri, text: []const u8) !void {
+        if (std.mem.eql(u8, resource.scheme, "file")) return;
+        var reference = (try self.acquireExisting(resource)) orelse return;
+        defer reference.dispose();
+        _ = try documentOf(reference).replaceGeneratedContents(text);
     }
 
     pub fn registerDocument(self: *TextModelResolverService, document: *EditorDocument, readonly: bool) !void {
@@ -302,6 +317,8 @@ pub const TextModelResolverService = struct {
         listeners: std.ArrayList(Listener) = .empty,
         existing: ?resolver.ModelReference = null,
         source: ?resolver.TextContentRequest = null,
+        async_content: ?@import("../../../../base/common/lifecycle.zig").IDisposable = null,
+        provider_cursor: ?usize = null,
         result: ?resolver.TextContentRequest.Result = null,
         failure: ?anyerror = null,
         worker_submitted: bool = false,
@@ -326,21 +343,13 @@ pub const TextModelResolverService = struct {
             self.* = .{ .allocator = allocator, .service = service, .key = owned_key, .uri = uri, .arena = arena, .reload = reload };
             self.delivery = .{ .queue = service.window, .context = self, .run = deliver, .progress = true };
             self.existing = try service.acquireExisting(resource);
-            if (self.existing == null or self.reload) self.source = service.captureContent(resource) catch |err| blk: {
-                self.failure = err;
-                break :blk null;
-            };
             return self;
         }
 
         fn reloadIfNecessary(self: *PendingReference) void {
-            if (self.existing == null or self.source != null or self.reload) return;
+            if (self.existing == null or self.source != null or self.async_content != null or self.reload) return;
             self.reload = true;
             self.delivery.schedule(null);
-            self.source = self.service.?.captureContent(self.uri) catch |err| blk: {
-                self.failure = err;
-                break :blk null;
-            };
             self.start();
         }
 
@@ -352,6 +361,78 @@ pub const TextModelResolverService = struct {
         }
 
         fn start(self: *PendingReference) void {
+            if (self.existing != null and !self.reload) {
+                self.delivery.post();
+                return;
+            }
+            self.beginContent() catch |err| {
+                self.failure = err;
+                self.delivery.post();
+            };
+        }
+
+        fn beginContent(self: *PendingReference) !void {
+            const service = self.service.?;
+            if (try service.captureBuiltinContent(self.uri)) |source| {
+                self.source = source;
+                self.startWorker();
+                return;
+            }
+            try self.advanceProvider();
+        }
+
+        fn advanceProvider(self: *PendingReference) !void {
+            const service = self.service.?;
+            // The monotonically assigned registration ID is the stable
+            // continuation cursor even if a provider is removed while waiting.
+            var index = service.providers.items.len;
+            while (index > 0) {
+                index -= 1;
+                const entry = service.providers.items[index];
+                if (self.provider_cursor) |cursor| if (entry.id >= cursor) continue;
+                if (!std.mem.eql(u8, entry.scheme, self.uri.scheme)) continue;
+                self.provider_cursor = entry.id;
+                if (entry.provider.request_content) |request| {
+                    self.async_content = try request(entry.provider.context, self.uri, .{ .context = self, .complete = onAsyncContent });
+                    return;
+                }
+                if (entry.provider.capture) |capture| if (try capture(entry.provider.context, self.uri)) |source| {
+                    self.source = source;
+                    self.startWorker();
+                    return;
+                };
+            }
+            if (try service.acquireExisting(self.uri)) |value| {
+                var reference = value;
+                defer reference.dispose();
+                self.source = try CachedContentRequest.create(documentOf(reference), false);
+                self.startWorker();
+                return;
+            }
+            return error.UnableToResolveResource;
+        }
+
+        fn onAsyncContent(context: *anyopaque, result: anyerror!?[]const u8) void {
+            const self: *PendingReference = @ptrCast(@alignCast(context));
+            self.async_content = null;
+            self.acceptAsyncContent(result) catch |err| {
+                self.failure = err;
+                self.delivery.post();
+            };
+        }
+
+        fn acceptAsyncContent(self: *PendingReference, result: anyerror!?[]const u8) !void {
+            const text = (try result) orelse return self.advanceProvider();
+            const a = self.arena.allocator();
+            self.result = .{
+                .uri = self.uri,
+                .path = try uri_util.fsPath(self.uri, a),
+                .text = try a.dupe(u8, text),
+            };
+            self.delivery.post();
+        }
+
+        fn startWorker(self: *PendingReference) void {
             if (self.source != null) {
                 const service = self.service.?;
                 const worker = service.ensureWorker() catch |err| {
@@ -458,6 +539,7 @@ pub const TextModelResolverService = struct {
 
         fn destroy(self: *PendingReference) void {
             if (self.existing) |*reference| reference.dispose();
+            if (self.async_content) |request| request.dispose();
             if (self.source) |source| source.destroy(source.context);
             self.listeners.deinit(self.allocator);
             self.arena.deinit();
@@ -517,6 +599,10 @@ pub const TextModelResolverService = struct {
                 const service: *TextModelResolverService = @ptrCast(@alignCast(context));
                 return service.createSyntheticDocument(value, language);
             }
+            fn updateVirtualContent(context: *anyopaque, uri: std.Uri, text: []const u8) !void {
+                const service: *TextModelResolverService = @ptrCast(@alignCast(context));
+                try service.updateVirtualContent(uri, text);
+            }
             fn register(context: *anyopaque, scheme: []const u8, provider: resolver.ITextModelContentProvider) !resolver.ContentProviderRegistration {
                 const service: *TextModelResolverService = @ptrCast(@alignCast(context));
                 return service.registerTextModelContentProvider(scheme, provider);
@@ -526,7 +612,11 @@ pub const TextModelResolverService = struct {
                 return service.canHandleResource(uri);
             }
         };
-        return .{ .context = self, .create_model_reference = Adapter.reference, .acquire_model_reference = Adapter.acquireReference, .refresh_model_reference = Adapter.refresh, .create_synthetic_document = Adapter.synthetic, .can_handle_resource = Adapter.canHandle, .register_provider = Adapter.register };
+        return .{ .context = self, .create_model_reference = Adapter.reference, .acquire_model_reference = Adapter.acquireReference, .refresh_model_reference = Adapter.refresh, .create_synthetic_document = Adapter.synthetic, .can_handle_resource = Adapter.canHandle, .register_provider = Adapter.register, .update_virtual_content = Adapter.updateVirtualContent };
+    }
+
+    pub fn modelService(self: *TextModelResolverService) @import("../../../../editor/common/services/modelService.zig").IModelService {
+        return self.collection.interface();
     }
 
     pub fn documentOf(reference: resolver.ModelReference) *EditorDocument {
@@ -538,9 +628,29 @@ const ResourceModelCollection = struct {
     allocator: Allocator,
     window: *dispatch.Queue,
     entries: std.StringHashMap(*Entry),
+    on_model_added: @import("../../../../base/common/event.zig").Emitter(resolver.IResolvedTextEditorModel),
+    on_model_removed: @import("../../../../base/common/event.zig").Emitter(resolver.IResolvedTextEditorModel),
 
     fn init(allocator: Allocator, window: *dispatch.Queue) ResourceModelCollection {
-        return .{ .allocator = allocator, .window = window, .entries = .init(allocator) };
+        return .{ .allocator = allocator, .window = window, .entries = .init(allocator), .on_model_added = .init(allocator), .on_model_removed = .init(allocator) };
+    }
+
+    fn interface(self: *ResourceModelCollection) @import("../../../../editor/common/services/modelService.zig").IModelService {
+        return .{
+            .context = self,
+            .get_models = struct {
+                fn get(context: *anyopaque, allocator: Allocator) ![]resolver.IResolvedTextEditorModel {
+                    const collection: *ResourceModelCollection = @ptrCast(@alignCast(context));
+                    const models = try allocator.alloc(resolver.IResolvedTextEditorModel, collection.entries.count());
+                    var iterator = collection.entries.valueIterator();
+                    var i: usize = 0;
+                    while (iterator.next()) |entry| : (i += 1) models[i] = entry.*.modelInterface();
+                    return models;
+                }
+            }.get,
+            .on_model_added = &self.on_model_added,
+            .on_model_removed = &self.on_model_removed,
+        };
     }
 
     fn register(self: *ResourceModelCollection, document: *EditorDocument, readonly: bool) !*Entry {
@@ -558,6 +668,7 @@ const ResourceModelCollection = struct {
         entry.dispose_listener = try document.on_will_dispose.listen(entry, Entry.onDocumentDisposed);
         errdefer document.on_will_dispose.unlisten(entry.dispose_listener.?);
         try self.entries.put(key, entry);
+        self.on_model_added.fire(entry.modelInterface()) catch {};
         return entry;
     }
 
@@ -573,8 +684,13 @@ const ResourceModelCollection = struct {
         // Detach all callbacks while the document is alive; a detached entry
         // with active references destroys itself on the last release.
         var iterator = self.entries.valueIterator();
-        while (iterator.next()) |value| value.*.detach();
+        while (iterator.next()) |value| {
+            self.on_model_removed.fire(value.*.modelInterface()) catch {};
+            value.*.detach();
+        }
         self.entries.deinit();
+        self.on_model_added.deinit();
+        self.on_model_removed.deinit();
     }
 
     const Entry = struct {
@@ -589,6 +705,10 @@ const ResourceModelCollection = struct {
         dirty_listener: bool = false,
         disposal_task: dispatch.Task = .{},
 
+        fn modelInterface(self: *Entry) resolver.IResolvedTextEditorModel {
+            return .{ .context = self.document, .textEditorModel = self.document.model, .onWillDispose = &self.document.on_will_dispose, .readonly = self.readonly };
+        }
+
         fn acquire(self: *Entry) resolver.ModelReference {
             self.disposal_task.schedule(null);
             self.stopWaitingForClean();
@@ -597,7 +717,7 @@ const ResourceModelCollection = struct {
                 self.held = true;
             }
             self.refs += 1;
-            return .{ .object = .{ .context = self.document, .textEditorModel = self.document.model, .onWillDispose = &self.document.on_will_dispose, .readonly = self.readonly }, .release = @import("../../../../base/common/lifecycle.zig").IDisposable.from(Entry, self, release) };
+            return .{ .object = self.modelInterface(), .release = @import("../../../../base/common/lifecycle.zig").IDisposable.from(Entry, self, release) };
         }
 
         fn release(self: *Entry) void {
@@ -651,7 +771,10 @@ const ResourceModelCollection = struct {
         fn onDocumentDisposed(_: void, self: *Entry) !void {
             std.debug.assert(!self.held and self.refs == 0);
             self.disposal_task.schedule(null);
-            if (self.collection) |collection| _ = collection.entries.remove(self.key);
+            if (self.collection) |collection| {
+                _ = collection.entries.remove(self.key);
+                collection.on_model_removed.fire(self.modelInterface()) catch {};
+            }
             self.destroy();
         }
 

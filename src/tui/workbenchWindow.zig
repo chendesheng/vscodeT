@@ -302,6 +302,7 @@ pub const TerminalWorkbench = struct {
     file_service_api: @import("../vs/platform/files/common/files.zig").IFileService,
     text_model_resolver: @import("../vs/workbench/services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService,
     text_model_api: @import("../vs/editor/common/services/resolverService.zig").ITextModelService,
+    model_service_api: @import("../vs/editor/common/services/modelService.zig").IModelService,
     /// Native file opening and event-driven reload owner.
     editor_opening: editor_service_mod.EditorOpening,
     cols: usize,
@@ -539,6 +540,7 @@ pub const TerminalWorkbench = struct {
         errdefer self.text_model_resolver.deinit();
         try self.text_model_resolver.bindFileService(self.file_service_api);
         self.text_model_api = self.text_model_resolver.interface();
+        self.model_service_api = self.text_model_resolver.modelService();
         self.git_file_provider = .init(allocator, &self.git_model, self.async_io);
         errdefer self.git_file_provider.deinit();
         self.git_file_provider.setRepositoryDiscovery(.{ .context = self, .open = discoverGitResourceRepository });
@@ -1246,6 +1248,7 @@ pub const TerminalWorkbench = struct {
         _ = try self.services.set(@import("../vs/workbench/services/editor/common/editorService.zig").editor_service_id, &self.editor_api);
         _ = try self.services.set(@import("../vs/platform/files/common/files.zig").file_service_id, &self.file_service_api);
         _ = try self.services.set(@import("../vs/editor/common/services/resolverService.zig").text_model_service_id, &self.text_model_api);
+        _ = try self.services.set(@import("../vs/editor/common/services/modelService.zig").model_service_id, &self.model_service_api);
         _ = try self.services.set(@import("../vs/workbench/contrib/scm/common/quickDiff.zig").quick_diff_service_id, self.scm.quick_diff_api.?);
         _ = try self.services.set(@import("../vs/workbench/contrib/scm/browser/quickDiffModel.zig").quick_diff_model_service_id, self.scm.quick_diff_model_api.?);
         _ = try self.services.set(@import("../vs/workbench/contrib/multiDiffEditor/browser/multiDiffSourceResolverService.zig").multi_diff_source_resolver_service_id, &self.multi_diff_sources_api);
