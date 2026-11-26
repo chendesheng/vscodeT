@@ -34,6 +34,8 @@ pub const Options = struct {
     show_moves: bool = false,
 };
 
+pub const IDocumentDiff = doc_diff.IDocumentDiff;
+
 pub const DiffMapping = struct {
     line_range_mapping: DetailedLineRangeMapping,
 };
@@ -98,6 +100,10 @@ pub const DiffEditorViewModel = struct {
         );
         defer doc_diff.deinitDiff(self.allocator, &result);
 
+        try self.applyComputedDiff(result);
+    }
+
+    pub fn applyComputedDiff(self: *DiffEditorViewModel, result: IDocumentDiff) !void {
         const normalized = try self.normalizeDocumentDiff(result);
         if (self.state) |*state| state.deinit(self.allocator);
         self.state = normalized;

@@ -39,6 +39,7 @@ const LineRange = @import("../../../common/core/ranges/lineRange.zig").LineRange
 
 pub const DiffEditorViewModel = diff_view_model.DiffEditorViewModel;
 pub const DiffState = diff_view_model.DiffState;
+pub const IDocumentDiff = diff_view_model.IDocumentDiff;
 pub const DiffAlgorithmName = diff_editor_options.DiffAlgorithmName;
 pub const AlignedRows = view_zones.AlignedRows;
 pub const DiffEditorDecorations = decorations_mod.DiffEditorDecorations;
@@ -253,6 +254,24 @@ pub fn DiffEditorWidget(comptime View: type) type {
             height: usize,
             options: Options,
         ) !*Self {
+            return createWithDiff(factory, allocator, io, original_path, modified_path, original_text, modified_text, original_label, modified_label, width, height, options, null);
+        }
+
+        pub fn createWithDiff(
+            factory: *const fn (Allocator, *Editor) anyerror!*View,
+            allocator: Allocator,
+            io: Io,
+            original_path: []const u8,
+            modified_path: []const u8,
+            original_text: []const u8,
+            modified_text: []const u8,
+            original_label: []const u8,
+            modified_label: []const u8,
+            width: usize,
+            height: usize,
+            options: Options,
+            computed: ?IDocumentDiff,
+        ) !*Self {
             const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
             const normalized_options = options.normalize();
@@ -285,7 +304,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .show_moves = options.show_moves,
             });
             errdefer diff_model.deinit();
-            try diff_model.compute();
+            if (computed) |result| try diff_model.applyComputedDiff(result) else try diff_model.compute();
             const diff_state = diff_model.stateRef() orelse return error.DiffUnavailable;
 
             const changes = try allocator.alloc(view_model.DetailedLineRangeMapping, diff_state.mappings.len);
@@ -776,12 +795,13 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         fn paintGutter(self: *Self, frame: *ui.Frame, x: usize, y: usize, height: usize) void {
+            const palette = self.modified_view.themeColors();
             const normal = ui.cell.PaintStyle{
-                .fg = ui.cell.packColor(.{ .r = 80, .g = 80, .b = 80 }),
+                .fg = ui.cell.packColor(if (palette) |colors| colors.color("diffEditor.border", .{ 80, 80, 80 }) else .{ .r = 80, .g = 80, .b = 80 }),
             };
             const current = ui.cell.PaintStyle{
-                .fg = ui.cell.packColor(.{ .r = 220, .g = 220, .b = 220 }),
-                .bg = ui.cell.packColor(.{ .r = 60, .g = 60, .b = 64 }),
+                .fg = ui.cell.packColor(if (palette) |colors| colors.foreground else .{ .r = 220, .g = 220, .b = 220 }),
+                .bg = ui.cell.packColor(if (palette) |colors| colors.color("editor.lineHighlightBackground", .{ 60, 60, 64 }) else .{ .r = 60, .g = 60, .b = 64 }),
             };
             const mappings = self.aligned.mappings;
             const cursor_row = self.focusedEditor().modelCursorPosition().lineNumber;

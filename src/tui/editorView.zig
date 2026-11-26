@@ -1226,6 +1226,10 @@ pub const View = struct {
 
     /// Resets the theme-dependent document roots; the next render recreates
     /// them because the registry colors are cached per document.
+    pub fn themeColors(self: *View) ?*const theme_colors_mod.ThemeColors {
+        return self.theme_colors;
+    }
+
     pub fn setThemeColors(self: *View, palette: ?*const theme_colors_mod.ThemeColors) void {
         self.theme_colors = palette;
         self.ghost_text.editor_foreground = if (palette) |colors| colors.color("editor.foreground", .{ 212, 212, 212 }) else color(.{ 212, 212, 212 });

@@ -2725,9 +2725,7 @@ pub const TerminalWorkbench = struct {
         left_label: []const u8,
         right_label: []const u8,
     ) !void {
-        const editors = editor_service_mod.EditorService{ .part = self.part };
-        try editors.openSnapshotDiff(self.view_factory, self.io, if (self.configuration) |config| config.interface() else null, path, original_text, modified_text, left_label, right_label);
-        self.focusEditor();
+        try self.editor_opening.requestOpenSnapshotDiff(if (self.configuration) |config| config.interface() else null, path, original_text, modified_text, left_label, right_label);
     }
 
     fn gitDisabled(context: ?*anyopaque, reason: []const u8) void {

@@ -658,6 +658,7 @@ comptime {
     _ = @import("./vs/editor/browser/viewParts/glyphMargin/glyphMargin.zig");
     _ = @import("./vs/editor/browser/viewParts/decorations/decorations.zig");
     _ = @import("./vs/editor/browser/widget/diffEditor/diffEditorViewModel.zig");
+    _ = @import("./vs/editor/browser/widget/diffEditor/diffProviderFactoryService.zig");
     _ = @import("./vs/editor/browser/widget/diffEditor/components/diffEditorViewZones.zig");
     _ = @import("./vs/editor/browser/widget/diffEditor/components/diffEditorDecorations.zig");
     _ = @import("./vs/editor/browser/widget/diffEditor/components/diffEditorEditors.zig");

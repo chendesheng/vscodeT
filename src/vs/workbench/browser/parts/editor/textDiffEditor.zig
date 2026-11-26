@@ -23,6 +23,7 @@ const text_files = @import("../../../services/textfile/common/textFileService.zi
 const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 
 pub const Options = widget_mod.Options;
+pub const IDocumentDiff = widget_mod.IDocumentDiff;
 
 // Project the diffEditor configuration merged by upstream TextDiffEditor.
 pub fn computeConfiguration(configuration_service: ?@import("../../../../platform/configuration/common/configuration.zig").IConfigurationService) Options {
@@ -187,6 +188,21 @@ pub fn DiffView(comptime View: type) type {
             height: usize,
             options: Options,
         ) !*Self {
+            return createWithDiff(factory, allocator, io, model, original_text, modified_text, width, height, options, null);
+        }
+
+        pub fn createWithDiff(
+            factory: *const fn (Allocator, *Editor) anyerror!*View,
+            allocator: Allocator,
+            io: Io,
+            model: DiffEditorModel,
+            original_text: []const u8,
+            modified_text: []const u8,
+            width: usize,
+            height: usize,
+            options: Options,
+            computed: ?IDocumentDiff,
+        ) !*Self {
             const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
 
@@ -201,7 +217,7 @@ pub fn DiffView(comptime View: type) type {
             const modified_label = try allocator.dupe(u8, model.modified_label);
             errdefer allocator.free(modified_label);
 
-            const widget = try DiffEditorWidget.create(
+            const widget = try DiffEditorWidget.createWithDiff(
                 factory,
                 allocator,
                 io,
@@ -214,6 +230,7 @@ pub fn DiffView(comptime View: type) type {
                 width,
                 height,
                 options,
+                computed,
             );
             errdefer widget.destroy();
 
@@ -285,7 +302,11 @@ pub fn DiffView(comptime View: type) type {
         /// Replaces the snapshot texts in place, recreating the diff widget with
         /// the new content while keeping the input identity/tab.
         pub fn replace(self: *Self, original_text: []const u8, modified_text: []const u8, width: usize, height: usize, options: Options) !void {
-            const widget = try DiffEditorWidget.create(
+            try self.replaceWithDiff(original_text, modified_text, width, height, options, null);
+        }
+
+        pub fn replaceWithDiff(self: *Self, original_text: []const u8, modified_text: []const u8, width: usize, height: usize, options: Options, computed: ?IDocumentDiff) !void {
+            const widget = try DiffEditorWidget.createWithDiff(
                 self.factory,
                 self.allocator,
                 self.io,
@@ -298,6 +319,7 @@ pub fn DiffView(comptime View: type) type {
                 width,
                 height,
                 options,
+                computed,
             );
             const previous = self.widget;
             widget.split_ratio = previous.split_ratio;
@@ -314,6 +336,21 @@ pub fn DiffView(comptime View: type) type {
             widget.modified_view.setThemeColors(self.theme_colors);
             self.widget = widget;
             previous.destroy();
+        }
+
+        pub fn matchesSnapshot(self: *Self, original: []const u8, modified: []const u8, options: Options) bool {
+            return std.meta.eql(self.widget.options, options.normalize()) and
+                snapshotLinesEqual(self.widget.view_model.original_lines, original) and
+                snapshotLinesEqual(self.widget.view_model.modified_lines, modified);
+        }
+
+        fn snapshotLinesEqual(lines: []const []const u8, text: []const u8) bool {
+            var iterator = std.mem.splitScalar(u8, text, '\n');
+            for (lines) |line| {
+                const next = iterator.next() orelse return false;
+                if (!std.mem.eql(u8, line, next)) return false;
+            }
+            return iterator.next() == null;
         }
 
         /// Reapply the diff-specific configuration when its owner receives

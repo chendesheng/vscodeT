@@ -117,10 +117,26 @@ pub const EditorService = struct {
         left_label: []const u8,
         right_label: []const u8,
     ) !void {
+        try self.openSnapshotDiffWithDiff(factory, io, path, original_text, modified_text, left_label, right_label, text_diff_editor_mod.computeConfiguration(configuration), null, null);
+    }
+
+    fn openSnapshotDiffWithDiff(
+        self: EditorService,
+        factory: editor_pane.EditorViewFactory,
+        io: std.Io,
+        path: []const u8,
+        original_text: []const u8,
+        modified_text: []const u8,
+        left_label: []const u8,
+        right_label: []const u8,
+        options: text_diff_editor_mod.Options,
+        computed: ?text_diff_editor_mod.IDocumentDiff,
+        target: ?GroupIdentifier,
+    ) !void {
         if (self.findDiffTab(path, left_label, right_label)) |existing| {
             const tab = existing.tab;
             const dims = existing.pane.contentDimensions();
-            try tab.diff.?.replace(original_text, modified_text, dims.width, dims.height, text_diff_editor_mod.computeConfiguration(configuration));
+            try tab.diff.?.replaceWithDiff(original_text, modified_text, dims.width, dims.height, options, computed);
             tab.syncDiffViews();
             try existing.pane.activateTab(tab);
             self.part.service.activateGroup(existing.pane.group);
@@ -129,10 +145,10 @@ pub const EditorService = struct {
             return;
         }
 
-        const pane = self.part.activeView() orelse return error.GroupPaneMissing;
+        const pane = if (target) |id| self.part.viewForGroup(self.part.service.getGroup(id) orelse return error.GroupPaneMissing) orelse return error.GroupPaneMissing else self.part.activeView() orelse return error.GroupPaneMissing;
         const dims = pane.contentDimensions();
         const tab = blk: {
-            const view = try editor_pane.DiffView.create(
+            const view = try editor_pane.DiffView.createWithDiff(
                 factory,
                 self.part.allocator,
                 io,
@@ -146,7 +162,8 @@ pub const EditorService = struct {
                 modified_text,
                 dims.width,
                 dims.height,
-                text_diff_editor_mod.computeConfiguration(configuration),
+                options,
+                computed,
             );
             errdefer view.destroy();
             break :blk try Tab.initDiff(self.part.allocator, view);
@@ -297,6 +314,10 @@ const HistoryService = @import("../../history/browser/historyService.zig").Histo
 /// model/view construction and this companion owns the outstanding file
 /// resolve/reload jobs. The window provides the document surface and
 /// notification callbacks; completions are posted to its input/event queue.
+const DiffProvider = @import("../../../../editor/browser/widget/diffEditor/diffProviderFactoryService.zig").WorkerBasedDocumentDiffProvider;
+const DiffWorker = @import("../../../../editor/browser/services/editorWorkerService.zig").EditorWorkerService;
+const WindowTask = @import("../../../../base/common/windowDispatch.zig").Task;
+
 pub const EditorOpening = struct {
     pub const ImageDimensions = struct { width: usize, height: usize };
 
@@ -324,16 +345,118 @@ pub const EditorOpening = struct {
         image_dimensions: *const fn (*anyopaque) ImageDimensions,
     },
     pending_open: ?struct { read: *TextFileRead, options: OpenOptions } = null,
+    diff_worker: ?*DiffWorker = null,
+    pending_diff: ?struct {
+        request: *DiffProvider.Request,
+        path: []u8,
+        left: []u8,
+        right: []u8,
+        group: GroupIdentifier,
+    } = null,
+    diff_progress: WindowTask = .{},
     reload_jobs: std.array_list.Managed(*TextFileRead),
 
     pub fn cancel(self: *EditorOpening) void {
         self.cancelPendingOpen();
+        self.cancelPendingDiff();
         self.cancelReloadJobs();
     }
 
     pub fn deinit(self: *EditorOpening) void {
         self.cancel();
+        if (self.diff_worker) |worker| {
+            worker.deinit();
+            self.allocator.destroy(worker);
+        }
         self.reload_jobs.deinit();
+    }
+
+    pub fn requestOpenSnapshotDiff(self: *EditorOpening, configuration: ?IConfigurationService, path: []const u8, original: []const u8, modified: []const u8, left: []const u8, right: []const u8) !void {
+        self.cancelPendingOpen();
+        self.cancelPendingDiff();
+        const options = text_diff_editor_mod.computeConfiguration(configuration);
+        const editors = EditorService{ .part = self.part };
+        if (editors.findDiffTab(path, left, right)) |existing| {
+            if (existing.tab.diff.?.matchesSnapshot(original, modified, options)) {
+                try existing.pane.activateTab(existing.tab);
+                self.part.service.activateGroup(existing.pane.group);
+                existing.tab.focusEditor();
+                self.host.focus_editor(self.host.context);
+                self.clearStatusHint();
+                return;
+            }
+        }
+        const worker = self.diff_worker orelse blk: {
+            const instance = try self.allocator.create(DiffWorker);
+            instance.* = DiffWorker.init();
+            instance.attachWindow(self.window_events);
+            self.diff_worker = instance;
+            break :blk instance;
+        };
+        const path_copy = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(path_copy);
+        const left_copy = try self.allocator.dupe(u8, left);
+        errdefer self.allocator.free(left_copy);
+        const right_copy = try self.allocator.dupe(u8, right);
+        errdefer self.allocator.free(right_copy);
+        const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp();
+        const request = try DiffProvider.computeDiff(worker, original, modified, options, .{
+            .context = self,
+            .run = diffCompleted,
+        }, now);
+        self.pending_diff = .{
+            .request = request,
+            .path = path_copy,
+            .left = left_copy,
+            .right = right_copy,
+            .group = self.part.service.activeGroup().id,
+        };
+        self.diff_progress = .{ .queue = self.window_events, .context = self, .run = showDiffProgress };
+        self.diff_progress.schedule(now + 1000);
+    }
+
+    fn showDiffProgress(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *EditorOpening = @ptrCast(@alignCast(context));
+        const pending = self.pending_diff orelse return false;
+        self.setStatusHint("Computing diff for {s}...", .{std.fs.path.basename(pending.path)});
+        return true;
+    }
+
+    fn cancelPendingDiff(self: *EditorOpening) void {
+        const pending = self.pending_diff orelse return;
+        self.pending_diff = null;
+        pending.request.cancel();
+        self.diff_progress.schedule(null);
+        self.allocator.free(pending.path);
+        self.allocator.free(pending.left);
+        self.allocator.free(pending.right);
+    }
+
+    fn diffCompleted(context: *anyopaque, request: *DiffProvider.Request, result: ?text_diff_editor_mod.IDocumentDiff) bool {
+        const self: *EditorOpening = @ptrCast(@alignCast(context));
+        const pending = self.pending_diff orelse return false;
+        if (pending.request != request) return false;
+        self.pending_diff = null;
+        self.diff_progress.schedule(null);
+        defer {
+            self.allocator.free(pending.path);
+            self.allocator.free(pending.left);
+            self.allocator.free(pending.right);
+        }
+        const computed = result orelse {
+            self.setStatusHint("Diff computation failed", .{});
+            return true;
+        };
+        if (self.part.service.getGroup(pending.group) == null) return false;
+        const editors = EditorService{ .part = self.part };
+        editors.openSnapshotDiffWithDiff(self.view_factory, self.io, pending.path, request.original, request.modified, pending.left, pending.right, request.options, computed, pending.group) catch |err| {
+            self.setStatusHint("Open diff failed: {s}", .{@errorName(err)});
+            return true;
+        };
+        if (editors.activeEditorPane()) |tab| self.host.configure_tab(self.host.context, tab);
+        self.clearStatusHint();
+        self.host.focus_editor(self.host.context);
+        return true;
     }
 
     fn samePath(self: *EditorOpening, left: []const u8, right: []const u8) bool {
@@ -452,6 +575,7 @@ pub const EditorOpening = struct {
     }
 
     pub fn openPathWithOptions(self: *EditorOpening, path: []const u8, options: OpenOptions) !void {
+        self.cancelPendingDiff();
         self.history.recordActiveNavigation(.USER);
         if (!options.force_text and media_preview.opensInImagePreview(path)) {
             if (self.findOpenImageInput(path)) |existing| {
@@ -538,6 +662,7 @@ pub const EditorOpening = struct {
 
     pub fn requestOpenPathWithOptions(self: *EditorOpening, path: []const u8, options: OpenOptions) void {
         self.cancelPendingOpen();
+        self.cancelPendingDiff();
         self.clearStatusHint();
         // Image tabs load their payload through `ImagePreviewPane.initAsync`;
         // constructing the tab itself does no file I/O.

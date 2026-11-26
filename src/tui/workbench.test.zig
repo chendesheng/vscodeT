@@ -140,6 +140,15 @@ fn paneTextAlloc(allocator: Allocator, pane: *@import("../vs/workbench/contrib/m
     return text.toOwnedSlice();
 }
 
+fn pumpDiffForTests(workbench: *Workbench) !void {
+    var guard: usize = 0;
+    while (workbench.editor_opening.pending_diff != null and guard < 5000) : (guard += 1) {
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+        if (workbench.editor_opening.pending_diff != null) std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+    try std.testing.expect(workbench.editor_opening.pending_diff == null);
+}
+
 fn pumpOpenForTests(workbench: *Workbench) void {
     var guard: usize = 0;
     while (workbench.editor_opening.pending_open != null and guard < 1000) : (guard += 1) {
@@ -8342,6 +8351,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     const working_resource = provider.groups[2].resources.items[0];
     try std.testing.expectEqualStrings("a.txt", working_resource.relative_path);
     try workbench.scm.changes.?.host.open_change(workbench.scm.changes.?.host.context, &working_resource.iface);
+    try pumpDiffForTests(workbench);
     var tab = workbench.activeTab() orelse return error.TestExpectedTab;
     try std.testing.expect(tab.isDiff());
     try std.testing.expectEqual(@as(usize, 2), tab.diff.?.widget.changeCount());
@@ -8385,6 +8395,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
 
     // Staged and untracked diffs open with distinct titles/keys.
     try workbench.openDiff(staged_path, .head, .index);
+    try pumpDiffForTests(workbench);
     const staged_tab = workbench.activeTab().?;
     try std.testing.expect(staged_tab.isDiff());
     try std.testing.expect(std.mem.indexOf(u8, staged_tab.input.getName(), "HEAD") != null);
@@ -8393,6 +8404,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     // Index <-> working tree diff for a file that was staged and then edited.
     try tmp.dir.writeFile(io, .{ .sub_path = "staged.txt", .data = "staged\nmore\n" });
     try workbench.openDiff(staged_path, .index, .working);
+    try pumpDiffForTests(workbench);
     const index_working_tab = workbench.activeTab().?;
     try std.testing.expect(index_working_tab.isDiff());
     try std.testing.expect(std.mem.indexOf(u8, index_working_tab.input.getName(), "Index") != null);
@@ -8403,6 +8415,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expect(index_working_tab.diff.?.matches(staged_alias, "Index", "Working Tree"));
 
     try workbench.openDiff(untracked_path, .empty, .working);
+    try pumpDiffForTests(workbench);
     const untracked_tab = workbench.activeTab().?;
     try std.testing.expect(untracked_tab.isDiff());
     try std.testing.expectEqual(initial_tabs + 4, workbench.tabCount());
@@ -8412,6 +8425,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     const refreshed_resource = provider.groups[2].resources.items[0];
     try std.testing.expectEqualStrings("a.txt", refreshed_resource.relative_path);
     try workbench.scm.changes.?.host.open_change(workbench.scm.changes.?.host.context, &refreshed_resource.iface);
+    try pumpDiffForTests(workbench);
     try std.testing.expectEqual(tab, workbench.activeTab().?);
     try std.testing.expectEqual(initial_tabs + 4, workbench.tabCount());
 
@@ -8426,6 +8440,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     }
     const staged_resource = partially_staged orelse return error.TestExpectedPartiallyStagedResource;
     try workbench.scm.changes.?.host.open_change(workbench.scm.changes.?.host.context, &staged_resource.iface);
+    try pumpDiffForTests(workbench);
     try std.testing.expectEqual(index_working_tab, workbench.activeTab().?);
     try std.testing.expectEqual(initial_tabs + 4, workbench.tabCount());
 
@@ -8441,6 +8456,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expect(change_row != null);
     history_view.selection = change_row.?;
     _ = try history_view.handleKey(&.{ .key = .enter });
+    try pumpDiffForTests(workbench);
     const commit_tab = workbench.activeTab() orelse return error.TestExpectedTab;
     try std.testing.expect(commit_tab.isDiff());
     try std.testing.expect(std.mem.indexOf(u8, commit_tab.input.getName(), "\u{2194}") != null);
