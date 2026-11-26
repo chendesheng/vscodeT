@@ -451,6 +451,7 @@ pub const TerminalWorkbench = struct {
     terminal_tabbed_view: terminal_panel.TerminalTabbedView = .{},
     suppress_global_command: bool = false,
     git_model: git_model_mod.Model,
+    git_file_provider: @import("../extensions/git/src/fileSystemProvider.zig").GitFileSystemProvider,
     github_publish: @import("../extensions/github/src/commands.zig").PublishCommand,
     git_commands: @import("../extensions/git/src/commands.zig").CommandContribution,
     scm: SCMContribution,
@@ -528,6 +529,9 @@ pub const TerminalWorkbench = struct {
         self.text_model_resolver = .init(allocator, self.async_io, &self.window_events);
         errdefer self.text_model_resolver.deinit();
         self.text_model_api = self.text_model_resolver.interface();
+        self.git_file_provider = .init(&self.git_model, self.async_io);
+        try self.git_file_provider.register(self.text_model_api);
+        errdefer self.git_file_provider.deinit();
         self.user_keybindings = try user_keybindings_mod.UserKeybindingsLoader.create(allocator, io, self.async_io, &self.window_events);
         errdefer self.user_keybindings.destroy();
         _ = try self.user_keybindings.on_did_change.listen(self, onUserKeybindingsChanged);
@@ -853,7 +857,6 @@ pub const TerminalWorkbench = struct {
                 .menus = &self.menu_service,
                 .context_keys = &self.core.context_keys,
                 .context_menu = &self.context_menu_api,
-                .provider = .{ .context = &self.git_commands, .capture = @import("../extensions/git/src/commands.zig").CommandContribution.captureMultiDiffResource },
             },
             .host = .{
                 .context = self,
@@ -1756,6 +1759,7 @@ pub const TerminalWorkbench = struct {
             self.editor_status = null;
         }
         self.git_commands.deinit();
+        self.git_file_provider.deinit();
         self.deinitGit();
         self.search_window.destroy();
         if (self.sidebar) |sidebar| sidebar.deinit();

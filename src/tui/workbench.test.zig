@@ -11549,6 +11549,22 @@ test "Workbench: git scm integration shares canonical virtual diff models across
     try std.testing.expectEqual(original, second.original_input.resolve());
     try std.testing.expectEqual(model, reference.object.textEditorModel);
     try std.testing.expect(first.modified_input.resolve() != second.modified_input.resolve());
+    const working = wb.editors.findResolvedFileInput(io, path).?.editor.document;
+    try wb.editor_api.openMultiDiffResources(.{ .multiDiffSource = try std.Uri.parse("multi-diff-editor:shared-virtual"), .resources = &.{.{ .original = model.uri(), .modified = working.model.uri() }} });
+    for (0..6000) |_| {
+        if (wb.activeTab()) |tab| if (tab.multi_diff) |multi| {
+            if (!multi.widget.getViewModel().?.isLoading) break;
+        };
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+    const multi = wb.activeTab().?.multi_diff.?;
+    const vm = multi.widget.getViewModel().?;
+    try std.testing.expectEqual(@as(usize, 1), vm.items.len);
+    try std.testing.expectEqual(original, vm.items[0].original);
+    try std.testing.expectEqual(working, vm.items[0].modified);
+    _ = try wb.closeActive();
+    try std.testing.expectEqual(second, wb.activeTab().?.diff.?);
     _ = try wb.closeActive();
     try std.testing.expectEqual(first, wb.activeTab().?.diff.?);
     _ = try wb.closeActive();
@@ -11559,4 +11575,56 @@ test "Workbench: git scm integration shares canonical virtual diff models across
     reference.dispose();
     for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp());
     try std.testing.expectEqual(@as(usize, 1), count);
+}
+
+test "Workbench: git scm integration resolves a Git revision and an outside working file independently" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var repo = std.testing.tmpDir(.{});
+    defer repo.cleanup();
+    var outside = std.testing.tmpDir(.{});
+    defer outside.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try repo.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+    if (!try runGitTest(a, root, &.{"init"})) return error.SkipZigTest;
+    _ = try runGitTest(a, root, &.{ "config", "core.autocrlf", "false" });
+    _ = try runGitTest(a, root, &.{ "config", "user.name", "Test User" });
+    _ = try runGitTest(a, root, &.{ "config", "user.email", "test@example.com" });
+    try repo.dir.writeFile(io, .{ .sub_path = "tracked.txt", .data = "revision\n" });
+    const tracked = try repo.dir.realPathFileAlloc(io, "tracked.txt", a);
+    defer a.free(tracked);
+    try std.testing.expect(try runGitTest(a, root, &.{ "add", "tracked.txt" }));
+    try std.testing.expect(try runGitTest(a, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "initial" }));
+    const outside_path = try seedFile(a, io, &outside, "outside.txt", "outside\n");
+    defer a.free(outside_path);
+    const window = try TestWindow.init(a, io, &.{}, 110, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    const settings_path = try std.fs.path.join(a, &.{ root, ".git", "settings.json" });
+    defer a.free(settings_path);
+    try wb.setUserSettingsPaths(&.{settings_path});
+    try wb.initSidebar(root);
+    pumpSidebarForTests(wb);
+    try wb.initGit();
+    try wb.openPath(outside_path);
+    const working = wb.activeTab().?.editor.document;
+    try wb.activeTab().?.editor.insertText("unsaved ");
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const git_uri = try @import("../extensions/git/src/uri.zig").toGitUri(arena.allocator(), tracked, "HEAD");
+    try wb.editor_api.openMultiDiffResources(.{ .multiDiffSource = try std.Uri.parse("multi-diff-editor:mixed-git-file"), .resources = &.{.{ .original = git_uri, .modified = working.model.uri() }} });
+    for (0..6000) |_| {
+        if (wb.activeTab()) |tab| if (tab.multi_diff) |multi| {
+            if (!multi.widget.getViewModel().?.isLoading) break;
+        };
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+    const multi = wb.activeTab().?.multi_diff.?;
+    const vm = multi.widget.getViewModel().?;
+    try std.testing.expectEqual(@as(usize, 1), vm.items.len);
+    try std.testing.expectEqualStrings("revision", try vm.items[0].original.model.borrowLineContent(1));
+    try std.testing.expectEqual(working, vm.items[0].modified);
+    try std.testing.expectEqualStrings("unsaved outside", try vm.items[0].modified.model.borrowLineContent(1));
 }

@@ -351,7 +351,7 @@ pub const EditorService = struct {
                     const service: *EditorService = @ptrCast(@alignCast(context));
                     const opening = service.opening orelse return error.EditorOpeningUnavailable;
                     const sources = opening.multi_diff_source_services orelse return error.MultiDiffUnavailable;
-                    try opening.openMultiDiffSource(if (sources.configuration) |configuration| configuration.* else null, sources.resolver, sources.provider, source_uri, label);
+                    try opening.openMultiDiffSource(if (sources.configuration) |configuration| configuration.* else null, sources.resolver, source_uri, label);
                 }
             }.open,
             .open_multi_diff_resources_fn = struct {
@@ -488,7 +488,6 @@ pub const EditorOpening = struct {
     multi_diff_source_services: ?struct {
         configuration: ?*const IConfigurationService,
         resolver: multi_source.IMultiDiffSourceResolverService,
-        provider: multi_source.ResourceSnapshotProvider,
         storage: ?*const @import("../../../../platform/storage/common/storage.zig").IStorageService = null,
         workspace: ?*@import("../../workspaces/common/workspaceContextService.zig").WorkspaceContextService = null,
         lists: ?*@import("../../../../platform/list/browser/listService.zig").ListService = null,
@@ -539,7 +538,7 @@ pub const EditorOpening = struct {
     pub fn configureRestoredTab(self: *EditorOpening, tab: *Tab) !void {
         if (tab.multi_diff) |multi| {
             const services = self.multi_diff_source_services orelse return error.MultiDiffUnavailable;
-            try self.bindMultiDiffInput(multi.input, if (services.configuration) |configuration| configuration.* else null, services.resolver, services.provider);
+            try self.bindMultiDiffInput(multi.input, if (services.configuration) |configuration| configuration.* else null, services.resolver);
         } else {
             self.host.configure_editor(self.host.context, tab.editor);
             if (tab.file_input != null) try self.text_model_resolver.registerDocument(tab.editor.document, false);
@@ -720,7 +719,7 @@ pub const EditorOpening = struct {
     /// Source resolution belongs to the input, not the transient open-editor
     /// request. A late SCM provider or a changed group can update the same
     /// pane even after another editor is opened.
-    pub fn openMultiDiffSource(self: *EditorOpening, configuration: ?IConfigurationService, resolver: multi_source.IMultiDiffSourceResolverService, provider: multi_source.ResourceSnapshotProvider, source_uri: []const u8, label: []const u8) !void {
+    pub fn openMultiDiffSource(self: *EditorOpening, configuration: ?IConfigurationService, resolver: multi_source.IMultiDiffSourceResolverService, source_uri: []const u8, label: []const u8) !void {
         self.cancelPendingOpen();
         self.cancelPendingDiff();
         if (self.findMultiDiffTab(source_uri)) |existing| {
@@ -729,7 +728,7 @@ pub const EditorOpening = struct {
         }
         const input = try multi_diff_input.MultiDiffEditorInput.create(self.allocator, source_uri, label, false);
         defer input.destroy();
-        try self.bindMultiDiffInput(input, configuration, resolver, provider);
+        try self.bindMultiDiffInput(input, configuration, resolver);
         try self.openMultiDiffInput(input, null, false);
     }
 
@@ -765,30 +764,29 @@ pub const EditorOpening = struct {
             };
             try input.setInitialResources(items);
         }
-        try self.bindMultiDiffInput(input, if (services.configuration) |configuration| configuration.* else null, services.resolver, services.provider);
+        try self.bindMultiDiffInput(input, if (services.configuration) |configuration| configuration.* else null, services.resolver);
         try self.openMultiDiffInput(input, null, options.options.preserveFocus);
         if (self.findMultiDiffTab(uri)) |opened| try opened.tab.multi_diff.?.setOptions(options.options);
     }
 
-    fn bindMultiDiffInput(self: *EditorOpening, input: *multi_diff_input.MultiDiffEditorInput, configuration: ?IConfigurationService, resolver: multi_source.IMultiDiffSourceResolverService, provider: multi_source.ResourceSnapshotProvider) !void {
+    fn bindMultiDiffInput(self: *EditorOpening, input: *multi_diff_input.MultiDiffEditorInput, configuration: ?IConfigurationService, resolver: multi_source.IMultiDiffSourceResolverService) !void {
         if (input.source_binding != null) return;
         const source = try input.resolveSource(resolver);
-        _ = try SourceBinding.create(self, input, source, provider, configuration);
+        _ = try SourceBinding.create(self, input, source, configuration);
     }
 
     const SourceBinding = struct {
         opening: *EditorOpening,
         input: *multi_diff_input.MultiDiffEditorInput,
-        provider: multi_source.ResourceSnapshotProvider,
         configuration: ?IConfigurationService,
         request: ?*multi_source.SnapshotBatchRequest = null,
 
-        fn create(opening: *EditorOpening, input: *multi_diff_input.MultiDiffEditorInput, source: multi_source.IResolvedMultiDiffSource, provider: multi_source.ResourceSnapshotProvider, configuration: ?IConfigurationService) !*SourceBinding {
+        fn create(opening: *EditorOpening, input: *multi_diff_input.MultiDiffEditorInput, source: multi_source.IResolvedMultiDiffSource, configuration: ?IConfigurationService) !*SourceBinding {
             const binding = opening.allocator.create(SourceBinding) catch |err| {
                 source.dispose(source.context);
                 return err;
             };
-            binding.* = .{ .opening = opening, .input = input, .provider = provider, .configuration = configuration };
+            binding.* = .{ .opening = opening, .input = input, .configuration = configuration };
             try input.attachResolvedSource(source, .{ .context = binding, .resolve_resources = refresh, .report_failure = reportFailure, .dispose = dispose });
             return binding;
         }
@@ -808,23 +806,7 @@ pub const EditorOpening = struct {
         }
         fn captureResource(context: *anyopaque, resource: multi_source.MultiDiffEditorItem) !diff_provider.SnapshotSource {
             const self: *SourceBinding = @ptrCast(@alignCast(context));
-            const files = @import("../../textmodelResolver/common/textModelResolverService.zig").FileSnapshotRequest;
-            if (!files.supports(resource.originalUri) or !files.supports(resource.modifiedUri))
-                return self.provider.capture(self.provider.context, resource);
-            var arena = std.heap.ArenaAllocator.init(self.opening.allocator);
-            defer arena.deinit();
-            const a = arena.allocator();
-            const original = try self.workingText(a, resource.originalUri);
-            const modified = try self.workingText(a, resource.modifiedUri);
-            return files.capture(self.opening.text_file_service.files.io, resource.originalUri, resource.modifiedUri, original, modified);
-        }
-        fn workingText(self: *SourceBinding, allocator: std.mem.Allocator, resource: ?std.Uri) !?@import("../../textmodelResolver/common/textModelResolverService.zig").FileSnapshotRequest.WorkingText {
-            const uri = resource orelse return null;
-            const path = try @import("../../../../base/common/stdUri.zig").fsPath(uri, allocator);
-            const existing = self.opening.findOpenInput(path) orelse return null;
-            var text = try existing.editor.model.getValue(.TextDefined, true);
-            defer text.deinit();
-            return .{ .text = try allocator.dupe(u8, text.items), .encoding = existing.editor.getEncoding() };
+            return self.opening.text_model_resolver.capturePair(resource.originalUri, resource.modifiedUri);
         }
         fn resolved(context: *anyopaque, request: *multi_source.SnapshotBatchRequest) bool {
             const self: *SourceBinding = @ptrCast(@alignCast(context));

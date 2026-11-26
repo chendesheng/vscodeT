@@ -8,7 +8,6 @@ const Allocator = std.mem.Allocator;
 const repository_mod = @import("repository.zig");
 const git_mod = @import("git.zig");
 const SnapshotSource = @import("../../../vs/editor/browser/widget/diffEditor/diffProviderFactoryService.zig").SnapshotSource;
-const multi_diff_source = @import("../../../vs/workbench/contrib/multiDiffEditor/browser/multiDiffSourceResolverService.zig");
 const history_source = @import("../../../vs/workbench/contrib/multiDiffEditor/browser/scmMultiDiffSourceResolver.zig").ScmHistoryItemResolver;
 const IConfigurationService = @import("../../../vs/platform/configuration/common/configuration.zig").IConfigurationService;
 const IEditorService = @import("../../../vs/workbench/services/editor/common/editorService.zig").IEditorService;
@@ -504,23 +503,6 @@ pub const CommandContribution = struct {
         const label = try std.fmt.allocPrint(self.allocator, "{s} - {s}", .{ display, item.subject });
         defer self.allocator.free(label);
         try self.editors.openMultiDiffSource(source_uri, label);
-    }
-
-    pub fn captureMultiDiffResource(context: *anyopaque, resource: multi_diff_source.MultiDiffEditorItem) !SnapshotSource {
-        const self: *CommandContribution = @ptrCast(@alignCast(context));
-        const std_uri = @import("../../../vs/base/common/stdUri.zig");
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const a = arena.allocator();
-        const original_working = if (resource.originalUri) |uri|
-            if (std.mem.eql(u8, uri.scheme, "file")) try self.host.working_text(self.host.context, a, try std_uri.fsPath(uri, a)) else null
-        else
-            null;
-        const modified_working = if (resource.modifiedUri) |uri|
-            if (std.mem.eql(u8, uri.scheme, "file")) try self.host.working_text(self.host.context, a, try std_uri.fsPath(uri, a)) else null
-        else
-            null;
-        return self.model.resourceSnapshotSource(self.snapshot_io, resource.originalUri, resource.modifiedUri, original_working, modified_working);
     }
 
     pub fn openRefDiff(self: *CommandContribution, path: []const u8, original_path: ?[]const u8, left: ?[]const u8, right: []const u8, left_label: []const u8, right_label: []const u8) !void {
