@@ -139,15 +139,17 @@ pub const QuickDiffWidget = struct {
         const original = c.model.getDiffEditorModel(provider_id) orelse return error.OriginalUnavailable;
         if (self.embedded) |embedded| {
             if (std.mem.eql(u8, self.provider_id, provider_id)) {
-                if (!refresh) return;
+                if (original.original_document) |document| {
+                    if (embedded.widget.original_editor.document == document) return;
+                } else if (!refresh) return;
                 var current = try embedded.widget.original_editor.model.getValue(null, true);
                 defer current.deinit();
-                if (std.mem.eql(u8, current.items, original.original_content)) return;
+                if (original.original_document == null and std.mem.eql(u8, current.items, original.original_content)) return;
             }
         }
         const uri = if (original.resource_uri) |resource| try std.Uri.parse(resource) else std.Uri{ .scheme = "vscode-quickdiff", .path = .{ .raw = c.view.editor.path }, .query = .{ .raw = provider_id } };
-        const document = try editor_mod.EditorDocument.createFromText(c.allocator, c.view.editor.io, c.view.editor.path, original.original_content, uri);
-        defer document.release();
+        const document = original.original_document orelse try editor_mod.EditorDocument.createFromText(c.allocator, c.view.editor.io, c.view.editor.path, original.original_content, uri);
+        defer if (original.original_document == null) document.release();
         var mappings: std.ArrayList(model_mod.DetailedLineRangeMapping) = .empty;
         defer mappings.deinit(c.allocator);
         if (!c.model.ignore_trim_whitespace and c.model.changes_version_id == c.view.editor.model.getVersionId()) {

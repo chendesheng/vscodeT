@@ -1,15 +1,15 @@
 // Port of `src/vs/workbench/contrib/scm/browser/quickDiffModel.ts`.
 //
 // Terminal adaptations:
-// - There is no text-file-model service, chat editing, progress service or
-//   observables. Original content comes synchronously from the quick-diff
-//   provider as `Original { content, ref_label }`; the model diffs line arrays
-//   with the ported `LineDiffProvider` on a worker using an owned input.
+// - The URI text-model resolver owns original resource references and their
+//   asynchronous acquisition. The worker receives immutable snapshots from
+//   those resolved models; it never accesses live models or providers.
+//   Legacy in-process providers with no URI may still supply inline fixture
+//   content while their resource contract is being migrated.
 // - Each model uses a window deadline for its 200 ms ThrottledDelayer.
 //   Worker replies wake the window to apply decorations on the UI thread.
-// - `getDiffEditorModel` returns the original resource URI, content and ref
-//   label. The embedded peek resolves it into a retained original document
-//   and shares the working document with the outer editor.
+// - The embedded peek obtains the real original document from the owned
+//   resolver reference and shares the working document with the outer editor.
 // - Paths replace `URI` values, and suppressed secondary changes stay in
 //   `all_changes` (the API-visible list) while `changes` contains the visible
 //   primary/contributed and non-overlapping secondary changes, matching the
@@ -25,6 +25,10 @@ const text_model = @import("../../../../editor/common/model/textModel.zig");
 const range_mapping = @import("../../../../editor/common/diff/rangeMapping.zig");
 const line_range = @import("../../../../editor/common/core/ranges/lineRange.zig");
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
+const model_resolver = @import("../../../../editor/common/services/resolverService.zig");
+const EditorDocument = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").EditorDocument;
+const TextModelResolverService = @import("../../../services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService;
+const time = @import("../../../../base/common/timeCompat.zig");
 
 pub const QuickDiff = quick_diff.QuickDiff;
 pub const QuickDiffProviderKind = quick_diff.QuickDiffProviderKind;
@@ -46,6 +50,7 @@ pub const QuickDiffModelOptions = struct {
 
 pub const DiffEditorModel = struct {
     original_content: []const u8,
+    original_document: ?*EditorDocument = null,
     ref_label: []const u8,
     resource_uri: ?[]const u8 = null,
 };
@@ -145,6 +150,9 @@ pub const QuickDiffModel = struct {
     service: *QuickDiffService,
     options: QuickDiffModelOptions,
     pending: ?*DiffRequest = null,
+    resolver: ?model_resolver.ITextModelService = null,
+    resolving: ?*PendingOriginals = null,
+    original_models: std.StringHashMapUnmanaged(*OriginalModel) = .empty,
     ignore_trim_whitespace: bool = true,
 
     quick_diffs: []QuickDiff = &.{},
@@ -158,6 +166,186 @@ pub const QuickDiffModel = struct {
     scheduler: @import("../../../../base/common/windowDispatch.zig").Task = .{},
     worker: ?*worker_service.EditorWorkerService = null,
     disposed: bool = false,
+
+    const OriginalModel = struct {
+        uri: []u8,
+        reference: model_resolver.ModelReference,
+        listener: usize,
+
+        fn dispose(self: *OriginalModel, allocator: Allocator) void {
+            self.reference.object.textEditorModel.removeDidChangeContentListener(self.listener);
+            self.reference.dispose();
+            allocator.free(self.uri);
+            allocator.destroy(self);
+        }
+    };
+
+    /// The promise barrier for the current provider URI set. The resolver
+    /// deduplicates acquisitions globally; this model owns each URI reference
+    /// and its content subscription until that resource leaves the result.
+    const PendingOriginals = struct {
+        owner: *QuickDiffModel,
+        worker: *worker_service.EditorWorkerService,
+        originals: []QuickDiff,
+        slots: []Slot,
+        remaining: usize = 0,
+        starting: bool = true,
+
+        const Slot = struct {
+            parent: *PendingOriginals,
+            resource: ?[]const u8 = null,
+            request: ?model_resolver.ModelReferenceRequest = null,
+
+            fn complete(context: *anyopaque, result: model_resolver.ModelReferenceResult) void {
+                const self: *Slot = @ptrCast(@alignCast(context));
+                const parent = self.parent;
+                self.request = null;
+                if (result == .resolved) {
+                    var reference = result.resolved;
+                    if (self.resource) |uri| {
+                        parent.owner.adoptOriginalModel(uri, reference) catch reference.dispose();
+                    } else reference.dispose();
+                }
+                parent.remaining -= 1;
+                if (!parent.starting and parent.remaining == 0) parent.finish();
+            }
+        };
+
+        fn create(owner: *QuickDiffModel, originals: []QuickDiff, worker: *worker_service.EditorWorkerService) !*PendingOriginals {
+            const a = owner.allocator;
+            const self = try a.create(PendingOriginals);
+            errdefer a.destroy(self);
+            const slots = try a.alloc(Slot, originals.len);
+            for (slots) |*slot| slot.* = .{ .parent = self };
+            self.* = .{ .owner = owner, .worker = worker, .originals = originals, .slots = slots };
+            return self;
+        }
+
+        fn start(self: *PendingOriginals) void {
+            const owner = self.owner;
+            const api = owner.resolver.?;
+            for (self.originals, self.slots) |quick, *slot| {
+                const resource = quick.original.resource_uri orelse continue;
+                if (owner.original_models.contains(resource)) continue;
+                const uri = std.Uri.parse(resource) catch continue;
+                slot.resource = resource;
+                self.remaining += 1;
+                slot.request = api.createModelReference(uri, .{ .context = slot, .complete = Slot.complete }) catch blk: {
+                    self.remaining -= 1;
+                    break :blk null;
+                };
+            }
+            self.starting = false;
+            if (self.remaining == 0) self.finish();
+        }
+
+        fn finish(self: *PendingOriginals) void {
+            const owner = self.owner;
+            const worker = self.worker;
+            owner.resolving = null;
+            const originals = self.collectResolved() catch {
+                self.destroy();
+                owner.scheduler.schedule(owner.due_at);
+                return;
+            };
+            self.destroy();
+            const request = owner.prepareDiffWithOriginals(originals) catch {
+                owner.scheduler.schedule(owner.due_at);
+                return;
+            };
+            if (request.originals.len == 0) {
+                defer request.destroy();
+                owner.scheduler.schedule(owner.due_at);
+                owner.applyDiff(request) catch {};
+            } else {
+                owner.pending = request;
+                worker.computeDiff(&request.message, time.milliTimestamp());
+            }
+        }
+
+        fn collectResolved(self: *PendingOriginals) ![]QuickDiff {
+            const a = self.owner.allocator;
+            var result: std.array_list.Managed(QuickDiff) = .init(a);
+            try result.ensureTotalCapacity(self.originals.len);
+            errdefer {
+                for (result.items) |*quick| quick.deinit(a);
+                result.deinit();
+            }
+            for (self.originals) |*quick| {
+                if (quick.original.resource_uri) |uri| {
+                    const entry = self.owner.original_models.get(uri) orelse {
+                        quick.deinit(a);
+                        continue;
+                    };
+                    const model = entry.reference.object.textEditorModel;
+                    if (model.isTooLargeForSyncing()) {
+                        quick.deinit(a);
+                        continue;
+                    }
+                    var contents = model.getValue(.LF, false) catch {
+                        quick.deinit(a);
+                        continue;
+                    };
+                    defer contents.deinit();
+                    const owned = a.dupe(u8, contents.items) catch {
+                        quick.deinit(a);
+                        continue;
+                    };
+                    a.free(quick.original.content);
+                    quick.original.content = owned;
+                }
+                result.appendAssumeCapacity(quick.*);
+            }
+            a.free(self.originals);
+            self.originals = &.{};
+            return result.toOwnedSlice();
+        }
+
+        fn destroy(self: *PendingOriginals) void {
+            const a = self.owner.allocator;
+            for (self.slots) |slot| if (slot.request) |request| request.cancel();
+            a.free(self.slots);
+            freeQuickDiffsArray(a, self.originals);
+            a.destroy(self);
+        }
+    };
+
+    fn adoptOriginalModel(self: *QuickDiffModel, uri: []const u8, reference: model_resolver.ModelReference) !void {
+        if (self.original_models.contains(uri)) {
+            var duplicate = reference;
+            duplicate.dispose();
+            return;
+        }
+        const entry = try self.allocator.create(OriginalModel);
+        errdefer self.allocator.destroy(entry);
+        const key = try self.allocator.dupe(u8, uri);
+        errdefer self.allocator.free(key);
+        const model = reference.object.textEditorModel;
+        const listener = try model.onDidChangeContentWithContextId(self, originalContentChanged);
+        errdefer model.removeDidChangeContentListener(listener);
+        entry.* = .{ .uri = key, .reference = reference, .listener = listener };
+        try self.original_models.put(self.allocator, key, entry);
+    }
+
+    fn originalContentChanged(_: @import("../../../../editor/common/textModelEvents.zig").InternalModelContentChangeEvent, self: *QuickDiffModel) !void {
+        self.triggerDiff(time.milliTimestamp());
+    }
+
+    fn pruneOriginalModels(self: *QuickDiffModel) void {
+        var stale = std.array_list.Managed(*OriginalModel).init(self.allocator);
+        defer stale.deinit();
+        var it = self.original_models.valueIterator();
+        while (it.next()) |value| {
+            const entry = value.*;
+            for (self.quick_diffs) |quick| {
+                if (quick.original.resource_uri) |uri| if (std.mem.eql(u8, uri, entry.uri)) break;
+            } else stale.append(entry) catch return;
+        }
+        for (stale.items) |entry| {
+            _ = self.original_models.remove(entry.uri);
+            entry.dispose(self.allocator);
+        }
+    }
 
     pub fn init(
         allocator: Allocator,
@@ -186,6 +374,11 @@ pub const QuickDiffModel = struct {
         self.scheduler.schedule(null);
         self.disposed = true;
         if (self.pending) |request| request.owner = null;
+        if (self.resolving) |pending| pending.destroy();
+        self.resolving = null;
+        var original_iterator = self.original_models.valueIterator();
+        while (original_iterator.next()) |value| value.*.dispose(self.allocator);
+        self.original_models.deinit(self.allocator);
         self.clearChanges();
         self.all_changes.deinit();
         self.changes.deinit();
@@ -207,7 +400,7 @@ pub const QuickDiffModel = struct {
     pub fn triggerDiff(self: *QuickDiffModel, now_ms: i64) void {
         if (self.disposed) return;
         self.due_at = now_ms + 200;
-        if (self.pending == null) self.scheduler.schedule(self.due_at);
+        if (self.pending == null and self.resolving == null) self.scheduler.schedule(self.due_at);
     }
 
     pub fn attachWindow(self: *QuickDiffModel, window: *@import("../../../../base/common/windowDispatch.zig").Queue, worker: *worker_service.EditorWorkerService) void {
@@ -222,8 +415,18 @@ pub const QuickDiffModel = struct {
 
     pub fn runScheduledDiff(self: *QuickDiffModel, worker: *worker_service.EditorWorkerService, now_ms: i64) bool {
         const due = self.due_at orelse return false;
-        if (now_ms < due or self.pending != null) return false;
+        if (now_ms < due or self.pending != null or self.resolving != null) return false;
         self.due_at = null;
+        if (self.resolver != null) {
+            const originals = self.getOriginals() catch return false;
+            const pending = PendingOriginals.create(self, originals, worker) catch {
+                freeQuickDiffsArray(self.allocator, originals);
+                return false;
+            };
+            self.resolving = pending;
+            pending.start();
+            return false;
+        }
         const request = self.prepareDiff() catch return false;
         if (request.originals.len == 0) {
             defer request.destroy();
@@ -282,6 +485,7 @@ pub const QuickDiffModel = struct {
             if (!std.mem.eql(u8, quick.id, provider_id)) continue;
             return .{
                 .original_content = quick.original.content,
+                .original_document = if (quick.original.resource_uri) |uri| if (self.original_models.get(uri)) |entry| TextModelResolverService.documentOf(entry.reference) else null else null,
                 .ref_label = quick.original.ref_label,
                 .resource_uri = quick.original.resource_uri,
             };
@@ -340,8 +544,16 @@ pub const QuickDiffModel = struct {
         self.quick_diffs = &.{};
     }
 
+    fn getOriginals(self: *QuickDiffModel) ![]QuickDiff {
+        return if (self.model.isTooLargeForSyncing()) &.{} else try self.service.getQuickDiffs(self.allocator, self.path, self.model.getLanguageId(), true);
+    }
+
     fn prepareDiff(self: *QuickDiffModel) !*DiffRequest {
-        const originals: []QuickDiff = if (self.model.isTooLargeForSyncing()) &.{} else try self.service.getQuickDiffs(self.allocator, self.path, self.model.getLanguageId(), true);
+        return self.prepareDiffWithOriginals(try self.getOriginals());
+    }
+
+    /// Takes ownership of the provider descriptors and immutable text snapshots.
+    fn prepareDiffWithOriginals(self: *QuickDiffModel, originals: []QuickDiff) !*DiffRequest {
         errdefer freeQuickDiffsArray(self.allocator, originals);
         const request = try self.allocator.create(DiffRequest);
         errdefer self.allocator.destroy(request);
@@ -421,6 +633,15 @@ pub const QuickDiffModel = struct {
         self.changes = visible_changes;
         self.quick_diff_changes = by_provider;
         self.changes_version_id = request.version;
+        self.pruneOriginalModels();
+        // The live reference, not the worker's snapshot, is the model used
+        // by the peek. Drop the snapshot once line mapping is published.
+        for (self.quick_diffs) |*quick| {
+            if (quick.original.resource_uri) |uri| if (self.original_models.contains(uri)) {
+                self.allocator.free(quick.original.content);
+                quick.original.content = &.{};
+            };
+        }
         self.on_did_change.fire({}) catch {};
     }
 

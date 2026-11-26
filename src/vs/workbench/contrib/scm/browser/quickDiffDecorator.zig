@@ -393,6 +393,7 @@ pub const QuickDiffWorkbenchController = struct {
     window: *WindowQueue,
     allocator: Allocator,
     service: *QuickDiffService,
+    text_model_service: ?@import("../../../../editor/common/services/resolverService.zig").ITextModelService = null,
     worker: EditorWorkerService,
     entries: std.array_list.Managed(*Entry),
     resources_changed: ?*ResourceEvent = null,
@@ -460,6 +461,7 @@ pub const QuickDiffWorkbenchController = struct {
             .decorator = undefined,
         };
         errdefer entry.model.deinit();
+        entry.model.resolver = self.text_model_service;
         if (self.worker.replies_ready.queue == null) self.worker.attachWindow(self.window);
         entry.model.attachWindow(self.window, &self.worker);
         entry.model.setIgnoreTrimWhitespace(self.ignore_trim_whitespace);

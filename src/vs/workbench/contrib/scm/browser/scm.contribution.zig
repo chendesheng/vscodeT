@@ -68,6 +68,7 @@ pub const SCMContribution = struct {
 
     pub const Options = struct {
         editors: EditorService,
+        text_model_service: ?@import("../../../../editor/common/services/resolverService.zig").ITextModelService = null,
         view_factory: ?@import("../../../../editor/browser/widget/codeEditor/terminalEditorView.zig").EditorViewFactory = null,
         quick_diff_menu: ?@import("quickDiffWidget.zig").MenuHost = null,
         activity_service: *ActivityService,
@@ -123,6 +124,7 @@ pub const SCMContribution = struct {
         controller.* = QuickDiffWorkbenchController.init(allocator, quick_service, options.window);
         self.quick_diff_controller = controller;
         controller.resources_changed = provider.on_did_change_resources;
+        controller.text_model_service = options.text_model_service;
         controller.view_factory = options.view_factory;
         controller.quick_input = options.quick_input;
         controller.menu_host = options.quick_diff_menu;

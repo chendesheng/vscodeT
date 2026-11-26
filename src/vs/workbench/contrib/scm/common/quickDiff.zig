@@ -1,10 +1,10 @@
 // Port of `src/vs/workbench/contrib/scm/common/quickDiff.ts`.
 //
 // Terminal adaptations:
-// - `getOriginalResource` returns the original content synchronously as
-//   `Original { content, ref_label }` instead of a `Promise<URI>`; the terminal
-//   workbench has no cross-process git file-system provider and quick diff
-//   needs the bytes, not a resource indirection.
+// - Git returns its canonical original URI; QuickDiffModel resolves and owns
+//   the actual URI-backed model asynchronously through ITextModelService.
+//   The native Original descriptor still supports inline content from older
+//   in-process providers while migrating those callers to the URI contract.
 // - Paths replace `URI` values.
 // - The upstream color registrations become terminal RGB defaults. Cells have
 //   no alpha, so translucent overview colors are composited over the dark
@@ -28,8 +28,8 @@ pub const QuickDiffProviderKind = enum {
     contributed,
 };
 
-/// Terminal original content for a quick diff, with the label of the
-/// reference it came from (for example `HEAD`). Owned by the receiver.
+/// Original URI/label descriptor and the optional immutable text captured
+/// for the native worker. Owned by the receiver.
 pub const Original = struct {
     content: []u8,
     ref_label: []u8,
@@ -51,9 +51,8 @@ pub const QuickDiffProvider = struct {
     root_path: ?[]const u8 = null,
     selector: ?Selector = null,
     kind: QuickDiffProviderKind = .contributed,
-    /// Returns the original content for `path`, or null when the provider has
-    /// no baseline (for example an untracked file). The returned value owns
-    /// its slices.
+    /// Returns the original resource for `path`, or null when the provider
+    /// has no baseline. The returned value owns its slices.
     get_original_fn: *const fn (context: *anyopaque, allocator: Allocator, path: []const u8) anyerror!?Original,
 
     pub fn getOriginalResource(self: QuickDiffProvider, allocator: Allocator, path: []const u8) !?Original {

@@ -8356,6 +8356,12 @@ test "Workbench: git scm integration, shared working files and read-only revisio
         const peek = controller.widget.?;
         const embedded = peek.embedded.?;
         try std.testing.expectEqual(tab.editor.document, embedded.widget.modified_editor.document);
+        const baseline = entry.model.getDiffEditorModel(peek.provider_id).?;
+        try std.testing.expectEqual(baseline.original_document.?, embedded.widget.original_editor.document);
+        try std.testing.expectEqual(@as(usize, 0), baseline.original_content.len);
+        var original_reference = try workbench.text_model_api.acquireModelReference(embedded.widget.original_editor.model.uri());
+        defer original_reference.dispose();
+        try std.testing.expectEqual(embedded.widget.original_editor.model, original_reference.object.textEditorModel);
         try std.testing.expectEqualStrings("git", embedded.widget.original_editor.model.uri().scheme);
         try std.testing.expect(!embedded.widget.sideBySide());
         try std.testing.expect(tab.editor.dirty_diff_visible);
@@ -10658,6 +10664,8 @@ test "Workbench: git scm integration peek actions stage and revert only the sele
         }
     };
     try Harness.wait(workbench, entry, primary, 2);
+    const retained_original = entry.model.getDiffEditorModel(primary).?.original_document.?;
+    try std.testing.expectEqualStrings("two", try retained_original.model.borrowLineContent(2));
     var frame: std.Io.Writer.Allocating = .init(a);
     defer frame.deinit();
     try renderFrame(workbench, &frame.writer);
@@ -10673,6 +10681,9 @@ test "Workbench: git scm integration peek actions stage and revert only the sele
     defer a.free(unchanged);
     try std.testing.expectEqualStrings(modified, unchanged);
     try Harness.wait(workbench, entry, primary, 1);
+    try std.testing.expectEqual(retained_original, entry.model.getDiffEditorModel(primary).?.original_document.?);
+    try std.testing.expectEqualStrings("TWO", try retained_original.model.borrowLineContent(2));
+    try std.testing.expect(!retained_original.isDirty());
     try controller.navigate(true, 6);
     try std.testing.expectEqualStrings(primary, controller.widget.?.provider_id);
     try renderFrame(workbench, &frame.writer);

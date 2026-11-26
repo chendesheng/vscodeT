@@ -299,3 +299,96 @@ test "quickDiffModel: results and navigation" {
     try std.testing.expectEqual(@as(usize, 2), results[0].changes.len);
     try std.testing.expectEqualStrings("HEAD", harness.quick_model.getDiffEditorModel("git.primary").?.ref_label);
 }
+
+test "quickDiffModel: URI references are shared, updated by model events, and released on provider removal" {
+    const a = std.testing.allocator;
+    const Queue = @import("../../../../../base/common/windowDispatch.zig").Queue;
+    const Resolver = @import("../../../../services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService;
+    const time = @import("../../../../../base/common/timeCompat.zig");
+    var queue: Queue = .{ .io = std.testing.io };
+    var resolver = Resolver.init(a, std.testing.io, &queue);
+    defer resolver.deinit();
+    const uri = try std.Uri.parse("test:/quick-diff-original");
+    var reference = try resolver.createResolvedModelReference(uri, "original.txt", "old", true);
+    defer reference.dispose();
+    const original = Resolver.documentOf(reference);
+    var modified = try TestModel.init(a, "new", "plaintext");
+    defer modified.deinit();
+    var service = quick_diff_service.QuickDiffService.init(a, null);
+    defer service.deinit();
+    const Provider = struct {
+        fn get(_: *anyopaque, allocator: Allocator, _: []const u8) !?quick_diff.Original {
+            const resource = try allocator.dupe(u8, "test:/quick-diff-original");
+            errdefer allocator.free(resource);
+            return .{ .content = &.{}, .ref_label = try allocator.dupe(u8, "Original"), .resource_uri = resource };
+        }
+    };
+    var primary: QuickDiffProvider = .{ .context = @constCast(&{}), .id = "one", .label = "One", .kind = .primary, .get_original_fn = Provider.get };
+    var secondary: QuickDiffProvider = .{ .context = @constCast(&{}), .id = "two", .label = "Two", .kind = .secondary, .get_original_fn = Provider.get };
+    _ = try service.addQuickDiffProvider(&primary);
+    _ = try service.addQuickDiffProvider(&secondary);
+    var worker = EditorWorkerService.init();
+    defer worker.deinit();
+    worker.attachWindow(&queue);
+    var model = QuickDiffModel.init(a, modified.model, "/repo/file.txt", &service, .{});
+    model.resolver = resolver.interface();
+    model.attachWindow(&queue, &worker);
+    defer model.deinit();
+    const Pump = struct {
+        fn settle(q: *Queue, quick: *QuickDiffModel, w: *EditorWorkerService) !void {
+            const deadline = quick.due_at orelse return error.MissingQuickDiffDeadline;
+            for (0..20) |_| {
+                if (quick.due_at == null and quick.resolving == null) break;
+                _ = q.dispatch(@max(deadline, time.milliTimestamp()));
+            }
+            try std.testing.expect(quick.resolving == null);
+            if (quick.pending != null) {
+                w.waitForReply();
+                for (0..20) |_| {
+                    if (quick.pending == null) break;
+                    _ = q.dispatch(@max(deadline, time.milliTimestamp()));
+                }
+                try std.testing.expect(quick.pending == null);
+            }
+        }
+    };
+    model.triggerDiff(time.milliTimestamp());
+    try Pump.settle(&queue, &model, &worker);
+    try std.testing.expectEqual(@as(usize, 1), model.original_models.count());
+    try std.testing.expectEqual(@as(usize, 2), model.quickDiffs().len);
+    try std.testing.expectEqual(original, model.getDiffEditorModel("one").?.original_document.?);
+    try std.testing.expectEqual(original, model.getDiffEditorModel("two").?.original_document.?);
+    try std.testing.expectEqual(@as(usize, 2), model.all_changes.items.len);
+    try std.testing.expectEqual(@as(usize, 1), model.changes.items.len);
+    try std.testing.expectEqual(@as(usize, 0), model.quickDiffs()[0].original.content.len);
+
+    // The original model's content event is sufficient to schedule the next
+    // diff; there is no provider or renderer polling for changed bytes.
+    _ = try original.replaceGeneratedContents("new");
+    try Pump.settle(&queue, &model, &worker);
+    try std.testing.expectEqual(original, model.getDiffEditorModel("one").?.original_document.?);
+    try std.testing.expectEqual(@as(usize, 0), model.all_changes.items.len);
+    service.removeProvider(&primary);
+    service.removeProvider(&secondary);
+    model.triggerDiff(time.milliTimestamp());
+    try Pump.settle(&queue, &model, &worker);
+    try std.testing.expectEqual(@as(usize, 0), model.original_models.count());
+    try std.testing.expectEqual(@as(usize, 0), model.quickDiffs().len);
+
+    // A model disposed before its asynchronously delivered reference must
+    // cancel the acquisition without publishing a stale result.
+    _ = try service.addQuickDiffProvider(&primary);
+    var abandoned = QuickDiffModel.init(a, modified.model, "/repo/file.txt", &service, .{});
+    abandoned.resolver = resolver.interface();
+    abandoned.attachWindow(&queue, &worker);
+    abandoned.triggerDiff(time.milliTimestamp());
+    const deadline = abandoned.due_at.?;
+    _ = queue.dispatch(deadline);
+    try std.testing.expect(abandoned.resolving != null);
+    abandoned.deinit();
+    for (0..20) |_| {
+        if (queue.nextTimeout(time.milliTimestamp(), 1) != 0) break;
+        _ = queue.dispatch(time.milliTimestamp());
+    }
+    try std.testing.expectEqualStrings("new", try original.model.borrowLineContent(1));
+}
