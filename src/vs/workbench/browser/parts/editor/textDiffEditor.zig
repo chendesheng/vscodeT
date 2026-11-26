@@ -33,10 +33,8 @@ pub fn computeConfiguration(configuration_service: ?@import("../../../../platfor
         options.use_inline_view_when_space_is_limited = configuration.getBool("diffEditor.useInlineViewWhenSpaceIsLimited", true);
         if (configuration.getValue("diffEditor.renderSideBySideInlineBreakpoint")) |value| {
             switch (value.*) {
-                // The TUI breakpoint is measured in cells, using the same
-                // 900px -> 50 cells scale as the default terminal projection.
                 .integer => |number| if (number >= 0) {
-                    options.minimum_side_by_side_width = @intCast(@divTrunc(number, 18));
+                    options.minimum_side_by_side_width = @import("../../../services/layout/browser/layoutService.zig").widthInCells(@intCast(number));
                 },
                 else => {},
             }

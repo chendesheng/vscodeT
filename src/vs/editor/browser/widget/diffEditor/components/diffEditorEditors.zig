@@ -22,9 +22,12 @@ pub fn computePaneWidths(width: usize, side_by_side: bool, ratio: f64, minimum_w
     }
     const gutter: usize = 1;
     const available = width -| gutter;
-    const clamped_ratio = if (std.math.isFinite(ratio)) std.math.clamp(ratio, 0.2, 0.8) else 0.5;
+    const clamped_ratio = if (std.math.isFinite(ratio)) std.math.clamp(ratio, 0.1, 0.9) else 0.5;
     var original: usize = @intFromFloat(@floor(@as(f64, @floatFromInt(available)) * clamped_ratio));
-    original = std.math.clamp(original, 1, available -| 1);
+    // 100px minimum editor width mapped to six cells using the shared
+    // workbench horizontal scale.
+    const minimum = if (available > 12) @as(usize, 6) else 1;
+    original = std.math.clamp(original, minimum, available -| minimum);
     return .{ .original = original, .modified = available - original, .gutter = gutter };
 }
 
@@ -45,10 +48,10 @@ test "diffEditorEditors: pane widths and narrow fallback" {
     try std.testing.expectEqual(@as(usize, 0), narrow.original);
     try std.testing.expectEqual(@as(usize, 30), narrow.modified);
 
-    // The ratio is clamped to the upstream 0.2..0.8 range.
+    // The ratio is clamped to the upstream 0.1..0.9 range.
     const extreme = computePaneWidths(100, true, 0.99, 50);
-    try std.testing.expectEqual(@as(usize, 79), extreme.original);
-    try std.testing.expectEqual(@as(usize, 20), extreme.modified);
+    try std.testing.expectEqual(@as(usize, 89), extreme.original);
+    try std.testing.expectEqual(@as(usize, 10), extreme.modified);
     try std.testing.expectEqual(@as(usize, 5), alignedTopLine(5));
     try std.testing.expectEqual(@as(usize, 1), alignedTopLine(0));
 }

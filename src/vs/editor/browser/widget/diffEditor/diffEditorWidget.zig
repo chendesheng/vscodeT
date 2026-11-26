@@ -587,7 +587,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             return diff_editor_editors.computePaneWidths(
                 self.width,
                 self.sideBySide(),
-                self.split_ratio,
+                if (self.options.enable_split_view_resizing) self.split_ratio else self.options.split_view_default_ratio,
                 3,
             );
         }
@@ -769,7 +769,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             const widths = self.paneWidths();
             if (self.sideBySide()) {
                 if (x < widths.original) return self.original_view.pointerAt(x, y);
-                if (x < widths.original + widths.gutter) return sash_css.pointer(.vertical);
+                if (x < widths.original + widths.gutter) return if (self.options.enable_split_view_resizing) sash_css.pointer(.vertical) else .default;
                 return self.modified_view.pointerAt(x -| (widths.original + widths.gutter), y);
             }
             return self.modified_view.pointerAt(x, y);
@@ -830,7 +830,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             if (self.sideBySide() and event.x == widths.original) {
                 switch (event.kind) {
                     .down => {
-                        self.dragging_split = true;
+                        self.dragging_split = self.options.enable_split_view_resizing;
                         return true;
                     },
                     else => {},
@@ -844,8 +844,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
                     if (self.options.enable_split_view_resizing and self.width > 2) {
                         self.split_ratio = std.math.clamp(
                             @as(f64, @floatFromInt(event.x)) / @as(f64, @floatFromInt(self.width -| 1)),
-                            0.2,
-                            0.8,
+                            0.1,
+                            0.9,
                         );
                         self.layout(self.width, self.height);
                     }
@@ -1035,7 +1035,7 @@ fn flipMapping(mapping: *view_model.DetailedLineRangeMapping) void {
 
 fn clampRatio(ratio: f64) f64 {
     if (!std.math.isFinite(ratio)) return 0.5;
-    return std.math.clamp(ratio, 0.2, 0.8);
+    return std.math.clamp(ratio, 0.1, 0.9);
 }
 
 pub fn applyHideUnchangedRegions(

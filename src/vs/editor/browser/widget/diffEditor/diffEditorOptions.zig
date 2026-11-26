@@ -32,7 +32,7 @@ pub const Options = struct {
     enable_split_view_resizing: bool = true,
     split_view_default_ratio: f64 = 0.5,
     /// Terminal cell projection of the upstream width breakpoint (900px).
-    minimum_side_by_side_width: usize = 50,
+    minimum_side_by_side_width: usize = 53,
     use_inline_view_when_space_is_limited: bool = true,
 
     hide_unchanged_regions: bool = false,
@@ -60,7 +60,7 @@ pub const Options = struct {
         if (!std.math.isFinite(result.split_view_default_ratio)) {
             result.split_view_default_ratio = 0.5;
         }
-        result.split_view_default_ratio = std.math.clamp(result.split_view_default_ratio, 0.2, 0.8);
+        result.split_view_default_ratio = std.math.clamp(result.split_view_default_ratio, 0.1, 0.9);
         if (result.max_computation_time_ms < 0) result.max_computation_time_ms = 0;
         if (result.diff_algorithm.isPackage()) result.diff_algorithm = .advanced;
         if (result.minimum_side_by_side_width < 2) result.minimum_side_by_side_width = 2;
@@ -85,7 +85,7 @@ test "diffEditorOptions: normalization clamps the split and falls back to advanc
         .diff_algorithm = .advanced_external,
         .minimum_side_by_side_width = 0,
     }).normalize();
-    try std.testing.expectEqual(@as(f64, 0.8), options.split_view_default_ratio);
+    try std.testing.expectEqual(@as(f64, 0.9), options.split_view_default_ratio);
     try std.testing.expectEqual(@as(i64, 0), options.max_computation_time_ms);
     try std.testing.expectEqual(DiffAlgorithmName.advanced, options.diff_algorithm);
     try std.testing.expectEqual(@as(usize, 2), options.minimum_side_by_side_width);
