@@ -92,6 +92,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
         model: ?*model.MultiDiffEditorViewModel = null,
         items_listener: ?usize = null,
         active_listener: ?usize = null,
+        loading_listener: ?usize = null,
         layout_listener: ?usize = null,
         preserve_focus_on_load: bool = false,
         initialized_active: bool = false,
@@ -155,9 +156,11 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
             if (self.model) |value| {
                 if (self.items_listener) |id| value.on_did_change_items.unlisten(id);
                 if (self.active_listener) |id| value.on_did_change_active_item.unlisten(id);
+                if (self.loading_listener) |id| value.on_did_change_loading.unlisten(id);
             }
             self.items_listener = null;
             self.active_listener = null;
+            self.loading_listener = null;
             self.model = null;
         }
         pub fn clearPendingRestorationState(self: *Self) void {
@@ -178,6 +181,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
                 if (value) |source| {
                     self.items_listener = try source.on_did_change_items.listen(self, onItemsChanged);
                     self.active_listener = try source.on_did_change_active_item.listen(self, onActiveChanged);
+                    self.loading_listener = try source.on_did_change_loading.listen(self, onLoadingChanged);
                 }
             }
             self.clearPendingRestorationState();
@@ -190,6 +194,16 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
         }
         fn onItemsChanged(_: void, self: *Self) !void {
             try self.updateItems();
+        }
+        fn onLoadingChanged(_: void, self: *Self) !void {
+            self.finishRestoredDocs();
+            try self.on_did_change_layout.fire({});
+        }
+        fn finishRestoredDocs(self: *Self) void {
+            if (self.model) |value| if (!value.isLoading) {
+                if (self.pending_state) |*state| state.deinit();
+                self.pending_state = null;
+            };
         }
         fn onActiveChanged(_: void, self: *Self) !void {
             for (self.manager.items) |managed| if (managed.binding()) |binding| try binding.template.updateHeader(binding.item);
@@ -228,6 +242,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
                 }
             }
             try self.applyPendingScroll();
+            self.finishRestoredDocs();
         }
         fn getItemId(_: *anyopaque, item: *model.DocumentDiffItemViewModel) []const u8 {
             return std.mem.asBytes(&item.identity);
@@ -321,6 +336,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
             return binding.editor;
         }
         pub fn getViewState(self: *Self, allocator: Allocator) !IMultiDiffEditorViewState {
+            if (self.pending_state) |state| return state.clone(allocator);
             const states = try allocator.alloc(IMultiDiffDocState, self.manager.items.len);
             var initialized: usize = 0;
             errdefer {
@@ -354,6 +370,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
             try self.scroll_view.endUpdate();
             if (state.activeDiffItemKey) |key| if (self.findItem(key)) |item| try item.setActive();
             try self.applyPendingScroll();
+            self.finishRestoredDocs();
         }
         fn applyDocState(self: *Self, item: *model.DocumentDiffItemViewModel, state: IMultiDiffEditorViewState) !void {
             for (state.docStates) |saved| {

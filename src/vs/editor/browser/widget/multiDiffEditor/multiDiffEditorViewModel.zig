@@ -290,12 +290,12 @@ pub const MultiDiffEditorViewModel = struct {
             for (next[0..count]) |item| item.release();
             self.allocator.free(next);
         };
+        var cache: std.AutoHashMap(*model.IDocumentDiffItem, *DocumentDiffItemViewModel) = .init(self.allocator);
+        defer cache.deinit();
+        for (self.items) |item| try cache.put(item.documentDiffItem, item);
+        for (self.pending) |item| try cache.put(item.documentDiffItem, item);
         if (docs == .items) for (docs.items, 0..) |document, i| {
-            const existing = for (self.pending) |item| {
-                if (item.documentDiffItem == document) break item;
-            } else for (self.items) |item| {
-                if (item.documentDiffItem == document) break item;
-            } else null;
+            const existing = cache.get(document);
             next[i] = if (existing) |item| item.retain() else try DocumentDiffItemViewModel.create(self, document);
             count += 1;
         };
