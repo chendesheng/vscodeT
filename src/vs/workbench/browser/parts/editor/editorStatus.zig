@@ -229,6 +229,12 @@ pub const EditorStatus = struct {
         try self.update(if (editor) |active| active.statusTarget() else null);
     }
 
+    /// A virtualized editor control can be disposed while its composite pane
+    /// remains active. Release the status-target event subscriptions first.
+    pub fn detachDisposedEditor(self: *EditorStatus, editor: *anyopaque) void {
+        if (self.target) |target| if (target.context == editor) self.update(null) catch {};
+    }
+
     fn onTargetChanged(context: *anyopaque, change: StatusChange) void {
         const self: *EditorStatus = @ptrCast(@alignCast(context));
         if (self.target) |target| self.updateStatusElement(target, change);

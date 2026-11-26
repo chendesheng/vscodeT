@@ -808,7 +808,7 @@ pub fn main(init: std.process.Init) !void {
                     const modal_host = helix_runtime.host orelse vim_runtime.host;
                     if (modal_host) |host| {
                         const editor_focused = workbench.focus == .editor;
-                        const normal_tab = if (workbench.activeTab()) |tab| !tab.isDiff() and !tab.isImage() and tab.markdown_preview == null and tab.terminal_input == null else false;
+                        const normal_tab = if (workbench.activeTab()) |tab| !tab.isDiff() and !tab.isMultiDiff() and !tab.isImage() and tab.markdown_preview == null and tab.terminal_input == null else false;
                         if (!workbench.is_pasting and editor_focused and normal_tab and
                             dispatchExtensionKey(workbench, host, event))
                         {
@@ -844,7 +844,7 @@ pub fn main(init: std.process.Init) !void {
                         }
                         continue;
                     }
-                    if (current.isDiff()) {
+                    if (current.isDiff() or current.isMultiDiff()) {
                         if (current.handleDiffKey(event)) needs_render = true;
                         continue;
                     }
@@ -941,7 +941,7 @@ pub fn main(init: std.process.Init) !void {
                         needs_render = true;
                         continue;
                     }
-                    if (current.isDiff()) {
+                    if (current.isDiff() or current.isMultiDiff()) {
                         if (current.handleDiffMouse(adjusted) catch false) needs_render = true;
                         continue;
                     }

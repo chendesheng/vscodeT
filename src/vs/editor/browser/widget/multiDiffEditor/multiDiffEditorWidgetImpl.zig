@@ -96,6 +96,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
         preserve_focus_on_load: bool = false,
         initialized_active: bool = false,
         focused: bool = false,
+        focus_transition: bool = false,
         pending_state: ?IMultiDiffEditorViewState = null,
         pending_scroll: ?scroll_mod.ScrollPosition = null,
         pending_dimensions: ?scroll_mod.ScrollDimensions = null,
@@ -192,6 +193,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
         }
         fn onActiveChanged(_: void, self: *Self) !void {
             for (self.manager.items) |managed| if (managed.binding()) |binding| try binding.template.updateHeader(binding.item);
+            try self.on_did_change_layout.fire({});
         }
         fn updateItems(self: *Self) !void {
             const items = if (self.model) |value| value.items else &.{};
@@ -465,11 +467,14 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
             try self.setScrollState(@as(isize, @intCast(self.scroll_view.getScrollPosition().scrollTop)) + delta, null);
         }
         pub fn setFocused(self: *Self, value: bool) !void {
+            if (self.focus_transition) return;
             self.focused = value;
             const source = self.model orelse return;
             if (value) {
                 if (source.activeDiffItem) |item| try self.focusItem(item);
             } else if (source.focusedDiffItem) |item| {
+                self.focus_transition = true;
+                defer self.focus_transition = false;
                 const binding = self.bindingFor(item);
                 if (binding) |b| if (b.editor) |editor| editor.setEditorFocused(false);
                 try item.setFocused(false);
@@ -477,6 +482,9 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
             }
         }
         fn focusItem(self: *Self, item: *model.DocumentDiffItemViewModel) !void {
+            if (self.focus_transition) return;
+            self.focus_transition = true;
+            defer self.focus_transition = false;
             const value = self.model orelse return;
             if (value.focusedDiffItem) |old| {
                 if (old != item) {
@@ -512,6 +520,15 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
                 }
             }
             return false;
+        }
+        pub fn openFile(self: *Self, resource: ?std.Uri) !void {
+            if (resource) |uri| {
+                if (self.host.open_file) |callback| try callback(self.host.context, uri);
+                return;
+            }
+            const source = self.model orelse return;
+            const item = source.activeDiffItem orelse return;
+            try self.runItemAction(item, .open_file);
         }
         fn runItemAction(self: *Self, item: *model.DocumentDiffItemViewModel, action: item_template.ItemAction) !void {
             const doc = item.documentDiffItem;

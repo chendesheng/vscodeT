@@ -23,9 +23,9 @@ pub const CodeEditorService = struct {
         for (self.part.group_views.items) |group| {
             const tab = group.activeTab() orelse continue;
             if (!hasTextControl(tab)) continue;
-            if (tab.diff) |diff| {
-                if (diff.widget.focusedView().isFocused()) return diff.widget.focusedEditor();
-            } else if (tab.view.isFocused()) {
+            if (tab.activeDiffWidget()) |widget| {
+                if (widget.focusedView().isFocused()) return widget.focusedEditor();
+            } else if (!tab.isMultiDiff() and tab.view.isFocused()) {
                 if (tab.editor.focused_embedded) |child| return child.view.editor;
                 return tab.editor;
             }
@@ -37,9 +37,9 @@ pub const CodeEditorService = struct {
         const self: *CodeEditorService = @ptrCast(@alignCast(context));
         for (self.part.group_views.items) |group| {
             const tab = group.activeTab() orelse continue;
-            if (tab.diff) |diff| {
-                if (diff.widget.focusedView().isFocused()) return diff.widget.interface();
-            } else if (tab.view.isFocused()) {
+            if (tab.activeDiffWidget()) |widget| {
+                if (widget.focusedView().isFocused()) return widget.interface();
+            } else if (!tab.isMultiDiff() and tab.view.isFocused()) {
                 if (tab.editor.focused_embedded) |child| return child.diff;
             }
         }
@@ -47,8 +47,8 @@ pub const CodeEditorService = struct {
         // active diff pane is also the action target from the command palette.
         const group = self.part.activeView() orelse return null;
         const tab = group.activeTab() orelse return null;
-        const diff = tab.diff orelse return null;
-        return diff.widget.interface();
+        const widget = tab.activeDiffWidget() orelse return null;
+        return widget.interface();
     }
 
     fn activeEditor(context: *anyopaque) ?*Editor {
@@ -56,7 +56,6 @@ pub const CodeEditorService = struct {
         const group = self.part.activeView() orelse return null;
         const tab = group.activeTab() orelse return null;
         if (!hasTextControl(tab)) return null;
-        if (tab.diff) |diff| return diff.widget.modified_editor;
-        return tab.editor;
+        return tab.codeEditorControl();
     }
 };

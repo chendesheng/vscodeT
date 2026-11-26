@@ -23,6 +23,8 @@ const FileEditorInput = @import("../../../contrib/files/browser/editors/fileEdit
 const EditorInput = @import("../../../common/editor/editorInput.zig").EditorInput;
 const TextResourceEditorInput = @import("../../../common/editor/textResourceEditorInput.zig").TextResourceEditorInput;
 pub const DiffView = @import("./textDiffEditor.zig").DiffView(View);
+pub const MultiDiffPane = @import("../../../contrib/multiDiffEditor/browser/multiDiffEditor.zig").MultiDiffEditor(View);
+pub const DiffWidget = @import("../../../../editor/browser/widget/diffEditor/diffEditorWidget.zig").DiffEditorWidget(View);
 const FindController = @import("../../../../editor/contrib/find/browser/findController.zig").FindController;
 const word_character_classifier = @import("../../../../editor/common/core/wordCharacterClassifier.zig");
 const editorBrowser = @import("../../../../editor/browser/editorBrowser.zig");
@@ -160,7 +162,7 @@ pub const RestoredEditorPanes = struct {
             try callback.run(callback.context, tab);
         } else {
             const widget = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
-            for (0..2) |index| if (tab.workingCopyAt(index)) |editor| {
+            for (0..tab.workingCopyCount()) |index| if (tab.workingCopyAt(index)) |editor| {
                 self.working_copies.acquireWorkingCopy(widget.workingCopyInterface(editor)) catch |err| switch (err) {
                     error.AlreadyRegistered => {},
                     else => return err,
@@ -193,6 +195,8 @@ pub const Tab = struct {
     code_lens: ?*@import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution = null,
     original_code_lens: ?*@import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution = null,
     diff: ?*DiffView = null,
+    multi_diff: ?*MultiDiffPane = null,
+    multi_diff_listener: ?usize = null,
     control_change_service: ?*groups.EditorGroupsService = null,
     markdown_preview: ?*MarkdownPreview = null,
     window: ?*@import("../../../../base/common/windowDispatch.zig").Queue = null,
@@ -423,6 +427,35 @@ pub const Tab = struct {
         return self;
     }
 
+    /// Mounts a composite multi-file editor. The placeholder is only the
+    /// stable legacy tab adapter; actual text controls belong to the visible
+    /// item bindings and are resolved through activeDiffWidget.
+    pub fn initMultiDiff(factory: EditorViewFactory, allocator: Allocator, io: Io, pane: *MultiDiffPane) !*Tab {
+        const self = try allocator.create(Tab);
+        errdefer allocator.destroy(self);
+        const editor = try Editor.createFromText(allocator, io, "", "Multi Diff Editor", 1, 1);
+        errdefer {
+            editor.deinit();
+            allocator.destroy(editor);
+        }
+        editor.setReadOnly(true);
+        const view = try factory(allocator, editor);
+        errdefer view.deinit();
+        self.* = .{ .allocator = allocator, .editor = editor, .view = view, .file_input = null, .input = pane.input.interface(), .multi_diff = pane };
+        self.multi_diff_listener = try pane.widget.on_did_change_layout.listen(self, onMultiDiffChanged);
+        return self;
+    }
+
+    fn onMultiDiffChanged(_: void, self: *Tab) !void {
+        if (self.control_change_service) |service| try service.on_did_visible_editors_change.fire({});
+    }
+
+    pub fn activeDiffWidget(self: *Tab) ?*DiffWidget {
+        if (self.diff) |diff| return diff.widget;
+        if (self.multi_diff) |multi| return multi.widget.activeControl();
+        return null;
+    }
+
     /// Creates the editor contributions on first activation. The tab must have
     /// been attached to a view before any key/mouse event is routed to it.
     pub fn attachWindow(self: *Tab, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
@@ -441,6 +474,11 @@ pub const Tab = struct {
     }
 
     pub fn saveEditorViewState(self: *Tab, allocator: Allocator, group: u32) !?groups.SerializedEditorViewState {
+        if (self.multi_diff) |multi| {
+            const resource = try multi.viewStateResource(allocator);
+            errdefer allocator.free(resource);
+            return .{ .group = group, .resource = resource, .state = try multi.computeEditorViewState(allocator) };
+        }
         const diff = self.diff orelse return null;
         const resource = try diff.viewStateResource(allocator);
         errdefer allocator.free(resource);
@@ -453,7 +491,7 @@ pub const Tab = struct {
     }
 
     pub fn attachCodeLensServices(self: *Tab, features: *LanguageFeaturesService, cache: *@import("../../../../editor/contrib/codelens/browser/codeLensCache.zig").CodeLensCache, commands: @import("../../../../editor/contrib/codelens/browser/codelensWidget.zig").CommandHost, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
-        if (self.image_preview != null or self.terminal_input != null or self.markdown_panel != null) return;
+        if (self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
         const Contribution = @import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution;
         if (self.code_lens == null) {
             self.code_lens = Contribution.create(self.allocator, self.editor, self.view.terminal_view_host, self.view.viewZones(), features.interface(), cache, commands, window) catch null;
@@ -488,12 +526,21 @@ pub const Tab = struct {
         if (self.diff) |diff| diff.widget.attachGutterServices(menus, context, menu) catch {};
     }
 
+    /// Multi-diff templates may have subscribed to shared services after the
+    /// pane was first mounted. Release them before window service teardown.
+    pub fn detachMultiDiffControls(self: *Tab) void {
+        const multi = self.multi_diff orelse return;
+        if (self.multi_diff_listener) |id| multi.widget.on_did_change_layout.unlisten(id);
+        self.multi_diff_listener = null;
+        multi.widget.setViewModel(null, .{}) catch {};
+    }
+
     pub fn detachDiffGutterServices(self: *Tab) void {
         if (self.diff) |diff| diff.widget.detachGutterServices();
     }
 
     pub fn ensureControllers(self: *Tab) !void {
-        if (self.markdown_preview != null or self.image_preview != null or self.terminal_input != null) return;
+        if (self.markdown_preview != null or self.image_preview != null or self.terminal_input != null or self.multi_diff != null) return;
         if (self.controllers == null) {
             self.controllers = try self.createControllers(self.editor, self.view);
         }
@@ -528,7 +575,9 @@ pub const Tab = struct {
     }
 
     pub fn setThemeColors(self: *Tab, palette: ?*const @import("../../themeColors.zig").ThemeColors) void {
-        if (self.diff) |diff| {
+        if (self.multi_diff) |multi| {
+            multi.setThemeColors(palette);
+        } else if (self.diff) |diff| {
             diff.setThemeColors(palette);
         } else self.view.setThemeColors(palette);
         if (self.controllers) |controllers| controllers.setThemeColors(palette);
@@ -545,6 +594,13 @@ pub const Tab = struct {
             pane.dirty = true;
             return;
         }
+        if (self.multi_diff) |multi| {
+            for (multi.widget.impl.manager.items) |managed| if (managed.binding()) |binding| if (binding.editor) |widget| {
+                widget.original_view.invalidate();
+                widget.modified_view.invalidate();
+            };
+            return;
+        }
         if (self.diff) |diff| {
             diff.widget.original_view.invalidate();
             diff.widget.modified_view.invalidate();
@@ -555,7 +611,18 @@ pub const Tab = struct {
 
     /// A comparison only contributes the file-backed sides as working
     /// copies. Immutable virtual resources must never register as disk files.
+    pub fn workingCopyCount(self: *const Tab) usize {
+        if (self.multi_diff) |multi| return multi.input.entries.len * 2;
+        return 2;
+    }
+
     pub fn workingCopyAt(self: *Tab, index: usize) ?*Editor {
+        if (self.multi_diff) |multi| {
+            if (index / 2 >= multi.input.entries.len) return null;
+            const entry = multi.input.entries[index / 2];
+            const side = (if (index % 2 == 0) entry.original else entry.modified) orelse return null;
+            return if (side.fileInput()) |input| input.editor else null;
+        }
         if (self.diff) |diff| {
             const side = switch (index) {
                 0 => diff.original_input,
@@ -570,6 +637,10 @@ pub const Tab = struct {
 
     pub fn isDiff(self: *const Tab) bool {
         return self.diff != null;
+    }
+
+    pub fn isMultiDiff(self: *const Tab) bool {
+        return self.multi_diff != null;
     }
 
     pub fn isImage(self: *const Tab) bool {
@@ -645,7 +716,7 @@ pub const Tab = struct {
             if (container.first_child) |old| _ = container.removeChild(old);
             _ = try container.appendChild(element);
         }
-        if (self.terminal_input != null or self.isImage() or self.markdown_preview != null) return;
+        if (self.terminal_input != null or self.isImage() or self.markdown_preview != null or self.multi_diff != null) return;
         if (self.last_width != w or self.last_height != h) self.layoutCells(w, h);
         if (self.diff) |diff| {
             try diff.widget.mount(surface, element, x, y);
@@ -669,6 +740,10 @@ pub const Tab = struct {
             try pane.paint(frame, x, y, w, h);
             return;
         }
+        if (self.multi_diff) |multi| {
+            try multi.paint(frame, x, y, w, h);
+            return;
+        }
         if (self.diff) |diff| {
             try diff.paint(frame, x, y, w, h);
             return;
@@ -686,6 +761,7 @@ pub const Tab = struct {
         if (self.image_preview) |pane| {
             return (try pane.pointerAt(x, y)) orelse .default;
         }
+        if (self.multi_diff) |multi| return multi.widget.pointerAt(x, y);
         if (self.diff) |diff| return diff.widget.pointerAt(x, y);
         if (self.markdown_preview) |preview| return (try preview.pointerAt(x, y)) orelse .default;
         return self.view.pointerAt(x, y);
@@ -697,6 +773,10 @@ pub const Tab = struct {
             return .{ .row = cursor.row, .col = cursor.col };
         }
         if (self.image_preview != null or self.markdown_preview != null) return null;
+        if (self.multi_diff) |multi| {
+            const cell = multi.widget.cursorCell() orelse return null;
+            return .{ .row = cell.row, .col = cell.col };
+        }
         if (self.diff) |diff| {
             const cell = diff.cursorCell() orelse return null;
             return .{ .row = cell.row, .col = cell.col };
@@ -711,6 +791,10 @@ pub const Tab = struct {
             pane.setFocused(true);
             return;
         }
+        if (self.multi_diff) |multi| {
+            multi.widget.setFocused(true) catch {};
+            return;
+        }
         if (self.diff) |diff| {
             diff.focus();
             return;
@@ -719,11 +803,19 @@ pub const Tab = struct {
     }
 
     pub fn nextDiffChange(self: *Tab) bool {
+        if (self.multi_diff) |multi| {
+            multi.widget.goToNextChange() catch return false;
+            return true;
+        }
         const diff = self.diff orelse return false;
         return diff.nextChange();
     }
 
     pub fn previousDiffChange(self: *Tab) bool {
+        if (self.multi_diff) |multi| {
+            multi.widget.goToPreviousChange() catch return false;
+            return true;
+        }
         const diff = self.diff orelse return false;
         return diff.previousChange();
     }
@@ -736,6 +828,7 @@ pub const Tab = struct {
     }
 
     pub fn handleDiffMouse(self: *Tab, event: *ui.MouseEvent) !bool {
+        if (self.multi_diff) |multi| return multi.widget.dispatchMouse(event);
         const diff = self.diff orelse return false;
         try self.ensureControllers();
         return diff.widget.dispatchMouseWith(event, .{ .context = self, .dispatch = dispatchDiffPaneMouse });
@@ -768,6 +861,7 @@ pub const Tab = struct {
     }
 
     pub fn handleDiffKey(self: *Tab, event: *ui.KeyEvent) bool {
+        if (self.multi_diff) |multi| return multi.widget.dispatchKey(event) catch false;
         const diff = self.diff orelse return false;
         if (diff.widget.accessible_viewer.visible()) return diff.handleKey(event);
         if (diff.widget.handleDeletedSelectionKey(event)) return true;
@@ -779,7 +873,9 @@ pub const Tab = struct {
     }
 
     pub fn setEditorFocused(self: *Tab, focused: bool) void {
-        if (self.diff) |diff| diff.widget.setEditorFocused(focused) else _ = self.view.setFocused(focused);
+        if (self.multi_diff) |multi| {
+            multi.widget.setFocused(focused) catch {};
+        } else if (self.diff) |diff| diff.widget.setEditorFocused(focused) else _ = self.view.setFocused(focused);
     }
 
     /// The tab's entry in the ported `EditorGroupModel`; the group view maps
@@ -788,12 +884,13 @@ pub const Tab = struct {
         return .{
             .context = self,
             .input = self.input,
-            .id = self.input.editor_id orelse self.input.type_id,
+            .id = if (self.multi_diff != null) "workbench.editor.multiDiffEditor" else self.input.editor_id orelse self.input.type_id,
             .get_control_fn = struct {
                 fn get(context: *anyopaque) ?*anyopaque {
                     const tab: *Tab = @ptrCast(@alignCast(context));
                     if (tab.image_preview) |pane| return pane;
                     if (tab.markdown_preview) |pane| return pane;
+                    if (tab.multi_diff) |multi| return multi.widget;
                     if (tab.diff) |diff| return diff.widget;
                     if (tab.terminalInstance()) |instance| return instance;
                     return tab.editor;
@@ -825,6 +922,7 @@ pub const Tab = struct {
     /// terminal. A diff exposes its modified text control.
     pub fn codeEditorControl(self: *Tab) ?*Editor {
         if (self.isImage() or self.terminal_input != null or self.markdown_preview != null) return null;
+        if (self.multi_diff) |multi| return if (multi.widget.activeControl()) |editor| editor.modified_editor else null;
         if (self.diff) |diff| return diff.widget.modified_editor;
         return self.editor;
     }
@@ -872,7 +970,7 @@ pub const Tab = struct {
     }
 
     fn editorTopInset(self: *Tab) usize {
-        if (self.diff != null) return 0;
+        if (self.diff != null or self.multi_diff != null) return 0;
         const find_rows = if (self.controllers) |controllers| controllers.find.viewZoneRows() else 0;
         const query_rows = if (self.search_editor_input) |input| input.search_editor.headerRows() else 0;
         return find_rows + query_rows;
@@ -887,6 +985,10 @@ pub const Tab = struct {
         }
         if (self.image_preview) |pane| {
             pane.layout(@max(width, 1), @max(height, 1)) catch {};
+            return;
+        }
+        if (self.multi_diff) |multi| {
+            multi.layout(width, height);
             return;
         }
         if (self.diff) |diff| {
@@ -1103,7 +1205,13 @@ pub const Tab = struct {
             return;
         }
         self.view.deinit();
-        if (self.image_input) |input| {
+        if (self.multi_diff) |multi| {
+            if (self.multi_diff_listener) |id| multi.widget.on_did_change_layout.unlisten(id);
+            self.multi_diff_listener = null;
+            multi.destroy();
+            self.editor.deinit();
+            self.allocator.destroy(self.editor);
+        } else if (self.image_input) |input| {
             self.editor.deinit();
             self.allocator.destroy(self.editor);
             input.deinit();

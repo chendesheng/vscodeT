@@ -137,7 +137,36 @@ pub const TextEditorConfiguration = struct {
         return .{ .context = self, .get_value = readSetting };
     }
 
+    pub fn applyToDiffWidget(self: *TextEditorConfiguration, widget: *@import("editorPane.zig").DiffWidget) void {
+        const settings = self.reader();
+        for ([_]*@import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor{ widget.original_editor, widget.modified_editor }, [_]@TypeOf(widget.original_view){ widget.original_view, widget.modified_view }) |control, view| {
+            _ = control.applyEditorSettings(settings, control.languageId(), control.path) catch false;
+            _ = view.applyEditorSettings(settings, control.languageId(), control.path) catch false;
+            control.setLineDecorationsWidth(if (widget.options.render_indicators) 1 else 0);
+            if (self.zen_hide_line_numbers) view.applyLineNumbersOverride(.Off) catch {};
+        }
+        widget.setThemeColors(self.theme.*);
+    }
+
     pub fn applyToTab(self: *TextEditorConfiguration, tab: *Tab) void {
+        if (tab.multi_diff) |multi| {
+            if (self.configuration.service) |service| {
+                for (multi.input.entries) |entry| {
+                    const source = entry.item.modified orelse entry.item.original.?;
+                    var scratch = std.heap.ArenaAllocator.init(tab.allocator);
+                    defer scratch.deinit();
+                    const resource = @import("../../../../base/common/stdUri.zig").fsPath(source.uri, scratch.allocator()) catch "";
+                    const language = if (source.textModel) |document| document.model.getLanguageId() else null;
+                    var options = @import("textDiffEditor.zig").computeConfigurationForResource(service.interface(), .{ .resource = resource, .override_identifier = language });
+                    options.original_editable = entry.item.options.original_editable;
+                    options.read_only = entry.item.options.read_only;
+                    entry.item.updateOptions(options) catch {};
+                }
+            }
+            for (multi.widget.impl.manager.items) |managed| if (managed.binding()) |binding| if (binding.editor) |widget| self.applyToDiffWidget(widget);
+            multi.setThemeColors(self.theme.*);
+            return;
+        }
         if (tab.diff) |diff| {
             if (self.configuration.service) |service| {
                 var scratch = std.heap.ArenaAllocator.init(tab.editor.allocator);
@@ -196,7 +225,12 @@ pub const TextEditorConfiguration = struct {
     }
 
     fn applyLineNumbers(tab: *Tab, value: RenderLineNumbersType) void {
-        if (tab.diff) |diff| {
+        if (tab.multi_diff) |multi| {
+            for (multi.widget.impl.manager.items) |managed| if (managed.binding()) |binding| if (binding.editor) |widget| {
+                widget.original_view.applyLineNumbersOverride(value) catch {};
+                widget.modified_view.applyLineNumbersOverride(value) catch {};
+            };
+        } else if (tab.diff) |diff| {
             diff.widget.original_view.applyLineNumbersOverride(value) catch {};
             diff.widget.modified_view.applyLineNumbersOverride(value) catch {};
         } else if (!tab.isImage()) {

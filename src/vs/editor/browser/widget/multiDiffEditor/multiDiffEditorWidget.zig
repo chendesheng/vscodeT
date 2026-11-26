@@ -10,6 +10,7 @@ const options = @import("multiDiffEditorOptions.zig");
 const common = @import("../../../common/multiDiffEditor.zig");
 const Range = @import("../../../common/core/range.zig").Range;
 const dispatch = @import("../../../../base/common/windowDispatch.zig");
+const Emitter = @import("../../../../base/common/event.zig").Emitter;
 const item_template = @import("diffEditorItemTemplate.zig");
 const DiffWordWrap = @import("../diffEditor/diffEditorOptions.zig").DiffWordWrap;
 
@@ -26,16 +27,26 @@ pub fn MultiDiffEditorWidget(comptime View: type) type {
         pub const SetModelOptions = struct { preserveFocus: bool = false, viewState: ?IMultiDiffEditorViewState = null };
         impl: *Impl,
         allocator: std.mem.Allocator,
+        on_did_change_layout: Emitter(void),
+        layout_listener: ?usize = null,
 
         pub fn create(allocator: std.mem.Allocator, io: std.Io, queue: *dispatch.Queue, host: Host, variant: MultiDiffEditorVariant) !*Self {
             const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
-            self.* = .{ .allocator = allocator, .impl = try Impl.create(allocator, io, queue, host, variant) };
+            self.* = .{ .allocator = allocator, .impl = try Impl.create(allocator, io, queue, host, variant), .on_did_change_layout = .init(allocator) };
+            errdefer self.impl.destroy();
+            errdefer self.on_did_change_layout.deinit();
+            self.layout_listener = try self.impl.on_did_change_layout.listen(self, onLayoutChanged);
             return self;
         }
         pub fn destroy(self: *Self) void {
+            if (self.layout_listener) |id| self.impl.on_did_change_layout.unlisten(id);
             self.impl.destroy();
+            self.on_did_change_layout.deinit();
             self.allocator.destroy(self);
+        }
+        fn onLayoutChanged(_: void, self: *Self) !void {
+            try self.on_did_change_layout.fire({});
         }
         pub fn createViewModel(self: *Self, source: model.IMultiDiffEditorModel, worker: ?view_model.WorkerServices) !*MultiDiffEditorViewModel {
             return MultiDiffEditorViewModel.create(self.allocator, self.impl.io, source, self.impl.queue, worker);
@@ -63,8 +74,11 @@ pub fn MultiDiffEditorWidget(comptime View: type) type {
             const width = old.scroll_view.width;
             const height = old.scroll_view.height;
             const padding = old.padding.height;
+            if (self.layout_listener) |id| old.on_did_change_layout.unlisten(id);
+            self.layout_listener = null;
             old.destroy();
             self.impl = replacement;
+            self.layout_listener = try replacement.on_did_change_layout.listen(self, onLayoutChanged);
             try replacement.layout(width, height);
             try replacement.setPaddingBottom(padding);
             try replacement.setViewModel(source, true, state);

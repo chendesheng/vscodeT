@@ -62,6 +62,7 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
             context: *anyopaque,
             view_factory: *const fn (Allocator, *Editor) anyerror!*View,
             configure_diff: ?*const fn (*anyopaque, *Widget) anyerror!void = null,
+            dispose_diff: ?*const fn (*anyopaque, *Widget) void = null,
             open_file: ?*const fn (*anyopaque, std.Uri) anyerror!void = null,
             open_binary_diff: ?*const fn (*anyopaque, std.Uri, std.Uri) anyerror!void = null,
         };
@@ -185,6 +186,7 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
                 if (self.editor) |editor| {
                     if (self.original_size_listener) |id| editor.original_editor.viewLayout().onDidContentSizeChange().unlisten(id);
                     if (self.modified_size_listener) |id| editor.modified_editor.viewLayout().onDidContentSizeChange().unlisten(id);
+                    if (self.template.host.dispose_diff) |dispose| dispose(self.template.host.context, editor);
                     editor.destroy();
                 }
                 self.template.header.doc.blur();
