@@ -327,6 +327,8 @@ pub const EditorDocument = struct {
     associations_arena: std.heap.ArenaAllocator,
     /// Owns language-configuration strings loaded from declarative extensions.
     declarative_arena: std.heap.ArenaAllocator,
+    /// Non-path URI components borrowed by TextModel for virtual resources.
+    resource_arena: std.heap.ArenaAllocator,
     declarative: ?*const extensions_registry.Registry = null,
     encoding: encoding_mod.Encoding = .utf8,
     on_did_change_encoding: Emitter(void),
@@ -352,6 +354,7 @@ pub const EditorDocument = struct {
         text: ?[]const u8,
         declarative: ?*const extensions_registry.Registry,
         loaded: ?*const LoadedText,
+        resource: ?std.Uri,
     ) !*EditorDocument {
         const path_copy = try allocator.dupe(u8, path);
         errdefer allocator.free(path_copy);
@@ -401,8 +404,10 @@ pub const EditorDocument = struct {
         undo_redo.* = UndoRedoService.init(allocator);
         errdefer undo_redo.deinit();
 
+        var resource_arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer resource_arena.deinit();
         var encoding: encoding_mod.Encoding = .utf8;
-        const model = try createModel(allocator, io, path, language_id, undo_redo, language_service, text, loaded, &encoding);
+        const model = try createModel(allocator, io, path, language_id, undo_redo, language_service, text, loaded, &encoding, resource, resource_arena.allocator());
         errdefer {
             model.deinit();
             allocator.destroy(model);
@@ -433,6 +438,7 @@ pub const EditorDocument = struct {
             .language_config_service = language_config_service,
             .associations_arena = std.heap.ArenaAllocator.init(allocator),
             .declarative_arena = declarative_arena,
+            .resource_arena = resource_arena,
             .declarative = declarative,
             .encoding = encoding,
             .on_did_change_encoding = Emitter(void).init(allocator),
@@ -455,6 +461,11 @@ pub const EditorDocument = struct {
     fn contentChanged(event: InternalModelContentChangeEvent, self: *EditorDocument) anyerror!void {
         if (self.json.uri == null or self.editors.items.len == 0) return;
         self.editors.items[0].changeJsonDocument(&event.contentChangedEvent) catch |err| self.editors.items[0].setMessage("JSON sync failed: {s}", .{@errorName(err)});
+    }
+
+    /// Resolve a virtual text resource independently of any mounted editor.
+    pub fn createFromText(allocator: Allocator, io: Io, path: []const u8, text: []const u8, resource: ?std.Uri) !*EditorDocument {
+        return init(allocator, io, path, text, null, null, resource);
     }
 
     pub fn retain(self: *EditorDocument) void {
@@ -480,6 +491,7 @@ pub const EditorDocument = struct {
         self.allocator.destroy(self.model);
         self.undo_redo.deinit();
         self.allocator.destroy(self.undo_redo);
+        self.resource_arena.deinit();
         self.associations_arena.deinit();
         self.language_service.deinit();
         self.allocator.destroy(self.language_service);
@@ -694,6 +706,7 @@ pub const Editor = struct {
     /// the View attaches.
     pub const CreateOptions = struct {
         reserve_scrollbar: bool = false,
+        resource: ?std.Uri = null,
     };
 
     pub fn overviewRulerWidthFor(screen_width: usize, gutter: usize) usize {
@@ -806,7 +819,7 @@ pub const Editor = struct {
     }
 
     fn createInternal(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize, text: ?[]const u8, declarative: ?*const extensions_registry.Registry, options: CreateOptions, loaded: ?*const LoadedText) !*Editor {
-        const document = try EditorDocument.init(allocator, io, path, text, declarative, loaded);
+        const document = try EditorDocument.init(allocator, io, path, text, declarative, loaded, options.resource);
         errdefer document.release();
         return createView(allocator, document, width, height, options);
     }
@@ -984,11 +997,14 @@ pub const Editor = struct {
         return createViewFromEditorWithOptions(source, width, height, .{ .reserve_scrollbar = source.scrollbar_width != 0 });
     }
 
-    pub fn createViewFromEditorWithOptions(source: *Editor, width: usize, height: usize, options: CreateOptions) !*Editor {
-        source.document.retain();
-        errdefer source.document.release();
+    pub fn createViewFromDocument(document: *EditorDocument, width: usize, height: usize, options: CreateOptions) !*Editor {
+        document.retain();
+        errdefer document.release();
+        return createView(document.allocator, document, width, height, options);
+    }
 
-        const editor = try createView(source.allocator, source.document, width, height, options);
+    pub fn createViewFromEditorWithOptions(source: *Editor, width: usize, height: usize, options: CreateOptions) !*Editor {
+        const editor = try createViewFromDocument(source.document, width, height, options);
         editor.read_only = source.read_only;
         editor.status_row = source.status_row;
         editor.gutter_line_numbers = source.gutter_line_numbers;
@@ -5112,6 +5128,8 @@ fn createModel(
     text: ?[]const u8,
     loaded: ?*const LoadedText,
     encoding_out: *encoding_mod.Encoding,
+    resource: ?std.Uri,
+    resource_allocator: Allocator,
 ) !*TextModel {
     const options = TextModelCreationOptions{
         .tabSize = 4,
@@ -5147,7 +5165,16 @@ fn createModel(
     };
     encoding_out.* = value.encoding;
     var fixed = Io.Reader.fixed(value.text);
-    const associated = std.Uri{
+    const associated = if (resource) |uri| std.Uri{
+        .scheme = try resource_allocator.dupe(u8, uri.scheme),
+        .user = null,
+        .password = null,
+        .host = if (uri.host) |host| .{ .raw = try resource_allocator.dupe(u8, try host.toRawMaybeAlloc(resource_allocator)) } else null,
+        .port = uri.port,
+        .path = .{ .raw = try allocator.dupe(u8, try std_uri.path(uri, resource_allocator)) },
+        .query = if (uri.query) |query| .{ .raw = try resource_allocator.dupe(u8, try query.toRawMaybeAlloc(resource_allocator)) } else null,
+        .fragment = if (uri.fragment) |fragment| .{ .raw = try resource_allocator.dupe(u8, try fragment.toRawMaybeAlloc(resource_allocator)) } else null,
+    } else std.Uri{
         .scheme = "file",
         .user = null,
         .password = null,
@@ -6724,6 +6751,24 @@ pub fn workingCopyInterface(editor: *Editor) IWorkingCopy {
         .add_save_listener = wcAddSave,
         .remove_save_listener = wcRemoveSave,
     };
+}
+
+test "Editor: virtual model resource owns its URI through a shared view" {
+    const allocator = std.testing.allocator;
+    const query = try allocator.dupe(u8, "ref=HEAD");
+    const document = try EditorDocument.createFromText(allocator, std.testing.io, "a.zig", "const a = 1;", .{ .scheme = "git", .path = .{ .raw = "/repo/a.zig" }, .query = .{ .raw = query } });
+    allocator.free(query);
+    defer document.release();
+    const view = try Editor.createViewFromDocument(document, 40, 8, .{});
+    defer {
+        view.deinit();
+        allocator.destroy(view);
+    }
+    try std.testing.expectEqual(document.model, view.model);
+    try std.testing.expectEqualStrings("git", view.model.uri().scheme);
+    try std.testing.expectEqualStrings("ref=HEAD", view.model.uri().query.?.raw);
+    try std.testing.expectEqualStrings("/repo/a.zig", view.model.uri().path.raw);
+    try std.testing.expectEqualStrings("zig", view.languageId());
 }
 
 test "Editor: bundled languages are registered on the language service" {
