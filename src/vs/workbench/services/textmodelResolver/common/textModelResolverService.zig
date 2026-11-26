@@ -3,7 +3,6 @@
 // published URI model identity and deferred last-reference disposal.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const SnapshotSource = @import("../../../../editor/browser/widget/diffEditor/diffProviderFactoryService.zig").SnapshotSource;
 const text_file = @import("../../textfile/common/textFileService.zig");
 const encoding = @import("../../textfile/common/encoding.zig");
 const uri_util = @import("../../../../base/common/stdUri.zig");
@@ -49,6 +48,7 @@ pub const TextModelResolverService = struct {
         while (iterator.next()) |value| {
             const pending = value.*;
             pending.service = null;
+            pending.canceled.store(true, .release);
             pending.delivery.schedule(null);
             if (!pending.worker_submitted) pending.destroy();
         }
@@ -81,16 +81,6 @@ pub const TextModelResolverService = struct {
             self.allocator.free(entry.scheme);
             return;
         }
-    }
-
-    /// Resolve each URI independently. A mixed Git/filesystem/custom pair
-    /// must never be sent to a single repository-specific pair provider.
-    pub fn capturePair(self: *TextModelResolverService, original: ?std.Uri, modified: ?std.Uri) !SnapshotSource {
-        const left = if (original) |uri| try self.captureContent(uri) else null;
-        errdefer if (left) |request| request.destroy(request.context);
-        const right = if (modified) |uri| try self.captureContent(uri) else null;
-        errdefer if (right) |request| request.destroy(request.context);
-        return PairContentRequest.create(left, right);
     }
 
     pub fn captureContent(self: *TextModelResolverService, resource: std.Uri) !resolver.TextContentRequest {
@@ -146,14 +136,30 @@ pub const TextModelResolverService = struct {
     /// share one request and one published model. Delivery is always a window
     /// event, including an already-resolved resource.
     pub fn createModelReference(self: *TextModelResolverService, resource: std.Uri, listener: resolver.ModelReferenceListener) !resolver.ModelReferenceRequest {
+        return self.requestReference(resource, listener, false);
+    }
+
+    pub fn refreshModelReference(self: *TextModelResolverService, resource: std.Uri, listener: resolver.ModelReferenceListener) !resolver.ModelReferenceRequest {
+        return self.requestReference(resource, listener, true);
+    }
+
+    fn shouldRefresh(self: *TextModelResolverService, resource: std.Uri) bool {
+        if (std.mem.eql(u8, resource.scheme, "file")) return false;
+        for (self.providers.items) |entry| if (std.mem.eql(u8, entry.scheme, resource.scheme)) return true;
+        return false;
+    }
+
+    fn requestReference(self: *TextModelResolverService, resource: std.Uri, listener: resolver.ModelReferenceListener, refresh: bool) !resolver.ModelReferenceRequest {
+        const reload = refresh and self.shouldRefresh(resource);
         const key = try uri_util.resourceKey(self.allocator, resource);
         defer self.allocator.free(key);
         const id = self.next_request_id;
         self.next_request_id += 1;
         if (self.pending.get(key)) |pending| {
             try pending.addListener(id, listener);
+            if (reload) pending.reloadIfNecessary();
         } else {
-            const pending = try PendingReference.create(self, key, resource);
+            const pending = try PendingReference.create(self, key, resource, reload);
             errdefer pending.destroy();
             try pending.addListener(id, listener);
             errdefer _ = self.pending_listeners.remove(id);
@@ -166,12 +172,22 @@ pub const TextModelResolverService = struct {
     fn cancelReference(context: *anyopaque, id: u64) void {
         const self: *TextModelResolverService = @ptrCast(@alignCast(context));
         const entry = self.pending_listeners.fetchRemove(id) orelse return;
-        for (entry.value.listeners.items) |*listener| {
+        const pending = entry.value;
+        for (pending.listeners.items) |*listener| {
             if (listener.id == id) {
                 listener.active = false;
                 break;
             }
         }
+        for (pending.listeners.items) |listener| if (listener.active) return;
+        // The request may be in the middle of delivering another result.
+        // Only an as-yet-undelivered acquisition is detached here.
+        if (self.pending.get(pending.key) != pending) return;
+        _ = self.pending.remove(pending.key);
+        pending.canceled.store(true, .release);
+        pending.service = null;
+        pending.delivery.schedule(null);
+        if (!pending.worker_submitted) pending.destroy();
     }
 
     const PendingReference = struct {
@@ -186,13 +202,15 @@ pub const TextModelResolverService = struct {
         result: ?resolver.TextContentRequest.Result = null,
         failure: ?anyerror = null,
         worker_submitted: bool = false,
+        canceled: std.atomic.Value(bool) = .init(false),
+        reload: bool = false,
         previous_delivery: ?*PendingReference = null,
         delivery: dispatch.Task = .{},
         message: worker_mod.Request = .{ .compute = compute, .reply = reply },
 
         const Listener = struct { id: u64, callback: resolver.ModelReferenceListener, active: bool = true };
 
-        fn create(service: *TextModelResolverService, key: []const u8, resource: std.Uri) !*PendingReference {
+        fn create(service: *TextModelResolverService, key: []const u8, resource: std.Uri, reload: bool) !*PendingReference {
             const allocator = service.allocator;
             const self = try allocator.create(PendingReference);
             errdefer allocator.destroy(self);
@@ -201,14 +219,25 @@ pub const TextModelResolverService = struct {
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             errdefer arena.deinit();
             const uri = try std.Uri.parse(try uri_util.encodedResource(arena.allocator(), resource));
-            self.* = .{ .allocator = allocator, .service = service, .key = owned_key, .uri = uri, .arena = arena };
+            self.* = .{ .allocator = allocator, .service = service, .key = owned_key, .uri = uri, .arena = arena, .reload = reload };
             self.delivery = .{ .queue = service.window, .context = self, .run = deliver, .progress = true };
             self.existing = try service.acquireExisting(resource);
-            if (self.existing == null) self.source = service.captureContent(resource) catch |err| blk: {
+            if (self.existing == null or self.reload) self.source = service.captureContent(resource) catch |err| blk: {
                 self.failure = err;
                 break :blk null;
             };
             return self;
+        }
+
+        fn reloadIfNecessary(self: *PendingReference) void {
+            if (self.existing == null or self.source != null or self.reload) return;
+            self.reload = true;
+            self.delivery.schedule(null);
+            self.source = self.service.?.captureContent(self.uri) catch |err| blk: {
+                self.failure = err;
+                break :blk null;
+            };
+            self.start();
         }
 
         fn addListener(self: *PendingReference, id: u64, listener: resolver.ModelReferenceListener) !void {
@@ -233,6 +262,7 @@ pub const TextModelResolverService = struct {
 
         fn compute(message: *worker_mod.Request) void {
             const self: *PendingReference = @fieldParentPtr("message", message);
+            if (self.canceled.load(.acquire)) return;
             const source = self.source.?;
             self.result = source.read(source.context, self.arena.allocator()) catch |err| {
                 self.failure = err;
@@ -274,22 +304,42 @@ pub const TextModelResolverService = struct {
             var owner = self.existing;
             self.existing = null;
             defer if (owner) |*reference| reference.dispose();
-            if (owner == null and self.failure == null) {
+            if ((owner == null or self.reload) and self.failure == null) {
                 if (self.result) |value| {
-                    if (value.failure) |err| self.failure = err else if (value.text) |text| {
-                        owner = service.createResolvedModelReference(value.uri, value.path, text, !value.is_working_file) catch |err| blk: {
-                            self.failure = err;
-                            break :blk null;
-                        };
-                        if (owner) |reference| if (value.encoding) |name| if (std.meta.stringToEnum(encoding.Encoding, name)) |kind| {
-                            documentOf(reference).encoding = kind;
-                        };
+                    if (value.failure) |err| {
+                        self.failure = err;
+                    } else if (value.text) |text| {
+                        const result_key = uri_util.resourceKey(self.allocator, value.uri) catch null;
+                        defer if (result_key) |key| self.allocator.free(key);
+                        if (result_key == null or !std.mem.eql(u8, result_key.?, self.key)) {
+                            self.failure = error.ProviderResourceMismatch;
+                        } else {
+                            if (owner == null) {
+                                owner = service.createResolvedModelReference(value.uri, value.path, text, !value.is_working_file) catch |err| blk: {
+                                    self.failure = err;
+                                    break :blk null;
+                                };
+                            } else if (self.reload) {
+                                _ = documentOf(owner.?).replaceGeneratedContents(text) catch |err| blk: {
+                                    self.failure = err;
+                                    break :blk false;
+                                };
+                            }
+                            if (owner) |reference| if (value.encoding) |name| if (std.meta.stringToEnum(encoding.Encoding, name)) |kind| {
+                                documentOf(reference).encoding = kind;
+                            };
+                        }
                     } else self.failure = error.BinaryFile;
                 } else self.failure = error.UnableToResolveResource;
             }
-            for (self.listeners.items) |listener| {
+            if (self.failure != null) {
+                if (owner) |*reference| reference.dispose();
+                owner = null;
+            }
+            for (self.listeners.items) |*listener| {
                 if (self.service == null) break;
                 if (!listener.active) continue;
+                listener.active = false;
                 _ = service.pending_listeners.remove(listener.id);
                 const outcome: resolver.ModelReferenceResult = if (owner) |reference| blk: {
                     const acquired = service.acquireModelReference(reference.object.textEditorModel.uri()) catch |err| break :blk .{ .failure = err };
@@ -348,6 +398,10 @@ pub const TextModelResolverService = struct {
                 const service: *TextModelResolverService = @ptrCast(@alignCast(context));
                 return service.createModelReference(uri, listener);
             }
+            fn refresh(context: *anyopaque, uri: std.Uri, listener: resolver.ModelReferenceListener) !resolver.ModelReferenceRequest {
+                const service: *TextModelResolverService = @ptrCast(@alignCast(context));
+                return service.refreshModelReference(uri, listener);
+            }
             fn acquireReference(context: *anyopaque, uri: std.Uri) !resolver.ModelReference {
                 const service: *TextModelResolverService = @ptrCast(@alignCast(context));
                 return service.acquireModelReference(uri);
@@ -365,7 +419,7 @@ pub const TextModelResolverService = struct {
                 return service.canHandleResource(uri);
             }
         };
-        return .{ .context = self, .create_model_reference = Adapter.reference, .acquire_model_reference = Adapter.acquireReference, .create_synthetic_document = Adapter.synthetic, .can_handle_resource = Adapter.canHandle, .register_provider = Adapter.register };
+        return .{ .context = self, .create_model_reference = Adapter.reference, .acquire_model_reference = Adapter.acquireReference, .refresh_model_reference = Adapter.refresh, .create_synthetic_document = Adapter.synthetic, .can_handle_resource = Adapter.canHandle, .register_provider = Adapter.register };
     }
 
     pub fn documentOf(reference: resolver.ModelReference) *EditorDocument {
@@ -514,39 +568,6 @@ const ResourceModelCollection = struct {
     };
 };
 
-const PairContentRequest = struct {
-    original: ?resolver.TextContentRequest,
-    modified: ?resolver.TextContentRequest,
-
-    fn create(original: ?resolver.TextContentRequest, modified: ?resolver.TextContentRequest) !SnapshotSource {
-        const self = try std.heap.page_allocator.create(PairContentRequest);
-        self.* = .{ .original = original, .modified = modified };
-        return .{ .context = self, .read = read, .destroy = destroy };
-    }
-    fn read(context: *anyopaque, a: Allocator) !SnapshotSource.Texts {
-        const self: *PairContentRequest = @ptrCast(@alignCast(context));
-        const left = if (self.original) |request| try request.read(request.context, a) else null;
-        const right = if (self.modified) |request| try request.read(request.context, a) else null;
-        return .{
-            .original = if (left) |value| value.text orelse "" else "",
-            .modified = if (right) |value| value.text orelse "" else "",
-            .original_resource = if (left) |value| resource(value) else null,
-            .modified_resource = if (right) |value| resource(value) else null,
-            .original_available = if (left) |value| value.text != null else false,
-            .modified_available = if (right) |value| value.text != null else false,
-        };
-    }
-    fn resource(value: resolver.TextContentRequest.Result) SnapshotSource.Resource {
-        return .{ .path = value.path, .uri = value.uri, .is_working_file = value.is_working_file, .encoding = if (value.encoding) |name| std.meta.stringToEnum(encoding.Encoding, name) else null, .failure = value.failure };
-    }
-    fn destroy(context: *anyopaque) void {
-        const self: *PairContentRequest = @ptrCast(@alignCast(context));
-        if (self.original) |request| request.destroy(request.context);
-        if (self.modified) |request| request.destroy(request.context);
-        std.heap.page_allocator.destroy(self);
-    }
-};
-
 const CachedContentRequest = struct {
     arena: std.heap.ArenaAllocator,
     uri: []const u8,
@@ -580,109 +601,46 @@ const CachedContentRequest = struct {
     }
 };
 
+/// The file service captures a resource, not a comparison. Decoding and
+/// binary detection happen on the native worker before model publication.
 const FileContentRequest = struct {
-    source: SnapshotSource,
+    arena: std.heap.ArenaAllocator,
+    io: std.Io,
+    path: []const u8,
+    uri: []const u8,
 
     fn create(io: std.Io, uri: std.Uri) !resolver.TextContentRequest {
         const self = try std.heap.page_allocator.create(FileContentRequest);
         errdefer std.heap.page_allocator.destroy(self);
-        self.* = .{ .source = try FileSnapshotRequest.capture(io, uri, null, null, null) };
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        const path = try text_file.absolutePath(a, io, try uri_util.fsPath(uri, a));
+        const encoded = try uri_util.encodedResource(a, uri);
+        self.* = .{ .arena = arena, .io = io, .path = path, .uri = encoded };
         return .{ .context = self, .read = read, .destroy = destroy };
     }
     fn read(context: *anyopaque, a: Allocator) !resolver.TextContentRequest.Result {
         const self: *FileContentRequest = @ptrCast(@alignCast(context));
-        const result = try self.source.read(self.source.context, a);
-        const resource = result.original_resource orelse return error.UnableToResolveResource;
-        return .{ .uri = resource.uri, .path = resource.path, .text = if (result.original_available) result.original else null, .encoding = if (resource.encoding) |value| @tagName(value) else null, .is_working_file = resource.is_working_file, .failure = resource.failure };
+        var resource: resolver.TextContentRequest.Result = .{ .uri = try std.Uri.parse(try a.dupe(u8, self.uri)), .path = try a.dupe(u8, self.path) };
+        var files = DiskFileService.init(a, self.io);
+        defer files.deinit();
+        var data = files.readFile(self.path) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            resource.failure = err;
+            return resource;
+        };
+        defer data.deinit(a);
+        const detected = if (encoding.detectBOM(data.bytes)) |bom| bom.encoding else encoding.Encoding.utf8;
+        if (!encoding.isUTF16(detected) and std.mem.indexOfScalar(u8, data.bytes, 0) != null) return resource;
+        resource.is_working_file = true;
+        resource.encoding = @tagName(detected);
+        resource.text = try encoding.decode(a, data.bytes, detected);
+        return resource;
     }
     fn destroy(context: *anyopaque) void {
         const self: *FileContentRequest = @ptrCast(@alignCast(context));
-        self.source.destroy(self.source.context);
-        std.heap.page_allocator.destroy(self);
-    }
-};
-
-pub const FileSnapshotRequest = struct {
-    arena: std.heap.ArenaAllocator,
-    io: std.Io,
-    original: ?Entry,
-    modified: ?Entry,
-
-    pub const WorkingText = struct { text: []const u8, encoding: encoding.Encoding };
-    const Entry = struct {
-        path: []const u8,
-        uri: []const u8,
-        working: ?WorkingText = null,
-    };
-    pub fn supports(uri: ?std.Uri) bool {
-        return if (uri) |value| std.mem.eql(u8, value.scheme, "file") else true;
-    }
-    fn captureEntry(a: Allocator, io: std.Io, uri: ?std.Uri, working: ?WorkingText) !?Entry {
-        const value = uri orelse return null;
-        if (!supports(value)) return error.UnsupportedResourceScheme;
-        const path = try text_file.absolutePath(a, io, try uri_util.fsPath(value, a));
-        return .{
-            .path = path,
-            .uri = try uri_util.encodedResource(a, value),
-            .working = if (working) |text| .{ .text = try a.dupe(u8, text.text), .encoding = text.encoding } else null,
-        };
-    }
-    pub fn capture(io: std.Io, original: ?std.Uri, modified: ?std.Uri, original_working: ?WorkingText, modified_working: ?WorkingText) !SnapshotSource {
-        const self = try std.heap.page_allocator.create(FileSnapshotRequest);
-        errdefer std.heap.page_allocator.destroy(self);
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        errdefer arena.deinit();
-        const a = arena.allocator();
-        const original_entry = try captureEntry(a, io, original, original_working);
-        const modified_entry = try captureEntry(a, io, modified, modified_working);
-        self.* = .{ .arena = arena, .io = io, .original = original_entry, .modified = modified_entry };
-        return self.interface();
-    }
-    const Result = struct { resource: ?SnapshotSource.Resource = null, text: ?[]const u8 = null };
-    fn readEntry(self: *FileSnapshotRequest, allocator: Allocator, entry: ?Entry) !Result {
-        const value = entry orelse return .{};
-        var resource: SnapshotSource.Resource = .{
-            .path = try allocator.dupe(u8, value.path),
-            .uri = try std.Uri.parse(try allocator.dupe(u8, value.uri)),
-        };
-        if (value.working) |working| {
-            resource.encoding = working.encoding;
-            resource.is_working_file = true;
-            return .{ .resource = resource, .text = try allocator.dupe(u8, working.text) };
-        }
-        var files = DiskFileService.init(allocator, self.io);
-        defer files.deinit();
-        var data = files.readFile(value.path) catch |err| {
-            if (err == error.OutOfMemory) return err;
-            resource.failure = err;
-            return .{ .resource = resource };
-        };
-        defer data.deinit(allocator);
-        const detected = if (encoding.detectBOM(data.bytes)) |bom| bom.encoding else encoding.Encoding.utf8;
-        if (!encoding.isUTF16(detected) and std.mem.indexOfScalar(u8, data.bytes, 0) != null) return .{ .resource = resource };
-        resource.is_working_file = true;
-        resource.encoding = detected;
-        return .{ .resource = resource, .text = try encoding.decode(allocator, data.bytes, detected) };
-    }
-    fn read(context: *anyopaque, allocator: Allocator) !SnapshotSource.Texts {
-        const self: *FileSnapshotRequest = @ptrCast(@alignCast(context));
-        const original = try self.readEntry(allocator, self.original);
-        const modified = try self.readEntry(allocator, self.modified);
-        return .{
-            .original = original.text orelse "",
-            .modified = modified.text orelse "",
-            .original_resource = original.resource,
-            .modified_resource = modified.resource,
-            .original_available = original.text != null,
-            .modified_available = modified.text != null,
-        };
-    }
-    fn destroy(context: *anyopaque) void {
-        const self: *FileSnapshotRequest = @ptrCast(@alignCast(context));
         self.arena.deinit();
         std.heap.page_allocator.destroy(self);
-    }
-    pub fn interface(self: *FileSnapshotRequest) SnapshotSource {
-        return .{ .context = self, .read = read, .destroy = destroy };
     }
 };

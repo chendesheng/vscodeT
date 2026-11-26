@@ -17,6 +17,7 @@ const workbench_multi = @import("../common/multiDiffEditor.zig");
 const SignalSubscription = @import("../../../../base/common/event.zig").SignalSubscription;
 const std_uri = @import("../../../../base/common/stdUri.zig");
 const dispatch = @import("../../../../base/common/windowDispatch.zig");
+const resolver_api = @import("../../../../editor/common/services/resolverService.zig");
 
 pub const ID = "workbench.input.multiDiffEditor";
 pub const ResolvedSide = struct {
@@ -31,6 +32,114 @@ pub const ResolvedItem = struct {
     options: DiffOptions = .{},
     source_index: usize = 0,
     context_keys: []const @import("../../../../platform/contextkey/common/contextkey.zig").KeyValue = &.{},
+};
+
+/// A settled side owns the actual resolver reference, even if the other
+/// side failed or the input was closed before the result could be published.
+pub const ResolvedResourceSide = struct {
+    uri: ?std.Uri,
+    result: ?resolver_api.ModelReferenceResult = null,
+    request: ?resolver_api.ModelReferenceRequest = null,
+    owner: *PendingResources,
+
+    pub fn reference(self: ResolvedResourceSide) ?resolver_api.ModelReference {
+        const result = self.result orelse return null;
+        return if (result == .resolved) result.resolved else null;
+    }
+    pub fn failure(self: ResolvedResourceSide) ?anyerror {
+        const result = self.result orelse return null;
+        return if (result == .failure) result.failure else null;
+    }
+    fn complete(context: *anyopaque, result: resolver_api.ModelReferenceResult) void {
+        const self: *ResolvedResourceSide = @ptrCast(@alignCast(context));
+        self.request = null;
+        self.result = result;
+        self.owner.remaining -= 1;
+        if (self.owner.remaining == 0) self.owner.finish();
+    }
+    fn deinit(self: *ResolvedResourceSide) void {
+        if (self.request) |request| request.cancel();
+        self.request = null;
+        if (self.result) |*result| if (result.* == .resolved) result.resolved.dispose();
+        self.result = null;
+    }
+};
+
+pub const ResolvedResourceItem = struct {
+    resource: source_mod.MultiDiffEditorItem,
+    original: ResolvedResourceSide,
+    modified: ResolvedResourceSide,
+};
+
+/// Native editor-input adapters retain the already-resolved text model;
+/// source error/binary policy and resource ordering stay with the input.
+pub const ResourceModelAdapter = struct {
+    context: *anyopaque,
+    create_side: *const fn (*anyopaque, ResolvedResourceSide, ?SideInput, []const u8) anyerror!ResolvedSide,
+    compute_options: *const fn (*anyopaque, std.Uri, ?ResolvedSide, ?ResolvedSide) anyerror!DiffOptions,
+};
+
+pub const ResourceResolutionListener = struct {
+    context: *anyopaque,
+    run: *const fn (*anyopaque, []const ResolvedResourceItem) anyerror!void,
+};
+
+/// Promise.allSettled per resource and the source-level Promise.all mapped to
+/// native completion events. No partial document set is ever published.
+const PendingResources = struct {
+    allocator: Allocator,
+    arena: std.heap.ArenaAllocator,
+    input: *MultiDiffEditorInput,
+    items: []ResolvedResourceItem,
+    remaining: usize = 0,
+    listener: ResourceResolutionListener,
+
+    fn create(input: *MultiDiffEditorInput, resources: []const source_mod.MultiDiffEditorItem, listener: ResourceResolutionListener) !*PendingResources {
+        const self = try input.allocator.create(PendingResources);
+        errdefer input.allocator.destroy(self);
+        var arena = std.heap.ArenaAllocator.init(input.allocator);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        const cloned = try source_mod.StaticResolvedMultiDiffSource.cloneItems(a, resources);
+        const items = try a.alloc(ResolvedResourceItem, cloned.len);
+        for (cloned, items) |resource, *item| {
+            item.* = .{ .resource = resource, .original = .{ .uri = resource.originalUri, .owner = self }, .modified = .{ .uri = resource.modifiedUri, .owner = self } };
+        }
+        self.* = .{ .allocator = input.allocator, .arena = arena, .input = input, .items = items, .listener = listener };
+        return self;
+    }
+    fn start(self: *PendingResources, service: resolver_api.ITextModelService) void {
+        for (self.items) |*item| {
+            for ([_]*ResolvedResourceSide{ &item.original, &item.modified }) |side| {
+                const uri = side.uri orelse continue;
+                self.remaining += 1;
+                side.request = service.refreshModelReference(uri, .{ .context = side, .complete = ResolvedResourceSide.complete }) catch |err| blk: {
+                    side.result = .{ .failure = err };
+                    self.remaining -= 1;
+                    break :blk null;
+                };
+            }
+        }
+        if (self.remaining == 0) self.finish();
+    }
+    fn finish(self: *PendingResources) void {
+        const input = self.input.retain();
+        defer input.destroy();
+        input.pending_resources = null;
+        defer self.destroy();
+        defer if (input.pending_resources == null) input.setResolvingDocuments(false) catch {};
+        self.listener.run(self.listener.context, self.items) catch |err| {
+            if (input.source_binding) |binding| if (binding.report_failure) |report| report(binding.context, err);
+        };
+    }
+    fn destroy(self: *PendingResources) void {
+        for (self.items) |*item| {
+            item.original.deinit();
+            item.modified.deinit();
+        }
+        self.arena.deinit();
+        self.allocator.destroy(self);
+    }
 };
 
 pub const MultiDiffEditorInput = struct {
@@ -58,6 +167,7 @@ pub const MultiDiffEditorInput = struct {
     on_did_change_resources: @import("../../../../base/common/event.zig").Emitter(void),
     initial_resources_arena: ?std.heap.ArenaAllocator = null,
     initial_resources: ?[]const source_mod.MultiDiffEditorItem = null,
+    pending_resources: ?*PendingResources = null,
 
     pub const SourceBinding = struct {
         context: *anyopaque,
@@ -80,6 +190,7 @@ pub const MultiDiffEditorInput = struct {
     }
 
     pub fn detachSource(self: *MultiDiffEditorInput) void {
+        self.cancelResourceResolution();
         if (self.source_resources_listener) |listener| listener.dispose();
         if (self.source_label_listener) |listener| listener.dispose();
         self.source_resources_listener = null;
@@ -94,6 +205,67 @@ pub const MultiDiffEditorInput = struct {
         }
         self.setResolvingDocuments(false) catch {};
         self.document_set.setContextKeys(&.{}) catch {};
+    }
+
+    pub fn publishResolvedResources(self: *MultiDiffEditorInput, settled: []const ResolvedResourceItem, adapter: ResourceModelAdapter) !void {
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        var existing: std.StringHashMap(SideInput) = .init(a);
+        for (self.entries) |entry| {
+            if (entry.original) |side| try existing.put(try std_uri.resourceKey(a, entry.item.original.?.uri), side);
+            if (entry.modified) |side| try existing.put(try std_uri.resourceKey(a, entry.item.modified.?.uri), side);
+        }
+        var items: std.ArrayList(ResolvedItem) = .empty;
+        defer for (items.items) |item| {
+            releaseResolvedSide(item.original);
+            releaseResolvedSide(item.modified);
+        };
+        self.last_resolution_failure = null;
+        for (settled) |value| {
+            const a_failure = value.original.failure();
+            const b_failure = value.modified.failure();
+            const failure = if (a_failure != null and a_failure.? != error.BinaryFile) a_failure else if (b_failure != null and b_failure.? != error.BinaryFile) b_failure else null;
+            if (failure) |err| {
+                if (self.last_resolution_failure == null) self.last_resolution_failure = err;
+                continue;
+            }
+            const binary = a_failure != null or b_failure != null;
+            const original = try resolvedSide(a, &existing, adapter, value.original, binary, "Original");
+            errdefer releaseResolvedSide(original);
+            const modified = try resolvedSide(a, &existing, adapter, value.modified, binary, "Modified");
+            errdefer releaseResolvedSide(modified);
+            const uri = value.resource.modifiedUri orelse value.resource.originalUri orelse continue;
+            const options = try adapter.compute_options(adapter.context, uri, original, modified);
+            try items.append(a, .{ .original = original, .modified = modified, .go_to_file_uri = value.resource.goToFileUri orelse uri, .go_to_file_title = value.resource.goToFileEditorTitle, .options = options, .context_keys = value.resource.contextKeys });
+        }
+        try self.setResolvedItems(items.items);
+    }
+
+    fn resolvedSide(a: Allocator, existing: *const std.StringHashMap(SideInput), adapter: ResourceModelAdapter, side: ResolvedResourceSide, binary: bool, label: []const u8) !?ResolvedSide {
+        const uri = side.uri orelse return null;
+        if (binary) return .{ .uri = uri };
+        const key = try std_uri.resourceKey(a, uri);
+        return try adapter.create_side(adapter.context, side, existing.get(key), label);
+    }
+
+    fn releaseResolvedSide(side: ?ResolvedSide) void {
+        if (side) |value| if (value.input) |input| input.destroy();
+    }
+
+    pub fn resolveResourceModels(self: *MultiDiffEditorInput, service: resolver_api.ITextModelService, declared: []const source_mod.MultiDiffEditorItem, listener: ResourceResolutionListener) !void {
+        self.cancelResourceResolution();
+        try self.setResolvingDocuments(true);
+        errdefer self.setResolvingDocuments(false) catch {};
+        const pending = try PendingResources.create(self, declared, listener);
+        self.pending_resources = pending;
+        pending.start(service);
+    }
+
+    fn cancelResourceResolution(self: *MultiDiffEditorInput) void {
+        const pending = self.pending_resources orelse return;
+        self.pending_resources = null;
+        pending.destroy();
     }
 
     fn onSourceResourcesChanged(_: void, self: *MultiDiffEditorInput) !void {

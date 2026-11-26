@@ -779,7 +779,6 @@ pub const EditorOpening = struct {
         opening: *EditorOpening,
         input: *multi_diff_input.MultiDiffEditorInput,
         configuration: ?IConfigurationService,
-        request: ?*multi_source.SnapshotBatchRequest = null,
 
         fn create(opening: *EditorOpening, input: *multi_diff_input.MultiDiffEditorInput, source: multi_source.IResolvedMultiDiffSource, configuration: ?IConfigurationService) !*SourceBinding {
             const binding = opening.allocator.create(SourceBinding) catch |err| {
@@ -796,39 +795,19 @@ pub const EditorOpening = struct {
         }
         fn refresh(context: *anyopaque, resources: []const multi_source.MultiDiffEditorItem) !void {
             const self: *SourceBinding = @ptrCast(@alignCast(context));
-            if (self.request) |request| request.cancel();
-            self.request = null;
-            const worker = try self.opening.ensureDiffWorker();
-            const batch_provider: multi_source.ResourceSnapshotProvider = .{ .context = self, .capture = captureResource };
-            const batch = try batch_provider.captureBatch(self.opening.allocator, resources);
-            const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp();
-            self.request = try multi_source.SnapshotBatchRequest.submit(self.opening.allocator, worker, batch, .{ .context = self, .run = resolved }, now);
+            try self.input.resolveResourceModels(self.opening.text_model_resolver.interface(), resources, .{ .context = self, .run = resolved });
         }
-        fn captureResource(context: *anyopaque, resource: multi_source.MultiDiffEditorItem) !diff_provider.SnapshotSource {
+        fn resolved(context: *anyopaque, resources: []const multi_diff_input.ResolvedResourceItem) !void {
             const self: *SourceBinding = @ptrCast(@alignCast(context));
-            return self.opening.text_model_resolver.capturePair(resource.originalUri, resource.modifiedUri);
-        }
-        fn resolved(context: *anyopaque, request: *multi_source.SnapshotBatchRequest) bool {
-            const self: *SourceBinding = @ptrCast(@alignCast(context));
-            if (self.request != request) return false;
-            self.request = null;
-            defer self.input.setResolvingDocuments(false) catch {};
             const opening = self.opening;
-            if (request.failure) |failure| {
-                opening.setStatusHint("Open changes failed: {s}", .{@errorName(failure)});
-                return true;
-            }
-            self.applyResolved(request.result) catch |err| {
-                opening.setStatusHint("Open changes failed: {s}", .{@errorName(err)});
-                return true;
-            };
-            if (self.input.last_resolution_failure) |failure| opening.setStatusHint("Some changed files could not be resolved: {s}", .{@errorName(failure)}) else opening.clearStatusHint();
+            const input = self.input;
+            try self.applyResolved(resources);
+            if (input.last_resolution_failure) |failure| opening.setStatusHint("Some changed files could not be resolved: {s}", .{@errorName(failure)}) else opening.clearStatusHint();
             opening.host.request_frame(opening.host.context);
-            return true;
         }
-        fn applyResolved(self: *SourceBinding, snapshots: []const multi_source.ResolvedSnapshot) !void {
+        fn applyResolved(self: *SourceBinding, resources: []const multi_diff_input.ResolvedResourceItem) !void {
             const opening = self.opening;
-            const change = opening.host.change_working_copy orelse return opening.resolveSnapshotsInto(self.configuration, self.input, snapshots);
+            const change = opening.host.change_working_copy orelse return self.input.publishResolvedResources(resources, self.resourceModelAdapter());
             // Retain the old file inputs until their registration delta is
             // applied. Unchanged file identities do not unregister/re-register.
             var previous: std.ArrayList(*FileEditorInput) = .empty;
@@ -849,7 +828,7 @@ pub const EditorOpening = struct {
                 if (!entry.found_existing) entry.value_ptr.* = 0;
                 entry.value_ptr.* -= 1;
             }
-            const result = opening.resolveSnapshotsInto(self.configuration, self.input, snapshots);
+            const result = self.input.publishResolvedResources(resources, self.resourceModelAdapter());
             for (self.input.entries) |entry| for ([_]?text_diff_editor_mod.SideInput{ entry.original, entry.modified }) |side| {
                 if (side) |value| if (value.fileInput()) |file| {
                     const counter = try delta.getOrPut(file.editor);
@@ -864,9 +843,51 @@ pub const EditorOpening = struct {
             }
             try result;
         }
+        fn resourceModelAdapter(self: *SourceBinding) multi_diff_input.ResourceModelAdapter {
+            return .{ .context = self, .create_side = createSide, .compute_options = computeOptions };
+        }
+        fn createSide(context: *anyopaque, side: multi_diff_input.ResolvedResourceSide, existing: ?text_diff_editor_mod.SideInput, label: []const u8) !multi_diff_input.ResolvedSide {
+            const self: *SourceBinding = @ptrCast(@alignCast(context));
+            const opening = self.opening;
+            const uri = side.uri.?;
+            const reference = side.reference() orelse return error.UnableToResolveResource;
+            const document = TextModelResolverService.documentOf(reference);
+            if (existing) |input| {
+                if (input.resolve() == document) return .{ .uri = uri, .input = switch (input) {
+                    .file => |file| .{ .file = file.retain() },
+                    .resource => |resource| .{ .resource = resource.retain() },
+                } };
+            }
+            if (std.mem.eql(u8, uri.scheme, "file")) {
+                const service = EditorService{ .part = opening.part };
+                if (service.findOpenFileInput(opening.io, document.path)) |file| {
+                    if (file.editor.document != document) return error.ModelAlreadyRegistered;
+                    return .{ .uri = uri, .input = .{ .file = file.retain() } };
+                }
+                const editor = try Editor.createViewFromDocument(document, 80, 20, .{ .reserve_scrollbar = true });
+                errdefer {
+                    editor.deinit();
+                    opening.allocator.destroy(editor);
+                }
+                opening.host.configure_editor(opening.host.context, editor);
+                const input = try FileEditorInput.init(opening.allocator, editor);
+                return .{ .uri = uri, .input = .{ .file = input } };
+            }
+            const owned_reference = try opening.text_model_resolver.acquireModelReference(uri);
+            const input = try text_diff_editor_mod.TextResourceEditorInput.initFromReference(opening.allocator, owned_reference, label);
+            return .{ .uri = uri, .input = .{ .resource = input } };
+        }
+        fn computeOptions(context: *anyopaque, uri: std.Uri, original: ?multi_diff_input.ResolvedSide, modified: ?multi_diff_input.ResolvedSide) !text_diff_editor_mod.Options {
+            const self: *SourceBinding = @ptrCast(@alignCast(context));
+            var scratch = std.heap.ArenaAllocator.init(self.opening.allocator);
+            defer scratch.deinit();
+            const language = if (modified) |side| if (side.input) |input| input.resolve().model.getLanguageId() else null else null;
+            const side = modified orelse original.?;
+            const path = if (side.input) |input| input.resolve().path else try @import("../../../../base/common/stdUri.zig").fsPath(uri, scratch.allocator());
+            return text_diff_editor_mod.computeConfigurationForResource(self.configuration, .{ .resource = path, .override_identifier = language });
+        }
         fn dispose(context: *anyopaque) void {
             const self: *SourceBinding = @ptrCast(@alignCast(context));
-            if (self.request) |request| request.cancel();
             self.opening.allocator.destroy(self);
         }
     };
@@ -882,84 +903,6 @@ pub const EditorOpening = struct {
         const editor = try Editor.createViewFromDocument(TextModelResolverService.documentOf(reference), width, height, .{ .reserve_scrollbar = true });
         if (resource.encoding) |encoding| editor.setEncoding(encoding);
         return editor;
-    }
-
-    fn resolveMultiDiffSide(self: *EditorOpening, existing_resources: *const std.StringHashMap(*text_diff_editor_mod.TextResourceEditorInput), resource: diff_provider.SnapshotSource.Resource, text: []const u8, binary: bool, label: []const u8) !multi_diff_input.ResolvedSide {
-        if (binary) return .{ .uri = resource.uri };
-        if (resource.is_working_file) {
-            if (self.findOpenInput(resource.path)) |file| {
-                try self.text_model_resolver.registerDocument(file.editor.document, false);
-                return .{ .uri = resource.uri, .input = .{ .file = file.retain() } };
-            }
-            const editor = try self.createResolvedFileEditor(resource, text, 80, 20);
-            errdefer {
-                editor.deinit();
-                self.allocator.destroy(editor);
-            }
-            self.host.configure_editor(self.host.context, editor);
-            const input = try FileEditorInput.init(self.allocator, editor);
-            return .{ .uri = resource.uri, .input = .{ .file = input } };
-        }
-        const key = try @import("../../../../base/common/stdUri.zig").resourceKey(self.allocator, resource.uri);
-        defer self.allocator.free(key);
-        if (existing_resources.get(key)) |input| {
-            try input.updateContents(text);
-            return .{ .uri = resource.uri, .input = .{ .resource = input.retain() } };
-        }
-        var reference = try self.text_model_resolver.createResolvedModelReference(resource.uri, resource.path, text, true);
-        _ = TextModelResolverService.documentOf(reference).replaceGeneratedContents(text) catch |err| {
-            reference.dispose();
-            return err;
-        };
-        const input = try text_diff_editor_mod.TextResourceEditorInput.initFromReference(self.allocator, reference, label);
-        return .{ .uri = resource.uri, .input = .{ .resource = input } };
-    }
-    fn releaseMultiDiffResolvedSide(side: ?multi_diff_input.ResolvedSide) void {
-        if (side) |value| if (value.input) |input| input.destroy();
-    }
-    fn resolveSnapshotsInto(self: *EditorOpening, configuration: ?IConfigurationService, input: *multi_diff_input.MultiDiffEditorInput, snapshots: []const multi_source.ResolvedSnapshot) !void {
-        var existing_resources: std.StringHashMap(*text_diff_editor_mod.TextResourceEditorInput) = .init(self.allocator);
-        defer existing_resources.deinit();
-        for (input.entries) |entry| {
-            for ([_]?text_diff_editor_mod.SideInput{ entry.original, entry.modified }) |side| {
-                if (side) |value| if (value == .resource) try existing_resources.put(value.resource.key, value.resource);
-            }
-        }
-        var items: std.ArrayList(multi_diff_input.ResolvedItem) = .empty;
-        defer {
-            for (items.items) |item| {
-                releaseMultiDiffResolvedSide(item.original);
-                releaseMultiDiffResolvedSide(item.modified);
-            }
-            items.deinit(self.allocator);
-        }
-        input.last_resolution_failure = null;
-        for (snapshots) |snapshot| {
-            const texts = snapshot.texts orelse {
-                if (input.last_resolution_failure == null) input.last_resolution_failure = snapshot.failure;
-                continue;
-            };
-            const a = if (snapshot.original_exists) texts.original_resource else null;
-            const b = if (snapshot.modified_exists) texts.modified_resource else null;
-            if (a == null and b == null) continue;
-            const original_failure = if (a) |resource| resource.failure else null;
-            const modified_failure = if (b) |resource| resource.failure else null;
-            if (if (original_failure != null) original_failure else modified_failure) |failure| {
-                if (input.last_resolution_failure == null) input.last_resolution_failure = failure;
-                continue;
-            }
-            const binary = (a != null and !texts.original_available) or (b != null and !texts.modified_available);
-            const original = if (a) |resource| try self.resolveMultiDiffSide(&existing_resources, resource, texts.original, binary, "Original") else null;
-            errdefer releaseMultiDiffResolvedSide(original);
-            const modified = if (b) |resource| try self.resolveMultiDiffSide(&existing_resources, resource, texts.modified, binary, "Modified") else null;
-            errdefer releaseMultiDiffResolvedSide(modified);
-            const resource = b orelse a.?;
-            const language = if (modified) |side| if (side.input) |value| value.resolve().model.getLanguageId() else null else null;
-            const options = text_diff_editor_mod.computeConfigurationForResource(configuration, .{ .resource = resource.path, .override_identifier = language });
-            const go_to_uri = if (snapshot.go_to_file_uri) |encoded| try std.Uri.parse(encoded) else resource.uri;
-            try items.append(self.allocator, .{ .original = original, .modified = modified, .go_to_file_uri = go_to_uri, .go_to_file_title = snapshot.go_to_file_title, .options = options, .context_keys = snapshot.context_keys });
-        }
-        try input.setResolvedItems(items.items);
     }
 
     /// Consumes the provider's virtual document source on all outcomes.

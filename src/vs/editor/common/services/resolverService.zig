@@ -94,12 +94,19 @@ pub const ITextModelService = struct {
     context: *anyopaque,
     create_model_reference: *const fn (*anyopaque, std.Uri, ModelReferenceListener) anyerror!ModelReferenceRequest,
     acquire_model_reference: *const fn (*anyopaque, std.Uri) anyerror!ModelReference,
+    refresh_model_reference: *const fn (*anyopaque, std.Uri, ModelReferenceListener) anyerror!ModelReferenceRequest,
     create_synthetic_document: *const fn (*anyopaque, []const u8, ?[]const u8) anyerror!ModelReference,
     can_handle_resource: *const fn (*anyopaque, std.Uri) bool,
     register_provider: *const fn (*anyopaque, []const u8, ITextModelContentProvider) anyerror!ContentProviderRegistration,
 
     pub fn createModelReference(self: ITextModelService, resource: std.Uri, listener: ModelReferenceListener) !ModelReferenceRequest {
         return self.create_model_reference(self.context, resource, listener);
+    }
+
+    /// Native provider-change delivery refreshes an already-published
+    /// virtual document, then acquires its existing shared model.
+    pub fn refreshModelReference(self: ITextModelService, resource: std.Uri, listener: ModelReferenceListener) !ModelReferenceRequest {
+        return self.refresh_model_reference(self.context, resource, listener);
     }
 
     /// Window-thread native boundary for a document already resolved and
