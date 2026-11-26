@@ -1349,10 +1349,9 @@ console API for raw mode, sizing and input polling.
   asynchronous model-reference acquisition, cancellation and live provider
   updates. The extension host mirrors offscreen documents and sends typed
   diff/multi-diff Tabs API events with actual group move and close operations.
-  Quick Diff's native Git providers return original URIs; the shared model
-  resolver owns the baselines and the peek reuses their documents. The
-  legacy inline-content provider fallback and full Git file-system provider
-  registration are still portable gaps; see the audit.
+  Quick Diff providers return original URIs only; the shared model resolver
+  owns the baselines and the peek reuses their documents. The full Git
+  file-system provider registration remains a portable gap; see the audit.
   See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
   Only one repository per workspace folder is shown.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and

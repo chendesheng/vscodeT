@@ -120,7 +120,12 @@ and end-to-end verification of later changes are still required.
   return original Git URIs; their original models resolve asynchronously
   through the shared text-model service. The worker captures immutable
   snapshots from these models, and the peek mounts the same URI document.
-  The provider registry now matches actual resource URI schemes, authorities,
+  All providers and fixtures now use URI-only descriptors, with no inline
+  content or synthetic original fallback. Snapshots live only in the worker
+  request arena, not in published provider metadata. The registered
+  `IQuickDiffService` and `IQuickDiffModelService` expose actual provider
+  registration/disposal events and typed original/modified result URIs.
+  The provider registry matches actual resource URI schemes, authorities,
   parent roots and language selectors; rooted providers have priority over
   unrooted providers.
 * The Git primary and secondary providers live in the upstream
@@ -135,11 +140,11 @@ and end-to-end verification of later changes are still required.
   multi-diff layout-debug action cases exercise target selection; native
   auxiliary windows are unavailable, not silently replaced by side groups.
 
-The full suite through the action fixtures passes 3,620/3,642 (22 skipped;
-48/48 build steps), and the focused view suite through pointer capture passes
-488/488. Remaining portable gaps include eliminating the old inline-content
-provider fallback, completing the Git read-only file-system provider
-registration and ref/encoding/submodule behavior, further contribution
+The full suite through the URI-only Quick Diff services passes 3,622/3,644
+(22 skipped; 48/48 build steps), and the focused view suite through pointer
+capture passes 488/488. Remaining portable gaps include completing the Git
+read-only file-system provider registration and ref/encoding/submodule behavior,
+further contribution
 lifecycle and focus/capture coverage, and end-to-end native large-diff
 benchmarks. Browser pixel geometry, browser accessibility-tree traversal and
 a native separate Agents window remain genuine terminal-boundary adaptations.
