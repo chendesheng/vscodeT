@@ -44,6 +44,24 @@ const SnapshotRead = struct {
         std.heap.page_allocator.destroy(self);
     }
 
+    fn resource(self: *SnapshotRead, allocator: Allocator, relative: []const u8, ref: []const u8, working_file: bool) !SnapshotSource.Resource {
+        const path = try std.fs.path.join(allocator, &.{ self.root, relative });
+        return .{
+            .path = path,
+            .uri = if (working_file) .{ .scheme = "file", .host = .{ .raw = "" }, .path = .{ .raw = path } } else try @import("uri.zig").toGitUri(allocator, path, ref),
+            .is_working_file = working_file,
+        };
+    }
+
+    fn resourceRef(ref: git.DiffRef, left: bool) []const u8 {
+        return switch (ref) {
+            .head => "HEAD",
+            .index => if (left) "~" else "",
+            .working => "wt",
+            .empty => "empty",
+        };
+    }
+
     fn read(context: *anyopaque, allocator: Allocator) !SnapshotSource.Texts {
         const self: *SnapshotRead = @ptrCast(@alignCast(context));
         const reader = try Git.init(allocator, .{ .git_path = self.exe, .io = self.io });
@@ -58,7 +76,12 @@ const SnapshotRead = struct {
                         return error.DiffUnavailable;
                     } else |_| {}
                 }
-                return .{ .original = text.original, .modified = text.modified };
+                return .{
+                    .original = text.original,
+                    .modified = text.modified,
+                    .original_resource = try self.resource(allocator, self.original_path, resourceRef(refs.left, true), refs.left == .working and text.original_available),
+                    .modified_resource = try self.resource(allocator, self.modified_path, resourceRef(refs.right, false), refs.right == .working and text.modified_available),
+                };
             },
             .revisions => |refs| {
                 const original = if (refs.left) |revision|
@@ -66,7 +89,12 @@ const SnapshotRead = struct {
                 else
                     try allocator.dupe(u8, "");
                 const modified = (reader.readRefAt(allocator, self.root, self.modified_path, refs.right) catch null) orelse try allocator.dupe(u8, "");
-                return .{ .original = original, .modified = modified };
+                return .{
+                    .original = original,
+                    .modified = modified,
+                    .original_resource = try self.resource(allocator, self.original_path, refs.left orelse "empty", false),
+                    .modified_resource = try self.resource(allocator, self.modified_path, refs.right, false),
+                };
             },
         }
     }

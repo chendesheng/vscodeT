@@ -17,7 +17,20 @@ pub const SnapshotSource = struct {
     read: *const fn (*anyopaque, std.mem.Allocator) anyerror!Texts,
     destroy: *const fn (*anyopaque) void,
 
-    pub const Texts = struct { original: []const u8, modified: []const u8 };
+    pub const Resource = struct {
+        path: []const u8,
+        uri: std.Uri,
+        /// The provider resolved a real available file, not an absent or
+        /// unsupported snapshot side. Only these may become working copies.
+        is_working_file: bool = false,
+    };
+
+    pub const Texts = struct {
+        original: []const u8,
+        modified: []const u8,
+        original_resource: ?Resource = null,
+        modified_resource: ?Resource = null,
+    };
 };
 
 /// Bounded result cache owned by one editor worker. Content digests replace
@@ -101,6 +114,8 @@ pub const WorkerBasedDocumentDiffProvider = struct {
         message: worker.Request = .{ .compute = compute, .reply = reply },
         original: []const u8,
         modified: []const u8,
+        original_resource: ?SnapshotSource.Resource = null,
+        modified_resource: ?SnapshotSource.Resource = null,
         options: Options,
         listener: ?Listener,
         result: ?Result = null,
@@ -130,6 +145,8 @@ pub const WorkerBasedDocumentDiffProvider = struct {
                 };
                 self.original = texts.original;
                 self.modified = texts.modified;
+                self.original_resource = texts.original_resource;
+                self.modified_resource = texts.modified_resource;
             }
             const key = if (self.cache != null) Cache.Key.init(self.original, self.modified, self.options) else null;
             if (self.cache) |cache| {

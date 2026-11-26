@@ -90,7 +90,12 @@ pub const DiffRef = enum {
         };
     }
 };
-pub const ResolvedDiffTexts = struct { original: []u8, modified: []u8 };
+pub const ResolvedDiffTexts = struct {
+    original: []u8,
+    modified: []u8,
+    original_available: bool = true,
+    modified_available: bool = true,
+};
 
 pub const RefKind = enum {
     head,
@@ -537,19 +542,26 @@ pub const Git = struct {
     /// null so a diff request can degrade to an empty side; only allocation
     /// failures propagate.
     pub fn resolveDiffTexts(self: *Git, root: []const u8, relative: []const u8, working: ?[]const u8, left: DiffRef, right: DiffRef) !ResolvedDiffTexts {
-        const original = try self.diffTextFor(root, relative, working, left);
+        const original_text = try self.diffTextFor(root, relative, working, left);
+        const original = original_text orelse try self.allocator.dupe(u8, "");
         errdefer self.allocator.free(original);
-        return .{ .original = original, .modified = try self.diffTextFor(root, relative, working, right) };
+        const modified_text = try self.diffTextFor(root, relative, working, right);
+        return .{
+            .original = original,
+            .modified = modified_text orelse try self.allocator.dupe(u8, ""),
+            .original_available = original_text != null,
+            .modified_available = modified_text != null,
+        };
     }
-    fn diffTextFor(self: *Git, root: []const u8, relative: []const u8, working: ?[]const u8, ref: DiffRef) ![]u8 {
-        if (ref == .working) if (working) |text| return self.allocator.dupe(u8, text);
+    fn diffTextFor(self: *Git, root: []const u8, relative: []const u8, working: ?[]const u8, ref: DiffRef) !?[]u8 {
+        if (ref == .working) if (working) |text| return try self.allocator.dupe(u8, text);
         const kind: RefKind = switch (ref) {
             .head => .head,
             .index => .index,
             .working => .working,
-            .empty => return self.allocator.dupe(u8, ""),
+            .empty => return null,
         };
-        return (try self.readRef(root, relative, kind)) orelse try self.allocator.dupe(u8, "");
+        return self.readRef(root, relative, kind);
     }
 
     pub fn readRef(self: *Git, root: []const u8, path: []const u8, ref: RefKind) !?[]u8 {
