@@ -122,7 +122,7 @@ pub const TextEditorConfiguration = struct {
 
     fn onConfigurationChanged(change: config.Change, self: *TextEditorConfiguration) !void {
         if (self.configuration.service == null) return;
-        if (config.affectsConfiguration(change, "editor") or
+        if (config.affectsConfiguration(change, "editor") or config.affectsConfiguration(change, "diffEditor") or
             (change.source == .DEFAULT and change.keys.len == 0))
             self.applyToAllTabs();
     }
@@ -138,7 +138,17 @@ pub const TextEditorConfiguration = struct {
     }
 
     pub fn applyToTab(self: *TextEditorConfiguration, tab: *Tab) void {
-        if (tab.isDiff()) {
+        if (tab.diff) |diff| {
+            if (self.configuration.service) |service| {
+                const options = @import("textDiffEditor.zig").computeConfiguration(service.interface());
+                if (diff.updateOptions(options) catch false) tab.syncDiffViews();
+            }
+            const settings = self.reader();
+            for ([_]*@import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor{ diff.widget.original_editor, diff.widget.modified_editor }, [_]@TypeOf(tab.view){ diff.widget.original_view, diff.widget.modified_view }) |control, view| {
+                _ = control.applyEditorSettings(settings, control.languageId(), control.path) catch false;
+                _ = view.applyEditorSettings(settings, control.languageId(), control.path) catch false;
+                control.setLineDecorationsWidth(if (diff.widget.options.render_indicators) 1 else 0);
+            }
             if (self.zen_hide_line_numbers) applyLineNumbers(tab, .Off);
             tab.setThemeColors(self.theme.*);
             return;

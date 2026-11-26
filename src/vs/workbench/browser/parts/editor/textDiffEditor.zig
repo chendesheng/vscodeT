@@ -316,6 +316,20 @@ pub fn DiffView(comptime View: type) type {
             previous.destroy();
         }
 
+        /// Reapply the diff-specific configuration when its owner receives
+        /// IConfigurationService's change event. Snapshot source lines remain
+        /// owned by the current model until replacement succeeds.
+        pub fn updateOptions(self: *Self, options: Options) !bool {
+            const normalized = options.normalize();
+            if (std.meta.eql(self.widget.options, normalized)) return false;
+            const original = try std.mem.join(self.allocator, "\n", self.widget.view_model.original_lines);
+            defer self.allocator.free(original);
+            const modified = try std.mem.join(self.allocator, "\n", self.widget.view_model.modified_lines);
+            defer self.allocator.free(modified);
+            try self.replace(original, modified, self.widget.width, self.widget.height, normalized);
+            return true;
+        }
+
         pub fn setThemeColors(self: *Self, palette: ?*const @import("../../themeColors.zig").ThemeColors) void {
             self.theme_colors = palette;
             self.widget.original_view.setThemeColors(palette);
