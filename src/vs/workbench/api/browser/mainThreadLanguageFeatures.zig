@@ -191,6 +191,118 @@ const CodeLensCommandRequest = struct {
 
 pub const InlineProvider = struct { handle: u32, supports_events: bool };
 
+const occurrence_model = @import("../../../editor/contrib/wordHighlighter/browser/wordHighlighter.zig");
+const resolver = @import("../../../editor/common/services/resolverService.zig");
+
+// registerModelAndPositionCommand retains the resolved model throughout the
+// asynchronous provider execution, including an unmounted resource.
+const DocumentHighlightCommandRequest = struct {
+    owner: *MainThreadLanguageFeatures,
+    commands: *CommandRegistry,
+    resolver_service: resolver.ITextModelService,
+    resource_string: []const u8,
+    input_position: Position, // upstream UTF-16 columns
+    document: ?*EditorDocument,
+    reference: ?resolver.ModelReference = null,
+    resolving: ?resolver.ModelReferenceRequest = null,
+    pending: ?*occurrence_model.OccurrenceRequest = null,
+    channel: ?*rpc.RpcProtocol = null,
+    request_id: u32 = 0,
+    starting: bool = false,
+    finished: bool = false,
+
+    fn start(context: *anyopaque, channel: *rpc.RpcProtocol, request_id: u32) void {
+        const self: *DocumentHighlightCommandRequest = @ptrCast(@alignCast(context));
+        self.channel = channel;
+        self.request_id = request_id;
+        if (self.document) |document| {
+            self.run(document.model);
+        } else {
+            const uri = std.Uri.parse(self.resource_string) catch |err| return self.fail(err);
+            self.resolving = self.resolver_service.createModelReference(uri, .{ .context = self, .complete = modelReady }) catch |err| return self.fail(err);
+        }
+    }
+
+    fn modelReady(context: *anyopaque, result: resolver.ModelReferenceResult) void {
+        const self: *DocumentHighlightCommandRequest = @ptrCast(@alignCast(context));
+        self.resolving = null;
+        switch (result) {
+            .failure => |err| self.fail(err),
+            .resolved => |reference| {
+                self.reference = reference;
+                self.run(reference.object.textEditorModel);
+            },
+        }
+    }
+
+    fn currentModel(self: *DocumentHighlightCommandRequest) *TextModel {
+        return if (self.document) |document| document.model else self.reference.?.object.textEditorModel;
+    }
+
+    fn run(self: *DocumentHighlightCommandRequest, model: *TextModel) void {
+        const command = self.commands.get("_executeDocumentHighlights") orelse return self.fail(error.CommandNotFound);
+        const position = Position.init(self.input_position.lineNumber, columnForModel(model, self.input_position.lineNumber, self.input_position.column));
+        const args: occurrence_model.ExecuteDocumentHighlightsArgs = .{
+            .allocator = self.owner.allocator,
+            .registry = &self.owner.features.document_highlight_provider,
+            .model = model,
+            .position = position,
+            .listener = .{ .context = self, .complete = ready },
+            .pending = &self.pending,
+        };
+        self.starting = true;
+        command.executeWithArgument(@import("../../../platform/commands/common/commands.zig").CommandArgument.from(occurrence_model.ExecuteDocumentHighlightsArgs, &args)) catch |err| self.fail(err);
+        self.starting = false;
+        if (self.finished) self.dispose();
+    }
+
+    fn ready(context: *anyopaque, result: *occurrence_model.OccurrenceResult) void {
+        const self: *DocumentHighlightCommandRequest = @ptrCast(@alignCast(context));
+        self.pending = null;
+        defer result.dispose();
+        const model = self.currentModel();
+        var scratch = std.heap.ArenaAllocator.init(self.owner.allocator);
+        defer scratch.deinit();
+        const highlights = result.get(model.uri()) orelse return self.reply(.empty);
+        const a = scratch.allocator();
+        var items = std.json.Array.init(a);
+        for (highlights) |highlight| {
+            var dto: std.json.ObjectMap = .empty;
+            dto.put(a, "range", rangeJson(a, model, highlight.range) catch |err| return self.fail(err)) catch |err| return self.fail(err);
+            if (highlight.kind) |kind| dto.put(a, "kind", .{ .integer = @backingInt(kind) }) catch |err| return self.fail(err);
+            items.append(.{ .object = dto }) catch |err| return self.fail(err);
+        }
+        self.reply(.{ .json = .{ .array = items } });
+    }
+
+    fn fail(self: *DocumentHighlightCommandRequest, err: anyerror) void {
+        self.reply(.{ .err = .{ .name = @errorName(err), .message = @errorName(err) } });
+    }
+
+    fn reply(self: *DocumentHighlightCommandRequest, value: rpc.HandlerReply) void {
+        if (self.finished) return;
+        self.finished = true;
+        if (self.channel) |channel| channel.sendReply(self.request_id, value);
+        self.channel = null;
+        if (!self.starting) self.dispose();
+    }
+
+    fn dispose(self: *DocumentHighlightCommandRequest) void {
+        if (self.resolving) |request| request.cancel();
+        if (self.pending) |request| request.cancel();
+        if (self.reference) |*reference| reference.dispose();
+        if (self.document) |document| document.release();
+        const owner = self.owner;
+        for (owner.highlight_commands.items, 0..) |candidate, index| {
+            if (candidate != self) continue;
+            _ = owner.highlight_commands.swapRemove(index);
+            break;
+        }
+        owner.allocator.free(self.resource_string);
+        owner.allocator.destroy(self);
+    }
+};
+
 pub const MainThreadLanguageFeatures = struct {
     allocator: Allocator,
     features: *features_mod.LanguageFeaturesService,
@@ -198,6 +310,7 @@ pub const MainThreadLanguageFeatures = struct {
     registrations: std.AutoHashMap(u32, *Registration),
     code_lens_events: std.AutoHashMap(u32, *CodeLensState),
     code_lens_commands: std.ArrayList(*CodeLensCommandRequest) = .empty,
+    highlight_commands: std.ArrayList(*DocumentHighlightCommandRequest) = .empty,
     inline_providers: @import("../../../editor/common/languageFeatureRegistry.zig").LanguageFeatureRegistry(InlineProvider),
 
     pub fn init(allocator: Allocator, features: *features_mod.LanguageFeaturesService, proxy: HostProxy) MainThreadLanguageFeatures {
@@ -212,6 +325,8 @@ pub const MainThreadLanguageFeatures = struct {
     }
 
     pub fn deinit(self: *MainThreadLanguageFeatures) void {
+        while (self.highlight_commands.items.len != 0) self.highlight_commands.items[self.highlight_commands.items.len - 1].dispose();
+        self.highlight_commands.deinit(self.allocator);
         while (self.code_lens_commands.items.len != 0) self.code_lens_commands.items[self.code_lens_commands.items.len - 1].dispose();
         var iterator = self.registrations.valueIterator();
         while (iterator.next()) |registration_ptr| self.destroyRegistration(registration_ptr.*);
@@ -235,6 +350,18 @@ pub const MainThreadLanguageFeatures = struct {
         };
         try self.code_lens_commands.append(self.allocator, request);
         return .{ .deferred = .{ .context = request, .start = CodeLensCommandRequest.start } };
+    }
+
+    pub fn executeDocumentHighlightCommand(self: *MainThreadLanguageFeatures, resource: std.Uri, position: Position, document: ?*EditorDocument, resolver_service: resolver.ITextModelService, commands: *CommandRegistry) !rpc.HandlerReply {
+        const request = try self.allocator.create(DocumentHighlightCommandRequest);
+        errdefer self.allocator.destroy(request);
+        const resource_string = try std_uri.encodedResource(self.allocator, resource);
+        errdefer self.allocator.free(resource_string);
+        if (document) |loaded| loaded.retain();
+        errdefer if (document) |loaded| loaded.release();
+        request.* = .{ .owner = self, .commands = commands, .resolver_service = resolver_service, .resource_string = resource_string, .input_position = position, .document = document };
+        try self.highlight_commands.append(self.allocator, request);
+        return .{ .deferred = .{ .context = request, .start = DocumentHighlightCommandRequest.start } };
     }
 
     fn destroyRegistration(self: *MainThreadLanguageFeatures, registration: *Registration) void {

@@ -599,6 +599,25 @@ pub const Extensions = struct {
             const provider = if (self.language_features_actor) |*actor| actor else return error.LanguageFeaturesUnavailable;
             return provider.executeCodeLensCommand(document, count, self.services.common.commands, self.services.window);
         }
+        if (std.mem.eql(u8, method, "$executeCommand") and args.len > 1 and args[0] == .json and args[0].json == .string and std.mem.eql(u8, args[0].json.string, "_executeDocumentHighlights")) {
+            if (args[1] != .json or args[1].json != .array or args[1].json.array.items.len < 2) return error.InvalidArguments;
+            const parameters = args[1].json.array.items;
+            const components = try std_uri.componentsFromJson(parameters[0], arena);
+            const key = try std_uri.resourceKeyFromComponents(arena, components);
+            const resource: std.Uri = .{
+                .scheme = components.scheme,
+                .host = if (components.authority.len != 0) .{ .raw = components.authority } else null,
+                .path = .{ .raw = components.path },
+                .query = if (components.query.len != 0) .{ .raw = components.query } else null,
+                .fragment = if (components.fragment.len != 0) .{ .raw = components.fragment } else null,
+            };
+            if (parameters[1] != .object) return error.InvalidArguments;
+            const line = parameters[1].object.get("lineNumber") orelse return error.InvalidArguments;
+            const column = parameters[1].object.get("column") orelse return error.InvalidArguments;
+            if (line != .integer or column != .integer or line.integer < 1 or column.integer < 1) return error.InvalidArguments;
+            const provider = if (self.language_features_actor) |*actor| actor else return error.LanguageFeaturesUnavailable;
+            return provider.executeDocumentHighlightCommand(resource, Position.init(@intCast(line.integer), @intCast(column.integer)), self.models.documentForResource(key), self.services.text_model_service, self.services.common.commands);
+        }
         if (self.commands_actor) |*actor| return actor.invoke(method, args, arena);
         return .empty;
     }
@@ -2643,6 +2662,13 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                 }
             }
             try std.testing.expect(single_found and multi_found);
+            const original_uri = try std_uri.encodedResource(scratch.allocator(), diff.originalModel().uri());
+            const value = try extensions.host.requestSync(scratch.allocator(), command, "$executeContributedCommand", &.{ .{ .json = .{ .string = "fixture.executeDocumentHighlights" } }, .{ .json = .{ .string = original_uri } } }, null, 5000);
+            try std.testing.expectEqual(1, value.array.items.len);
+            try std.testing.expectEqual(2, value.array.items[0].object.get("start").?.integer);
+            try std.testing.expectEqual(6, value.array.items[0].object.get("end").?.integer);
+            try std.testing.expectEqual(1, value.array.items[0].object.get("kind").?.integer);
+            try std.testing.expectEqual(0, extensions.language_features_actor.?.highlight_commands.items.len);
             original.applyConfiguration(.{ .occurrences_highlight = .off });
             try std.testing.expect(!original.saveViewState() and !modified.saveViewState());
         }

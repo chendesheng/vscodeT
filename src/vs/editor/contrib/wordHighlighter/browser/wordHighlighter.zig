@@ -1037,6 +1037,37 @@ pub const WordHighlighterContribution = struct {
 const EditorCommand = @import("../../../browser/editorExtensions.zig").EditorCommand;
 const platform_actions = @import("../../../../platform/actions/common/actions.zig");
 
+/// Port of registerModelAndPositionCommand('_executeDocumentHighlights').
+/// The model reference is owned by the caller until the result continuation.
+pub const ExecuteDocumentHighlightsArgs = struct {
+    allocator: Allocator,
+    registry: *registry_mod.LanguageFeatureRegistry(editor_languages.DocumentHighlightProvider),
+    model: *TextModel,
+    position: Position,
+    listener: OccurrenceListener,
+    pending: *?*OccurrenceRequest,
+};
+const ServicesAccessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
+const CommandArgument = @import("../../../../platform/commands/common/commands.zig").CommandArgument;
+pub const execute_provider_action: platform_actions.Action2 = .{
+    .command = .{ .id = "_executeDocumentHighlights", .title = "Execute Document Highlights" },
+    .context = @constCast(&{}),
+    .run_fn = struct {
+        fn run(_: *anyopaque, _: ServicesAccessor) !void {
+            return error.InvalidArgument;
+        }
+    }.run,
+    .run_with_argument_fn = struct {
+        fn run(_: *anyopaque, accessor: ServicesAccessor, argument: CommandArgument) !void {
+            const args = argument.as(ExecuteDocumentHighlightsArgs) orelse return error.InvalidArgument;
+            const config = try accessor.get(@import("../../../common/services/textResourceConfiguration.zig").text_resource_configuration_service_id);
+            const setting = config.getValue(args.model, "editor.occurrencesHighlightFromAllProviders");
+            const merge = if (setting) |value| value.* == .bool and value.bool else false;
+            args.pending.* = try getOccurrencesAtPosition(args.allocator, args.registry, args.model, args.position, .None, merge, args.listener);
+        }
+    }.run,
+};
+
 pub const trigger_action = EditorCommand.action(.{ .id = "editor.action.wordHighlight.trigger", .title = "Trigger Symbol Highlight", .category = "Go" }, false, triggerAction);
 pub const navigation_actions = [_]platform_actions.Action2{
     EditorCommand.action(.{ .id = "editor.action.wordHighlight.next", .title = "Go to Next Symbol Highlight", .category = "Go" }, false, nextAction),

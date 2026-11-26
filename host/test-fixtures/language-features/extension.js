@@ -45,6 +45,10 @@ function activate(context) {
     }
   }));
   context.subscriptions.push(vscode.commands.registerCommand('fixture.highlightQueries', () => highlightQueries));
+  context.subscriptions.push(vscode.commands.registerCommand('fixture.executeDocumentHighlights', async (uri) => {
+    const items = await vscode.commands.executeCommand('vscode.executeDocumentHighlights', vscode.Uri.parse(uri), new vscode.Position(0, 3));
+    return items?.map(item => ({ start: item.range.start.character, end: item.range.end.character, kind: item.kind }));
+  }));
   const tabEvents = [];
   context.subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(event => {
     tabEvents.push({ opened: event.opened.map(tab => tab.label), closed: event.closed.map(tab => tab.label), changed: event.changed.map(tab => tab.label) });
