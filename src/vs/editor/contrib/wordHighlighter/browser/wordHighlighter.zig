@@ -618,7 +618,7 @@ pub const WordHighlighter = struct {
         } else if (preserved == null) _ = self.clearDecorations();
         self.pending_position = position;
         self.pending_render_delay = render_delay;
-        self.setDeadline(now_ms + @as(i64, @intCast(run_delay)));
+        self.setDeadline(now_ms +| @as(i64, @intCast(run_delay)));
     }
 
     /// Fires either the run delayer or the independently timed render callback.
@@ -691,7 +691,7 @@ pub const WordHighlighter = struct {
 
     fn computeAt(self: *WordHighlighter, position: Position, now_ms: i64) bool {
         self.computing_now = now_ms;
-        self.minimum_render_time = now_ms + @as(i64, @intCast(self.pending_render_delay));
+        self.minimum_render_time = now_ms +| @as(i64, @intCast(self.pending_render_delay));
         defer self.computing_now = null;
         self.last_render_changed = false;
         const others = if (self.session) |session| session.otherModels(self, self.allocator) catch return false else &.{};
