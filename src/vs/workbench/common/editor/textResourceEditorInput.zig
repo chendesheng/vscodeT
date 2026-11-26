@@ -15,6 +15,7 @@ pub const TextResourceEditorInput = struct {
     document: *EditorDocument,
     key: []u8,
     description: []u8,
+    preferred_name: ?[]u8 = null,
     refs: usize = 1,
 
     pub const ID = "workbench.editors.resourceEditorInput";
@@ -56,11 +57,29 @@ pub const TextResourceEditorInput = struct {
         self.document.release();
         self.allocator.free(self.key);
         self.allocator.free(self.description);
+        if (self.preferred_name) |name| self.allocator.free(name);
         self.allocator.destroy(self);
     }
 
     pub fn interface(self: *TextResourceEditorInput) *EditorInput {
         return &self.base;
+    }
+
+    pub fn setPreferredName(self: *TextResourceEditorInput, name: []const u8) !void {
+        if (std.mem.eql(u8, self.base.getName(), name)) return;
+        const owned = try self.allocator.dupe(u8, name);
+        const previous = self.preferred_name;
+        self.preferred_name = owned;
+        self.base.name = owned;
+        defer if (previous) |old| self.allocator.free(old);
+        try self.base.fireLabel();
+    }
+
+    /// A virtual file provider may change the contents at the same URI
+    /// (for example Git's index or HEAD). Keep the shared model reference
+    /// and emit the normal content change instead of replacing the input.
+    pub fn updateContents(self: *TextResourceEditorInput, text: []const u8) !void {
+        _ = try self.document.replaceGeneratedContents(text);
     }
 
     pub fn resolve(self: *TextResourceEditorInput) *EditorDocument {

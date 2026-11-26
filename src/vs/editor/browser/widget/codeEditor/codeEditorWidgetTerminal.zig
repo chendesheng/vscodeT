@@ -519,6 +519,28 @@ pub const EditorDocument = struct {
         return self.model.getAlternativeVersionId() != self.saved_version;
     }
 
+    /// Update a generated or virtual resource without replacing the shared
+    /// document. All retained editor views observe the model's content event.
+    pub fn replaceGeneratedContents(self: *EditorDocument, text: []const u8) !bool {
+        var current = try self.model.getValue(.TextDefined, true);
+        defer current.deinit();
+        if (std.mem.eql(u8, current.items, text)) return false;
+        var operations = [_]IdentifiedSingleEditOperation{.init(self.model.getFullModelRange(), if (text.len == 0) null else String.initBorrowed(text))};
+        _ = try self.model.applyEdits(&operations, false);
+        self.model.clearUndoRedo();
+        self.saved_version = self.model.getAlternativeVersionId();
+        self.clearConflict();
+        self.refreshDirtyState();
+        return true;
+    }
+
+    fn clearConflict(self: *EditorDocument) void {
+        self.conflict = false;
+        for (self.editors.items) |editor| {
+            if (std.mem.startsWith(u8, editor.message(), "Conflict:")) editor.clearMessage();
+        }
+    }
+
     fn addEditor(self: *EditorDocument, editor: *Editor) !void {
         try self.editors.append(editor);
         // Once a document has two views, every pane must track its selections
@@ -5110,21 +5132,7 @@ pub const Editor = struct {
     /// the text editor's read-only user input mode.
     pub fn replaceGeneratedContents(self: *Editor, text: []const u8, reset_cursor: bool) !void {
         const position = if (reset_cursor) Position.init(1, 1) else self.modelCursorPosition();
-        var current = try self.model.getValue(.TextDefined, true);
-        defer current.deinit();
-        if (std.mem.eql(u8, current.items, text)) return;
-
-        const last_line = self.model.getLineCount();
-        const last_column = self.model.getLineMaxColumn(last_line);
-        var operations = [_]IdentifiedSingleEditOperation{.init(
-            Range.init(1, 1, last_line, last_column),
-            if (text.len == 0) null else String.initBorrowed(text),
-        )};
-        _ = try self.model.applyEdits(&operations, false);
-        self.model.clearUndoRedo();
-        self.document.saved_version = self.model.getAlternativeVersionId();
-        self.clearConflict();
-        self.document.refreshDirtyState();
+        if (!try self.document.replaceGeneratedContents(text)) return;
         try self.setCursorPosition(self.model.validatePosition(position));
     }
 
@@ -5190,10 +5198,7 @@ pub const Editor = struct {
     }
 
     pub fn clearConflict(self: *Editor) void {
-        self.document.conflict = false;
-        for (self.document.editors.items) |editor| {
-            if (std.mem.startsWith(u8, editor.message(), "Conflict:")) editor.clearMessage();
-        }
+        self.document.clearConflict();
     }
 
     pub fn save(self: *Editor) !void {
