@@ -79,7 +79,7 @@ pub const ViewLayout = struct {
         self.scrollable.setScrollDimensions(.{
             .width = self.viewport_width,
             .height = self.viewport_height,
-            .scrollWidth = @max(self.viewport_width, self.max_line_width),
+            .scrollWidth = @max(self.viewport_width, self.max_line_width, self.lines_layout.getWhitespaceMinWidth()),
             .scrollHeight = @max(self.viewport_height, content_height),
         }, use_raw_scroll_positions);
     }

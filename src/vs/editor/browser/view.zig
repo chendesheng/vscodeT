@@ -24,6 +24,7 @@ const glyph_margin_mod = @import("./viewParts/glyphMargin/glyphMargin.zig");
 const current_line_mod = @import("./viewParts/currentLineHighlight/currentLineHighlight.zig");
 const margin_decorations_mod = @import("./viewParts/marginDecorations/marginDecorations.zig");
 const editor_scrollbar_mod = @import("./viewParts/editorScrollbar/editorScrollbar.zig");
+const view_zones_mod = @import("./viewParts/viewZones/viewZones.zig");
 const view_event_handler = @import("../common/viewEventHandler.zig");
 const ViewEventHandler = view_event_handler.ViewEventHandler;
 const ViewEvent = view_events.ViewEvent;
@@ -60,6 +61,7 @@ pub const View = struct {
     overlay_widgets: ViewOverlayWidgets,
     margin: TerminalMargin,
     scrollbar: TerminalScrollbar,
+    view_zones: view_zones_mod.ViewZones,
     view_parts: std.array_list.Managed(*ViewPart),
     content_overlays: std.array_list.Managed(*DynamicViewOverlay),
     is_focused: bool = false,
@@ -75,6 +77,7 @@ pub const View = struct {
             .overlay_widgets = ViewOverlayWidgets.init(allocator),
             .margin = TerminalMargin.init(allocator),
             .scrollbar = TerminalScrollbar.init(allocator),
+            .view_zones = view_zones_mod.ViewZones.init(allocator),
             .view_parts = std.array_list.Managed(*ViewPart).init(allocator),
             .content_overlays = std.array_list.Managed(*DynamicViewOverlay).init(allocator),
         };
@@ -85,6 +88,7 @@ pub const View = struct {
 
     pub fn deinit(self: *View) void {
         self.context.removeEventHandler(&self.handler);
+        self.view_zones.deinit();
         self.view_lines.deinit();
         self.content_widgets.deinit();
         self.overlay_widgets.deinit();
@@ -165,6 +169,8 @@ pub const View = struct {
     pub const DocumentPartsOptions = struct {
         doc: *ui.Document,
         gutter_root: *ui.Node,
+        zone_content_root: *ui.Node,
+        zone_margin_root: *ui.Node,
         scrollbar_root: *ui.Node,
         overlay_widgets_root: *ui.Node,
         content_widgets_root: *ui.Node,
@@ -189,6 +195,7 @@ pub const View = struct {
 
     pub fn renderDocumentParts(self: *View, options: DocumentPartsOptions) !void {
         const host = options.host;
+        try self.view_zones.renderDocument(options.doc, options.zone_content_root, options.zone_margin_root, options.gutter, options.text_right -| options.gutter, options.scroll_left, host);
         try self.margin.render(
             options.doc,
             options.gutter_root,

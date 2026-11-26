@@ -271,6 +271,8 @@ pub const TerminalViewHost = struct {
         self.context = ViewContext.init(&self.configuration, self.theme.interface(), self.modelInterface());
         self.glyph_lanes = try GlyphMarginLanesModel.init(allocator, editor.model.getLineCount());
         self.view.init(allocator, &self.context);
+        self.view.view_zones.attach(editor, &self.context);
+        try self.view.addViewPart(&self.view.view_zones.base);
         self.view.scrollbar.overview.attach(allocator, &self.context);
         try self.view.addViewPart(&self.view.scrollbar.overview.base);
         self.scratch_text = try StringBuilder.init(allocator, 256);

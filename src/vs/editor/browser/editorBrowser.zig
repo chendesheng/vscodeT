@@ -28,6 +28,54 @@ pub const IEditorKeyTarget = struct {
     }
 };
 
+/// Model-anchored view zone. The terminal uses cell heights rather than
+/// CSS pixels. The delegate builds a document-owned subtree when its zone
+/// enters the viewport (and when the zone is explicitly laid out again).
+pub const IViewZone = struct {
+    after_line_number: usize,
+    after_column: ?usize = null,
+    after_column_affinity: @import("../common/model.zig").PositionAffinity = .None,
+    ordinal: ?i32 = null,
+    height_in_lines: usize = 1,
+    min_width: usize = 0,
+    show_in_hidden_areas: bool = false,
+    suppress_mouse_down: bool = false,
+    context: ?*anyopaque = null,
+    build: ?Build = null,
+    build_margin: ?Build = null,
+    on_computed_height: ?*const fn (?*anyopaque, usize) void = null,
+    on_dom_node_top: ?*const fn (?*anyopaque, f64) void = null,
+
+    pub const Build = *const fn (?*anyopaque, *ui.Document, RenderInfo) anyerror!*ui.Node;
+    pub const RenderInfo = struct {
+        width: usize,
+        height: usize,
+        scroll_left: usize,
+    };
+};
+
+/// Transaction-scoped counterpart of upstream IViewZoneChangeAccessor.
+/// Zig passes the updated zone value to layoutZone rather than mutating a
+/// borrowed JavaScript object.
+pub const IViewZoneChangeAccessor = struct {
+    context: *anyopaque,
+    add_zone: *const fn (*anyopaque, IViewZone) anyerror![]const u8,
+    remove_zone: *const fn (*anyopaque, []const u8) anyerror!void,
+    layout_zone: *const fn (*anyopaque, []const u8, IViewZone) anyerror!void,
+
+    pub fn addZone(self: IViewZoneChangeAccessor, zone: IViewZone) ![]const u8 {
+        return self.add_zone(self.context, zone);
+    }
+
+    pub fn removeZone(self: IViewZoneChangeAccessor, id: []const u8) !void {
+        return self.remove_zone(self.context, id);
+    }
+
+    pub fn layoutZone(self: IViewZoneChangeAccessor, id: []const u8, zone: IViewZone) !void {
+        return self.layout_zone(self.context, id, zone);
+    }
+};
+
 /// Mirrors upstream `OverlayWidgetPositionPreference`.
 pub const OverlayWidgetPositionPreference = enum {
     top_right_corner,

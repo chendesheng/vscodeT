@@ -142,6 +142,10 @@ pub const IEditorView = struct {
         return self.vtable.hasEditorFocus(self.context);
     }
 
+    pub fn viewZones(self: *IEditorView) *@import("../../viewParts/viewZones/viewZones.zig").ViewZones {
+        return &self.terminal_view_host.viewRef().view_zones;
+    }
+
     pub fn addOverlayWidget(self: *IEditorView, widget: editorBrowser.IOverlayWidget) anyerror!void {
         return self.vtable.addOverlayWidget(self.context, widget);
     }

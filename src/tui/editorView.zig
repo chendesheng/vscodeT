@@ -519,6 +519,8 @@ pub const View = struct {
     /// Stable containers for the retained chrome parts, in paint order. Each
     /// part updates its own container; a refresh never clears the chrome root.
     gutter_root: ?*ui.Node = null,
+    zone_content_root: ?*ui.Node = null,
+    zone_margin_root: ?*ui.Node = null,
     scrollbar_root: ?*ui.Node = null,
     overlay_widgets_root: ?*ui.Node = null,
     content_widgets_root: ?*ui.Node = null,
@@ -763,6 +765,18 @@ pub const View = struct {
                 .height = .{ .cells = height_f },
             });
         }
+        const zone_roots = [_]?*ui.Node{ self.zone_content_root, self.zone_margin_root };
+        for (zone_roots) |maybe_node| {
+            const node = maybe_node orelse continue;
+            node.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = 0 },
+                .top = .{ .cells = inset_f },
+                .width = .{ .percent = 100 },
+                .height = .{ .cells = @floatFromInt(self.editor.textHeight()) },
+                .overflow = .hidden,
+            });
+        }
     }
 
     pub fn needsRender(self: *const View) bool {
@@ -780,6 +794,10 @@ pub const View = struct {
 
     fn ensureRendered(self: *View) !void {
         try self.render(true, false);
+    }
+
+    pub fn viewZones(self: *View) *@import("../vs/editor/browser/viewParts/viewZones/viewZones.zig").ViewZones {
+        return &self.terminal_view_host.viewRef().view_zones;
     }
 
     /// Registers an overlay widget. The caller owns the widget struct and must
@@ -916,6 +934,14 @@ pub const View = struct {
         } else try self.elementAt(event.x, event.y);
         const target = hit orelse (self.root_node orelse return false);
         self.dispatchAt(target, event);
+        if (event.kind == .down and event.y >= self.top_inset_rows and event.x < self.editor.textAreaRight() and !self.pointInWidget(event.x, event.y)) {
+            const row = event.y - self.top_inset_rows;
+            if (row < self.editor.textHeight()) {
+                if (try self.editor.viewLayout().getWhitespaceAtVerticalOffset(@floatFromInt(self.editor.scrollTop() + row))) |zone| {
+                    if (self.terminal_view_host.viewRef().view_zones.shouldSuppressMouseDownOnViewZone(zone.id)) return false;
+                }
+            }
+        }
         if (event.kind == .wheel) return false;
         return self.mouse_handler.dispatch(.{
             .context = self,
@@ -1263,10 +1289,13 @@ pub const View = struct {
     /// Drops every retained chrome pointer when the document that owns the
     /// nodes is cleared or replaced. The nodes themselves are not touched.
     fn resetChromeRoots(self: *View) void {
+        self.terminal_view_host.viewRef().view_zones.resetNodes();
         self.terminal_view_host.viewRef().marginPart().resetNodes();
         self.terminal_view_host.viewRef().scrollbarPart().resetNodes();
         self.chrome_root = null;
         self.gutter_root = null;
+        self.zone_content_root = null;
+        self.zone_margin_root = null;
         self.scrollbar_root = null;
         self.overlay_widgets_root = null;
         self.content_widgets_root = null;
@@ -2006,6 +2035,8 @@ pub const View = struct {
             // The retained chrome parts manage their own containers, in paint
             // order: gutter, scrollbar, overlay widgets, content widgets and
             // the editor status row.
+            self.zone_content_root = try appendChromePartRoot(doc, chrome_root);
+            self.zone_margin_root = try appendChromePartRoot(doc, chrome_root);
             self.gutter_root = try appendChromePartRoot(doc, chrome_root);
             self.scrollbar_root = try appendChromePartRoot(doc, chrome_root);
             self.overlay_widgets_root = try appendChromePartRoot(doc, chrome_root);
@@ -2223,6 +2254,8 @@ pub const View = struct {
         try self.terminal_view_host.viewRef().renderDocumentParts(.{
             .doc = doc,
             .gutter_root = gutter_root,
+            .zone_content_root = self.zone_content_root orelse return error.DocumentRootMissing,
+            .zone_margin_root = self.zone_margin_root orelse return error.DocumentRootMissing,
             .scrollbar_root = scrollbar_root,
             .overlay_widgets_root = overlay_widgets_root,
             .content_widgets_root = content_widgets_root,
@@ -3961,6 +3994,87 @@ test "View: folding keeps a scrolled viewport at the same model line" {
     try std.testing.expect(try view.dispatchMouse(&down));
     try std.testing.expectEqual(@as(usize, 4), editor.topViewLine());
     try std.testing.expectEqual(@as(usize, 4), editor.modelLineNumber(editor.topViewLine()));
+}
+
+test "View: model-anchored view zones render retained content and recompute on hiding" {
+    const allocator = std.testing.allocator;
+    const editor = try Editor.createFromText(allocator, std.testing.io, "first\nsecond\nthird\nfourth", "test.txt", 40, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    const Accessor = editorBrowser.IViewZoneChangeAccessor;
+    const State = struct {
+        id: []const u8 = "",
+        computed_height: usize = 0,
+        top: f64 = 0,
+        builds: usize = 0,
+        fn build(context: ?*anyopaque, doc: *ui.Document, _: editorBrowser.IViewZone.RenderInfo) anyerror!*ui.Node {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.builds += 1;
+            const node = try doc.createElement(.div);
+            const text = try doc.createText("zone text");
+            _ = try node.appendChild(text);
+            return node;
+        }
+        fn height(context: ?*anyopaque, value: usize) void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.computed_height = value;
+        }
+        fn setTop(context: ?*anyopaque, value: f64) void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.top = value;
+        }
+        fn add(self: *@This(), accessor: Accessor) anyerror!void {
+            self.id = try accessor.addZone(.{
+                .after_line_number = 1,
+                .height_in_lines = 3,
+                .context = self,
+                .build = build,
+                .on_computed_height = height,
+                .on_dom_node_top = setTop,
+                .suppress_mouse_down = true,
+            });
+        }
+        fn remove(self: *@This(), accessor: Accessor) anyerror!void {
+            try accessor.removeZone(self.id);
+        }
+    };
+    var state = State{};
+    const zones = view.viewZones();
+    try zones.changeViewZones(&state, State.add);
+    try std.testing.expectEqual(@as(usize, 3), state.computed_height);
+    try view.paint();
+    try std.testing.expectEqual(@as(f64, 1), state.top);
+    const text = try view.grid().rowText(allocator, 1);
+    defer allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "zone text") != null);
+    try std.testing.expectEqual(@as(usize, 1), state.builds);
+    const initial_node = view.zone_content_root.?.first_child;
+    try std.testing.expect(initial_node != null);
+    try std.testing.expect(editor.scrollViewLines(1));
+    try view.paint();
+    try std.testing.expectEqual(@as(f64, 0), state.top);
+    try std.testing.expectEqual(initial_node, view.zone_content_root.?.first_child);
+    try std.testing.expectEqual(@as(usize, 1), state.builds);
+    const target = try view.mouseTargetAt(editor.gutterWidth(), 0);
+    try std.testing.expectEqual(editorBrowser.MouseTargetType.content_view_zone, target.type);
+    try std.testing.expectEqualStrings(state.id, target.detail.?.view_zone.view_zone_id);
+
+    try editor.setHiddenAreas(&.{Range.init(2, 1, 2, 2)});
+    try std.testing.expectEqual(@as(usize, 0), state.computed_height);
+    try view.paint();
+    try std.testing.expect(view.zone_content_root.?.first_child == null);
+    try editor.setHiddenAreas(&.{});
+    try std.testing.expectEqual(@as(usize, 3), state.computed_height);
+    try view.paint();
+    try std.testing.expect(view.zone_content_root.?.first_child != null);
+    try zones.changeViewZones(&state, State.remove);
+    try view.paint();
+    try std.testing.expect(view.zone_content_root.?.first_child == null);
+    try std.testing.expectEqual(@as(usize, 4), editor.model.getLineCount());
 }
 
 test "View: mouse target distinguishes text, empty area, gutter and status" {
