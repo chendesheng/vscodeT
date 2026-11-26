@@ -332,6 +332,7 @@ pub const EditorDocument = struct {
     declarative: ?*const extensions_registry.Registry = null,
     encoding: encoding_mod.Encoding = .utf8,
     on_did_change_encoding: Emitter(void),
+    on_will_dispose: Emitter(void),
     /// Working copy notifications belong to the shared document, not any
     /// particular editor view that happens to be mounted.
     working_copy_dirty_listeners: std.array_list.Managed(ChangeListener),
@@ -448,6 +449,7 @@ pub const EditorDocument = struct {
             .declarative = declarative,
             .encoding = encoding,
             .on_did_change_encoding = Emitter(void).init(allocator),
+            .on_will_dispose = .init(allocator),
             .working_copy_dirty_listeners = .init(allocator),
             .working_copy_content_listeners = .init(allocator),
             .working_copy_save_listeners = .init(allocator),
@@ -508,6 +510,8 @@ pub const EditorDocument = struct {
 
     fn deinit(self: *EditorDocument) void {
         std.debug.assert(self.editors.items.len == 0);
+        self.on_will_dispose.fire({}) catch {};
+        self.on_will_dispose.deinit();
         self.editors.deinit();
         self.on_did_change_encoding.deinit();
         self.working_copy_dirty_listeners.deinit();
@@ -530,6 +534,16 @@ pub const EditorDocument = struct {
         self.allocator.destroy(self.codec);
         self.allocator.free(self.path);
         self.allocator.destroy(self);
+    }
+
+    /// Language belongs to the shared document, including unmounted virtual
+    /// models. Mounted code editors consume the same model language change.
+    pub fn setLanguage(self: *EditorDocument, language_id: []const u8) !void {
+        if (std.mem.eql(u8, language_id, self.model.getLanguageId())) return;
+        try configureDocumentLanguage(self.allocator, self.io, self.language_service, self.declarative_arena.allocator(), self.declarative, language_id);
+        try self.codec.register(language_id);
+        self.model.setLanguage(language_id);
+        for (self.editors.items) |editor| try editor.applyLanguageState(language_id);
     }
 
     pub fn isDirty(self: *const EditorDocument) bool {
@@ -2688,14 +2702,7 @@ pub const Editor = struct {
     /// the model language changes once, then each editor pane updates its
     /// cursor/auto-closing/folding view state.
     pub fn setLanguage(self: *Editor, language_id: []const u8) !void {
-        if (std.mem.eql(u8, language_id, self.model.getLanguageId())) return;
-
-        try configureDocumentLanguage(self.allocator, self.io, self.language_service, self.document.declarative_arena.allocator(), self.document.declarative, language_id);
-        try self.codec.register(language_id);
-        self.model.setLanguage(language_id);
-        for (self.document.editors.items) |editor| {
-            try editor.applyLanguageState(language_id);
-        }
+        try self.document.setLanguage(language_id);
     }
 
     fn applyLanguageState(self: *Editor, language_id: []const u8) !void {

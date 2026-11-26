@@ -574,6 +574,7 @@ comptime {
     _ = @import("./vs/workbench/services/workingCopy/common/workingCopyBackup.zig");
     _ = @import("./vs/workbench/services/workingCopy/common/workingCopyBackupService.zig");
     _ = @import("./vs/workbench/services/workingCopy/test/node/workingCopyBackupService.test.zig");
+    _ = @import("./vs/workbench/services/textmodelResolver/test/browser/textModelResolverService.test.zig");
     _ = @import("./vs/workbench/services/textfile/test/node/encoding/encoding.test.zig");
     _ = @import("./vs/workbench/services/textfile/common/textFileEditorModel.zig");
     _ = @import("./vs/workbench/services/untitled/common/untitledTextEditorInput.zig");
