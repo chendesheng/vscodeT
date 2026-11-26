@@ -13,6 +13,7 @@ const widget_mod = @import("../../../../editor/browser/widget/diffEditor/diffEdi
 const diff_editor_input = @import("../../../common/editor/diffEditorInput.zig");
 const editor_input = @import("../../../common/editor/editorInput.zig");
 const text_files = @import("../../../services/textfile/common/textFileService.zig");
+const TextModelResolverService = @import("../../../services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService;
 const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 
 pub const Options = widget_mod.Options;
@@ -171,12 +172,26 @@ pub const SideInput = union(enum) {
 pub const SideSource = struct {
     resource: ?std.Uri = null,
     file: ?*FileEditorInput = null,
+    resolver: ?*TextModelResolverService = null,
 
     fn resolve(self: SideSource, allocator: Allocator, io: Io, path: []const u8, label: []const u8, text: []const u8) !SideInput {
-        if (self.file) |input| return .{ .file = input.retain() };
+        if (self.file) |input| {
+            if (self.resolver) |resolver| try resolver.registerDocument(input.editor.document, false);
+            return .{ .file = input.retain() };
+        }
         const absolute = try text_files.absolutePath(allocator, io, path);
         defer allocator.free(absolute);
-        return .{ .resource = try TextResourceEditorInput.init(allocator, io, path, label, text, self.resource orelse snapshotResource(absolute, label)) };
+        const resource = self.resource orelse snapshotResource(absolute, label);
+        if (self.resolver) |resolver| {
+            var reference = try resolver.createResolvedModelReference(resource, path, text, true);
+            // The provider may have returned an updated mutable revision URI.
+            _ = TextModelResolverService.documentOf(reference).replaceGeneratedContents(text) catch |err| {
+                reference.dispose();
+                return err;
+            };
+            return .{ .resource = try TextResourceEditorInput.initFromReference(allocator, reference, label) };
+        }
+        return .{ .resource = try TextResourceEditorInput.init(allocator, io, path, label, text, resource) };
     }
 };
 

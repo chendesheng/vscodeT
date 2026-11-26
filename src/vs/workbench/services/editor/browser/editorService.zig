@@ -8,6 +8,7 @@ const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorW
 const FileEditorInput = @import("../../../contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
 const ImagePreviewEditorInput = @import("../../../contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInput;
 const text_files = @import("../../textfile/common/textFileService.zig");
+const TextModelResolverService = @import("../../textmodelResolver/common/textModelResolverService.zig").TextModelResolverService;
 const editor_pane = @import("../../../browser/parts/editor/editorPane.zig");
 const Tab = editor_pane.Tab;
 const GroupView = @import("../../../browser/parts/editor/editorGroupView.zig").EditorGroupView(*Tab);
@@ -108,10 +109,11 @@ pub const EditorService = struct {
     }
 
     fn resolveDiffSide(self: EditorService, io: std.Io, resource: ?diff_provider.SnapshotSource.Resource, text: []const u8, width: usize, height: usize, created: *?*FileEditorInput) !text_diff_editor_mod.SideSource {
-        const resolved = resource orelse return .{};
-        if (!resolved.is_working_file) return .{ .resource = resolved.uri };
-        if (self.findResolvedFileInput(io, resolved.path)) |input| return .{ .file = input };
-        const editor = try Editor.createFromTextWithOptions(self.part.allocator, io, text, resolved.path, width, height, .{ .reserve_scrollbar = true });
+        const resolver = if (self.opening) |opening| opening.text_model_resolver else null;
+        const resolved = resource orelse return .{ .resolver = resolver };
+        if (!resolved.is_working_file) return .{ .resource = resolved.uri, .resolver = resolver };
+        if (self.findResolvedFileInput(io, resolved.path)) |input| return .{ .file = input, .resolver = resolver };
+        const editor = if (self.opening) |opening| try opening.createResolvedFileEditor(resolved, text, width, height) else try Editor.createFromTextWithOptions(self.part.allocator, io, text, resolved.path, width, height, .{ .reserve_scrollbar = true });
         errdefer {
             editor.deinit();
             self.part.allocator.destroy(editor);
@@ -119,7 +121,7 @@ pub const EditorService = struct {
         if (self.opening) |opening| opening.host.configure_editor(opening.host.context, editor);
         const input = try FileEditorInput.init(self.part.allocator, editor);
         created.* = input;
-        return .{ .file = input };
+        return .{ .file = input, .resolver = resolver };
     }
 
     pub fn findOpenImageInput(self: EditorService, io: std.Io, path: []const u8) ?*ImagePreviewEditorInput {
@@ -242,7 +244,7 @@ pub const EditorService = struct {
             const original = try self.resolveDiffSide(io, resources.original, original_text, dims.width, dims.height, &created_original);
             const modified = if (original.file) |file| blk_side: {
                 if (resources.modified) |resolved| {
-                    if (resolved.is_working_file and text_files.samePath(self.part.allocator, io, file.editor.path, resolved.path)) break :blk_side text_diff_editor_mod.SideSource{ .file = file };
+                    if (resolved.is_working_file and text_files.samePath(self.part.allocator, io, file.editor.path, resolved.path)) break :blk_side text_diff_editor_mod.SideSource{ .file = file, .resolver = original.resolver };
                 }
                 break :blk_side try self.resolveDiffSide(io, resources.modified, modified_text, dims.width, dims.height, &created_modified);
             } else try self.resolveDiffSide(io, resources.modified, modified_text, dims.width, dims.height, &created_modified);
@@ -463,6 +465,7 @@ pub const EditorOpening = struct {
     images: *ui.image.Runtime,
     window_events: *@import("../../../../base/common/windowDispatch.zig").Queue,
     text_file_service: *text_files.TextFileService,
+    text_model_resolver: *TextModelResolverService,
     history: *HistoryService,
     declarative: *const ?*const extensions_registry.Registry,
     json_client: *const ?*json_language.Client,
@@ -537,8 +540,12 @@ pub const EditorOpening = struct {
         if (tab.multi_diff) |multi| {
             const services = self.multi_diff_source_services orelse return error.MultiDiffUnavailable;
             try self.bindMultiDiffInput(multi.input, if (services.configuration) |configuration| configuration.* else null, services.resolver, services.provider);
-        } else self.host.configure_editor(self.host.context, tab.editor);
+        } else {
+            self.host.configure_editor(self.host.context, tab.editor);
+            if (tab.file_input != null) try self.text_model_resolver.registerDocument(tab.editor.document, false);
+        }
         if (tab.diff) |diff| {
+            for ([_]text_diff_editor_mod.SideInput{ diff.original_input, diff.modified_input }) |side| try self.text_model_resolver.registerDocument(side.resolve(), side.interface().isReadonly());
             self.host.configure_editor(self.host.context, diff.widget.original_editor);
             try self.attachDiffModel(diff.widget.view_model);
         }
@@ -882,17 +889,32 @@ pub const EditorOpening = struct {
         }
     };
 
+    fn createResolvedFileEditor(self: *EditorOpening, resource: diff_provider.SnapshotSource.Resource, text: []const u8, width: usize, height: usize) !*Editor {
+        if (try self.text_model_resolver.acquireExisting(resource.uri)) |value| {
+            var reference = value;
+            defer reference.dispose();
+            return Editor.createViewFromDocument(TextModelResolverService.documentOf(reference), width, height, .{ .reserve_scrollbar = true });
+        }
+        var reference = try self.text_model_resolver.createResolvedModelReference(resource.uri, resource.path, text, false);
+        defer reference.dispose();
+        const editor = try Editor.createViewFromDocument(TextModelResolverService.documentOf(reference), width, height, .{ .reserve_scrollbar = true });
+        if (resource.encoding) |encoding| editor.setEncoding(encoding);
+        return editor;
+    }
+
     fn resolveMultiDiffSide(self: *EditorOpening, existing_resources: *const std.StringHashMap(*text_diff_editor_mod.TextResourceEditorInput), resource: diff_provider.SnapshotSource.Resource, text: []const u8, binary: bool, label: []const u8) !multi_diff_input.ResolvedSide {
         if (binary) return .{ .uri = resource.uri };
         if (resource.is_working_file) {
-            if (self.findOpenInput(resource.path)) |file| return .{ .uri = resource.uri, .input = .{ .file = file.retain() } };
-            const editor = try Editor.createFromTextWithOptions(self.allocator, self.io, text, resource.path, 80, 20, .{ .reserve_scrollbar = true });
+            if (self.findOpenInput(resource.path)) |file| {
+                try self.text_model_resolver.registerDocument(file.editor.document, false);
+                return .{ .uri = resource.uri, .input = .{ .file = file.retain() } };
+            }
+            const editor = try self.createResolvedFileEditor(resource, text, 80, 20);
             errdefer {
                 editor.deinit();
                 self.allocator.destroy(editor);
             }
             self.host.configure_editor(self.host.context, editor);
-            if (resource.encoding) |encoding| editor.setEncoding(encoding);
             const input = try FileEditorInput.init(self.allocator, editor);
             return .{ .uri = resource.uri, .input = .{ .file = input } };
         }
@@ -902,7 +924,12 @@ pub const EditorOpening = struct {
             try input.updateContents(text);
             return .{ .uri = resource.uri, .input = .{ .resource = input.retain() } };
         }
-        const input = try text_diff_editor_mod.TextResourceEditorInput.init(self.allocator, self.io, resource.path, label, text, resource.uri);
+        var reference = try self.text_model_resolver.createResolvedModelReference(resource.uri, resource.path, text, true);
+        _ = TextModelResolverService.documentOf(reference).replaceGeneratedContents(text) catch |err| {
+            reference.dispose();
+            return err;
+        };
+        const input = try text_diff_editor_mod.TextResourceEditorInput.initFromReference(self.allocator, reference, label);
         return .{ .uri = resource.uri, .input = .{ .resource = input } };
     }
     fn releaseMultiDiffResolvedSide(side: ?multi_diff_input.ResolvedSide) void {
@@ -1117,6 +1144,7 @@ pub const EditorOpening = struct {
     }
 
     fn openTextResourceInput(self: *EditorOpening, input: *text_diff_editor_mod.TextResourceEditorInput) !void {
+        try self.text_model_resolver.registerDocument(input.document, true);
         self.cancelPendingOpen();
         self.cancelPendingDiff();
         const opened = try self.part.service.openEditor(input.interface(), null, .{ .open = .{ .pinned = true, .active = true } });
@@ -1163,9 +1191,27 @@ pub const EditorOpening = struct {
     }
 
     fn openCreatedTextEditor(self: *EditorOpening, path: []const u8, editor: *Editor, options: OpenOptions) !void {
-        self.host.configure_editor(self.host.context, editor);
+        var actual = editor;
+        var owned = true;
+        defer if (owned) {
+            actual.deinit();
+            self.allocator.destroy(actual);
+        };
+        if (try self.text_model_resolver.acquireExisting(editor.model.uri())) |value| {
+            var reference = value;
+            defer reference.dispose();
+            const document = TextModelResolverService.documentOf(reference);
+            if (document != editor.document) {
+                const size = (self.part.activeView() orelse return error.GroupPaneMissing).contentDimensions();
+                actual = try Editor.createViewFromDocument(document, size.width, size.height, .{ .reserve_scrollbar = true });
+                editor.deinit();
+                self.allocator.destroy(editor);
+            }
+        } else try self.text_model_resolver.registerDocument(editor.document, false);
+        self.host.configure_editor(self.host.context, actual);
         const service = EditorService{ .part = self.part };
-        try self.finishTextEditorOpen(path, try service.openTextEditor(self.view_factory, editor, options, self.images), options);
+        owned = false; // openTextEditor consumes the editor on all outcomes
+        try self.finishTextEditorOpen(path, try service.openTextEditor(self.view_factory, actual, options, self.images), options);
     }
 
     fn finishTextEditorOpen(self: *EditorOpening, path: []const u8, opened: OpenedTextEditor, options: OpenOptions) !void {

@@ -1,10 +1,11 @@
 // Port of the read-only TextResourceEditorInput in
 // src/vs/workbench/common/editor/textResourceEditorInput.ts.
-// The resolved native EditorDocument reference replaces ITextModelService's
-// reference to a TextResourceEditorModel; mounted editors retain it separately.
+// Resolved inputs retain the ITextModelService reference; mounted code
+// editors retain the same document independently.
 const std = @import("std");
 const EditorDocument = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").EditorDocument;
 const EditorInput = @import("editorInput.zig").EditorInput;
+const ModelReference = @import("../../../editor/common/services/resolverService.zig").ModelReference;
 const GroupIdentifier = @import("editorInput.zig").GroupIdentifier;
 const SaveResult = @import("editorInput.zig").SaveResult;
 const resource_key = @import("../../../base/common/stdUri.zig").resourceKey;
@@ -13,6 +14,7 @@ pub const TextResourceEditorInput = struct {
     allocator: std.mem.Allocator,
     base: EditorInput,
     document: *EditorDocument,
+    model_reference: ?ModelReference = null,
     key: []u8,
     description: []u8,
     preferred_name: ?[]u8 = null,
@@ -23,6 +25,18 @@ pub const TextResourceEditorInput = struct {
     pub fn init(allocator: std.mem.Allocator, io: std.Io, path: []const u8, description: []const u8, text: []const u8, resource: std.Uri) !*TextResourceEditorInput {
         const document = try EditorDocument.createFromText(allocator, io, path, text, resource);
         errdefer document.release();
+        return initResolved(allocator, document, description, null);
+    }
+
+    /// Adopts the acquired reference on every outcome.
+    pub fn initFromReference(allocator: std.mem.Allocator, reference: ModelReference, description: []const u8) !*TextResourceEditorInput {
+        var owned = reference;
+        errdefer owned.dispose();
+        const document: *EditorDocument = @ptrCast(@alignCast(reference.object.context));
+        return initResolved(allocator, document, description, owned);
+    }
+
+    fn initResolved(allocator: std.mem.Allocator, document: *EditorDocument, description: []const u8, reference: ?ModelReference) !*TextResourceEditorInput {
         const key = try resource_key(allocator, document.model.uri());
         errdefer allocator.free(key);
         const label = try allocator.dupe(u8, description);
@@ -32,6 +46,7 @@ pub const TextResourceEditorInput = struct {
             .allocator = allocator,
             .base = EditorInput.init(allocator, ID),
             .document = document,
+            .model_reference = reference,
             .key = key,
             .description = label,
         };
@@ -55,7 +70,7 @@ pub const TextResourceEditorInput = struct {
         if (self.refs != 0) return;
         self.base.dispose();
         self.base.deinit();
-        self.document.release();
+        if (self.model_reference) |*reference| reference.dispose() else self.document.release();
         self.allocator.free(self.key);
         self.allocator.free(self.description);
         if (self.preferred_name) |name| self.allocator.free(name);

@@ -11519,3 +11519,44 @@ test "Workbench: serialize and restore multiple diff layout debug log follows th
     debug_group.focus();
     try wb.commands.execute("workbench.action.closeActiveEditor");
 }
+
+test "Workbench: git scm integration shares canonical virtual diff models across editor inputs" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "shared.txt", .data = "work\n" });
+    const path = try tmp.dir.realPathFileAlloc(io, "shared.txt", a);
+    defer a.free(path);
+    const window = try TestWindow.init(a, io, &.{path}, 110, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "old\n", "A\n", "Shared Original", "Modified A");
+    const first = wb.activeTab().?.diff.?;
+    const original = first.original_input.resolve();
+    const model = original.model;
+    var count: usize = 0;
+    _ = try original.on_will_dispose.listen(&count, struct {
+        fn disposed(_: void, value: *usize) !void {
+            value.* += 1;
+        }
+    }.disposed);
+    var reference = try wb.text_model_api.createModelReference(model.uri());
+    defer reference.dispose();
+    try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "old\n", "B\n", "Shared Original", "Modified B");
+    const second = wb.activeTab().?.diff.?;
+    try std.testing.expect(first != second);
+    try std.testing.expectEqual(original, second.original_input.resolve());
+    try std.testing.expectEqual(model, reference.object.textEditorModel);
+    try std.testing.expect(first.modified_input.resolve() != second.modified_input.resolve());
+    _ = try wb.closeActive();
+    try std.testing.expectEqual(first, wb.activeTab().?.diff.?);
+    _ = try wb.closeActive();
+    try std.testing.expect(wb.activeTab().?.diff == null);
+    for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+    try std.testing.expectEqual(@as(usize, 0), count);
+    try std.testing.expectEqualStrings("old", try model.borrowLineContent(1));
+    reference.dispose();
+    for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+    try std.testing.expectEqual(@as(usize, 1), count);
+}

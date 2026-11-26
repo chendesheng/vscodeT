@@ -298,6 +298,8 @@ pub const TerminalWorkbench = struct {
     async_io: Io,
     disk_files: @import("../vs/platform/files/common/fileService.zig").DiskFileService,
     text_file_service: text_files.TextFileService,
+    text_model_resolver: @import("../vs/workbench/services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService,
+    text_model_api: @import("../vs/editor/common/services/resolverService.zig").ITextModelService,
     /// Native file opening and event-driven reload owner.
     editor_opening: editor_service_mod.EditorOpening,
     cols: usize,
@@ -523,6 +525,9 @@ pub const TerminalWorkbench = struct {
         self.explorer_panes = null;
         self.window_events = .{ .io = self.async_io, .window_events = .init(allocator) };
         errdefer self.window_events.deinitWindowEvents();
+        self.text_model_resolver = .init(allocator, self.async_io, &self.window_events);
+        errdefer self.text_model_resolver.deinit();
+        self.text_model_api = self.text_model_resolver.interface();
         self.user_keybindings = try user_keybindings_mod.UserKeybindingsLoader.create(allocator, io, self.async_io, &self.window_events);
         errdefer self.user_keybindings.destroy();
         _ = try self.user_keybindings.on_did_change.listen(self, onUserKeybindingsChanged);
@@ -833,6 +838,7 @@ pub const TerminalWorkbench = struct {
             .images = &self.images,
             .window_events = &self.window_events,
             .text_file_service = &self.text_file_service,
+            .text_model_resolver = &self.text_model_resolver,
             .history = &self.history,
             .declarative = &self.declarative,
             .json_client = &self.json_client,
@@ -1214,6 +1220,7 @@ pub const TerminalWorkbench = struct {
         self.editors = .{ .part = self.part, .opening = &self.editor_opening };
         self.editor_api = self.editors.interface();
         _ = try self.services.set(@import("../vs/workbench/services/editor/common/editorService.zig").editor_service_id, &self.editor_api);
+        _ = try self.services.set(@import("../vs/editor/common/services/resolverService.zig").text_model_service_id, &self.text_model_api);
         _ = try self.services.set(@import("../vs/workbench/contrib/multiDiffEditor/browser/multiDiffSourceResolverService.zig").multi_diff_source_resolver_service_id, &self.multi_diff_sources_api);
         self.diff_commands = .{
             .editor_service = &self.editors,
@@ -1797,6 +1804,7 @@ pub const TerminalWorkbench = struct {
         self.workspace.deinit();
         // The part owns the group views; disposing it disposes the tab views.
         self.part.deinit();
+        self.text_model_resolver.deinit();
         self.window_events.deinitWindowEvents();
         if (self.layout.main_container) |main| main.document.destroy(main);
         self.terminal_tabbed_view.deinit(self.allocator);
