@@ -88,6 +88,7 @@ pub const EditorOptions = struct {
 pub const IMultiDiffEditorFileListHost = struct {
     context: *anyopaque,
     focus_file_list: *const fn (*anyopaque) anyerror!void,
+    restore_focus_file_list: ?*const fn (*anyopaque) void = null,
     pub fn focusFileList(self: IMultiDiffEditorFileListHost) !void {
         try self.focus_file_list(self.context);
     }

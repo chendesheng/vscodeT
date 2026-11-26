@@ -910,6 +910,12 @@ pub const Tab = struct {
                         try pane.focusFileList();
                     }
                 }.focus,
+                .restore_focus_file_list = struct {
+                    fn focus(context: *anyopaque) void {
+                        const pane: *MultiDiffPane = @ptrCast(@alignCast(context));
+                        pane.focusFileList() catch {};
+                    }
+                }.focus,
             } else null,
             .get_control_fn = struct {
                 fn get(context: *anyopaque) ?*anyopaque {
