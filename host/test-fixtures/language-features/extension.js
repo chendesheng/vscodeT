@@ -29,6 +29,22 @@ function activate(context) {
     const items = await vscode.commands.executeCommand('vscode.executeCodeLensProvider', vscode.Uri.parse(uri), count);
     return items.map(item => ({ title: item.command?.title, start: item.range.start.character }));
   }));
+  context.subscriptions.push(vscode.commands.registerCommand('fixture.tabState', () => ({
+    activeDocument: vscode.window.activeTextEditor?.document.uri.toString(),
+    documents: vscode.workspace.textDocuments.map(document => ({ uri: document.uri.toString(), firstLine: document.lineAt(0).text })),
+    groups: vscode.window.tabGroups.all.map(group => ({
+      column: group.viewColumn,
+      active: group.isActive,
+      tabs: group.tabs.map(tab => ({
+        active: tab.isActive,
+        pinned: tab.isPinned,
+        preview: tab.isPreview,
+        dirty: tab.isDirty,
+        label: tab.label,
+        diffs: (tab.input?.textDiffs ?? (tab.input?.original && tab.input?.modified ? [tab.input] : [])).map(diff => ({ original: diff.original.toString(), modified: diff.modified.toString() }))
+      }))
+    }))
+  })));
   context.subscriptions.push(vscode.languages.registerHoverProvider({ language: 'json' }, {
     provideHover() {
       return { contents: ['fixture hover'] };

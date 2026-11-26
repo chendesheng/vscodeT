@@ -54,7 +54,8 @@ const documents_and_editors = @import("./mainThreadDocumentsAndEditors.zig");
 const MainThreadDocuments = @import("./mainThreadDocuments.zig").MainThreadDocuments;
 const MainThreadTextEditors = @import("./mainThreadTextEditors.zig").MainThreadTextEditors;
 const EditSpec = @import("./mainThreadTextEditors.zig").EditSpec;
-const MainThreadEditorTabs = @import("./mainThreadEditorTabs.zig").MainThreadEditorTabs;
+const editor_tabs = @import("./mainThreadEditorTabs.zig");
+const MainThreadEditorTabs = editor_tabs.MainThreadEditorTabs;
 const MainThreadWindow = @import("./mainThreadWindow.zig").MainThreadWindow;
 const MainThreadExtensionService = @import("./mainThreadExtensionService.zig").MainThreadExtensionService;
 const diagnosticsHost = @import("./mainThreadDiagnostics.zig").HostProxy;
@@ -629,20 +630,49 @@ pub const Extensions = struct {
 
     fn editorTabsMoveHost(_: *anyopaque, _: []const u8, _: usize) anyerror!void {}
 
+    const LocatedTab = struct { pane: *GroupPane, tab: *Tab };
+
+    fn findTabById(self: *Extensions, id: []const u8) !?LocatedTab {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        for (self.editor_service.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (std.mem.eql(u8, id, try tabId(arena.allocator(), pane, tab))) return .{ .pane = pane, .tab = tab };
+            }
+        }
+        return null;
+    }
+
     fn editorTabsCloseTabHost(context: *anyopaque, tab_id: []const u8) anyerror!bool {
         const self: *Extensions = @ptrCast(@alignCast(context));
-        const closed = self.services.close_path(self.services.common.context, tab_id) catch false;
+        const target = (try self.findTabById(tab_id)) orelse return false;
+        const opening = self.editor_service.opening orelse return false;
+        try opening.group_actions.closeEditor(target.pane, target.tab);
         self.needs_render = true;
-        return closed;
+        // A dirty editor's asynchronous confirmation may still be pending;
+        // do not report success before the group actually closes the tab.
+        return (try self.findTabById(tab_id)) == null;
     }
 
     fn editorTabsCloseGroupHost(context: *anyopaque, group_id: i64) anyerror!bool {
-        _ = group_id;
         const self: *Extensions = @ptrCast(@alignCast(context));
-        while (self.editor_service.tabCount() > 0) {
-            if (!(self.services.close_active(self.services.common.context) catch false)) break;
+        const id = std.math.cast(u32, group_id) orelse return false;
+        const opening = self.editor_service.opening orelse return false;
+        const part = self.editor_service.part;
+        while (part.service.getGroup(id)) |group| {
+            const pane = part.viewForGroup(group) orelse return false;
+            const old_count = pane.tabs.items.len;
+            if (old_count == 0) {
+                _ = part.collapseView(pane);
+                self.needs_render = true;
+                return true;
+            }
+            try opening.group_actions.closeEditor(pane, pane.tabs.items[0]);
+            self.needs_render = true;
+            const current = part.service.getGroup(id) orelse return true;
+            const remaining = part.viewForGroup(current) orelse return false;
+            if (remaining.tabs.items.len >= old_count) return false;
         }
-        self.needs_render = true;
         return true;
     }
 
@@ -1059,27 +1089,67 @@ pub const Extensions = struct {
         self.needs_render = true;
     }
 
+    /// Mirrors upstream EditorResourceAccessor.getCanonicalUri with BOTH for
+    /// composite diffs. The group's ID also distinguishes identical inputs in
+    /// different groups, and virtual resource queries are never dropped.
+    fn tabId(arena: Allocator, pane: *GroupPane, tab: *Tab) ![]const u8 {
+        const resource = if (tab.diff) |diff| try std.fmt.allocPrint(arena, "{s}-{s}", .{
+            try std_uri.encodedResource(arena, diff.modified_input.resolve().model.uri()),
+            try std_uri.encodedResource(arena, diff.original_input.resolve().model.uri()),
+        }) else if (tab.multi_diff) |multi| multi.input.source_uri else if (tab.markdown_panel != null or tab.terminal_input != null) tab.input.resource orelse "undefined-undefined" else try std_uri.encodedResource(arena, tab.editor.model.uri());
+        return std.fmt.allocPrint(arena, "{d}~{s}-{s}-{s} ", .{ pane.group.id, tab.input.editor_id orelse "undefined", tab.input.type_id, resource });
+    }
+
+    fn tabInput(arena: Allocator, tab: *Tab) !editor_tabs.TabInputSpec {
+        if (tab.diff) |diff| return .{ .text_diff = .{
+            .original = diff.original_input.resolve().model.uri(),
+            .modified = diff.modified_input.resolve().model.uri(),
+        } };
+        if (tab.multi_diff) |multi| {
+            var pairs: std.ArrayList(editor_tabs.TextDiffSpec) = .empty;
+            // Upstream describes the input's declared resources, not the
+            // mounted/filtered/sorted view models. Added/deleted resources
+            // have no TextDiffInputDto when either URI is absent.
+            for (multi.input.resources() orelse &.{}) |resource| {
+                const original = resource.originalUri orelse continue;
+                const modified = resource.modifiedUri orelse continue;
+                try pairs.append(arena, .{ .original = original, .modified = modified });
+            }
+            return .{ .multi_diff = pairs.items };
+        }
+        if (tab.terminal_input != null) return .terminal;
+        if (tab.image_input != null) return .{ .custom = .{ .uri = tab.editor.model.uri(), .view_type = tab.input.editor_id orelse "" } };
+        if (tab.markdown_panel != null) return .{ .webview = tab.input.editor_id orelse "" };
+        if (tab.file_input != null or tab.text_resource_input != null) return .{ .text = tab.editor.model.uri() };
+        return .unknown;
+    }
+
     fn syncTabs(self: *Extensions) !void {
-        const active_tab = self.editor_service.activeEditorPane();
         var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_instance.deinit();
         const arena = arena_instance.allocator();
-        var specs = std.array_list.Managed(documents_and_editors.TabSpec).init(arena);
-        for (self.editor_service.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                try specs.append(.{
-                    .path = try std_uri.fsPath(tab.editor.model.uri(), arena),
-                    .label = std.fs.path.basename(tab.editor.path),
-                    .is_active = tab == active_tab,
-                    .is_dirty = tab.editor.dirty_state,
-                    .is_pinned = pane.group.model.isPinned(.{ .editor = tab.input }),
-                    .is_preview = pane.group.model.previewEditor() == tab.input,
+        const part = self.editor_service.part;
+        const panes = try part.orderedViews(arena);
+        var specs: std.ArrayList(editor_tabs.GroupSpec) = .empty;
+        for (panes, 1..) |pane, column| {
+            const inputs = try pane.group.model.getEditors(arena, .SEQUENTIAL, false);
+            var tabs: std.ArrayList(editor_tabs.TabSpec) = .empty;
+            for (inputs) |input| {
+                const tab = pane.tabForInput(input) orelse continue;
+                try tabs.append(arena, .{
+                    .id = try tabId(arena, pane, tab),
+                    .label = input.getName(),
+                    .editor_id = input.editor_id,
+                    .input = try tabInput(arena, tab),
+                    .is_active = pane.group.model.activeEditor() == input,
+                    .is_dirty = input.isDirty(),
+                    .is_pinned = pane.group.model.isSticky(.{ .editor = input }),
+                    .is_preview = !pane.group.model.isPinned(.{ .editor = input }),
                 });
             }
+            try specs.append(arena, .{ .id = pane.group.id, .view_column = column, .is_active = part.activeView() == pane, .tabs = tabs.items });
         }
-        if (self.editor_tabs_actor) |*actor| {
-            try actor.sync(arena, if (active_tab) |tab| try std_uri.fsPath(tab.editor.model.uri(), arena) else "", specs.items);
-        }
+        if (self.editor_tabs_actor) |*actor| try actor.sync(arena, specs.items);
     }
 
     fn removeActiveDocument(self: *Extensions) !void {
@@ -2221,6 +2291,108 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqual(diff.original_editor, extensions.active.?.editor);
             diff.setFocus(.modified);
             try std.testing.expectEqual(diff.modified_editor, extensions.active.?.editor);
+        }
+
+        test "Extensions: multi-diff tabs expose declared pairs and offscreen documents through virtualization" {
+            if (!build_options.e2e) return error.SkipZigTest;
+            const io = time_compat.io;
+            std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+            const a = std.testing.allocator;
+            var scratch = std.heap.ArenaAllocator.init(a);
+            defer scratch.deinit();
+            const arena = scratch.allocator();
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try tmp.dir.writeFile(io, .{ .sub_path = "bootstrap.json", .data = "{}" });
+            const bootstrap = try tmp.dir.realPathFileAlloc(io, "bootstrap.json", arena);
+            const Resource = @import("../../common/editor.zig").IMultiDiffEditorResource;
+            var resources: [3]Resource = undefined;
+            for (&resources, 0..) |*resource, index| {
+                var uris: [2]std.Uri = undefined;
+                for ([_][]const u8{ "old", "new" }, 0..) |side, side_index| {
+                    const name = try std.fmt.allocPrint(arena, "{d}-{s}.json", .{ index, side });
+                    var contents: std.ArrayList(u8) = .empty;
+                    try contents.appendSlice(arena, try std.fmt.allocPrint(arena, "{s}-{d}\n", .{ side, index }));
+                    for (1..45) |line| try contents.appendSlice(arena, try std.fmt.allocPrint(arena, "{s} {d}\n", .{ side, line }));
+                    try tmp.dir.writeFile(io, .{ .sub_path = name, .data = contents.items });
+                    const path = try tmp.dir.realPathFileAlloc(io, name, arena);
+                    uris[side_index] = try std.Uri.parse(try std_uri.encodedResource(arena, .{ .scheme = "file", .path = .{ .raw = path } }));
+                }
+                resource.* = .{ .original = uris[0], .modified = uris[1] };
+            }
+            const window = try TestWindow.init(a, io, &.{bootstrap}, 120, 24);
+            defer window.deinit();
+            const wb = window.workbench;
+            try wb.enableLanguageFeatures();
+            const extensions = try Extensions.init(a, io, wb.extensionHostServices(), &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }}, ".cache-ext/data-multi-diff-fixture", "host/dist");
+            defer extensions.deinit();
+            const features = wb.language_features.?;
+            const deadline = time_compat.milliTimestamp() + 10_000;
+            while (time_compat.milliTimestamp() < deadline) {
+                _ = extensions.pump();
+                const providers = try features.code_lens_provider.ordered(arena, wb.activeTab().?.editor.model, false);
+                if (providers.len != 0) break;
+                time_compat.sleepMillis(10);
+            }
+            try wb.editor_api.openMultiDiffResources(.{ .multiDiffSource = try std.Uri.parse("multi-diff-editor:ext-host-test"), .label = "Extension host comparison", .resources = &resources });
+            for (0..6000) |_| {
+                if (wb.activeTab()) |tab| if (tab.multi_diff) |multi| {
+                    if (!multi.widget.getViewModel().?.isLoading) break;
+                };
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                _ = extensions.pump();
+                std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+            }
+            const tab = wb.activeTab() orelse return error.TestExpectedMultiDiffTab;
+            const multi = tab.multi_diff orelse return error.TestExpectedMultiDiffTab;
+            const vm = multi.widget.getViewModel().?;
+            try std.testing.expectEqual(@as(usize, 3), vm.items.len);
+            const last = vm.items[2];
+            try std.testing.expect(multi.widget.impl.bindingFor(last) == null);
+            for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            const command_id = proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands);
+            const command_args = &.{rpc.Arg{ .json = .{ .string = "fixture.tabState" } }};
+            const state = try extensions.host.requestSync(arena, command_id, "$executeContributedCommand", command_args, null, 5000);
+            const groups = state.object.get("groups").?.array.items;
+            try std.testing.expectEqual(@as(usize, 1), groups.len);
+            const tabs = groups[0].object.get("tabs").?.array.items;
+            try std.testing.expectEqual(@as(usize, 2), tabs.len);
+            const comparison = tabs[1].object;
+            try std.testing.expect(comparison.get("active").?.bool);
+            try std.testing.expect(!comparison.get("pinned").?.bool);
+            const diffs = comparison.get("diffs").?.array.items;
+            try std.testing.expectEqual(@as(usize, resources.len), diffs.len);
+            for (diffs, resources) |wire, resource| {
+                try std.testing.expectEqualStrings(try std_uri.encodedResource(arena, resource.original.?), wire.object.get("original").?.string);
+                try std.testing.expectEqualStrings(try std_uri.encodedResource(arena, resource.modified.?), wire.object.get("modified").?.string);
+            }
+            const docs = state.object.get("documents").?.array.items;
+            try std.testing.expectEqual(@as(usize, 7), docs.len);
+            try std.testing.expect(for (docs) |doc| {
+                if (std.mem.eql(u8, doc.object.get("firstLine").?.string, "old-2")) break true;
+            } else false);
+            // A language feature can use the last unmounted document before
+            // it is scrolled into view, and the real active editor follows both sides.
+            const model = last.original.model;
+            const value = try extensions.host.requestSync(arena, command_id, "$executeContributedCommand", &.{
+                .{ .json = .{ .string = "fixture.executeCodeLens" } },
+                .{ .json = .{ .string = try std_uri.encodedResource(arena, model.uri()) } },
+                .{ .json = .{ .integer = 0 } },
+            }, null, 5000);
+            try std.testing.expectEqualStrings(":old-2", value.array.items[0].object.get("title").?.string);
+            try multi.widget.reveal(.{ .original = resources[2].original, .modified = resources[2].modified }, null);
+            const control = multi.widget.activeControl() orelse return error.TestExpectedMultiDiffControl;
+            control.setFocus(.original);
+            try std.testing.expectEqual(control.original_editor, extensions.active.?.editor);
+            control.setFocus(.modified);
+            try std.testing.expectEqual(control.modified_editor, extensions.active.?.editor);
+            const after = try extensions.host.requestSync(arena, command_id, "$executeContributedCommand", command_args, null, 5000);
+            try std.testing.expectEqual(@as(usize, 7), after.object.get("documents").?.array.items.len);
+            try std.testing.expectEqualStrings(try std_uri.encodedResource(arena, control.modified_editor.model.uri()), after.object.get("activeDocument").?.string);
+            _ = try wb.closeActive();
+            for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            const closed = try extensions.host.requestSync(arena, command_id, "$executeContributedCommand", command_args, null, 5000);
+            try std.testing.expectEqual(@as(usize, 1), closed.object.get("documents").?.array.items.len);
         }
 
         test "Extensions: real TypeScript extension drives the language features" {

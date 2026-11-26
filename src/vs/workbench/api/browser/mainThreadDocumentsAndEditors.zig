@@ -4,7 +4,7 @@
 //
 // Terminal adaptation: the adapter supplies editor-group lifecycle and focus;
 // this module owns the real model mirrors and builds the exact `$acceptDocumentsAndEditorsDelta`,
-// `$acceptEditorTabModel`, `$acceptModelChanged` and
+// `$acceptModelChanged` and
 // `$acceptEditorPropertiesChanged` payloads, including the UTF-16 conversion of
 // selections and visible ranges.
 const std = @import("std");
@@ -19,15 +19,6 @@ pub const EditorOptions = struct {
     tab_size: usize,
     indent_size: usize,
     insert_spaces: bool,
-};
-
-pub const TabSpec = struct {
-    path: []const u8,
-    label: []const u8,
-    is_active: bool,
-    is_dirty: bool,
-    is_pinned: bool = true,
-    is_preview: bool = false,
 };
 
 pub const ChangeSpec = struct {
@@ -139,33 +130,6 @@ pub fn removedDocumentDelta(arena: Allocator, path: []const u8) !std.json.Value 
     try delta.put(arena, "removedDocuments", .{ .array = removed_docs });
     try delta.put(arena, "removedEditors", .{ .array = removed_editors });
     return .{ .object = delta };
-}
-
-pub fn tabModel(arena: Allocator, active_path: []const u8, tabs: []const TabSpec) !std.json.Value {
-    var tab_array = std.json.Array.init(arena);
-    for (tabs) |tab| {
-        var tab_object: std.json.ObjectMap = .empty;
-        try tab_object.put(arena, "id", .{ .string = try arena.dupe(u8, tab.path) });
-        try tab_object.put(arena, "label", .{ .string = try arena.dupe(u8, tab.label) });
-        var input: std.json.ObjectMap = .empty;
-        try input.put(arena, "kind", .{ .integer = 1 });
-        try input.put(arena, "uri", try manager.fileUri(arena, tab.path));
-        try tab_object.put(arena, "input", .{ .object = input });
-        if (std.mem.eql(u8, tab.path, active_path)) try tab_object.put(arena, "editorId", .{ .string = "1" });
-        try tab_object.put(arena, "isActive", .{ .bool = tab.is_active });
-        try tab_object.put(arena, "isPinned", .{ .bool = tab.is_pinned });
-        try tab_object.put(arena, "isPreview", .{ .bool = tab.is_preview });
-        try tab_object.put(arena, "isDirty", .{ .bool = tab.is_dirty });
-        try tab_array.append(.{ .object = tab_object });
-    }
-    var group: std.json.ObjectMap = .empty;
-    try group.put(arena, "isActive", .{ .bool = true });
-    try group.put(arena, "viewColumn", .{ .integer = 1 });
-    try group.put(arena, "tabs", .{ .array = tab_array });
-    try group.put(arena, "groupId", .{ .integer = 1 });
-    var groups = std.json.Array.init(arena);
-    try groups.append(.{ .object = group });
-    return .{ .array = groups };
 }
 
 pub fn selectionsJson(arena: Allocator, model: *TextModel, selections: []const Selection) !std.json.Array {
