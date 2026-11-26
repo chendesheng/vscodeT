@@ -20,6 +20,52 @@ const std_uri = @import("../../../../base/common/stdUri.zig");
 const ThemeColors = @import("../../../../workbench/browser/themeColors.zig").ThemeColors;
 const DiffWordWrap = @import("../diffEditor/diffEditorOptions.zig").DiffWordWrap;
 
+/// Upstream layout debug DTO. Allocated URI labels and item arrays belong
+/// to the caller's arena; the live scroll layout is never retained by a log.
+pub const IMultiDiffEditorLayoutDebugState = struct {
+    scrollLeft: usize,
+    scrollDimensions: scroll_mod.ScrollDimensions,
+    layout: Layout,
+    geometryEdit: ?GeometryEdit,
+    items: []const Item,
+    pub const Layout = struct {
+        revision: layout_mod.LayoutRevision,
+        scrollTop: usize,
+        logicalScrollHeight: usize,
+        scrollHeight: usize,
+        renderedHeight: usize,
+        leadingScrollSlack: usize,
+        trailingScrollSlack: usize,
+        contentViewport: layout_mod.LogicalRange,
+        renderedViewport: OffsetRange,
+        hiddenContentHeightAboveViewport: usize,
+    };
+    pub const GeometryEdit = struct {
+        fromRevision: layout_mod.LayoutRevision,
+        toRevision: layout_mod.LayoutRevision,
+        edits: []const layout_mod.ISizeEdit,
+        anchorKind: @FieldType(scroll_mod.ICompressedVirtualizedGeometryEdit, "anchorKind"),
+        anchorOffset: isize,
+        mappedAnchorOffset: isize,
+        anchorViewportOffset: isize,
+        desiredScrollTop: usize,
+        appliedScrollTop: usize,
+        leadingScrollSlack: usize,
+        trailingScrollSlack: usize,
+    };
+    pub const Item = struct {
+        key: []const u8,
+        label: []const u8,
+        originalUri: ?[]const u8,
+        modifiedUri: ?[]const u8,
+        collapsed: bool,
+        hasTemplate: bool,
+        verticalState: struct { contentHeight: usize, itemViewportOffset: usize },
+        maxScroll: usize,
+        layout: layout_mod.ICompressedVirtualizedItemLayout,
+    };
+};
+
 pub const IMultiDiffDocState = struct { key: []u8, collapsed: bool, selections: ?[]Selection };
 pub const IMultiDiffEditorViewState = struct {
     allocator: Allocator,
@@ -281,6 +327,66 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
             try self.applyPendingScroll();
             try self.on_did_change_layout.fire({});
         }
+
+        pub fn getLayoutDebugState(self: *const Self, a: Allocator) !IMultiDiffEditorLayoutDebugState {
+            const current_layout = self.scroll_view.layout;
+            const entries = self.manager.items;
+            if (entries.len > current_layout.items.len) return error.LayoutNotReady;
+            const items = try a.alloc(IMultiDiffEditorLayoutDebugState.Item, entries.len);
+            for (entries, items, current_layout.items[0..entries.len]) |entry, *item, geometry| {
+                const doc = entry.item.documentDiffItem;
+                const uri = if (doc.modified) |side| side.uri else if (doc.original) |side| side.uri else null;
+                const label = if (uri) |resource| blk: {
+                    const path = try std_uri.path(resource, a);
+                    const name = std.fs.path.basename(path);
+                    if (name.len > 0) break :blk name;
+                    if (resource.host) |host| break :blk try host.toRawMaybeAlloc(a);
+                    break :blk resource.scheme;
+                } else "<none>";
+                item.* = .{
+                    .key = try a.dupe(u8, entry.item.getKey()),
+                    .label = try a.dupe(u8, label),
+                    .originalUri = if (doc.original) |side| try std_uri.encodedResource(a, side.uri) else null,
+                    .modifiedUri = if (doc.modified) |side| try std_uri.encodedResource(a, side.uri) else null,
+                    .collapsed = entry.item.collapsed,
+                    .hasTemplate = entry.binding() != null,
+                    .verticalState = .{ .contentHeight = entry.size(), .itemViewportOffset = geometry.scrollOffset },
+                    .maxScroll = entry.maxScroll(),
+                    .layout = geometry,
+                };
+            }
+            return .{
+                .scrollLeft = self.scroll_view.scroll_left,
+                .scrollDimensions = self.scroll_view.scroll_dimensions,
+                .layout = .{
+                    .revision = current_layout.revision,
+                    .scrollTop = current_layout.scrollTop,
+                    .logicalScrollHeight = current_layout.logicalScrollHeight,
+                    .scrollHeight = current_layout.scrollHeight,
+                    .renderedHeight = current_layout.renderedHeight,
+                    .leadingScrollSlack = current_layout.leadingScrollSlack,
+                    .trailingScrollSlack = current_layout.trailingScrollSlack,
+                    .contentViewport = current_layout.contentViewport,
+                    .renderedViewport = current_layout.renderedViewport,
+                    .hiddenContentHeightAboveViewport = current_layout.hiddenContentHeightAboveViewport,
+                },
+                .geometryEdit = if (self.scroll_view.last_geometry_edit) |geometry| .{
+                    .fromRevision = geometry.fromRevision,
+                    .toRevision = geometry.toRevision,
+                    .edits = try a.dupe(layout_mod.ISizeEdit, geometry.edits),
+                    .anchorKind = geometry.anchorKind,
+                    .anchorOffset = geometry.anchorOffset,
+                    .mappedAnchorOffset = geometry.mappedAnchorOffset,
+                    .anchorViewportOffset = geometry.anchorViewportOffset,
+                    .desiredScrollTop = geometry.desiredScrollTop,
+                    .appliedScrollTop = geometry.appliedScrollTop,
+                    .leadingScrollSlack = geometry.leadingScrollSlack,
+                    .trailingScrollSlack = geometry.trailingScrollSlack,
+                } else null,
+                .items = items,
+            };
+        }
+
         pub fn layout(self: *Self, width: usize, height: usize) !void {
             self.config.width = width;
             try self.scroll_view.setDimensions(width, height, 0);

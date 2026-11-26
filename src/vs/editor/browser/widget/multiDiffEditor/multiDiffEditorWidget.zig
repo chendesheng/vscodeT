@@ -28,18 +28,22 @@ pub fn MultiDiffEditorWidget(comptime View: type) type {
         impl: *Impl,
         allocator: std.mem.Allocator,
         on_did_change_layout: Emitter(void),
+        on_will_dispose: Emitter(void),
         layout_listener: ?usize = null,
 
         pub fn create(allocator: std.mem.Allocator, io: std.Io, queue: *dispatch.Queue, host: Host, variant: MultiDiffEditorVariant) !*Self {
             const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
-            self.* = .{ .allocator = allocator, .impl = try Impl.create(allocator, io, queue, host, variant), .on_did_change_layout = .init(allocator) };
+            self.* = .{ .allocator = allocator, .impl = try Impl.create(allocator, io, queue, host, variant), .on_did_change_layout = .init(allocator), .on_will_dispose = .init(allocator) };
             errdefer self.impl.destroy();
             errdefer self.on_did_change_layout.deinit();
+            errdefer self.on_will_dispose.deinit();
             self.layout_listener = try self.impl.on_did_change_layout.listen(self, onLayoutChanged);
             return self;
         }
         pub fn destroy(self: *Self) void {
+            self.on_will_dispose.fire({}) catch {};
+            self.on_will_dispose.deinit();
             if (self.layout_listener) |id| self.impl.on_did_change_layout.unlisten(id);
             self.impl.destroy();
             self.on_did_change_layout.deinit();
@@ -96,6 +100,9 @@ pub fn MultiDiffEditorWidget(comptime View: type) type {
         }
         pub fn setPaddingBottom(self: *Self, height: usize) !void {
             try self.impl.setPaddingBottom(height);
+        }
+        pub fn getLayoutDebugState(self: *Self, allocator: std.mem.Allocator) !impl_mod.IMultiDiffEditorLayoutDebugState {
+            return self.impl.getLayoutDebugState(allocator);
         }
         pub fn getViewState(self: *Self, allocator: std.mem.Allocator) !IMultiDiffEditorViewState {
             return self.impl.getViewState(allocator);

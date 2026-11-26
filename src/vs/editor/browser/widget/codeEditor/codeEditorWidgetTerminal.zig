@@ -534,6 +534,19 @@ pub const EditorDocument = struct {
         return true;
     }
 
+    /// Append to a generated read-only document using the normal content
+    /// change event, without replacing previous lines or their selections.
+    pub fn appendGeneratedContents(self: *EditorDocument, text: []const u8) !void {
+        if (text.len == 0) return;
+        const end = self.model.getPositionAt(self.model.getValueLength(.TextDefined, false));
+        var operations = [_]IdentifiedSingleEditOperation{.init(Range.init(end.lineNumber, end.column, end.lineNumber, end.column), String.initBorrowed(text))};
+        _ = try self.model.applyEdits(&operations, false);
+        self.model.clearUndoRedo();
+        self.saved_version = self.model.getAlternativeVersionId();
+        self.clearConflict();
+        self.refreshDirtyState();
+    }
+
     fn clearConflict(self: *EditorDocument) void {
         self.conflict = false;
         for (self.editors.items) |editor| {
