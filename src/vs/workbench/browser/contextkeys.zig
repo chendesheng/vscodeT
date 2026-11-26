@@ -14,6 +14,7 @@ const ModelLanguageChangedEvent = @import("../../editor/common/textModelEvents.z
 pub const WindowContextState = struct {
     active_editor: ?*Editor,
     active_diff: bool = false,
+    visible_diff: bool = false,
     comparing_moved_code: bool = false,
     language_visible: bool,
     language_id: []const u8,
@@ -38,6 +39,7 @@ pub const WindowContextState = struct {
 const WindowContextKeys = struct {
     editor_focus: contextkeys.IContextKey,
     text_compare_editor_active: contextkeys.IContextKey,
+    text_compare_editor_visible: contextkeys.IContextKey,
     is_in_diff_editor: contextkeys.IContextKey,
     comparing_moved_code: contextkeys.IContextKey,
     editor_text_focus: contextkeys.IContextKey,
@@ -71,6 +73,7 @@ const WindowContextKeys = struct {
         return .{
             .editor_focus = try service.createKey("editorFocus", .{ .boolean = false }),
             .text_compare_editor_active = try service.createKey("textCompareEditorActive", .{ .boolean = false }),
+            .text_compare_editor_visible = try service.createKey("textCompareEditorVisible", .{ .boolean = false }),
             .is_in_diff_editor = try service.createKey("isInDiffEditor", .{ .boolean = false }),
             .comparing_moved_code = try service.createKey("comparingMovedCode", .{ .boolean = false }),
             .editor_lang_id = try service.createKey("editorLangId", .{ .string = "" }),
@@ -186,6 +189,7 @@ pub const WorkbenchContextKeysHandler = struct {
         const scm_active = std.mem.eql(u8, state.active_activity, "scm");
         keys.editor_focus.set(.{ .boolean = state.editor_focused });
         keys.text_compare_editor_active.set(.{ .boolean = state.active_diff });
+        keys.text_compare_editor_visible.set(.{ .boolean = state.visible_diff });
         keys.is_in_diff_editor.set(.{ .boolean = state.active_diff });
         keys.comparing_moved_code.set(.{ .boolean = state.comparing_moved_code });
         keys.editor_lang_id.set(.{ .string = state.language_id });

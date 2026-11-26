@@ -9837,6 +9837,12 @@ test "Diff editor commands resolve the active snapshot pane through their servic
     try std.testing.expectEqual((original_index + 1) % count, widget.current_change.?);
     try wb.commands.execute("workbench.action.compareEditor.previousChange");
     try std.testing.expectEqual(original_index, widget.current_change.?);
+    const next_f5: ui.KeyEvent = .{ .key = .f5, .mods = .{ .alt = true } };
+    const previous_f5: ui.KeyEvent = .{ .key = .f5, .mods = .{ .alt = true, .shift = true } };
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(wb, &next_f5));
+    try std.testing.expectEqual((original_index + 1) % count, widget.current_change.?);
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(wb, &previous_f5));
+    try std.testing.expectEqual(original_index, widget.current_change.?);
     const original = widget.original_editor;
     try std.testing.expect(!widget.inline_mode);
     try wb.commands.execute("workbench.action.compareEditor.swapSides");
@@ -9880,6 +9886,28 @@ test "Diff editor commands resolve the active snapshot pane through their servic
     try std.testing.expect(tab.diff.?.widget.options.hide_unchanged_regions);
     try wb.commands.execute("diffEditor.showAllUnchangedRegions");
     try wb.commands.execute("diffEditor.collapseAllUnchangedRegions");
+
+    // Open the focused revision as its own read-only editor over the very
+    // same document, using the upstream Ctrl+K, Shift+O chord.
+    current.setFocus(.original);
+    const original_model = current.originalModel();
+    const original_input = tab.diff.?.original_input.interface();
+    const chord: ui.KeyEvent = .{ .key = .{ .char = 'k' }, .mods = .{ .ctrl = true } };
+    const open: ui.KeyEvent = .{ .key = .{ .char = 'o' }, .mods = .{ .shift = true } };
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(wb, &chord));
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(wb, &open));
+    const resource_tab = wb.activeTab().?;
+    try std.testing.expect(!resource_tab.isDiff());
+    try std.testing.expect(resource_tab.text_resource_input != null);
+    try std.testing.expectEqual(original_input, resource_tab.input);
+    try std.testing.expectEqual(original_model, resource_tab.editor.model);
+    try std.testing.expect(resource_tab.editor.isReadOnly());
+    _ = try wb.closeActive();
+    try std.testing.expectEqual(tab, wb.activeTab().?);
+    current.setFocus(.modified);
+    try wb.commands.execute("workbench.action.compareEditor.openSide");
+    try std.testing.expectEqual(current.modifiedModel(), wb.activeTab().?.editor.model);
+    try std.testing.expect(wb.activeTab().?.editor.isReadOnly());
 }
 
 fn chooseContextMenuItem(wb: *Workbench, label: []const u8) !void {

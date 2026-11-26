@@ -21,6 +21,7 @@ const ModelDecorationSink = @import("../../../../editor/browser/widget/codeEdito
 const editor_input_dispatch = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminalInput.zig");
 const FileEditorInput = @import("../../../contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
 const EditorInput = @import("../../../common/editor/editorInput.zig").EditorInput;
+const TextResourceEditorInput = @import("../../../common/editor/textResourceEditorInput.zig").TextResourceEditorInput;
 pub const DiffView = @import("./textDiffEditor.zig").DiffView(View);
 const FindController = @import("../../../../editor/contrib/find/browser/findController.zig").FindController;
 const word_character_classifier = @import("../../../../editor/common/core/wordCharacterClassifier.zig");
@@ -106,6 +107,7 @@ pub const Tab = struct {
     element: ?*ui.Node = null,
     /// File input for a normal tab; null for a diff tab.
     file_input: ?*FileEditorInput,
+    text_resource_input: ?*TextResourceEditorInput = null,
     /// The group-model input (a `FileEditorInput` or a `DiffEditorInput`).
     input: *EditorInput,
     controllers: ?*Controllers = null,
@@ -190,6 +192,30 @@ pub const Tab = struct {
             .view = view,
             .file_input = input,
             .input = &input.base,
+        };
+        return self;
+    }
+
+    /// Opens a virtual TextResourceEditorInput in its own code editor. The
+    /// input's model remains shared with any comparison already displaying it.
+    pub fn initResourceFromInput(factory: EditorViewFactory, allocator: Allocator, input: *TextResourceEditorInput, width: usize, height: usize) !*Tab {
+        const self = try allocator.create(Tab);
+        errdefer allocator.destroy(self);
+        const editor = try Editor.createViewFromDocument(input.resolve(), width, height, .{ .reserve_scrollbar = true });
+        errdefer {
+            editor.deinit();
+            editor.allocator.destroy(editor);
+        }
+        editor.setReadOnly(true);
+        const view = try factory(allocator, editor);
+        errdefer view.deinit();
+        self.* = .{
+            .allocator = allocator,
+            .editor = editor,
+            .view = view,
+            .file_input = null,
+            .text_resource_input = input.retain(),
+            .input = input.interface(),
         };
         return self;
     }
@@ -940,6 +966,11 @@ pub const Tab = struct {
             input.deinit();
         } else if (self.file_input) |input| {
             input.deinit();
+        } else if (self.text_resource_input) |input| {
+            const allocator = self.editor.allocator;
+            self.editor.deinit();
+            allocator.destroy(self.editor);
+            input.destroy();
         } else if (self.search_editor_input) |input| {
             input.deinit();
         }

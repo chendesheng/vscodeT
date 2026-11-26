@@ -167,6 +167,14 @@ pub const EditorService = struct {
         return .{ .pane = pane, .tab = tab, .is_new = true };
     }
 
+    pub fn openDiffSide(self: EditorService, input: text_diff_editor_mod.SideInput) !void {
+        const opening = self.opening orelse return error.EditorOpeningUnavailable;
+        switch (input) {
+            .file => |file| try opening.openPathWithOptions(file.editor.path, .{ .force_text = true }),
+            .resource => |resource| try opening.openTextResourceInput(resource),
+        }
+    }
+
     pub fn openSnapshotDiff(
         self: EditorService,
         factory: editor_pane.EditorViewFactory,
@@ -628,6 +636,41 @@ pub const EditorOpening = struct {
         }
         try self.history.add(path);
         self.pruneTabs(pane);
+    }
+
+    fn openTextResourceInput(self: *EditorOpening, input: *text_diff_editor_mod.TextResourceEditorInput) !void {
+        self.cancelPendingOpen();
+        self.cancelPendingDiff();
+        const opened = try self.part.service.openEditor(input.interface(), null, .{ .open = .{ .pinned = true, .active = true } });
+        const pane = self.part.viewForGroup(opened.group) orelse return error.GroupPaneMissing;
+        if (!opened.result.is_new) {
+            if (pane.tabForInput(opened.result.editor)) |tab| {
+                try pane.activateTab(tab);
+                tab.focusEditor();
+                self.host.focus_editor(self.host.context);
+            }
+            return;
+        }
+        var mounted = false;
+        errdefer if (!mounted) {
+            _ = opened.group.model.closeEditor(input.interface(), .UNKNOWN, true) catch null;
+            pane.syncActivePane();
+        };
+        const dimensions = pane.contentDimensions();
+        const tab = try Tab.initResourceFromInput(self.view_factory, self.allocator, input, dimensions.width, dimensions.height);
+        var tab_owned = true;
+        errdefer if (tab_owned) tab.deinit();
+        self.host.configure_editor(self.host.context, tab.editor);
+        try tab.view.setStatusBarVisible(false);
+        tab.setImageRuntime(self.images);
+        try pane.addTab(tab);
+        tab_owned = false;
+        mounted = true;
+        self.host.configure_tab(self.host.context, tab);
+        if (self.language_features.*) |features| tab.attachLanguageRegistry(features);
+        tab.ensureControllers() catch {};
+        tab.focusEditor();
+        self.host.focus_editor(self.host.context);
     }
 
     fn openExistingInput(self: *EditorOpening, path: []const u8, existing: *FileEditorInput, options: OpenOptions) !void {

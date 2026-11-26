@@ -3408,12 +3408,19 @@ pub const TerminalWorkbench = struct {
         const active = self.activeTab();
         const terminal_editor = if (active) |tab| tab.terminal_input != null else false;
         const markdown_preview = if (active) |tab| tab.markdown_preview != null else false;
-        const text_editor = if (active) |tab| tab.file_input != null and !markdown_preview else false;
+        const text_editor = if (active) |tab| (tab.file_input != null or tab.text_resource_input != null) and !markdown_preview else false;
         const target = self.code_editor_api.getFocusedCodeEditor() orelse self.code_editor_api.getActiveCodeEditor();
         const geometry_value = self.geometry();
+        const visible_diff = blk: {
+            for (self.part.group_views.items) |pane| {
+                if (pane.activeTab()) |tab| if (tab.isDiff()) break :blk true;
+            }
+            break :blk false;
+        };
         self.workbench_context.updateWindowContext(.{
             .active_editor = if (active) |tab| if (!tab.isDiff()) tab.editor else null else null,
             .active_diff = if (active) |tab| tab.isDiff() else false,
+            .visible_diff = visible_diff,
             .comparing_moved_code = if (active) |tab| if (tab.diff) |diff| diff.widget.view_model.moved_text_to_compare != null else false else false,
             .language_visible = text_editor,
             .language_id = if (text_editor) active.?.editor.languageId() else "",
@@ -3430,7 +3437,7 @@ pub const TerminalWorkbench = struct {
             .active_panel = if (geometry_value.panelShown()) geometry_value.activePanelId() else "",
             .quick_access_open = self.quick_access.isOpen(),
             .files_picker_open = self.quick_access.isOpen() and !self.quick_access.isPickOpen(),
-            .resource_scheme = if (terminal_editor) "vscode-terminal" else "file",
+            .resource_scheme = if (terminal_editor) "vscode-terminal" else if (target) |editor| editor.model.uri().scheme else "file",
             .editor_read_only = if (target) |editor| editor.isReadOnly() else false,
             .legacy_editor_read_only = if (active) |tab| tab.editor.read_only else false,
         });

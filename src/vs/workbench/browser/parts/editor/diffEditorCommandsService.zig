@@ -13,6 +13,7 @@ pub const ViewMode = enum { inline_view, side_by_side, automatic, toggle };
 pub const IDiffEditorCommandsService = struct {
     context: *anyopaque,
     navigate_fn: *const fn (*anyopaque, bool) void,
+    open_side_fn: *const fn (*anyopaque) anyerror!void,
     swap_fn: *const fn (*anyopaque) void,
     refresh_fn: *const fn (*anyopaque) anyerror!void,
     focus_fn: *const fn (*anyopaque, FocusSide) void,
@@ -21,6 +22,10 @@ pub const IDiffEditorCommandsService = struct {
 
     pub fn navigateInDiffEditor(self: IDiffEditorCommandsService, next: bool) void {
         self.navigate_fn(self.context, next);
+    }
+
+    pub fn openActiveDiffSide(self: IDiffEditorCommandsService) !void {
+        try self.open_side_fn(self.context);
     }
 
     pub fn swapDiffSides(self: IDiffEditorCommandsService) void {
@@ -55,6 +60,7 @@ pub const DiffEditorCommandsService = struct {
         return .{
             .context = self,
             .navigate_fn = navigateInDiffEditor,
+            .open_side_fn = openActiveDiffSide,
             .swap_fn = swapDiffSides,
             .refresh_fn = refreshDiff,
             .focus_fn = focusInDiffEditor,
@@ -67,6 +73,13 @@ pub const DiffEditorCommandsService = struct {
         const self: *DiffEditorCommandsService = @ptrCast(@alignCast(context));
         const tab = self.editor_service.activeEditorPane() orelse return;
         if (next) _ = tab.nextDiffChange() else _ = tab.previousDiffChange();
+    }
+
+    fn openActiveDiffSide(context: *anyopaque) !void {
+        const self: *DiffEditorCommandsService = @ptrCast(@alignCast(context));
+        const tab = self.editor_service.activeEditorPane() orelse return;
+        const diff = tab.diff orelse return;
+        try self.editor_service.openDiffSide(if (diff.widget.focused == .original) diff.original_input else diff.modified_input);
     }
 
     fn swapDiffSides(context: *anyopaque) void {
@@ -95,6 +108,10 @@ pub const DiffEditorCommandsService = struct {
             .side_by_side, .automatic => {
                 try configuration.updateValue("diffEditor.renderSideBySide", .{ .bool = true }, .USER);
                 try configuration.updateValue("diffEditor.useInlineViewWhenSpaceIsLimited", .{ .bool = mode == .automatic }, .USER);
+                if (mode == .automatic) {
+                    diff.widget.width_based_layout.resetWidthBasedLayout();
+                    diff.widget.layout(diff.widget.width, diff.widget.height);
+                }
             },
         }
     }
