@@ -160,6 +160,10 @@ pub const IViewZone = struct {
     update_margin: ?Update = null,
     on_computed_height: ?*const fn (?*anyopaque, usize) void = null,
     on_dom_node_top: ?*const fn (?*anyopaque, f64) void = null,
+    /// The terminal owns zone nodes and can discard them when clipped or
+    /// rebuilding the outer editor. Embedded widgets release their child
+    /// views before that storage goes away.
+    on_before_node_removed: ?*const fn (?*anyopaque) void = null,
 
     pub const Update = *const fn (?*anyopaque, *ui.Node, RenderInfo) anyerror!void;
     pub const Build = *const fn (?*anyopaque, *ui.Document, RenderInfo) anyerror!*ui.Node;
@@ -167,6 +171,8 @@ pub const IViewZone = struct {
         width: usize,
         height: usize,
         scroll_left: usize,
+        viewport_top: f64 = 0,
+        left: usize = 0,
         visible_start_row: usize = 0,
         visible_end_row: ?usize = null,
     };

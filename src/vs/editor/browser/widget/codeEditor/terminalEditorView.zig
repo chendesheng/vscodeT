@@ -29,6 +29,9 @@ pub const Cell = struct {
 
 pub const EditorViewFactory = *const fn (std.mem.Allocator, *Editor) anyerror!*IEditorView;
 
+/// The mounted document and native origin used by an embedded editor.
+pub const SurfaceContext = struct { surface: *ui.Surface, x: usize, y: usize };
+
 pub const IEditorView = struct {
     context: *anyopaque,
     editor: *Editor,
@@ -42,6 +45,8 @@ pub const IEditorView = struct {
         paint: *const fn (*anyopaque) anyerror!void,
         mountInto: *const fn (*anyopaque, *ui.Surface, *ui.Node, usize, usize, usize) anyerror!void,
         detach: *const fn (*anyopaque) void,
+        unmountSurface: *const fn (*anyopaque) void,
+        surfaceContext: *const fn (*anyopaque) SurfaceContext,
         isMounted: *const fn (*anyopaque) bool,
         grid: *const fn (*anyopaque) *const ui.CellGrid,
         pointerAt: *const fn (*anyopaque, usize, usize) anyerror!ui.Pointer,
@@ -96,6 +101,14 @@ pub const IEditorView = struct {
 
     pub fn detach(self: *IEditorView) void {
         return self.vtable.detach(self.context);
+    }
+
+    pub fn unmountSurface(self: *IEditorView) void {
+        self.vtable.unmountSurface(self.context);
+    }
+
+    pub fn surfaceContext(self: *IEditorView) SurfaceContext {
+        return self.vtable.surfaceContext(self.context);
     }
 
     pub fn isMounted(self: *IEditorView) bool {
@@ -259,6 +272,14 @@ pub const IEditorView = struct {
                 const view: *Native = @ptrCast(@alignCast(context));
                 return view.detach();
             }
+            fn unmountSurface(context: *anyopaque) void {
+                const view: *Native = @ptrCast(@alignCast(context));
+                view.unmountSurface();
+            }
+            fn surfaceContext(context: *anyopaque) SurfaceContext {
+                const view: *Native = @ptrCast(@alignCast(context));
+                return view.surfaceContext();
+            }
             fn isMounted(context: *anyopaque) bool {
                 const view: *Native = @ptrCast(@alignCast(context));
                 return view.isMounted();
@@ -401,6 +422,8 @@ pub const IEditorView = struct {
                 .paint = @This().paint,
                 .mountInto = @This().mountInto,
                 .detach = @This().detach,
+                .unmountSurface = @This().unmountSurface,
+                .surfaceContext = @This().surfaceContext,
                 .isMounted = @This().isMounted,
                 .grid = @This().grid,
                 .pointerAt = @This().pointerAt,

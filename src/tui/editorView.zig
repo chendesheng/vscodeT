@@ -655,6 +655,8 @@ pub const View = struct {
                 }
             }
         } else if (self.owns_surface) {
+            self.terminal_view_host.viewRef().view_zones.prepareNodeReset();
+            self.terminal_view_host.viewRef().view_zones.releaseRetiredNodes(null);
             self.terminal_view_host.viewRef().getViewLines().flushWindow();
             self.surface.deinit();
             self.owns_surface = false;
@@ -675,6 +677,31 @@ pub const View = struct {
         if (self.mount == null) return;
         const root = self.root_node orelse return;
         if (root.parent) |parent| _ = parent.removeChild(root);
+    }
+
+    /// A containing ViewZone is being removed or its document replaced. An
+    /// embedded control keeps its text model and viewport state, but releases
+    /// every pointer into the old native document before that document dies.
+    pub fn unmountSurface(self: *View) void {
+        const mounted = self.mount orelse return;
+        self.terminal_view_host.viewRef().view_zones.prepareNodeReset();
+        self.terminal_view_host.viewRef().view_zones.releaseRetiredNodes(null);
+        self.terminal_view_host.viewRef().getViewLines().flushWindow();
+        if (self.root_node) |root| mounted.surface.document().destroy(root);
+        self.mount = null;
+        self.root_node = null;
+        self.block_root = null;
+        self.content_root = null;
+        self.block_nodes.clearRetainingCapacity();
+        self.line_scroll_ready = false;
+        self.resetChromeRoots();
+        self.document_ready = false;
+        self.needs_full_box_rebuild = true;
+        self.invalidate();
+    }
+
+    pub fn surfaceContext(self: *View) @import("../vs/editor/browser/widget/codeEditor/terminalEditorView.zig").SurfaceContext {
+        return .{ .surface = self.renderSurface(), .x = if (self.mount) |mounted| mounted.x else 0, .y = if (self.mount) |mounted| mounted.y else 0 };
     }
 
     pub fn isMounted(self: *const View) bool {
@@ -1956,6 +1983,7 @@ pub const View = struct {
 
         const doc = self.renderSurface().document();
         if (!self.document_ready) {
+            self.terminal_view_host.viewRef().view_zones.prepareNodeReset();
             self.terminal_view_host.viewRef().view_zones.releaseRetiredNodes(null);
             self.line_scroll_ready = false;
             self.terminal_view_host.viewRef().getViewLines().flushWindow();
@@ -6604,4 +6632,73 @@ test "View: inline completion displays the projected suffix and accepts the prov
     const value = try editor.model.getLineContent(1);
     defer value.deinit();
     try std.testing.expectEqualStrings("f(value) + 1", value.items);
+}
+
+test "View: embedded editor releases its mounted document before view-zone clipping and reset" {
+    const a = std.testing.allocator;
+    const parent_editor = try Editor.createFromText(a, std.testing.io, "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve", "parent.txt", 60, 5);
+    defer {
+        parent_editor.deinit();
+        a.destroy(parent_editor);
+    }
+    const parent = try View.init(a, parent_editor);
+    defer parent.deinit();
+    const child_editor = try Editor.createFromText(a, std.testing.io, "embedded content", "child.txt", 40, 2);
+    defer {
+        child_editor.deinit();
+        a.destroy(child_editor);
+    }
+    const child = try View.init(a, child_editor);
+    defer child.deinit();
+    const State = struct {
+        parent: *View,
+        child: *View,
+        removed: usize = 0,
+        id: ?[]const u8 = null,
+        fn build(context: ?*anyopaque, doc: *ui.Document, info: editorBrowser.IViewZone.RenderInfo) !*ui.Node {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            const root = try doc.createElement(.div);
+            errdefer doc.destroy(root);
+            root.setStyle(.{ .width = .{ .percent = 100 }, .height = .{ .percent = 100 } });
+            const mount = self.parent.surfaceContext();
+            self.child.editor.setViewport(info.width, info.height);
+            try self.child.mountInto(mount.surface, root, mount.x + info.left, mount.y + @as(usize, @intFromFloat(@max(0, info.viewport_top))), 0);
+            try self.child.paint();
+            return root;
+        }
+        fn beforeRemove(context: ?*anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.removed += 1;
+            self.child.unmountSurface();
+        }
+        fn add(self: *@This(), accessor: editorBrowser.IViewZoneChangeAccessor) !void {
+            self.id = try accessor.addZone(.{ .after_line_number = 1, .height_in_lines = 2, .context = self, .build = build, .on_before_node_removed = beforeRemove });
+        }
+        fn remove(self: *@This(), accessor: editorBrowser.IViewZoneChangeAccessor) !void {
+            if (self.id) |id| try accessor.removeZone(id);
+            self.id = null;
+        }
+    };
+    var state: State = .{ .parent = parent, .child = child };
+    try parent.viewZones().changeViewZones(&state, State.add);
+    defer parent.viewZones().changeViewZones(&state, State.remove) catch {};
+    try parent.paint();
+    try std.testing.expect(child.isMounted());
+    try std.testing.expectEqual(@as(usize, 0), state.removed);
+    _ = parent_editor.setScrollTop(8);
+    try parent.paint();
+    try std.testing.expect(!child.isMounted());
+    try std.testing.expect(child.root_node == null);
+    try std.testing.expectEqual(@as(usize, 1), state.removed);
+    _ = parent_editor.setScrollTop(0);
+    try parent.paint();
+    try std.testing.expect(child.isMounted());
+    parent.setThemeColors(null);
+    try parent.paint();
+    try std.testing.expect(child.isMounted());
+    try std.testing.expectEqual(@as(usize, 2), state.removed);
+    try parent.viewZones().changeViewZones(&state, State.remove);
+    try std.testing.expect(!child.isMounted());
+    try std.testing.expectEqual(@as(usize, 3), state.removed);
+    try parent.paint();
 }
