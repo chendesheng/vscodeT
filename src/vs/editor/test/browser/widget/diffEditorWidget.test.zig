@@ -63,8 +63,15 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(original[0].options.linesDecorationsClassName == null);
             const modified = try widget.modifiedModel().getAllDecorations(1001, false);
             defer testing.allocator.free(modified);
-            try testing.expectEqualStrings("gutter-insert", modified[0].options.marginClassName.?);
-            try testing.expect(modified[0].options.linesDecorationsClassName != null);
+            var found = false;
+            for (modified) |decoration| {
+                if (decoration.options.marginClassName) |name| {
+                    try testing.expectEqualStrings("gutter-insert", name);
+                    try testing.expect(decoration.options.linesDecorationsClassName != null);
+                    found = true;
+                }
+            }
+            try testing.expect(found);
         }
 
         test "diffEditorWidget: navigation wraps and swap keeps both panes" {
@@ -138,6 +145,31 @@ pub fn Tests(comptime View: type) type {
             var deleted_again = try widget.modifiedModel().getLineContent(1);
             defer deleted_again.deinit();
             try testing.expectEqualStrings("a", deleted_again.items);
+        }
+
+        test "diffEditorWidget: gutter paints pure deletions and hunks after fillers" {
+            const widget = try DiffEditorWidget.create(
+                View.init,
+                testing.allocator,
+                Io.Threaded.global_single_threaded.io(),
+                "a.txt",
+                "b.txt",
+                "zero\ndeleted\ncommon\nold\nend",
+                "zero\ncommon\nnew\nend",
+                "Original",
+                "Modified",
+                80,
+                8,
+                .{},
+            );
+            defer widget.destroy();
+            var frame = try ui.Frame.init(testing.allocator, 80, 8);
+            defer frame.deinit();
+            try widget.paint(&frame, 0, 0, 80, 8);
+            try testing.expectEqual(@as(usize, 2), widget.changeCount());
+            const gutter = widget.paneWidths().original;
+            try testing.expectEqual(@as(u32, '-'), frame.next.cluster[frame.next.index(gutter, 1)]);
+            try testing.expectEqual(@as(u32, '~'), frame.next.cluster[frame.next.index(gutter, 3)]);
         }
 
         test "diffEditorWidget: read-only snapshot editors reject edits" {
