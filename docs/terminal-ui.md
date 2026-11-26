@@ -2100,6 +2100,24 @@ focus. Git actions are resolved from the scoped `SCMChangeContext` menu and
 forward the selected provider changes to the Git commands. Git snapshot
 resolution and the initial diff computation now run in the editor worker;
 the window receives completion events and obsolete replies are detached.
+The registered diff accessibility help uses a retained read-only code editor
+rather than a browser dialog, with resolved shortcut labels and Alt-F6
+verbosity configuration. The ARIA metadata is retained; terminal-native
+screen reader detection, the browser accessibility tree and audio signals
+are unavailable.
+
+The multi-diff widget composes a compressed virtual scroll view, typed item
+template pools and independently owned diff view models. Integer cell geometry
+replaces the browser's pixel-sized headers, spacing and viewport ranges. The
+header uses a retained typed CSS sheet; browser box shadows are not rendered
+but the sticky-header state remains. Child editor views paint through the
+normal diff renderer into clipped viewports; the shared CellGrid copies only
+intersecting rows without changing the child's layout or scroll coordinates.
+The current native code editor construction API still recreates child view
+instances on rebind, unlike upstream's reusable editor widget. This is a
+portable architectural gap, not a terminal restriction. Graph revision
+sources resolve asynchronously and preserve URI identity, absent sides,
+binary placeholders, collapse state and active item across virtualization.
 
 ## 9. POC acceptance
 

@@ -1216,8 +1216,11 @@ console API for raw mode, sizing and input polling.
   background. With one visible view the header merges into the
   container title.
   Hovering a commit opens a plain-text summary in a rounded popup.
-  Not ported: multi-diff "Open Changes" for a whole commit (only per-file
-  diffs), context menus, drag/drop, chat, clipboard copy actions and Git write
+  Graph "Open Changes" opens one virtualized multi-file diff for the selected
+  commit, resolving every changed resource on the native worker. Individual
+  history rows still open single-file diffs.
+  Not ported: the live SCM group multi-diff source, optional multi-diff file
+  list, context menus, drag/drop, chat, clipboard copy actions and Git write
   operations (checkout/cherry-pick/push/publish); the ref picker is
   single-select instead of upstream's multi-select; one repository per
   workspace so the repository picker is hidden; hover is plain text without
@@ -1269,8 +1272,7 @@ console API for raw mode, sizing and input polling.
   documents as restored ordinary file tabs. Both sides’ selections, model
   scroll anchors and collapsed unchanged regions are stored in the group’s
   diff resource memento. Virtual Git revision inputs have no upstream
-  serializer and therefore are not included in session restoration. Remaining
-  portable gaps include the multi-diff editor. Moved
+  serializer and therefore are not included in session restoration. Moved
   blocks are surfaced as model decorations, gutter connectors and Compare controls
   in side-by-side mode only; the active comparison aligns both moved ranges.
   Hide-unchanged uses the upstream unchanged-region range model, direct model
@@ -1311,7 +1313,23 @@ console API for raw mode, sizing and input polling.
   public `vscode.executeCodeLensProvider` command supports both resources and
   its resolution budget. The diff helper offers a whitespace-only-change
   button and a computation-time limit prompt; both update the effective
-  modified-resource configuration. Multi-file diff remains unported.
+  modified-resource configuration. The legacy collapse-unchanged setting
+  migrates at the workbench's Eventually phase, preserving JSONC comments
+  and language overrides. Alt-F1 opens the registered diff accessibility help
+  in a retained read-only editor; Alt-F6 disables its verbosity hint. The
+  terminal has no browser accessibility tree, screen-reader detection or
+  browser audio signals.
+  Multi-file diff uses a compressed virtual scroll layout, separately owned
+  real document and diff models, and pooled retained file headers. Only
+  viewport-intersecting or focused items hold mounted editor controls.
+  The Graph comparison distinguishes added/deleted sides from binary
+  resources, provides sticky file headers, collapse/expand-all and
+  Alt-F5/Shift-Alt-F5 navigation across files. View mode is editor-local.
+  The current native code-editor binding API recreates child views when a
+  template is reused; model references and selections survive eviction.
+  Live SCM source updates, the optional file-list view, multi-diff session
+  input serialization and extension tab DTO integration remain portable
+  gaps, not terminal limitations.
   See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
   Only one repository per workspace folder is shown.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and
