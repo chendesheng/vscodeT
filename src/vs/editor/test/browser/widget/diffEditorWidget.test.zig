@@ -40,6 +40,33 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(widget.modified_editor.isReadOnly());
         }
 
+        test "diffEditorWidget: filler decorations are grouped and indicators exclude fillers" {
+            const widget = try DiffEditorWidget.create(
+                View.init,
+                testing.allocator,
+                Io.Threaded.global_single_threaded.io(),
+                "a.txt",
+                "b.txt",
+                "end",
+                "one\ntwo\nthree\nfour\nend",
+                "Original",
+                "Modified",
+                80,
+                8,
+                .{},
+            );
+            defer widget.destroy();
+            try testing.expectEqual(@as(usize, 1), widget.decorations.originalDecorationCount());
+            const original = try widget.originalModel().getAllDecorations(1000, false);
+            defer testing.allocator.free(original);
+            try testing.expectEqualStrings("diff-filler", original[0].options.className.?);
+            try testing.expect(original[0].options.linesDecorationsClassName == null);
+            const modified = try widget.modifiedModel().getAllDecorations(1001, false);
+            defer testing.allocator.free(modified);
+            try testing.expectEqualStrings("gutter-insert", modified[0].options.marginClassName.?);
+            try testing.expect(modified[0].options.linesDecorationsClassName != null);
+        }
+
         test "diffEditorWidget: navigation wraps and swap keeps both panes" {
             const allocator = testing.allocator;
             const io = Io.Threaded.global_single_threaded.io();

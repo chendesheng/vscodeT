@@ -124,6 +124,12 @@ pub const DiffEditorDecorations = struct {
     fn buildOptions(self: *DiffEditorDecorations) void {
         self.line_insert = createWholeLine("line-insert", overview_feature.inserted_foreground, self.config.render_overview_ruler);
         self.line_delete = createWholeLine("line-delete", overview_feature.removed_foreground, self.config.render_overview_ruler);
+        self.line_insert.marginClassName = "gutter-insert";
+        self.line_delete.marginClassName = "gutter-delete";
+        if (self.config.render_indicators) {
+            self.line_insert.linesDecorationsClassName = "insert-sign codicon codicon-diff-insert";
+            self.line_delete.linesDecorationsClassName = "delete-sign codicon codicon-diff-remove";
+        }
         self.filler = createWholeLine("diff-filler", filler_background, false);
         self.char_insert = createRange("char-insert");
         self.char_delete = createRange("char-delete");
@@ -236,24 +242,17 @@ fn appendSideDecorations(
 ) !void {
     var row = display_range.startLineNumber;
     const end = display_range.endLineNumberExclusive;
-    var has_real = false;
-    while (row < end) : (row += 1) {
-        if (row == 0 or row > display_rows.len) continue;
-        if (display_rows[row - 1] == null) {
-            try decorations.append(.{
-                .range = Range.init(row, 1, row, 1),
-                .options = @constCast(filler_option),
-            });
-        } else {
-            has_real = true;
-        }
-    }
-    if (has_real) {
-        // Whole-line decorations use the inclusive end line, like upstream's
-        // `LineRange.toInclusiveRange`.
+    // One decoration per contiguous range, not per padded line. Real
+    // changes and filler rows have disjoint ranges so margin indicators do
+    // not appear on the blank alignment rows.
+    while (row < end and row <= display_rows.len) {
+        const first = row;
+        const filler = display_rows[row - 1] == null;
+        row += 1;
+        while (row < end and row <= display_rows.len and (display_rows[row - 1] == null) == filler) : (row += 1) {}
         try decorations.append(.{
-            .range = Range.init(display_range.startLineNumber, 1, end - 1, 1),
-            .options = @constCast(line_option),
+            .range = Range.init(first, 1, row - 1, 1),
+            .options = @constCast(if (filler) filler_option else line_option),
         });
     }
 

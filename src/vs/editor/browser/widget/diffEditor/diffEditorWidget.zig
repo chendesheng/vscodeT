@@ -135,12 +135,12 @@ fn buildInlineDisplay(
         try lines.append(modified[modified_cursor + index - 1]);
         try kinds.append(.unchanged);
         try numbers.append(modified_cursor + index);
-        original_rows[modified_cursor + index - 1] = lines.items.len;
+        original_rows[original_cursor + index - 1] = lines.items.len;
         modified_rows[modified_cursor + index - 1] = lines.items.len;
     }
 
-    var text_len: usize = 0;
-    for (lines.items) |line| text_len += line.len + 1;
+    var text_len: usize = lines.items.len -| 1;
+    for (lines.items) |line| text_len += line.len;
     const text = try allocator.alloc(u8, text_len);
     errdefer allocator.free(text);
     var offset: usize = 0;
@@ -177,10 +177,13 @@ fn inlineCharOptions(class_name: []const u8) ModelDecorationOptions {
     return options;
 }
 
-fn inlineDecorationOptions(class_name: []const u8) ModelDecorationOptions {
+fn inlineDecorationOptions(class_name: []const u8, render_indicators: bool) ModelDecorationOptions {
     var options = ModelDecorationOptions.init(class_name, .AlwaysGrowsWhenTypingAtEdges);
     options.className = class_name;
     options.isWholeLine = true;
+    const inserted = std.mem.eql(u8, class_name, "line-insert");
+    options.marginClassName = if (inserted) "gutter-insert" else "gutter-delete";
+    if (render_indicators) options.linesDecorationsClassName = if (inserted) "insert-sign codicon codicon-diff-insert" else "delete-sign codicon codicon-diff-remove";
     return options;
 }
 
@@ -356,8 +359,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
             modified_editor.setStatusRow(false);
             original_editor.setLineNumberMap(aligned.original);
             modified_editor.setLineNumberMap(if (is_inline) inline_display.line_numbers else aligned.modified);
-            original_editor.setLineDecorationsWidth(0);
-            modified_editor.setLineDecorationsWidth(0);
+            original_editor.setLineDecorationsWidth(if (normalized_options.render_indicators) 1 else 0);
+            modified_editor.setLineDecorationsWidth(if (normalized_options.render_indicators) 1 else 0);
             original_view.setStatusBarVisible(false) catch {};
             modified_view.setStatusBarVisible(false) catch {};
             if (normalized_options.hide_unchanged_regions and !is_inline) {
@@ -405,8 +408,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .inline_change_starts = inline_display.change_starts,
                 .inline_original_rows = inline_display.original_rows,
                 .inline_modified_rows = inline_display.modified_rows,
-                .inline_delete_options = inlineDecorationOptions("line-delete"),
-                .inline_insert_options = inlineDecorationOptions("line-insert"),
+                .inline_delete_options = inlineDecorationOptions("line-delete", normalized_options.render_indicators),
+                .inline_insert_options = inlineDecorationOptions("line-insert", normalized_options.render_indicators),
                 .inline_moved_original_options = inlineMovedOptions("movedOriginal"),
                 .inline_moved_modified_options = inlineMovedOptions("movedModified"),
                 .inline_char_delete_options = inlineCharOptions("char-delete"),
