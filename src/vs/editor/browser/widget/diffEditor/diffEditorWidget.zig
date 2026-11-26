@@ -876,10 +876,27 @@ pub fn DiffEditorWidget(comptime View: type) type {
         /// Routes a key event to the focused inner editor.
         pub fn dispatchKey(self: *Self, event: *ui.KeyEvent) bool {
             if (self.accessible_viewer.visible()) return self.dispatchAccessibleKey(event);
+            if (self.handleDeletedSelectionKey(event)) return true;
             if (self.focusedView().dispatchKey(event)) return true;
             _ = terminal_input.dispatch(self.focusedEditor(), event.*, &self.is_pasting);
             if (self.sideBySide()) self.syncScrollFromPane(self.focused);
             return true;
+        }
+
+        /// A deleted-code zone has its own native selection, like the
+        /// browser DOM range. Copy reads the original model, not the
+        /// modified editor's unrelated cursor selection.
+        pub fn handleDeletedSelectionKey(self: *Self, event: *ui.KeyEvent) bool {
+            if (self.inline_margin_menu.clipboard) |clipboard| {
+                if (event.mods.ctrl and event.key == .char and (event.key.char == 'c' or event.key.char == 'C')) {
+                    if (self.zones.copyDeletedSelection(clipboard) catch false) return true;
+                }
+            }
+            if (event.key == .escape and self.zones.clearDeletedSelection()) {
+                self.modified_view.invalidate();
+                return true;
+            }
+            return false;
         }
 
         /// Routes a mouse event to the correct pane, handles the split drag and
@@ -953,13 +970,30 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 return handled;
             }
             var hover_changed = false;
-            if (self.inline_margin_menu.available() and (event.kind == .move or event.kind == .down)) {
+            if (self.inline_margin_menu.available() and (event.kind == .move or event.kind == .down or event.kind == .up)) {
                 const mouse_target = try self.modified_view.mouseTargetAt(event.x, event.y);
                 const deleted = if (mouse_target.type == .content_view_zone or mouse_target.type == .gutter_view_zone) try self.zones.deletedAtViewportRow(event.y) else null;
                 hover_changed = self.zones.updateDeletedHover(deleted);
                 if (hover_changed) self.modified_view.invalidate();
+                const gutter = self.modified_editor.gutterWidth();
+                if (self.zones.draggingDeletedSelection() and (event.kind == .move or event.kind == .up)) {
+                    if (deleted) |hit| if (try self.zones.extendDeletedSelection(hit, event.x -| gutter)) self.modified_view.invalidate();
+                    if (event.kind == .up) self.zones.finishDeletedSelection();
+                    return true;
+                }
+                if (event.kind == .down and event.button == .left) {
+                    if (deleted) |hit| {
+                        if (mouse_target.type == .content_view_zone) {
+                            self.setFocus(.modified);
+                            try self.zones.beginDeletedSelection(hit, event.x -| gutter);
+                            self.modified_view.invalidate();
+                            return true;
+                        }
+                    }
+                    if (self.zones.clearDeletedSelection()) self.modified_view.invalidate();
+                }
                 if (deleted) |hit| {
-                    if (event.kind == .down and event.button == .left and event.x + 1 == self.modified_editor.gutterWidth()) {
+                    if (event.kind == .down and event.button == .left and event.x + 1 == gutter) {
                         self.setFocus(.modified);
                         return self.inline_margin_menu.show(self.originalModel(), self.modifiedModel(), hit.mapping, hit.line, !self.modified_editor.isReadOnly(), self.canRevert(), .{ .context = self, .run = revertDeletedCode }, .{ .x = self.screen_x + event.x, .y = self.screen_y + event.y, .opening_press = true });
                     }

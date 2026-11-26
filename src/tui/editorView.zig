@@ -243,6 +243,7 @@ const CellFlag = struct {
     const diagnostic_inline_unnecessary: u32 = 1 << 22;
     const search_editor_match: u32 = 1 << 23;
     const inline_deleted_text: u32 = 1 << 24;
+    const diff_deleted_selection: u32 = 1 << 25;
 };
 
 const find_match_background = [3]u8{ 80, 70, 20 };
@@ -2722,6 +2723,7 @@ fn applyFlagPaint(style: *ui.style.PaintStyle, flag: u32, palette: ?*const theme
     } else if (flag & CellFlag.char_delete != 0) {
         style.background = themedColor(palette, "diffEditor.removedTextBackground", diff_delete_char_background);
     }
+    if (flag & CellFlag.diff_deleted_selection != 0) applySelectionPaint(style, palette);
     if (flag & CellFlag.secondary_cursor != 0) {
         style.reverse = true;
         style.background = themedColor(palette, "editorCursor.foreground", secondary_cursor_background);
@@ -2820,6 +2822,7 @@ fn decorationBit(class_name: []const u8) ?u32 {
     if (std.mem.eql(u8, class_name, "char-insert")) return CellFlag.char_insert;
     if (std.mem.eql(u8, class_name, "char-delete")) return CellFlag.char_delete;
     if (std.mem.eql(u8, class_name, "inline-deleted-text")) return CellFlag.inline_deleted_text;
+    if (std.mem.eql(u8, class_name, "diff-deleted-selection")) return CellFlag.diff_deleted_selection;
     if (std.mem.eql(u8, class_name, "squiggly-error")) return CellFlag.diagnostic_error;
     if (std.mem.eql(u8, class_name, "squiggly-warning")) return CellFlag.diagnostic_warning;
     if (std.mem.eql(u8, class_name, "squiggly-info")) return CellFlag.diagnostic_info;

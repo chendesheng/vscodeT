@@ -9,6 +9,7 @@ const Editor = @import("../../../codeEditor/codeEditorWidgetTerminal.zig").Edito
 const TextModel = @import("../../../../../common/model/textModel.zig").TextModel;
 const LineRange = @import("../../../../../common/core/ranges/lineRange.zig").LineRange;
 const Range = @import("../../../../../common/core/range.zig").Range;
+const Position = @import("../../../../../common/core/position.zig").Position;
 const RangeMapping = @import("../../../../../common/diff/rangeMapping.zig").RangeMapping;
 const CursorColumns = @import("../../../../../common/core/cursorColumns.zig").CursorColumns;
 const line_breaks = @import("../../../../../common/viewModel/monospaceLineBreaksComputer.zig");
@@ -107,6 +108,25 @@ pub fn measure(allocator: std.mem.Allocator, model: *TextModel, range: LineRange
     return result;
 }
 
+/// Inverse of the terminal renderLines row projection. Recompute only the
+/// targeted line's wrap segments, using the same tab/UTF-8 cell mapping.
+pub fn modelPositionAtCell(allocator: std.mem.Allocator, model: *TextModel, range: LineRange, measurement: *const RenderLinesResult, classifier: *const line_breaks.WrappingCharacterClassifier, options: RenderOptions, row: usize, cell: usize) !Position {
+    const index = measurement.firstModelLineAtRow(row);
+    if (index >= range.length()) return model.validatePosition(.{ .lineNumber = range.endLineNumberExclusive, .column = 1 });
+    const line = range.startLineNumber + index;
+    const content = try model.borrowLineContent(line);
+    const breaks = try lineBreaks(allocator, classifier, content, options);
+    defer freeLineBreaks(allocator, breaks);
+    var start: usize = 0;
+    var end = content.len;
+    if (breaks) |value| {
+        const segment = @min(row - measurement.view_line_offsets[index], value.breakOffsets.len - 1);
+        start = if (segment > 0) value.breakOffsets[segment - 1] else 0;
+        end = value.breakOffsets[segment];
+    }
+    return model.validatePosition(.{ .lineNumber = line, .column = start + CursorColumns.columnFromVisibleColumn(content[start..end], cell, options.tab_size) });
+}
+
 pub const PaintOptions = struct {
     colors: struct {
         line_background: ui.Color,
@@ -114,6 +134,7 @@ pub const PaintOptions = struct {
     },
     style_fn: ViewLine.PartStyleFn,
     decoration_bits_fn: *const fn ([]const u8) u32,
+    selection: ?Range = null,
 };
 
 /// Render original model lines into a deleted-code zone using the upstream
@@ -154,6 +175,7 @@ pub fn renderLines(
     for (inner_changes) |change| {
         try inline_decorations.append(allocator, InlineDecoration.init(change.originalRange, "char-delete", .Regular));
     }
+    if (paint.selection) |selected| try inline_decorations.append(allocator, InlineDecoration.init(selected, "diff-deleted-selection", .Regular));
     const visible_start = info.visible_start_row;
     const visible_end = info.visible_end_row orelse info.height;
     const first_model_line = measurement.firstModelLineAtRow(visible_start);
@@ -180,13 +202,13 @@ pub fn renderLines(
                     const wrapped = try LineDecoration.extractWrapped(allocator, decorations, last, end);
                     defer allocator.free(wrapped);
                     const tokens = tokens_mod.IViewLineTokens.initSlice(line_tokens.sliceAndInflate(last, end, 0));
-                    try renderOriginalLine(allocator, doc, content, row - visible_start, tokens, wrapped, inline_decorations.items.len != 0, options, paint, info);
+                    try renderOriginalLine(allocator, doc, content, row - visible_start, tokens, wrapped, inner_changes.len != 0, options, paint, info);
                 }
                 row += 1;
                 last = end;
             }
         } else {
-            if (row >= visible_start) try renderOriginalLine(allocator, doc, content, row - visible_start, tokens_mod.IViewLineTokens.init(&line_tokens), decorations, inline_decorations.items.len != 0, options, paint, info);
+            if (row >= visible_start) try renderOriginalLine(allocator, doc, content, row - visible_start, tokens_mod.IViewLineTokens.init(&line_tokens), decorations, inner_changes.len != 0, options, paint, info);
             row += 1;
         }
     }

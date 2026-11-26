@@ -211,6 +211,8 @@ const ui = @import("ui");
 const ZoneView = @import("../../../../viewParts/viewZones/viewZones.zig");
 const render_lines = @import("./renderLines.zig");
 const InlineDiffDeletedCodeMargin = @import("inlineDiffDeletedCodeMargin.zig").InlineDiffDeletedCodeMargin;
+const CopySelection = @import("copySelection.zig").CopySelection;
+const Clipboard = @import("../../../../../../platform/clipboard/common/clipboardService.zig").IClipboardService;
 const TerminalViewHost = @import("../../../codeEditor/terminalViewHost.zig").TerminalViewHost;
 const ViewLine = @import("../../../../viewParts/viewLines/viewLine.zig").ViewLine;
 const ViewEventHandler = @import("../../../../../common/viewEventHandler.zig").ViewEventHandler;
@@ -252,6 +254,7 @@ pub const DiffEditorViewZones = struct {
     batch_depth: usize = 0,
     colors: Colors = .{},
     hovered_deleted: ?*DeletedData = null,
+    selected_deleted: ?*DeletedData = null,
 
     pub const Mode = enum { disabled, side_by_side, inline_view };
     pub const Colors = struct {
@@ -278,6 +281,7 @@ pub const DiffEditorViewZones = struct {
         spec: DeletedSpec,
         measurement: render_lines.RenderLinesResult,
         margin: InlineDiffDeletedCodeMargin = .{},
+        selection: CopySelection = .{},
         zone_id: ?[]const u8 = null,
     };
     const ZoneRecord = struct { spec: ZoneSpec, id: []const u8, deleted: ?*DeletedData = null };
@@ -609,6 +613,7 @@ pub const DiffEditorViewZones = struct {
             .colors = .{ .line_background = self.colors.removed_line, .text_background = self.colors.removed_text },
             .style_fn = self.style_fn,
             .decoration_bits_fn = self.decoration_bits_fn,
+            .selection = data.selection.range(),
         }, info);
     }
 
@@ -655,6 +660,51 @@ pub const DiffEditorViewZones = struct {
         return true;
     }
 
+    fn invalidateDeleted(self: *DiffEditorViewZones, data: *DeletedData) void {
+        if (data.zone_id) |id| self.modified.view_zones.invalidateZoneContent(id);
+    }
+
+    pub fn clearDeletedSelection(self: *DiffEditorViewZones) bool {
+        const data = self.selected_deleted orelse return false;
+        self.selected_deleted = null;
+        data.selection = .{};
+        self.invalidateDeleted(data);
+        return true;
+    }
+
+    fn deletedPositionAt(self: *DiffEditorViewZones, hit: DeletedHit, cell: usize) !@import("../../../../../common/core/position.zig").Position {
+        return render_lines.modelPositionAtCell(self.allocator, self.original.editor.model, hit.data.spec.range, &hit.data.measurement, &self.modified.editor.view_lines.classifier, hit.data.spec.options, hit.row, cell + self.modified.editor.scrollLeft());
+    }
+
+    pub fn beginDeletedSelection(self: *DiffEditorViewZones, hit: DeletedHit, cell: usize) !void {
+        const position = try self.deletedPositionAt(hit, cell);
+        _ = self.clearDeletedSelection();
+        self.selected_deleted = hit.data;
+        hit.data.selection.begin(position);
+        self.invalidateDeleted(hit.data);
+    }
+
+    pub fn draggingDeletedSelection(self: *const DiffEditorViewZones) bool {
+        return if (self.selected_deleted) |data| data.selection.dragging else false;
+    }
+
+    pub fn extendDeletedSelection(self: *DiffEditorViewZones, hit: DeletedHit, cell: usize) !bool {
+        if (self.selected_deleted != hit.data) return false;
+        const position = try self.deletedPositionAt(hit, cell);
+        if (!hit.data.selection.extend(position)) return false;
+        self.invalidateDeleted(hit.data);
+        return true;
+    }
+
+    pub fn finishDeletedSelection(self: *DiffEditorViewZones) void {
+        if (self.selected_deleted) |data| data.selection.finish();
+    }
+
+    pub fn copyDeletedSelection(self: *DiffEditorViewZones, clipboard: Clipboard) !bool {
+        const data = self.selected_deleted orelse return false;
+        return data.selection.copy(self.original.editor.model, clipboard);
+    }
+
     fn createDeletedData(self: *DiffEditorViewZones, spec: DeletedSpec) !*DeletedData {
         const data = try self.allocator.create(DeletedData);
         errdefer self.allocator.destroy(data);
@@ -669,6 +719,7 @@ pub const DiffEditorViewZones = struct {
     fn freeDeletedData(self: *DiffEditorViewZones, data: ?*DeletedData) void {
         if (data) |deleted| {
             if (self.hovered_deleted == deleted) self.hovered_deleted = null;
+            if (self.selected_deleted == deleted) self.selected_deleted = null;
             deleted.measurement.deinit();
             self.allocator.destroy(deleted);
         }

@@ -1273,7 +1273,21 @@ pub fn Tests(comptime View: type) type {
                 }
             }
             const row = blank_row orelse return error.TestUnexpectedResult;
-            var event: ui.MouseEvent = .{ .kind = .move, .x = widget.modified_editor.gutterWidth() + 1, .y = row };
+            const text_col = widget.modified_editor.gutterWidth();
+            var event: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = text_col, .y = row - 1 };
+            try testing.expect(try widget.dispatchMouse(&event));
+            event = .{ .kind = .move, .button = .left, .x = text_col + 3, .y = row - 1 };
+            try testing.expect(try widget.dispatchMouse(&event));
+            event.kind = .up;
+            try testing.expect(try widget.dispatchMouse(&event));
+            try widget.paint(&frame, 0, 0, 80, 8);
+            try testing.expectEqual(ui.cell.packColor(.{ .r = 38, .g = 79, .b = 120 }), frame.next.bg[frame.next.index(text_col, row - 1)]);
+            var copy_key: ui.KeyEvent = .{ .key = .{ .char = 'c' }, .mods = .{ .ctrl = true } };
+            try testing.expect(widget.dispatchKey(&copy_key));
+            try testing.expectEqualStrings("old", copy.text.items);
+            var escape: ui.KeyEvent = .{ .key = .escape };
+            try testing.expect(widget.dispatchKey(&escape));
+            event = .{ .kind = .move, .x = text_col + 1, .y = row };
             try testing.expect(try widget.dispatchMouse(&event));
             try widget.paint(&frame, 0, 0, 80, 8);
             const margin = widget.modified_editor.gutterWidth() - 1;
