@@ -11962,3 +11962,95 @@ test "Workbench: git scm integration deletion conflicts compare the base and sur
         try std.testing.expectEqualStrings(stage, modified_params.ref);
     }
 }
+
+test "Workbench: git scm integration discovers Git URI repositories in empty windows and multi-root workspaces" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var first = std.testing.tmpDir(.{});
+    defer first.cleanup();
+    var second = std.testing.tmpDir(.{});
+    defer second.cleanup();
+    var first_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var second_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const roots = [_][]const u8{
+        first_buffer[0..try first.dir.realPath(io, &first_buffer)],
+        second_buffer[0..try second.dir.realPath(io, &second_buffer)],
+    };
+    for ([_]std.Io.Dir{ first.dir, second.dir }, roots, [_][]const u8{ "first base\n", "second base\n" }) |dir, root, text| {
+        if (!try runGitTest(a, root, &.{"init"})) return error.SkipZigTest;
+        _ = try runGitTest(a, root, &.{ "config", "user.name", "Test User" });
+        _ = try runGitTest(a, root, &.{ "config", "user.email", "test@example.com" });
+        try std.testing.expect(try runGitTest(a, root, &.{ "config", "core.autocrlf", "false" }));
+        try dir.writeFile(io, .{ .sub_path = "same.txt", .data = text });
+        try std.testing.expect(try runGitTest(a, root, &.{ "add", "same.txt" }));
+        try std.testing.expect(try runGitTest(a, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "base" }));
+    }
+    // Discovery must also work when the revision resource has no on-disk file.
+    try first.dir.deleteFile(io, "same.txt");
+    try second.dir.writeFile(io, .{ .sub_path = "same.txt", .data = "second working\n" });
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const settings = try std.fs.path.join(scratch, &.{ roots[0], ".git", "test-settings.json" });
+    const paths = [_][]const u8{
+        try std.fs.path.join(scratch, &.{ roots[0], "same.txt" }),
+        try std.fs.path.join(scratch, &.{ roots[1], "same.txt" }),
+    };
+    const git_uri = @import("../extensions/git/src/uri.zig");
+    const uris = [_]std.Uri{
+        try git_uri.toGitUri(scratch, paths[0], "HEAD"),
+        try git_uri.toGitUri(scratch, paths[1], "HEAD"),
+    };
+    for ([_]bool{ true, false }) |empty_window| {
+        const window = try TestWindow.init(a, io, &.{}, 100, 30);
+        defer window.deinit();
+        const wb = window.workbench;
+        try wb.setUserSettingsPaths(&.{settings});
+        if (!empty_window) {
+            try wb.setWorkspaceFolders(&roots);
+            try wb.initGit();
+        } else try std.testing.expectEqual(@as(usize, 0), wb.git_model.repositories().len);
+        // Both the stat and read paths use the model's get-or-open lifecycle.
+        const first_stat = try wb.file_service_api.stat(uris[0]);
+        try std.testing.expectEqual(@as(u64, "first base\n".len), first_stat.size);
+        try wb.editor_api.requestOpenResourceUri(uris[1], "Second revision");
+        for (0..5000) |_| {
+            _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            if (wb.editor_opening.pending_resource_open == null) break;
+            std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+        }
+        const tab = wb.activeTab() orelse return error.TestExpectedRevision;
+        try std.testing.expectEqualStrings("second base", try tab.editor.model.borrowLineContent(1));
+        try std.testing.expectEqual(@as(usize, 2), wb.git_model.repositories().len);
+        try std.testing.expectEqual(@as(usize, 2), wb.scm.service_api.?.repositoryCount());
+        const second_provider = wb.git_model.getRepository(paths[1]) orelse return error.TestExpectedRepository;
+        try std.testing.expectEqualStrings(roots[1], second_provider.root);
+        try std.testing.expectEqual(second_provider, wb.git_model.repositoryForRoot(roots[1]).?);
+        const second_uri: std.Uri = .{ .scheme = "file", .path = .{ .raw = paths[1] } };
+        const quick = try wb.scm.quick_diff_api.?.getQuickDiffs(a, second_uri, "plaintext", true);
+        defer {
+            for (quick) |*value| value.deinit(a);
+            a.free(quick);
+        }
+        try std.testing.expectEqual(@as(usize, 1), quick.len);
+        try std.testing.expect(std.mem.startsWith(u8, quick[0].id, second_provider.id));
+
+        // The actual registered group action receives the selected repository's
+        // resource group, not the first repository's group sharing its ID.
+        const group = second_provider.interface().groups()[2];
+        const command_argument = @import("../vs/platform/commands/common/commands.zig").CommandArgument;
+        const resource_group = @import("../vs/workbench/contrib/scm/common/scm.zig").ISCMResourceGroup;
+        try std.testing.expect(try wb.commands.platform.executeWithArgument("git.viewChanges", command_argument.from(resource_group, group)));
+        for (0..5000) |_| {
+            _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            if (wb.activeTab()) |active| if (active.multi_diff) |multi| {
+                if (!multi.input.isResolvingDocuments and !multi.widget.getViewModel().?.isLoading) break;
+            };
+            std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+        }
+        const multi = wb.activeTab().?.multi_diff orelse return error.TestExpectedMultiDiff;
+        const entry = multi.widget.getViewModel().?.items[0];
+        try std.testing.expectEqualStrings("second base", try entry.original.model.borrowLineContent(1));
+        try std.testing.expectEqualStrings("second working", try entry.modified.model.borrowLineContent(1));
+    }
+}

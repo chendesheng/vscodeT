@@ -541,6 +541,7 @@ pub const TerminalWorkbench = struct {
         self.text_model_api = self.text_model_resolver.interface();
         self.git_file_provider = .init(allocator, &self.git_model, self.async_io);
         errdefer self.git_file_provider.deinit();
+        self.git_file_provider.setRepositoryDiscovery(.{ .context = self, .open = discoverGitResourceRepository });
         try self.git_file_provider.register(self.file_service_api, .{
             .context = &self.text_model_resolver,
             .is_open = struct {
@@ -2206,7 +2207,7 @@ pub const TerminalWorkbench = struct {
                 .{ .context = self, .callback = reportWatcherMessage },
             );
         }
-        if (self.git_model.repository) |provider| provider.watch(self.file_watcher_service.?) catch {};
+        for (self.git_model.repositories()) |provider| provider.watch(self.file_watcher_service.?) catch {};
     }
 
     fn onWorkspaceFileChanges(changes: []const @import("../vs/platform/files/common/files.zig").FileChange, self: *TerminalWorkbench) !void {
@@ -2937,8 +2938,21 @@ pub const TerminalWorkbench = struct {
     /// controller for the workspace folder. A missing git binary, a disabled
     /// `git.enabled` or a non-repository leaves the editor untouched.
     pub fn initGit(self: *TerminalWorkbench) !void {
-        if (self.git_model.git != null) return;
-        const root = self.workspaceFolderPath() orelse return;
+        for (self.workspace.getWorkspace().folders.items) |folder| {
+            try self.openGitRepository(folder.resource);
+        }
+    }
+
+    fn discoverGitResourceRepository(context: *anyopaque, path: []const u8) !void {
+        const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
+        // The Git filesystem provider implicitly opens repositories only when
+        // there are no workspace folders (the native equivalent of an empty
+        // editor window). Normal workspaces use their discovered repositories.
+        if (self.workspaceFolderPath() != null) return;
+        try self.openGitRepository(path);
+    }
+
+    fn openGitRepository(self: *TerminalWorkbench, root: []const u8) !void {
         const provider = (try self.git_model.openRepository(root, .{
             .io = self.io,
             .configuration = self.configuration,
@@ -2949,9 +2963,22 @@ pub const TerminalWorkbench = struct {
             .on_disabled = gitDisabled,
             .on_disabled_context = self,
         })) orelse return;
-        errdefer self.deinitGit();
+        const scm_api = try self.scm.ensureService();
+        if (scm_api.getRepository(provider.id) != null) return;
+        const first = self.scm.repository == null;
+        errdefer if (first) {
+            self.deinitGit();
+        } else {
+            self.git_file_provider.detachSingleRepository(provider);
+            self.git_model.closeRepository(provider);
+        };
         try self.git_file_provider.attachRepository(provider, &self.window_events, self.host_api);
         const quick_providers = provider.quickDiffProviders();
+        if (!first) {
+            try self.scm.registerAdditionalProvider(provider.interface(), &quick_providers);
+            if (self.file_watcher_service) |files_service| provider.watch(files_service) catch {};
+            return;
+        }
         try self.scm.attachProvider(provider.interface(), &quick_providers, .{
             .editors = .{ .part = self.part },
             .text_model_service = self.text_model_api,
@@ -2968,7 +2995,7 @@ pub const TerminalWorkbench = struct {
                     fn run(context: *anyopaque, group: *const @import("../vs/workbench/contrib/scm/common/scm.zig").ISCMResourceGroup) !void {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
                         const command = @import("../extensions/git/src/commands.zig").CommandContribution.multiDiffGroupCommandId(group) orelse return;
-                        try host.commands.execute(command);
+                        _ = try host.commands.platform.executeWithArgument(command, @import("../vs/platform/commands/common/commands.zig").CommandArgument.from(@import("../vs/workbench/contrib/scm/common/scm.zig").ISCMResourceGroup, group));
                     }
                 }.run,
                 .editor_service = self.editor_api,
@@ -3005,10 +3032,11 @@ pub const TerminalWorkbench = struct {
     /// Re-reads git status, the SCM rows, the quick-diff baselines, the
     /// branch/status entry and the activity badge.
     pub fn refreshGitStatus(self: *TerminalWorkbench) void {
-        const provider = self.git_model.repository orelse return;
-        provider.refresh() catch {};
-        if (provider.refreshHistoryRefs(true)) {
-            if (self.scm.history) |view| view.onHistoryItemRefsChanged(true);
+        for (self.git_model.repositories()) |provider| {
+            provider.refresh() catch {};
+            if (provider.refreshHistoryRefs(true) and provider == self.git_model.repository) {
+                if (self.scm.history) |view| view.onHistoryItemRefsChanged(true);
+            }
         }
     }
 

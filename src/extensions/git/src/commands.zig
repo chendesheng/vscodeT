@@ -34,7 +34,7 @@ pub const Commands = struct {
     pub const ResourceHost = struct {
         io: std.Io,
         dialogs: dialogs.IDialogService,
-        resolve_repository: *const fn (*anyopaque) ?*repository_mod.Repository,
+        resolve_repository: *const fn (*anyopaque, []const u8) ?*repository_mod.Repository,
         open_path: *const fn (*anyopaque, []const u8) anyerror!void,
         open_resource: *const fn (*anyopaque, std.Uri, []const u8) anyerror!void,
         open_diff: *const fn (*anyopaque, []const u8, git_mod.DiffRef, git_mod.DiffRef) anyerror!void,
@@ -168,7 +168,7 @@ pub const Commands = struct {
         fn resolve(self: *DiscardConfirmation) !void {
             const host = self.host.resources orelse return error.ResourceActionsUnavailable;
             const context = self.host.context;
-            const provider = host.resolve_repository(context) orelse return error.NoRepository;
+            const provider = host.resolve_repository(context, self.root) orelse return error.NoRepository;
             if (!std.mem.eql(u8, provider.root, self.root)) return error.RepositoryChanged;
             const git = provider.git orelse return error.NoGit;
             const absolute = try std.fs.path.join(self.allocator, &.{ self.root, self.path });
@@ -392,9 +392,9 @@ pub const CommandContribution = struct {
                     .io = self.io,
                     .dialogs = self.dialogs.*,
                     .resolve_repository = struct {
-                        fn run(context: *anyopaque) ?*repository_mod.Repository {
+                        fn run(context: *anyopaque, root: []const u8) ?*repository_mod.Repository {
                             const owner: *CommandContribution = @ptrCast(@alignCast(context));
-                            return owner.model.repository;
+                            return owner.model.repositoryForRoot(root);
                         }
                     }.run,
                     .open_path = struct {
@@ -538,10 +538,10 @@ pub const CommandContribution = struct {
         const self: *CommandContribution = @ptrCast(@alignCast(context));
         const changes = argument.as(HunkContext) orelse return error.InvalidArgument;
         if (!std.mem.eql(u8, changes.modifiedUri.scheme, "file")) return;
-        const provider = self.model.repository orelse return error.NoRepository;
         var temporary = std.heap.ArenaAllocator.init(self.allocator);
         defer temporary.deinit();
-        const path = try changes.modifiedUri.path.toRawMaybeAlloc(temporary.allocator());
+        const path = try @import("../../../vs/base/common/stdUri.zig").fsPath(changes.modifiedUri, temporary.allocator());
+        const provider = self.model.getRepository(path) orelse return error.NoRepository;
         const encoding = @import("../../../vs/workbench/services/textfile/common/encoding.zig").Encoding;
         try provider.stage(path, changes.originalWithModifiedChanges, std.meta.stringToEnum(encoding, changes.modifiedEncoding) orelse return error.InvalidEncoding);
         self.host.refresh_resources(self.host.context);
@@ -571,14 +571,14 @@ pub const CommandContribution = struct {
                 const self: *CommandContribution = @ptrCast(@alignCast(context));
                 const changes = argument.as(QuickDiffActionContext) orelse return error.InvalidArgument;
                 if (!std.mem.eql(u8, changes.modifiedUri.scheme, "file") or changes.index >= changes.changes.len) return;
-                const provider = self.model.repository orelse return error.NoRepository;
                 var temp = std.heap.ArenaAllocator.init(self.allocator);
                 defer temp.deinit();
                 const a = temp.allocator();
                 const ref = (try gitRef(a, changes.originalUri)) orelse return;
                 if (operation != .unstage and ref.len != 0 and !std.mem.eql(u8, ref, "~")) return;
                 const editor = changes.modified_editor;
-                const path = try changes.modifiedUri.path.toRawMaybeAlloc(a);
+                const path = try @import("../../../vs/base/common/stdUri.zig").fsPath(changes.modifiedUri, a);
+                const provider = self.model.getRepository(path) orelse return error.NoRepository;
                 const selected = changes.changes[changes.index];
                 switch (operation) {
                     .stage => {
@@ -635,8 +635,14 @@ pub const CommandContribution = struct {
         return null;
     }
 
-    fn viewResourceGroupChanges(self: *CommandContribution, group_id: []const u8) !void {
-        const repository = self.model.repository orelse return error.NoRepository;
+    fn viewResourceGroupChanges(self: *CommandContribution, group_id: []const u8, resource_group: ?*const scm.ISCMResourceGroup) !void {
+        const repository = if (resource_group) |group| blk: {
+            if (!std.mem.eql(u8, group.provider.provider_id, "git") or !std.mem.eql(u8, group.id, group_id)) return error.InvalidScmResource;
+            break :blk self.model.repositoryForRoot(group.provider.root_path orelse return error.NoRepository) orelse return error.NoRepository;
+        } else if (self.host.selected_resource(self.host.context)) |resource|
+            self.model.getRepository(resource.source_path) orelse self.model.repository orelse return error.NoRepository
+        else
+            self.model.repository orelse return error.NoRepository;
         const group = for (repository.interface().groups()) |candidate| {
             if (std.mem.eql(u8, candidate.id, group_id)) break candidate;
         } else return;
@@ -654,11 +660,21 @@ pub const CommandContribution = struct {
 
     fn viewChanges(context: *anyopaque, _: ServicesAccessor) !void {
         const self: *CommandContribution = @ptrCast(@alignCast(context));
-        try self.viewResourceGroupChanges("working");
+        try self.viewResourceGroupChanges("working", null);
     }
     fn viewStagedChanges(context: *anyopaque, _: ServicesAccessor) !void {
         const self: *CommandContribution = @ptrCast(@alignCast(context));
-        try self.viewResourceGroupChanges("index");
+        try self.viewResourceGroupChanges("index", null);
+    }
+
+    fn viewChangesForGroup(context: *anyopaque, _: ServicesAccessor, argument: CommandArgument) !void {
+        const self: *CommandContribution = @ptrCast(@alignCast(context));
+        try self.viewResourceGroupChanges("working", argument.as(scm.ISCMResourceGroup) orelse return error.InvalidArgument);
+    }
+
+    fn viewStagedChangesForGroup(context: *anyopaque, _: ServicesAccessor, argument: CommandArgument) !void {
+        const self: *CommandContribution = @ptrCast(@alignCast(context));
+        try self.viewResourceGroupChanges("index", argument.as(scm.ISCMResourceGroup) orelse return error.InvalidArgument);
     }
 
     const view_changes_visible = Expr{ .And = @constCast(&[_]*const Expr{ &git_enabled, &git_available }) };
@@ -678,6 +694,7 @@ pub const CommandContribution = struct {
                 },
                 .context = self,
                 .run_fn = viewChanges,
+                .run_with_argument_fn = viewChangesForGroup,
             },
             .{
                 .command = .{ .id = "git.viewStagedChanges", .title = "View Staged Changes", .category = "Git", .icon = "diff-multiple", .precondition = &not_operation },
@@ -687,6 +704,7 @@ pub const CommandContribution = struct {
                 },
                 .context = self,
                 .run_fn = viewStagedChanges,
+                .run_with_argument_fn = viewStagedChangesForGroup,
             },
         };
     }

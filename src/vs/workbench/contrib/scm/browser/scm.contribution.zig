@@ -43,6 +43,10 @@ pub const SCMContribution = struct {
     quick_diff_model_service: ?*quick_models.QuickDiffModelService = null,
     quick_diff_model_api: ?*quick_models.IQuickDiffModelService = null,
     registered_quick_providers: []quick_diff.IDisposable = &.{},
+    additional_providers: std.ArrayList(AdditionalProvider) = .empty,
+    resource_events: ?*@import("../../../../base/common/event.zig").Emitter(void) = null,
+    primary_resources_listener: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
+
     quick_diff_controller: ?*QuickDiffWorkbenchController = null,
     changes: ?*scm_view.SCMViewPane = null,
     history: ?*scm_history.SCMHistoryViewPane = null,
@@ -51,6 +55,12 @@ pub const SCMContribution = struct {
     provider_listener: ?usize = null,
     configuration_service: ?*ConfigurationService = null,
     configuration_listener: ?usize = null,
+
+    const AdditionalProvider = struct {
+        repository: *scm.ISCMRepository,
+        quick_registrations: []quick_diff.IDisposable,
+        resource_listener: @import("../../../../base/common/event.zig").SignalSubscription,
+    };
 
     pub fn init(allocator: Allocator) SCMContribution {
         return .{ .allocator = allocator };
@@ -147,7 +157,11 @@ pub const SCMContribution = struct {
         self.registered_quick_providers = try allocator.alloc(quick_diff.IDisposable, quick_providers.len);
         @memset(self.registered_quick_providers, quick_diff.IDisposable.none);
         for (quick_providers, self.registered_quick_providers) |quick, *registration| registration.* = try quick_service.addQuickDiffProvider(quick);
-        try models.setRepositoryResources(provider.on_did_change_resources);
+        const resource_events = try allocator.create(@import("../../../../base/common/event.zig").Emitter(void));
+        resource_events.* = .init(allocator);
+        self.resource_events = resource_events;
+        self.primary_resources_listener = try provider.on_did_change_resources.listenDisposable(self, onRepositoryResourcesChanged);
+        try models.setRepositoryResources(resource_events);
 
         const controller = try allocator.create(QuickDiffWorkbenchController);
         controller.* = QuickDiffWorkbenchController.init(allocator, quick_service.interface(), models);
@@ -168,6 +182,36 @@ pub const SCMContribution = struct {
         self.provider_listener = try self.provider_event.?.listen(self, onProviderChanged);
         try self.setViewConfiguration(options.configuration);
         self.applyProviderState();
+    }
+
+    /// Secondary repositories share the same SCM service, Changes tree and
+    /// Quick Diff model collection. The repository and Quick Diff registrations
+    /// are disposed before the extension releases their providers.
+    pub fn registerAdditionalProvider(self: *SCMContribution, provider: *scm.ISCMProvider, quick_providers: []const *quick_diff.QuickDiffProvider) !void {
+        const api = try self.ensureService();
+        const quick_service = self.quick_diff_service orelse return error.QuickDiffUnavailable;
+        const repository = try api.registerSCMProvider(provider);
+        errdefer repository.dispose();
+        const registrations = try self.allocator.alloc(quick_diff.IDisposable, quick_providers.len);
+        @memset(registrations, quick_diff.IDisposable.none);
+        errdefer {
+            for (registrations) |registration| registration.dispose();
+            self.allocator.free(registrations);
+        }
+        for (quick_providers, registrations) |quick, *registration| registration.* = try quick_service.addQuickDiffProvider(quick);
+        const resource_listener = try provider.on_did_change_resources.listenDisposable(self, onAdditionalRepositoryResourcesChanged);
+        errdefer resource_listener.dispose();
+        try self.additional_providers.append(self.allocator, .{ .repository = repository, .quick_registrations = registrations, .resource_listener = resource_listener });
+        self.applyProviderState();
+    }
+
+    fn onRepositoryResourcesChanged(_: void, self: *SCMContribution) !void {
+        if (self.resource_events) |events| try events.fire({});
+    }
+
+    fn onAdditionalRepositoryResourcesChanged(_: void, self: *SCMContribution) !void {
+        try onRepositoryResourcesChanged({}, self);
+        if (self.changes) |view| view.refresh();
     }
 
     pub fn detachConfiguration(self: *SCMContribution) void {
@@ -264,6 +308,18 @@ pub const SCMContribution = struct {
             allocator.destroy(view);
         }
         if (self.quick_diff_model_service) |models| models.setRepositoryResources(null) catch {};
+        if (self.primary_resources_listener) |listener| listener.dispose();
+        for (self.additional_providers.items) |additional| {
+            additional.resource_listener.dispose();
+            for (additional.quick_registrations) |registration| registration.dispose();
+            allocator.free(additional.quick_registrations);
+            additional.repository.dispose();
+        }
+        self.additional_providers.deinit(allocator);
+        if (self.resource_events) |events| {
+            events.deinit();
+            allocator.destroy(events);
+        }
         for (self.registered_quick_providers) |registration| registration.dispose();
         allocator.free(self.registered_quick_providers);
         if (self.repository) |repository| repository.dispose();
