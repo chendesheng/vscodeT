@@ -7,6 +7,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const repository_mod = @import("repository.zig");
 const git_mod = @import("git.zig");
+const SnapshotSource = @import("../../../vs/editor/browser/widget/diffEditor/diffProviderFactoryService.zig").SnapshotSource;
 const IConfigurationService = @import("../../../vs/platform/configuration/common/configuration.zig").IConfigurationService;
 const IEditorService = @import("../../../vs/workbench/services/editor/common/editorService.zig").IEditorService;
 
@@ -302,6 +303,7 @@ pub const CommandContribution = struct {
     allocator: Allocator,
     model: *Model,
     io: std.Io,
+    snapshot_io: std.Io,
     quick_input: *QuickInputService,
     configuration: *const IConfigurationService,
     editors: *const IEditorService,
@@ -318,7 +320,8 @@ pub const CommandContribution = struct {
         report_status: *const fn (*anyopaque, []const u8) void,
         working_text: *const fn (*anyopaque, Allocator, []const u8) anyerror!?[]u8,
         has_diff: *const fn (*anyopaque, []const u8, []const u8, []const u8) bool,
-        open_snapshot: *const fn (*anyopaque, []const u8, []const u8, []const u8, []const u8, []const u8) anyerror!void,
+        // Consumes the virtual source even when opening fails.
+        open_snapshot: *const fn (*anyopaque, []const u8, SnapshotSource, []const u8, []const u8) anyerror!void,
         refresh: *const fn (*anyopaque) void,
         commit_input: *const fn (*anyopaque) void,
         selected_resource: *const fn (*anyopaque) ?*scm.ISCMResource,
@@ -464,24 +467,13 @@ pub const CommandContribution = struct {
         const right_label = right.label();
         const working = if (left == .working or right == .working) try self.host.working_text(self.host.context, self.allocator, path) else null;
         defer if (working) |text| self.allocator.free(text);
-        const text = try self.model.resolveDiffTexts(path, working, left, right);
-        defer self.allocator.free(text.original);
-        defer self.allocator.free(text.modified);
-        if (text.original.len == 0 and text.modified.len == 0 and !self.host.has_diff(self.host.context, path, left_label, right_label)) {
-            const file_exists = if (std.Io.Dir.cwd().access(self.io, path, .{})) |_| true else |_| false;
-            if (file_exists) {
-                self.status("Diff skipped: binary or too large", .{});
-                return error.DiffUnavailable;
-            }
-        }
-        try self.host.open_snapshot(self.host.context, path, text.original, text.modified, left_label, right_label);
+        const source = try self.model.snapshotSource(self.snapshot_io, path, working, left, right, self.host.has_diff(self.host.context, path, left_label, right_label));
+        try self.host.open_snapshot(self.host.context, path, source, left_label, right_label);
     }
 
     pub fn openRefDiff(self: *CommandContribution, path: []const u8, original_path: ?[]const u8, left: ?[]const u8, right: []const u8, left_label: []const u8, right_label: []const u8) !void {
-        const text = try self.model.resolveRefDiffTexts(path, original_path, left, right);
-        defer self.allocator.free(text.original);
-        defer self.allocator.free(text.modified);
-        try self.host.open_snapshot(self.host.context, path, text.original, text.modified, left_label, right_label);
+        const source = try self.model.revisionSnapshotSource(self.snapshot_io, path, original_path, left, right);
+        try self.host.open_snapshot(self.host.context, path, source, left_label, right_label);
     }
 
     pub fn runRemoteAction(self: *CommandContribution, action: git_mod.Git.RemoteAction, remote: ?[]const u8) !void {

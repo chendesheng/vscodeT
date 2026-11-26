@@ -314,7 +314,8 @@ const HistoryService = @import("../../history/browser/historyService.zig").Histo
 /// model/view construction and this companion owns the outstanding file
 /// resolve/reload jobs. The window provides the document surface and
 /// notification callbacks; completions are posted to its input/event queue.
-const DiffProvider = @import("../../../../editor/browser/widget/diffEditor/diffProviderFactoryService.zig").WorkerBasedDocumentDiffProvider;
+const diff_provider = @import("../../../../editor/browser/widget/diffEditor/diffProviderFactoryService.zig");
+const DiffProvider = diff_provider.WorkerBasedDocumentDiffProvider;
 const DiffWorker = @import("../../../../editor/browser/services/editorWorkerService.zig").EditorWorkerService;
 const WindowTask = @import("../../../../base/common/windowDispatch.zig").Task;
 
@@ -371,21 +372,13 @@ pub const EditorOpening = struct {
         self.reload_jobs.deinit();
     }
 
-    pub fn requestOpenSnapshotDiff(self: *EditorOpening, configuration: ?IConfigurationService, path: []const u8, original: []const u8, modified: []const u8, left: []const u8, right: []const u8) !void {
+    /// Consumes the provider's virtual document source on all outcomes.
+    pub fn requestOpenSnapshotDiff(self: *EditorOpening, configuration: ?IConfigurationService, path: []const u8, source: diff_provider.SnapshotSource, left: []const u8, right: []const u8) !void {
+        var source_owned = true;
+        errdefer if (source_owned) source.destroy(source.context);
         self.cancelPendingOpen();
         self.cancelPendingDiff();
         const options = text_diff_editor_mod.computeConfiguration(configuration);
-        const editors = EditorService{ .part = self.part };
-        if (editors.findDiffTab(path, left, right)) |existing| {
-            if (existing.tab.diff.?.matchesSnapshot(original, modified, options)) {
-                try existing.pane.activateTab(existing.tab);
-                self.part.service.activateGroup(existing.pane.group);
-                existing.tab.focusEditor();
-                self.host.focus_editor(self.host.context);
-                self.clearStatusHint();
-                return;
-            }
-        }
         const worker = self.diff_worker orelse blk: {
             const instance = try self.allocator.create(DiffWorker);
             instance.* = DiffWorker.init();
@@ -400,7 +393,8 @@ pub const EditorOpening = struct {
         const right_copy = try self.allocator.dupe(u8, right);
         errdefer self.allocator.free(right_copy);
         const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp();
-        const request = try DiffProvider.computeDiff(worker, original, modified, options, .{
+        source_owned = false;
+        const request = try DiffProvider.computeResolvedDiff(worker, source, options, .{
             .context = self,
             .run = diffCompleted,
         }, now);
@@ -444,11 +438,21 @@ pub const EditorOpening = struct {
             self.allocator.free(pending.right);
         }
         const computed = result orelse {
-            self.setStatusHint("Diff computation failed", .{});
+            if (request.failure) |err| self.setStatusHint("Open diff failed: {s}", .{@errorName(err)}) else self.setStatusHint("Diff computation failed", .{});
             return true;
         };
         if (self.part.service.getGroup(pending.group) == null) return false;
         const editors = EditorService{ .part = self.part };
+        if (editors.findDiffTab(pending.path, pending.left, pending.right)) |existing| {
+            if (existing.tab.diff.?.matchesSnapshot(request.original, request.modified, request.options)) {
+                existing.pane.activateTab(existing.tab) catch return false;
+                self.part.service.activateGroup(existing.pane.group);
+                existing.tab.focusEditor();
+                self.host.focus_editor(self.host.context);
+                self.clearStatusHint();
+                return true;
+            }
+        }
         editors.openSnapshotDiffWithDiff(self.view_factory, self.io, pending.path, request.original, request.modified, pending.left, pending.right, request.options, computed, pending.group) catch |err| {
             self.setStatusHint("Open diff failed: {s}", .{@errorName(err)});
             return true;

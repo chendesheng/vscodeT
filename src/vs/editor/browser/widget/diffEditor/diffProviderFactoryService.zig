@@ -9,6 +9,17 @@ const Options = @import("diffEditorOptions.zig").Options;
 
 pub const Result = document.IDocumentDiff;
 
+/// A virtual-document source, owned by the request. The extension prepares
+/// immutable resource identity on the UI thread and resolves bytes on the
+/// worker without accessing its live repository or editor objects.
+pub const SnapshotSource = struct {
+    context: *anyopaque,
+    read: *const fn (*anyopaque, std.mem.Allocator) anyerror!Texts,
+    destroy: *const fn (*anyopaque) void,
+
+    pub const Texts = struct { original: []const u8, modified: []const u8 };
+};
+
 pub const WorkerBasedDocumentDiffProvider = struct {
     pub const Listener = struct {
         context: *anyopaque,
@@ -23,6 +34,8 @@ pub const WorkerBasedDocumentDiffProvider = struct {
         options: Options,
         listener: ?Listener,
         result: ?Result = null,
+        source: ?SnapshotSource = null,
+        failure: ?anyerror = null,
 
         pub fn cancel(self: *Request) void {
             self.listener = null;
@@ -38,6 +51,14 @@ pub const WorkerBasedDocumentDiffProvider = struct {
         fn compute(message: *worker.Request) void {
             const self: *Request = @fieldParentPtr("message", message);
             const allocator = self.arena.allocator();
+            if (self.source) |source| {
+                const texts = source.read(source.context, allocator) catch |err| {
+                    self.failure = err;
+                    return;
+                };
+                self.original = texts.original;
+                self.modified = texts.modified;
+            }
             const original = splitLines(allocator, self.original) catch return;
             const modified = splitLines(allocator, self.modified) catch return;
             var provider = document.LineDiffProvider.init(self.options.diff_algorithm);
@@ -51,6 +72,7 @@ pub const WorkerBasedDocumentDiffProvider = struct {
         fn reply(message: *worker.Request) bool {
             const self: *Request = @fieldParentPtr("message", message);
             defer {
+                if (self.source) |source| source.destroy(source.context);
                 self.arena.deinit();
                 std.heap.page_allocator.destroy(self);
             }
@@ -58,6 +80,28 @@ pub const WorkerBasedDocumentDiffProvider = struct {
             return listener.run(listener.context, self, self.result);
         }
     };
+
+    /// Consumes the source on success and failure.
+    pub fn computeResolvedDiff(
+        service: *worker.EditorWorkerService,
+        source: SnapshotSource,
+        options: Options,
+        listener: Listener,
+        now_ms: i64,
+    ) !*Request {
+        errdefer source.destroy(source.context);
+        const request = try std.heap.page_allocator.create(Request);
+        request.* = .{
+            .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator),
+            .original = "",
+            .modified = "",
+            .options = options.normalize(),
+            .listener = listener,
+            .source = source,
+        };
+        service.computeDiff(&request.message, now_ms);
+        return request;
+    }
 
     pub fn computeDiff(
         service: *worker.EditorWorkerService,

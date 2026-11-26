@@ -728,6 +728,7 @@ pub const TerminalWorkbench = struct {
             .allocator = allocator,
             .model = &self.git_model,
             .io = self.io,
+            .snapshot_io = self.async_io,
             .quick_input = self.quick_access.inputService(),
             .configuration = &self.configuration_api,
             .editors = &self.editor_api,
@@ -762,9 +763,9 @@ pub const TerminalWorkbench = struct {
                     }
                 }.get,
                 .open_snapshot = struct {
-                    fn open(context: *anyopaque, path: []const u8, original: []const u8, modified: []const u8, left: []const u8, right: []const u8) !void {
+                    fn open(context: *anyopaque, path: []const u8, source: @import("../vs/editor/browser/widget/diffEditor/diffProviderFactoryService.zig").SnapshotSource, left: []const u8, right: []const u8) !void {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                        try host.openSnapshotDiff(path, original, modified, left, right);
+                        try host.openSnapshotDiff(path, source, left, right);
                     }
                 }.open,
                 .refresh = struct {
@@ -2720,12 +2721,11 @@ pub const TerminalWorkbench = struct {
     fn openSnapshotDiff(
         self: *TerminalWorkbench,
         path: []const u8,
-        original_text: []const u8,
-        modified_text: []const u8,
+        source: @import("../vs/editor/browser/widget/diffEditor/diffProviderFactoryService.zig").SnapshotSource,
         left_label: []const u8,
         right_label: []const u8,
     ) !void {
-        try self.editor_opening.requestOpenSnapshotDiff(if (self.configuration) |config| config.interface() else null, path, original_text, modified_text, left_label, right_label);
+        try self.editor_opening.requestOpenSnapshotDiff(if (self.configuration) |config| config.interface() else null, path, source, left_label, right_label);
     }
 
     fn gitDisabled(context: ?*anyopaque, reason: []const u8) void {

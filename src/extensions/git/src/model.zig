@@ -18,6 +18,64 @@ const IGitExtensionDelegate = @import("../../../vs/workbench/contrib/git/common/
 const ConfigurationService = @import("../../../vs/workbench/services/configuration/browser/configurationService.zig").ConfigurationService;
 const WindowQueue = @import("../../../vs/base/common/windowDispatch.zig").Queue;
 
+const SnapshotSource = @import("../../../vs/editor/browser/widget/diffEditor/diffProviderFactoryService.zig").SnapshotSource;
+
+/// Immutable Git virtual-document request. All data is copied before
+/// scheduling; the worker creates its own Git reader and never accesses the
+/// repository model, status cache or extension callbacks.
+const SnapshotRead = struct {
+    arena: std.heap.ArenaAllocator,
+    io: std.Io,
+    exe: []const u8,
+    timeout: std.Io.Timeout,
+    max_file_size: usize,
+    root: []const u8,
+    path: []const u8,
+    original_path: []const u8,
+    modified_path: []const u8,
+    source: union(enum) {
+        refs: struct { working: ?[]const u8, left: git.DiffRef, right: git.DiffRef, has_diff: bool },
+        revisions: struct { left: ?[]const u8, right: []const u8 },
+    },
+
+    fn destroy(context: *anyopaque) void {
+        const self: *SnapshotRead = @ptrCast(@alignCast(context));
+        self.arena.deinit();
+        std.heap.page_allocator.destroy(self);
+    }
+
+    fn read(context: *anyopaque, allocator: Allocator) !SnapshotSource.Texts {
+        const self: *SnapshotRead = @ptrCast(@alignCast(context));
+        const reader = try Git.init(allocator, .{ .git_path = self.exe, .io = self.io });
+        defer reader.deinit();
+        reader.timeout = self.timeout;
+        reader.max_file_size = self.max_file_size;
+        switch (self.source) {
+            .refs => |refs| {
+                const text = try reader.resolveDiffTexts(self.root, self.modified_path, refs.working, refs.left, refs.right);
+                if (text.original.len == 0 and text.modified.len == 0 and !refs.has_diff) {
+                    if (std.Io.Dir.cwd().access(self.io, self.path, .{})) |_| {
+                        return error.DiffUnavailable;
+                    } else |_| {}
+                }
+                return .{ .original = text.original, .modified = text.modified };
+            },
+            .revisions => |refs| {
+                const original = if (refs.left) |revision|
+                    (reader.readRefAt(allocator, self.root, self.original_path, revision) catch null) orelse try allocator.dupe(u8, "")
+                else
+                    try allocator.dupe(u8, "");
+                const modified = (reader.readRefAt(allocator, self.root, self.modified_path, refs.right) catch null) orelse try allocator.dupe(u8, "");
+                return .{ .original = original, .modified = modified };
+            },
+        }
+    }
+
+    fn interface(self: *SnapshotRead) SnapshotSource {
+        return .{ .context = self, .read = read, .destroy = destroy };
+    }
+};
+
 pub const Model = struct {
     allocator: Allocator,
     git: ?*Git = null,
@@ -100,6 +158,62 @@ pub const Model = struct {
 
     pub fn setConfiguration(self: *Model, config: ?*ConfigurationService) !void {
         if (self.repository) |provider| try provider.setConfiguration(config);
+    }
+
+    fn captureSnapshot(self: *Model, io: std.Io, path: []const u8, original_path: []const u8, modified_path: []const u8) !*SnapshotRead {
+        const cli = self.git orelse return error.NoGit;
+        const root = self.git_root orelse return error.NoRepository;
+        const request = try std.heap.page_allocator.create(SnapshotRead);
+        errdefer std.heap.page_allocator.destroy(request);
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        errdefer arena.deinit();
+        const allocator = arena.allocator();
+        request.* = .{
+            .arena = undefined,
+            .io = io,
+            .exe = try allocator.dupe(u8, cli.exe),
+            .timeout = cli.timeout,
+            .max_file_size = cli.max_file_size,
+            .root = try allocator.dupe(u8, root),
+            .path = try allocator.dupe(u8, path),
+            .original_path = try allocator.dupe(u8, original_path),
+            .modified_path = try allocator.dupe(u8, modified_path),
+            .source = undefined,
+        };
+        request.arena = arena;
+        return request;
+    }
+
+    pub fn snapshotSource(self: *Model, io: std.Io, path: []const u8, working: ?[]const u8, left: git.DiffRef, right: git.DiffRef, has_diff: bool) !SnapshotSource {
+        if (self.repository == null) return error.NoRepository;
+        const root = self.git_root orelse return error.NoRepository;
+        const relative = extpath.relativeToRoot(path, root) orelse return error.OutsideRepository;
+        const request = try self.captureSnapshot(io, path, relative, relative);
+        errdefer SnapshotRead.destroy(request);
+        request.source = .{ .refs = .{
+            .working = if (working) |text| try request.arena.allocator().dupe(u8, text) else null,
+            .left = left,
+            .right = right,
+            .has_diff = has_diff,
+        } };
+        return request.interface();
+    }
+
+    pub fn revisionSnapshotSource(self: *Model, io: std.Io, path: []const u8, original_path: ?[]const u8, left: ?[]const u8, right: []const u8) !SnapshotSource {
+        const root = self.git_root orelse return error.NoRepository;
+        const relative_right = if (std.fs.path.isAbsolute(path)) extpath.relativeToRoot(path, root) orelse return error.OutsideRepository else path;
+        const relative_left = if (original_path) |value|
+            if (std.fs.path.isAbsolute(value)) extpath.relativeToRoot(value, root) orelse relative_right else value
+        else
+            relative_right;
+        const request = try self.captureSnapshot(io, path, relative_left, relative_right);
+        errdefer SnapshotRead.destroy(request);
+        const allocator = request.arena.allocator();
+        request.source = .{ .revisions = .{
+            .left = if (left) |revision| try allocator.dupe(u8, revision) else null,
+            .right = try allocator.dupe(u8, right),
+        } };
+        return request.interface();
     }
 
     /// The terminal projects Git's virtual text resources to snapshot buffers
