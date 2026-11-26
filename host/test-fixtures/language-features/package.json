@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "engines": { "vscode": "^1.74.0" },
   "main": "./extension.js",
+  "enabledApiProposals": ["multiDocumentHighlightProvider"],
   "contributes": { "commands": [{ "command": "echo", "title": "Fixture Echo" }] },
   "activationEvents": ["*"]
 }

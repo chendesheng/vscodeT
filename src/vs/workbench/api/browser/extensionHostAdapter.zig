@@ -2566,6 +2566,82 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqual(diff.modified_editor, extensions.active.?.editor);
         }
 
+        test "Extensions: semantic document and multi-document highlights render both registered diff editors" {
+            if (!build_options.e2e) return error.SkipZigTest;
+            const io = time_compat.io;
+            std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+            const a = std.testing.allocator;
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try tmp.dir.writeFile(io, .{ .sub_path = "diff.json", .data = "{}" });
+            var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const path = path_buffer[0..try tmp.dir.realPathFile(io, "diff.json", &path_buffer)];
+            const window = try TestWindow.init(a, io, &.{path}, 120, 24);
+            defer window.deinit();
+            const wb = window.workbench;
+            try wb.enableLanguageFeatures();
+            const extensions = try Extensions.init(a, io, wb.extensionHostServices(), &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }}, ".cache-ext/data-diff-highlight-fixture", "host/dist");
+            defer extensions.deinit();
+            try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "{\"word\":1}", "{\"word\":2}", "Original", "Modified");
+            const diff = wb.activeTab().?.diff.?.widget;
+            const WordHighlighterContribution = @import("../../../editor/contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
+            const original = diff.original_editor.getContribution(WordHighlighterContribution).?;
+            const modified = diff.modified_editor.getContribution(WordHighlighterContribution).?;
+            const features = wb.language_features.?;
+            const deadline = time_compat.milliTimestamp() + 10_000;
+            while (time_compat.milliTimestamp() < deadline) {
+                _ = extensions.pump();
+                const providers = try features.document_highlight_provider.ordered(a, diff.originalModel(), false);
+                defer a.free(providers);
+                const multi = try features.multi_document_highlight_provider.ordered(a, diff.originalModel(), false);
+                defer a.free(multi);
+                if (providers.len > 1 and multi.len > 1) break;
+                time_compat.sleepMillis(10);
+            }
+            diff.setFocus(.original);
+            try diff.original_editor.setCursorPosition(Position.init(1, 4));
+            original.trigger();
+            const Pump = struct {
+                fn settle(host: *Extensions, contribution: *WordHighlighterContribution) !void {
+                    const limit = time_compat.milliTimestamp() + 10_000;
+                    while (time_compat.milliTimestamp() < limit) {
+                        _ = host.pump();
+                        const highlighter = contribution.word_highlighter.?;
+                        if (highlighter.pending_request == null and highlighter.pending_deadline_ms == null) return;
+                        time_compat.sleepMillis(10);
+                    }
+                    return error.OccurrenceRequestDidNotSettle;
+                }
+            };
+            try Pump.settle(extensions, original);
+            try std.testing.expectEqual(1, original.word_highlighter.?.decorations.items.len);
+            try std.testing.expectEqual(@as(@import("../../../editor/browser/editorBrowser.zig").DecorationKind, .word_highlight), original.word_highlighter.?.decorations.items[0].kind);
+            try std.testing.expect(!modified.saveViewState());
+            original.applyConfiguration(.{ .occurrences_highlight = .multi_file });
+            original.trigger();
+            try Pump.settle(extensions, original);
+            try std.testing.expectEqual(1, modified.word_highlighter.?.decorations.items.len);
+            try std.testing.expectEqual(@as(@import("../../../editor/browser/editorBrowser.zig").DecorationKind, .word_highlight_strong), modified.word_highlighter.?.decorations.items[0].kind);
+            var scratch = std.heap.ArenaAllocator.init(a);
+            defer scratch.deinit();
+            const command = proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands);
+            const queries = try extensions.host.requestSync(scratch.allocator(), command, "$executeContributedCommand", &.{.{ .json = .{ .string = "fixture.highlightQueries" } }}, null, 5000);
+            var single_found = false;
+            var multi_found = false;
+            for (queries.array.items) |query| {
+                const object = query.object;
+                if (!std.mem.eql(u8, object.get("text").?.string, "{\"word\":1}")) continue;
+                if (std.mem.eql(u8, object.get("type").?.string, "single")) single_found = true else {
+                    for (object.get("others").?.array.items) |other| {
+                        if (std.mem.eql(u8, other.object.get("text").?.string, "{\"word\":2}") and !std.mem.eql(u8, other.object.get("uri").?.string, object.get("uri").?.string)) multi_found = true;
+                    }
+                }
+            }
+            try std.testing.expect(single_found and multi_found);
+            original.applyConfiguration(.{ .occurrences_highlight = .off });
+            try std.testing.expect(!original.saveViewState() and !modified.saveViewState());
+        }
+
         test "Extensions: Quick Diff providers resolve virtual originals and publish source-control information asynchronously" {
             if (!build_options.e2e) return error.SkipZigTest;
             const io = time_compat.io;

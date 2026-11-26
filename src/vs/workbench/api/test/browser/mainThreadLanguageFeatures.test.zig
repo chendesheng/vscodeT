@@ -360,3 +360,103 @@ test "mainThreadLanguageFeatures: CodeLens async provide resolve change and rele
     _ = try actor.invoke("$unregister", &.{.{ .json = .{ .integer = 31 } }}, null, scratch);
     try std.testing.expect(!features.code_lens_provider.has(model.model));
 }
+
+test "mainThreadLanguageFeatures: document highlight actors preserve UTF-16 ranges, multi-resource merging and cancellation" {
+    const a = std.testing.allocator;
+    const languages = @import("../../../../editor/common/languages.zig");
+    const Position = @import("../../../../editor/common/core/position.zig").Position;
+    const Range = @import("../../../../editor/common/core/range.zig").Range;
+    const CancellationToken = @import("../../../../base/common/cancellation.zig").CancellationToken;
+    const Disposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
+    const uri = @import("../../../../base/common/stdUri.zig");
+    const Proxy = struct {
+        callback: ?rpc.ReplyCallback = null,
+        method: []const u8 = "",
+        position_column: i64 = 0,
+        other_count: usize = 0,
+        canceled: bool = false,
+
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: []const rpc.Arg, _: ?CancellationToken, _: u32) !std.json.Value {
+            return error.MustUseAsyncRequest;
+        }
+        fn asyncRequest(context: *anyopaque, method: []const u8, args: []const rpc.Arg, callback: rpc.ReplyCallback) !Disposable {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.callback = callback;
+            self.method = method;
+            self.position_column = args[2].json.object.get("column").?.integer;
+            self.other_count = if (args.len == 4) args[3].json.array.items.len else 0;
+            return .{ .context = self, .disposeFn = cancel };
+        }
+        fn cancel(context: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.callback = null;
+            self.canceled = true;
+        }
+        fn complete(self: *@This(), value: std.json.Value) void {
+            const cb = self.callback.?;
+            self.callback = null;
+            cb.call(.{ .json = value });
+        }
+    };
+    const Receiver = struct {
+        document: ?[]const languages.DocumentHighlight = null,
+        multi: ?[]const languages.MultiDocumentHighlight = null,
+        fn documentReady(context: *anyopaque, result: anyerror!?[]const languages.DocumentHighlight) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.document = result catch unreachable;
+        }
+        fn multiReady(context: *anyopaque, result: anyerror!?[]const languages.MultiDocumentHighlight) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.multi = result catch unreachable;
+        }
+    };
+    var primary = try TestModel.init(a, "😀hello", "typescript");
+    defer primary.deinit();
+    var other = try TestModel.init(a, "éother", "typescript");
+    defer other.deinit();
+    var features = LanguageFeaturesService.init(a);
+    defer features.deinit();
+    var proxy: Proxy = .{};
+    var actor = MainThreadLanguageFeatures.init(a, &features, .{ .context = &proxy, .request = Proxy.request, .notify = Fake.notify, .request_async = Proxy.asyncRequest });
+    defer actor.deinit();
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const selectors = try std.json.parseFromSliceLeaky(std.json.Value, scratch, "[{\"language\":\"typescript\"}]", .{});
+    _ = try actor.invoke("$registerDocumentHighlightProvider", &.{ .{ .json = .{ .integer = 70 } }, .{ .json = selectors } }, null, scratch);
+    _ = try actor.invoke("$registerMultiDocumentHighlightProvider", &.{ .{ .json = .{ .integer = 71 } }, .{ .json = selectors } }, null, scratch);
+    const single = (try features.document_highlight_provider.ordered(scratch, primary.model, false))[0];
+    const multi = (try features.multi_document_highlight_provider.ordered(scratch, primary.model, false))[0];
+    var receiver: Receiver = .{};
+    const position = Position.init(1, 5);
+    _ = try single.request_document_highlights.?(single.context, scratch, primary.model, position, .None, .{ .context = &receiver, .complete = Receiver.documentReady });
+    try std.testing.expectEqualStrings("$provideDocumentHighlights", proxy.method);
+    try std.testing.expectEqual(3, proxy.position_column);
+    const primary_highlights = try std.json.parseFromSliceLeaky(std.json.Value, scratch, "[{\"range\":{\"startLineNumber\":1,\"startColumn\":3,\"endLineNumber\":1,\"endColumn\":8},\"kind\":1}]", .{});
+    proxy.complete(primary_highlights);
+    try std.testing.expectEqual(Range.init(1, 5, 1, 10), receiver.document.?[0].range);
+    try std.testing.expectEqual(languages.DocumentHighlightKind.Read, receiver.document.?[0].kind.?);
+    _ = try multi.request_multi_document_highlights.?(multi.context, scratch, primary.model, position, &.{other.model}, .None, .{ .context = &receiver, .complete = Receiver.multiReady });
+    try std.testing.expectEqualStrings("$provideMultiDocumentHighlights", proxy.method);
+    try std.testing.expectEqual(1, proxy.other_count);
+    const other_highlights = try std.json.parseFromSliceLeaky(std.json.Value, scratch, "[{\"range\":{\"startLineNumber\":1,\"startColumn\":2,\"endLineNumber\":1,\"endColumn\":7},\"kind\":2}]", .{});
+    var results = std.json.Array.init(scratch);
+    for ([_]*@import("../../../../editor/common/model/textModel.zig").TextModel{ primary.model, other.model, other.model }, 0..) |model, index| {
+        var entry: std.json.ObjectMap = .empty;
+        try entry.put(scratch, "uri", try uri.jsonComponents(scratch, model.uri()));
+        try entry.put(scratch, "highlights", if (index == 0) primary_highlights else other_highlights);
+        try results.append(.{ .object = entry });
+    }
+    proxy.complete(.{ .array = results });
+    try std.testing.expectEqual(2, receiver.multi.?.len);
+    try std.testing.expectEqual(2, receiver.multi.?[1].highlights.len);
+    try std.testing.expectEqual(Range.init(1, 3, 1, 8), receiver.multi.?[1].highlights[0].range);
+    try std.testing.expectEqual(languages.DocumentHighlightKind.Write, receiver.multi.?[1].highlights[0].kind.?);
+    const pending = (try single.request_document_highlights.?(single.context, scratch, primary.model, position, .None, .{ .context = &receiver, .complete = Receiver.documentReady })).?;
+    pending.dispose();
+    try std.testing.expect(proxy.canceled and proxy.callback == null);
+    _ = try actor.invoke("$unregister", &.{.{ .json = .{ .integer = 70 } }}, null, scratch);
+    _ = try actor.invoke("$unregister", &.{.{ .json = .{ .integer = 71 } }}, null, scratch);
+    try std.testing.expect(!features.document_highlight_provider.has(primary.model));
+    try std.testing.expect(!features.multi_document_highlight_provider.has(primary.model));
+}

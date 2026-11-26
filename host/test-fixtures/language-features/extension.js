@@ -29,6 +29,22 @@ function activate(context) {
     const items = await vscode.commands.executeCommand('vscode.executeCodeLensProvider', vscode.Uri.parse(uri), count);
     return items.map(item => ({ title: item.command?.title, start: item.range.start.character }));
   }));
+  const highlightQueries = [];
+  const highlight = (kind) => new vscode.DocumentHighlight(new vscode.Range(0, 2, 0, 6), kind);
+  context.subscriptions.push(vscode.languages.registerDocumentHighlightProvider({ language: 'json' }, {
+    async provideDocumentHighlights(document, position, token) {
+      highlightQueries.push({ type: 'single', uri: document.uri.toString(), text: document.lineAt(0).text, position: position.character });
+      return token.isCancellationRequested ? undefined : [highlight(vscode.DocumentHighlightKind.Read)];
+    }
+  }));
+  context.subscriptions.push(vscode.languages.registerMultiDocumentHighlightProvider({ language: 'json' }, {
+    async provideMultiDocumentHighlights(document, position, others, token) {
+      highlightQueries.push({ type: 'multi', uri: document.uri.toString(), text: document.lineAt(0).text, position: position.character, others: others.map(other => ({ uri: other.uri.toString(), text: other.lineAt(0).text })) });
+      if (token.isCancellationRequested) return undefined;
+      return [new vscode.MultiDocumentHighlight(document.uri, [highlight(vscode.DocumentHighlightKind.Read)]), ...others.map(other => new vscode.MultiDocumentHighlight(other.uri, [highlight(vscode.DocumentHighlightKind.Write)]))];
+    }
+  }));
+  context.subscriptions.push(vscode.commands.registerCommand('fixture.highlightQueries', () => highlightQueries));
   const tabEvents = [];
   context.subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(event => {
     tabEvents.push({ opened: event.opened.map(tab => tab.label), closed: event.closed.map(tab => tab.label), changed: event.changed.map(tab => tab.label) });

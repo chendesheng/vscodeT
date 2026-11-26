@@ -2,13 +2,14 @@
 // `src/vs/workbench/api/browser/mainThreadLanguageFeatures.ts`.
 //
 // Ported features: hover, completion, definition, declaration,
-// implementation, type definition, references, document symbols, code actions
+// implementation, type definition, references, document symbols, single- and
+// multi-document highlights, CodeLens, code actions
 // and document/range/on-type formatting. The actor stores providers by handle
 // in `LanguageFeaturesService`, converts the extension-host DTOs into editor
 // types and forwards provider calls back to `ExtHostLanguageFeatures`.
 //
-// Terminal adaptation: provider calls are synchronous with a bounded timeout
-// because the TUI editor has no asynchronous provider boundary. Workspace
+// Terminal adaptation: existing synchronous providers have bounded timeouts;
+// CodeLens and document highlight providers use cancellable RPC continuations. Workspace
 // edits from code actions are retained as raw DTO JSON until a bulk-edit
 // service exists; there is no TUI code-action surface yet.
 
@@ -302,6 +303,8 @@ pub const MainThreadLanguageFeatures = struct {
         if (std.mem.eql(u8, method, "$registerTypeDefinitionSupport")) return self.registerLocationProvider(args, arena, .type_definition);
         if (std.mem.eql(u8, method, "$registerReferenceSupport")) return self.registerReference(args, arena);
         if (std.mem.eql(u8, method, "$registerDocumentSymbolProvider")) return self.registerDocumentSymbol(args, arena);
+        if (std.mem.eql(u8, method, "$registerDocumentHighlightProvider")) return self.registerDocumentHighlights(args, arena, false);
+        if (std.mem.eql(u8, method, "$registerMultiDocumentHighlightProvider")) return self.registerDocumentHighlights(args, arena, true);
         if (std.mem.eql(u8, method, "$registerCodeLensSupport")) return self.registerCodeLens(args, arena);
         if (std.mem.eql(u8, method, "$emitCodeLensEvent")) {
             const handle = handleArg(args) orelse return error.InvalidArguments;
@@ -416,6 +419,29 @@ pub const MainThreadLanguageFeatures = struct {
             .display_name = state.display_name,
             .provide_document_symbols = provideDocumentSymbols,
         });
+        return .empty;
+    }
+
+    fn registerDocumentHighlights(self: *MainThreadLanguageFeatures, args: []const rpc.Arg, arena: Allocator, multi: bool) !rpc.HandlerReply {
+        const handle = handleArg(args) orelse return error.InvalidArguments;
+        const selector = try parseSelector(arena, jsonArg(args, 1) orelse return error.InvalidArguments);
+        const registration = try self.createRegistration(arena, handle);
+        errdefer {
+            _ = self.registrations.remove(handle);
+            self.destroyRegistration(registration);
+        }
+        registration.disposable = if (multi)
+            try self.features.multi_document_highlight_provider.register(selector, .{
+                .context = registration,
+                .provide_multi_document_highlights = provideMultiDocumentHighlights,
+                .request_multi_document_highlights = requestMultiDocumentHighlights,
+            })
+        else
+            try self.features.document_highlight_provider.register(selector, .{
+                .context = registration,
+                .provide_document_highlights = provideDocumentHighlights,
+                .request_document_highlights = requestDocumentHighlights,
+            });
         return .empty;
     }
 
@@ -728,6 +754,138 @@ pub const MainThreadLanguageFeatures = struct {
         if (lenses != .array) return .{ .disposable = release };
         for (lenses.array.items) |item| if (try parseCodeLens(allocator, model, item)) |lens| try result.append(allocator, lens);
         return .{ .lenses = try result.toOwnedSlice(allocator), .disposable = release };
+    }
+
+    fn highlightArgs(arena: Allocator, handle: u32, model: *TextModel, position: Position, others: ?[]const *TextModel) ![]rpc.Arg {
+        const args = try arena.alloc(rpc.Arg, if (others == null) 3 else 4);
+        args[0] = .{ .json = .{ .integer = handle } };
+        args[1] = .{ .json = try std_uri.jsonComponents(arena, model.uri()) };
+        args[2] = .{ .json = try positionJson(arena, model, position) };
+        if (others) |models| {
+            var values = std.json.Array.init(arena);
+            for (models) |other| try values.append(try std_uri.jsonComponents(arena, other.uri()));
+            args[3] = .{ .json = .{ .array = values } };
+        }
+        return args;
+    }
+
+    fn parseDocumentHighlights(allocator: Allocator, model: *TextModel, value: std.json.Value) !?[]const languages.DocumentHighlight {
+        if (value != .array) return null;
+        var highlights: std.ArrayList(languages.DocumentHighlight) = .empty;
+        errdefer highlights.deinit(allocator);
+        for (value.array.items) |item| {
+            if (item != .object) continue;
+            const range = rangeFromJson(model, item.object.get("range") orelse continue) orelse continue;
+            const kind = intField(item.object, "kind");
+            try highlights.append(allocator, .{ .range = range, .kind = if (kind) |k| std.enums.fromInt(languages.DocumentHighlightKind, k) else null });
+        }
+        return try highlights.toOwnedSlice(allocator);
+    }
+
+    fn parseMultiDocumentHighlights(allocator: Allocator, primary: *TextModel, others: []const *TextModel, value: std.json.Value) !?[]const languages.MultiDocumentHighlight {
+        if (value != .array) return null;
+        const Accumulator = struct { model: *TextModel, highlights: std.ArrayList(languages.DocumentHighlight) = .empty };
+        var scratch = std.heap.ArenaAllocator.init(allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        var models: std.StringHashMapUnmanaged(*TextModel) = .empty;
+        try models.put(a, try std_uri.resourceKey(a, primary.uri()), primary);
+        for (others) |model| try models.put(a, try std_uri.resourceKey(a, model.uri()), model);
+        var entries: std.StringArrayHashMapUnmanaged(Accumulator) = .empty;
+        for (value.array.items) |item| {
+            if (item != .object) continue;
+            const key = resourceKeyFromComponentsJson(a, item.object.get("uri") orelse continue) catch continue;
+            const model = models.get(key) orelse continue;
+            const highlights = try parseDocumentHighlights(a, model, item.object.get("highlights") orelse continue) orelse continue;
+            const entry = try entries.getOrPut(a, key);
+            if (!entry.found_existing) entry.value_ptr.* = .{ .model = model };
+            // The upstream DTO can contain repeated URIs; concatenate their
+            // ranges in provider order before returning the ResourceMap.
+            try entry.value_ptr.highlights.appendSlice(a, highlights);
+        }
+        const result = try allocator.alloc(languages.MultiDocumentHighlight, entries.count());
+        for (result, entries.values()) |*entry, accumulated| entry.* = .{
+            .uri = accumulated.model.uri(),
+            .highlights = try allocator.dupe(languages.DocumentHighlight, accumulated.highlights.items),
+        };
+        return result;
+    }
+
+    const HighlightRequest = struct {
+        allocator: Allocator,
+        model: *TextModel,
+        callback: union(enum) {
+            single: languages.DocumentHighlightCallback,
+            multi: struct { others: []const *TextModel, callback: languages.MultiDocumentHighlightCallback },
+        },
+
+        fn ready(context: *anyopaque, reply: rpc.Reply) void {
+            const self: *HighlightRequest = @ptrCast(@alignCast(context));
+            switch (self.callback) {
+                .single => |cb| cb.complete(cb.context, switch (reply) {
+                    .json => |value| parseDocumentHighlights(self.allocator, self.model, value),
+                    .err => error.RequestFailed,
+                    else => null,
+                }),
+                .multi => |multi| multi.callback.complete(multi.callback.context, switch (reply) {
+                    .json => |value| parseMultiDocumentHighlights(self.allocator, self.model, multi.others, value),
+                    .err => error.RequestFailed,
+                    else => null,
+                }),
+            }
+        }
+    };
+
+    fn provideDocumentHighlights(context: *anyopaque, allocator: Allocator, model: *TextModel, position: Position, token: CancellationToken) !?[]const languages.DocumentHighlight {
+        const registration: *Registration = @ptrCast(@alignCast(context));
+        var scratch = std.heap.ArenaAllocator.init(registration.owner.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        const args = try highlightArgs(a, registration.handle, model, position, null);
+        const value = try registration.owner.call(a, "$provideDocumentHighlights", args, token, timeout_format_ms);
+        return parseDocumentHighlights(allocator, model, value);
+    }
+
+    fn provideMultiDocumentHighlights(context: *anyopaque, allocator: Allocator, model: *TextModel, position: Position, others: []const *TextModel, token: CancellationToken) !?[]const languages.MultiDocumentHighlight {
+        const registration: *Registration = @ptrCast(@alignCast(context));
+        var scratch = std.heap.ArenaAllocator.init(registration.owner.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        const args = try highlightArgs(a, registration.handle, model, position, others);
+        const value = try registration.owner.call(a, "$provideMultiDocumentHighlights", args, token, timeout_format_ms);
+        return parseMultiDocumentHighlights(allocator, model, others, value);
+    }
+
+    fn requestDocumentHighlights(context: *anyopaque, allocator: Allocator, model: *TextModel, position: Position, token: CancellationToken, callback: languages.DocumentHighlightCallback) !?IDisposable {
+        const registration: *Registration = @ptrCast(@alignCast(context));
+        try token.throwIfCancellationRequested();
+        const proxy = registration.owner.proxy;
+        if (proxy.request_async) |request| {
+            var scratch = std.heap.ArenaAllocator.init(registration.owner.allocator);
+            defer scratch.deinit();
+            const pending = try allocator.create(HighlightRequest);
+            pending.* = .{ .allocator = allocator, .model = model, .callback = .{ .single = callback } };
+            const args = try highlightArgs(scratch.allocator(), registration.handle, model, position, null);
+            return try request(proxy.context, "$provideDocumentHighlights", args, .{ .context = pending, .callback = HighlightRequest.ready });
+        }
+        callback.complete(callback.context, provideDocumentHighlights(context, allocator, model, position, token));
+        return null;
+    }
+
+    fn requestMultiDocumentHighlights(context: *anyopaque, allocator: Allocator, model: *TextModel, position: Position, others: []const *TextModel, token: CancellationToken, callback: languages.MultiDocumentHighlightCallback) !?IDisposable {
+        const registration: *Registration = @ptrCast(@alignCast(context));
+        try token.throwIfCancellationRequested();
+        const proxy = registration.owner.proxy;
+        if (proxy.request_async) |request| {
+            var scratch = std.heap.ArenaAllocator.init(registration.owner.allocator);
+            defer scratch.deinit();
+            const pending = try allocator.create(HighlightRequest);
+            pending.* = .{ .allocator = allocator, .model = model, .callback = .{ .multi = .{ .others = others, .callback = callback } } };
+            const args = try highlightArgs(scratch.allocator(), registration.handle, model, position, others);
+            return try request(proxy.context, "$provideMultiDocumentHighlights", args, .{ .context = pending, .callback = HighlightRequest.ready });
+        }
+        callback.complete(callback.context, provideMultiDocumentHighlights(context, allocator, model, position, others, token));
+        return null;
     }
 
     fn provideCodeLenses(context: *anyopaque, allocator: Allocator, model: *TextModel, token: CancellationToken) !?languages.CodeLensList {
