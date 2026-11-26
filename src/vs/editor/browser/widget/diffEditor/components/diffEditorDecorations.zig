@@ -57,6 +57,8 @@ pub const DiffEditorDecorations = struct {
     char_delete_empty: ModelDecorationOptions,
     moved_original: ModelDecorationOptions,
     moved_modified: ModelDecorationOptions,
+    moved_original_active: ModelDecorationOptions,
+    moved_modified_active: ModelDecorationOptions,
 
     pub fn init(
         allocator: Allocator,
@@ -81,6 +83,8 @@ pub const DiffEditorDecorations = struct {
             .char_delete_empty = undefined,
             .moved_original = undefined,
             .moved_modified = undefined,
+            .moved_original_active = undefined,
+            .moved_modified_active = undefined,
         };
         self.buildOptions();
         return self;
@@ -132,6 +136,8 @@ pub const DiffEditorDecorations = struct {
         self.char_delete_empty.showIfCollapsed = true;
         self.moved_original = createMovedBlock("movedOriginal");
         self.moved_modified = createMovedBlock("movedModified");
+        self.moved_original_active = createMovedBlock("movedOriginal currentMove");
+        self.moved_modified_active = createMovedBlock("movedModified currentMove");
     }
 
     fn freeInjectedOptions(self: *DiffEditorDecorations, options: *std.ArrayList(*ModelDecorationOptions)) void {
@@ -165,13 +171,26 @@ pub const DiffEditorDecorations = struct {
     /// The real-model decoration path. Alignment whitespace belongs to
     /// DiffEditorViewZones, never to either text model.
     pub fn update(self: *DiffEditorDecorations, state: *const DiffState, show_moves: bool) !void {
+        try self.updateWithMoveState(state, show_moves, null, null);
+    }
+
+    pub fn updateWithMoveState(self: *DiffEditorDecorations, state: *const DiffState, show_moves: bool, active: ?usize, compare: ?usize) !void {
         var original_decorations = std.array_list.Managed(ModelDeltaDecoration).init(self.allocator);
         defer original_decorations.deinit();
         var modified_decorations = std.array_list.Managed(ModelDeltaDecoration).init(self.allocator);
         defer modified_decorations.deinit();
         var injected: std.ArrayList(*ModelDecorationOptions) = .empty;
         errdefer self.freeInjectedOptions(&injected);
-        for (state.mappings) |mapping| {
+        if (compare) |index| {
+            for (state.moved_texts[index].changes) |change| {
+                if (change.original.toInclusiveRange()) |range| try original_decorations.append(.{ .range = range, .options = &self.line_delete });
+                if (change.modified.toInclusiveRange()) |range| try modified_decorations.append(.{ .range = range, .options = &self.line_insert });
+                for (change.inner_changes orelse &.{}) |inner| {
+                    try original_decorations.append(.{ .range = inner.originalRange, .options = &self.char_delete });
+                    try modified_decorations.append(.{ .range = inner.modifiedRange, .options = &self.char_insert });
+                }
+            }
+        } else for (state.mappings) |mapping| {
             const change = mapping.line_range_mapping;
             if (change.original.toInclusiveRange()) |range| try original_decorations.append(.{ .range = range, .options = &self.line_delete });
             if (change.modified.toInclusiveRange()) |range| try modified_decorations.append(.{ .range = range, .options = &self.line_insert });
@@ -194,9 +213,9 @@ pub const DiffEditorDecorations = struct {
                 }
             }
         }
-        if (show_moves) for (state.moved_texts) |moved| {
-            if (moved.lineRangeMapping.original.toInclusiveRange()) |range| try original_decorations.append(.{ .range = range, .options = &self.moved_original });
-            if (moved.lineRangeMapping.modified.toInclusiveRange()) |range| try modified_decorations.append(.{ .range = range, .options = &self.moved_modified });
+        if (show_moves) for (state.moved_texts, 0..) |moved, index| {
+            if (moved.lineRangeMapping.original.toInclusiveRange()) |range| try original_decorations.append(.{ .range = range, .options = if (active == index) &self.moved_original_active else &self.moved_original });
+            if (moved.lineRangeMapping.modified.toInclusiveRange()) |range| try modified_decorations.append(.{ .range = range, .options = if (active == index) &self.moved_modified_active else &self.moved_modified });
         };
         const new_original = try self.applyTo(self.original_model, self.original_owner, self.original_ids, original_decorations.items);
         self.allocator.free(self.original_ids);

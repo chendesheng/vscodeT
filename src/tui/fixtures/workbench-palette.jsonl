@@ -160,6 +160,7 @@
 ["diffEditor.toggleShowMovedCodeBlocks","Toggle Show Moved Code Blocks","","",false,false,true,false,false]
 ["diffEditor.toggleUseInlineViewWhenSpaceIsLimited","Toggle Use Inline View When Space Is Limited","","",false,false,true,false,false]
 ["diffEditor.switchSide","Switch Side","Diff Editor","",true,false,true,false,false]
+["diffEditor.exitCompareMove","Exit Compare Move","Diff Editor","",false,false,true,false,false]
 ["diffEditor.collapseAllUnchangedRegions","Collapse All Unchanged Regions","Diff Editor","",true,false,true,false,false]
 ["diffEditor.showAllUnchangedRegions","Show All Unchanged Regions","Diff Editor","",true,false,true,false,false]
 ["editor.action.accessibleDiffViewer.next","Go to Next Difference","Accessible Diff Viewer","",true,false,true,false,false]

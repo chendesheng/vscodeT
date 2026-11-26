@@ -10,6 +10,7 @@ const code_editors = @import("../../services/codeEditorService.zig");
 const IDiffEditor = @import("../../editorBrowser.zig").IDiffEditor;
 
 const in_diff = contextkey.Expr{ .Defined = "isInDiffEditor" };
+const comparing_move = contextkey.Expr{ .Defined = "comparingMovedCode" };
 const collapse_config = contextkey.Expr{ .Defined = "config.diffEditor.hideUnchangedRegions.enabled" };
 
 pub const diff_actions = [_]actions.Action2{
@@ -36,6 +37,18 @@ pub const diff_actions = [_]actions.Action2{
         .run_fn = toggleSetting("diffEditor.useInlineViewWhenSpaceIsLimited", true),
     },
     editorAction("diffEditor.switchSide", "Switch Side", "Diff Editor", "arrow-swap", null, IDiffEditor.switchSide),
+    .{
+        .command = .{ .id = "diffEditor.exitCompareMove", .title = "Exit Compare Move", .category = "Diff Editor", .icon = "close", .precondition = &comparing_move },
+        .keybindings = &.{.{ .id = "diffEditor.exitCompareMove", .weight = 10000, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Escape) } }},
+        .context = @constCast(&{}),
+        .run_fn = struct {
+            fn run(_: *anyopaque, accessor: ServicesAccessor) !void {
+                const service = try accessor.get(code_editors.code_editor_service_id);
+                const editor = service.getFocusedDiffEditor() orelse return;
+                try editor.exitCompareMove();
+            }
+        }.run,
+    },
     editorAction("diffEditor.collapseAllUnchangedRegions", "Collapse All Unchanged Regions", "Diff Editor", "fold", null, IDiffEditor.collapseAllUnchangedRegions),
     editorAction("diffEditor.showAllUnchangedRegions", "Show All Unchanged Regions", "Diff Editor", "unfold", null, IDiffEditor.showAllUnchangedRegions),
     editorAction("editor.action.accessibleDiffViewer.next", "Go to Next Difference", "Accessible Diff Viewer", null, @backingInt(key_codes.KeyCode.F7), IDiffEditor.accessibleDiffViewerNext),

@@ -233,6 +233,10 @@ pub const DiffEditorViewZones = struct {
     decoration_bits_fn: *const fn ([]const u8) u32,
     render_indicators: bool,
     use_true_inline_view: bool = false,
+    compare_move: ?*const diff_model.MovedText = null,
+    compare_focus_original: bool = false,
+    original_top_padding: usize = 0,
+    modified_top_padding: usize = 0,
     updating: bool = false,
     syncing_scroll: bool = false,
     batch_depth: usize = 0,
@@ -254,6 +258,7 @@ pub const DiffEditorViewZones = struct {
     const ZoneSpec = struct {
         after_line_number: usize,
         height: usize,
+        blank: bool = false,
         min_width: usize = 0,
         deleted: ?DeletedSpec = null,
     };
@@ -321,6 +326,22 @@ pub const DiffEditorViewZones = struct {
         self.updateAfterEvent();
     }
 
+    pub fn setCompareMove(self: *DiffEditorViewZones, move: ?*const diff_model.MovedText, focus_original: bool) void {
+        if (self.compare_move == move) return;
+        self.compare_move = move;
+        self.compare_focus_original = focus_original;
+        self.updateAfterEvent();
+    }
+
+    fn containsExpanded(range: LineRange, after_line: usize) bool {
+        return after_line >= range.startLineNumber -| 1 and after_line < range.endLineNumberExclusive +| 1;
+    }
+
+    fn topForLine(editor: *Editor, model_line: usize) usize {
+        const view_line = editor.viewPositionOfModelPosition(.{ .lineNumber = model_line, .column = 1 }).lineNumber;
+        return @intFromFloat(@max(0, editor.viewLayout().getVerticalOffsetForLineNumber(view_line, false)));
+    }
+
     pub fn setColors(self: *DiffEditorViewZones, colors: Colors) void {
         if (std.meta.eql(self.colors, colors)) return;
         self.colors = colors;
@@ -371,12 +392,13 @@ pub const DiffEditorViewZones = struct {
     fn onScrollChanged(context: *anyopaque, event: *const events.ViewScrollChangedEvent) bool {
         const pane: *Pane = @ptrCast(@alignCast(context));
         const self = pane.owner;
-        if (self.mode == .disabled or self.updating or self.syncing_scroll or self.batch_depth > 0 or !event.scrollTopChanged) return false;
+        if (self.mode == .disabled or self.updating or self.syncing_scroll or self.batch_depth > 0 or (!event.scrollTopChanged and !event.scrollLeftChanged)) return false;
         if (self.mode == .inline_view and pane == &self.original) return false;
         self.syncing_scroll = true;
         defer self.syncing_scroll = false;
         const other = if (pane == &self.original) &self.modified else &self.original;
-        _ = other.editor.setScrollTop(pane.editor.scrollTop());
+        if (event.scrollTopChanged) _ = other.editor.setScrollTop(pane.editor.scrollTop());
+        if (event.scrollLeftChanged) _ = other.editor.setScrollLeft(pane.editor.scrollLeft());
         return false;
     }
 
@@ -424,20 +446,82 @@ pub const DiffEditorViewZones = struct {
                     continue;
                 }
                 if (alignment.original_height < alignment.modified_height) {
+                    if (self.compare_move) |move| {
+                        if (containsExpanded(move.lineRangeMapping.original, alignment.original_range.endLineNumberExclusive - 1)) continue;
+                    }
                     try original_specs.append(self.allocator, .{
                         .after_line_number = alignment.original_range.endLineNumberExclusive - 1,
                         .height = alignment.modified_height - alignment.original_height,
                     });
                 } else if (alignment.original_height > alignment.modified_height) {
+                    if (self.compare_move) |move| {
+                        if (containsExpanded(move.lineRangeMapping.modified, alignment.modified_range.endLineNumberExclusive - 1)) continue;
+                    }
                     try modified_specs.append(self.allocator, .{
                         .after_line_number = alignment.modified_range.endLineNumberExclusive - 1,
                         .height = alignment.original_height - alignment.modified_height,
                     });
                 }
             }
+            if (self.compare_move) |move| {
+                const mappings = try self.allocator.alloc(diff_model.DiffMapping, move.changes.len);
+                defer self.allocator.free(mappings);
+                for (mappings, move.changes) |*mapping, change| mapping.* = .{ .line_range_mapping = change };
+                const move_alignments = try computeRangeAlignment(self.allocator, self.original.editor, self.modified.editor, mappings, original_ignored, modified_ignored, true);
+                defer self.allocator.free(move_alignments);
+                for (move_alignments) |alignment| {
+                    if (move.lineRangeMapping.original.intersect(alignment.original_range) == null or move.lineRangeMapping.modified.intersect(alignment.modified_range) == null) continue;
+                    if (alignment.original_height < alignment.modified_height) {
+                        try original_specs.append(self.allocator, .{ .after_line_number = alignment.original_range.endLineNumberExclusive - 1, .height = alignment.modified_height - alignment.original_height });
+                    } else if (alignment.original_height > alignment.modified_height) {
+                        try modified_specs.append(self.allocator, .{ .after_line_number = alignment.modified_range.endLineNumberExclusive - 1, .height = alignment.original_height - alignment.modified_height });
+                    }
+                }
+            }
         }
+        const original_count = original_specs.items.len;
+        const modified_count = modified_specs.items.len;
+        const previous_original = self.original_top_padding;
+        const previous_modified = self.modified_top_padding;
+        if (self.compare_move == null) {
+            self.original_top_padding = 0;
+            self.modified_top_padding = 0;
+        }
+        try appendPadding(self.allocator, &original_specs, self.original_top_padding);
+        try appendPadding(self.allocator, &modified_specs, self.modified_top_padding);
         try self.apply(&self.original, original_specs.items, false);
         try self.apply(&self.modified, modified_specs.items, false);
+        if (self.compare_move) |move| {
+            const original_top = topForLine(self.original.editor, move.lineRangeMapping.original.startLineNumber) -| self.original_top_padding;
+            const modified_top = topForLine(self.modified.editor, move.lineRangeMapping.modified.startLineNumber) -| self.modified_top_padding;
+            const original_padding = modified_top -| original_top;
+            const modified_padding = original_top -| modified_top;
+            if (original_padding != self.original_top_padding or modified_padding != self.modified_top_padding) {
+                self.original_top_padding = original_padding;
+                self.modified_top_padding = modified_padding;
+                original_specs.shrinkRetainingCapacity(original_count);
+                modified_specs.shrinkRetainingCapacity(modified_count);
+                try appendPadding(self.allocator, &original_specs, original_padding);
+                try appendPadding(self.allocator, &modified_specs, modified_padding);
+                try self.apply(&self.original, original_specs.items, false);
+                try self.apply(&self.modified, modified_specs.items, false);
+            }
+        }
+        // Keep the focused content stationary when the top padding changes.
+        // Browser animation is replaced by an immediate cell-grid update.
+        if (previous_original != self.original_top_padding or previous_modified != self.modified_top_padding) {
+            const editor = if (self.compare_focus_original) self.original.editor else self.modified.editor;
+            const old_padding = if (self.compare_focus_original) previous_original else previous_modified;
+            const new_padding = if (self.compare_focus_original) self.original_top_padding else self.modified_top_padding;
+            const top = editor.scrollTop() + new_padding -| old_padding;
+            _ = editor.setScrollTop(top);
+            const other = if (self.compare_focus_original) self.modified.editor else self.original.editor;
+            _ = other.setScrollTop(editor.scrollTop());
+        }
+    }
+
+    fn appendPadding(allocator: Allocator, specs: *std.ArrayList(ZoneSpec), padding: usize) !void {
+        if (padding > 0) try specs.append(allocator, .{ .after_line_number = 0, .height = padding, .blank = true });
     }
 
     fn ids(self: *DiffEditorViewZones, pane: *const Pane) ![][]const u8 {
@@ -471,7 +555,7 @@ pub const DiffEditorViewZones = struct {
             .show_in_hidden_areas = true,
             .suppress_mouse_down = true,
             .context = self,
-            .build = buildFiller,
+            .build = if (spec.blank) null else buildFiller,
         };
     }
 

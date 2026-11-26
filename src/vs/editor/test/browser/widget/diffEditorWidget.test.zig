@@ -571,6 +571,49 @@ pub fn Tests(comptime View: type) type {
             try std.testing.expect(found);
         }
 
+        fn findMovedCompare(node: *ui.Node) ?*ui.Node {
+            if (node.getAttribute("class")) |class| {
+                if (std.mem.eql(u8, class, "diff-moved-code-compare")) return node;
+            }
+            var child = node.first_child;
+            while (child) |current| : (child = current.next) {
+                if (findMovedCompare(current)) |found| return found;
+            }
+            return null;
+        }
+
+        test "diffEditorWidget: moved blocks connect real ranges and compare them through view zones" {
+            const allocator = testing.allocator;
+            const widget = try DiffEditorWidget.create(View.init, allocator, std.testing.io, "a.txt", "b.txt", "aaaaaa\nbbbbbb\ncccccc\nxxxxxx\nyyyyyy\nzzzzzz", "xxxxxx\nyyyyyy\nzzzzzz\naaaaaa\nbbbbbb\ncccccc", "Original", "Modified", 80, 20, .{ .show_moves = true });
+            defer widget.destroy();
+            const move = &widget.state().?.moved_texts[0];
+            try testing.expect(widget.paneWidths().moves > 0);
+            try testing.expectEqual(widget.state().?.moved_texts.len, widget.moved_blocks.connections.len);
+            try widget.modified_editor.setCursorPosition(.{ .lineNumber = move.lineRangeMapping.modified.startLineNumber, .column = 1 });
+            try testing.expectEqual(@as(?usize, 0), widget.view_model.activeMovedText());
+            var frame = try ui.Frame.init(allocator, 80, 20);
+            defer frame.deinit();
+            try widget.paint(&frame, 0, 0, 80, 20);
+            const widths = widget.paneWidths();
+            var arrows: usize = 0;
+            for (0..20) |row| {
+                if (frame.next.cluster[frame.next.index(widths.original + widths.gutter + widths.moves - 1, row)] == '▶') arrows += 1;
+            }
+            try testing.expect(arrows > 0);
+            const compare = findMovedCompare(widget.modified_view.zone_content_root.?) orelse return error.MovedCompareMissing;
+            try testing.expect(compare.focus());
+            var enter: ui.KeyEvent = .{ .key = .enter };
+            try testing.expect(widget.dispatchKey(&enter));
+            try testing.expectEqual(@as(?usize, 0), widget.view_model.moved_text_to_compare);
+            const original_view_line = widget.original_editor.viewPositionOfModelPosition(.{ .lineNumber = move.lineRangeMapping.original.startLineNumber, .column = 1 }).lineNumber;
+            const modified_view_line = widget.modified_editor.viewPositionOfModelPosition(.{ .lineNumber = move.lineRangeMapping.modified.startLineNumber, .column = 1 }).lineNumber;
+            try testing.expectEqual(widget.original_editor.viewLayout().getVerticalOffsetForLineNumber(original_view_line, false), widget.modified_editor.viewLayout().getVerticalOffsetForLineNumber(modified_view_line, false));
+            try widget.exitCompareMove();
+            try testing.expect(widget.view_model.moved_text_to_compare == null);
+            try testing.expectEqual(@as(usize, 0), widget.zones.original_top_padding);
+            try testing.expectEqual(@as(usize, 0), widget.zones.modified_top_padding);
+        }
+
         test "diffEditorWidget: diff word wrap overrides both sides except hidden original" {
             const widget = try DiffEditorWidget.create(View.init, testing.allocator, Io.Threaded.global_single_threaded.io(), "a.txt", "b.txt", "a\nb", "a\nB", "Original", "Modified", 80, 8, .{ .diff_word_wrap = .off });
             defer widget.destroy();

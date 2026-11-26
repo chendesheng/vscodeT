@@ -201,6 +201,10 @@ pub const DiffEditorViewModel = struct {
     on_did_change: Emitter(void),
     unchanged_regions: []UnchangedRegion = &.{},
     on_did_change_unchanged_regions: Emitter(void),
+    on_did_change_active_move: Emitter(void),
+    moved_text_to_compare: ?usize = null,
+    active_moved_text_from_cursor: ?usize = null,
+    hovered_moved_text: ?usize = null,
     computed_once: bool = false,
 
     pub fn init(
@@ -217,6 +221,7 @@ pub const DiffEditorViewModel = struct {
             .provider = doc_diff.LineDiffProvider.init(options.diff_algorithm),
             .on_did_change = Emitter(void).init(allocator),
             .on_did_change_unchanged_regions = Emitter(void).init(allocator),
+            .on_did_change_active_move = Emitter(void).init(allocator),
         };
     }
 
@@ -224,6 +229,7 @@ pub const DiffEditorViewModel = struct {
         if (self.state) |*state| state.deinit(self.allocator);
         self.on_did_change.deinit();
         self.on_did_change_unchanged_regions.deinit();
+        self.on_did_change_active_move.deinit();
         self.allocator.free(self.unchanged_regions);
         self.* = undefined;
     }
@@ -250,6 +256,30 @@ pub const DiffEditorViewModel = struct {
         self.state = normalized;
         self.computed_once = true;
         self.on_did_change.fire({}) catch {};
+    }
+
+    pub fn activeMovedText(self: *const DiffEditorViewModel) ?usize {
+        return self.moved_text_to_compare orelse self.hovered_moved_text orelse self.active_moved_text_from_cursor;
+    }
+
+    pub fn setMovedTextFromCursor(self: *DiffEditorViewModel, index: ?usize) void {
+        const previous = self.activeMovedText();
+        const compare = self.moved_text_to_compare;
+        if (compare != index) self.moved_text_to_compare = null;
+        self.active_moved_text_from_cursor = index;
+        if (previous != self.activeMovedText() or compare != self.moved_text_to_compare) self.on_did_change_active_move.fire({}) catch {};
+    }
+
+    pub fn setHoveredMovedText(self: *DiffEditorViewModel, index: ?usize) void {
+        const previous = self.activeMovedText();
+        self.hovered_moved_text = index;
+        if (previous != self.activeMovedText()) self.on_did_change_active_move.fire({}) catch {};
+    }
+
+    pub fn setMovedTextToCompare(self: *DiffEditorViewModel, index: ?usize) void {
+        if (self.moved_text_to_compare == index) return;
+        self.moved_text_to_compare = index;
+        self.on_did_change_active_move.fire({}) catch {};
     }
 
     pub fn initializeUnchangedRegions(self: *DiffEditorViewModel, enabled: bool, minimum: usize, context: usize) !void {

@@ -19,6 +19,7 @@ const diff_view_model = @import("./diffEditorViewModel.zig");
 const diff_editor_options = @import("./diffEditorOptions.zig");
 const diff_editor_editors = @import("./components/diffEditorEditors.zig");
 const accessible_module = @import("./components/accessibleDiffViewer.zig");
+const moved_feature = @import("./features/movedBlocksLinesFeature.zig");
 const hide_unchanged_feature = @import("./features/hideUnchangedRegionsFeature.zig");
 const gutter_feature = @import("./features/gutterFeature.zig");
 const overview_feature = @import("./features/overviewRulerFeature.zig");
@@ -61,6 +62,10 @@ pub fn DiffEditorWidget(comptime View: type) type {
         overview: overview_feature.OverviewRulerFeature = undefined,
         hide_unchanged: hide_unchanged_feature.HideUnchangedRegionsFeature = undefined,
         accessible_viewer: accessible_module.AccessibleDiffViewer,
+        moved_blocks: moved_feature.MovedBlocksLinesFeature = undefined,
+        move_listener: ?usize = null,
+        laying_out: bool = false,
+        layout_pending: bool = false,
 
         original_editor: *Editor,
         modified_editor: *Editor,
@@ -82,6 +87,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             return .{
                 .context = self,
                 .switch_side = CommandAdapter.call(switchSide),
+                .exit_compare_move = CommandAdapter.call(exitCompareMove),
                 .collapse_all = CommandAdapter.call(collapseAllUnchangedRegions),
                 .show_all = CommandAdapter.call(showAllUnchangedRegions),
                 .accessible_next = CommandAdapter.call(accessibleDiffViewerNext),
@@ -260,10 +266,14 @@ pub fn DiffEditorWidget(comptime View: type) type {
             errdefer self.zones.deinit();
             errdefer self.overview.deinit(original_editor, modified_editor);
             try self.hide_unchanged.init(allocator, &self.view_model, &self.zones, original_editor, original_view.viewZones(), modified_editor, modified_view.viewZones(), normalized_options);
+            errdefer self.hide_unchanged.deinit();
+            try self.moved_blocks.init(allocator, &self.view_model, &self.zones, original_editor, original_view.viewZones(), modified_editor, modified_view.viewZones(), self, onMoveWidthChanged, onCompareMove);
+            errdefer self.moved_blocks.deinit();
+            self.move_listener = try self.view_model.on_did_change_active_move.listen(self, onMoveStateChanged);
+            errdefer self.view_model.on_did_change_active_move.unlisten(self.move_listener.?);
             // Keep the line views alive for layout changes and recomputation.
             self.layout(width, height);
             self.selectInitialChange();
-            errdefer self.hide_unchanged.deinit();
             if (normalized_options.only_show_accessible_diff_viewer) try self.accessibleDiffViewerNext();
             return self;
         }
@@ -271,6 +281,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
         pub fn destroy(self: *Self) void {
             const allocator = self.allocator;
             self.accessible_viewer.close();
+            if (self.move_listener) |id| self.view_model.on_did_change_active_move.unlisten(id);
+            self.moved_blocks.deinit();
             self.hide_unchanged.deinit();
             self.zones.deinit();
             self.overview.deinit(self.original_editor, self.modified_editor);
@@ -313,6 +325,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
             if (self.inline_mode == inline_mode) return;
             self.inline_mode = inline_mode;
             if (inline_mode) {
+                self.view_model.setMovedTextToCompare(null);
+                self.view_model.setMovedTextFromCursor(null);
                 self.setFocus(.modified);
                 self.original_view.detach();
             }
@@ -327,6 +341,18 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         /// A host can pass the initial width of a continuous resize gesture.
         pub fn layoutWithResizeStart(self: *Self, width: usize, height: usize, smooth_resize_start_width: ?usize) void {
+            if (self.laying_out) {
+                self.layout_pending = true;
+                return;
+            }
+            self.laying_out = true;
+            defer {
+                self.laying_out = false;
+                if (self.layout_pending) {
+                    self.layout_pending = false;
+                    self.layoutWithResizeStart(self.width, self.height, smooth_resize_start_width);
+                }
+            }
             self.zones.beginBatch();
             const smart_inline = self.isSimpleDiff();
             self.width_based_layout.setWidth(self.options, width, smooth_resize_start_width, false, smart_inline);
@@ -338,6 +364,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
             }
             self.width = @max(width, 1);
             self.height = @max(height, 1);
+            self.moved_blocks.setEnabled(self.options.show_moves and self.sideBySide()) catch {};
+            self.moved_blocks.recomputeGeometry() catch {};
             diff_editor_editors.applyWordWrap(self.original_editor, self.modified_editor, self.options.diff_word_wrap, self.sideBySide());
             const widths = self.paneWidths();
             self.original_editor.setViewport(widths.original, self.height);
@@ -345,6 +373,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.zones.use_true_inline_view = self.options.use_true_inline_view;
             self.zones.setMode(if (self.sideBySide()) .side_by_side else .inline_view);
             self.zones.endBatch();
+            self.moved_blocks.recomputeGeometry() catch {};
             self.original_view.invalidate();
             self.modified_view.invalidate();
             self.overview.invalidate();
@@ -370,14 +399,16 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         pub fn paneWidths(self: *const Self) PaneWidths {
             const overview = if (self.options.render_overview_ruler and self.width >= (if (self.sideBySide()) @as(usize, 3) else 1) + overview_feature.width) overview_feature.width else 0;
+            const moved_width = if (self.sideBySide()) @min(self.moved_blocks.width(), self.width -| overview -| 3) else 0;
             var result = diff_editor_editors.computePaneWidths(
-                self.width - overview,
+                self.width - overview - moved_width,
                 self.sideBySide(),
                 self.sash_layout.getRatio(self.options.split_view_default_ratio, self.options.enable_split_view_resizing),
                 self.options.split_view_default_ratio,
                 3,
             );
             result.overview = overview;
+            result.moves = moved_width;
             return result;
         }
 
@@ -402,6 +433,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             const was_focused = self.focusedView().isFocused();
             _ = self.focusedView().setFocused(false);
             self.focused = side;
+            self.moved_blocks.setFocusedSide(side == .original);
             self.focusedView().focusEditor();
             if (was_focused) _ = self.focusedView().setFocused(true);
         }
@@ -490,6 +522,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             const was_focused = self.focusedView().isFocused();
             const accessible = self.accessible_viewer.visible();
             self.accessible_viewer.close();
+            self.moved_blocks.deinit();
             self.hide_unchanged.deinit();
             self.zones.deinit();
             self.decorations.detach();
@@ -511,9 +544,10 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.decorations.modified_model = self.modified_editor.model;
             self.zones.init(self.allocator, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self.modified_view.terminal_view_host, self.modified_view.lineStyleFunction(), self.modified_view.decorationBitsFunction(), self.options.render_indicators, diff_state.mappings);
             try self.hide_unchanged.init(self.allocator, &self.view_model, &self.zones, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self.options);
+            try self.moved_blocks.init(self.allocator, &self.view_model, &self.zones, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self, onMoveWidthChanged, onCompareMove);
             self.applyZoneTheme(self.modified_view.themeColors());
-            try self.decorations.update(diff_state, self.options.show_moves and !self.inline_mode);
             self.focused = .modified;
+            try onMoveStateChanged({}, self);
             _ = self.original_view.setFocused(false);
             _ = self.modified_view.setFocused(was_focused);
             if (was_focused) self.modified_view.focusEditor();
@@ -549,7 +583,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             }
             if (self.sideBySide()) {
                 const widths = self.paneWidths();
-                const offset = widths.original + widths.gutter;
+                const offset = widths.original + widths.gutter + widths.moves;
                 try self.original_view.mountInto(surface, container, x, y, 0);
                 try self.modified_view.mountInto(surface, container, x + offset, y, offset);
             } else {
@@ -572,11 +606,17 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 try self.original_view.paint();
                 if (!self.original_view.isMounted()) try ui.CellGrid.blit(&frame.next, self.original_view.grid(), x, y, widths.original, h);
                 self.paintGutter(frame, x + widths.original, y, h);
+                if (widths.moves > 0) {
+                    const palette = self.modified_view.themeColors();
+                    const normal = if (palette) |colors| colors.color("diffEditor.move.border", .{ 139, 139, 139 }) else ui.Color{ .r = 139, .g = 139, .b = 139 };
+                    const active = if (palette) |colors| colors.color("diffEditor.moveActive.border", .{ 255, 165, 0 }) else ui.Color{ .r = 255, .g = 165, .b = 0 };
+                    self.moved_blocks.paint(&frame.next, x + widths.original + widths.gutter, y, widths.moves, h, normal, active);
+                }
                 try self.modified_view.paint();
                 if (!self.modified_view.isMounted()) try ui.CellGrid.blit(
                     &frame.next,
                     self.modified_view.grid(),
-                    x + widths.original + widths.gutter,
+                    x + widths.original + widths.gutter + widths.moves,
                     y,
                     widths.modified,
                     h,
@@ -609,7 +649,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
             if (self.sideBySide()) {
                 if (x < widths.original) return self.original_view.pointerAt(x, y);
                 if (x < widths.original + widths.gutter) return if (self.options.enable_split_view_resizing) sash_css.pointer(.vertical) else .default;
-                return self.modified_view.pointerAt(x -| (widths.original + widths.gutter), y);
+                if (x < widths.original + widths.gutter + widths.moves) return .default;
+                return self.modified_view.pointerAt(x -| (widths.original + widths.gutter + widths.moves), y);
             }
             return self.modified_view.pointerAt(x, y);
         }
@@ -650,7 +691,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 return .{ .row = cell.row, .col = cell.col };
             }
             const cell = self.modified_view.cursorCell() orelse return null;
-            return .{ .row = cell.row, .col = cell.col + widths.original + widths.gutter };
+            return .{ .row = cell.row, .col = cell.col + widths.original + widths.gutter + widths.moves };
         }
 
         /// Routes a key event to the focused read-only pane.
@@ -701,7 +742,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 return false;
             }
             if (self.sideBySide() or self.sash.drag != null) {
-                switch (self.sash.dispatchMouse(&self.sash_layout, event, widths.original, self.width -| widths.overview -| widths.gutter, self.sideBySide() and self.options.enable_split_view_resizing, @import("../../../../base/common/timeCompat.zig").milliTimestamp())) {
+                switch (self.sash.dispatchMouse(&self.sash_layout, event, widths.original, self.width -| widths.overview -| widths.gutter -| widths.moves, self.sideBySide() and self.options.enable_split_view_resizing, @import("../../../../base/common/timeCompat.zig").milliTimestamp())) {
                     .changed => {
                         self.layout(self.width, self.height);
                         return true;
@@ -712,11 +753,19 @@ pub fn DiffEditorWidget(comptime View: type) type {
             }
 
             if (self.sideBySide()) {
+                if (event.x >= widths.original + widths.gutter and event.x < widths.original + widths.gutter + widths.moves) {
+                    if (event.kind == .wheel) {
+                        _ = self.modified_editor.setScrollTop(@intCast(@max(0, @as(i64, @intCast(self.modified_editor.scrollTop())) + event.delta_y)));
+                        self.syncScrollFromPane(.modified);
+                        return true;
+                    }
+                    return false;
+                }
                 const side: Side = if (event.x < widths.original) .original else .modified;
                 if (event.kind == .down) self.setFocus(side);
                 const view = if (side == .original) self.original_view else self.modified_view;
                 var adjusted = event.*;
-                if (side == .modified) adjusted.x -|= widths.original + widths.gutter;
+                if (side == .modified) adjusted.x -|= widths.original + widths.gutter + widths.moves;
                 if (self.hide_unchanged.dispatchFoldGlyph(side == .original, &adjusted, view.top_inset_rows)) return true;
                 const handled = if (target) |handler| try handler.dispatch(handler.context, side, view, &adjusted) else try view.dispatchMouse(&adjusted);
                 self.syncScrollFromPane(side);
@@ -726,6 +775,34 @@ pub fn DiffEditorWidget(comptime View: type) type {
             if (self.hide_unchanged.dispatchFoldGlyph(false, event, self.modified_view.top_inset_rows)) return true;
             const handled = if (target) |handler| try handler.dispatch(handler.context, .modified, self.modified_view, event) else try self.modified_view.dispatchMouse(event);
             return handled;
+        }
+
+        fn onMoveWidthChanged(context: *anyopaque) void {
+            const self: *Self = @ptrCast(@alignCast(context));
+            if (self.laying_out) {
+                self.layout_pending = true;
+            } else {
+                self.layout(self.width, self.height);
+            }
+        }
+
+        fn onCompareMove(context: *anyopaque, original: bool, index: usize) void {
+            const self: *Self = @ptrCast(@alignCast(context));
+            self.setFocus(if (original) .original else .modified);
+            self.view_model.setMovedTextToCompare(if (self.view_model.moved_text_to_compare == index) null else index);
+        }
+
+        fn onMoveStateChanged(_: void, self: *Self) anyerror!void {
+            const enabled = self.options.show_moves and self.sideBySide();
+            const compare = if (enabled) self.view_model.moved_text_to_compare else null;
+            self.zones.setCompareMove(if (compare) |index| &self.state().?.moved_texts[index] else null, self.focused == .original);
+            try self.decorations.updateWithMoveState(self.state().?, enabled, self.view_model.activeMovedText(), compare);
+            self.original_view.invalidate();
+            self.modified_view.invalidate();
+        }
+
+        pub fn exitCompareMove(self: *Self) !void {
+            self.view_model.setMovedTextToCompare(null);
         }
 
         pub fn mapToOtherSide(self: *Self) Range {

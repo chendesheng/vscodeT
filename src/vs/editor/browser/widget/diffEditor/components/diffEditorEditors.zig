@@ -30,6 +30,7 @@ pub const PaneWidths = struct {
     modified: usize,
     gutter: usize,
     overview: usize = 0,
+    moves: usize = 0,
 };
 
 /// Splits the cell width into the original pane, the one-cell gutter and the

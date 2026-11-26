@@ -24,6 +24,7 @@ const Range = @import("../common/core/range.zig").Range;
 pub const IDiffEditor = struct {
     context: *anyopaque,
     switch_side: *const fn (*anyopaque) anyerror!void,
+    exit_compare_move: *const fn (*anyopaque) anyerror!void,
     collapse_all: *const fn (*anyopaque) anyerror!void,
     show_all: *const fn (*anyopaque) anyerror!void,
     accessible_next: *const fn (*anyopaque) anyerror!void,
@@ -31,6 +32,9 @@ pub const IDiffEditor = struct {
 
     pub fn switchSide(self: IDiffEditor) !void {
         try self.switch_side(self.context);
+    }
+    pub fn exitCompareMove(self: IDiffEditor) !void {
+        try self.exit_compare_move(self.context);
     }
     pub fn collapseAllUnchangedRegions(self: IDiffEditor) !void {
         try self.collapse_all(self.context);
