@@ -1369,11 +1369,11 @@ console API for raw mode, sizing and input polling.
   Git is registered as a read-only, case-sensitive filesystem provider:
   raw buffers, stat, merge-stage and submodule resources, and exact change
   events use the shared file service. Multiple workspace repositories and
-  configured initialized submodules register independent SCM and Quick Diff
-  sources. Git URI reads in empty windows discover the containing repository
+  configured initialized submodules and linked worktrees register independent
+  SCM and Quick Diff sources. Git URI reads in empty windows discover the containing repository
   and capture initial status on the worker before publishing it; direct
-  synchronous filesystem stat retains its synchronous discovery path. Worktree
-  discovery, active-repository selection and removal remain partial.
+  synchronous filesystem stat retains its synchronous discovery path.
+  Active-repository selection and removal remain partial.
   See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and
   `src/vs/workbench/contrib/search/browser/searchWidget.zig`) over the upstream-shaped portable view:

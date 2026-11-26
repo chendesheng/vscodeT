@@ -198,9 +198,12 @@ and the exact original text copied after a drag outside the deleted-code zone.
   Initial Git URI reads discover repositories and capture status on the worker,
   then publish the repository and its providers on the window dispatcher.
   Cancellation before publication is covered by the focused suite (496/496).
-  Direct synchronous filesystem stat retains its synchronous discovery path;
-  worktree discovery, active history repository selection and workspace
-  repository removal need further parity work.
+  Direct synchronous filesystem stat retains its synchronous discovery path.
+  Linked worktrees now follow the upstream filesystem metadata and configured
+  detection/limit checks on status events, including detached refs and pruned
+  entries. The native integration suite passes 497/497. Active history
+  repository selection and workspace repository removal need further parity
+  work.
 * Async Quick Diff queries preserve provider priority and cancellation while
   independently resolving contributed originals. Real extension-host actors
   now register Quick Diff and virtual text content providers through RPC.

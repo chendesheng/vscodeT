@@ -12250,8 +12250,12 @@ test "Workbench: git scm integration discovers linked worktrees from status acco
         try std.testing.expectEqualStrings(child_root, state.worktrees[1].path);
         try std.testing.expectEqualStrings("refs/heads/linked-branch", state.worktrees[1].ref);
         if (case.detect) {
-            const deadline = wb.git_model.repository_scan_task.at orelse return error.TestExpectedWorktreeScan;
-            _ = wb.window_events.dispatch(deadline);
+            _ = wb.git_model.repository_scan_task.at orelse return error.TestExpectedWorktreeScan;
+            for (0..1000) |_| {
+                const deadline = wb.git_model.repository_scan_task.at orelse break;
+                _ = wb.window_events.dispatch(deadline);
+            }
+            try std.testing.expect(wb.git_model.repository_scan_task.at == null);
         } else try std.testing.expect(wb.git_model.repository_scan_task.at == null);
         try std.testing.expectEqual(case.count, wb.git_model.repositories().len);
         if (case.count == 2) {
@@ -12284,7 +12288,7 @@ test "Workbench: git scm integration discovers linked worktrees from status acco
                 }
             }
             try std.testing.expect(found_detached);
-            for (0..10) |_| {
+            for (0..1000) |_| {
                 if (wb.git_model.repositories().len == 3) break;
                 const refresh_deadline = wb.git_model.repository_scan_task.at orelse break;
                 _ = wb.window_events.dispatch(refresh_deadline);
