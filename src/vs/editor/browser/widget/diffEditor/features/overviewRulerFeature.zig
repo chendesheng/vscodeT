@@ -139,7 +139,7 @@ pub const OverviewRulerFeature = struct {
     }
 
     fn scrollbar(editor: *Editor, height: usize) ScrollbarState {
-        return ScrollbarState.initWithMinimumSliderSize(0, width, 0, @floatFromInt(height), @floatFromInt(editor.scrollHeight()), @floatFromInt(editor.topViewLine() - 1), 1);
+        return ScrollbarState.initWithMinimumSliderSize(0, width, 0, @floatFromInt(height), @floatFromInt(editor.scrollHeight()), @floatFromInt(editor.scrollTop()), 1);
     }
 
     pub fn paint(self: *const OverviewRulerFeature, grid: *ui.CellGrid, x: usize, y: usize, modified: *Editor, removed: ui.Color, inserted: ui.Color, thumb: ui.Color) void {
@@ -198,7 +198,7 @@ pub const OverviewRulerFeature = struct {
     }
 
     fn setScroll(editor: *Editor, desired: f64) void {
-        _ = editor.setTopViewLine(@as(usize, @intFromFloat(@max(0, desired))) + 1);
+        _ = editor.setScrollTop(@intFromFloat(@max(0, desired)));
     }
 };
 

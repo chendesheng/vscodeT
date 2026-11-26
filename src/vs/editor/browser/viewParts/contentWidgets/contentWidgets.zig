@@ -79,15 +79,10 @@ pub const ViewContentWidgets = struct {
     ) !void {
         self.entries.clearRetainingCapacity();
         if (text_right == 0) return;
-        const top = editor.topViewLine();
-
         for (self.widgets.items) |widget| {
             const widget_position = widget.get_position(widget.context) orelse continue;
             const view_position = editor.viewPositionOfModelPosition(widget_position.position);
-            if (view_position.lineNumber < top or view_position.lineNumber >= top + text_height) {
-                continue;
-            }
-            const row = view_position.lineNumber - top;
+            const row = editor.visibleRowOfViewLine(view_position.lineNumber) orelse continue;
 
             var width = @min(widget.width(widget.context, cols), text_right);
             const height = @min(widget.height(widget.context), text_height);

@@ -1084,6 +1084,9 @@ pub const View = struct {
             .content_widget_contains = mouseContentWidgetContains,
             .overlay_widget_contains = mouseOverlayWidgetContains,
             .geometry = mouseGeometry,
+            .view_line_at_row = mouseViewLineAtRow,
+            .whitespace_at_row = mouseWhitespaceAtRow,
+            .end_position_at_view_line = mouseEndPositionAtViewLine,
             .line_text_width = mouseLineTextWidth,
             .position_at_view_point = mousePositionAtViewPoint,
         }, x, y);
@@ -1123,11 +1126,28 @@ pub const View = struct {
             .gutter_width = self.editor.gutterWidth(),
             .glyph_width = self.editor.gutterGlyphWidth(),
             .top_view_line = self.editor.topViewLine(),
+            .scroll_top = self.editor.scrollTop(),
             .view_line_count = self.editor.viewLineCount(),
             .scrollbar_width = self.scrollbar_width,
             .top_inset = self.top_inset_rows,
             .scroll_left = self.editor.scrollLeft(),
         };
+    }
+
+    fn mouseViewLineAtRow(context: *anyopaque, row: usize) ?usize {
+        const self: *View = @ptrCast(@alignCast(context));
+        return self.editor.viewLineAtViewportRow(row);
+    }
+
+    fn mouseWhitespaceAtRow(context: *anyopaque, row: usize) !?@import("../vs/editor/common/viewModel.zig").IViewWhitespaceViewportData {
+        const self: *View = @ptrCast(@alignCast(context));
+        return self.editor.viewLayout().getWhitespaceAtVerticalOffset(@floatFromInt(self.editor.scrollTop() + row));
+    }
+
+    fn mouseEndPositionAtViewLine(context: *anyopaque, line: usize) !Position {
+        const self: *View = @ptrCast(@alignCast(context));
+        const data = try self.editor.viewLineData(line);
+        return Position.init(self.editor.modelLineNumber(line), self.editor.modelColumnOfViewPosition(line, data.maxColumn));
     }
 
     fn mouseLineTextWidth(context: *anyopaque, view_line: usize) ?usize {
@@ -1147,8 +1167,7 @@ pub const View = struct {
         if (y < self.top_inset_rows) return null;
         const content_y = y - self.top_inset_rows;
         if (content_y >= self.editor.textHeight()) return null;
-        const view_line = self.editor.topViewLine() + content_y;
-        if (view_line > self.editor.viewLineCount()) return null;
+        const view_line = self.editor.viewLineAtViewportRow(content_y) orelse return null;
         if (self.editor.outputLineIndex(view_line) != 0) return null;
         return view_line;
     }
@@ -1487,11 +1506,7 @@ pub const View = struct {
     /// viewport. Content widgets use this to decide above/below placement.
     pub fn visibleRowOf(self: *View, position: Position) ?usize {
         const view_position = self.editor.viewPositionOfModelPosition(position);
-        const top = self.editor.topViewLine();
-        if (view_position.lineNumber < top) return null;
-        const row = view_position.lineNumber - top;
-        if (row >= self.editor.textHeight()) return null;
-        return row;
+        return self.editor.visibleRowOfViewLine(view_position.lineNumber);
     }
 
     /// Gives the keyboard back to the editor after a content widget closes.
@@ -2047,12 +2062,12 @@ pub const View = struct {
             // mapping: a guide is painted in a leading-whitespace cell of a
             // model line's first row; wrapped continuation rows are skipped.
             const guides_overlay = self.terminal_view_host.indentGuides();
-            const end_view_line = @min(total, top + text_height -| 1);
+            const end_view_line = @min(total, editor.visibleViewRange().endLineNumber -| 1);
             var view_line = top;
             while (view_line <= end_view_line) : (view_line += 1) {
                 if (editor.view_lines.getOutputLineIndex(view_line) != 0) continue;
                 const line_guides = guides_overlay.renderedLine(view_line) orelse continue;
-                const row = view_line - top;
+                const row = editor.visibleRowOfViewLine(view_line) orelse continue;
                 const model_line = editor.modelLineNumber(view_line);
                 var content = try editor.model.getLineContent(model_line);
                 defer content.deinit();
@@ -2094,8 +2109,7 @@ pub const View = struct {
             for (ruler_columns) |column| {
                 var ruler_row: usize = 0;
                 while (ruler_row < text_height) : (ruler_row += 1) {
-                    const view_line = top + ruler_row;
-                    if (view_line > total) break;
+                    const view_line = editor.viewLineAtViewportRow(ruler_row) orelse continue;
                     const model_line = self.editor.modelLineNumber(view_line);
                     var content = try self.editor.model.getLineContent(model_line);
                     defer content.deinit();
@@ -2135,9 +2149,7 @@ pub const View = struct {
             states[0].viewState.position;
 
         self.cursor_row = null;
-        if (cursor.lineNumber >= top and cursor.lineNumber < top + text_height and
-            cursor.lineNumber <= total)
-        {
+        if (editor.visibleRowOfViewLine(cursor.lineNumber)) |cursor_row| {
             const cursor_data = editor.viewLineData(cursor.lineNumber) catch null;
             if (cursor_data) |data| {
                 const cursor_model_line = editor.modelLineNumber(cursor.lineNumber);
@@ -2152,7 +2164,7 @@ pub const View = struct {
                         data.minColumn - 1,
                     );
                     if (visible >= scroll_left and visible < scroll_left + text_width) {
-                        self.cursor_row = cursor.lineNumber - top;
+                        self.cursor_row = cursor_row;
                         self.cursor_col = gutter + (visible - scroll_left);
                     }
                 }
@@ -2177,11 +2189,11 @@ pub const View = struct {
                     themedColor(self.theme_colors, "scrollbar.shadow", .{ 0, 0, 0 }),
                 );
             }
-            const end_view_line = @min(total, top + text_height -| 1);
+            const end_view_line = @min(total, editor.visibleViewRange().endLineNumber -| 1);
             var view_line = top;
             while (view_line <= end_view_line) : (view_line += 1) {
                 if (lineBackground(self.terminal_view_host.decorationsForLine(view_line), self.theme_colors)) |background| {
-                    line_backgrounds[view_line - top] = background;
+                    if (editor.visibleRowOfViewLine(view_line)) |row| line_backgrounds[row] = background;
                 }
             }
         }

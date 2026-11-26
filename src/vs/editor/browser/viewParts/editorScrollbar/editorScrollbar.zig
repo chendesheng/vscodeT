@@ -164,7 +164,7 @@ pub const TerminalScrollbar = struct {
             0,
             @floatFromInt(editor.textHeight()),
             @floatFromInt(editor.scrollHeight()),
-            @floatFromInt(editor.topViewLine() - 1),
+            @floatFromInt(editor.scrollTop()),
             1,
         );
     }
@@ -441,7 +441,7 @@ fn applyScrollPosition(editor: *Editor, desired: f64) usize {
         max_scroll
     else
         @min(@as(usize, @intFromFloat(@round(desired))), max_scroll);
-    _ = editor.setTopViewLine(clamped + 1);
+    _ = editor.setScrollTop(clamped);
     return clamped;
 }
 

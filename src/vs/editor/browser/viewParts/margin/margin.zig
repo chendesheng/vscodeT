@@ -251,7 +251,12 @@ pub const TerminalMargin = struct {
         var old_index: usize = 0;
         var screen_row: usize = 0;
         while (screen_row < text_height) : (screen_row += 1) {
-            const view_line = top + screen_row;
+            const view_line = editor.viewLineAtViewportRow(screen_row) orelse blk: {
+                // A zone is not a model line, so it has no number, fold
+                // control or line decoration. Leave the margin background.
+                if ((try editor.viewLayout().getWhitespaceAtVerticalOffset(@floatFromInt(editor.scrollTop() + screen_row))) != null) continue;
+                break :blk @max(total + 1, top + screen_row);
+            };
             while (old_index < self.rows.items.len and
                 self.rows.items[old_index].view_line < view_line) : (old_index += 1)
             {

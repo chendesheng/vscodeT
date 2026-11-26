@@ -24,6 +24,7 @@ pub const Geometry = struct {
     glyph_width: usize,
     top_inset: usize,
     top_view_line: usize,
+    scroll_top: usize = 0,
     view_line_count: usize,
     scrollbar_width: usize,
     /// Horizontal scroll offset in cells.
@@ -38,6 +39,9 @@ pub const TerminalMouseHost = struct {
     content_widget_contains: *const fn (context: *anyopaque, x: usize, y: usize) bool,
     overlay_widget_contains: *const fn (context: *anyopaque, x: usize, y: usize) bool,
     geometry: *const fn (context: *anyopaque) Geometry,
+    view_line_at_row: *const fn (context: *anyopaque, row: usize) ?usize,
+    whitespace_at_row: *const fn (context: *anyopaque, row: usize) anyerror!?@import("../../common/viewModel.zig").IViewWhitespaceViewportData,
+    end_position_at_view_line: *const fn (context: *anyopaque, view_line: usize) anyerror!Position,
     /// Rendered text width in cells, or null when the view line is not laid
     /// out in the current frame.
     line_text_width: *const fn (context: *anyopaque, view_line: usize) ?usize,
@@ -66,7 +70,7 @@ pub fn createMouseTarget(host: TerminalMouseHost, x: usize, y: usize) !MouseTarg
     }
 
     if (geometry.scrollbar_width > 0 and x >= geometry.cols -| geometry.scrollbar_width) {
-        const view_line = @min(geometry.top_view_line + content_y, geometry.view_line_count);
+        const view_line = host.view_line_at_row(host.context, content_y) orelse @min(geometry.top_view_line, geometry.view_line_count);
         return .{
             .element = element,
             .type = .scrollbar,
@@ -75,7 +79,26 @@ pub fn createMouseTarget(host: TerminalMouseHost, x: usize, y: usize) !MouseTarg
         };
     }
 
-    const view_line = geometry.top_view_line + content_y;
+    if (try host.whitespace_at_row(host.context, content_y)) |zone| {
+        const before = if (zone.afterLineNumber > 0) try host.end_position_at_view_line(host.context, zone.afterLineNumber) else null;
+        const after = if (zone.afterLineNumber < geometry.view_line_count) try host.position_at_view_point(host.context, zone.afterLineNumber + 1, 0) else null;
+        const offset: f64 = @floatFromInt(geometry.scroll_top + content_y);
+        const position = if (before != null and (after == null or offset < zone.verticalOffset + zone.height / 2)) before.? else after orelse return error.InvalidViewZone;
+        return .{
+            .element = element,
+            .type = if (x < geometry.gutter_width) .gutter_view_zone else .content_view_zone,
+            .position = position,
+            .mouse_column = mouse_column,
+            .detail = .{ .view_zone = .{
+                .view_zone_id = zone.id,
+                .position_before = before,
+                .position_after = after,
+                .position = position,
+                .after_line_number = zone.afterLineNumber,
+            } },
+        };
+    }
+    const view_line = host.view_line_at_row(host.context, content_y) orelse geometry.view_line_count + 1;
     if (x < geometry.glyph_width) {
         return .{
             .element = element,

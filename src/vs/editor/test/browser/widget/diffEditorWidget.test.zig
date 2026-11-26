@@ -429,6 +429,55 @@ pub fn Tests(comptime View: type) type {
             try testing.expectEqual(initial_height, observer.height);
         }
 
+        test "diffEditorWidget: whitespace rows affect paint hit tests and scrolling without changing model lines" {
+            const allocator = testing.allocator;
+            const widget = try DiffEditorWidget.create(View.init, allocator, Io.Threaded.global_single_threaded.io(), "a.txt", "b.txt", "first\nsecond\nthird\nfourth", "first\nsecond\nthird\nfourth", "Original", "Modified", 80, 4, .{});
+            defer widget.destroy();
+            const editor = widget.modified_editor;
+            const view = widget.modified_view;
+            const Accessor = @import("../../../common/viewModel.zig").IWhitespaceChangeAccessor;
+            var id: []const u8 = undefined;
+            try editor.changeWhitespace(&id, struct {
+                fn run(out: *[]const u8, accessor: Accessor) anyerror!void {
+                    out.* = try accessor.insert(1, 0, 3, 0);
+                }
+            }.run);
+            try testing.expectEqual(@as(usize, 4), editor.model.getLineCount());
+            try testing.expectEqual(@as(usize, 7), editor.scrollHeight());
+            try view.paint();
+            const first = try view.grid().rowText(allocator, 0);
+            defer allocator.free(first);
+            try testing.expect(std.mem.indexOf(u8, first, "first") != null);
+            try testing.expectEqual(@as(?usize, null), editor.visibleRowOfViewLine(2));
+            for (1..4) |row| {
+                const blank = try view.grid().rowText(allocator, row);
+                defer allocator.free(blank);
+                try testing.expect(std.mem.indexOf(u8, blank, "second") == null);
+                const target = try view.mouseTargetAt(editor.gutterWidth(), row);
+                try testing.expectEqual(@import("../../../browser/editorBrowser.zig").MouseTargetType.content_view_zone, target.type);
+                try testing.expectEqualStrings(id, target.detail.?.view_zone.view_zone_id);
+            }
+            try testing.expect(editor.scrollViewLines(2));
+            try testing.expectEqual(@as(usize, 2), editor.scrollTop());
+            try testing.expectEqual(@as(?usize, 2), editor.visibleRowOfViewLine(2));
+            try view.paint();
+            const second = try view.grid().rowText(allocator, 2);
+            defer allocator.free(second);
+            try testing.expect(std.mem.indexOf(u8, second, "second") != null);
+            const target = try view.mouseTargetAt(editor.gutterWidth(), 2);
+            try testing.expectEqual(@as(usize, 2), target.position.?.lineNumber);
+            try editor.changeWhitespace(id, struct {
+                fn run(zone_id: []const u8, accessor: Accessor) anyerror!void {
+                    try accessor.remove(zone_id);
+                }
+            }.run);
+            try testing.expectEqual(@as(usize, 0), editor.scrollTop());
+            try view.paint();
+            const normal = try view.grid().rowText(allocator, 1);
+            defer allocator.free(normal);
+            try testing.expect(std.mem.indexOf(u8, normal, "second") != null);
+        }
+
         test "diffEditorWidget: upstream UnchangedRegion fromDiffs scenarios" {
             const allocator = testing.allocator;
             const R = @import("../../../common/core/ranges/lineRange.zig").LineRange;

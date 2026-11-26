@@ -404,7 +404,7 @@ pub const TerminalViewHost = struct {
             .completelyVisibleEndLineNumber = end_line,
             .lineHeight = 1,
         };
-        try self.renderPartial(partial);
+        try self.renderPartial(partial, &.{});
     }
 
     /// Renders the editor's current viewport. The line range and relative
@@ -413,10 +413,12 @@ pub const TerminalViewHost = struct {
     pub fn renderViewport(self: *TerminalViewHost) !void {
         var data = try self.editor.viewLayout().getLinesViewportData(self.allocator);
         defer data.deinit();
-        try self.renderPartial(data.data);
+        const whitespace = try self.editor.viewLayout().getWhitespaceViewportData(self.allocator);
+        defer self.allocator.free(whitespace);
+        try self.renderPartial(data.data, whitespace);
     }
 
-    fn renderPartial(self: *TerminalViewHost, partial: view_model.IPartialViewLinesViewportData) !void {
+    fn renderPartial(self: *TerminalViewHost, partial: view_model.IPartialViewLinesViewportData, whitespace: []const view_model.IViewWhitespaceViewportData) !void {
         if (self.selections.len > 0) self.allocator.free(self.selections);
         self.selections = try self.editor.getViewSelections();
 
@@ -430,7 +432,7 @@ pub const TerminalViewHost = struct {
                 .affectsLineNumber = true,
             } });
         }
-        const viewport = ViewportData.init(self.selections, partial, &.{}, self.modelInterface());
+        const viewport = ViewportData.init(self.selections, partial, whitespace, self.modelInterface());
         // A viewport resize changes the visible line range without raising a
         // view event. Force the retained line window to render the new range
         // instead of keeping the old (shorter) window.
@@ -736,7 +738,7 @@ pub const TerminalViewHost = struct {
             args.secondary_cursor_flag,
         );
 
-        const row = view_line -| args.top;
+        const row = editor.visibleRowOfViewLine(view_line) orelse std.math.maxInt(usize);
         var guide_count: usize = 0;
         for (args.guides) |guide| {
             if (guide.row == row) guide_count += 1;

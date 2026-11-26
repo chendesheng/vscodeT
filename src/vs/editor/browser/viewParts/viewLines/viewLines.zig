@@ -368,7 +368,7 @@ pub const ViewLines = struct {
             const existed = line.dom_node != null;
             const node = try line.paint(options.doc, .{
                 .left_cells = options.left_cells,
-                .top_cells = options.top_row + (line_number - start),
+                .top_cells = @as(isize, @intCast(options.top_row)) + @as(isize, @intFromFloat(self.context.view_layout.getVerticalOffsetForLineNumber(line_number, false))) - @as(isize, self.context.view_layout.getCurrentViewport().top),
                 .width_cells = options.width_cells,
                 .background = data.background,
                 .flags = data.flags,

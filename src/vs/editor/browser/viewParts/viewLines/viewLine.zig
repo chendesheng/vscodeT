@@ -380,7 +380,7 @@ pub const ViewLine = struct {
 
     pub const PaintOptions = struct {
         left_cells: usize,
-        top_cells: usize,
+        top_cells: isize,
         width_cells: usize,
         height_cells: usize = 1,
         background: ?ui.Color = null,

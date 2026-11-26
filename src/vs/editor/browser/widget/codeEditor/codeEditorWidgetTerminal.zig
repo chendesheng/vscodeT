@@ -1916,10 +1916,40 @@ pub const Editor = struct {
         return self.cursor_config.indentSize;
     }
 
+    /// The first line at or after the viewport's vertical offset. A view
+    /// zone can occupy cells before it, so this is not a scroll coordinate.
     pub fn topViewLine(self: *const Editor) usize {
-        const top = self.view_layout.getCurrentScrollTop();
-        if (top <= 0) return 1;
-        return @as(usize, @intFromFloat(top)) + 1;
+        return @constCast(&self.view_layout).getLineNumberAtVerticalOffset(self.view_layout.getCurrentScrollTop());
+    }
+
+    pub fn scrollTop(self: *const Editor) usize {
+        return @intFromFloat(self.view_layout.getCurrentScrollTop());
+    }
+
+    pub fn setScrollTop(self: *Editor, offset: usize) bool {
+        const previous = self.scrollTop();
+        self.view_layout.setScrollPositionNow(.{ .scrollTop = @floatFromInt(offset) });
+        return previous != self.scrollTop();
+    }
+
+    /// Cell position of the line's content relative to the viewport, or
+    /// null if it is not visible. View zones take up rows but have no line.
+    pub fn visibleRowOfViewLine(self: *const Editor, line: usize) ?usize {
+        if (line == 0 or line > self.view_layout.getLineCount()) return null;
+        const offset = @constCast(&self.view_layout).getVerticalOffsetForLineNumber(line, false);
+        const row = offset - self.view_layout.getCurrentScrollTop();
+        if (row < 0 or row >= @as(f64, @floatFromInt(self.textHeight()))) return null;
+        return @intFromFloat(row);
+    }
+
+    pub fn viewLineAtViewportRow(self: *const Editor, row: usize) ?usize {
+        if (row >= self.textHeight()) return null;
+        const layout = @constCast(&self.view_layout);
+        const offset = layout.getCurrentScrollTop() + @as(f64, @floatFromInt(row));
+        const line = layout.getLineNumberAtVerticalOffset(offset);
+        const line_offset = layout.getVerticalOffsetForLineNumber(line, false);
+        if (offset < line_offset or offset >= line_offset + layout.getLineHeightForLineNumber(line)) return null;
+        return line;
     }
 
     /// The vertical scroll state (upstream `IViewModel.viewLayout`).
@@ -2081,7 +2111,7 @@ pub const Editor = struct {
     /// more than the line count, but a short document still reports its
     /// viewport height.
     pub fn scrollHeight(self: *Editor) usize {
-        return @max(self.viewLineCount(), self.textHeight());
+        return @intFromFloat(self.view_layout.getScrollHeight());
     }
 
     pub fn viewLineData(self: *Editor, view_line: usize) !ViewLineData {
@@ -2759,7 +2789,7 @@ pub const Editor = struct {
 
         const count = self.view_lines.getViewLineCount();
         if (count == 0) return;
-        const last = @min(self.topViewLine() + self.textHeight() - 1, count);
+        const last = @min(self.visibleViewRange().endLineNumber -| 1, count);
         const model_line = @min(self.view_lines.getModelLineNumber(last), line_count);
         if (self.tokens_need_refresh) {
             const first_model_line = self.view_lines.getModelLineNumber(self.topViewLine());
@@ -2960,16 +2990,15 @@ pub const Editor = struct {
     }
 
     pub fn ensureCursorVisible(self: *Editor) void {
-        const top = self.topViewLine();
+        const top = self.scrollTop();
         const position = self.viewCursorPosition();
+        const line_top: usize = @intFromFloat(self.view_layout.getVerticalOffsetForLineNumber(position.lineNumber, false));
         const height = self.textHeight();
-        var next = top;
-        if (position.lineNumber < top) {
-            next = position.lineNumber;
-        } else if (position.lineNumber >= top + height) {
-            next = position.lineNumber - height + 1;
+        if (line_top < top) {
+            _ = self.setScrollTop(line_top);
+        } else if (line_top >= top + height) {
+            _ = self.setScrollTop(line_top -| height + 1);
         }
-        if (next != top) _ = self.applyTopViewLine(next);
         self.ensureCursorVisibleHorizontal();
     }
 
@@ -3020,36 +3049,22 @@ pub const Editor = struct {
         }
     }
 
-    fn maxTopViewLine(self: *Editor) usize {
-        const total = self.view_lines.getViewLineCount();
-        const height = self.textHeight();
-        return if (total <= height) 1 else total - height + 1;
-    }
-
-    /// Scrolls the viewport by `delta` view lines without moving the cursor.
-    /// Returns whether the top line changed; the wheel uses this so a cursor
-    /// may stay off-screen until the next cursor move reveals it.
+    /// Scroll the viewport by terminal cells (including whitespace zones).
     pub fn scrollViewLines(self: *Editor, delta: isize) bool {
-        const max_top = self.maxTopViewLine();
-        const current: isize = @intCast(@min(self.topViewLine(), max_top));
-        const max: isize = @intCast(max_top);
-        const next = std.math.clamp(current + delta, 1, max);
-        return self.applyTopViewLine(@intCast(next));
+        const current: isize = @intCast(self.scrollTop());
+        const maximum: isize = @intCast(self.scrollHeight() -| self.textHeight());
+        return self.setScrollTop(@intCast(std.math.clamp(current + delta, 0, maximum)));
     }
 
-    /// Sets the first visible view line without moving the cursor. Used by the
-    /// terminal scrollbar, whose scroll position is expressed in lines.
+    /// Sets the first visible view line without moving the cursor.
     pub fn setTopViewLine(self: *Editor, line: usize) bool {
         return self.applyTopViewLine(line);
     }
 
-    /// Applies a whole-line top position through the view layout, which emits
-    /// `ViewScrollChanged` when it changes.
     fn applyTopViewLine(self: *Editor, line: usize) bool {
-        const next = std.math.clamp(line, 1, self.maxTopViewLine());
-        if (next == self.topViewLine()) return false;
-        self.view_layout.setScrollPositionNow(.{ .scrollTop = @floatFromInt(next - 1) });
-        return true;
+        const next = std.math.clamp(line, 1, self.viewLineCount());
+        if (next == 1) return self.setScrollTop(0);
+        return self.setScrollTop(@intFromFloat(self.view_layout.getVerticalOffsetForLineNumber(next, false)));
     }
 
     pub const ScrollDirection = enum { up, down };
@@ -3109,7 +3124,7 @@ pub const Editor = struct {
             .editor => {
                 changed = switch (direction) {
                     .up => self.setTopViewLine(1),
-                    .down => self.setTopViewLine(self.maxTopViewLine()),
+                    .down => self.setScrollTop(self.scrollHeight() -| self.textHeight()),
                 };
             },
         }
@@ -3131,10 +3146,9 @@ pub const Editor = struct {
         const start = std.math.clamp(start_view_line, 1, count);
         const end = std.math.clamp(end_view_line, start, count);
         const height = self.textHeight();
-        const top = self.topViewLine();
-        const top0: isize = @intCast(top - 1);
-        const box_start: isize = @intCast(start - 1);
-        const box_end: isize = @intCast(end);
+        const top0: isize = @intCast(self.scrollTop());
+        const box_start: isize = @intFromFloat(self.view_layout.getVerticalOffsetForLineNumber(start, false));
+        const box_end: isize = @intFromFloat(self.view_layout.getVerticalOffsetAfterLineNumber(end, false));
         const box_length = box_end - box_start;
         const viewport_end = top0 + @as(isize, @intCast(height));
 
@@ -3146,7 +3160,7 @@ pub const Editor = struct {
                 desired = @max(0, padded_end - @as(isize, @intCast(height)));
             },
             .Center, .CenterIfOutsideViewport => {
-                const fully_visible = start >= top and end <= top + height -| 1;
+                const fully_visible = box_start >= top0 and box_end <= viewport_end;
                 if (vertical_type == .CenterIfOutsideViewport and fully_visible) {
                     desired = top0;
                 } else if (box_length > @as(isize, @intCast(height))) {
@@ -3157,7 +3171,7 @@ pub const Editor = struct {
                 }
             },
             .NearTop, .NearTopIfOutsideViewport => {
-                const fully_visible = start >= top and end <= top + height -| 1;
+                const fully_visible = box_start >= top0 and box_end <= viewport_end;
                 if (vertical_type == .NearTopIfOutsideViewport and fully_visible) {
                     desired = top0;
                 } else {
@@ -3184,7 +3198,7 @@ pub const Editor = struct {
                 }
             },
         }
-        return self.setTopViewLine(@intCast(desired + 1));
+        return self.setScrollTop(@intCast(desired));
     }
 
     /// Converts a model range to view lines, matching
@@ -3209,7 +3223,8 @@ pub const Editor = struct {
     /// upstream's `getCompletelyVisibleViewRange`.
     pub fn visibleViewRange(self: *Editor) Range {
         const start = self.topViewLine();
-        const end = @min(start + self.textHeight(), self.viewLineCount() + 1);
+        const last = self.view_layout.getLineNumberAtVerticalOffset(@floatFromInt(self.scrollTop() + self.textHeight() -| 1));
+        const end = @min(last + 1, self.viewLineCount() + 1);
         return Range.init(start, 1, end, 1);
     }
 
