@@ -24,6 +24,7 @@ const accessible_module = @import("./components/accessibleDiffViewer.zig");
 const moved_feature = @import("./features/movedBlocksLinesFeature.zig");
 const hide_unchanged_feature = @import("./features/hideUnchangedRegionsFeature.zig");
 const gutter_feature = @import("./features/gutterFeature.zig");
+const revert_feature = @import("./features/revertButtonsFeature.zig");
 const overview_feature = @import("./features/overviewRulerFeature.zig");
 const sash_mod = @import("./components/diffEditorSash.zig");
 const view_model = diff_view_model;
@@ -160,6 +161,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         moved_blocks: moved_feature.MovedBlocksLinesFeature = undefined,
         inline_margin_menu: inline_margin.MenuController,
         gutter_toolbar: gutter_feature.DiffGutterToolbar = undefined,
+        revert_buttons: revert_feature.RevertButtonsFeature = undefined,
         screen_x: usize = 0,
         screen_y: usize = 0,
         move_listener: ?usize = null,
@@ -397,6 +399,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
             errdefer self.overview.deinit(original_editor, modified_editor);
             try self.hide_unchanged.init(allocator, &self.view_model, &self.zones, original_editor, original_view.viewZones(), modified_editor, modified_view.viewZones(), normalized_options);
             errdefer self.hide_unchanged.deinit();
+            try self.revert_buttons.init(allocator, &self.view_model, modified_editor, modified_view.terminal_view_host, .{ .context = self, .revert = revertMarginChange });
+            errdefer self.revert_buttons.deinit();
             try self.moved_blocks.init(allocator, &self.view_model, &self.zones, original_editor, original_view.viewZones(), modified_editor, modified_view.viewZones(), self, onMoveWidthChanged, onCompareMove);
             errdefer self.moved_blocks.deinit();
             self.move_listener = try self.view_model.on_did_change_active_move.listen(self, onMoveStateChanged);
@@ -421,6 +425,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             const allocator = self.allocator;
             self.smooth_resize.deinit();
             self.gutter_toolbar.deinit();
+            self.revert_buttons.deinit();
             self.accessible_viewer.close();
             self.inline_margin_menu.deinit();
             if (self.diff_listener) |id| self.view_model.on_did_change.unlisten(id);
@@ -542,6 +547,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             }
             self.overview.invalidate();
             try self.gutter_toolbar.updateSelection();
+            try self.revert_buttons.update();
             if (was_accessible) try self.openAccessibleViewer();
         }
 
@@ -606,6 +612,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.width = @max(width, 1);
             self.height = @max(height, 1);
             self.moved_blocks.setEnabled(self.options.show_moves and self.sideBySide()) catch {};
+            self.revert_buttons.setEnabled(self.options.render_margin_revert_icon and self.sideBySide() and !self.options.read_only and !self.options.render_gutter_menu) catch {};
             self.moved_blocks.recomputeGeometry() catch {};
             diff_editor_editors.applyWordWrap(self.original_editor, self.modified_editor, self.options.diff_word_wrap, self.sideBySide());
             const widths = self.paneWidths();
@@ -788,6 +795,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             const was_focused = self.focusedView().isFocused();
             const accessible = self.accessible_viewer.visible();
             self.accessible_viewer.close();
+            self.revert_buttons.deinit();
             self.moved_blocks.deinit();
             self.hide_unchanged.deinit();
             self.zones.deinit();
@@ -811,6 +819,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.decorations.modified_model = self.modified_editor.model;
             self.zones.init(self.allocator, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self.modified_view.terminal_view_host, self.modified_view.lineStyleFunction(), self.modified_view.decorationBitsFunction(), self.options.render_indicators, diff_state.mappings);
             try self.hide_unchanged.init(self.allocator, &self.view_model, &self.zones, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self.options);
+            try self.revert_buttons.init(self.allocator, &self.view_model, self.modified_editor, self.modified_view.terminal_view_host, .{ .context = self, .revert = revertMarginChange });
             try self.moved_blocks.init(self.allocator, &self.view_model, &self.zones, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self, onMoveWidthChanged, onCompareMove);
             self.applyZoneTheme(self.modified_view.themeColors());
             self.focused = .modified;
@@ -964,6 +973,15 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.modified_view.invalidate();
         }
 
+        fn revertMarginChange(context: *anyopaque, change: revert_feature.RevertChange, original_version: u32, modified_version: u32) !void {
+            const self: *Self = @ptrCast(@alignCast(context));
+            if (self.originalModel().getVersionId() != original_version or self.modifiedModel().getVersionId() != modified_version) return;
+            switch (change) {
+                .hunk => |mapping| try self.revert(mapping),
+                .selection => |mappings| try self.revertRangeMappings(mappings),
+            }
+        }
+
         fn revertDeletedCode(context: *anyopaque, mapping: view_model.DetailedLineRangeMapping, original_version: u32, modified_version: u32) !void {
             const self: *Self = @ptrCast(@alignCast(context));
             if (self.originalModel().getVersionId() != original_version or self.modifiedModel().getVersionId() != modified_version) return;
@@ -1108,7 +1126,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 var adjusted = event.*;
                 if (side == .modified) adjusted.x -|= widths.modifiedLeft();
                 if (adjusted.kind == .up and adjusted.x < view.editor.gutterGlyphWidth()) {
-                    if (self.hide_unchanged.dispatchFoldGlyph(side == .original, &adjusted, try view.mouseTargetAt(adjusted.x, adjusted.y))) return true;
+                    if (try self.dispatchFoldGlyph(side == .original, view, &adjusted)) return true;
                 }
                 const handled = if (target) |handler| try handler.dispatch(handler.context, side, view, &adjusted) else try view.dispatchMouse(&adjusted);
                 self.syncScrollFromPane(side);
@@ -1155,10 +1173,19 @@ pub fn DiffEditorWidget(comptime View: type) type {
             }
             if (event.kind == .down) self.setFocus(.modified);
             if (event.kind == .up and adjusted.x < self.modified_editor.gutterGlyphWidth()) {
-                if (self.hide_unchanged.dispatchFoldGlyph(false, &adjusted, try self.modified_view.mouseTargetAt(adjusted.x, event.y))) return true;
+                if (try self.dispatchFoldGlyph(false, self.modified_view, &adjusted)) return true;
             }
             const handled = if (target) |handler| try handler.dispatch(handler.context, .modified, self.modified_view, &adjusted) else try self.modified_view.dispatchMouse(&adjusted);
             return handled or hover_changed;
+        }
+
+        fn dispatchFoldGlyph(self: *Self, original: bool, view: *View, event: *ui.MouseEvent) !bool {
+            const mouse = try view.mouseTargetAt(event.x, event.y);
+            if (mouse.type != .gutter_glyph_margin or event.x >= 3) return false;
+            const position = mouse.position orelse return false;
+            const slot = view.terminal_view_host.glyphMargin().renderedLine(position.lineNumber).lanes[event.x] orelse return false;
+            if (slot.glyph.interactive or std.mem.indexOf(u8, slot.glyph.class_name, "fold-unchanged") == null) return false;
+            return self.hide_unchanged.dispatchFoldGlyph(original, event, mouse);
         }
 
         fn onMoveWidthChanged(context: *anyopaque) void {
@@ -1181,6 +1208,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             const compare = if (enabled) self.view_model.moved_text_to_compare else null;
             self.zones.setCompareMove(if (compare) |index| &self.state().?.moved_texts[index] else null, self.focused == .original);
             try self.decorations.updateWithMoveState(self.state().?, enabled, self.view_model.activeMovedText(), compare);
+            try self.revert_buttons.update();
             self.original_view.invalidate();
             self.modified_view.invalidate();
         }

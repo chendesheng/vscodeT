@@ -295,7 +295,7 @@ pub const HideUnchangedRegionsFeature = struct {
     pub fn dispatchFoldGlyph(self: *HideUnchangedRegionsFeature, original: bool, event: *ui.MouseEvent, target: browser.MouseTarget) bool {
         if (event.kind != .up or event.button == .right or self.options.variant == .compact or target.type != .gutter_glyph_margin) return false;
         const pane = if (original) &self.original else &self.modified;
-        const line = (target.position orelse return false).lineNumber;
+        const line = pane.editor.modelLineNumber((target.position orelse return false).lineNumber);
         for (pane.bindings) |*binding| {
             const region = binding.region();
             if (region.shouldHideControls() and line == (if (original) region.original_line_number else region.modified_line_number)) {

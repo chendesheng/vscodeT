@@ -1312,6 +1312,60 @@ pub fn Tests(comptime View: type) type {
             }
         }
 
+        test "diffEditorWidget: legacy revert glyph widgets respect options and selected changes" {
+            const allocator = testing.allocator;
+            const Range = @import("../../../common/core/range.zig").Range;
+            const original = "first\nabc old def stale\nthird\nlast";
+            const modified = "first\nabc new def fresh\nthird\nlast";
+            const widget = try DiffEditorWidget.create(View.init, allocator, testing.io, "a.txt", "b.txt", original, modified, "Original", "Modified", 80, 8, .{ .render_gutter_menu = false });
+            defer widget.destroy();
+            try testing.expect(widget.revert_buttons.enabled);
+            try testing.expectEqual(@as(usize, 1), widget.revert_buttons.buttons.items.len);
+            try widget.modified_editor.setSelection(Range.init(2, 5, 2, 8));
+            try testing.expectEqual(@as(usize, 1), widget.revert_buttons.buttons.items.len);
+            try testing.expect(widget.revert_buttons.buttons.items[0].change == .selection);
+            var frame = try ui.Frame.init(allocator, 80, 8);
+            defer frame.deinit();
+            try widget.paint(&frame, 0, 0, 80, 8);
+            const view_line = widget.modified_editor.viewPositionOfModelPosition(.{ .lineNumber = 2, .column = 1 }).lineNumber;
+            const row = widget.modified_editor.visibleRowOfViewLine(view_line).?;
+            const column = widget.paneWidths().modifiedLeft();
+            try testing.expectEqual(@as(u32, '→'), frame.next.cluster[frame.next.index(column, row)]);
+            try testing.expectEqualStrings("Revert Selected Changes", widget.modified_view.terminal_view_host.glyphTooltipAt(view_line, 0).?);
+            var event: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = column, .y = row };
+            try testing.expect(try widget.dispatchMouse(&event));
+            event.kind = .up;
+            try testing.expect(try widget.dispatchMouse(&event));
+            try testing.expectEqualStrings("abc old def fresh", try widget.modifiedModel().borrowLineContent(2));
+            try widget.modified_editor.undo();
+            try testing.expectEqualStrings("abc new def fresh", try widget.modifiedModel().borrowLineContent(2));
+            try widget.modified_editor.setCursorPosition(.{ .lineNumber = 2, .column = 1 });
+            try testing.expect(widget.revert_buttons.buttons.items[0].change == .hunk);
+            try widget.paint(&frame, 0, 0, 80, 8);
+            event.kind = .down;
+            try testing.expect(try widget.dispatchMouse(&event));
+            event.kind = .up;
+            try testing.expect(try widget.dispatchMouse(&event));
+            try testing.expectEqual(@as(usize, 0), widget.changeCount());
+            try widget.modified_editor.undo();
+            var options = widget.options;
+            options.render_gutter_menu = true;
+            _ = try widget.updateOptions(options);
+            try testing.expectEqual(@as(usize, 0), widget.revert_buttons.buttons.items.len);
+            options.render_gutter_menu = false;
+            options.read_only = true;
+            _ = try widget.updateOptions(options);
+            try testing.expectEqual(@as(usize, 0), widget.revert_buttons.buttons.items.len);
+            options.read_only = false;
+            options.render_side_by_side = false;
+            _ = try widget.updateOptions(options);
+            try testing.expectEqual(@as(usize, 0), widget.revert_buttons.buttons.items.len);
+            options.render_side_by_side = true;
+            options.render_margin_revert_icon = false;
+            _ = try widget.updateOptions(options);
+            try testing.expectEqual(@as(usize, 0), widget.revert_buttons.buttons.items.len);
+        }
+
         test "diffEditorWidget: inline deleted-code margin copies model lines and reverts the hunk" {
             const Clipboard = @import("../../../../platform/clipboard/common/clipboardService.zig").IClipboardService;
             const ContextMenu = @import("../../../../platform/contextview/browser/contextMenuService.zig").ContextMenuService;
