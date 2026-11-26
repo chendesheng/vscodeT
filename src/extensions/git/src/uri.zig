@@ -53,7 +53,11 @@ pub fn toGitUriWithOptions(allocator: std.mem.Allocator, path: []const u8, ref: 
 
 /// Encoded resource identity retained by SCM history and resource groups.
 pub fn gitUriString(allocator: std.mem.Allocator, path: []const u8, ref: []const u8) ![]u8 {
-    const uri = try toGitUri(allocator, path, ref);
+    return gitUriStringWithOptions(allocator, path, ref, .{});
+}
+
+pub fn gitUriStringWithOptions(allocator: std.mem.Allocator, path: []const u8, ref: []const u8, options: GitUriOptions) ![]u8 {
+    const uri = try toGitUriWithOptions(allocator, path, ref, options);
     defer allocator.free(uri.path.raw);
     defer allocator.free(uri.query.?.raw);
     return std.fmt.allocPrint(allocator, "{f}", .{uri});

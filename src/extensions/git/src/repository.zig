@@ -55,6 +55,7 @@ pub const GitScmResource = struct {
     kind: ResourceKind,
     /// Porcelain v2 status letter (`M`, `A`, `D`, `R`, `?`, ...).
     status: u8,
+    submodule: bool = false,
     /// Upstream `Resource.letter` projection (`U` for untracked, `!` for a
     /// conflict, ...); the resource row paints it as a file decoration badge.
     letter: [1]u8,
@@ -565,7 +566,7 @@ pub const Repository = struct {
         const uris = @import("uri.zig");
         const previous_absolute = if (original) |path| try std.fs.path.join(self.allocator, &.{ self.root, path }) else null;
         defer if (previous_absolute) |value| self.allocator.free(value);
-        const original_uri = switch (kind) {
+        const original_uri = if (change.submodule) null else switch (kind) {
             .merge, .untracked => null,
             .index => switch (status) {
                 'A', 'C' => null,
@@ -578,7 +579,12 @@ pub const Repository = struct {
             },
         };
         errdefer if (original_uri) |value| self.allocator.free(value);
-        const modified_uri = if (status == 'D' or kind == .merge) null else switch (kind) {
+        // Upstream Repository.getResources represents a submodule change
+        // as one virtual patch in the parent repository, not the checked-out
+        // directory or a pair of Gitlink object IDs.
+        const modified_uri = if (change.submodule)
+            try uris.gitUriStringWithOptions(self.allocator, absolute, if (kind == .index) "index" else "wt", .{ .submodule_of = self.root })
+        else if (status == 'D' or kind == .merge) null else switch (kind) {
             .index => try uris.gitUriString(self.allocator, absolute, ""),
             .working, .untracked => try uris.fileUriString(self.allocator, absolute),
             .merge => unreachable,
@@ -593,6 +599,7 @@ pub const Repository = struct {
             .absolute_path = absolute,
             .kind = kind,
             .status = status,
+            .submodule = change.submodule,
             .letter = .{info.letter},
             .decorations = .{
                 .tooltip = tooltip,
@@ -812,6 +819,34 @@ fn makeState(allocator: Allocator) !GitRepositoryState {
     state.untracked_changes = try allocator.alloc(GitChange, 1);
     state.untracked_changes[0] = .{ .path = try allocator.dupe(u8, "new.zig"), .status = '?' };
     return state;
+}
+
+test "repository: submodule changes expose parent repository patch URIs" {
+    const a = testing.allocator;
+    var fake = FakeDelegate{};
+    fake.init();
+    var state = try makeState(a);
+    state.index_changes[0].submodule = true;
+    state.working_tree_changes[0].submodule = true;
+    const repository = try GitRepository.create(a, test_root, state, &fake.base);
+    defer repository.destroy();
+    state.deinit(a);
+    var host: TestHost = .{};
+    const provider = try Repository.create(a, null, repository, test_root, .{ .context = &host, .open_change = TestHost.openChange });
+    defer provider.destroy();
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    for ([_]usize{ 1, 2 }, [_][]const u8{ "index", "wt" }) |group, ref| {
+        const resource = provider.groups[group].resources.items[0];
+        try testing.expect(resource.submodule);
+        try testing.expect(resource.iface.multi_diff_original_uri == null);
+        const uri = try std.Uri.parse(resource.iface.multi_diff_modified_uri.?);
+        const params = try @import("uri.zig").fromGitUri(arena.allocator(), uri);
+        try testing.expectEqualStrings(resource.absolute_path, params.path);
+        try testing.expectEqualStrings(test_root, params.submoduleOf.?);
+        try testing.expectEqualStrings(ref, params.ref);
+        try testing.expect(std.mem.endsWith(u8, try @import("../../../vs/base/common/stdUri.zig").fsPath(uri, arena.allocator()), ".diff"));
+    }
 }
 
 test "repository: groups, status letters and resource opening" {

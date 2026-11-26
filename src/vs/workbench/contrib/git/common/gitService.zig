@@ -75,6 +75,8 @@ pub const GitChange = struct {
     /// maps the seven conflict pairs to distinct statuses; the port keeps the
     /// pair so the Git provider can produce the same letters/tooltips.
     conflict: ?[2]u8 = null,
+    /// A Gitlink reported by the porcelain v2 submodule field.
+    submodule: bool = false,
 };
 
 pub const GitDiffChange = struct {
@@ -340,6 +342,7 @@ fn changesEql(a: []const GitChange, b: []const GitChange) bool {
         if (!optionalStringEql(left.modified_path, right.modified_path)) return false;
         if (left.status != right.status) return false;
         if (!optionalConflictEql(left.conflict, right.conflict)) return false;
+        if (left.submodule != right.submodule) return false;
     }
     return true;
 }
@@ -381,6 +384,7 @@ fn cloneChanges(changes: []const GitChange, allocator: Allocator) ![]GitChange {
             .modified_path = if (change.modified_path) |path| try allocator.dupe(u8, path) else null,
             .status = change.status,
             .conflict = change.conflict,
+            .submodule = change.submodule,
         };
     }
     return result;

@@ -1985,12 +1985,14 @@ fn freeBranch(allocator: Allocator, branch: *GitBranch) void {
 const TypeRecord = struct {
     x: u8,
     y: u8,
+    submodule: bool,
     path: []const u8,
 };
 
 const RenameRecord = struct {
     x: u8,
     y: u8,
+    submodule: bool,
     /// May be empty for a structurally complete but malformed record; the
     /// caller still consumes the following original-path field in that case.
     path: []const u8,
@@ -2067,7 +2069,7 @@ pub fn parseStatus(allocator: Allocator, bytes: []const u8) !GitRepositoryState 
                     &index_changes,
                     &working_tree_changes,
                     allocator,
-                    .{ .x = parsed.x, .y = parsed.y, .path = parsed.path },
+                    .{ .x = parsed.x, .y = parsed.y, .submodule = parsed.submodule, .path = parsed.path },
                     original,
                 );
             },
@@ -2076,14 +2078,14 @@ pub fn parseStatus(allocator: Allocator, bytes: []const u8) !GitRepositoryState 
                 if (parsed.path.len == 0 or std.mem.endsWith(u8, parsed.path, "/")) continue;
                 if (entry_count >= max_status_entries) continue;
                 entry_count += 1;
-                try appendChange(&merge_changes, allocator, parsed.path, null, 'U', .{ parsed.x, parsed.y });
+                try appendChange(&merge_changes, allocator, parsed.path, null, 'U', .{ parsed.x, parsed.y }, parsed.submodule);
             },
             '?' => {
                 const path = parseSimplePath(record) orelse continue;
                 if (path.len == 0 or std.mem.endsWith(u8, path, "/")) continue;
                 if (entry_count >= max_status_entries) continue;
                 entry_count += 1;
-                try appendChange(&untracked_changes, allocator, path, null, '?', null);
+                try appendChange(&untracked_changes, allocator, path, null, '?', null, false);
             },
             '!' => {
                 // Ignored entries have no state group in the read-only model.
@@ -2132,12 +2134,12 @@ fn parseTypeRecord(record: []const u8, record_type: u8, spaces_before_path: usiz
         index = space + 1;
     }
     if (index > record.len) return null;
-    return .{ .x = xy[0], .y = xy[1], .path = record[index..] };
+    return .{ .x = xy[0], .y = xy[1], .submodule = record.len > 5 and record[5] == 'S', .path = record[index..] };
 }
 
 fn parseRenameRecord(record: []const u8) ?RenameRecord {
     const parsed = parseTypeRecord(record, '2', 7) orelse return null;
-    return .{ .x = parsed.x, .y = parsed.y, .path = parsed.path };
+    return .{ .x = parsed.x, .y = parsed.y, .submodule = parsed.submodule, .path = parsed.path };
 }
 
 fn parseAheadBehind(value: []const u8, ahead: *?usize, behind: *?usize) void {
@@ -2159,6 +2161,7 @@ fn appendChange(
     original: ?[]const u8,
     status: u8,
     conflict: ?[2]u8,
+    submodule: bool,
 ) !void {
     const owned_path = try allocator.dupe(u8, path);
     errdefer allocator.free(owned_path);
@@ -2169,6 +2172,7 @@ fn appendChange(
         .original_path = owned_original,
         .status = status,
         .conflict = conflict,
+        .submodule = submodule,
     });
 }
 
@@ -2180,10 +2184,10 @@ fn addXYChange(
     original: ?[]const u8,
 ) !void {
     if (record.x != '.' and record.x != ' ') {
-        try appendChange(index_changes, allocator, record.path, original, record.x, null);
+        try appendChange(index_changes, allocator, record.path, original, record.x, null, record.submodule);
     }
     if (record.y != '.' and record.y != ' ') {
-        try appendChange(working_tree_changes, allocator, record.path, original, record.y, null);
+        try appendChange(working_tree_changes, allocator, record.path, original, record.y, null, record.submodule);
     }
 }
 
@@ -2504,6 +2508,20 @@ test "parseStatus: unmerged and untracked records" {
     try std.testing.expectEqual(@as(usize, 0), state.index_changes.len);
     try std.testing.expectEqual(@as(usize, 0), state.working_tree_changes.len);
     try expectChangePaths(state.untracked_changes, &.{"untracked.zig"});
+}
+
+test "parseStatus: carries Gitlink identity in both change groups" {
+    const a = std.testing.allocator;
+    const bytes = try buildStatus(a, &.{
+        "1 MM SCM. 160000 160000 160000 aaa bbb module",
+        "1 .M N... 100644 100644 100644 aaa bbb regular.zig",
+    });
+    defer a.free(bytes);
+    var state = try parseStatus(a, bytes);
+    defer state.deinit(a);
+    try std.testing.expect(state.index_changes[0].submodule);
+    try std.testing.expect(state.working_tree_changes[0].submodule);
+    try std.testing.expect(!state.working_tree_changes[1].submodule);
 }
 
 test "parseStatus: malformed and truncated records are skipped" {
