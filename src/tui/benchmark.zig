@@ -632,6 +632,18 @@ fn benchNativeDiffOpen(wb: *terminal_workbench.TerminalWorkbench, io: Io, path: 
     return tab;
 }
 
+/// Cumulative process resident-set high-water mark. Linux reports KiB,
+/// macOS reports bytes; other targets keep zero (unavailable).
+fn benchPeakRssBytes() usize {
+    const system = @import("builtin").os.tag;
+    if (system == .macos or system == .linux) {
+        const usage = std.posix.getrusage(std.posix.rusage.SELF);
+        const bytes: usize = @intCast(@max(usage.maxrss, 0));
+        return if (system == .linux) bytes * 1024 else bytes;
+    }
+    return 0;
+}
+
 fn benchPercentile(samples: []i64, p: usize) i64 {
     std.mem.sort(i64, samples, {}, std.sort.asc(i64));
     return samples[(samples.len - 1) * p / 100];
@@ -741,7 +753,7 @@ test "benchmark: native Git diff editor open, scroll, input and refresh" {
 
     var allocation: BenchAllocation = .{};
     const a = allocation.allocator();
-    const window = try BenchWindow.init(a, io, &.{}, 160, 54);
+    const window = try BenchWindow.init(a, io, &.{}, 160, 55);
     defer window.deinit();
     const wb = window.workbench;
     const settings = try std.fs.path.join(names, &.{ root, ".git", "bench-settings.json" });
@@ -780,13 +792,15 @@ test "benchmark: native Git diff editor open, scroll, input and refresh" {
                 const peak = allocation.peak.load(.monotonic) -| baseline;
                 const acq = times.acquisition_us.load(.acquire);
                 std.debug.print(
-                    "[bench] diff-open n={d} case={s} budget={d} moves={} acquisition={d}us compute_and_handoff={d}us submit={d}us mount={d}us first_frame={d}us total={d}us original_bytes={d} modified_bytes={d} model_lines={d}/{d} view_lines={d}/{d} hunks={d} moved={d} quitEarly={} window_peak_delta={d}B\n",
+                    "[bench] diff-open n={d} case={s} budget={d} moves={} acquisition={d}us compute_and_handoff={d}us submit={d}us mount={d}us first_frame={d}us total={d}us original_bytes={d} modified_bytes={d} model_lines={d}/{d} view_lines={d}/{d} hunks={d} moved={d} quitEarly={} decorations={d}/{d} zones={d}/{d} window_peak_delta={d}B process_peak_rss={d}B\n",
                     .{
-                        item.lines,           @tagName(item.pattern),         budget,                                 moves,
-                        acq,                  @max(0, times.worker_us - acq), times.submit_us,                        times.mount_us,
-                        times.first_frame_us, times.total_us,                 times.original_bytes.load(.acquire),    times.modified_bytes.load(.acquire),
-                        original_lines,       modified_lines,                 widget.original_editor.viewLineCount(), widget.modified_editor.viewLineCount(),
-                        state.mappings.len,   state.moved_texts.len,          state.quit_early,                       peak,
+                        item.lines,                          @tagName(item.pattern),                  budget,                                  moves,
+                        acq,                                 @max(0, times.worker_us - acq),          times.submit_us,                         times.mount_us,
+                        times.first_frame_us,                times.total_us,                          times.original_bytes.load(.acquire),     times.modified_bytes.load(.acquire),
+                        original_lines,                      modified_lines,                          widget.original_editor.viewLineCount(),  widget.modified_editor.viewLineCount(),
+                        state.mappings.len,                  state.moved_texts.len,                   state.quit_early,                        widget.decorations.original_ids.len,
+                        widget.decorations.modified_ids.len, widget.zones.original.records.items.len, widget.zones.modified.records.items.len, peak,
+                        benchPeakRssBytes(),
                     },
                 );
                 if (item.pattern == .many and budget == 0 and !moves) {
