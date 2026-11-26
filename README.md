@@ -1345,7 +1345,10 @@ console API for raw mode, sizing and input polling.
   resource URI. The retained disclosure and toolbar support keyboard focus
   and roving action navigation. **Toggle Tab Key Moves Focus** enables
   bidirectional traversal through headers, real diff panes and the optional
-  file list, with the normal status-bar indicator. Unchanged-region, sash,
+  file list, with the normal status-bar indicator. Resource/language
+  `editor.tabFocusMode` combines with the global toggle, and native widget
+  focus scopes hand off to the adjacent pane instead of wrapping internally.
+  Unchanged-region, sash,
   overview-ruler and inline deleted-code selection drags retain window
   pointer capture when the pointer leaves the pane. Both source-backed and explicit
   inputs restore through the normal session serializer. The Developer layout-debug command opens a
@@ -1359,6 +1362,10 @@ console API for raw mode, sizing and input polling.
   extension-host Quick Diff and virtual text providers use the same model
   references; the model-service lifecycle mirrors even unmounted baselines,
   and the source-control diff-information API receives versioned mappings.
+  Virtual document updates compute minimal edits on the worker and cancel
+  superseded or disposed-model requests. Pooled child editors retain their
+  Find, word highlighting, Sticky Scroll, CodeLens, Hover and Suggest
+  contribution instances, detaching model-bound requests and view nodes.
   Git is registered as a read-only, case-sensitive filesystem provider:
   raw buffers, stat, merge-stage and submodule resources, and exact change
   events use the shared file service. Multiple workspace repositories and
