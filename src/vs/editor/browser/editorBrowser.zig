@@ -69,6 +69,37 @@ pub const IEditorKeyTarget = struct {
     }
 };
 
+/// Upstream IGlyphMarginWidget. Terminal widgets expose one cell's icon,
+/// accessible tooltip and mouse handler instead of a browser DOM node.
+pub const IGlyphMarginWidgetPosition = struct {
+    lane: @import("../common/model.zig").GlyphMarginLane,
+    range: Range,
+    zIndex: usize,
+};
+
+pub const IGlyphMarginWidget = struct {
+    context: *anyopaque,
+    get_id: *const fn (*anyopaque) []const u8,
+    get_position: *const fn (*anyopaque) IGlyphMarginWidgetPosition,
+    get_presentation: *const fn (*anyopaque) Presentation,
+    handle_mouse: *const fn (*anyopaque, *ui.MouseEvent) anyerror!bool,
+
+    pub const Presentation = struct { codepoint: u21, color: ui.Color, class_name: []const u8, tooltip: ?[]const u8 = null };
+
+    pub fn getId(self: IGlyphMarginWidget) []const u8 {
+        return self.get_id(self.context);
+    }
+    pub fn getPosition(self: IGlyphMarginWidget) IGlyphMarginWidgetPosition {
+        return self.get_position(self.context);
+    }
+    pub fn getPresentation(self: IGlyphMarginWidget) Presentation {
+        return self.get_presentation(self.context);
+    }
+    pub fn handleMouse(self: IGlyphMarginWidget, event: *ui.MouseEvent) !bool {
+        return self.handle_mouse(self.context, event);
+    }
+};
+
 /// Model-anchored view zone. The terminal uses cell heights rather than
 /// CSS pixels. The delegate builds a document-owned subtree when its zone
 /// enters the viewport (and when the zone is explicitly laid out again).

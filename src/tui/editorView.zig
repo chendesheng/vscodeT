@@ -925,6 +925,8 @@ pub const View = struct {
     /// scrolls the viewport. Returns true when the caret or selection changed.
     pub fn dispatchMouse(self: *View, event: *ui.MouseEvent) !bool {
         try self.ensureRendered();
+        const glyph_line = if (event.y >= self.top_inset_rows and event.x < self.editor.gutterGlyphWidth()) self.editor.viewLineAtViewportRow(event.y - self.top_inset_rows) else null;
+        if (try self.terminal_view_host.dispatchGlyphMarginMouse(glyph_line, event.x, event)) return true;
         const surface = self.renderSurface();
         const hit = if (event.kind == .move) hit: {
             _ = try surface.updateHoverAt(
@@ -5897,6 +5899,83 @@ test "View: glyph margin compacts multiple lanes" {
     // Line 3 only has the center lane, so compaction puts it in the first cell.
     try std.testing.expectEqual(@as(u32, 0x25CF), grid.cluster[grid.index(0, 2)]);
     try std.testing.expect(grid.cluster[grid.index(1, 2)] != 0x25CF);
+}
+
+test "View: glyph margin widgets win equal-z decorations and route mouse in model lanes" {
+    const allocator = std.testing.allocator;
+    const editor = try Editor.createFromText(allocator, std.testing.io, "one long line one long line one long line\ntwo\nthree", "test.txt", 18, 12);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    var right = ModelDecorationOptions.init("right-glyph", .AlwaysGrowsWhenTypingAtEdges);
+    right.glyphMarginClassName = "glyph-warning";
+    right.glyphMargin = .{ .position = .Right, .persistLane = false };
+    right.zIndex = 50;
+    var left = ModelDecorationOptions.init("left-glyph", .AlwaysGrowsWhenTypingAtEdges);
+    left.glyphMarginClassName = "glyph-error";
+    left.glyphMargin = .{ .position = .Left, .persistLane = false };
+    const ids = try editor.model.deltaDecorations(&.{}, &.{ .{ .range = Range.init(2, 1, 2, 1), .options = &right }, .{ .range = Range.init(2, 1, 2, 1), .options = &left } }, 65);
+    defer allocator.free(ids);
+    const Widget = struct {
+        line: usize = 2,
+        hits: usize = 0,
+        fn id(_: *anyopaque) []const u8 {
+            return "widget.test";
+        }
+        fn position(ptr: *anyopaque) editorBrowser.IGlyphMarginWidgetPosition {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            return .{ .range = Range.init(self.line, 1, self.line, 1), .lane = .Right, .zIndex = 50 };
+        }
+        fn presentation(_: *anyopaque) editorBrowser.IGlyphMarginWidget.Presentation {
+            return .{ .codepoint = '→', .color = .{ .r = 200, .g = 200, .b = 200 }, .class_name = "widget-test", .tooltip = "Test action" };
+        }
+        fn mouse(ptr: *anyopaque, event: *ui.MouseEvent) !bool {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            if (event.button != .left) return false;
+            if (event.kind == .up) self.hits += 1;
+            return event.kind == .down or event.kind == .up;
+        }
+        fn interface(self: *@This()) editorBrowser.IGlyphMarginWidget {
+            return .{ .context = self, .get_id = id, .get_position = position, .get_presentation = presentation, .handle_mouse = mouse };
+        }
+    };
+    var widget: Widget = .{};
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    editor.setWordWrapOverride(.on);
+    try view.terminal_view_host.addGlyphMarginWidget(widget.interface());
+    defer view.terminal_view_host.removeGlyphMarginWidget("widget.test");
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+    try std.testing.expectEqual(@as(usize, 2), editor.gutterGlyphWidth());
+    const row = editor.visibleRowOfViewLine(editor.viewPositionOfModelPosition(.{ .lineNumber = 2, .column = 1 }).lineNumber).?;
+    try std.testing.expect(row > 1);
+    try std.testing.expectEqual(@as(u32, '→'), view.surface.grid().cluster[view.surface.grid().index(1, row)]);
+    try std.testing.expectEqual(ui.Pointer.pointer, try view.pointerAt(1, row));
+    var event: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = 1, .y = row };
+    try std.testing.expect(try view.dispatchMouse(&event));
+    event.kind = .up;
+    try std.testing.expect(try view.dispatchMouse(&event));
+    try std.testing.expectEqual(@as(usize, 1), widget.hits);
+    event.kind = .down;
+    try std.testing.expect(try view.dispatchMouse(&event));
+    event.kind = .up;
+    event.x = editor.gutterWidth() + 1;
+    _ = try view.dispatchMouse(&event);
+    event.x = 1;
+    _ = try view.dispatchMouse(&event);
+    try std.testing.expectEqual(@as(usize, 1), widget.hits);
+    widget.line = 3;
+    view.terminal_view_host.layoutGlyphMarginWidget(widget.interface());
+    try view.renderAnsi(&out.writer);
+    try std.testing.expectEqual(@as(u32, 0x25B2), view.surface.grid().cluster[view.surface.grid().index(1, row)]);
+    const next_row = editor.visibleRowOfViewLine(editor.viewPositionOfModelPosition(.{ .lineNumber = 3, .column = 1 }).lineNumber).?;
+    try std.testing.expectEqual(@as(u32, '→'), view.surface.grid().cluster[view.surface.grid().index(0, next_row)]);
+    view.terminal_view_host.removeGlyphMarginWidget("widget.test");
+    try view.renderAnsi(&out.writer);
+    try std.testing.expect(view.surface.grid().cluster[view.surface.grid().index(0, next_row)] != '→');
 }
 
 test "View: collapsed end-of-line markers paint an underline cell" {

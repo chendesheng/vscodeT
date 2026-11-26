@@ -71,7 +71,7 @@ const FoldingDecorationProvider = folding_decorations_mod.FoldingDecorationProvi
 const LinesDecorationsOverlay = lines_decorations_mod.LinesDecorationsOverlay;
 const DecorationsOverlay = decorations_overlay_mod.DecorationsOverlay;
 const BlockDecorations = block_decorations_mod.BlockDecorations;
-const GlyphMarginOverlay = glyph_margin_mod.GlyphMarginOverlay;
+const GlyphMarginWidgets = glyph_margin_mod.GlyphMarginWidgets;
 const GlyphMarginLanesModel = @import("../../../common/viewModel/glyphLanesModel.zig").GlyphMarginLanesModel;
 const CursorState = @import("../../../common/cursorCommon.zig").CursorState;
 const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
@@ -184,7 +184,7 @@ pub const TerminalViewHost = struct {
     line_decorations: LinesDecorationsOverlay,
     decorations_overlay: DecorationsOverlay,
     block_decorations: BlockDecorations,
-    glyph_margin: GlyphMarginOverlay,
+    glyph_margin: GlyphMarginWidgets,
     margin_decorations: margin_decorations_mod.MarginViewLineDecorationsOverlay,
     glyph_lanes: GlyphMarginLanesModel,
     glyph_margin_dirty: bool = true,
@@ -298,7 +298,7 @@ pub const TerminalViewHost = struct {
         try self.view.addContentOverlay(&self.selections_overlay.base);
         try self.view.addContentOverlay(&self.current_line.base);
         try self.view.addContentOverlay(&self.current_line_margin.base);
-        try self.view.addContentOverlay(&self.glyph_margin.base);
+        try self.view.addViewPart(&self.glyph_margin.base);
         try self.view.addContentOverlay(&self.margin_decorations.base);
         try self.view.addViewPart(&self.block_decorations.base);
 
@@ -521,8 +521,33 @@ pub const TerminalViewHost = struct {
     }
 
     /// The ported glyph-margin overlay.
-    pub fn glyphMargin(self: *TerminalViewHost) *GlyphMarginOverlay {
+    pub fn glyphMargin(self: *TerminalViewHost) *GlyphMarginWidgets {
         return &self.glyph_margin;
+    }
+
+    pub fn addGlyphMarginWidget(self: *TerminalViewHost, widget: @import("../../editorBrowser.zig").IGlyphMarginWidget) !void {
+        try self.glyph_margin.addWidget(widget);
+        self.glyphWidgetsChanged();
+    }
+
+    pub fn layoutGlyphMarginWidget(self: *TerminalViewHost, widget: @import("../../editorBrowser.zig").IGlyphMarginWidget) void {
+        self.glyph_margin.layoutWidget(widget);
+        self.glyphWidgetsChanged();
+    }
+
+    pub fn removeGlyphMarginWidget(self: *TerminalViewHost, id: []const u8) void {
+        if (self.glyph_margin.removeWidget(id)) self.glyphWidgetsChanged();
+    }
+
+    fn glyphWidgetsChanged(self: *TerminalViewHost) void {
+        self.view.forceRender();
+        if (self.glyph_margin_dirty) return;
+        self.glyph_margin_dirty = true;
+        self.editor.emitViewEvent(.{ .ViewDecorationsChanged = .{ .affectsGlyphMargin = true, .affectsLineNumber = false, .affectsMinimap = false, .affectsOverviewRuler = false } });
+    }
+
+    pub fn dispatchGlyphMarginMouse(self: *TerminalViewHost, view_line: ?usize, lane: usize, event: *ui.MouseEvent) !bool {
+        return self.glyph_margin.dispatchMouse(view_line, lane, event);
     }
 
     /// The glyph-margin hover message for a visible line/lane, if any.
@@ -563,17 +588,15 @@ pub const TerminalViewHost = struct {
             const line_count = self.editor.model.getLineCount();
             self.glyph_lanes.reset(line_count) catch return;
 
-            const converter = self.editor.converter.interface();
-            var has_glyph = false;
+            var has_glyph = self.glyph_margin.getWidgets().len != 0;
             for (all) |decoration| {
-                if (decoration.options.glyphMarginClassName != null) has_glyph = true;
-                const glyph_options = decoration.options.glyphMargin orelse continue;
-                const view_range = converter.convertModelRangeToViewRange(
-                    converter.context,
-                    decoration.range,
-                    .None,
-                );
-                self.glyph_lanes.push(glyph_options.position, view_range, glyph_options.persistLane orelse false);
+                if (decoration.options.glyphMarginClassName == null) continue;
+                has_glyph = true;
+                const glyph_options = decoration.options.glyphMargin;
+                self.glyph_lanes.push(if (glyph_options) |options| options.position else .Center, self.editor.model.validateRange(decoration.range), if (glyph_options) |options| options.persistLane orelse false else false);
+            }
+            for (self.glyph_margin.getWidgets()) |widget| {
+                self.glyph_lanes.push(widget.preference.lane, self.editor.model.validateRange(widget.preference.range), false);
             }
             const enabled = self.options.get(.glyphMargin);
             const lanes = @max(self.glyph_lanes.requiredLanes(), 1);

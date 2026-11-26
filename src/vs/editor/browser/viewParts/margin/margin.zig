@@ -33,7 +33,7 @@ const folding_css = @import("../../../contrib/folding/browser/folding_css.zig");
 const glyph_margin = @import("../glyphMargin/glyphMargin.zig");
 const current_line_mod = @import("../currentLineHighlight/currentLineHighlight.zig");
 const margin_decorations_mod = @import("../marginDecorations/marginDecorations.zig");
-const GlyphMarginOverlay = glyph_margin.GlyphMarginOverlay;
+const GlyphMarginWidgets = glyph_margin.GlyphMarginWidgets;
 const Glyph = glyph_margin.Glyph;
 
 /// Terminal colors for the gutter. The TUI resolves the upstream color ids and
@@ -206,7 +206,7 @@ pub const TerminalMargin = struct {
         editor: *Editor,
         line_numbers: *const LineNumbersOverlay,
         line_decorations: *const LinesDecorationsOverlay,
-        glyph_margin_overlay: ?*const GlyphMarginOverlay,
+        glyph_margin_overlay: ?*const GlyphMarginWidgets,
         line_highlight: ?*const current_line_mod.AbstractLineHighlightOverlay,
         margin_decorations: *const margin_decorations_mod.MarginViewLineDecorationsOverlay,
         folding: *const FoldingDecorationProvider,
@@ -326,7 +326,7 @@ pub const TerminalMargin = struct {
         editor: *Editor,
         line_numbers: *const LineNumbersOverlay,
         line_decorations: *const LinesDecorationsOverlay,
-        glyph_margin_overlay: ?*const GlyphMarginOverlay,
+        glyph_margin_overlay: ?*const GlyphMarginWidgets,
         line_highlight: ?*const current_line_mod.AbstractLineHighlightOverlay,
         margin_decorations: *const margin_decorations_mod.MarginViewLineDecorationsOverlay,
         folding: *const FoldingDecorationProvider,
@@ -643,7 +643,7 @@ fn applyPaint(self: *TerminalMargin, row: *TerminalMargin.Row, paint: TerminalMa
         const next = paint.glyphs[lane];
         const glyph_changed = blk: {
             if (current == null or next == null) break :blk (current == null) != (next == null);
-            break :blk current.?.codepoint != next.?.codepoint or !current.?.color.eql(next.?.color);
+            break :blk current.?.codepoint != next.?.codepoint or !current.?.color.eql(next.?.color) or current.?.interactive != next.?.interactive;
         };
         if (!glyph_changed) continue;
         row.glyphs[lane] = next;
@@ -651,6 +651,7 @@ fn applyPaint(self: *TerminalMargin, row: *TerminalMargin.Row, paint: TerminalMa
             const len = std.unicode.utf8Encode(glyph.codepoint, &row.glyph_bufs[lane]) catch 0;
             row.glyph_texts[lane].setTextBorrowed(row.glyph_bufs[lane][0..len]);
             row.glyph_texts[lane].setStyle(.{ .color = glyph.color });
+            row.glyph_cells[lane].asElement().style.pointer = if (glyph.interactive) .pointer else .default;
             setDisplay(row.glyph_cells[lane], true);
         } else {
             setDisplay(row.glyph_cells[lane], false);

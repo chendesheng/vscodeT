@@ -1,22 +1,19 @@
-// Port of the decoration-rendering helpers of
-// `src/vs/editor/browser/viewParts/glyphMargin/glyphMargin.ts`
-// (`DecorationToRender`, `LineDecorationToRender`,
-// `VisibleLineDecorationsToRender`, `DedupOverlay._render`).
-//
-// Terminal adaptation: the glyph margin widget host itself (DOM widgets) is not
-// ported; the `linesDecorations`/`marginDecorations` overlays share the dedup
-// algorithm and receive the per-line decoration lists as data.
+// Port of `src/vs/editor/browser/viewParts/glyphMargin/glyphMargin.ts`.
+// DedupOverlay shares the decoration rendering helpers. GlyphMarginWidgets
+// is a ViewPart: each lane chooses the highest z-index, widgets win ties,
+// and the selected widget supplies one terminal cell instead of a DOM node.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
-const dynamic_overlay = @import("../../view/dynamicViewOverlay.zig");
+const view_part = @import("../../view/viewPart.zig");
+const browser = @import("../../editorBrowser.zig");
 const rendering_context = @import("../../view/renderingContext.zig");
 const view_context = @import("../../../common/viewModel/viewContext.zig");
 const view_events = @import("../../../common/viewEvents.zig");
 const view_event_handler = @import("../../../common/viewEventHandler.zig");
 const glyph_lanes_mod = @import("../../../common/viewModel/glyphLanesModel.zig");
 
-const DynamicViewOverlay = dynamic_overlay.DynamicViewOverlay;
+const ViewPart = view_part.ViewPart;
 const RenderingContext = rendering_context.RenderingContext;
 const ViewContext = view_context.ViewContext;
 const EventHandlerCallbacks = view_event_handler.EventHandlerCallbacks;
@@ -142,6 +139,7 @@ pub const Glyph = struct {
     color: ui.Color,
     class_name: []const u8,
     tooltip: ?[]const u8 = null,
+    interactive: bool = false,
 };
 
 /// One line's compacted lane glyphs. `lanes[i]` is the glyph for lane index
@@ -156,16 +154,21 @@ pub const LineGlyphs = struct {
 /// classes. The terminal reserves the compacted lane count (1-3 cells) and maps
 /// the known `glyphMarginClassName` families to cell glyphs; classes with no
 /// terminal rule stay invisible, like an upstream class with no CSS rule.
-pub const GlyphMarginOverlay = struct {
-    base: dynamic_overlay.DynamicViewOverlay,
+pub const GlyphMarginWidgets = struct {
+    base: ViewPart,
     allocator: Allocator,
     context: *ViewContext,
     lanes: *const GlyphMarginLanesModel,
     render_result: ?[]LineGlyphs,
     render_start_line_number: usize,
+    widgets: std.StringArrayHashMapUnmanaged(WidgetData) = .empty,
+    next_order: usize = 0,
+    pressed_widget: ?*anyopaque = null,
+
+    pub const WidgetData = struct { widget: browser.IGlyphMarginWidget, preference: browser.IGlyphMarginWidgetPosition, order: usize };
 
     pub fn init(
-        self: *GlyphMarginOverlay,
+        self: *GlyphMarginWidgets,
         allocator: Allocator,
         context: *ViewContext,
         lanes: *const GlyphMarginLanesModel,
@@ -181,9 +184,63 @@ pub const GlyphMarginOverlay = struct {
         self.base.initWithHandlerContext(context, self, callbacks(), prepareRenderCallback, renderCallback);
     }
 
-    pub fn deinit(self: *GlyphMarginOverlay) void {
+    pub fn deinit(self: *GlyphMarginWidgets) void {
         self.base.deinit();
         self.clearRenderResult();
+        self.widgets.deinit(self.allocator);
+    }
+
+    pub fn getWidgets(self: *const GlyphMarginWidgets) []const WidgetData {
+        return self.widgets.values();
+    }
+
+    pub fn addWidget(self: *GlyphMarginWidgets, widget: browser.IGlyphMarginWidget) !void {
+        const id = widget.getId();
+        const entry = try self.widgets.getOrPut(self.allocator, id);
+        const order = if (entry.found_existing) entry.value_ptr.order else blk: {
+            self.next_order += 1;
+            break :blk self.next_order;
+        };
+        if (entry.found_existing and self.pressed_widget == entry.value_ptr.widget.context) self.pressed_widget = null;
+        entry.key_ptr.* = id;
+        entry.value_ptr.* = .{ .widget = widget, .preference = widget.getPosition(), .order = order };
+        self.clearRenderResult();
+        self.base.handler.setShouldRender();
+    }
+
+    pub fn layoutWidget(self: *GlyphMarginWidgets, widget: browser.IGlyphMarginWidget) void {
+        const data = self.widgets.getPtr(widget.getId()) orelse return;
+        data.preference = widget.getPosition();
+        self.clearRenderResult();
+        self.base.handler.setShouldRender();
+    }
+
+    pub fn removeWidget(self: *GlyphMarginWidgets, id: []const u8) bool {
+        const data = self.widgets.get(id) orelse return false;
+        if (self.pressed_widget == data.widget.context) self.pressed_widget = null;
+        _ = self.widgets.swapRemove(id);
+        self.clearRenderResult();
+        self.base.handler.setShouldRender();
+        return true;
+    }
+
+    pub fn widgetAt(self: *const GlyphMarginWidgets, view_line: usize, lane: usize) ?browser.IGlyphMarginWidget {
+        if (lane >= 3) return null;
+        const slot = self.renderedLine(view_line).lanes[lane] orelse return null;
+        return slot.widget;
+    }
+
+    pub fn dispatchMouse(self: *GlyphMarginWidgets, view_line: ?usize, lane: usize, event: *ui.MouseEvent) !bool {
+        const widget = if (view_line) |line| self.widgetAt(line, lane) else null;
+        if (event.kind == .down) self.pressed_widget = if (widget) |value| value.context else null;
+        if (event.kind == .up) {
+            const pressed = self.pressed_widget;
+            self.pressed_widget = null;
+            const value = widget orelse return false;
+            if (pressed != value.context) return false;
+        }
+        if (widget) |value| return value.handleMouse(event);
+        return false;
     }
 
     // --- begin event handlers
@@ -235,16 +292,14 @@ pub const GlyphMarginOverlay = struct {
 
     // --- end event handlers
 
-    fn prepareRenderCallback(overlay: *DynamicViewOverlay, context: *const RenderingContext) void {
-        const self: *GlyphMarginOverlay = @fieldParentPtr("base", overlay);
+    fn prepareRenderCallback(part: *ViewPart, context: *RenderingContext) void {
+        const self: *GlyphMarginWidgets = @fieldParentPtr("base", part);
         self.prepareRender(context);
     }
 
-    fn renderCallback(_: *DynamicViewOverlay, _: usize, _: usize) []const u8 {
-        return "";
-    }
+    fn renderCallback(_: *ViewPart, _: *rendering_context.RestrictedRenderingContext) void {}
 
-    pub fn prepareRender(self: *GlyphMarginOverlay, context: *const RenderingContext) void {
+    pub fn prepareRender(self: *GlyphMarginWidgets, context: *const RenderingContext) void {
         self.clearRenderResult();
         const visible_start = context.restricted.visibleRange.startLineNumber;
         const visible_end = context.restricted.visibleRange.endLineNumber;
@@ -300,9 +355,34 @@ pub const GlyphMarginOverlay = struct {
                 };
             }
         }
+        // Upstream places a widget at the first visible line of its range.
+        // Its z-index wins ties with decorations; widget insertion order
+        // resolves otherwise identical requests.
+        for (self.widgets.values()) |data| {
+            const range = converter.convertModelRangeToViewRange(converter.context, data.preference.range, .None);
+            if (range.endLineNumber < visible_start or range.startLineNumber > visible_end) continue;
+            const line = @max(range.startLineNumber, visible_start);
+            const position = converter.convertViewPositionToModelPosition(converter.context, Position.init(line, 1));
+            const active_lanes = self.lanes.getLanesAtLine(self.allocator, position.lineNumber) catch continue;
+            defer self.allocator.free(active_lanes);
+            const lane = indexOfLane(active_lanes, data.preference.lane) orelse continue;
+            if (lane >= 3) continue;
+            const slot = &result[line - visible_start].lanes[lane];
+            if (slot.*) |existing| {
+                if (data.preference.zIndex < existing.z_index) continue;
+                if (data.preference.zIndex == existing.z_index and existing.widget != null and existing.widget_order <= data.order) continue;
+            }
+            const presentation = data.widget.getPresentation();
+            slot.* = .{
+                .glyph = .{ .codepoint = presentation.codepoint, .color = presentation.color, .class_name = presentation.class_name, .tooltip = presentation.tooltip, .interactive = true },
+                .z_index = data.preference.zIndex,
+                .widget = data.widget,
+                .widget_order = data.order,
+            };
+        }
     }
 
-    pub fn renderedLine(self: *const GlyphMarginOverlay, view_line: usize) LineGlyphs {
+    pub fn renderedLine(self: *const GlyphMarginWidgets, view_line: usize) LineGlyphs {
         const result = self.render_result orelse return .{};
         if (view_line < self.render_start_line_number) return .{};
         const index = view_line - self.render_start_line_number;
@@ -310,7 +390,7 @@ pub const GlyphMarginOverlay = struct {
         return result[index];
     }
 
-    fn clearRenderResult(self: *GlyphMarginOverlay) void {
+    fn clearRenderResult(self: *GlyphMarginWidgets) void {
         const result = self.render_result orelse return;
         self.allocator.free(result);
         self.render_result = null;
@@ -327,6 +407,8 @@ fn indexOfLane(lanes: []const GlyphMarginLane, wanted: GlyphMarginLane) ?usize {
 const GlyphSlot = struct {
     glyph: Glyph,
     z_index: usize,
+    widget: ?browser.IGlyphMarginWidget = null,
+    widget_order: usize = 0,
 };
 
 const GlyphColor = struct {

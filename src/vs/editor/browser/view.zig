@@ -187,7 +187,7 @@ pub const View = struct {
         scrollbar_width: usize,
         line_numbers: *const LineNumbersOverlay,
         line_decorations: *const LinesDecorationsOverlay,
-        glyph_margin: *const glyph_margin_mod.GlyphMarginOverlay,
+        glyph_margin: *const glyph_margin_mod.GlyphMarginWidgets,
         line_highlight: ?*const current_line_mod.AbstractLineHighlightOverlay,
         margin_decorations: *const margin_decorations_mod.MarginViewLineDecorationsOverlay,
         folding: *const FoldingDecorationProvider,
