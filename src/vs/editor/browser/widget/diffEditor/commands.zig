@@ -51,6 +51,7 @@ pub const diff_actions = [_]actions.Action2{
     },
     editorAction("diffEditor.collapseAllUnchangedRegions", "Collapse All Unchanged Regions", "Diff Editor", "fold", null, IDiffEditor.collapseAllUnchangedRegions),
     editorAction("diffEditor.showAllUnchangedRegions", "Show All Unchanged Regions", "Diff Editor", "unfold", null, IDiffEditor.showAllUnchangedRegions),
+    editorAction("diffEditor.revert", "Revert", "Diff Editor", null, null, IDiffEditor.revertFocusedRangeMappings),
     editorAction("editor.action.accessibleDiffViewer.next", "Go to Next Difference", "Accessible Diff Viewer", null, @backingInt(key_codes.KeyCode.F7), IDiffEditor.accessibleDiffViewerNext),
     editorAction("editor.action.accessibleDiffViewer.prev", "Go to Previous Difference", "Accessible Diff Viewer", null, key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.F7), IDiffEditor.accessibleDiffViewerPrev),
 };

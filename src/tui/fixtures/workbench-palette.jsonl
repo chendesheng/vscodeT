@@ -163,6 +163,7 @@
 ["diffEditor.exitCompareMove","Exit Compare Move","Diff Editor","",false,false,true,false,false]
 ["diffEditor.collapseAllUnchangedRegions","Collapse All Unchanged Regions","Diff Editor","",true,false,true,false,false]
 ["diffEditor.showAllUnchangedRegions","Show All Unchanged Regions","Diff Editor","",true,false,true,false,false]
+["diffEditor.revert","Revert","Diff Editor","",true,false,true,false,false]
 ["editor.action.accessibleDiffViewer.next","Go to Next Difference","Accessible Diff Viewer","",true,false,true,false,false]
 ["editor.action.accessibleDiffViewer.prev","Go to Previous Difference","Accessible Diff Viewer","",true,false,true,false,false]
 ["workbench.action.toggleSidebarVisibility","Toggle Primary Side Bar Visibility","View","",true,false,false,true,true]

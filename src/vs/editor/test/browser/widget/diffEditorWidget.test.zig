@@ -243,7 +243,7 @@ pub fn Tests(comptime View: type) type {
                 "HEAD",
                 80,
                 10,
-                .{},
+                .{ .read_only = true },
             );
             defer widget.destroy();
 
@@ -548,11 +548,50 @@ pub fn Tests(comptime View: type) type {
                 "HEAD",
                 80,
                 10,
-                .{},
+                .{ .read_only = true },
             );
             defer widget.destroy();
             try testing.expectError(error.ReadOnly, widget.modified_editor.insertText("x"));
             try testing.expectError(error.ReadOnly, widget.original_editor.undo());
+        }
+
+        test "diffEditorWidget: editable options and revert focused hunk are undoable" {
+            const widget = try DiffEditorWidget.create(View.init, testing.allocator, testing.io, "a.txt", "b.txt", "old\na\nb\nc\nd\ne\nf\ng\nlast-old\nend", "new\na\nb\nc\nd\ne\nf\ng\nlast-new\nend", "Original", "Modified", 80, 8, .{});
+            defer widget.destroy();
+            try testing.expect(widget.original_editor.isReadOnly());
+            try testing.expect(!widget.modified_editor.isReadOnly());
+            try testing.expectEqual(@as(usize, 2), widget.changeCount());
+            try widget.modified_editor.setCursorPosition(.{ .lineNumber = 1, .column = 1 });
+            try widget.interface().revertFocusedRangeMappings();
+            try testing.expectEqualStrings("old", try widget.modifiedModel().borrowLineContent(1));
+            try testing.expectEqualStrings("last-new", try widget.modifiedModel().borrowLineContent(9));
+            try testing.expectEqual(@as(usize, 1), widget.changeCount());
+            try widget.modified_editor.undo();
+            try testing.expectEqualStrings("new", try widget.modifiedModel().borrowLineContent(1));
+            try testing.expectEqual(@as(usize, 2), widget.changeCount());
+            widget.setFocus(.original);
+            try widget.interface().revertFocusedRangeMappings();
+            try testing.expectEqual(@as(usize, 2), widget.changeCount());
+            widget.setFocus(.modified);
+            var options = widget.options;
+            options.original_editable = true;
+            options.read_only = true;
+            try testing.expect(try widget.updateOptions(options));
+            try testing.expect(!widget.original_editor.isReadOnly());
+            try testing.expect(widget.modified_editor.isReadOnly());
+            try widget.revert(widget.state().?.mappings[0].line_range_mapping);
+            try testing.expectEqualStrings("new", try widget.modifiedModel().borrowLineContent(1));
+        }
+
+        test "diffEditorWidget: revert inner range does not revert other changes" {
+            const widget = try DiffEditorWidget.create(View.init, testing.allocator, testing.io, "a.txt", "b.txt", "one abc row xyz end", "two abc row uvw end", "Original", "Modified", 80, 8, .{});
+            defer widget.destroy();
+            const mappings = widget.state().?.mappings[0].line_range_mapping.inner_changes.?;
+            try testing.expectEqual(@as(usize, 2), mappings.len);
+            try widget.revertRangeMappings(mappings[0..1]);
+            try testing.expectEqualStrings("one abc row uvw end", try widget.modifiedModel().borrowLineContent(1));
+            try widget.modified_editor.undo();
+            try testing.expectEqualStrings("two abc row uvw end", try widget.modifiedModel().borrowLineContent(1));
         }
 
         test "diffEditorWidget: mouse drag resizes the split ratio" {

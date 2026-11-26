@@ -25,6 +25,7 @@ pub const IDiffEditor = struct {
     context: *anyopaque,
     switch_side: *const fn (*anyopaque) anyerror!void,
     exit_compare_move: *const fn (*anyopaque) anyerror!void,
+    revert_focused: *const fn (*anyopaque) anyerror!void,
     collapse_all: *const fn (*anyopaque) anyerror!void,
     show_all: *const fn (*anyopaque) anyerror!void,
     accessible_next: *const fn (*anyopaque) anyerror!void,
@@ -35,6 +36,9 @@ pub const IDiffEditor = struct {
     }
     pub fn exitCompareMove(self: IDiffEditor) !void {
         try self.exit_compare_move(self.context);
+    }
+    pub fn revertFocusedRangeMappings(self: IDiffEditor) !void {
+        try self.revert_focused(self.context);
     }
     pub fn collapseAllUnchangedRegions(self: IDiffEditor) !void {
         try self.collapse_all(self.context);

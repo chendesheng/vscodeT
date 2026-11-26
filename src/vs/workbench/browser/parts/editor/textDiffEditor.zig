@@ -25,9 +25,17 @@ const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorW
 pub const Options = widget_mod.Options;
 pub const IDocumentDiff = widget_mod.IDocumentDiff;
 
+// Snapshot inputs are immutable regardless of the diff widget defaults.
+fn snapshotOptions(options: Options) Options {
+    var result = options;
+    result.read_only = true;
+    result.original_editable = false;
+    return result;
+}
+
 // Project the diffEditor configuration merged by upstream TextDiffEditor.
 pub fn computeConfiguration(configuration_service: ?@import("../../../../platform/configuration/common/configuration.zig").IConfigurationService) Options {
-    var options = Options{};
+    var options = snapshotOptions(.{});
     if (configuration_service) |configuration| {
         options.show_empty_decorations = configuration.getBool("diffEditor.experimental.showEmptyDecorations", true);
         options.use_true_inline_view = configuration.getBool("diffEditor.experimental.useTrueInlineView", false);
@@ -244,7 +252,7 @@ pub fn DiffView(comptime View: type) type {
                 model.modified_label,
                 width,
                 height,
-                options,
+                snapshotOptions(options),
                 computed,
             );
             errdefer widget.destroy();
@@ -322,7 +330,7 @@ pub fn DiffView(comptime View: type) type {
 
         pub fn replaceWithDiff(self: *Self, original_text: []const u8, modified_text: []const u8, width: usize, height: usize, options: Options, computed: ?IDocumentDiff) !void {
             if (snapshotLinesEqual(self.allocator, self.widget.originalModel(), original_text) and snapshotLinesEqual(self.allocator, self.widget.modifiedModel(), modified_text)) {
-                _ = try self.widget.updateOptionsWithDiff(options, computed);
+                _ = try self.widget.updateOptionsWithDiff(snapshotOptions(options), computed);
                 self.widget.layout(width, height);
                 return;
             }
@@ -338,7 +346,7 @@ pub fn DiffView(comptime View: type) type {
                 self.model.modified_label,
                 width,
                 height,
-                options,
+                snapshotOptions(options),
                 computed,
             );
             const previous = self.widget;
@@ -363,7 +371,7 @@ pub fn DiffView(comptime View: type) type {
         }
 
         pub fn matchesSnapshot(self: *Self, original: []const u8, modified: []const u8, options: Options) bool {
-            return std.meta.eql(self.widget.options, options.normalize()) and
+            return std.meta.eql(self.widget.options, snapshotOptions(options).normalize()) and
                 snapshotLinesEqual(self.allocator, self.widget.originalModel(), original) and
                 snapshotLinesEqual(self.allocator, self.widget.modifiedModel(), modified);
         }
@@ -384,7 +392,7 @@ pub fn DiffView(comptime View: type) type {
         /// Configuration changes update the existing diff model and views.
         /// Presentation-only changes do not re-run the diff provider.
         pub fn updateOptions(self: *Self, options: Options) !bool {
-            return self.widget.updateOptions(options);
+            return self.widget.updateOptions(snapshotOptions(options));
         }
 
         pub fn setThemeColors(self: *Self, palette: ?*const @import("../../themeColors.zig").ThemeColors) void {

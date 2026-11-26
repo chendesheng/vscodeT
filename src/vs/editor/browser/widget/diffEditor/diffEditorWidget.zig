@@ -14,6 +14,7 @@ const ui = @import("ui");
 const sash_css = @import("../../../../base/browser/ui/sash/sash_css.zig");
 
 const Editor = @import("../codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const TextEdit = @import("../codeEditor/codeEditorWidgetTerminal.zig").TextEdit;
 const terminal_input = @import("../codeEditor/codeEditorWidgetTerminalInput.zig");
 const diff_view_model = @import("./diffEditorViewModel.zig");
 const diff_editor_options = @import("./diffEditorOptions.zig");
@@ -87,6 +88,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .context = self,
                 .switch_side = CommandAdapter.call(switchSide),
                 .exit_compare_move = CommandAdapter.call(exitCompareMove),
+                .revert_focused = CommandAdapter.call(revertFocusedRangeMappings),
                 .collapse_all = CommandAdapter.call(collapseAllUnchangedRegions),
                 .show_all = CommandAdapter.call(showAllUnchangedRegions),
                 .accessible_next = CommandAdapter.call(accessibleDiffViewerNext),
@@ -194,8 +196,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
             const modified_view = try factory(allocator, modified_editor);
             errdefer modified_view.deinit();
 
-            original_editor.setReadOnly(true);
-            modified_editor.setReadOnly(true);
+            original_editor.setReadOnly(!normalized_options.original_editable);
+            modified_editor.setReadOnly(normalized_options.read_only);
             original_editor.setStatusRow(false);
             modified_editor.setStatusRow(false);
             original_editor.setLineDecorationsWidth(if (normalized_options.render_indicators) 1 else 0);
@@ -328,6 +330,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
             }
             self.width_based_layout.updateOptions(old, options);
             self.options = options;
+            self.original_editor.setReadOnly(!options.original_editable);
+            self.modified_editor.setReadOnly(options.read_only);
             self.view_model.options = next_base;
             self.view_model.provider = @import("../../../common/diff/documentDiffProvider.zig").LineDiffProvider.init(next_base.diff_algorithm);
             self.original_editor.setLineDecorationsWidth(if (options.render_indicators) 1 else 0);
@@ -611,6 +615,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
             std.mem.swap(*Editor, &self.original_editor, &self.modified_editor);
             std.mem.swap(*View, &self.original_view, &self.modified_view);
+            self.original_editor.setReadOnly(!self.options.original_editable);
+            self.modified_editor.setReadOnly(self.options.read_only);
             std.mem.swap([]u8, &self.original_label, &self.modified_label);
             std.mem.swap([]u8, &self.original_path, &self.modified_path);
             self.view_model.swapModels();
@@ -773,7 +779,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             return .{ .row = cell.row, .col = cell.col + widths.original + widths.gutter + widths.moves };
         }
 
-        /// Routes a key event to the focused read-only pane.
+        /// Routes a key event to the focused inner editor.
         pub fn dispatchKey(self: *Self, event: *ui.KeyEvent) bool {
             if (self.accessible_viewer.visible()) return self.dispatchAccessibleKey(event);
             if (self.focusedView().dispatchKey(event)) return true;
@@ -904,6 +910,60 @@ pub fn DiffEditorWidget(comptime View: type) type {
             const editor = if (target_side == .original) self.original_editor else self.modified_editor;
             self.setFocus(target_side);
             try editor.setSelection(editor.model.validateRange(selection));
+        }
+
+        fn canRevert(self: *Self) bool {
+            return self.view_model.is_diff_up_to_date and !self.modified_editor.isReadOnly();
+        }
+
+        /// DiffEditorWidget.revert: the whole hunk is one undoable edit.
+        pub fn revert(self: *Self, mapping: view_model.DetailedLineRangeMapping) !void {
+            if (!self.canRevert()) return;
+            try self.revertRangeMappings(&.{.{
+                .originalRange = mapping.original.toExclusiveRange(),
+                .modifiedRange = mapping.modified.toExclusiveRange(),
+            }});
+        }
+
+        /// DiffEditorWidget.revertRangeMappings: collect the original text
+        /// before applying edits, as the model event can replace the diff.
+        pub fn revertRangeMappings(self: *Self, mappings: []const view_model.RangeMapping) !void {
+            if (!self.canRevert() or mappings.len == 0) return;
+            var edits: std.ArrayList(TextEdit) = .empty;
+            defer {
+                for (edits.items) |edit| self.originalModel().getAllocator().free(edit.text);
+                edits.deinit(self.allocator);
+            }
+            try edits.ensureTotalCapacity(self.allocator, mappings.len);
+            for (mappings) |mapping| {
+                var text = try self.originalModel().getValueInRange(mapping.originalRange, null);
+                errdefer text.deinit();
+                edits.appendAssumeCapacity(.{
+                    .range = self.modifiedModel().validateRange(mapping.modifiedRange),
+                    .text = try text.toOwnedSlice(),
+                });
+            }
+            self.modified_editor.beginUndoGroup();
+            defer self.modified_editor.endUndoGroup();
+            try self.modified_editor.applyTextEdits(edits.items, &.{});
+        }
+
+        pub fn revertFocusedRangeMappings(self: *Self) !void {
+            if (!self.canRevert() or self.focused != .modified) return;
+            const state_value = self.state() orelse return;
+            const selection = self.modified_editor.modelSelection();
+            const selected_range = LineRange.init(selection.startLineNumber, selection.endLineNumber);
+            var mappings: std.ArrayList(view_model.RangeMapping) = .empty;
+            defer mappings.deinit(self.allocator);
+            for (state_value.mappings) |mapping| {
+                const change = mapping.line_range_mapping;
+                if (change.modified.intersect(selected_range) == null) continue;
+                try mappings.append(self.allocator, .{
+                    .originalRange = change.original.toExclusiveRange(),
+                    .modifiedRange = change.modified.toExclusiveRange(),
+                });
+            }
+            try self.revertRangeMappings(mappings.items);
         }
 
         pub fn collapseAllUnchangedRegions(self: *Self) !void {
