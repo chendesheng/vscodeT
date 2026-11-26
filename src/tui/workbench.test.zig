@@ -11541,7 +11541,7 @@ test "Workbench: git scm integration shares canonical virtual diff models across
             value.* += 1;
         }
     }.disposed);
-    var reference = try wb.text_model_api.createModelReference(model.uri());
+    var reference = try wb.text_model_api.acquireModelReference(model.uri());
     defer reference.dispose();
     try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "old\n", "B\n", "Shared Original", "Modified B");
     const second = wb.activeTab().?.diff.?;
