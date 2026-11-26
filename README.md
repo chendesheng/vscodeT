@@ -1257,8 +1257,12 @@ console API for raw mode, sizing and input polling.
   working-file changes. The modified side determines the diff input's dirty
   state; swapping preserves the underlying resource identities. Hunk or
   selection revert is one undoable edit and is disabled while the diff is
-  stale. Diff tabs are not yet session-serialized. Remaining portable gaps
-  include quick-diff peek and multi-diff editor. Moved
+  stale. File-to-file diff inputs restore from the session, sharing the same
+  documents as restored ordinary file tabs. Both sides’ selections, model
+  scroll anchors and collapsed unchanged regions are stored in the group’s
+  diff resource memento. Virtual Git revision inputs have no upstream
+  serializer and therefore are not included in session restoration. Remaining
+  portable gaps include quick-diff peek and multi-diff editor. Moved
   blocks are surfaced as model decorations, gutter connectors and Compare controls
   in side-by-side mode only; the active comparison aligns both moved ranges.
   Hide-unchanged uses the upstream unchanged-region range model, direct model
@@ -1292,7 +1296,7 @@ console API for raw mode, sizing and input polling.
   rewriting the working file; legacy margin revert buttons are available when
   the gutter menu is disabled. Inline deleted-code controls copy original text,
   reveal original line numbers, support selection, and apply undoable revert.
-  Remaining gaps include persistent view state and code lens.
+  Remaining gaps include code lens.
   See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
   Only one repository per workspace folder is shown.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and

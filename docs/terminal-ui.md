@@ -2078,8 +2078,11 @@ text with strikethrough. Browser
 three-pixel empty-range borders become one marker cell. The accessible review
 viewer uses the same line renderer and a retained unified row window; its
 ARIA labels are represented in the terminal document, not exposed through a
-browser accessibility tree. Disclosure breadcrumbs, hunk/selection
-toolbar menus and session restore remain unported. Git snapshot
+browser accessibility tree. File-to-file diff inputs restore through the
+composite serializer. The two code editor states and collapsed-region model
+state are stored using the ordered pair of model URIs and the group ID;
+ordinary file tabs and diff panes resolve shared documents during restoration.
+Virtual Git revision inputs have no upstream text-resource serializer. Git snapshot
 resolution and the initial diff computation now run in the editor worker;
 the window receives completion events and obsolete replies are detached.
 
