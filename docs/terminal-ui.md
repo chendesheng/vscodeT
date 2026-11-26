@@ -2026,21 +2026,15 @@ Terminal substitutions and their reasons:
   per-visible-line class lists instead of positioned `<div>`s; the terminal maps
   `line-insert`/`line-delete`/`diff-filler` to row backgrounds and
   `char-insert`/`char-delete` to inline cell styles.
-- **Line-number override.** A diff snapshot editor sets `line_number_map`
-  (1-based display row -> real line, `null` for filler rows). The margin renders
-  a blank number for fillers, and the status-bar selection reports the display
-  line, matching upstream's view-model line numbers.
-- **Aligned snapshot rows instead of diff-specific view zones.** The terminal
-  view layout now accepts whitespace transactions and emits zone-change
-  events. View lines, margins, cursor, widgets, scrollbar and mouse targets
-  use the actual vertical offsets; whitespace can occupy rows without model
-  content. A view-zone delegate/node owner and the migration of diff alignment
-  itself are still missing. `diffEditorViewZones.zig` pre-aligns both sides into
-  display line arrays. Changed blocks have height `max(originalLen, modifiedLen)`, the
-  shorter side is padded with blank filler rows (leading fillers for top-of-file
-  insert/delete), and both panes have equal line counts, so they scroll in
-  lockstep. The two snapshot editors are read-only; support for editable diff
-  models is a remaining portable gap.
+- **Model-anchored diff view zones.** The view layout accepts whitespace
+  transactions and emits zone-change events. Both panes keep their real
+  resource models; filler rows are represented by view zones rather than
+  synthetic model lines. Line numbers, scroll, selection, wrapping and
+  hit testing use the shared view/model mapping and layout. A working-tree
+  diff mounts an independent view of the existing editable file document;
+  Git revision resources resolve to read-only models owned by the
+  TextResourceEditorInput. The working copy is registered once per document,
+  regardless of the number of mounted file or diff views.
 - **Combined overview ruler and sash.** The upstream ruler's original and
   modified lanes occupy one terminal cell each; markers use the existing
   overview renderer's half-cell projection and the viewport slider uses
@@ -2058,19 +2052,21 @@ Both panes retain their real text models. The retained ViewZones part aligns
 changed ranges, wrapped lines and other zone heights. Inline mode inserts
 deleted original code above the modified model, using the shared token and
 line-decoration rendering pipeline and building only visible zone rows. The
-gutter looks up real vertical-layout hunk bounds by binary search. Unchanged
+gutter finds the first visible hunk by binary search and walks the intersecting
+item bounds once per viewport. Unchanged
 regions own direct hidden areas and model-anchored disclosure controls; the
 compact disclosure keeps its keyboard target across expand/collapse. The
 terminal collapses browser disclosure geometry to a single cell row.
-Moved blocks use side-by-side model decorations. Both pane controllers attach
-and dispose with their editor views. True-inline word changes inject deleted
+Moved blocks use side-by-side model decorations, connector tracks and
+Compare controls. Both pane controllers attach and dispose with their editor
+views. True-inline word changes inject deleted
 text into view projections, preserving model coordinates and painting removed
 text with strikethrough. Browser
 three-pixel empty-range borders become one marker cell. The accessible review
 viewer uses the same line renderer and a retained unified row window; its
 ARIA labels are represented in the terminal document, not exposed through a
-browser accessibility tree. Moved connectors, disclosure breadcrumbs and
-session restore remain unported. Git snapshot
+browser accessibility tree. Disclosure breadcrumbs, hunk/selection
+toolbar menus and session restore remain unported. Git snapshot
 resolution and the initial diff computation now run in the editor worker;
 the window receives completion events and obsolete replies are detached.
 

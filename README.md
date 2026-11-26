@@ -1237,9 +1237,9 @@ console API for raw mode, sizing and input polling.
   `scm.diffDecorationsGutterPattern`. `Alt-Down`/`Alt-Up` navigate changes
   (TUI-specific because a normal terminal cannot deliver F5/F7).
 - The diff editor view (`src/vs/editor/browser/widget/diffEditor/` plus
-  `src/vs/workbench/browser/parts/editor/textDiffEditor.zig`) opens a read-only
+  `src/vs/workbench/browser/parts/editor/textDiffEditor.zig`) opens a
   side-by-side comparison from a changed SCM resource. Both sides retain
-  their real snapshot text models: `diffEditorViewZones.zig` inserts
+  their real resource text models: `diffEditorViewZones.zig` inserts
   model-anchored whitespace to align changed blocks, wrapped lines and other
   view zones; `diffEditorDecorations.zig` paints `line-insert`/`line-delete`
   and `char-insert`/`char-delete`; the center gutter shows
@@ -1250,11 +1250,15 @@ console API for raw mode, sizing and input polling.
   `workbench.action.compareEditor.swapSides` swaps panes and
   `refreshDiff` re-snapshots. Binary, invalid-UTF-8 and oversized files are
   skipped with an empty side; a missing git binary, `git.enabled=false` or a
-  non-repository leaves the editor untouched. Diff tabs are read-only: save,
-  revert, reload and external-change handling are inert, they are not working
-  copies, history entries or session-serialized, and closing them returns to
-  the untouched file tab. Remaining portable gaps include quick-diff peek,
-  multi-diff editor and editing either side. Moved
+  non-repository leaves the editor untouched. Git revision and index resources
+  use distinct read-only virtual URIs. Available working-tree files use the
+  same editable document, undo history, dirty state and file save/revert
+  behavior as an ordinary file editor. Refresh never overwrites unsaved
+  working-file changes. The modified side determines the diff input's dirty
+  state; swapping preserves the underlying resource identities. Hunk or
+  selection revert is one undoable edit and is disabled while the diff is
+  stale. Diff tabs are not yet session-serialized. Remaining portable gaps
+  include quick-diff peek and multi-diff editor. Moved
   blocks are surfaced as model decorations, gutter connectors and Compare controls
   in side-by-side mode only; the active comparison aligns both moved ranges.
   Hide-unchanged uses the upstream unchanged-region range model, direct model
@@ -1266,8 +1270,8 @@ console API for raw mode, sizing and input polling.
   breakpoint maps to 53 terminal cells using the workbench width scale;
   narrower views switch to inline mode without hiding deleted text.
   Diff line indicators and margin classes follow `renderIndicators`; line
-  and character backgrounds use the active theme. Refresh preserves the split,
-  cursor and scroll state. Git snapshot resolution and diff computation run on
+  and character backgrounds use the active theme. Refresh retains both
+  resource inputs, models, mounted views, split, cursors and scroll state. Git snapshot resolution and diff computation run on
   the editor worker; identical content/options reuse a bounded result cache.
   Model-content events debounce a new diff by 200 ms and computation-option
   changes schedule immediate work. Presentation-only changes retain the mounted
@@ -1281,8 +1285,8 @@ console API for raw mode, sizing and input polling.
   strikethrough; empty character ranges render a one-cell marker. The accessible
   diff viewer uses grouped unified review rows (F7/Shift-F7), arrow-key line
   navigation, and Enter to reveal the selected source. Remaining gaps include
-  title/hunk action rendering, disclosure breadcrumbs
-  and code lens.
+  title/hunk action rendering, deleted-code margin actions, disclosure
+  breadcrumbs and code lens.
   See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
   Only one repository per workspace folder is shown.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and
