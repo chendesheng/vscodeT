@@ -129,6 +129,9 @@ pub fn MultiDiffEditorWidget(comptime View: type) type {
         pub fn getViewModel(self: *Self) ?*MultiDiffEditorViewModel {
             return self.impl.model;
         }
+        pub fn collectVisibleTextResources(self: *const Self, allocator: std.mem.Allocator, result: *std.ArrayList(std.Uri)) !void {
+            try self.impl.collectVisibleTextResources(allocator, result);
+        }
         pub fn activeControl(self: *Self) ?*Impl.Widget {
             return self.impl.activeControl();
         }

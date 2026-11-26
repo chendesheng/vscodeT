@@ -457,6 +457,19 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
             for (self.manager.items) |managed| if (managed.item == item) return managed.binding();
             return null;
         }
+
+        /// The native equivalent of the visible inner editor controls, not
+        /// the offscreen keep-alive or merely resolved document models.
+        pub fn collectVisibleTextResources(self: *const Self, allocator: Allocator, result: *std.ArrayList(std.Uri)) !void {
+            for (self.manager.items, 0..) |managed, index| {
+                if (index >= self.scroll_view.layout.items.len) break;
+                if (self.scroll_view.layout.items[index].visibility != .visible or managed.item.collapsed) continue;
+                const binding = managed.binding() orelse continue;
+                const editor = binding.editor orelse continue;
+                try result.append(allocator, editor.original_editor.model.uri());
+                try result.append(allocator, editor.modified_editor.model.uri());
+            }
+        }
         /// The file list selection follows the active visible item, otherwise
         /// the topmost visible diff. The compressed layout owns visibility.
         pub fn currentVisibleItem(self: *const Self) ?*model.DocumentDiffItemViewModel {

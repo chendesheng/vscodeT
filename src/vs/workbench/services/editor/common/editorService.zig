@@ -47,6 +47,7 @@ pub const IEditorService = struct {
     open_multi_diff_resources_fn: ?*const fn (*anyopaque, editor.IResourceMultiDiffEditorInput) anyerror!void = null,
     request_open_editor: *const fn (*anyopaque, []const u8, OpenOptions, EditorTarget) anyerror!void,
     get_editors: *const fn (*anyopaque, std.mem.Allocator) anyerror![]IEditorIdentifier,
+    get_visible_text_resources: ?*const fn (*anyopaque, std.mem.Allocator) anyerror![]std.Uri = null,
     replace_editors: *const fn (*anyopaque, []const EditorReplacement, editor.GroupIdentifier) anyerror!void,
     on_did_active_editor_change: *Emitter(?*EditorInput),
     on_did_visible_editors_change: *Emitter(void),
@@ -83,6 +84,13 @@ pub const IEditorService = struct {
     /// Sequential editors in grid appearance order. Caller owns the slice.
     pub fn getEditors(self: IEditorService, allocator: std.mem.Allocator) ![]IEditorIdentifier {
         return self.get_editors(self.context, allocator);
+    }
+
+    /// URI projection of the mounted visible text editor controls. The
+    /// caller owns the slice; URI components remain borrowed from the models.
+    pub fn getVisibleTextResources(self: IEditorService, allocator: std.mem.Allocator) ![]std.Uri {
+        if (self.get_visible_text_resources) |get| return get(self.context, allocator);
+        return allocator.alloc(std.Uri, 0);
     }
 
     pub fn replaceEditors(self: IEditorService, replacements: []const EditorReplacement, group_id: editor.GroupIdentifier) !void {

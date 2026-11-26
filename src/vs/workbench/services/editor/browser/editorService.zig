@@ -384,6 +384,12 @@ pub const EditorService = struct {
                     return service.getEditors(allocator);
                 }
             }.get,
+            .get_visible_text_resources = struct {
+                fn get(context: *anyopaque, allocator: std.mem.Allocator) ![]std.Uri {
+                    const service: *EditorService = @ptrCast(@alignCast(context));
+                    return service.getVisibleTextResources(allocator);
+                }
+            }.get,
             .replace_editors = struct {
                 fn replace(context: *anyopaque, replacements: []const EditorReplacement, group_id: GroupIdentifier) !void {
                     const service: *EditorService = @ptrCast(@alignCast(context));
@@ -431,6 +437,24 @@ pub const EditorService = struct {
 
     pub fn visibleEditorPanes(self: EditorService) VisibleEditorPanes {
         return .{ .groups = self.part.group_views.items };
+    }
+
+    pub fn getVisibleTextResources(self: EditorService, allocator: std.mem.Allocator) ![]std.Uri {
+        var result: std.ArrayList(std.Uri) = .empty;
+        errdefer result.deinit(allocator);
+        var panes = self.visibleEditorPanes();
+        while (panes.next()) |tab| {
+            if (tab.image_preview != null or tab.markdown_preview != null or tab.terminalInstance() != null) continue;
+            if (tab.multi_diff) |multi| {
+                try multi.widget.collectVisibleTextResources(allocator, &result);
+            } else if (tab.diff) |diff| {
+                try result.append(allocator, diff.widget.original_editor.model.uri());
+                try result.append(allocator, diff.widget.modified_editor.model.uri());
+            } else {
+                try result.append(allocator, tab.editor.model.uri());
+            }
+        }
+        return result.toOwnedSlice(allocator);
     }
 
     pub const VisibleEditorPanes = struct {
