@@ -23,6 +23,9 @@ const WindowQueue = dispatch.Queue;
 const time = @import("../../../vs/base/common/timeCompat.zig");
 const INotificationService = @import("../../../vs/platform/notification/common/notification.zig").INotificationService;
 const Emitter = @import("../../../vs/base/common/event.zig").Emitter;
+const worker_mod = @import("../../../vs/editor/browser/services/editorWorkerService.zig");
+const workspace_context = @import("../../../vs/workbench/services/workspaces/common/workspaceContextService.zig");
+const editor_service = @import("../../../vs/workbench/services/editor/common/editorService.zig");
 
 const SnapshotSource = @import("../../../vs/editor/browser/widget/diffEditor/diffProviderFactoryService.zig").SnapshotSource;
 
@@ -275,6 +278,9 @@ pub const Model = struct {
     repository_scans: std.ArrayList(*RepositoryScan) = .empty,
     pending_repository_scans: std.AutoHashMapUnmanaged(*RepositoryScan, void) = .empty,
     repository_scan_task: dispatch.Task = .{},
+    repository_open_worker: ?*worker_mod.EditorWorkerService = null,
+    pending_repository_openings: std.ArrayList(*PendingRepositoryOpen) = .empty,
+    workspace_binding: ?WorkspaceBinding = null,
     repository_count_key: ?@import("../../../vs/platform/contextkey/common/contextkey.zig").IContextKey = null,
     git_missing_key: ?@import("../../../vs/platform/contextkey/common/contextkey.zig").IContextKey = null,
 
@@ -340,16 +346,10 @@ pub const Model = struct {
             for (modules[0..@min(modules.len, self.submodule_limit)]) |module| {
                 const path = try std.fs.path.join(a, &.{ self.repository.root, module.path });
                 if (self.model.repositoryForRoot(path) != null) continue;
-                const dot_git = try std.fs.path.join(a, &.{ path, ".git" });
-                const cli = self.model.git orelse continue;
-                std.Io.Dir.cwd().access(cli.io, dot_git, .{}) catch continue;
                 try paths.append(a, path);
             }
             for (worktrees[0..@min(worktrees.len, self.worktree_limit)]) |worktree| {
                 if (self.model.repositoryForRoot(worktree.path) != null) continue;
-                const cli = self.model.git orelse continue;
-                const dot_git = try std.fs.path.join(a, &.{ worktree.path, ".git" });
-                std.Io.Dir.cwd().access(cli.io, dot_git, .{}) catch continue;
                 try paths.append(a, try a.dupe(u8, worktree.path));
             }
             const before = self.model.open_repositories.items.len;
@@ -363,6 +363,145 @@ pub const Model = struct {
             self.model.allocator.destroy(self);
         }
     };
+
+    pub const RepositoryOpenListener = struct {
+        context: *anyopaque,
+        publish: *const fn (*anyopaque, *RepositoryOpenRequest) anyerror!void,
+    };
+
+    pub const WorkspaceHost = struct {
+        context: *anyopaque,
+        open_repository: *const fn (*anyopaque, []const u8) anyerror!void,
+        close_repository: *const fn (*anyopaque, *Repository) void,
+    };
+
+    const WorkspaceBinding = struct {
+        workspace: *workspace_context.WorkspaceContextService,
+        editors: editor_service.IEditorService,
+        host: WorkspaceHost,
+        listener: @import("../../../vs/base/common/event.zig").SignalSubscription,
+    };
+
+    pub fn bindWorkspace(self: *Model, workspace: *workspace_context.WorkspaceContextService, editors: editor_service.IEditorService, host: WorkspaceHost) !void {
+        if (self.workspace_binding) |binding| {
+            if (binding.workspace == workspace) return;
+            binding.listener.dispose();
+            self.workspace_binding = null;
+        }
+        self.workspace_binding = .{
+            .workspace = workspace,
+            .editors = editors,
+            .host = host,
+            .listener = try workspace.on_did_change_workspace_folders.listenDisposable(self, onDidChangeWorkspaceFolders),
+        };
+    }
+
+    fn onDidChangeWorkspaceFolders(change: workspace_context.WorkspaceFoldersChangeEvent, self: *Model) !void {
+        const binding = self.workspace_binding orelse return;
+        // Preserve repositories still in use by visible text editors (both
+        // sides of a diff, including Git virtual documents) or contained by
+        // another remaining workspace folder.
+        if (change.removed.len > 0) {
+            const resources = try binding.editors.getVisibleTextResources(self.allocator);
+            defer self.allocator.free(resources);
+            var active: std.AutoHashMapUnmanaged(*Repository, void) = .empty;
+            defer active.deinit(self.allocator);
+            var scratch = std.heap.ArenaAllocator.init(self.allocator);
+            defer scratch.deinit();
+            for (resources) |resource| {
+                const path = if (std.mem.eql(u8, resource.scheme, "git")) blk: {
+                    const params = @import("uri.zig").fromGitUri(scratch.allocator(), resource) catch continue;
+                    break :blk params.path;
+                } else try @import("../../../vs/base/common/stdUri.zig").fsPath(resource, scratch.allocator());
+                if (self.getRepository(path)) |repository| try active.put(self.allocator, repository, {});
+            }
+            var to_close: std.AutoHashMapUnmanaged(*Repository, void) = .empty;
+            defer to_close.deinit(self.allocator);
+            for (change.removed) |folder| {
+                self.cancelRepositoryOpen(folder.resource);
+                const repository = self.getRepository(folder.resource) orelse continue;
+                if (active.contains(repository)) continue;
+                var contained = false;
+                for (binding.workspace.getWorkspace().folders.items) |remaining| {
+                    if (try git_util.isDescendant(self.allocator, remaining.resource, repository.root)) {
+                        contained = true;
+                        break;
+                    }
+                }
+                if (!contained) try to_close.put(self.allocator, repository, {});
+            }
+            var iterator = to_close.keyIterator();
+            while (iterator.next()) |repository| binding.host.close_repository(binding.host.context, repository.*);
+        }
+        for (change.added) |folder| {
+            if (self.getRepository(folder.resource) == null) try binding.host.open_repository(binding.host.context, folder.resource);
+        }
+    }
+
+    const PendingRepositoryOpen = struct {
+        worker_request: worker_mod.Request = .{ .compute = compute, .reply = reply },
+        owner: ?*Model,
+        request: *RepositoryOpenRequest,
+        listener: RepositoryOpenListener,
+
+        fn compute(message: *worker_mod.Request) void {
+            const self: *PendingRepositoryOpen = @fieldParentPtr("worker_request", message);
+            self.request.discover() catch {};
+        }
+
+        fn reply(message: *worker_mod.Request) bool {
+            const self: *PendingRepositoryOpen = @fieldParentPtr("worker_request", message);
+            defer {
+                self.request.destroy();
+                std.heap.page_allocator.destroy(self);
+            }
+            const owner = self.owner orelse return false;
+            owner.removePendingRepositoryOpen(self);
+            const before = owner.open_repositories.items.len;
+            self.listener.publish(self.listener.context, self.request) catch return false;
+            return before != owner.open_repositories.items.len;
+        }
+    };
+
+    fn removePendingRepositoryOpen(self: *Model, pending: *PendingRepositoryOpen) void {
+        pending.owner = null;
+        for (self.pending_repository_openings.items, 0..) |candidate, index| {
+            if (candidate != pending) continue;
+            _ = self.pending_repository_openings.orderedRemove(index);
+            return;
+        }
+    }
+
+    pub fn cancelRepositoryOpen(self: *Model, path: []const u8) void {
+        for (self.pending_repository_openings.items) |pending| {
+            if (!(git_util.pathEquals(self.allocator, pending.request.path, path) catch false)) continue;
+            self.removePendingRepositoryOpen(pending);
+            return;
+        }
+    }
+
+    /// Repository scans use the same immutable discovery/status capture as a
+    /// Git virtual-document read, with completion delivered on the window.
+    pub fn requestRepositoryOpen(self: *Model, path: []const u8, options: OpenOptions, listener: RepositoryOpenListener) !void {
+        if (self.repositoryForRoot(path) != null) return;
+        for (self.pending_repository_openings.items) |pending| {
+            if (git_util.pathEquals(self.allocator, pending.request.path, path) catch false) return;
+        }
+        const request = (try self.captureRepositoryOpen(path, options)) orelse return;
+        errdefer request.destroy();
+        const pending = try std.heap.page_allocator.create(PendingRepositoryOpen);
+        errdefer std.heap.page_allocator.destroy(pending);
+        pending.* = .{ .owner = self, .request = request, .listener = listener };
+        const worker = self.repository_open_worker orelse blk: {
+            const created = try self.allocator.create(worker_mod.EditorWorkerService);
+            created.* = .init();
+            created.attachWindow(options.window);
+            self.repository_open_worker = created;
+            break :blk created;
+        };
+        try self.pending_repository_openings.append(self.allocator, pending);
+        worker.computeDiff(&pending.worker_request, time.milliTimestamp());
+    }
 
     pub const OpenOptions = struct {
         io: std.Io,
@@ -715,9 +854,16 @@ pub const Model = struct {
     /// Reset makes the single-workspace extension reusable after a workspace
     /// or git.enabled change.
     pub fn deinit(self: *Model) void {
+        if (self.workspace_binding) |binding| binding.listener.dispose();
         if (self.repository_count_key) |key| key.reset();
         if (self.git_missing_key) |key| key.reset();
         self.repository_scan_task.schedule(null);
+        for (self.pending_repository_openings.items) |pending| pending.owner = null;
+        self.pending_repository_openings.deinit(self.allocator);
+        if (self.repository_open_worker) |worker| {
+            worker.deinit();
+            self.allocator.destroy(worker);
+        }
         for (self.repository_scans.items) |binding| binding.dispose();
         self.repository_scans.deinit(self.allocator);
         self.pending_repository_scans.deinit(self.allocator);

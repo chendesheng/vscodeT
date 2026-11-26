@@ -2952,6 +2952,7 @@ pub const TerminalWorkbench = struct {
     /// controller for the workspace folder. A missing git binary, a disabled
     /// `git.enabled` or a non-repository leaves the editor untouched.
     pub fn initGit(self: *TerminalWorkbench) !void {
+        try self.git_model.bindWorkspace(self.workspace, self.editor_api, .{ .context = self, .open_repository = scanGitRepository, .close_repository = closeGitRepository });
         for (self.workspace.getWorkspace().folders.items) |folder| {
             try self.openGitRepository(folder.resource);
         }
@@ -2979,7 +2980,14 @@ pub const TerminalWorkbench = struct {
 
     fn scanGitRepository(context: *anyopaque, root: []const u8) !void {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-        try self.openGitRepository(root);
+        try self.git_model.requestRepositoryOpen(root, self.gitOpenOptions(), .{ .context = self, .publish = publishGitResourceRepository });
+    }
+
+    fn closeGitRepository(context: *anyopaque, provider: *@import("../extensions/git/src/repository.zig").Repository) void {
+        const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
+        self.git_file_provider.detachSingleRepository(provider);
+        self.scm.unregisterProvider(provider.interface());
+        self.git_model.closeRepository(provider);
     }
 
     fn gitOpenOptions(self: *TerminalWorkbench) @import("../extensions/git/src/model.zig").Model.OpenOptions {

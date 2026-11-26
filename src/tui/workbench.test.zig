@@ -12148,6 +12148,78 @@ test "Workbench: git scm integration discovers Git URI repositories in empty win
         try std.testing.expectEqual(second_provider, wb.git_model.repository.?);
         try std.testing.expectEqual(second_provider.interface().history_provider, wb.scm.history.?.provider);
         try std.testing.expect(!scm_view_service.activeRepository().?.pinned);
+
+        if (!empty_window) {
+            const context = wb.workspace;
+            const changes_view = wb.scm.changes.?;
+            const graph_view = wb.scm.history.?;
+            const container = wb.scm.container.?;
+            try wb.setWorkspaceFolders(&.{roots[1]});
+            try std.testing.expect(wb.workspace == context);
+            try std.testing.expectEqual(@as(usize, 1), wb.git_model.repositories().len);
+            try std.testing.expect(wb.git_model.repositoryForRoot(roots[0]) == null);
+            try std.testing.expect(wb.git_model.git.?.repositoryForRoot(roots[0]) == null);
+            try std.testing.expectEqual(second_provider, wb.git_model.repository.?);
+            try std.testing.expectEqual(@as(usize, 1), wb.scm.service_api.?.repositoryCount());
+            const removed_quick = try wb.scm.quick_diff_api.?.getQuickDiffs(a, .{ .scheme = "file", .path = .{ .raw = paths[0] } }, "plaintext", true);
+            defer {
+                for (removed_quick) |*provider| provider.deinit(a);
+                a.free(removed_quick);
+            }
+            try std.testing.expectEqual(@as(usize, 0), removed_quick.len);
+
+            // A visible multi-diff owns multiple real text models even when
+            // the regular file editor has been closed. Keep its repository
+            // when the workspace no longer contains any folders.
+            try wb.commands.execute("workbench.action.closeActiveEditor");
+            try std.testing.expect(wb.activeTab().?.multi_diff != null);
+            try wb.setWorkspaceFolders(&.{});
+            try std.testing.expectEqual(second_provider, wb.git_model.repositoryForRoot(roots[1]).?);
+
+            // Cancel an added workspace-folder capture before a reply may
+            // publish, then reopen that root normally on a later event.
+            try wb.setWorkspaceFolders(&.{roots[0]});
+            try std.testing.expectEqual(@as(usize, 1), wb.git_model.pending_repository_openings.items.len);
+            try wb.setWorkspaceFolders(&.{});
+            try std.testing.expectEqual(@as(usize, 0), wb.git_model.pending_repository_openings.items.len);
+            const worker = wb.git_model.repository_open_worker.?;
+            worker.waitForReply();
+            for (0..5000) |_| {
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                if (worker.replies_ready.at == null) break;
+                std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+            }
+            try std.testing.expect(wb.git_model.repositoryForRoot(roots[0]) == null);
+
+            try wb.setWorkspaceFolders(&.{roots[0]});
+            try std.testing.expectEqual(@as(usize, 1), wb.git_model.repositories().len);
+            try std.testing.expectEqual(@as(usize, 1), wb.git_model.pending_repository_openings.items.len);
+            for (0..5000) |_| {
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                if (wb.git_model.pending_repository_openings.items.len == 0) break;
+                std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+            }
+            try std.testing.expectEqual(@as(usize, 2), wb.git_model.repositories().len);
+            const reopened_first = wb.git_model.repositoryForRoot(roots[0]).?;
+            try std.testing.expectEqual(@as(usize, 1), reopened_first.count());
+            try std.testing.expect(wb.scm.changes.? == changes_view and wb.scm.history.? == graph_view and wb.scm.container.? == container);
+
+            // Removing the workspace after all editors close clears the
+            // active repository and Graph but retains the SCM view owners.
+            try wb.setWorkspaceFolders(&roots);
+            try wb.commands.execute("workbench.action.closeAllEditors");
+            try wb.setWorkspaceFolders(&.{roots[0]});
+            try std.testing.expect(wb.git_model.repositoryForRoot(roots[1]) == null);
+            try std.testing.expectEqual(reopened_first, wb.git_model.repository.?);
+            try std.testing.expectEqual(reopened_first.interface().history_provider, graph_view.provider);
+            try wb.setWorkspaceFolders(&.{});
+            try std.testing.expectEqual(@as(usize, 0), wb.git_model.repositories().len);
+            try std.testing.expectEqual(@as(usize, 0), wb.scm.service_api.?.repositoryCount());
+            try std.testing.expect(scm_view_service.activeRepository() == null);
+            try std.testing.expect(graph_view.provider == null);
+            try std.testing.expectEqual(@as(usize, 0), wb.scm.activity.?.count);
+            try std.testing.expect(wb.scm.changes.? == changes_view and wb.scm.history.? == graph_view and wb.scm.container.? == container);
+        }
     }
 }
 
@@ -12202,9 +12274,15 @@ test "Workbench: git scm integration excludes unchanged submodule trees and disc
         if (detect) {
             _ = wb.git_model.repository_scan_task.at orelse return error.TestExpectedSubmoduleScan;
             for (0..1000) |_| {
-                if (wb.git_model.repositories().len == 2) break;
                 const deadline = wb.git_model.repository_scan_task.at orelse break;
                 _ = wb.window_events.dispatch(deadline);
+            }
+            try std.testing.expectEqual(@as(usize, 1), wb.git_model.repositories().len);
+            try std.testing.expectEqual(@as(usize, 1), wb.git_model.pending_repository_openings.items.len);
+            for (0..5000) |_| {
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                if (wb.git_model.pending_repository_openings.items.len == 0) break;
+                std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
             }
             try std.testing.expectEqual(@as(usize, 2), wb.git_model.repositories().len);
             const child = wb.git_model.getRepository(child_path) orelse return error.TestExpectedSubmoduleRepository;
@@ -12284,6 +12362,13 @@ test "Workbench: git scm integration discovers linked worktrees from status acco
                 _ = wb.window_events.dispatch(deadline);
             }
             try std.testing.expect(wb.git_model.repository_scan_task.at == null);
+            try std.testing.expectEqual(@as(usize, 1), wb.git_model.repositories().len);
+            try std.testing.expectEqual(case.count - 1, wb.git_model.pending_repository_openings.items.len);
+            for (0..5000) |_| {
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                if (wb.git_model.pending_repository_openings.items.len == 0) break;
+                std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+            }
         } else try std.testing.expect(wb.git_model.repository_scan_task.at == null);
         try std.testing.expectEqual(case.count, wb.git_model.repositories().len);
         if (case.count == 2) {
@@ -12317,9 +12402,15 @@ test "Workbench: git scm integration discovers linked worktrees from status acco
             }
             try std.testing.expect(found_detached);
             for (0..1000) |_| {
-                if (wb.git_model.repositories().len == 3) break;
                 const refresh_deadline = wb.git_model.repository_scan_task.at orelse break;
                 _ = wb.window_events.dispatch(refresh_deadline);
+            }
+            try std.testing.expectEqual(@as(usize, 2), wb.git_model.repositories().len);
+            try std.testing.expectEqual(@as(usize, 1), wb.git_model.pending_repository_openings.items.len);
+            for (0..5000) |_| {
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                if (wb.git_model.pending_repository_openings.items.len == 0) break;
+                std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
             }
             try std.testing.expectEqual(@as(usize, 3), wb.git_model.repositories().len);
             try std.testing.expect(wb.git_model.repositoryForRoot(root).? == parent);
