@@ -148,6 +148,7 @@ Rules:
   | `codelensWidget.css` | `0x00f0` | one-row CodeLens content and clickable command links |
   | `zoneWidget.css` | `0x0100` | model-anchored zone widget and frame container |
   | `peekViewWidget.css` | `0x0110` | peek header, title, actions and body |
+  | Multi-diff editor `style.css` | `0x0120` | file header, disclosure, labels, actions and binary placeholder |
 
 - The editor registers every sheet once in `View.init` through
   `editorCss.register(document)`. `Document.clear()` preserves them.

@@ -29,6 +29,7 @@ pub const DocumentDiffItemViewModel = struct {
     diffEditorViewModel: diff.DiffEditorViewModel,
     options: Options,
     key: []u8,
+    identity: usize,
     collapsed: bool = false,
     lastTemplateData: LastTemplateData,
     isFocused: bool = false,
@@ -100,6 +101,7 @@ pub const DocumentDiffItemViewModel = struct {
             .diffEditorViewModel = diff.DiffEditorViewModel.init(allocator, original.model, modified.model, computationOptions(options)),
             .options = options,
             .key = key,
+            .identity = @intFromPtr(self),
             .lastTemplateData = .{},
             .change = .init(allocator),
             .on_did_change_options = .init(allocator),
@@ -212,7 +214,10 @@ pub const DocumentDiffItemViewModel = struct {
     }
     fn onOptionsChanged(_: void, self: *DocumentDiffItemViewModel) !void {
         const options = effectiveOptions(self.documentDiffItem.options);
-        if (std.meta.eql(self.options, options)) return;
+        if (std.meta.eql(self.options, options)) {
+            try self.on_did_change_options.fire({});
+            return;
+        }
         self.options = options;
         const next = computationOptions(options);
         const changed = !std.meta.eql(next, self.diffEditorViewModel.options);
