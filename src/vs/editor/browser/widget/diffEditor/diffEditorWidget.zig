@@ -6,8 +6,8 @@
 // owns two read-only snapshot editors/views over the **aligned display texts**
 // produced by `diffEditorViewZones.zig`, paints both grids plus a one-cell
 // center gutter, and maps navigation commands to aligned display rows. Mouse
-// resizing replaces the split-view sash; the original pane is not
-// keyboard-focusable (documented terminal simplification).
+// resizing replaces the split-view sash; keys dispatch through the focused
+// snapshot editor using the shared terminal editor input adapter.
 //
 // Inline mode (`renderSideBySide: false`) interleaves unchanged, deleted and
 // inserted lines in one modified snapshot editor with whole-line, inner
@@ -26,6 +26,7 @@ const ui = @import("ui");
 const sash_css = @import("../../../../base/browser/ui/sash/sash_css.zig");
 
 const Editor = @import("../codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const terminal_input = @import("../codeEditor/codeEditorWidgetTerminalInput.zig");
 const diff_view_model = @import("./diffEditorViewModel.zig");
 const diff_editor_options = @import("./diffEditorOptions.zig");
 const diff_editor_editors = @import("./components/diffEditorEditors.zig");
@@ -231,6 +232,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         sync_top_line: bool = true,
         message: ?[]u8 = null,
         dragging_split: bool = false,
+        is_pasting: bool = false,
         width: usize = 0,
         height: usize = 0,
 
@@ -699,7 +701,10 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         /// Routes a key event to the focused read-only pane.
         pub fn dispatchKey(self: *Self, event: *ui.KeyEvent) bool {
-            return self.focusedView().dispatchKey(event);
+            if (self.focusedView().dispatchKey(event)) return true;
+            _ = terminal_input.dispatch(self.focusedEditor(), event.*, &self.is_pasting);
+            if (self.sideBySide()) self.syncScrollFromPane(self.focused);
+            return true;
         }
 
         /// Routes a mouse event to the correct pane, handles the split drag and

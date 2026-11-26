@@ -180,6 +180,34 @@ pub fn Tests(comptime View: type) type {
             try testing.expectEqual(widget.modified_editor, widget.focusedEditor());
         }
 
+        test "diffEditorWidget: keyboard navigation reaches the focused editor and syncs scrolling" {
+            const common = "2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15";
+            const widget = try DiffEditorWidget.create(
+                View.init,
+                testing.allocator,
+                Io.Threaded.global_single_threaded.io(),
+                "a.txt",
+                "b.txt",
+                "old\n" ++ common,
+                "new\n" ++ common,
+                "Original",
+                "Modified",
+                80,
+                5,
+                .{},
+            );
+            defer widget.destroy();
+            widget.setFocus(.original);
+            var key = ui.KeyEvent{ .key = .down };
+            try testing.expect(widget.dispatchKey(&key));
+            try testing.expectEqual(@as(usize, 2), widget.original_editor.modelCursorPosition().lineNumber);
+            key = .{ .key = .page_down };
+            try testing.expect(widget.dispatchKey(&key));
+            try testing.expect(widget.original_editor.topViewLine() > 1);
+            try testing.expectEqual(widget.original_editor.topViewLine(), widget.modified_editor.topViewLine());
+            try testing.expect(widget.original_editor.isReadOnly());
+        }
+
         test "diffEditorWidget: moved blocks create model decorations" {
             const allocator = std.testing.allocator;
             const io = std.Io.Threaded.global_single_threaded.io();
