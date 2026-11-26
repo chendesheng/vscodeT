@@ -60,6 +60,81 @@ pub const ContextState = struct {
 
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
 
+const window_dispatch = @import("../../../../base/common/windowDispatch.zig");
+const SignalSubscription = @import("../../../../base/common/event.zig").SignalSubscription;
+const milliTimestamp = @import("../../../../base/common/timeCompat.zig").milliTimestamp;
+
+/// The widget's upstream width observer recognizes a smooth resize from a
+/// captured pointer gesture or consecutive window resize events. The native
+/// event queue replaces its 200 ms RunOnceScheduler; layout is still the
+/// trigger for deciding the start width.
+const SmoothResize = struct {
+    start_width: ?usize = null,
+    window_resize_count: usize = 0,
+    was_pointer_driven: bool = false,
+    pointer_down: bool = false,
+    scheduler: window_dispatch.Task = .{},
+    subscription: ?SignalSubscription = null,
+
+    fn attach(self: *SmoothResize, queue: *window_dispatch.Queue) !void {
+        if (self.scheduler.queue == queue) return;
+        self.deinit();
+        const emitter = if (queue.window_events) |*e| e else return;
+        self.subscription = try emitter.listenDisposable(self, onWindowEvent);
+        self.scheduler = .{ .queue = queue, .context = self, .run = finishScheduled };
+    }
+
+    fn deinit(self: *SmoothResize) void {
+        self.scheduler.schedule(null);
+        if (self.subscription) |subscription| subscription.dispose();
+        self.* = .{};
+    }
+
+    fn schedule(self: *SmoothResize, now: i64) void {
+        self.scheduler.schedule(now +| 200);
+    }
+
+    fn onWindowEvent(event: window_dispatch.WindowEvent, self: *SmoothResize) !void {
+        switch (event) {
+            .resize => {
+                self.window_resize_count +|= 1;
+                self.schedule(milliTimestamp());
+            },
+            .pointer_down => self.pointer_down = true,
+            .pointer_up => {
+                if (!self.pointer_down) return;
+                self.pointer_down = false;
+                self.scheduler.schedule(null);
+                self.finish(milliTimestamp());
+            },
+        }
+    }
+
+    fn finish(self: *SmoothResize, now: i64) void {
+        if (self.pointer_down) {
+            self.schedule(now);
+            return;
+        }
+        self.start_width = null;
+        self.window_resize_count = 0;
+        self.was_pointer_driven = false;
+    }
+
+    fn finishScheduled(context: *anyopaque, now: i64, _: bool) bool {
+        const self: *SmoothResize = @ptrCast(@alignCast(context));
+        self.finish(now);
+        return false;
+    }
+
+    fn widthChanged(self: *SmoothResize, previous: usize, width: usize) ?usize {
+        if (self.scheduler.queue == null or previous == 0 or previous == width) return null;
+        if (self.start_width == null) self.start_width = previous;
+        self.was_pointer_driven = self.was_pointer_driven or self.pointer_down;
+        self.schedule(milliTimestamp());
+        return if (self.was_pointer_driven or self.window_resize_count > 1) self.start_width else null;
+    }
+};
+
 /// Terminal adapter type is supplied by the editor composition root. The
 /// diff widget owns both editors and their upstream layout/selection flow.
 pub fn DiffEditorWidget(comptime View: type) type {
@@ -74,6 +149,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         options: Options,
         inline_mode: bool = false,
         width_based_layout: diff_editor_options.WidthBasedLayout = .{},
+        smooth_resize: SmoothResize = .{},
 
         view_model: DiffEditorViewModel,
         zones: view_zones.DiffEditorViewZones = undefined,
@@ -334,6 +410,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         pub fn destroy(self: *Self) void {
             const allocator = self.allocator;
+            self.smooth_resize.deinit();
             self.accessible_viewer.close();
             self.inline_margin_menu.deinit();
             if (self.diff_listener) |id| self.view_model.on_did_change.unlisten(id);
@@ -482,6 +559,10 @@ pub fn DiffEditorWidget(comptime View: type) type {
             try self.decorations.setConfig(config, self.state().?, self.options.show_moves and !inline_mode);
         }
 
+        pub fn attachWindow(self: *Self, window: *window_dispatch.Queue) void {
+            self.smooth_resize.attach(window) catch {};
+        }
+
         pub fn layout(self: *Self, width: usize, height: usize) void {
             self.layoutWithResizeStart(width, height, null);
         }
@@ -502,7 +583,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
             }
             self.zones.beginBatch();
             const smart_inline = self.isSimpleDiff();
-            self.width_based_layout.setWidth(self.options, width, smooth_resize_start_width, false, smart_inline);
+            const resize_start = smooth_resize_start_width orelse self.smooth_resize.widthChanged(self.width, width);
+            self.width_based_layout.setWidth(self.options, width, resize_start, false, smart_inline);
             const inline_mode = !self.width_based_layout.renderSideBySide(self.options, false, smart_inline);
             if (self.inline_mode != inline_mode) {
                 self.setInlineMode(inline_mode) catch |err| {

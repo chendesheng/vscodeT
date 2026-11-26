@@ -753,6 +753,7 @@ pub fn main(init: std.process.Init) !void {
                 .focus => |focused| {
                     try workbench.host_service.setFocus(focused);
                     if (!focused) {
+                        workbench.window_events.fireWindowEvent(.pointer_up);
                         if (workbench.context_menu_service.current != null) {
                             workbench.context_menu_service.hideContextMenu();
                             needs_render = true;
@@ -859,6 +860,11 @@ pub fn main(init: std.process.Init) !void {
                     if (try current.handleEditorKey(event, &workbench.is_pasting, now_ms, null)) return;
                 },
                 .mouse => |*event| {
+                    switch (event.kind) {
+                        .down => workbench.window_events.fireWindowEvent(.pointer_down),
+                        .up, .click => workbench.window_events.fireWindowEvent(.pointer_up),
+                        else => {},
+                    }
                     // Only motion re-resolves the whole workbench: a press or
                     // release keeps the shape the last move established, so a
                     // click on a row does not flicker back to the arrow.

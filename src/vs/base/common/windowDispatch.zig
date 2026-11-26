@@ -7,11 +7,26 @@ pub const Wake = struct {
     signal: *const fn (*anyopaque) void,
 };
 
+/// Global window events corresponding to the browser resize and capturing
+/// pointer events. The terminal host delivers them before layout or input.
+pub const WindowEvent = enum { resize, pointer_down, pointer_up };
+pub const WindowEventEmitter = @import("event.zig").Emitter(WindowEvent);
+
 pub const Queue = struct {
     io: std.Io,
     mutex: std.Io.Mutex = .init,
     scheduled: std.DoublyLinkedList = .{},
     wake: ?Wake = null,
+    window_events: ?WindowEventEmitter = null,
+
+    pub fn fireWindowEvent(self: *Queue, event: WindowEvent) void {
+        if (self.window_events) |*emitter| emitter.fire(event) catch {};
+    }
+
+    pub fn deinitWindowEvents(self: *Queue) void {
+        if (self.window_events) |*emitter| emitter.deinit();
+        self.window_events = null;
+    }
 
     pub fn setWake(self: *Queue, wake: ?Wake) void {
         self.mutex.lockUncancelable(self.io);

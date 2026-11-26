@@ -55,6 +55,47 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(layout.renderSideBySide(options, false, false));
         }
 
+        test "diffEditorWidget: window events recognize continuous resize and dispose the scheduler" {
+            const dispatch = @import("../../../../base/common/windowDispatch.zig");
+            const allocator = testing.allocator;
+            var queue: dispatch.Queue = .{ .io = testing.io, .window_events = .init(allocator) };
+            defer queue.deinitWindowEvents();
+            const widget = try DiffEditorWidget.create(View.init, allocator, testing.io, "a.txt", "b.txt", "old", "new", "Original", "Modified", 40, 8, .{});
+            var destroyed = false;
+            defer if (!destroyed) widget.destroy();
+            widget.attachWindow(&queue);
+            try testing.expectEqual(@as(usize, 1), queue.window_events.?.listenerCount());
+            try testing.expect(!widget.sideBySide());
+            queue.fireWindowEvent(.resize);
+            widget.layout(45, 8);
+            try testing.expect(!widget.width_based_layout.temporaryInlineMode());
+            queue.fireWindowEvent(.resize);
+            widget.layout(80, 8);
+            try testing.expect(widget.width_based_layout.temporaryInlineMode());
+            try testing.expect(!widget.sideBySide());
+            widget.resetWidthBasedLayout();
+            try testing.expect(widget.sideBySide());
+            widget.layout(40, 8);
+            _ = queue.dispatch(std.math.maxInt(i64));
+            widget.layout(80, 8);
+            try testing.expect(widget.sideBySide()); // discrete layout, not a window gesture
+            widget.layout(40, 8);
+            _ = queue.dispatch(std.math.maxInt(i64));
+            queue.fireWindowEvent(.pointer_down);
+            widget.layout(80, 8);
+            try testing.expect(widget.width_based_layout.temporaryInlineMode());
+            queue.fireWindowEvent(.pointer_up);
+            try testing.expect(queue.scheduled.first == null);
+            widget.resetWidthBasedLayout();
+            try testing.expect(widget.sideBySide());
+            queue.fireWindowEvent(.resize);
+            try testing.expect(queue.scheduled.first != null);
+            widget.destroy();
+            destroyed = true;
+            try testing.expectEqual(@as(usize, 0), queue.window_events.?.listenerCount());
+            try testing.expect(queue.scheduled.first == null);
+        }
+
         test "diffEditorWidget: accessible viewer groups, navigates and reveals the source line" {
             const allocator = testing.allocator;
             const io = Io.Threaded.global_single_threaded.io();

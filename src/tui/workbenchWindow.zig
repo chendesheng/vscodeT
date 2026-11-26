@@ -514,7 +514,8 @@ pub const TerminalWorkbench = struct {
         self.explorer_container = null;
         self.explorer_view_model = null;
         self.explorer_panes = null;
-        self.window_events = .{ .io = self.async_io };
+        self.window_events = .{ .io = self.async_io, .window_events = .init(allocator) };
+        errdefer self.window_events.deinitWindowEvents();
         self.user_keybindings = try user_keybindings_mod.UserKeybindingsLoader.create(allocator, io, self.async_io, &self.window_events);
         errdefer self.user_keybindings.destroy();
         _ = try self.user_keybindings.on_did_change.listen(self, onUserKeybindingsChanged);
@@ -1679,6 +1680,7 @@ pub const TerminalWorkbench = struct {
         self.workspace.deinit();
         // The part owns the group views; disposing it disposes the tab views.
         self.part.deinit();
+        self.window_events.deinitWindowEvents();
         if (self.layout.main_container) |main| main.document.destroy(main);
         self.terminal_tabbed_view.deinit(self.allocator);
         if (self.terminal_service) |service| {
@@ -3948,6 +3950,7 @@ pub const TerminalWorkbench = struct {
         const new_cols = @max(cols, 1);
         const new_rows = @max(rows, 1);
         if (new_cols == self.cols and new_rows == self.rows) return;
+        self.window_events.fireWindowEvent(.resize);
 
         self.cols = new_cols;
         self.rows = new_rows;

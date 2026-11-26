@@ -349,7 +349,10 @@ pub const Tab = struct {
         self.editor.attachWindow(window);
         if (self.controllers) |controllers| controllers.attachWindow(window);
         if (self.original_controllers) |controllers| controllers.attachWindow(window);
-        if (self.diff) |diff| diff.widget.original_editor.attachWindow(window);
+        if (self.diff) |diff| {
+            diff.widget.original_editor.attachWindow(window);
+            diff.widget.attachWindow(window);
+        }
     }
 
     pub fn attachDiffActionServices(self: *Tab, clipboard: @import("../../../../platform/clipboard/common/clipboardService.zig").IClipboardService, menu: @import("../../../../platform/contextview/browser/contextMenuService.zig").IContextMenuService) void {
@@ -478,6 +481,7 @@ pub const Tab = struct {
         if (self.window) |window| {
             self.editor.attachWindow(window);
             diff.widget.original_editor.attachWindow(window);
+            diff.widget.attachWindow(window);
         }
         if (changed and had_controllers) self.ensureControllers() catch {};
         if (changed) if (self.control_change_service) |service| {
