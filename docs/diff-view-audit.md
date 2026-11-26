@@ -142,11 +142,34 @@ and end-to-end verification of later changes are still required.
 
 The full suite through the URI-only Quick Diff services passes 3,622/3,644
 (22 skipped; 48/48 build steps), and the focused view suite through pointer
-capture passes 488/488. Remaining portable gaps include completing the Git
-read-only file-system provider registration and ref/encoding/submodule behavior,
-further contribution
-lifecycle and focus/capture coverage, and end-to-end native large-diff
-benchmarks. Browser pixel geometry, browser accessibility-tree traversal and
+capture passes 488/488.
+
+### Registered Git filesystem and encoding checkpoint (2026-11-27)
+
+* `IFileService` owns disposable scheme registration, URI-aware stat,
+  immutable read requests and exact change events. Git registers its
+  read-only, case-sensitive filesystem provider at window startup; it no
+  longer registers the old text-content provider or resolves refreshes
+  through a diff-specific snapshot request. The text-model resolver decodes
+  raw bytes through the shared text-file codec. Git reads preserve BOM-marked
+  UTF-16, distinguish missing resources from binary data, support empty-tree
+  hashes, merge-stage `~1`/ `:1` refs and parent-repository submodule patches,
+  and expose object sizes and mtime. Initial single-file diffs use the same
+  byte decoder and propagate encoding to both real documents.
+* Staging or reverting index contents emits the upstream exact original
+  resource changes immediately. Repository-wide changes use the 1,100 ms
+  focus-gated debounce and cached resource URIs. Cache cleanup retains
+  resources for three minutes or while their working file model is open,
+  and runs every five minutes; the window disposes the registration, timers
+  and listeners with their owners.
+
+The full suite through this checkpoint passes 3,628/3,650 (22 skipped;
+48/48 build steps), including real Git conflicts, submodule patches, raw
+buffer/stat and binary/missing resolution, shared filesystem change events,
+provider cache retention and UTF-16 single-diff integration. Remaining
+portable gaps include automatic repository discovery for Git URIs in empty
+windows and multi-repository workspaces, further contribution lifecycle
+and focus/capture coverage, and end-to-end native large-diff benchmarks. Browser pixel geometry, browser accessibility-tree traversal and
 a native separate Agents window remain genuine terminal-boundary adaptations.
 
 ## 0. Re-audit update (2026-11-26)

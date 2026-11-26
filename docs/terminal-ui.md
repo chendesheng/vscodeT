@@ -1969,6 +1969,20 @@ order; each live model publishes its captured version and the decorator receives
 the model's change event. Releasing the last model reference cancels/resolves
 outstanding work without republishing to a closed editor.
 
+The shared `ProviderFileService` implements the URI-aware read and stat
+surface of `IFileService`. The Git extension registers its read-only,
+case-sensitive provider with that service. Immutable raw read requests
+retain the repository/ref data; the text-model resolver performs the same
+UTF-8/BOM and binary detection as for disk files. Git URI query parameters
+carry exact revisions, index stages and submodule ownership. The provider
+reports object sizes and mtime, emits the two exact original resource URIs
+after an index hunk update, and debounces repository-wide cached URI changes
+until the window is focused. Its five-minute cleanup keeps live working
+files and resources accessed in the last three minutes. Native path-only
+mutation/fd APIs for other providers retain their earlier boundary; full
+multi-repository Git discovery and opening Git URIs in empty windows remain
+portable gaps.
+
 The Source Control Changes view (`src/vs/workbench/contrib/scm/browser/scmViewPane.zig`)
 keeps the upstream `SCMTreeDataSource`/`SCMTreeSorter`/`SCMTreeFilter` behavior
 for changes. With a single repository the groups are the tree-root

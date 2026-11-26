@@ -1263,10 +1263,12 @@ console API for raw mode, sizing and input polling.
   `index ↔ working tree` (untracked = empty ↔ working, deleted = working side
   empty); title labels name both refs. `Alt-Down`/`Alt-Up` navigate,
   `workbench.action.compareEditor.swapSides` swaps panes and
-  `refreshDiff` re-snapshots. Binary, invalid-UTF-8 and oversized files are
-  skipped with an empty side; a missing git binary, `git.enabled=false` or a
-  non-repository leaves the editor untouched. Git revision and index resources
-  use distinct read-only virtual URIs. Available working-tree files use the
+  `refreshDiff` re-snapshots. Binary and oversized files use an empty side;
+  text goes through the shared UTF-8/BOM-marked UTF-16 decoder. Missing and
+  binary original resources are distinguished during URI model resolution.
+  A missing git binary, `git.enabled=false` or a non-repository leaves the
+  editor untouched. Git revision and index resources use distinct read-only
+  virtual URIs. Available working-tree files use the
   same editable document, undo history, dirty state and file save/revert
   behavior as an ordinary file editor. Refresh never overwrites unsaved
   working-file changes. The modified side determines the diff input's dirty
@@ -1350,8 +1352,11 @@ console API for raw mode, sizing and input polling.
   updates. The extension host mirrors offscreen documents and sends typed
   diff/multi-diff Tabs API events with actual group move and close operations.
   Quick Diff providers return original URIs only; the shared model resolver
-  owns the baselines and the peek reuses their documents. The full Git
-  file-system provider registration remains a portable gap; see the audit.
+  owns the baselines and the peek reuses their documents. Git is registered
+  as a read-only, case-sensitive filesystem provider: raw buffers, stat,
+  merge-stage and submodule resources, and exact change events use the
+  shared file service. Automatic discovery of other repositories for Git
+  URIs in empty windows remains unported; see the audit.
   See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
   Only one repository per workspace folder is shown.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and
