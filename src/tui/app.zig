@@ -457,7 +457,10 @@ pub fn main(init: std.process.Init) !void {
     }
 
     var file_serializer: ?FileEditorSerializer = null;
+    defer if (file_serializer) |*value| value.deinit();
     var image_serializer: ?ImagePreviewEditorInputSerializer = null;
+    const DiffSerializer = @import("../vs/workbench/common/editor/diffEditorInput.zig").DiffEditorSerializer;
+    var diff_serializer: ?DiffSerializer = null;
     var registry: ?EditorFactoryRegistry = null;
     defer if (registry) |*value| value.deinit();
     if (args.session != null) {
@@ -470,6 +473,8 @@ pub fn main(init: std.process.Init) !void {
         registry = EditorFactoryRegistry.init(allocator);
         try registry.?.registerEditorSerializerFactory(FileEditorInput.TYPE_ID, factory_registry.SerializerFactory.bound(FileEditorSerializer, &file_serializer.?));
         try registry.?.registerEditorSerializerFactory(ImagePreviewEditorInput.ID, factory_registry.SerializerFactory.bound(ImagePreviewEditorInputSerializer, &image_serializer.?));
+        diff_serializer = DiffSerializer.init(allocator, &registry.?);
+        try registry.?.registerEditorSerializerFactory(@import("../vs/workbench/common/editor/diffEditorInput.zig").ID, factory_registry.SerializerFactory.bound(DiffSerializer, &diff_serializer.?));
     }
 
     var surface: ui.Surface = undefined;
@@ -508,6 +513,7 @@ pub fn main(init: std.process.Init) !void {
         }
         workbench = try startWorkbench(allocator, io, &surface, &.{}, if (registry) |*value| .{ .registry = value } else null);
     }
+    if (file_serializer) |*value| value.clearResolvedDocuments();
     infoLog(log_service, "startup: workbench-init={d}ms", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
     });
@@ -2151,6 +2157,7 @@ test "app: shutdown writes the current editor groups before didShutdown" {
     var serializers = EditorFactoryRegistry.init(allocator);
     defer serializers.deinit();
     var file = workbench.createFileSerializer();
+    defer file.deinit();
     try serializers.registerEditorSerializer(FileEditorInput.TYPE_ID, file.interface());
     var writer = SessionOnShutdown{ .workbench = workbench, .registry = &serializers, .path = path, .log = null };
     _ = try workbench.core.on_will_shutdown.listen(&writer, SessionOnShutdown.save);

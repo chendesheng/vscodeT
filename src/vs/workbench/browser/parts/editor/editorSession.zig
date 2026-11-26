@@ -45,6 +45,7 @@ const PartDto = struct {
     serializedGrid: ?std.json.Value = null,
     activeGroup: ?u32 = null,
     mostRecentActiveGroups: []const u32 = &.{},
+    editorViewStates: []const editor_groups.SerializedEditorViewState = &.{},
     // Input compatibility with sessions storing a group index.
     active_group: ?usize = null,
 };
@@ -66,12 +67,14 @@ pub fn savePart(
             .serializedGrid = saved,
             .activeGroup = active_id,
             .mostRecentActiveGroups = data.most_recent_active_groups,
+            .editorViewStates = data.editor_view_states,
         }, .{ .emit_null_optional_fields = false }, &out.writer);
     } else {
         try std.json.Stringify.value(PartDto{
             .groups = data.groups,
             .activeGroup = active_id,
             .mostRecentActiveGroups = data.most_recent_active_groups,
+            .editorViewStates = data.editor_view_states,
         }, .{ .emit_null_optional_fields = false }, &out.writer);
     }
 
@@ -156,10 +159,23 @@ fn parsePart(allocator: Allocator, bytes: []const u8) !?editor_groups.Serialized
     } else @min(parsed.value.active_group orelse 0, groups.items.items.len - 1);
     const recent = try allocator.dupe(u32, parsed.value.mostRecentActiveGroups);
     errdefer allocator.free(recent);
+    const view_states = try allocator.alloc(editor_groups.SerializedEditorViewState, parsed.value.editorViewStates.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (view_states[0..initialized]) |entry| entry.deinit(allocator);
+        allocator.free(view_states);
+    }
+    for (view_states, parsed.value.editorViewStates) |*entry, stored| {
+        const resource = try allocator.dupe(u8, stored.resource);
+        errdefer allocator.free(resource);
+        entry.* = .{ .group = stored.group, .resource = resource, .state = try allocator.dupe(u8, stored.state) };
+        initialized += 1;
+    }
     return .{
         .groups = try groups.items.toOwnedSlice(allocator),
         .active_group = active_group,
         .most_recent_active_groups = recent,
+        .editor_view_states = view_states,
         .serialized_grid = grid,
     };
 }

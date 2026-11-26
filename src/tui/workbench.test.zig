@@ -1535,6 +1535,7 @@ test "Workbench: serialize and restore a group" {
     try workbench.activateIndex(1);
 
     var serializer = workbench.createFileSerializer();
+    defer serializer.deinit();
     var registry = editor_factory.EditorFactoryRegistry.init(allocator);
     defer registry.deinit();
     try registry.registerEditorSerializer(FileEditorInput.TYPE_ID, serializer.interface());
@@ -1590,6 +1591,7 @@ test "Workbench: serialize and restore multiple groups" {
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
 
     var serializer = workbench.createFileSerializer();
+    defer serializer.deinit();
     var registry = editor_factory.EditorFactoryRegistry.init(allocator);
     defer registry.deinit();
     try registry.registerEditorSerializer(FileEditorInput.TYPE_ID, serializer.interface());
@@ -1619,6 +1621,91 @@ test "Workbench: serialize and restore multiple groups" {
     try renderFrame(restored, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "part_a.txt") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "part_b.txt") != null);
+}
+
+test "Workbench: serialize and restore multiple editor inputs including a real file diff" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const DiffView = @import("../vs/workbench/browser/parts/editor/editorPane.zig").DiffView;
+    const diff_input = @import("../vs/workbench/common/editor/diffEditorInput.zig");
+    const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var original: std.ArrayList(u8) = .empty;
+    defer original.deinit(allocator);
+    var modified: std.ArrayList(u8) = .empty;
+    defer modified.deinit(allocator);
+    for (0..40) |index| {
+        var line: [32]u8 = undefined;
+        const content = try std.fmt.bufPrint(&line, "line {d}\n", .{index});
+        try original.appendSlice(allocator, content);
+        try modified.appendSlice(allocator, if (index == 18) "changed content\n" else content);
+    }
+    const path_a = try seedFile(allocator, io, &tmp, "diff_a.txt", original.items);
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "diff_b.txt", modified.items);
+    defer allocator.free(path_b);
+    const window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 120, 12);
+    defer window.deinit();
+    const wb = window.workbench;
+    const pane = wb.activePane().?;
+    const original_file = pane.tabs.items[0].file_input.?;
+    const modified_file = pane.tabs.items[1].file_input.?;
+    const dimensions = pane.contentDimensions();
+    const diff = try DiffView.createWithSources(wb.view_factory, allocator, io, .{ .original_path = path_a, .modified_path = path_b, .original_label = "A", .modified_label = "B" }, original.items, modified.items, dimensions.width, dimensions.height, .{}, .{ .original = .{ .file = original_file }, .modified = .{ .file = modified_file } }, null);
+    const tab = try Tab.initDiff(allocator, diff);
+    _ = try wb.service.openEditor(tab.input, pane.group, .{ .open = .{ .pinned = true, .active = true } });
+    try pane.addTab(tab);
+    try wb.editor_opening.configureRestoredTab(tab);
+    try pane.activateTab(tab);
+    tab.layoutCells(dimensions.width, dimensions.height);
+    const left = Selection.init(19, 6, 19, 2);
+    const right = Selection.init(19, 2, 19, 5);
+    try diff.widget.original_editor.setSelections(&.{left});
+    try diff.widget.modified_editor.setSelections(&.{right});
+    _ = diff.widget.modified_editor.setScrollTop(16);
+    var before = try diff.widget.saveViewState(allocator);
+    defer before.deinit(allocator);
+    var registry = editor_factory.EditorFactoryRegistry.init(allocator);
+    defer registry.deinit();
+    var file_serializer = wb.createFileSerializer();
+    defer file_serializer.deinit();
+    var diff_serializer = diff_input.DiffEditorSerializer.init(allocator, &registry);
+    try registry.registerEditorSerializer(FileEditorInput.TYPE_ID, file_serializer.interface());
+    try registry.registerEditorSerializer(diff_input.ID, diff_serializer.interface());
+    var data = try wb.part.createState(allocator, &registry);
+    defer data.deinit(allocator);
+    try std.testing.expectEqual(1, data.editor_view_states.len);
+    const session = @import("../vs/workbench/browser/parts/editor/editorSession.zig");
+    const path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/diff-session.json", .{tmp.sub_path});
+    defer allocator.free(path);
+    try session.savePart(allocator, io, path, &data);
+    var loaded = (try session.loadPart(allocator, io, path)).?;
+    defer loaded.deinit(allocator);
+    try std.testing.expectEqual(1, loaded.editor_view_states.len);
+    const restored_window = try TestWindow.initWithOptions(allocator, io, &.{}, 120, 12, .{}, .{ .data = loaded, .registry = &registry });
+    defer restored_window.deinit();
+    const restored = restored_window.workbench;
+    try std.testing.expectEqual(3, restored.tabCount());
+    const restored_diff = restored.activeTab().?.diff orelse return error.DiffNotRestored;
+    try std.testing.expect(restored_diff.original_input == .file and restored_diff.modified_input == .file);
+    const restored_pane = restored.activePane().?;
+    try std.testing.expectEqual(restored_pane.tabs.items[0].editor.model, restored_diff.widget.originalModel());
+    try std.testing.expectEqual(restored_pane.tabs.items[1].editor.model, restored_diff.widget.modifiedModel());
+    try std.testing.expectEqualStrings(path_a, restored_diff.model.original_path);
+    try std.testing.expectEqualStrings(path_b, restored_diff.model.modified_path);
+    try std.testing.expect(!restored_diff.widget.original_editor.isReadOnly());
+    try std.testing.expect(!restored_diff.widget.modified_editor.isReadOnly());
+    const left_selections = try restored_diff.widget.original_editor.getSelections();
+    defer allocator.free(left_selections);
+    const right_selections = try restored_diff.widget.modified_editor.getSelections();
+    defer allocator.free(right_selections);
+    try std.testing.expectEqualSlices(Selection, &.{left}, left_selections);
+    try std.testing.expectEqualSlices(Selection, &.{right}, right_selections);
+    var after = try restored_diff.widget.saveViewState(allocator);
+    defer after.deinit(allocator);
+    try std.testing.expectEqual(before.modified.viewState.firstPosition, after.modified.viewState.firstPosition);
+    try std.testing.expectEqual(before.modified.viewState.firstPositionDeltaTop, after.modified.viewState.firstPositionDeltaTop);
 }
 
 test "Workbench: sidebar renders and opens a file" {
@@ -5171,6 +5258,7 @@ test "Workbench: session serialization restores image tabs" {
     var registry = editor_factory.EditorFactoryRegistry.init(allocator);
     defer registry.deinit();
     var file_serializer = FileEditorSerializer.init(allocator, io, 40, 10);
+    defer file_serializer.deinit();
     _ = try registry.registerEditorSerializer(FileEditorInput.TYPE_ID, file_serializer.interface());
     var image_serializer = ImagePreviewEditorInputSerializer.init(allocator);
     _ = try registry.registerEditorSerializer(ImagePreviewEditorInput.ID, image_serializer.interface());
@@ -8569,17 +8657,22 @@ test "Workbench: git scm integration, shared working files and read-only revisio
     try std.testing.expect(std.mem.indexOf(u8, commit_tab.input.getName(), "\u{2194}") != null);
     try std.testing.expect(std.mem.indexOf(u8, commit_tab.input.getName(), "Empty") != null);
 
-    // Session save has no serializer for diff tabs and skips them.
+    // Git resource inputs have no upstream text-resource serializer, so
+    // their composite diff input cannot be serialized.
     var registry = editor_factory.EditorFactoryRegistry.init(allocator);
     defer registry.deinit();
     var file_serializer = workbench.createFileSerializer();
+    defer file_serializer.deinit();
     try registry.registerEditorSerializer(FileEditorInput.TYPE_ID, file_serializer.interface());
+    const diff_input = @import("../vs/workbench/common/editor/diffEditorInput.zig");
+    var diff_serializer = diff_input.DiffEditorSerializer.init(allocator, &registry);
+    try registry.registerEditorSerializer(diff_input.ID, diff_serializer.interface());
     var serialized = try workbench.part.createState(allocator, &registry);
     defer serialized.deinit(allocator);
     var serialized_editors: usize = 0;
     for (serialized.groups) |group_data| serialized_editors += group_data.editors.len;
-    // Only the normal file tab is serialized; the three diff inputs have no
-    // serializer and are skipped.
+    // Only the normal file tab is serialized; the three Git revision
+    // comparisons cannot serialize both resource sides.
     try std.testing.expectEqual(initial_tabs, serialized_editors);
 
     // A working file that was first resolved by a comparison can be opened

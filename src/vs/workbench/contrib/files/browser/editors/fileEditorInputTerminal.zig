@@ -138,6 +138,7 @@ pub const FileEditorSerializer = struct {
     io: std.Io,
     width: usize,
     height: usize,
+    resolved_documents: std.ArrayList(*@import("../../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").EditorDocument) = .empty,
 
     pub fn init(allocator: Allocator, io: std.Io, width: usize, height: usize) FileEditorSerializer {
         return .{
@@ -148,13 +149,32 @@ pub const FileEditorSerializer = struct {
         };
     }
 
+    /// During group restoration, inputs in different groups and in a diff
+    /// resolve the same actual workspace resource to one document. The cache
+    /// holds only a reference for the restore transaction, not a pane.
+    pub fn clearResolvedDocuments(self: *FileEditorSerializer) void {
+        for (self.resolved_documents.items) |document| document.release();
+        self.resolved_documents.clearRetainingCapacity();
+    }
+
+    pub fn deinit(self: *FileEditorSerializer) void {
+        self.clearResolvedDocuments();
+        self.resolved_documents.deinit(self.allocator);
+    }
+
     pub fn interface(self: *FileEditorSerializer) IEditorSerializer {
         return .{
             .context = self,
             .canSerialize = canSerialize,
             .serialize = serialize,
             .deserialize = deserialize,
+            .discard_deserialized = discardDeserialized,
         };
+    }
+
+    fn discardDeserialized(_: *anyopaque, input: *EditorInput) void {
+        const file: *FileEditorInput = @ptrCast(@alignCast(input.impl.?));
+        file.deinit();
     }
 
     fn canSerialize(_: *anyopaque, input: *EditorInput) bool {
@@ -168,12 +188,27 @@ pub const FileEditorSerializer = struct {
 
     fn deserialize(context: *anyopaque, data: []const u8) anyerror!?*EditorInput {
         const self: *FileEditorSerializer = @ptrCast(@alignCast(context));
-        const editor = Editor.createWithOptions(self.allocator, self.io, data, self.width, self.height, .{ .reserve_scrollbar = true }) catch return null;
-        errdefer {
+        const text_files = @import("../../../../services/textfile/common/textFileService.zig");
+        const editor = blk: {
+            for (self.resolved_documents.items) |document| {
+                if (text_files.samePath(self.allocator, self.io, document.path, data)) {
+                    break :blk Editor.createViewFromDocument(document, self.width, self.height, .{ .reserve_scrollbar = true }) catch return null;
+                }
+            }
+            const created = Editor.createWithOptions(self.allocator, self.io, data, self.width, self.height, .{ .reserve_scrollbar = true }) catch return null;
+            self.resolved_documents.append(self.allocator, created.document) catch |err| {
+                created.deinit();
+                self.allocator.destroy(created);
+                return err;
+            };
+            created.document.retain();
+            break :blk created;
+        };
+        const input = FileEditorInput.init(self.allocator, editor) catch |err| {
             editor.deinit();
             self.allocator.destroy(editor);
-        }
-        const input = FileEditorInput.init(self.allocator, editor) catch return null;
+            return err;
+        };
         return &input.base;
     }
 };
@@ -257,6 +292,7 @@ test "FileEditorSerializer round-trips a path" {
     const io = std.Io.Threaded.global_single_threaded.io();
 
     var serializer = FileEditorSerializer.init(allocator, io, 20, 5);
+    defer serializer.deinit();
     const ser = serializer.interface();
 
     const editor = try Editor.createFromText(allocator, io, "alpha", "serialized.txt", 20, 5);

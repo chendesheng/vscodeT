@@ -176,7 +176,18 @@ pub const DiffEditorSerializer = struct {
             .canSerialize = canSerialize,
             .serialize = serialize,
             .deserialize = deserialize,
+            .discard_deserialized = discardDeserialized,
         };
+    }
+
+    fn discardDeserialized(context: *anyopaque, input: *EditorInput) void {
+        const self: *DiffEditorSerializer = @ptrCast(@alignCast(context));
+        const diff = is(input) orelse return;
+        const original = diff.original;
+        const modified = diff.modified;
+        diff.destroy();
+        if (self.registry.getEditorSerializer(original)) |serializer| serializer.discardDeserialized(original);
+        if (self.registry.getEditorSerializer(modified)) |serializer| serializer.discardDeserialized(modified);
     }
 
     fn canSerialize(context: *anyopaque, input: *EditorInput) bool {
@@ -229,8 +240,12 @@ pub const DiffEditorSerializer = struct {
         const original_serializer = self.registry.getEditorSerializerByType(original_type) orelse return null;
         const modified_serializer = self.registry.getEditorSerializerByType(modified_type) orelse return null;
         const original = (try original_serializer.deserialize(original_serializer.context, original_data)) orelse return null;
+        var adopted = false;
+        defer if (!adopted) original_serializer.discardDeserialized(original);
         const modified = (try modified_serializer.deserialize(modified_serializer.context, modified_data)) orelse return null;
+        defer if (!adopted) modified_serializer.discardDeserialized(modified);
         const diff = try DiffEditorInput.init(self.allocator, stringField(object, "name"), stringField(object, "description"), original, modified);
+        adopted = true;
         return &diff.base;
     }
 };

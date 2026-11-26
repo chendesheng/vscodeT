@@ -1179,7 +1179,10 @@ pub const TerminalWorkbench = struct {
     }
 
     fn restoreEditors(self: *TerminalWorkbench) !void {
-        if (self.previous_state) |previous| if (previous.data) |data| try self.service.restoreSerializedEditors(data, previous.registry);
+        const states: []const editor_groups.SerializedEditorViewState = if (self.previous_state) |previous| if (previous.data) |data| blk: {
+            try self.service.restoreSerializedEditors(data, previous.registry);
+            break :blk data.editor_view_states;
+        } else &.{} else &.{};
         self.previous_state = null;
         const panes = @import("../vs/workbench/browser/parts/editor/editorPane.zig").RestoredEditorPanes{
             .view_factory = self.view_factory,
@@ -1189,6 +1192,15 @@ pub const TerminalWorkbench = struct {
             .images = &self.images,
             .history = &self.history,
             .working_copies = &self.working_copy_service,
+            .diff_options = @import("../vs/workbench/browser/parts/editor/textDiffEditor.zig").computeConfiguration(self.configuration_api),
+            .editor_view_states = states,
+            .share_view_state = self.configuration_api.getBool("workbench.editor.sharedViewState", false),
+            .on_restore = .{ .context = &self.editor_opening, .run = struct {
+                fn configure(context: *anyopaque, tab: *Tab) !void {
+                    const opening: *editor_service_mod.EditorOpening = @ptrCast(@alignCast(context));
+                    try opening.configureRestoredTab(tab);
+                }
+            }.configure },
         };
         try self.part.restoreEditors(panes);
     }

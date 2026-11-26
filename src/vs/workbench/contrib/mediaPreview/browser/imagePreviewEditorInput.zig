@@ -96,7 +96,13 @@ pub const ImagePreviewEditorInputSerializer = struct {
             .canSerialize = canSerialize,
             .serialize = serialize,
             .deserialize = deserialize,
+            .discard_deserialized = discardDeserialized,
         };
+    }
+
+    fn discardDeserialized(_: *anyopaque, input: *EditorInput) void {
+        const image: *ImagePreviewEditorInput = @ptrCast(@alignCast(input.impl.?));
+        image.deinit();
     }
 
     fn canSerialize(_: *anyopaque, input: *EditorInput) bool {

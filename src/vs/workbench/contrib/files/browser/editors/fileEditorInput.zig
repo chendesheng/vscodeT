@@ -133,7 +133,15 @@ pub const FileEditorSerializer = struct {
             .canSerialize = canSerialize,
             .serialize = serialize,
             .deserialize = deserialize,
+            .discard_deserialized = discardDeserialized,
         };
+    }
+
+    fn discardDeserialized(context: *anyopaque, input: *EditorInput) void {
+        const self: *FileEditorSerializer = @ptrCast(@alignCast(context));
+        const file: *FileEditorInput = @ptrCast(@alignCast(input.impl.?));
+        file.deinit();
+        self.allocator.destroy(file);
     }
 
     fn canSerialize(context: *anyopaque, input: *EditorInput) bool {

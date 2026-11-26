@@ -115,6 +115,12 @@ pub const SideInput = union(enum) {
     resource: *TextResourceEditorInput,
     file: *FileEditorInput,
 
+    fn fromInput(input: *editor_input.EditorInput) ?SideInput {
+        if (std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID)) return .{ .file = @ptrCast(@alignCast(input.impl.?)) };
+        if (std.mem.eql(u8, input.type_id, TextResourceEditorInput.ID)) return .{ .resource = @ptrCast(@alignCast(input.impl.?)) };
+        return null;
+    }
+
     pub fn interface(self: SideInput) *editor_input.EditorInput {
         return switch (self) {
             .resource => |input| input.interface(),
@@ -240,11 +246,40 @@ pub fn DiffView(comptime View: type) type {
             sources: ResolvedSources,
             computed: ?IDocumentDiff,
         ) !*Self {
+            const original_input = try sources.original.resolve(allocator, io, model.original_path, model.original_label, original_text);
+            errdefer original_input.destroy();
+            const modified_input = try sources.modified.resolve(allocator, io, model.modified_path, model.modified_label, modified_text);
+            errdefer modified_input.destroy();
+            const title = try std.fmt.allocPrint(allocator, "{s} ({s} ↔ {s})", .{ std.fs.path.basename(model.modified_path), model.original_label, model.modified_label });
+            defer allocator.free(title);
+            const diff_input = try diff_editor_input.DiffEditorInput.init(allocator, title, null, original_input.interface(), modified_input.interface());
+            errdefer diff_input.destroy();
+            return createResolved(factory, allocator, io, model, original_text, modified_text, width, height, options, original_input, modified_input, diff_input, computed);
+        }
+
+        /// Mount the same TextDiffEditor pane for a deserialized DiffEditorInput.
+        /// Both side inputs already belong to the composite and are adopted on
+        /// success; no replacement model or synthetic resource is created.
+        pub fn createFromInput(factory: *const fn (Allocator, *Editor) anyerror!*View, allocator: Allocator, io: Io, composite: *diff_editor_input.DiffEditorInput, width: usize, height: usize, options: Options) !*Self {
+            const original = SideInput.fromInput(composite.original) orelse return error.UnsupportedDiffInput;
+            const modified = SideInput.fromInput(composite.modified) orelse return error.UnsupportedDiffInput;
+            const original_doc = original.resolve();
+            const modified_doc = modified.resolve();
+            var original_text = try original_doc.model.getValue(null, true);
+            defer original_text.deinit();
+            var modified_text = try modified_doc.model.getValue(null, true);
+            defer modified_text.deinit();
+            return createResolved(factory, allocator, io, .{
+                .original_path = original_doc.path,
+                .modified_path = modified_doc.path,
+                .original_label = composite.original.getName(),
+                .modified_label = composite.modified.getName(),
+            }, original_text.items, modified_text.items, width, height, options, original, modified, composite, null);
+        }
+
+        fn createResolved(factory: *const fn (Allocator, *Editor) anyerror!*View, allocator: Allocator, io: Io, model: DiffEditorModel, original_text: []const u8, modified_text: []const u8, width: usize, height: usize, options: Options, original_input: SideInput, modified_input: SideInput, diff_input: *diff_editor_input.DiffEditorInput, computed: ?IDocumentDiff) !*Self {
             const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
-
-            // SCM refreshes and history updates can discard the source strings
-            // while the diff tab and its input are still open.
             const original_path = try allocator.dupe(u8, model.original_path);
             errdefer allocator.free(original_path);
             const modified_path = try allocator.dupe(u8, model.modified_path);
@@ -253,64 +288,54 @@ pub fn DiffView(comptime View: type) type {
             errdefer allocator.free(original_label);
             const modified_label = try allocator.dupe(u8, model.modified_label);
             errdefer allocator.free(modified_label);
-
-            const original_input = try sources.original.resolve(allocator, io, original_path, original_label, original_text);
-            errdefer original_input.destroy();
-            const modified_input = try sources.modified.resolve(allocator, io, modified_path, modified_label, modified_text);
-            errdefer modified_input.destroy();
-            const valid_computed = if (computed != null and
-                snapshotLinesEqual(allocator, original_input.resolve().model, original_text) and
-                snapshotLinesEqual(allocator, modified_input.resolve().model, modified_text)) computed else null;
-            const widget = try DiffEditorWidget.createWithModelSources(
-                factory,
-                allocator,
-                io,
-                model.original_path,
-                model.modified_path,
-                original_text,
-                modified_text,
-                model.original_label,
-                model.modified_label,
-                width,
-                height,
-                inputOptions(options, original_input, modified_input),
-                .{ .original = original_input.resolve(), .modified = modified_input.resolve() },
-                valid_computed,
-            );
+            const valid_computed = if (computed != null and snapshotLinesEqual(allocator, original_input.resolve().model, original_text) and snapshotLinesEqual(allocator, modified_input.resolve().model, modified_text)) computed else null;
+            const widget = try DiffEditorWidget.createWithModelSources(factory, allocator, io, model.original_path, model.modified_path, original_text, modified_text, model.original_label, model.modified_label, width, height, inputOptions(options, original_input, modified_input), .{ .original = original_input.resolve(), .modified = modified_input.resolve() }, valid_computed);
             errdefer widget.destroy();
-
-            const basename = std.fs.path.basename(model.modified_path);
-            const title = try std.fmt.allocPrint(
-                allocator,
-                "{s} ({s} \u{2194} {s})",
-                .{ basename, model.original_label, model.modified_label },
-            );
-            defer allocator.free(title);
-            const diff_input = try diff_editor_input.DiffEditorInput.init(
-                allocator,
-                title,
-                null,
-                original_input.interface(),
-                modified_input.interface(),
-            );
-            errdefer diff_input.destroy();
-
             self.* = .{
                 .factory = factory,
                 .allocator = allocator,
                 .io = io,
-                .model = .{
-                    .original_path = original_path,
-                    .modified_path = modified_path,
-                    .original_label = original_label,
-                    .modified_label = modified_label,
-                },
+                .model = .{ .original_path = original_path, .modified_path = modified_path, .original_label = original_label, .modified_label = modified_label },
                 .widget = widget,
                 .original_input = original_input,
                 .modified_input = modified_input,
                 .diff_input = diff_input,
             };
             return self;
+        }
+
+        /// TextDiffEditor.toEditorViewStateResource: use the ordered pair of
+        /// model URIs, not the title, display paths or active side alone.
+        pub fn viewStateResource(self: *Self, allocator: Allocator) ![]u8 {
+            const URI = @import("../../../../base/common/uri.zig").URI;
+            var original_uri = try URI.fromStd(allocator, self.original_input.resolve().model.uri());
+            defer original_uri.deinit();
+            var modified_uri = try URI.fromStd(allocator, self.modified_input.resolve().model.uri());
+            defer modified_uri.deinit();
+            const original = try original_uri.toStringEncoded(allocator);
+            defer allocator.free(original);
+            const modified = try modified_uri.toStringEncoded(allocator);
+            defer allocator.free(modified);
+            const encoder = std.base64.standard.Encoder;
+            const first_len = encoder.calcSize(original.len);
+            const second_len = encoder.calcSize(modified.len);
+            const key = try allocator.alloc(u8, 5 + first_len + second_len);
+            @memcpy(key[0..5], "diff:");
+            _ = encoder.encode(key[5 .. 5 + first_len], original);
+            _ = encoder.encode(key[5 + first_len ..], modified);
+            return key;
+        }
+
+        pub fn computeEditorViewState(self: *Self, allocator: Allocator) ![]u8 {
+            var saved = try self.widget.saveViewState(allocator);
+            defer saved.deinit(allocator);
+            return std.json.Stringify.valueAlloc(allocator, saved, .{ .emit_null_optional_fields = false });
+        }
+
+        pub fn restoreEditorViewState(self: *Self, data: []const u8) !void {
+            const saved = std.json.parseFromSlice(widget_mod.IDiffEditorViewState, self.allocator, data, .{ .ignore_unknown_fields = true }) catch return;
+            defer saved.deinit();
+            try self.widget.restoreViewState(saved.value);
         }
 
         pub fn destroy(self: *Self) void {

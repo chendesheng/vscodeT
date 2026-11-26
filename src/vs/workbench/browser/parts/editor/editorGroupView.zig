@@ -315,7 +315,7 @@ pub fn EditorGroupView(comptime View: type) type {
             for (editors) |input| {
                 const tab = try panes.createPane(self.allocator, input) orelse continue;
                 try self.addTab(tab);
-                try panes.didRestore(tab);
+                try panes.didRestore(tab, self.group.id);
             }
         }
 

@@ -28,6 +28,13 @@ pub const IEditorSerializer = struct {
     /// Recreates an input from a serialized form. Null means the input could
     /// not be restored.
     deserialize: *const fn (context: *anyopaque, data: []const u8) anyerror!?*EditorInput,
+    /// Zig allocation ownership for a deserialized input that could not be
+    /// adopted by its composite. Upstream GC needs no separate release hook.
+    discard_deserialized: ?*const fn (*anyopaque, *EditorInput) void = null,
+
+    pub fn discardDeserialized(self: IEditorSerializer, input: *EditorInput) void {
+        if (self.discard_deserialized) |discard| discard(self.context, input) else input.dispose();
+    }
 };
 
 /// Zig equivalent of IConstructorSignature<IEditorSerializer>. A native

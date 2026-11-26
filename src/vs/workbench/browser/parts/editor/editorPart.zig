@@ -363,6 +363,26 @@ pub fn EditorPart(comptime GroupView: type) type {
             var state = try self.service.serializePart(allocator, registry);
             errdefer state.deinit(allocator);
             state.serialized_grid = try SerializableGrid.serialize(allocator, self.root, self.maximized_group, {}, groupToJSON);
+            if (@hasField(GroupView, "tabs")) {
+                const Tab = @typeInfo(@TypeOf(self.group_views.items[0].tabs.items[0])).pointer.child;
+                if (@hasDecl(Tab, "saveEditorViewState")) {
+                    var memento = @import("editorPane.zig").EditorMemento{ .allocator = allocator };
+                    defer memento.deinit();
+                    // Active group last for shared-view-state fallback.
+                    for ([_]bool{ false, true }) |active| for (self.group_views.items) |group| {
+                        if ((group.group == self.service.active) != active) continue;
+                        for (group.tabs.items) |tab| {
+                            const serializer = registry.getEditorSerializer(tab.editorInput()) orelse continue;
+                            if (!serializer.canSerialize(serializer.context, tab.editorInput())) continue;
+                            if (try tab.saveEditorViewState(allocator, group.group.id)) |entry| {
+                                errdefer entry.deinit(allocator);
+                                try memento.saveEditorState(entry);
+                            }
+                        }
+                    };
+                    state.editor_view_states = try memento.entries.toOwnedSlice(allocator);
+                }
+            }
             return state;
         }
 

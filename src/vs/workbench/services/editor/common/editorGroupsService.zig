@@ -133,15 +133,31 @@ pub const OpenResult = struct {
 
 pub const SerializedGrid = @import("../../../../base/browser/ui/grid/grid.zig").SerializedGrid(GroupIdentifier);
 
+/// Editor pane memento entries travel with the terminal's explicit session
+/// file. The encoded view state is owned by the individual editor pane.
+pub const SerializedEditorViewState = struct {
+    group: GroupIdentifier,
+    resource: []const u8,
+    state: []const u8,
+
+    pub fn deinit(self: SerializedEditorViewState, allocator: Allocator) void {
+        allocator.free(self.resource);
+        allocator.free(self.state);
+    }
+};
+
 pub const SerializedEditorPart = struct {
     serialized_grid: ?SerializedGrid = null,
     groups: []group_mod.SerializedEditorGroupModel,
     active_group: usize,
     most_recent_active_groups: []const GroupIdentifier = &.{},
+    editor_view_states: []const SerializedEditorViewState = &.{},
 
     pub fn deinit(self: *SerializedEditorPart, allocator: Allocator) void {
         if (self.serialized_grid) |saved| saved.root.deinit(allocator);
         allocator.free(self.most_recent_active_groups);
+        for (self.editor_view_states) |entry| entry.deinit(allocator);
+        allocator.free(self.editor_view_states);
         for (self.groups) |*group| group.deinit(allocator);
         if (self.groups.len > 0) allocator.free(self.groups);
         self.* = .{ .groups = &.{}, .active_group = 0 };

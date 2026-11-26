@@ -63,6 +63,67 @@ const TerminalEditorInput = @import("../../../contrib/terminal/browser/terminalE
 const TerminalInstance = @import("../../../contrib/terminal/browser/terminalInstance.zig").TerminalInstance;
 const terminal_editor = @import("../../../contrib/terminal/browser/terminalEditor.zig");
 
+/// EditorMemento from editorPane.ts. The terminal keeps open pane controls
+/// alive until close; shutdown captures their view state into a bounded
+/// group/resource map. Session storage is an explicit host file rather than
+/// the browser's workspace storage database.
+pub const EditorMemento = struct {
+    allocator: Allocator,
+    entries: std.ArrayList(groups.SerializedEditorViewState) = .empty,
+    const limit = 100;
+
+    pub fn deinit(self: *EditorMemento) void {
+        for (self.entries.items) |entry| entry.deinit(self.allocator);
+        self.entries.deinit(self.allocator);
+    }
+
+    /// Takes ownership of resource/state on success.
+    pub fn saveEditorState(self: *EditorMemento, entry: groups.SerializedEditorViewState) !void {
+        try self.entries.ensureUnusedCapacity(self.allocator, 1);
+        var i: usize = 0;
+        // Touch every state of the resource as one LRU key, preserving the
+        // relative order of its other groups.
+        var end = self.entries.items.len;
+        while (i < end) {
+            const old = self.entries.items[i];
+            if (!std.mem.eql(u8, old.resource, entry.resource)) {
+                i += 1;
+                continue;
+            }
+            _ = self.entries.orderedRemove(i);
+            end -= 1;
+            if (old.group == entry.group) old.deinit(self.allocator) else self.entries.appendAssumeCapacity(old);
+        }
+        self.entries.appendAssumeCapacity(entry);
+        // Upstream bounds the number of resource keys, not the number of
+        // groups within a key. Dispose the oldest complete key when needed.
+        var resources: usize = 0;
+        for (self.entries.items, 0..) |candidate, index| {
+            for (self.entries.items[0..index]) |previous| {
+                if (std.mem.eql(u8, candidate.resource, previous.resource)) break;
+            } else resources += 1;
+        }
+        if (resources > limit) {
+            const oldest = self.entries.orderedRemove(0);
+            defer oldest.deinit(self.allocator);
+            i = 0;
+            while (i < self.entries.items.len) {
+                if (std.mem.eql(u8, oldest.resource, self.entries.items[i].resource)) self.entries.orderedRemove(i).deinit(self.allocator) else i += 1;
+            }
+        }
+    }
+
+    pub fn loadEditorState(entries: []const groups.SerializedEditorViewState, group: u32, resource: []const u8, shared: bool) ?[]const u8 {
+        var fallback: ?[]const u8 = null;
+        for (entries) |entry| {
+            if (!std.mem.eql(u8, resource, entry.resource)) continue;
+            if (entry.group == group) return entry.state;
+            if (shared) fallback = entry.state;
+        }
+        return fallback;
+    }
+};
+
 /// Restores the terminal view for an input already deserialized by its group.
 /// The group owns the view from addTab onward. The model keeps its original
 /// active, pinned, sticky and preview selections.
@@ -74,10 +135,18 @@ pub const RestoredEditorPanes = struct {
     images: *ui.image.Runtime,
     history: *@import("../../../services/history/browser/historyService.zig").HistoryService,
     working_copies: *@import("../../../services/workingCopy/common/workingCopyService.zig").WorkingCopyService,
+    diff_options: @import("textDiffEditor.zig").Options = .{},
+    editor_view_states: []const groups.SerializedEditorViewState = &.{},
+    share_view_state: bool = false,
+    on_restore: ?struct { context: *anyopaque, run: *const fn (*anyopaque, *Tab) anyerror!void } = null,
 
     pub fn createPane(self: RestoredEditorPanes, allocator: Allocator, input: *EditorInput) !?*Tab {
         if (std.mem.eql(u8, input.type_id, ImagePreviewEditorInput.ID)) {
             return try Tab.initImageFromInput(self.view_factory, allocator, self.io, @ptrCast(@alignCast(input.impl.?)), self.width, self.height, self.images, null);
+        }
+        if (@import("../../../common/editor/diffEditorInput.zig").is(input)) |diff_input| {
+            const diff = try DiffView.createFromInput(self.view_factory, allocator, self.io, diff_input, self.width, self.height, self.diff_options);
+            return try Tab.initDiff(allocator, diff);
         }
         if (!std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID)) return null;
         const tab = try Tab.initFromInput(self.view_factory, allocator, @ptrCast(@alignCast(input.impl.?)));
@@ -85,14 +154,23 @@ pub const RestoredEditorPanes = struct {
         return tab;
     }
 
-    pub fn didRestore(self: RestoredEditorPanes, tab: *Tab) !void {
+    pub fn didRestore(self: RestoredEditorPanes, tab: *Tab, group: u32) !void {
         try tab.view.setStatusBarVisible(false);
-        if (tab.file_input != null) {
+        if (self.on_restore) |callback| {
+            try callback.run(callback.context, tab);
+        } else {
             const widget = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
-            self.working_copies.acquireWorkingCopy(widget.workingCopyInterface(tab.editor)) catch |err| switch (err) {
-                error.AlreadyRegistered => {},
-                else => return err,
+            for (0..2) |index| if (tab.workingCopyAt(index)) |editor| {
+                self.working_copies.acquireWorkingCopy(widget.workingCopyInterface(editor)) catch |err| switch (err) {
+                    error.AlreadyRegistered => {},
+                    else => return err,
+                };
             };
+        }
+        if (tab.diff) |diff| {
+            const resource = try diff.viewStateResource(tab.allocator);
+            defer tab.allocator.free(resource);
+            if (EditorMemento.loadEditorState(self.editor_view_states, group, resource, self.share_view_state)) |state| try diff.restoreEditorViewState(state);
         }
         try self.history.add(tab.editor.path);
     }
@@ -357,6 +435,13 @@ pub const Tab = struct {
 
     pub fn attachDiffActionServices(self: *Tab, clipboard: @import("../../../../platform/clipboard/common/clipboardService.zig").IClipboardService, menu: @import("../../../../platform/contextview/browser/contextMenuService.zig").IContextMenuService) void {
         if (self.diff) |diff| diff.widget.attachActionServices(clipboard, menu);
+    }
+
+    pub fn saveEditorViewState(self: *Tab, allocator: Allocator, group: u32) !?groups.SerializedEditorViewState {
+        const diff = self.diff orelse return null;
+        const resource = try diff.viewStateResource(allocator);
+        errdefer allocator.free(resource);
+        return .{ .group = group, .resource = resource, .state = try diff.computeEditorViewState(allocator) };
     }
 
     pub fn attachDiffBreadcrumbs(self: *Tab, features: *LanguageFeaturesService, models: *@import("../../../../editor/contrib/documentSymbols/browser/outlineModel.zig").OutlineModelService) void {

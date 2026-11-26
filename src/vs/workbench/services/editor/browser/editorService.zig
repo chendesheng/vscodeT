@@ -476,6 +476,18 @@ pub const EditorOpening = struct {
         return instance;
     }
 
+    /// Restored panes take the same configuration, language, worker and
+    /// working-copy registration path as fresh panes after mounting.
+    pub fn configureRestoredTab(self: *EditorOpening, tab: *Tab) !void {
+        self.host.configure_editor(self.host.context, tab.editor);
+        if (tab.diff) |diff| {
+            self.host.configure_editor(self.host.context, diff.widget.original_editor);
+            try self.attachDiffModel(&diff.widget.view_model);
+        }
+        self.host.configure_tab(self.host.context, tab);
+        self.host.register_working_copy(self.host.context, tab);
+    }
+
     fn attachDiffModel(self: *EditorOpening, model: *@import("../../../../editor/browser/widget/diffEditor/diffEditorViewModel.zig").DiffEditorViewModel) !void {
         model.attachWorker(try self.ensureDiffWorker(), &self.diff_cache, self.window_events);
     }
