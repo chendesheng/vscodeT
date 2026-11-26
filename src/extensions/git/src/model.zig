@@ -70,10 +70,13 @@ const SnapshotRead = struct {
         };
         var side: Side = .{ .resource = try self.resource(a, relative, uri_ref, false) };
         if (read_ref == null and !working) return side; // absent side
+        // Keep the upstream ~1/~2/~3 URI identities; only the Git CLI
+        // boundary converts them to the index-stage syntax.
+        const stage = if (read_ref) |revision| @import("uri.zig").normalizeIndexStage(revision) else null;
         const bytes = (if (working)
             reader.readWorkingBuffer(self.root, relative)
         else
-            reader.readGitBuffer(self.root, read_ref.?, relative)) catch |err| {
+            reader.readGitBuffer(self.root, if (stage) |ref| &ref else read_ref.?, relative)) catch |err| {
             if (err == error.OutOfMemory) return err;
             side.resource.failure = err;
             return side;

@@ -55,6 +55,16 @@ pub const Commands = struct {
             try host.open_resource(self.host.context, uri, std.fs.path.basename(resource.absolute_path));
             return;
         }
+        if (resource.mergeComparison()) |comparison| {
+            try host.open_ref_diff(self.host.context, resource.absolute_path, null, comparison.left, comparison.right, "Base", comparison.title);
+            return;
+        }
+        // An index rename compares the old HEAD path with the new index
+        // path, not two revisions of the renamed destination.
+        if (resource.kind == .index and resource.status == 'R') if (resource.original_path) |old_path| {
+            try host.open_ref_diff(self.host.context, resource.absolute_path, old_path, "HEAD", "", "HEAD", "Index");
+            return;
+        };
         if (resource.provider.diffRefsForResource(resource)) |refs| {
             try host.open_diff(self.host.context, resource.absolute_path, refs.left, refs.right);
         } else try host.open_path(self.host.context, resource.absolute_path);

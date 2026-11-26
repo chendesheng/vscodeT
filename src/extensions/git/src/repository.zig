@@ -56,11 +56,23 @@ pub const GitScmResource = struct {
     /// Porcelain v2 status letter (`M`, `A`, `D`, `R`, `?`, ...).
     status: u8,
     submodule: bool = false,
+    conflict: ?[2]u8 = null,
     /// Upstream `Resource.letter` projection (`U` for untracked, `!` for a
     /// conflict, ...); the resource row paints it as a file decoration badge.
     letter: [1]u8,
     decorations: scm.ISCMResourceDecorations,
     iface: scm.ISCMResource,
+
+    /// Upstream ResourceCommandResolver.getLeftResource/getRightResource:
+    /// a deleted-by-one-side conflict compares the common base to the
+    /// surviving side. Other merge statuses open the working resource.
+    pub fn mergeComparison(self: *const GitScmResource) ?struct { left: []const u8, right: []const u8, title: []const u8 } {
+        if (self.kind != .merge) return null;
+        const xy = self.conflict orelse return null;
+        if (xy[0] == 'D' and xy[1] == 'U') return .{ .left = "~1", .right = "~3", .title = "Theirs" };
+        if (xy[0] == 'U' and xy[1] == 'D') return .{ .left = "~1", .right = "~2", .title = "Ours" };
+        return null;
+    }
 
     pub fn destroy(self: *GitScmResource) void {
         const allocator = self.provider.allocator;
@@ -434,7 +446,8 @@ pub const Repository = struct {
     }
 
     /// The Git resource's status determines its original and modified
-    /// resources. Conflict resources open the file instead of a snapshot diff.
+    /// resources. Deletion conflicts use mergeComparison; the remaining
+    /// merge statuses open the working file.
     pub fn diffRefsForResource(self: *Repository, resource: *const GitScmResource) ?struct { left: git_mod.DiffRef, right: git_mod.DiffRef } {
         _ = self;
         return switch (resource.kind) {
@@ -567,7 +580,11 @@ pub const Repository = struct {
         const previous_absolute = if (original) |path| try std.fs.path.join(self.allocator, &.{ self.root, path }) else null;
         defer if (previous_absolute) |value| self.allocator.free(value);
         const original_uri = if (change.submodule) null else switch (kind) {
-            .merge, .untracked => null,
+            .merge => if (change.conflict) |xy|
+                if ((xy[0] == 'D' and xy[1] == 'U') or (xy[0] == 'U' and xy[1] == 'D')) try uris.gitUriString(self.allocator, absolute, "~1") else null
+            else
+                null,
+            .untracked => null,
             .index => switch (status) {
                 'A', 'C' => null,
                 else => try uris.gitUriString(self.allocator, previous_absolute orelse absolute, "HEAD"),
@@ -584,7 +601,12 @@ pub const Repository = struct {
         // directory or a pair of Gitlink object IDs.
         const modified_uri = if (change.submodule)
             try uris.gitUriStringWithOptions(self.allocator, absolute, if (kind == .index) "index" else "wt", .{ .submodule_of = self.root })
-        else if (status == 'D' or kind == .merge) null else switch (kind) {
+        else if (kind == .merge)
+            if (change.conflict) |xy|
+                if ((xy[0] == 'U' and xy[1] == 'U') or (xy[0] == 'A' and xy[1] == 'A')) try uris.fileUriString(self.allocator, absolute) else null
+            else
+                null
+        else if (status == 'D') null else switch (kind) {
             .index => try uris.gitUriString(self.allocator, absolute, ""),
             .working, .untracked => try uris.fileUriString(self.allocator, absolute),
             .merge => unreachable,
@@ -600,6 +622,7 @@ pub const Repository = struct {
             .kind = kind,
             .status = status,
             .submodule = change.submodule,
+            .conflict = change.conflict,
             .letter = .{info.letter},
             .decorations = .{
                 .tooltip = tooltip,

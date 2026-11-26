@@ -11747,7 +11747,7 @@ test "Workbench: git scm integration resolves a Git revision and an outside work
     try std.testing.expectEqualStrings("unsaved outside", try working.model.borrowLineContent(1));
 }
 
-test "Workbench: Git URI models distinguish missing and binary resources and decode original buffers" {
+test "Workbench: git scm integration URI models distinguish missing and binary resources and decode original buffers" {
     const a = std.testing.allocator;
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
@@ -11898,4 +11898,67 @@ test "Workbench: Git URI models distinguish missing and binary resources and dec
     try std.testing.expectEqualStrings("B", try diff.widget.original_editor.model.borrowLineContent(2));
     try std.testing.expectEqualStrings("C", try diff.widget.modified_editor.model.borrowLineContent(2));
     try std.testing.expect(!diff.widget.modified_editor.isReadOnly());
+}
+
+test "Workbench: git scm integration deletion conflicts compare the base and surviving merge-index stage" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = root_buffer[0..try tmp.dir.realPath(io, &root_buffer)];
+    if (!try runGitTest(a, root, &.{"init"})) return error.SkipZigTest;
+    _ = try runGitTest(a, root, &.{ "config", "user.name", "Test User" });
+    _ = try runGitTest(a, root, &.{ "config", "user.email", "test@example.com" });
+    try std.testing.expect(try runGitTest(a, root, &.{ "config", "core.autocrlf", "false" }));
+    try tmp.dir.writeFile(io, .{ .sub_path = "deleted-ours.txt", .data = "base\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "deleted-theirs.txt", .data = "base\n" });
+    try std.testing.expect(try runGitTest(a, root, &.{ "add", "deleted-ours.txt", "deleted-theirs.txt" }));
+    try std.testing.expect(try runGitTest(a, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "base" }));
+    try std.testing.expect(try runGitTest(a, root, &.{ "checkout", "-b", "test-ours" }));
+    try std.testing.expect(try runGitTest(a, root, &.{ "checkout", "-b", "test-theirs" }));
+    try tmp.dir.writeFile(io, .{ .sub_path = "deleted-ours.txt", .data = "theirs\n" });
+    try tmp.dir.deleteFile(io, "deleted-theirs.txt");
+    try std.testing.expect(try runGitTest(a, root, &.{ "add", "-A" }));
+    try std.testing.expect(try runGitTest(a, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "theirs" }));
+    try std.testing.expect(try runGitTest(a, root, &.{ "checkout", "test-ours" }));
+    try tmp.dir.deleteFile(io, "deleted-ours.txt");
+    try tmp.dir.writeFile(io, .{ .sub_path = "deleted-theirs.txt", .data = "ours\n" });
+    try std.testing.expect(try runGitTest(a, root, &.{ "add", "-A" }));
+    try std.testing.expect(try runGitTest(a, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "ours" }));
+    try std.testing.expect(!try runGitTest(a, root, &.{ "-c", "commit.gpgsign=false", "merge", "test-theirs" }));
+
+    const settings = try std.fs.path.join(a, &.{ root, ".git", "test-settings.json" });
+    defer a.free(settings);
+    const window = try TestWindow.init(a, io, &.{}, 100, 30);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.setUserSettingsPaths(&.{settings});
+    try wb.initSidebar(root);
+    pumpSidebarForTests(wb);
+    try wb.initGit();
+    const provider = wb.git_model.repository orelse return error.TestExpectedRepository;
+    try std.testing.expectEqual(@as(usize, 2), provider.groups[0].resources.items.len);
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const git_uri = @import("../extensions/git/src/uri.zig");
+    for ([_][]const u8{ "deleted-ours.txt", "deleted-theirs.txt" }, [_][]const u8{ "theirs", "ours" }, [_][]const u8{ "~3", "~2" }) |path, expected, stage| {
+        const resource = for (provider.groups[0].resources.items) |item| {
+            if (std.mem.eql(u8, path, item.relative_path)) break item;
+        } else return error.TestExpectedMergeResource;
+        const comparison = resource.mergeComparison() orelse return error.TestExpectedMergeComparison;
+        try std.testing.expectEqualStrings(stage, comparison.right);
+        try resource.iface.open(false);
+        try pumpDiffForTests(wb);
+        const tab = wb.activeTab() orelse return error.TestExpectedDiff;
+        const diff = tab.diff orelse return error.TestExpectedDiff;
+        try std.testing.expect(diff.widget.original_editor.isReadOnly());
+        try std.testing.expect(diff.widget.modified_editor.isReadOnly());
+        try std.testing.expectEqualStrings("base", try diff.widget.original_editor.model.borrowLineContent(1));
+        try std.testing.expectEqualStrings(expected, try diff.widget.modified_editor.model.borrowLineContent(1));
+        const original_params = try git_uri.fromGitUri(arena.allocator(), diff.widget.original_editor.model.uri());
+        const modified_params = try git_uri.fromGitUri(arena.allocator(), diff.widget.modified_editor.model.uri());
+        try std.testing.expectEqualStrings("~1", original_params.ref);
+        try std.testing.expectEqualStrings(stage, modified_params.ref);
+    }
 }
