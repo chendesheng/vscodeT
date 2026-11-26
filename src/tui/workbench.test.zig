@@ -11083,6 +11083,29 @@ test "Workbench: git scm integration opens live Changes group and retains surviv
     try std.testing.expect(try multi.widget.dispatchMouse(&mouse));
     try std.testing.expectEqual(@as(usize, 1), probe.runs);
     try std.testing.expect(probe.correct_resource);
+    try std.testing.expectEqual(node, binding.template.header.doc.focusedElement().?);
+    // The retained header DOM routes keyboard activation to the same typed
+    // menu action rather than forwarding the keystroke to the code editor.
+    var header_key: ui.KeyEvent = .{ .key = .enter };
+    try std.testing.expect(try multi.widget.dispatchKey(&header_key));
+    try std.testing.expectEqual(@as(usize, 2), probe.runs);
+    header_key = .{ .key = .{ .char = ' ' } };
+    try std.testing.expect(try multi.widget.dispatchKey(&header_key));
+    try std.testing.expectEqual(@as(usize, 3), probe.runs);
+    try std.testing.expect(probe.correct_resource);
+    const first_enabled = for (binding.toolbar_buttons) |button_info| {
+        if (button_info.enabled) break button_info.node;
+    } else return error.TestExpectedEnabledToolbarAction;
+    const last_enabled = for (0..binding.toolbar_buttons.len) |offset| {
+        const button_info = binding.toolbar_buttons[binding.toolbar_buttons.len - 1 - offset];
+        if (button_info.enabled) break button_info.node;
+    } else return error.TestExpectedEnabledToolbarAction;
+    header_key = .{ .key = .home };
+    try std.testing.expect(try multi.widget.dispatchKey(&header_key));
+    try std.testing.expectEqual(first_enabled, binding.template.header.doc.focusedElement().?);
+    header_key = .{ .key = .end };
+    try std.testing.expect(try multi.widget.dispatchKey(&header_key));
+    try std.testing.expectEqual(last_enabled, binding.template.header.doc.focusedElement().?);
     try target_item.documentDiffItem.setContextKeys(&.{});
     var child = binding.template.actions.first_child;
     while (child) |value| : (child = value.next) try std.testing.expect(!std.mem.eql(u8, value.getAttribute("aria-label") orelse "", "Scoped File Action"));

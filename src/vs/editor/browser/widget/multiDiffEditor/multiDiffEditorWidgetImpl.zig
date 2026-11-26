@@ -630,17 +630,26 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
             self.focused = value;
             const source = self.model orelse return;
             if (value) {
-                if (source.activeDiffItem) |item| try self.focusItem(item);
+                if (source.activeDiffItem) |item| {
+                    const header = if (self.bindingFor(item)) |binding| binding.hasHeaderFocus() else false;
+                    try self.focusItemWithHeader(item, header);
+                }
             } else if (source.focusedDiffItem) |item| {
                 self.focus_transition = true;
                 defer self.focus_transition = false;
                 const binding = self.bindingFor(item);
-                if (binding) |b| if (b.editor) |editor| editor.setEditorFocused(false);
+                if (binding) |b| {
+                    b.blurHeader();
+                    if (b.editor) |editor| editor.setEditorFocused(false);
+                }
                 try item.setFocused(false);
                 if (binding) |b| try b.context.notifyChanged();
             }
         }
         fn focusItem(self: *Self, item: *model.DocumentDiffItemViewModel) !void {
+            return self.focusItemWithHeader(item, false);
+        }
+        fn focusItemWithHeader(self: *Self, item: *model.DocumentDiffItemViewModel, header: bool) !void {
             if (self.focus_transition) return;
             self.focus_transition = true;
             defer self.focus_transition = false;
@@ -648,22 +657,62 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
             if (value.focusedDiffItem) |old| {
                 if (old != item) {
                     const old_binding = self.bindingFor(old);
-                    if (old_binding) |binding| if (binding.editor) |editor| editor.setEditorFocused(false);
+                    if (old_binding) |binding| {
+                        binding.blurHeader();
+                        if (binding.editor) |editor| editor.setEditorFocused(false);
+                    }
                     try old.setFocused(false);
                     if (old_binding) |binding| try binding.context.notifyChanged();
                 }
             }
             try item.setFocused(true);
             self.focused = true;
-            if (self.bindingFor(item)) |binding| if (binding.editor) |editor| {
-                editor.setEditorFocused(true);
-                editor.focusedView().focusEditor();
-            };
+            if (self.bindingFor(item)) |binding| {
+                if (header or item.collapsed) {
+                    if (!binding.hasHeaderFocus()) _ = binding.focusHeader(false);
+                    if (binding.editor) |editor| editor.setEditorFocused(false);
+                } else {
+                    binding.blurHeader();
+                    if (binding.editor) |editor| {
+                        editor.setEditorFocused(true);
+                        editor.focusedView().focusEditor();
+                    }
+                }
+            }
+        }
+        fn moveHeaderTab(self: *Self, item: *model.DocumentDiffItemViewModel, direction: ui.dom.FocusDirection) !bool {
+            if (direction == .forward and !item.collapsed) {
+                try self.focusItem(item);
+                return true;
+            }
+            const index = for (self.manager.items, 0..) |managed, i| {
+                if (managed.item == item) break i;
+            } else return false;
+            const next = if (direction == .forward) index + 1 else if (index > 0) index - 1 else return false;
+            if (next >= self.manager.items.len) return false;
+            const adjacent = self.manager.items[next].item;
+            try self.revealIndex(next);
+            if (direction == .backward and !adjacent.collapsed) {
+                try self.focusItem(adjacent);
+            } else if (self.bindingFor(adjacent)) |binding| {
+                _ = binding.focusHeader(direction == .backward);
+                try self.focusItemWithHeader(adjacent, true);
+            }
+            return true;
         }
         pub fn dispatchKey(self: *Self, event: *ui.KeyEvent) !bool {
             const value = self.model orelse return false;
             const item = value.activeDiffItem orelse return false;
             if (self.bindingFor(item)) |binding| {
+                if (binding.hasHeaderFocus()) {
+                    const result = binding.dispatchHeaderKey(event);
+                    if (result.leave) |direction| return self.moveHeaderTab(item, direction);
+                    if (result.action) |action| {
+                        if (action == .toolbar_action) try binding.runToolbarAction(binding.keyboardToolbarAnchor(self.origin_x, self.origin_y)) else try self.runItemAction(item, action);
+                        return true;
+                    }
+                    return result.handled;
+                }
                 if (item.collapsed) {
                     if (event.key == .enter or (event.key == .char and event.key.char == ' ')) {
                         try item.setCollapsed(false);
@@ -695,7 +744,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
                 .collapse => try item.setCollapsed(!item.collapsed),
                 .open_file => if (self.host.open_file) |callback| try callback(self.host.context, (doc.modified orelse doc.original.?).uri),
                 .open_binary_diff => if (self.host.open_binary_diff) |callback| if (doc.original != null and doc.modified != null) try callback(self.host.context, doc.original.?.uri, doc.modified.?.uri),
-                .toolbar_action => return error.MissingToolbarMouseEvent,
+                .toolbar_action => return error.MissingToolbarAnchor,
             }
         }
         pub fn dispatchMouse(self: *Self, event: *ui.MouseEvent) !bool {
@@ -711,12 +760,14 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
                 if (header.contains(row)) {
                     const item = binding.item;
                     if (event.kind == .down) try item.setActive();
-                    if (try binding.dispatchHeaderMouse(event, row - header.start)) |action| {
+                    const header_action = try binding.dispatchHeaderMouse(event, row - header.start);
+                    if (event.kind == .down and binding.hasHeaderFocus()) try self.focusItemWithHeader(item, true);
+                    if (header_action) |action| {
                         if (action == .toolbar_action) {
                             var absolute = event.*;
                             absolute.x += self.origin_x;
                             absolute.y += self.origin_y;
-                            try binding.runToolbarAction(&absolute);
+                            try binding.runToolbarAction(@import("../../../../platform/contextview/browser/contextMenuService.zig").Anchor.mouse(&absolute));
                         } else try self.runItemAction(item, action);
                         return true;
                     }

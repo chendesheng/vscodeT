@@ -140,7 +140,12 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
             pending_toolbar_index: ?usize = null,
             overflow_open: bool = false,
 
-            const ToolbarButton = struct { binding: *Binding, index: usize };
+            const ToolbarButton = struct {
+                binding: *Binding,
+                index: usize,
+                node: *ui.Node = undefined,
+                enabled: bool = false,
+            };
             const overflow_index = std.math.maxInt(usize);
 
             pub fn size(self: *Binding) usize {
@@ -169,6 +174,7 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
                 try self.template.root.setClasses([_]css.Class{.header});
                 if (offset > 0 or self.headerRange().start > range.start) try self.template.root.addClass(css.Class.shadow);
                 if (self.item.collapsed) try self.template.root.addClass(css.Class.collapsed);
+                if (self.template.header.doc.focusedElement() == self.template.root) try self.template.root.addClass(css.Class.header_focused);
                 if (self.editor) |editor| {
                     self.setting_data = true;
                     editor.layout(body_width, body_height);
@@ -311,6 +317,11 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
             fn rebuildToolbar(self: *Binding) !void {
                 const menu = self.toolbar_menu orelse return;
                 const allocator = self.template.allocator;
+                // Preserve the action bar's focus across a menu rebuild.
+                const focused = self.template.header.doc.focusedElement();
+                const previous_index = for (self.toolbar_buttons) |button| {
+                    if (focused == button.node) break @as(?usize, button.index);
+                } else null;
                 // Remove DOM listeners before releasing their button contexts.
                 self.template.actions.clearChildren();
                 allocator.free(self.toolbar_buttons);
@@ -338,6 +349,19 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
                     try self.addToolbarButton(&self.toolbar_buttons[index], "…", "More Actions", true, false);
                 }
                 self.template.actions.setStyle(.{ .display = if (self.toolbar_buttons.len > 0) .flex else .none });
+                var first: ?*ToolbarButton = null;
+                var previous: ?*ToolbarButton = null;
+                for (self.toolbar_buttons) |*button| {
+                    if (!button.enabled) continue;
+                    if (first == null) first = button;
+                    if (previous_index == button.index) previous = button;
+                }
+                if (previous orelse first) |button| {
+                    self.setToolbarTabStop(button);
+                    if (previous_index != null) _ = button.node.focus();
+                } else if (previous_index != null) {
+                    _ = self.template.collapse_button.focus();
+                }
             }
             fn addToolbarButton(self: *Binding, button: *ToolbarButton, glyph: []const u8, label: []const u8, enabled: bool, checked: bool) !void {
                 const node = try self.template.actions.document.createElement(.span);
@@ -346,15 +370,69 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
                 try node.setAttribute("role", "button");
                 try node.setAttribute("aria-label", label);
                 try node.setAttribute("aria-disabled", if (enabled) "false" else "true");
+                button.node = node;
+                button.enabled = enabled;
+                node.asElement().focusable = enabled;
+                node.asElement().tab_index = -1;
                 node.setStyle(.{ .width = .{ .cells = 3 }, .text_align = .center, .pointer = if (enabled) .pointer else .default, .bold = checked, .dim = !enabled });
-                try node.addEventListener(.{ .context = button, .mouse_down = toolbarButtonClick });
+                try node.addEventListener(.{ .context = button, .mouse_down = toolbarButtonClick, .key_down = toolbarButtonKey, .focus = toolbarButtonFocused, .blur = actionBlurred });
                 _ = try self.template.actions.appendChild(node);
+            }
+            fn setToolbarTabStop(self: *Binding, selected: *ToolbarButton) void {
+                for (self.toolbar_buttons) |*button| button.node.asElement().tab_index = if (button == selected and button.enabled) 0 else -1;
+            }
+            fn toolbarButtonFocused(context: ?*anyopaque, event: *ui.FocusEvent) void {
+                const button: *ToolbarButton = @ptrCast(@alignCast(context.?));
+                button.binding.setToolbarTabStop(button);
+                actionFocused(null, event);
             }
             fn toolbarButtonClick(context: ?*anyopaque, event: *ui.MouseEvent) void {
                 const button: *ToolbarButton = @ptrCast(@alignCast(context.?));
                 if (event.button != .left) return;
-                button.binding.pending_toolbar_index = button.index;
-                button.binding.template.pending_action = .toolbar_action;
+                if (button.enabled) {
+                    _ = button.node.focus();
+                    button.binding.pending_toolbar_index = button.index;
+                    button.binding.template.pending_action = .toolbar_action;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            /// MenuWorkbenchToolBar's ActionBar uses one tab stop and arrow,
+            /// Home/End navigation among enabled actions. Terminals deliver
+            /// key-down only, so Enter and Space activate on key-down.
+            fn toolbarButtonKey(context: ?*anyopaque, event: *ui.KeyEvent) void {
+                const button: *ToolbarButton = @ptrCast(@alignCast(context.?));
+                if (event.mods.alt or event.mods.ctrl) return;
+                const binding = button.binding;
+                if (isActivationKey(event)) {
+                    if (button.enabled) {
+                        binding.pending_toolbar_index = button.index;
+                        binding.template.pending_action = .toolbar_action;
+                    }
+                } else switch (event.key) {
+                    .left, .right, .home, .end => {
+                        const buttons = binding.toolbar_buttons;
+                        if (buttons.len == 0) return;
+                        const current = for (buttons, 0..) |*candidate, index| {
+                            if (candidate == button) break index;
+                        } else return;
+                        const forward = event.key == .right or event.key == .home;
+                        const start = switch (event.key) {
+                            .home => 0,
+                            .end => buttons.len - 1,
+                            .left => (current + buttons.len - 1) % buttons.len,
+                            .right => (current + 1) % buttons.len,
+                            else => unreachable,
+                        };
+                        for (0..buttons.len) |offset| {
+                            const index = if (forward) (start + offset) % buttons.len else (start + buttons.len - offset) % buttons.len;
+                            if (!buttons[index].enabled) continue;
+                            _ = buttons[index].node.focus();
+                            break;
+                        }
+                    },
+                    else => return,
+                }
                 event.preventDefault();
                 event.stopPropagation();
             }
@@ -362,10 +440,10 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
                 const item = self.item.documentDiffItem;
                 return (item.modified orelse item.original.?).uri;
             }
-            pub fn runToolbarAction(self: *Binding, event: *const ui.MouseEvent) !void {
+            pub fn runToolbarAction(self: *Binding, anchor: context_menu.Anchor) !void {
                 const selected = self.pending_toolbar_index orelse return;
                 self.pending_toolbar_index = null;
-                if (selected == overflow_index) return self.showToolbarOverflow(context_menu.Anchor.mouse(event));
+                if (selected == overflow_index) return self.showToolbarOverflow(anchor);
                 const menu = self.toolbar_menu orelse return;
                 var raw_index: usize = 0;
                 for (menu.getActions()) |group| for (group.actions) |action| {
@@ -539,6 +617,52 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
                     try frame.next.blitRows(template.header.grid(), x, y + start - self.rendered_viewport.start, start - header.start, self.width, end - start);
                 }
             }
+            pub fn hasHeaderFocus(self: *const Binding) bool {
+                return self.template.header.doc.focusedElement() != null;
+            }
+            pub fn blurHeader(self: *Binding) void {
+                self.template.header.doc.blur();
+            }
+            fn firstHeaderStop(self: *Binding) *ui.Node {
+                return if (self.template.config.variant.headerClickToCollapse) self.template.root else self.template.collapse_button;
+            }
+            fn lastHeaderStop(self: *Binding) *ui.Node {
+                for (self.toolbar_buttons) |button| {
+                    if (button.enabled and button.node.asElement().tab_index == 0) return button.node;
+                }
+                if (self.template.host.file_toolbar == null and self.template.host.open_file != null) return self.template.actions;
+                return self.template.collapse_button;
+            }
+            pub fn focusHeader(self: *Binding, last: bool) bool {
+                return (if (last) self.lastHeaderStop() else self.firstHeaderStop()).focus();
+            }
+            pub const HeaderKeyResult = struct {
+                handled: bool = false,
+                action: ?ItemAction = null,
+                leave: ?ui.dom.FocusDirection = null,
+            };
+            pub fn dispatchHeaderKey(self: *Binding, event: *ui.KeyEvent) HeaderKeyResult {
+                const template = self.template;
+                const focused = template.header.doc.focusedElement() orelse return .{};
+                const tab = !event.mods.ctrl and !event.mods.alt and (event.key == .tab or event.key == .backtab);
+                if (tab) {
+                    const backward = event.key == .backtab or event.mods.shift;
+                    // A retained header is a separate terminal surface. At its
+                    // tab boundary the composite moves focus to the adjacent
+                    // editor/item instead of wrapping inside the subdocument.
+                    if (backward and focused == self.firstHeaderStop()) return .{ .leave = .backward };
+                    if (!backward and focused == self.lastHeaderStop()) return .{ .leave = .forward };
+                }
+                template.header.doc.dispatchEvent(event);
+                const action = template.pending_action;
+                template.pending_action = null;
+                return .{ .handled = event.default_prevented or tab, .action = action };
+            }
+            pub fn keyboardToolbarAnchor(self: *Binding, x: usize, y: usize) context_menu.Anchor {
+                const node = self.template.header.doc.focusedElement() orelse self.template.actions;
+                const rect = node.asElement().rect;
+                return .{ .x = x + ui.cell.snap(rect.x), .y = y + (self.headerRange().start -| self.rendered_viewport.start) + ui.cell.snap(rect.y) };
+            }
             pub fn dispatchHeaderMouse(self: *Binding, event: *ui.MouseEvent, row: usize) !?ItemAction {
                 const template = self.template;
                 var local = event.*;
@@ -623,11 +747,15 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
             self.root = try doc.createElement(.div);
             doc.setRoot(self.root);
             try self.root.addClass(css.Class.header);
+            self.root.asElement().focusable = self.config.variant.headerClickToCollapse;
+            if (self.config.variant.headerClickToCollapse) try self.root.setAttribute("role", "button");
+            try self.root.addEventListener(.{ .context = self, .key_down = headerKey, .focus = headerFocused, .blur = headerBlurred });
             self.row = try element(self.root, .header_content, .div);
             self.collapse_button = try element(self.row, .collapse_button, .span);
             try self.collapse_button.setAttribute("role", "button");
             try self.collapse_button.setAttribute("aria-label", "Collapse or expand file");
-            try self.collapse_button.addEventListener(.{ .context = self, .mouse_down = collapseClick });
+            self.collapse_button.asElement().focusable = true;
+            try self.collapse_button.addEventListener(.{ .context = self, .mouse_down = collapseClick, .key_down = collapseKey, .focus = actionFocused, .blur = actionBlurred });
             const file_path = try element(self.row, .file_path, .div);
             self.primary_path = try element(file_path, .title, .span);
             self.status = try element(file_path, .status, .span);
@@ -637,7 +765,8 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
                 try self.actions.setTextContent("↗");
                 try self.actions.setAttribute("role", "button");
                 try self.actions.setAttribute("aria-label", "Go to File");
-                try self.actions.addEventListener(.{ .context = self, .mouse_down = openFileClick });
+                self.actions.asElement().focusable = self.host.open_file != null;
+                try self.actions.addEventListener(.{ .context = self, .mouse_down = openFileClick, .key_down = openFileKey, .focus = actionFocused, .blur = actionBlurred });
             }
             try self.row.addEventListener(.{ .context = self, .mouse_down = headerClick });
         }
@@ -663,6 +792,7 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
         fn collapseClick(context: ?*anyopaque, event: *ui.MouseEvent) void {
             const self: *Self = @ptrCast(@alignCast(context.?));
             if (event.button == .left) {
+                _ = self.collapse_button.focus();
                 self.pending_action = .collapse;
                 event.preventDefault();
                 event.stopPropagation();
@@ -671,6 +801,7 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
         fn openFileClick(context: ?*anyopaque, event: *ui.MouseEvent) void {
             const self: *Self = @ptrCast(@alignCast(context.?));
             if (event.button == .left) {
+                _ = self.actions.focus();
                 self.pending_action = .open_file;
                 event.preventDefault();
                 event.stopPropagation();
@@ -679,9 +810,50 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
         fn headerClick(context: ?*anyopaque, event: *ui.MouseEvent) void {
             const self: *Self = @ptrCast(@alignCast(context.?));
             if (event.button == .left and self.config.variant.headerClickToCollapse) {
+                _ = self.root.focus();
                 self.pending_action = .collapse;
                 event.preventDefault();
             }
+        }
+        fn isActivationKey(event: *const ui.KeyEvent) bool {
+            if (event.mods.ctrl or event.mods.alt) return false;
+            return switch (event.key) {
+                .enter => true,
+                .char => |value| value == ' ',
+                .text => |value| std.mem.eql(u8, value, " "),
+                else => false,
+            };
+        }
+        fn collapseKey(context: ?*anyopaque, event: *ui.KeyEvent) void {
+            if (!isActivationKey(event)) return;
+            const self: *Self = @ptrCast(@alignCast(context.?));
+            self.pending_action = .collapse;
+            event.preventDefault();
+            event.stopPropagation();
+        }
+        fn openFileKey(context: ?*anyopaque, event: *ui.KeyEvent) void {
+            if (!isActivationKey(event)) return;
+            const self: *Self = @ptrCast(@alignCast(context.?));
+            self.pending_action = .open_file;
+            event.preventDefault();
+            event.stopPropagation();
+        }
+        fn headerKey(context: ?*anyopaque, event: *ui.KeyEvent) void {
+            const self: *Self = @ptrCast(@alignCast(context.?));
+            // Child action and disclosure listeners consume their own keys.
+            if (self.config.variant.headerClickToCollapse and event.target == self.root and isActivationKey(event)) collapseKey(context, event);
+        }
+        fn actionFocused(_: ?*anyopaque, event: *ui.FocusEvent) void {
+            if (event.target) |node| node.addClass(css.Class.focused_action) catch {};
+        }
+        fn actionBlurred(_: ?*anyopaque, event: *ui.FocusEvent) void {
+            if (event.target) |node| node.removeClass(css.Class.focused_action);
+        }
+        fn headerFocused(_: ?*anyopaque, event: *ui.FocusEvent) void {
+            if (event.target) |node| node.addClass(css.Class.header_focused) catch {};
+        }
+        fn headerBlurred(_: ?*anyopaque, event: *ui.FocusEvent) void {
+            if (event.target) |node| node.removeClass(css.Class.header_focused);
         }
         pub fn createBinding(self: *Self, item: *model.DocumentDiffItemViewModel, context: vm.IVirtualizedItemBindingContext) !*Binding {
             const height = if (item.isBinary()) binaryFilePlaceholderContentHeight else @max(1, @max(context.initialSize, item.lastTemplateData.expandedContentHeight) -| self.config.outerHeight());

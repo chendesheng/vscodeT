@@ -242,6 +242,40 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(f.vm.items[0].diffEditorViewModel.is_diff_up_to_date);
         }
 
+        test "View: MultiDiffEditorWidget header disclosure, action and body follow DOM keyboard focus" {
+            const item = try textItem("/header.txt", "old\nnext", "new\nnext");
+            defer item.release();
+            var f: Fixture = .{};
+            try f.init(&.{item}, .noCards, 80, 12);
+            defer f.deinit();
+            const vm_item = f.vm.items[0];
+            const binding = f.widget.impl.bindingFor(vm_item).?;
+            var frame = try ui.Frame.init(testing.allocator, 80, 12);
+            defer frame.deinit();
+            frame.begin();
+            try f.widget.paint(&frame, 0, 0, 80, 12);
+            const header = binding.headerRange();
+            const button = binding.template.collapse_button;
+            var click: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = ui.cell.snap(button.asElement().rect.x) + 1, .y = header.start - binding.rendered_viewport.start + ui.cell.snap(button.asElement().rect.y) };
+            try testing.expect(try f.widget.dispatchMouse(&click));
+            try testing.expect(vm_item.collapsed);
+            try testing.expect(vm_item.isFocused);
+            try testing.expectEqual(button, binding.template.header.doc.focusedElement().?);
+            var key: ui.KeyEvent = .{ .key = .enter };
+            try testing.expect(try f.widget.dispatchKey(&key));
+            try testing.expect(!vm_item.collapsed);
+            key = .{ .key = .tab };
+            try testing.expect(try f.widget.dispatchKey(&key));
+            try testing.expectEqual(binding.template.actions, binding.template.header.doc.focusedElement().?);
+            key = .{ .key = .enter };
+            try testing.expect(try f.widget.dispatchKey(&key));
+            try testing.expectEqual(@as(usize, 1), f.opened_file);
+            key = .{ .key = .tab };
+            try testing.expect(try f.widget.dispatchKey(&key));
+            try testing.expect(!binding.hasHeaderFocus());
+            try testing.expect(binding.editor.?.focusedView().isFocused());
+        }
+
         test "View: MultiDiffEditorWidget renders binary files as a placeholder" {
             const binary = try model.IDocumentDiffItem.create(testing.allocator, .{ .uri = .{ .scheme = "git", .path = .{ .raw = "/image.png" } } }, .{ .uri = .{ .scheme = "file", .path = .{ .raw = "/image.png" } } }, .{});
             defer binary.release();
