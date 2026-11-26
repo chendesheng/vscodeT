@@ -9792,6 +9792,11 @@ test "Diff editor commands resolve the active snapshot pane through their servic
     const window = try TestWindow.init(allocator, io, &.{}, 100, 20);
     defer window.deinit();
     const wb = window.workbench;
+    const settings = try seedFile(allocator, io, &tmp, "settings.json", "{}");
+    defer allocator.free(settings);
+    try wb.setUserSettingsPaths(&.{settings});
+    wb.ensureConfigurationReady();
+
     try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "one\ntwo\n", "ONE\ntwo\nthree\n", "commit-a", "commit-b");
     const tab = wb.activeTab().?;
     const widget = tab.diff.?.widget;
@@ -9809,6 +9814,16 @@ test "Diff editor commands resolve the active snapshot pane through their servic
     // Commit labels cannot be re-resolved as Git refs; refresh is a no-op.
     try wb.commands.execute("workbench.action.compareEditor.refreshDiff");
     try std.testing.expectEqual(tab, wb.activeTab().?);
+    try wb.commands.execute("workbench.action.compareEditor.focusSecondarySide");
+    try std.testing.expectEqual(widget.original_editor, widget.focusedEditor());
+    try wb.commands.execute("workbench.action.compareEditor.focusOtherSide");
+    try std.testing.expectEqual(widget.modified_editor, widget.focusedEditor());
+    try wb.commands.execute("diffEditor.setViewMode.inline");
+    try std.testing.expect(tab.diff.?.widget.inline_mode);
+    try wb.commands.execute("diffEditor.setViewMode.sideBySide");
+    try std.testing.expect(tab.diff.?.widget.sideBySide());
+    try wb.commands.execute("toggle.diff.ignoreTrimWhitespace");
+    try std.testing.expect(!tab.diff.?.widget.options.ignore_trim_whitespace);
 }
 
 fn chooseContextMenuItem(wb: *Workbench, label: []const u8) !void {

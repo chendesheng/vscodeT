@@ -3405,6 +3405,7 @@ pub const TerminalWorkbench = struct {
         const geometry_value = self.geometry();
         self.workbench_context.updateWindowContext(.{
             .active_editor = if (active) |tab| if (!tab.isDiff()) tab.editor else null else null,
+            .active_diff = if (active) |tab| tab.isDiff() else false,
             .language_visible = text_editor,
             .language_id = if (text_editor) active.?.editor.languageId() else "",
             .custom_editor_id = if (markdown_preview and active.?.file_input != null) "vscode.markdown.preview.editor" else "",
