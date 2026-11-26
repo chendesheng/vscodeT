@@ -645,12 +645,26 @@ pub const CellGrid = struct {
         width: usize,
         height: usize,
     ) !void {
-        if (dest_col >= self.cols or dest_row >= self.rows) return;
+        return self.blitRows(source, dest_col, dest_row, 0, width, height);
+    }
+
+    /// Composites a vertically clipped source viewport. The source row offset
+    /// keeps the source's original layout and view-local scroll coordinates.
+    pub fn blitRows(
+        self: *CellGrid,
+        source: *const CellGrid,
+        dest_col: usize,
+        dest_row: usize,
+        source_row: usize,
+        width: usize,
+        height: usize,
+    ) !void {
+        if (dest_col >= self.cols or dest_row >= self.rows or source_row >= source.rows) return;
         const copy_width = @min(width, @min(source.cols, self.cols - dest_col));
-        const copy_height = @min(height, @min(source.rows, self.rows - dest_row));
+        const copy_height = @min(height, @min(source.rows - source_row, self.rows - dest_row));
         var row: usize = 0;
         while (row < copy_height) : (row += 1) {
-            const source_start = row * source.cols;
+            const source_start = (source_row + row) * source.cols;
             const dest_start = (dest_row + row) * self.cols + dest_col;
             @memcpy(self.cluster[dest_start .. dest_start + copy_width], source.cluster[source_start .. source_start + copy_width]);
             @memcpy(self.fg[dest_start .. dest_start + copy_width], source.fg[source_start .. source_start + copy_width]);

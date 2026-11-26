@@ -238,3 +238,23 @@ test "CellGrid grapheme equality compares the bytes" {
     try b.putGrapheme(0, 0, "e\u{302}", 1, .{});
     try std.testing.expect(!CellGrid.sameCell(&a, 0, &b, 0));
 }
+
+test "CellGrid blitRows clips vertically without changing source coordinates or attributes" {
+    const allocator = std.testing.allocator;
+    var source = try CellGrid.init(allocator, 3, 4);
+    defer source.deinit();
+    var dest = try CellGrid.init(allocator, 5, 3);
+    defer dest.deinit();
+    source.putCodepoint(0, 0, 'a', 1, .{});
+    source.putCodepoint(0, 1, 'b', 1, .{});
+    try source.putGrapheme(1, 1, "e\u{301}", 1, .{});
+    source.addBorder(2, 1, cell_border.Segment.bottom, .{ .width = 16, .color = .default_fg });
+    source.putCodepoint(0, 2, 'c', 1, .{});
+    source.putCodepoint(0, 3, 'd', 1, .{});
+    try dest.blitRows(&source, 1, 1, 1, 3, 3);
+    try std.testing.expect(CellGrid.sameCell(&source, source.index(0, 1), &dest, dest.index(1, 1)));
+    try std.testing.expect(CellGrid.sameCell(&source, source.index(1, 1), &dest, dest.index(2, 1)));
+    try std.testing.expect(CellGrid.sameCell(&source, source.index(2, 1), &dest, dest.index(3, 1)));
+    try std.testing.expect(CellGrid.sameCell(&source, source.index(0, 2), &dest, dest.index(1, 2)));
+    try std.testing.expectEqual(@as(u32, 0), dest.cluster[dest.index(1, 0)]);
+}
