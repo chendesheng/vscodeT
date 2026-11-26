@@ -32,6 +32,8 @@ pub const QuickDiffActionContext = struct {
     changes: []const quick.IChange,
     index: usize,
     mappings: []const model_mod.DetailedLineRangeMapping,
+    all_changes: []const model_mod.QuickDiffChange,
+    baselines: []const quick.QuickDiff,
     original_model: *model_mod.TextModel,
     modified_editor: *editor_mod.Editor,
 };
@@ -309,7 +311,7 @@ pub const QuickDiffWidget = struct {
             try changes.append(c.allocator, change.change);
             try mappings.append(c.allocator, change.change2);
         }
-        const argument: QuickDiffActionContext = .{ .modifiedUri = c.view.editor.model.uri(), .originalUri = embedded.widget.original_editor.model.uri(), .changes = changes.items, .index = selected orelse return error.InvalidDiff, .mappings = mappings.items, .original_model = embedded.widget.original_editor.model, .modified_editor = c.view.editor };
+        const argument: QuickDiffActionContext = .{ .modifiedUri = c.view.editor.model.uri(), .originalUri = embedded.widget.original_editor.model.uri(), .changes = changes.items, .index = selected orelse return error.InvalidDiff, .mappings = mappings.items, .all_changes = c.model.all_changes.items, .baselines = c.model.quick_diffs, .original_model = embedded.widget.original_editor.model, .modified_editor = c.view.editor };
         for (resolved.groups) |group| for (group.actions) |action| {
             if (!std.mem.eql(u8, action.id(), id) or !action.enabled()) continue;
             const item = menu_service.MenuItemAction.from(action) orelse continue;

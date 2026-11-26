@@ -299,13 +299,19 @@ const QuickPick = @import("../../../vs/platform/quickinput/browser/quickInput.zi
 const QuickPickItem = @import("../../../vs/platform/quickinput/common/quickInput.zig").QuickPickItem;
 const Model = @import("model.zig").Model;
 
+const staging = @import("staging.zig");
+const QuickDiffActionContext = @import("../../../vs/workbench/contrib/scm/browser/quickDiffWidget.zig").QuickDiffActionContext;
 const HunkContext = @import("../../../vs/editor/browser/widget/diffEditor/features/gutterFeature.zig").DiffEditorSelectionHunkToolbarContext;
 const CommandArgument = @import("../../../vs/platform/commands/common/commands.zig").CommandArgument;
 const Expr = @import("../../../vs/platform/contextkey/common/contextkey.zig").Expr;
 const stageable_diff = Expr{ .Regex = .{ .key = "diffEditorOriginalUri", .source = "^git:.*%22ref%22%3A%22~%22%7D$", .flags = "" } };
+const stageable_quick_diff = Expr{ .Regex = .{ .key = "originalResource", .source = "^git:.*%22ref%22%3A%22%22%7D$", .flags = "" } };
 const git_enabled = Expr{ .Defined = "config.git.enabled" };
 const git_available = Expr{ .Not = "git.missing" };
 const git_repository_open = Expr{ .NotEquals = .{ .key = "gitOpenRepositoryCount", .value = .{ .string = "0" } } };
+const quick_diff_visible = Expr{ .And = @constCast(&[_]*const Expr{ &git_enabled, &git_available, &stageable_quick_diff }) };
+const not_operation = Expr{ .Not = "operationInProgress" };
+const unstage_quick_diff_visible = Expr{ .False = {} };
 const stageable_diff_palette = Expr{ .And = @constCast(&[_]*const Expr{ &git_enabled, &git_available, &git_repository_open, &stageable_diff }) };
 
 pub const CommandContribution = struct {
@@ -509,7 +515,77 @@ pub const CommandContribution = struct {
 
     fn diffStageWithoutContext(_: *anyopaque, _: ServicesAccessor) !void {}
 
-    pub fn diffActions(self: *CommandContribution) [2]platform_actions.Action2 {
+    fn gitRef(allocator: Allocator, uri: std.Uri) !?[]const u8 {
+        if (!std.mem.eql(u8, uri.scheme, "git")) return null;
+        const query = (uri.query orelse return null).toRawMaybeAlloc(allocator) catch return null;
+        const value = std.json.parseFromSliceLeaky(struct { ref: []const u8 }, allocator, query, .{ .ignore_unknown_fields = true, .allocate = .alloc_always }) catch return null;
+        return value.ref;
+    }
+
+    fn quickDiffChange(comptime operation: enum { stage, revert, unstage }) platform_actions.ActionRunWithArgument {
+        return struct {
+            fn run(context: *anyopaque, _: ServicesAccessor, argument: CommandArgument) !void {
+                const self: *CommandContribution = @ptrCast(@alignCast(context));
+                const changes = argument.as(QuickDiffActionContext) orelse return error.InvalidArgument;
+                if (!std.mem.eql(u8, changes.modifiedUri.scheme, "file") or changes.index >= changes.changes.len) return;
+                const provider = self.model.repository orelse return error.NoRepository;
+                var temp = std.heap.ArenaAllocator.init(self.allocator);
+                defer temp.deinit();
+                const a = temp.allocator();
+                const ref = (try gitRef(a, changes.originalUri)) orelse return;
+                if (operation != .unstage and ref.len != 0 and !std.mem.eql(u8, ref, "~")) return;
+                const editor = changes.modified_editor;
+                const path = try changes.modifiedUri.path.toRawMaybeAlloc(a);
+                const selected = changes.changes[changes.index];
+                switch (operation) {
+                    .stage => {
+                        const text = try staging.applyLineChanges(a, changes.original_model, editor.model, &.{selected});
+                        try provider.stage(path, text, editor.getEncoding());
+                    },
+                    .revert => {
+                        if (editor.isReadOnly()) return error.ReadOnly;
+                        var remaining: std.ArrayList(staging.LineChange) = .empty;
+                        try remaining.appendSlice(a, changes.changes[0..changes.index]);
+                        try remaining.appendSlice(a, changes.changes[changes.index + 1 ..]);
+                        const text = try staging.applyLineChanges(a, changes.original_model, editor.model, remaining.items);
+                        const scroll = editor.scrollTop();
+                        editor.beginUndoGroup();
+                        {
+                            defer editor.endUndoGroup();
+                            try editor.applyTextEdits(&.{.{ .range = editor.model.getFullModelRange(), .text = text }}, &.{});
+                        }
+                        try editor.save();
+                        _ = editor.setScrollTop(scroll);
+                    },
+                    .unstage => {
+                        if (!std.mem.eql(u8, ref, "HEAD")) return;
+                        var working_provider: ?[]const u8 = null;
+                        for (changes.baselines) |baseline| {
+                            const resource = baseline.original.resource_uri orelse continue;
+                            const baseline_ref = (try gitRef(a, std.Uri.parse(resource) catch continue)) orelse continue;
+                            if (baseline_ref.len == 0 or std.mem.eql(u8, baseline_ref, "~")) {
+                                working_provider = baseline.id;
+                                break;
+                            }
+                        }
+                        const working = working_provider orelse return;
+                        var inverted: std.ArrayList(staging.LineChange) = .empty;
+                        try inverted.append(a, staging.invertLineChange(selected));
+                        for (changes.all_changes) |change| {
+                            if (std.mem.eql(u8, change.provider_id, working)) try inverted.append(a, staging.invertLineChange(change.change));
+                        }
+                        std.mem.sort(staging.LineChange, inverted.items, {}, staging.compareLineChanges);
+                        const text = try staging.applyLineChanges(a, editor.model, changes.original_model, inverted.items);
+                        try provider.stage(path, text, editor.getEncoding());
+                    },
+                }
+                if (operation != .unstage) try editor.setCursorPosition(.init(@min(selected.modifiedStartLineNumber +| 1, editor.model.getLineCount()), 1));
+                self.host.refresh_resources(self.host.context);
+            }
+        }.run;
+    }
+
+    pub fn diffActions(self: *CommandContribution) [5]platform_actions.Action2 {
         return .{
             .{
                 .command = .{ .id = "git.diff.stageHunk", .title = "Stage Block", .category = "Git", .icon = "plus", .precondition = &stageable_diff_palette },
@@ -526,6 +602,27 @@ pub const CommandContribution = struct {
                 .context = self,
                 .run_fn = diffStageWithoutContext,
                 .run_with_argument_fn = diffStageHunkOrSelection,
+            },
+            .{
+                .command = .{ .id = "git.stageChange", .title = "Stage Change", .category = "Git", .icon = "add", .precondition = &not_operation },
+                .menus = &.{.{ .id = platform_actions.menu_ids.SCMChangeContext, .when = &quick_diff_visible }},
+                .context = self,
+                .run_fn = diffStageWithoutContext,
+                .run_with_argument_fn = quickDiffChange(.stage),
+            },
+            .{
+                .command = .{ .id = "git.revertChange", .title = "Revert Change", .category = "Git", .icon = "discard", .precondition = &not_operation },
+                .menus = &.{.{ .id = platform_actions.menu_ids.SCMChangeContext, .when = &quick_diff_visible }},
+                .context = self,
+                .run_fn = diffStageWithoutContext,
+                .run_with_argument_fn = quickDiffChange(.revert),
+            },
+            .{
+                .command = .{ .id = "git.unstageChange", .title = "Unstage Change", .category = "Git", .icon = "remove", .precondition = &not_operation },
+                .menus = &.{.{ .id = platform_actions.menu_ids.SCMChangeContext, .when = &unstage_quick_diff_visible }},
+                .context = self,
+                .run_fn = diffStageWithoutContext,
+                .run_with_argument_fn = quickDiffChange(.unstage),
             },
         };
     }

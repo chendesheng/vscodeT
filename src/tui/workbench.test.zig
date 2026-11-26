@@ -10598,3 +10598,93 @@ test "Workbench: panel title menu follows maximization and alignment context eve
     try std.testing.expect(terminal_workbench.handlePanelMouse(wb, &click));
     try std.testing.expect(!wb.layout.isVisible(.panel));
 }
+
+test "Workbench: git scm integration peek actions stage and revert only the selected change" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = root_buffer[0..try tmp.dir.realPath(io, &root_buffer)];
+    if (!try runGitTest(a, root, &.{"init"})) return error.SkipZigTest;
+    try std.testing.expect(try runGitTest(a, root, &.{ "config", "core.autocrlf", "false" }));
+    _ = try runGitTest(a, root, &.{ "config", "user.name", "Test User" });
+    _ = try runGitTest(a, root, &.{ "config", "user.email", "test@example.com" });
+    const original = "one\ntwo\nthree\nfour\nfive\nsix\n";
+    const modified = "one\nTWO\nthree\nfour\nfive\nSIX\n";
+    const partial = "one\nTWO\nthree\nfour\nfive\nsix\n";
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = original });
+    if (!try runGitTest(a, root, &.{ "add", "a.txt" })) return error.SkipZigTest;
+    if (!try runGitTest(a, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "initial" })) return error.SkipZigTest;
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = modified });
+    const path = try std.fs.path.join(a, &.{ root, "a.txt" });
+    defer a.free(path);
+    const window = try TestWindow.init(a, io, &.{path}, 100, 30);
+    defer window.deinit();
+    const workbench = window.workbench;
+    const settings = try std.fs.path.join(a, &.{ root, ".git", "test-settings.json" });
+    defer a.free(settings);
+    try workbench.setUserSettingsPaths(&.{settings});
+    try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
+    try workbench.initGit();
+    const provider = workbench.git_model.repository.?;
+    const entry = workbench.scm.quick_diff_controller.?.entries.items[0];
+    const primary = provider.quickDiffProviders()[0].id;
+    const controller = entry.peek_controller.?;
+    const tab = workbench.activeTab().?;
+    const Harness = struct {
+        fn wait(wb: *Workbench, item: *@import("../vs/workbench/contrib/scm/browser/quickDiffDecorator.zig").Entry, id: []const u8, count: usize) !void {
+            for (0..5000) |_| {
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                if (item.model.quick_diff_changes.get(id)) |indices| {
+                    if (indices.items.len == count) return;
+                }
+                std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+            }
+            return error.TestExpectedQuickDiffChanges;
+        }
+        fn button(pane: *Tab, peek: *@import("../vs/workbench/contrib/scm/browser/quickDiffWidget.zig").QuickDiffWidget, id: []const u8) !void {
+            var child = peek.peek.action_bar.?.first_child;
+            const node = while (child) |item| : (child = item.next) {
+                if (std.mem.eql(u8, item.getAttribute("data-peek-action") orelse "", id)) break item;
+            } else return error.TestExpectedPeekAction;
+            const rect = node.kind.element.rect;
+            const surface = pane.view.surfaceContext();
+            var click: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = ui.cell.snap(rect.x) + 1 - surface.x, .y = ui.cell.snap(rect.y) - surface.y };
+            _ = try pane.view.dispatchMouse(&click);
+            try std.testing.expect(click.default_prevented);
+        }
+    };
+    try Harness.wait(workbench, entry, primary, 2);
+    var frame: std.Io.Writer.Allocating = .init(a);
+    defer frame.deinit();
+    try renderFrame(workbench, &frame.writer);
+    try controller.navigate(true, 2);
+    try renderFrame(workbench, &frame.writer);
+    try Harness.button(tab, controller.widget.?, "git.stageChange");
+    try std.testing.expect(controller.widget == null);
+    try std.testing.expectEqual(tab, workbench.activeTab().?);
+    const index = (try provider.git.?.readRef(root, "a.txt", .index)).?;
+    defer a.free(index);
+    try std.testing.expectEqualStrings(partial, index);
+    const unchanged = try tmp.dir.readFileAlloc(io, "a.txt", a, .limited(1024));
+    defer a.free(unchanged);
+    try std.testing.expectEqualStrings(modified, unchanged);
+    try Harness.wait(workbench, entry, primary, 1);
+    try controller.navigate(true, 6);
+    try std.testing.expectEqualStrings(primary, controller.widget.?.provider_id);
+    try renderFrame(workbench, &frame.writer);
+    try Harness.button(tab, controller.widget.?, "git.revertChange");
+    try std.testing.expect(controller.widget == null);
+    const saved = try tmp.dir.readFileAlloc(io, "a.txt", a, .limited(1024));
+    defer a.free(saved);
+    try std.testing.expectEqualStrings(partial, saved);
+    var contents = try tab.editor.model.getValue(null, false);
+    defer contents.deinit();
+    try std.testing.expectEqualStrings(partial, contents.items);
+    try tab.editor.undo();
+    var restored = try tab.editor.model.getValue(null, false);
+    defer restored.deinit();
+    try std.testing.expectEqualStrings(modified, restored.items);
+}
