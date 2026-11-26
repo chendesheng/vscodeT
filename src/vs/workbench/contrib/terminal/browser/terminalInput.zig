@@ -160,6 +160,7 @@ fn keyFor(key: ui.Key) Input.Key {
         .page_up => .page_up,
         .page_down => .page_down,
         .f1 => .f1,
+        .f7 => .f7,
         .f12 => .f12,
     };
 }
