@@ -285,6 +285,9 @@ pub const QuickDiffModel = struct {
     pending: ?*DiffRequest = null,
     resolver: model_resolver.ITextModelService,
     resolving: ?*PendingOriginals = null,
+    provider_query: ?@import("../../../../base/common/lifecycle.zig").IDisposable = null,
+    query_worker: ?*worker_service.EditorWorkerService = null,
+    query_now_ms: i64 = 0,
     original_models: std.StringHashMapUnmanaged(*OriginalModel) = .empty,
     ignore_trim_whitespace: bool = true,
 
@@ -522,6 +525,8 @@ pub const QuickDiffModel = struct {
         if (self.providers_listener) |id| self.service.on_did_change_providers.unlisten(id);
         if (self.repository_listener) |id| self.repository_resources.?.unlisten(id);
         if (self.pending) |request| request.owner = null;
+        if (self.provider_query) |request| request.dispose();
+        self.provider_query = null;
         if (self.resolving) |pending| pending.destroy();
         self.resolving = null;
         var original_iterator = self.original_models.valueIterator();
@@ -548,7 +553,7 @@ pub const QuickDiffModel = struct {
     pub fn triggerDiff(self: *QuickDiffModel, now_ms: i64) void {
         if (self.disposed) return;
         self.due_at = now_ms + 200;
-        if (self.pending == null and self.resolving == null) self.scheduler.schedule(self.due_at);
+        if (self.pending == null and self.resolving == null and self.provider_query == null) self.scheduler.schedule(self.due_at);
     }
 
     pub fn attachWindow(self: *QuickDiffModel, window: *@import("../../../../base/common/windowDispatch.zig").Queue, worker: *worker_service.EditorWorkerService) void {
@@ -563,9 +568,33 @@ pub const QuickDiffModel = struct {
 
     pub fn runScheduledDiff(self: *QuickDiffModel, worker: *worker_service.EditorWorkerService, now_ms: i64) bool {
         const due = self.due_at orelse return false;
-        if (now_ms < due or self.pending != null or self.resolving != null) return false;
+        if (now_ms < due or self.pending != null or self.resolving != null or self.provider_query != null) return false;
         self.due_at = null;
-        const originals = self.getOriginals() catch return false;
+        if (self.model.isTooLargeForSyncing()) return self.startOriginals(&.{}, worker, now_ms);
+        const query = self.service.requestQuickDiffs(self.allocator, self.model.uri(), self.model.getLanguageId(), true, .{ .context = self, .complete = providerQueryComplete }) catch return false;
+        switch (query) {
+            .ready => |originals| return self.startOriginals(originals, worker, now_ms),
+            .pending => |request| {
+                self.provider_query = request;
+                self.query_worker = worker;
+                self.query_now_ms = now_ms;
+                return false;
+            },
+        }
+    }
+
+    fn providerQueryComplete(context: *anyopaque, result: quick_diff.QuickDiffQueryResult) void {
+        const self: *QuickDiffModel = @ptrCast(@alignCast(context));
+        self.provider_query = null;
+        const worker = self.query_worker.?;
+        self.query_worker = null;
+        switch (result) {
+            .resolved => |originals| _ = self.startOriginals(originals, worker, self.query_now_ms),
+            .failure => self.scheduler.schedule(self.due_at),
+        }
+    }
+
+    fn startOriginals(self: *QuickDiffModel, originals: []QuickDiff, worker: *worker_service.EditorWorkerService, now_ms: i64) bool {
         const pending = PendingOriginals.create(self, originals, worker, now_ms) catch {
             freeQuickDiffsArray(self.allocator, originals);
             return false;
@@ -677,10 +706,6 @@ pub const QuickDiffModel = struct {
         }
         if (self.quick_diffs.len > 0) self.allocator.free(self.quick_diffs);
         self.quick_diffs = &.{};
-    }
-
-    fn getOriginals(self: *QuickDiffModel) ![]QuickDiff {
-        return if (self.model.isTooLargeForSyncing()) &.{} else try self.service.getQuickDiffs(self.allocator, self.model.uri(), self.model.getLanguageId(), true);
     }
 
     /// Transfer the provider descriptors and capture immutable worker input

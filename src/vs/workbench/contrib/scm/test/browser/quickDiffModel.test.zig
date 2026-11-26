@@ -100,9 +100,15 @@ const ModelProvider = struct {
     base: QuickDiffProvider,
     uri: ?[]u8,
     reference: ?ModelReference,
+    pending_listener: ?quick_diff.OriginalListener = null,
+    pending_allocator: ?Allocator = null,
+    canceled: usize = 0,
 
     fn init(self: *ModelProvider, allocator: Allocator, resolver: *Resolver, id: []const u8, kind: QuickDiffProviderKind, content: ?[]const u8) !void {
         self.allocator = allocator;
+        self.pending_listener = null;
+        self.pending_allocator = null;
+        self.canceled = 0;
         self.uri = if (content != null) try std.fmt.allocPrint(allocator, "test-quickdiff:/{s}", .{id}) else null;
         errdefer if (self.uri) |uri| allocator.free(uri);
         self.reference = if (self.uri) |uri| try resolver.createResolvedModelReference(try std.Uri.parse(uri), "original.zig", content.?, true) else null;
@@ -118,6 +124,29 @@ const ModelProvider = struct {
     fn deinit(self: *ModelProvider) void {
         if (self.reference) |*reference| reference.dispose();
         if (self.uri) |uri| self.allocator.free(uri);
+    }
+
+    fn requestDeferred(context: *anyopaque, allocator: Allocator, _: std.Uri, listener: quick_diff.OriginalListener) anyerror!quick_diff.OriginalResolution {
+        const self: *ModelProvider = @ptrCast(@alignCast(context));
+        if (self.pending_listener != null) return error.RequestAlreadyPending;
+        self.pending_listener = listener;
+        self.pending_allocator = allocator;
+        return .{ .pending = @import("../../../../../base/common/lifecycle.zig").IDisposable.from(ModelProvider, self, cancelDeferred) };
+    }
+
+    fn cancelDeferred(self: *ModelProvider) void {
+        self.pending_listener = null;
+        self.pending_allocator = null;
+        self.canceled += 1;
+    }
+
+    fn finishDeferred(self: *ModelProvider) !void {
+        const listener = self.pending_listener orelse return error.RequestCanceled;
+        const allocator = self.pending_allocator.?;
+        self.pending_listener = null;
+        self.pending_allocator = null;
+        const result = try getOriginal(self, allocator, try std.Uri.parse("file:/modified.txt"));
+        listener.complete(listener.context, result);
     }
 
     fn getOriginal(context: *anyopaque, allocator: Allocator, resource: std.Uri) anyerror!?quick_diff.Original {
@@ -471,4 +500,37 @@ test "QuickDiffModelService: canonical resource and options share model lifetime
     second.dispose();
     try std.testing.expectEqual(@as(usize, 0), models.references.count());
     try std.testing.expectEqual(@as(usize, 0), resources.listenerCount());
+}
+
+test "quickDiffModel: asynchronous provider promises precede model resolution and cancel on disposal" {
+    var harness: Harness = undefined;
+    try harness.init("modified", "plaintext");
+    defer harness.deinit();
+    const provider = try harness.addProvider("deferred", .contributed, "original");
+    provider.base.request_original_fn = ModelProvider.requestDeferred;
+    provider.base.get_original_fn = null;
+
+    harness.quick_model.triggerDiff(time.milliTimestamp());
+    _ = harness.quick_model.runScheduledDiff(&harness.worker, harness.quick_model.due_at.?);
+    try std.testing.expect(harness.quick_model.provider_query != null);
+    try std.testing.expect(harness.quick_model.resolving == null);
+    try std.testing.expect(harness.quick_model.pending == null);
+    try std.testing.expect(provider.pending_listener != null);
+    try provider.finishDeferred();
+    try std.testing.expect(harness.quick_model.provider_query == null);
+    try std.testing.expect(harness.quick_model.resolving != null);
+    try harness.resolveOriginals();
+    if (harness.quick_model.pending != null) {
+        harness.worker.waitForReply();
+        _ = harness.worker.dispatchReplies();
+    }
+    try std.testing.expectEqual(@as(usize, 1), harness.quick_model.changes.items.len);
+    try std.testing.expectEqualStrings("deferred", harness.quick_model.changes.items[0].provider_id);
+
+    var closed = QuickDiffModel.init(harness.allocator, harness.model.model, harness.service.interface(), harness.resolver.interface(), .{});
+    _ = closed.runScheduledDiff(&harness.worker, closed.due_at.?);
+    try std.testing.expect(closed.provider_query != null);
+    closed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), provider.canceled);
+    try std.testing.expectError(error.RequestCanceled, provider.finishDeferred());
 }

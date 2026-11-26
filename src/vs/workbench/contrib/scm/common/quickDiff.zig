@@ -39,6 +39,15 @@ pub const Original = struct {
     }
 };
 
+/// The promise boundary for a provider can resolve immediately (native Git)
+/// or deliver a result later (extension-host RPC). Cancelling a pending
+/// request detaches its listener; a provider must not invoke it afterward.
+pub const OriginalResolution = union(enum) { ready: ?Original, pending: IDisposable };
+pub const OriginalListener = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, ?Original) void,
+};
+
 pub const QuickDiffProvider = struct {
     context: *anyopaque,
     id: []const u8,
@@ -48,10 +57,13 @@ pub const QuickDiffProvider = struct {
     kind: QuickDiffProviderKind = .contributed,
     /// Returns the original resource for `resource`, or null when the provider
     /// has no baseline. The returned value owns its slices.
-    get_original_fn: *const fn (context: *anyopaque, allocator: Allocator, resource: std.Uri) anyerror!?Original,
+    get_original_fn: ?*const fn (context: *anyopaque, allocator: Allocator, resource: std.Uri) anyerror!?Original = null,
+    request_original_fn: ?*const fn (context: *anyopaque, allocator: Allocator, resource: std.Uri, listener: OriginalListener) anyerror!OriginalResolution = null,
 
-    pub fn getOriginalResource(self: QuickDiffProvider, allocator: Allocator, resource: std.Uri) !?Original {
-        return self.get_original_fn(self.context, allocator, resource);
+    pub fn requestOriginalResource(self: QuickDiffProvider, allocator: Allocator, resource: std.Uri, listener: OriginalListener) !OriginalResolution {
+        if (self.request_original_fn) |request| return request(self.context, allocator, resource, listener);
+        if (self.get_original_fn) |get| return .{ .ready = try get(self.context, allocator, resource) };
+        return .{ .ready = null };
     }
 };
 
@@ -68,6 +80,13 @@ pub const QuickDiff = struct {
         self.* = undefined;
     }
 };
+
+pub const QuickDiffQueryResult = union(enum) { resolved: []QuickDiff, failure: anyerror };
+pub const QuickDiffQueryListener = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, QuickDiffQueryResult) void,
+};
+pub const QuickDiffQuery = union(enum) { ready: []QuickDiff, pending: IDisposable };
 
 pub const QuickDiffChange = struct {
     provider_id: []const u8,
@@ -93,13 +112,14 @@ pub const IQuickDiffService = struct {
     context: *anyopaque,
     providers_fn: *const fn (context: *anyopaque) []const *QuickDiffProvider,
     add_quick_diff_provider_fn: *const fn (context: *anyopaque, provider: *QuickDiffProvider) anyerror!IDisposable,
-    get_quick_diffs_fn: *const fn (
+    request_quick_diffs_fn: *const fn (
         context: *anyopaque,
         allocator: Allocator,
         resource: std.Uri,
         language: ?[]const u8,
         is_synchronized: bool,
-    ) anyerror![]QuickDiff,
+        listener: QuickDiffQueryListener,
+    ) anyerror!QuickDiffQuery,
     toggle_visibility_fn: *const fn (context: *anyopaque, id: []const u8) void,
     is_visible_fn: *const fn (context: *anyopaque, id: []const u8) bool,
     on_did_change_providers: *Emitter(void),
@@ -112,14 +132,25 @@ pub const IQuickDiffService = struct {
         return self.add_quick_diff_provider_fn(self.context, provider);
     }
 
-    pub fn getQuickDiffs(
-        self: IQuickDiffService,
-        allocator: Allocator,
-        resource: std.Uri,
-        language: ?[]const u8,
-        is_synchronized: bool,
-    ) ![]QuickDiff {
-        return self.get_quick_diffs_fn(self.context, allocator, resource, language, is_synchronized);
+    pub fn requestQuickDiffs(self: IQuickDiffService, allocator: Allocator, resource: std.Uri, language: ?[]const u8, is_synchronized: bool, listener: QuickDiffQueryListener) !QuickDiffQuery {
+        return self.request_quick_diffs_fn(self.context, allocator, resource, language, is_synchronized, listener);
+    }
+
+    /// Immediate-only convenience for native provider tests. It uses the
+    /// same promise barrier as real consumers, never a second lookup path.
+    pub fn getQuickDiffs(self: IQuickDiffService, allocator: Allocator, resource: std.Uri, language: ?[]const u8, is_synchronized: bool) ![]QuickDiff {
+        const query = try self.requestQuickDiffs(allocator, resource, language, is_synchronized, .{ .context = @constCast(&{}), .complete = struct {
+            fn complete(_: *anyopaque, _: QuickDiffQueryResult) void {
+                unreachable;
+            }
+        }.complete });
+        switch (query) {
+            .ready => |result| return result,
+            .pending => |request| {
+                request.dispose();
+                return error.AsynchronousQuickDiffProvider;
+            },
+        }
     }
 
     pub fn toggleQuickDiffProviderVisibility(self: IQuickDiffService, id: []const u8) void {

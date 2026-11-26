@@ -1,8 +1,8 @@
 // Port of `src/vs/workbench/contrib/scm/common/quickDiffService.ts`.
 //
 // Terminal adaptations:
-// - `Promise<QuickDiff[]>` becomes a synchronous `![]QuickDiff`; the git CLI
-//   delegate is local and bounded by its command deadline.
+// - The upstream promise aggregation is a callback-backed, cancellable query;
+//   synchronous native providers resolve their slots immediately.
 // - The hidden-provider set is persisted through the in-memory storage service
 //   under the upstream key, serialized as a JSON array.
 // - Provider matching and selectors use the actual text-model std.Uri.
@@ -128,13 +128,14 @@ pub const QuickDiffService = struct {
         }
     }
 
-    pub fn getQuickDiffs(
+    pub fn requestQuickDiffs(
         self: *QuickDiffService,
         allocator: Allocator,
         resource: std.Uri,
         language: ?[]const u8,
         is_synchronized: bool,
-    ) ![]QuickDiff {
+        listener: quick_diff.QuickDiffQueryListener,
+    ) !quick_diff.QuickDiffQuery {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const scratch = arena.allocator();
@@ -156,33 +157,121 @@ pub const QuickDiffService = struct {
             }
         }.lessThan);
 
-        var result = std.array_list.Managed(QuickDiff).init(allocator);
-        errdefer {
-            for (result.items) |*entry| entry.deinit(allocator);
-            result.deinit();
-        }
         const candidate = try language_selector.candidateFromUri(scratch, resource, language orelse "", is_synchronized);
+        var matching: std.ArrayList(*QuickDiffProvider) = .empty;
+        defer matching.deinit(allocator);
         for (candidates.items) |provider| {
             const score_value: i32 = if (provider.selector) |selector|
                 language_selector.score(scratch, selector, candidate) catch 0
             else
                 10;
-            if (score_value <= 0) continue;
-            var original = (provider.getOriginalResource(allocator, resource) catch continue) orelse continue;
-            errdefer original.deinit(allocator);
-            const id = try allocator.dupe(u8, provider.id);
-            errdefer allocator.free(id);
-            const label = try allocator.dupe(u8, provider.label);
-            errdefer allocator.free(label);
-            try result.append(.{
-                .id = id,
-                .label = label,
-                .original = original,
-                .kind = provider.kind,
-            });
+            if (score_value > 0) try matching.append(allocator, provider);
         }
-        return result.toOwnedSlice();
+        const query = try PendingQuery.create(allocator, matching.items, listener);
+        return query.start(matching.items, resource);
     }
+
+    pub fn getQuickDiffs(self: *QuickDiffService, allocator: Allocator, resource: std.Uri, language: ?[]const u8, is_synchronized: bool) ![]QuickDiff {
+        return self.interface().getQuickDiffs(allocator, resource, language, is_synchronized);
+    }
+
+    /// Equivalent of upstream Promise.allSettled. Each slot owns its
+    /// provider metadata independently of the registration, so completion
+    /// order and provider disposal cannot change the published ordering.
+    const PendingQuery = struct {
+        allocator: Allocator,
+        listener: quick_diff.QuickDiffQueryListener,
+        slots: []Slot,
+        remaining: usize = 0,
+
+        const Slot = struct {
+            owner: *PendingQuery,
+            id: ?[]u8 = null,
+            label: ?[]u8 = null,
+            kind: QuickDiffProviderKind = .contributed,
+            original: ?quick_diff.Original = null,
+            request: ?IDisposable = null,
+
+            fn complete(context: *anyopaque, original: ?quick_diff.Original) void {
+                const self: *Slot = @ptrCast(@alignCast(context));
+                const owner = self.owner;
+                self.request = null;
+                self.original = original;
+                owner.remaining -= 1;
+                if (owner.remaining == 0) owner.finish();
+            }
+
+            fn deinit(self: *Slot) void {
+                if (self.request) |request| request.dispose();
+                if (self.original) |*original| original.deinit(self.owner.allocator);
+                if (self.id) |id| self.owner.allocator.free(id);
+                if (self.label) |label| self.owner.allocator.free(label);
+            }
+        };
+
+        fn create(allocator: Allocator, candidates: []const *QuickDiffProvider, listener: quick_diff.QuickDiffQueryListener) !*PendingQuery {
+            const self = try allocator.create(PendingQuery);
+            errdefer allocator.destroy(self);
+            const slots = try allocator.alloc(Slot, candidates.len);
+            errdefer allocator.free(slots);
+            self.* = .{ .allocator = allocator, .listener = listener, .slots = slots };
+            for (slots) |*slot| slot.* = .{ .owner = self };
+            errdefer for (slots) |*slot| slot.deinit();
+            for (slots, candidates) |*slot, provider| {
+                slot.id = try allocator.dupe(u8, provider.id);
+                slot.label = try allocator.dupe(u8, provider.label);
+                slot.kind = provider.kind;
+            }
+            return self;
+        }
+
+        fn start(self: *PendingQuery, candidates: []const *QuickDiffProvider, resource: std.Uri) !quick_diff.QuickDiffQuery {
+            for (self.slots, candidates) |*slot, provider| {
+                const resolution = provider.requestOriginalResource(self.allocator, resource, .{ .context = slot, .complete = Slot.complete }) catch continue;
+                switch (resolution) {
+                    .ready => |original| slot.original = original,
+                    .pending => |request| {
+                        slot.request = request;
+                        self.remaining += 1;
+                    },
+                }
+            }
+            if (self.remaining != 0) return .{ .pending = IDisposable.from(PendingQuery, self, destroy) };
+            defer self.destroy();
+            return .{ .ready = try self.collect() };
+        }
+
+        fn collect(self: *PendingQuery) ![]QuickDiff {
+            var count: usize = 0;
+            for (self.slots) |slot| if (slot.original != null) {
+                count += 1;
+            };
+            const results = try self.allocator.alloc(QuickDiff, count);
+            var i: usize = 0;
+            for (self.slots) |*slot| if (slot.original) |original| {
+                results[i] = .{ .id = slot.id.?, .label = slot.label.?, .kind = slot.kind, .original = original };
+                slot.id = null;
+                slot.label = null;
+                slot.original = null;
+                i += 1;
+            };
+            return results;
+        }
+
+        fn finish(self: *PendingQuery) void {
+            const listener = self.listener;
+            const result: quick_diff.QuickDiffQueryResult = if (self.collect()) |values| .{ .resolved = values } else |err| .{ .failure = err };
+            self.destroy();
+            listener.complete(listener.context, result);
+        }
+
+        fn destroy(self: *PendingQuery) void {
+            const allocator = self.allocator;
+            for (self.slots) |*slot| slot.deinit();
+            allocator.free(self.slots);
+            allocator.destroy(self);
+        }
+    };
 
     pub fn toggleQuickDiffProviderVisibility(self: *QuickDiffService, id: []const u8) void {
         if (self.isQuickDiffProviderVisible(id)) {
@@ -207,7 +296,7 @@ pub const QuickDiffService = struct {
             .context = self,
             .providers_fn = providersThunk,
             .add_quick_diff_provider_fn = addProviderThunk,
-            .get_quick_diffs_fn = getQuickDiffsThunk,
+            .request_quick_diffs_fn = requestQuickDiffsThunk,
             .toggle_visibility_fn = toggleVisibilityThunk,
             .is_visible_fn = isVisibleThunk,
             .on_did_change_providers = &self.on_did_change_providers,
@@ -224,15 +313,16 @@ pub const QuickDiffService = struct {
         return self.addQuickDiffProvider(provider);
     }
 
-    fn getQuickDiffsThunk(
+    fn requestQuickDiffsThunk(
         context: *anyopaque,
         allocator: Allocator,
         resource: std.Uri,
         language: ?[]const u8,
         is_synchronized: bool,
-    ) anyerror![]QuickDiff {
+        listener: quick_diff.QuickDiffQueryListener,
+    ) anyerror!quick_diff.QuickDiffQuery {
         const self: *QuickDiffService = @ptrCast(@alignCast(context));
-        return self.getQuickDiffs(allocator, resource, language, is_synchronized);
+        return self.requestQuickDiffs(allocator, resource, language, is_synchronized, listener);
     }
 
     fn toggleVisibilityThunk(context: *anyopaque, id: []const u8) void {
@@ -484,4 +574,92 @@ test "quickDiffService: a disposed registration removes its provider and fires c
     second.dispose();
     try std.testing.expectEqual(@as(usize, 4), events);
     try std.testing.expectEqual(@as(usize, 0), service.interface().providers().len);
+}
+
+test "quickDiffService: asynchronous originals settle in provider order and cancellation detaches" {
+    const a = std.testing.allocator;
+    const Deferred = struct {
+        provider: QuickDiffProvider,
+        listener: ?quick_diff.OriginalListener = null,
+        allocator: ?Allocator = null,
+        cancellations: usize = 0,
+
+        fn init(self: *@This(), id: []const u8, kind: QuickDiffProviderKind) void {
+            self.* = .{ .provider = .{ .context = self, .id = id, .label = id, .kind = kind, .request_original_fn = request } };
+        }
+
+        fn request(context: *anyopaque, allocator: Allocator, _: std.Uri, listener: quick_diff.OriginalListener) !quick_diff.OriginalResolution {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.allocator = allocator;
+            self.listener = listener;
+            return .{ .pending = IDisposable.from(@This(), self, cancel) };
+        }
+
+        fn cancel(self: *@This()) void {
+            self.listener = null;
+            self.cancellations += 1;
+        }
+
+        fn complete(self: *@This(), uri: []const u8) !void {
+            const listener = self.listener orelse return error.RequestCanceled;
+            const allocator = self.allocator.?;
+            const label = try allocator.dupe(u8, "Original");
+            errdefer allocator.free(label);
+            const original = try allocator.dupe(u8, uri);
+            self.listener = null;
+            listener.complete(listener.context, .{ .ref_label = label, .resource_uri = original });
+        }
+    };
+    const Result = struct {
+        value: ?quick_diff.QuickDiffQueryResult = null,
+        fn complete(context: *anyopaque, result: quick_diff.QuickDiffQueryResult) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.value = result;
+        }
+        fn listener(self: *@This()) quick_diff.QuickDiffQueryListener {
+            return .{ .context = self, .complete = complete };
+        }
+    };
+    var service = QuickDiffService.init(a, null);
+    defer service.deinit();
+    var primary: Deferred = undefined;
+    primary.init("primary", .primary);
+    primary.provider.root_uri = try std.Uri.parse("file:///repo");
+    var custom: Deferred = undefined;
+    custom.init("custom", .contributed);
+    custom.provider.root_uri = try std.Uri.parse("file:///repo");
+    const custom_registration = try service.addQuickDiffProvider(&custom.provider);
+    defer custom_registration.dispose();
+    const primary_registration = try service.addQuickDiffProvider(&primary.provider);
+    defer primary_registration.dispose();
+    const resource = try std.Uri.parse("file:///repo/a.txt");
+    var result: Result = .{};
+    const query = try service.requestQuickDiffs(a, resource, "plaintext", true, result.listener());
+    try std.testing.expect(query == .pending);
+    try custom.complete("git:/custom");
+    try std.testing.expect(result.value == null);
+    // The request owns a copy of the descriptor even if its owner changes.
+    primary.provider.label = "Changed after request";
+    try primary.complete("git:/primary");
+    const diffs = switch (result.value orelse return error.TestExpectedResult) {
+        .resolved => |value| value,
+        .failure => |err| return err,
+    };
+    defer {
+        for (diffs) |*diff| diff.deinit(a);
+        a.free(diffs);
+    }
+    try std.testing.expectEqual(@as(usize, 2), diffs.len);
+    try std.testing.expectEqualStrings("primary", diffs[0].id);
+    try std.testing.expectEqualStrings("primary", diffs[0].label);
+    try std.testing.expectEqualStrings("custom", diffs[1].id);
+
+    result.value = null;
+    const canceled = try service.requestQuickDiffs(a, resource, "plaintext", true, result.listener());
+    try std.testing.expect(canceled == .pending);
+    canceled.pending.dispose();
+    try std.testing.expect(result.value == null);
+    try std.testing.expectEqual(@as(usize, 1), primary.cancellations);
+    try std.testing.expectEqual(@as(usize, 1), custom.cancellations);
+    try std.testing.expectError(error.RequestCanceled, custom.complete("git:/late"));
 }
