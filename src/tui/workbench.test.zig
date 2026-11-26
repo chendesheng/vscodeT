@@ -8342,6 +8342,9 @@ test "Workbench: git scm integration, shared working files and read-only revisio
             std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
         }
         try std.testing.expectEqual(@as(usize, 2), entry.model.changes.items.len);
+        // Upstream only offers the staged provider for paths in the index group.
+        try std.testing.expectEqual(@as(usize, 1), entry.model.quick_diffs.len);
+        try std.testing.expectEqual(.primary, entry.model.quick_diffs[0].kind);
         const controller = entry.peek_controller orelse return error.TestExpectedQuickDiffController;
         const tab = workbench.activeTab().?;
         var peek_frame: std.Io.Writer.Allocating = .init(allocator);
@@ -8404,11 +8407,11 @@ test "Workbench: git scm integration, shared working files and read-only revisio
         _ = try service.addQuickDiffProvider(&alternate);
         defer service.removeProvider(&alternate);
         spins = 0;
-        while (entry.model.quick_diffs.len < 3 and spins < 5000) : (spins += 1) {
+        while (entry.model.quick_diffs.len < 2 and spins < 5000) : (spins += 1) {
             _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
             std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
         }
-        try std.testing.expect(entry.model.quick_diffs.len >= 3);
+        try std.testing.expectEqual(@as(usize, 2), entry.model.quick_diffs.len);
         try controller.navigate(true, 2);
         const multi = controller.widget.?;
         try std.testing.expect(multi.peek.picker_label.len != 0);
@@ -10681,6 +10684,8 @@ test "Workbench: git scm integration peek actions stage and revert only the sele
     defer a.free(unchanged);
     try std.testing.expectEqualStrings(modified, unchanged);
     try Harness.wait(workbench, entry, primary, 1);
+    try std.testing.expectEqual(@as(usize, 2), entry.model.quick_diffs.len);
+    try std.testing.expectEqual(.secondary, entry.model.quick_diffs[1].kind);
     try std.testing.expectEqual(retained_original, entry.model.getDiffEditorModel(primary).?.original_document.?);
     try std.testing.expectEqualStrings("TWO", try retained_original.model.borrowLineContent(2));
     try std.testing.expect(!retained_original.isDirty());

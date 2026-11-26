@@ -87,6 +87,7 @@ comptime {
     _ = @import("./vs/workbench/contrib/scm/browser/scm.contribution.zig");
     _ = @import("./extensions/git/src/model.zig");
     _ = @import("./extensions/git/src/repository.zig");
+    _ = @import("./extensions/git/src/quickDiffProvider.zig");
     _ = @import("./extensions/git/src/test/git.test.zig");
     _ = @import("./extensions/git/src/test/staging.test.zig");
     _ = @import("./extensions/git/src/test/util.test.zig");

@@ -15,6 +15,7 @@ const Allocator = std.mem.Allocator;
 
 const scm = @import("../../../vs/workbench/contrib/scm/common/scm.zig");
 const quick_diff = @import("../../../vs/workbench/contrib/scm/common/quickDiff.zig");
+const git_quick_diff = @import("quickDiffProvider.zig");
 const git_common = @import("../../../vs/workbench/contrib/git/common/gitService.zig");
 const git_browser = @import("../../../vs/workbench/contrib/git/browser/gitService.zig");
 const git_mod = @import("./git.zig");
@@ -115,8 +116,8 @@ pub const Repository = struct {
     configuration_service: ?*ConfigurationService = null,
     configuration_listener: ?usize = null,
     on_groups: Emitter(void),
-    primary_quick_diff: QuickDiffProvider,
-    secondary_quick_diff: QuickDiffProvider,
+    primary_quick_diff: git_quick_diff.GitQuickDiffProvider,
+    secondary_quick_diff: git_quick_diff.StagedResourceQuickDiffProvider,
     history: ?*GitHistoryProvider = null,
     file_service: ?*watchers.FileWatcherService = null,
     file_listener: ?usize = null,
@@ -232,22 +233,8 @@ pub const Repository = struct {
             self.base.history_provider = history.interface();
         } else |_| {}
 
-        self.primary_quick_diff = .{
-            .context = self,
-            .id = primary_id,
-            .label = "Git: Working Tree",
-            .root_path = root_copy,
-            .kind = .primary,
-            .get_original_fn = getIndexOriginal,
-        };
-        self.secondary_quick_diff = .{
-            .context = self,
-            .id = secondary_id,
-            .label = "Git: Staged",
-            .root_path = root_copy,
-            .kind = .secondary,
-            .get_original_fn = getHeadOriginal,
-        };
+        self.primary_quick_diff = .init(self, primary_id);
+        self.secondary_quick_diff = .init(self, secondary_id);
         return self;
     }
 
@@ -363,8 +350,8 @@ pub const Repository = struct {
         if (self.dot_git) |dot| dot.deinit(allocator);
         if (self.history) |history| history.destroy();
         self.history = null;
-        allocator.free(@constCast(self.primary_quick_diff.id));
-        allocator.free(@constCast(self.secondary_quick_diff.id));
+        allocator.free(@constCast(self.primary_quick_diff.base.id));
+        allocator.free(@constCast(self.secondary_quick_diff.base.id));
         for (&self.groups) |*group| {
             for (group.resources.items) |resource| resource.destroy();
             group.resources.deinit();
@@ -438,7 +425,7 @@ pub const Repository = struct {
     }
 
     pub fn quickDiffProviders(self: *Repository) [2]*QuickDiffProvider {
-        return .{ &self.primary_quick_diff, &self.secondary_quick_diff };
+        return .{ self.primary_quick_diff.interface(), self.secondary_quick_diff.interface() };
     }
 
     /// The Git resource's status determines its original and modified
@@ -707,34 +694,6 @@ fn openResource(context: *anyopaque, preserve_focus: bool) anyerror!void {
         resource.provider,
         resource,
     );
-}
-
-fn getIndexOriginal(context: *anyopaque, allocator: Allocator, path: []const u8) anyerror!?Original {
-    return getOriginal(context, allocator, path, .index, "Index");
-}
-
-fn getHeadOriginal(context: *anyopaque, allocator: Allocator, path: []const u8) anyerror!?Original {
-    return getOriginal(context, allocator, path, .head, "HEAD");
-}
-
-fn getOriginal(
-    context: *anyopaque,
-    allocator: Allocator,
-    path: []const u8,
-    kind: git_mod.RefKind,
-    label: []const u8,
-) !?Original {
-    const self: *Repository = @ptrCast(@alignCast(context));
-    if (self.git == null) return null;
-    const relative = self.relativePath(path) orelse return null;
-    const ref_label = try allocator.dupe(u8, label);
-    errdefer allocator.free(ref_label);
-    const absolute = try std.fs.path.join(allocator, &.{ self.root, relative });
-    defer allocator.free(absolute);
-    const uri = try @import("uri.zig").toGitUriWithOptions(allocator, absolute, if (kind == .index) "" else "HEAD", .{ .replace_file_extension = true });
-    defer allocator.free(uri.path.raw);
-    defer allocator.free(uri.query.?.raw);
-    return .{ .content = &.{}, .ref_label = ref_label, .resource_uri = try @import("../../../vs/base/common/stdUri.zig").resourceKey(allocator, uri) };
 }
 
 // ---------------------------------------------------------------------------
