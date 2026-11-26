@@ -461,6 +461,8 @@ pub fn main(init: std.process.Init) !void {
     var image_serializer: ?ImagePreviewEditorInputSerializer = null;
     const DiffSerializer = @import("../vs/workbench/common/editor/diffEditorInput.zig").DiffEditorSerializer;
     var diff_serializer: ?DiffSerializer = null;
+    const multi_diff = @import("../vs/workbench/contrib/multiDiffEditor/browser/multiDiffEditorInput.zig");
+    var multi_diff_serializer = multi_diff.MultiDiffEditorSerializer.init(allocator);
     var registry: ?EditorFactoryRegistry = null;
     defer if (registry) |*value| value.deinit();
     if (args.session != null) {
@@ -475,6 +477,7 @@ pub fn main(init: std.process.Init) !void {
         try registry.?.registerEditorSerializerFactory(ImagePreviewEditorInput.ID, factory_registry.SerializerFactory.bound(ImagePreviewEditorInputSerializer, &image_serializer.?));
         diff_serializer = DiffSerializer.init(allocator, &registry.?);
         try registry.?.registerEditorSerializerFactory(@import("../vs/workbench/common/editor/diffEditorInput.zig").ID, factory_registry.SerializerFactory.bound(DiffSerializer, &diff_serializer.?));
+        try registry.?.registerEditorSerializerFactory(multi_diff.ID, factory_registry.SerializerFactory.bound(multi_diff.MultiDiffEditorSerializer, &multi_diff_serializer));
     }
 
     var surface: ui.Surface = undefined;

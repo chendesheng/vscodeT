@@ -86,3 +86,116 @@ test "MultiDiffEditorInput: live resource reorder preserves the document and vie
     try input.setResolvedItems(&.{reordered});
     try testing.expectEqual(first_item, input.entries[0].item);
 }
+
+test "MultiDiffEditorInput: serializer preserves source identity and only explicit resource declarations" {
+    const a = testing.allocator;
+    var serializer = input_mod.MultiDiffEditorSerializer.init(a);
+    const api = serializer.interface();
+    const input = try input_mod.MultiDiffEditorInput.create(a, "scm-history-item:/repo?revision", "History", false);
+    defer input.destroy();
+    try input.setResolvedItems(&.{.{ .modified = .{ .uri = try std.Uri.parse("file:///resolved.txt") } }});
+    const encoded = (try api.serialize(api.context, input.interface(), a)).?;
+    defer a.free(encoded);
+    try testing.expectEqualStrings("{\"multiDiffSourceUri\":\"scm-history-item:/repo?revision\",\"label\":\"History\"}", encoded);
+    const restored_base = (try api.deserialize(api.context, encoded)).?;
+    defer api.discardDeserialized(restored_base);
+    const restored = input_mod.MultiDiffEditorInput.is(restored_base).?;
+    try testing.expectEqualStrings(input.source_uri, restored.source_uri);
+    try testing.expectEqualStrings("History", restored.label);
+    try testing.expect(restored.initial_resources == null);
+    try testing.expectEqual(@as(usize, 0), restored.entries.len);
+
+    const explicit = try input_mod.MultiDiffEditorInput.create(a, "multi-diff-editor:explicit", null, false);
+    defer explicit.destroy();
+    try explicit.setInitialResources(&.{
+        .{ .originalUri = try std.Uri.parse("file:///old%20name.txt"), .modifiedUri = try std.Uri.parse("file:///new%23name.txt"), .goToFileUri = try std.Uri.parse("file:///new%23name.txt") },
+        .{ .modifiedUri = try std.Uri.parse("file:///added.txt") },
+    });
+    const serialized = (try api.serialize(api.context, explicit.interface(), a)).?;
+    defer a.free(serialized);
+    try testing.expect(std.mem.indexOf(u8, serialized, "\"label\"") == null);
+    const restored_explicit_base = (try api.deserialize(api.context, serialized)).?;
+    defer api.discardDeserialized(restored_explicit_base);
+    const restored_explicit = input_mod.MultiDiffEditorInput.is(restored_explicit_base).?;
+    const source_mod = @import("../../browser/multiDiffSourceResolverService.zig");
+    var registry = source_mod.MultiDiffSourceResolverService.init(a);
+    defer registry.deinit();
+    const source = try restored_explicit.resolveSource(registry.interface());
+    defer source.dispose(source.context);
+    const resources = source.resources(source.context);
+    try testing.expectEqual(@as(usize, 2), resources.len);
+    try testing.expectEqualStrings("/old%20name.txt", resources[0].originalUri.?.path.percent_encoded);
+    try testing.expectEqualStrings("/new%23name.txt", resources[0].goToFileUri.?.path.percent_encoded);
+    try testing.expect(resources[1].originalUri == null);
+    const transient = try input_mod.MultiDiffEditorInput.create(a, "multi-diff-editor:temporary", null, true);
+    defer transient.destroy();
+    try testing.expect(!api.canSerialize(api.context, transient.interface()));
+    try testing.expect((try api.serialize(api.context, transient.interface(), a)) == null);
+    try testing.expect((try api.deserialize(api.context, "{\"multiDiffSourceUri\":\"multi-diff-editor:bad\",\"resources\":[{}]}")) == null);
+}
+
+test "MultiDiffEditorInput: updates its name from the resolved source label" {
+    const a = testing.allocator;
+    const Source = @import("../../browser/multiDiffSourceResolverService.zig");
+    const Emitter = @import("../../../../../base/common/event.zig").Emitter;
+    const Mock = struct {
+        label: []const u8 = "Current Turn Changes",
+        label_changed: Emitter(void),
+        resources_changed: Emitter(void),
+        resource_requests: usize = 0,
+        source_disposed: bool = false,
+        binding_disposed: bool = false,
+
+        fn getResources(_: *anyopaque) []const Source.MultiDiffEditorItem {
+            return &.{};
+        }
+        fn getLabel(context: *anyopaque) []const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return self.label;
+        }
+        fn resolveResources(context: *anyopaque, items: []const Source.MultiDiffEditorItem) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try testing.expectEqual(@as(usize, 0), items.len);
+            self.resource_requests += 1;
+        }
+        fn disposeSource(context: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.source_disposed = true;
+        }
+        fn disposeBinding(context: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.binding_disposed = true;
+        }
+    };
+    var mock: Mock = .{ .label_changed = .init(a), .resources_changed = .init(a) };
+    defer mock.label_changed.deinit();
+    defer mock.resources_changed.deinit();
+    const input = try input_mod.MultiDiffEditorInput.create(a, "multi-diff-editor:test", "Fallback", false);
+    defer input.destroy();
+    try input.attachResolvedSource(.{
+        .context = &mock,
+        .resources = Mock.getResources,
+        .on_did_change_resources = &mock.resources_changed,
+        .label = Mock.getLabel,
+        .on_did_change_label = &mock.label_changed,
+        .dispose = Mock.disposeSource,
+    }, .{ .context = &mock, .resolve_resources = Mock.resolveResources, .dispose = Mock.disposeBinding });
+    try testing.expectEqualStrings("Current Turn Changes (0 files)", input.base.getName());
+    const Count = struct {
+        fn onChange(_: void, counter: *usize) !void {
+            counter.* += 1;
+        }
+    };
+    var label_changes: usize = 0;
+    const listener = try input.base.on_did_change_label.listenDisposable(&label_changes, Count.onChange);
+    defer listener.dispose();
+    mock.label = "Last Turn Changes";
+    try mock.label_changed.fire({});
+    try testing.expectEqualStrings("Last Turn Changes (0 files)", input.base.getName());
+    try testing.expectEqual(@as(usize, 1), label_changes);
+    try testing.expectEqual(@as(usize, 1), mock.resource_requests);
+    input.detachSource();
+    try testing.expect(mock.source_disposed and mock.binding_disposed);
+    try testing.expectEqual(@as(usize, 0), mock.label_changed.listenerCount());
+    try testing.expectEqual(@as(usize, 0), mock.resources_changed.listenerCount());
+}

@@ -35,6 +35,7 @@ pub const MultiDiffEditorInput = struct {
     base: EditorInput,
     source_uri: []u8,
     label: []u8,
+    has_explicit_label: bool,
     name: []u8,
     is_transient: bool,
     document_set: model.MultiDiffEditorModel,
@@ -42,16 +43,89 @@ pub const MultiDiffEditorInput = struct {
     entries: []Entry = &.{},
     refs: usize = 1,
     source_binding: ?SourceBinding = null,
+    resolved_source: ?source_mod.IResolvedMultiDiffSource = null,
+    source_resources_listener: ?SignalSubscription = null,
+    source_label_listener: ?SignalSubscription = null,
+    resolved_label: ?[]u8 = null,
+    resolved_resource_count: ?usize = null,
+    initial_resources_arena: ?std.heap.ArenaAllocator = null,
+    initial_resources: ?[]const source_mod.MultiDiffEditorItem = null,
 
     pub const SourceBinding = struct {
         context: *anyopaque,
+        resolve_resources: *const fn (*anyopaque, []const source_mod.MultiDiffEditorItem) anyerror!void,
+        report_failure: ?*const fn (*anyopaque, anyerror) void = null,
         dispose: *const fn (*anyopaque) void,
     };
+
+    /// The input owns the resolved source and subscribes to both its resource
+    /// and label observables. Native text resolution is a separate callback.
+    /// Consumes the source and binding on success or failure.
+    pub fn attachResolvedSource(self: *MultiDiffEditorInput, source: source_mod.IResolvedMultiDiffSource, binding: SourceBinding) !void {
+        self.detachSource();
+        self.source_binding = binding;
+        self.resolved_source = source;
+        errdefer self.detachSource();
+        self.source_resources_listener = try source.on_did_change_resources.listenDisposable(self, onSourceResourcesChanged);
+        if (source.on_did_change_label) |changed| self.source_label_listener = try changed.listenDisposable(self, onSourceLabelChanged);
+        try self.publishSourceResources();
+    }
+
     pub fn detachSource(self: *MultiDiffEditorInput) void {
+        if (self.source_resources_listener) |listener| listener.dispose();
+        if (self.source_label_listener) |listener| listener.dispose();
+        self.source_resources_listener = null;
+        self.source_label_listener = null;
         if (self.source_binding) |binding| {
             self.source_binding = null;
             binding.dispose(binding.context);
         }
+        if (self.resolved_source) |source| {
+            self.resolved_source = null;
+            source.dispose(source.context);
+        }
+    }
+
+    fn onSourceResourcesChanged(_: void, self: *MultiDiffEditorInput) !void {
+        self.publishSourceResources() catch |err| {
+            if (self.source_binding) |binding| if (binding.report_failure) |report| report(binding.context, err);
+        };
+    }
+    fn onSourceLabelChanged(_: void, self: *MultiDiffEditorInput) !void {
+        try self.updateSourceName();
+    }
+    fn publishSourceResources(self: *MultiDiffEditorInput) !void {
+        const source = self.resolved_source orelse return;
+        if (!source.isReady()) return;
+        if (source.failure()) |failure| return failure;
+        try self.updateSourceName();
+        const binding = self.source_binding orelse return;
+        try binding.resolve_resources(binding.context, source.resources(source.context));
+    }
+
+    fn formatName(self: *const MultiDiffEditorInput, label: []const u8, count: ?usize) ![]u8 {
+        if (count) |number| return std.fmt.allocPrint(self.allocator, "{s} ({d} {s})", .{ label, number, if (number == 1) "file" else "files" });
+        return self.allocator.dupe(u8, label);
+    }
+    fn updateSourceName(self: *MultiDiffEditorInput) !void {
+        const source = self.resolved_source orelse return;
+        if (!source.isReady()) return;
+        const count = source.resources(source.context).len;
+        const label = if (source.label) |get| try self.allocator.dupe(u8, get(source.context)) else null;
+        errdefer if (label) |name| self.allocator.free(name);
+        const name = try self.formatName(label orelse self.label, count);
+        if (self.resolved_label) |previous| self.allocator.free(previous);
+        self.resolved_label = label;
+        self.resolved_resource_count = count;
+        if (std.mem.eql(u8, name, self.name)) {
+            self.allocator.free(name);
+            return;
+        }
+        const previous = self.name;
+        self.name = name;
+        self.base.name = name;
+        defer self.allocator.free(previous);
+        self.base.fireLabel() catch {};
     }
 
     pub const Entry = struct {
@@ -87,6 +161,7 @@ pub const MultiDiffEditorInput = struct {
             .base = EditorInput.init(allocator, ID),
             .source_uri = uri,
             .label = owned_label,
+            .has_explicit_label = label != null,
             .name = name,
             .is_transient = transient,
             .document_set = .init(allocator),
@@ -103,6 +178,20 @@ pub const MultiDiffEditorInput = struct {
         self.base.close_handler = .{ .context = self, .show_confirm = showConfirm };
         return self;
     }
+    pub fn setInitialResources(self: *MultiDiffEditorInput, source_resources: []const source_mod.MultiDiffEditorItem) !void {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        errdefer arena.deinit();
+        const copy = try source_mod.StaticResolvedMultiDiffSource.cloneItems(arena.allocator(), source_resources);
+        if (self.initial_resources_arena) |*old| old.deinit();
+        self.initial_resources_arena = arena;
+        self.initial_resources = copy;
+    }
+
+    pub fn resolveSource(self: *MultiDiffEditorInput, resolver: source_mod.IMultiDiffSourceResolverService) !source_mod.IResolvedMultiDiffSource {
+        if (self.initial_resources) |resources| return source_mod.StaticResolvedMultiDiffSource.create(self.allocator, resources);
+        return (try resolver.resolve(try std.Uri.parse(self.source_uri))) orelse try source_mod.StaticResolvedMultiDiffSource.create(self.allocator, &.{});
+    }
+
     pub fn retain(self: *MultiDiffEditorInput) *MultiDiffEditorInput {
         self.refs += 1;
         return self;
@@ -112,6 +201,7 @@ pub const MultiDiffEditorInput = struct {
         self.refs -= 1;
         if (self.refs != 0) return;
         self.detachSource();
+        if (self.initial_resources_arena) |*arena| arena.deinit();
         self.base.dispose();
         if (self.vm) |value| value.destroy();
         self.document_set.deinit();
@@ -119,6 +209,7 @@ pub const MultiDiffEditorInput = struct {
         self.base.deinit();
         self.allocator.free(self.source_uri);
         self.allocator.free(self.label);
+        if (self.resolved_label) |name| self.allocator.free(name);
         self.allocator.free(self.name);
         self.allocator.destroy(self);
     }
@@ -244,7 +335,7 @@ pub const MultiDiffEditorInput = struct {
             count += 1;
             document.* = entry.item;
         }
-        const name = try std.fmt.allocPrint(self.allocator, "{s} ({d} {s})", .{ self.label, entries.len, if (entries.len == 1) "file" else "files" });
+        const name = try self.formatName(self.resolved_label orelse self.label, self.resolved_resource_count orelse entries.len);
         const previous = self.entries;
         const previous_name = self.name;
         self.entries = entries;
@@ -256,7 +347,7 @@ pub const MultiDiffEditorInput = struct {
             self.allocator.free(previous_name);
         }
         try self.document_set.setOwnedDocuments(documents);
-        try self.base.fireLabel();
+        if (!std.mem.eql(u8, previous_name, name)) try self.base.fireLabel();
         try self.base.fireDirty();
     }
     fn onSideDirty(_: void, self: *MultiDiffEditorInput) !void {
@@ -296,5 +387,86 @@ pub const MultiDiffEditorInput = struct {
             .modifiedUri = if (entry.item.modified) |source| source.uri else null,
         };
         return result;
+    }
+};
+
+/// Port of MultiDiffEditorSerializer. Only the original resource declaration
+/// is persisted, never the resolved contents or live SCM resource snapshot.
+pub const MultiDiffEditorSerializer = struct {
+    allocator: Allocator,
+    const factory = @import("../../../common/editor/editorFactory.zig");
+    const SerializedResource = struct {
+        originalUri: ?[]const u8 = null,
+        modifiedUri: ?[]const u8 = null,
+        goToFileUri: ?[]const u8 = null,
+    };
+    const SerializedInput = struct {
+        multiDiffSourceUri: []const u8,
+        label: ?[]const u8 = null,
+        resources: ?[]const SerializedResource = null,
+    };
+
+    pub fn init(allocator: Allocator) MultiDiffEditorSerializer {
+        return .{ .allocator = allocator };
+    }
+    pub fn interface(self: *MultiDiffEditorSerializer) factory.IEditorSerializer {
+        return .{ .context = self, .canSerialize = canSerialize, .serialize = serialize, .deserialize = deserialize, .discard_deserialized = discard };
+    }
+    fn canSerialize(_: *anyopaque, base: *EditorInput) bool {
+        const input = MultiDiffEditorInput.is(base) orelse return false;
+        return !input.is_transient;
+    }
+    fn encodeUri(allocator: Allocator, uri: ?std.Uri) !?[]const u8 {
+        return if (uri) |value| try std.fmt.allocPrint(allocator, "{f}", .{value}) else null;
+    }
+    fn serialize(context: *anyopaque, base: *EditorInput, allocator: Allocator) !?[]const u8 {
+        if (!canSerialize(context, base)) return null;
+        const input = MultiDiffEditorInput.is(base).?;
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const resources: ?[]const SerializedResource = if (input.initial_resources) |items| blk: {
+            const values = try a.alloc(SerializedResource, items.len);
+            for (items, values) |item, *value| {
+                value.* = .{
+                    .originalUri = try encodeUri(a, item.originalUri),
+                    .modifiedUri = try encodeUri(a, item.modifiedUri),
+                    .goToFileUri = try encodeUri(a, item.goToFileUri),
+                };
+            }
+            break :blk values;
+        } else null;
+        return try std.json.Stringify.valueAlloc(allocator, SerializedInput{ .multiDiffSourceUri = input.source_uri, .label = if (input.has_explicit_label) input.label else null, .resources = resources }, .{ .emit_null_optional_fields = false });
+    }
+    fn decodeUri(value: ?[]const u8) !?std.Uri {
+        return if (value) |encoded| try std.Uri.parse(encoded) else null;
+    }
+    fn deserialize(context: *anyopaque, data: []const u8) !?*EditorInput {
+        const self: *MultiDiffEditorSerializer = @ptrCast(@alignCast(context));
+        const parsed = std.json.parseFromSlice(SerializedInput, self.allocator, data, .{ .ignore_unknown_fields = true }) catch return null;
+        defer parsed.deinit();
+        const value = parsed.value;
+        _ = std.Uri.parse(value.multiDiffSourceUri) catch return null;
+        const input = try MultiDiffEditorInput.create(self.allocator, value.multiDiffSourceUri, value.label, false);
+        var owned = true;
+        defer if (owned) input.destroy();
+        if (value.resources) |resources| {
+            const items = try self.allocator.alloc(source_mod.MultiDiffEditorItem, resources.len);
+            defer self.allocator.free(items);
+            for (resources, items) |resource, *item| {
+                item.* = .{
+                    .originalUri = decodeUri(resource.originalUri) catch return null,
+                    .modifiedUri = decodeUri(resource.modifiedUri) catch return null,
+                    .goToFileUri = decodeUri(resource.goToFileUri) catch return null,
+                };
+                item.validate() catch return null;
+            }
+            try input.setInitialResources(items);
+        }
+        owned = false;
+        return input.interface();
+    }
+    fn discard(_: *anyopaque, base: *EditorInput) void {
+        if (MultiDiffEditorInput.is(base)) |input| input.destroy();
     }
 };

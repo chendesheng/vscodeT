@@ -1258,6 +1258,12 @@ pub const TerminalWorkbench = struct {
             .diff_options = @import("../vs/workbench/browser/parts/editor/textDiffEditor.zig").computeConfiguration(self.configuration_api),
             .editor_view_states = states,
             .share_view_state = self.configuration_api.getBool("workbench.editor.sharedViewState", false),
+            .create_multi_diff = .{ .context = &self.editor_opening, .run = struct {
+                fn create(context: *anyopaque, input: *@import("../vs/workbench/contrib/multiDiffEditor/browser/multiDiffEditorInput.zig").MultiDiffEditorInput, width: usize, height: usize) !*Tab {
+                    const opening: *editor_service_mod.EditorOpening = @ptrCast(@alignCast(context));
+                    return opening.createMultiDiffTab(input, width, height, true);
+                }
+            }.create },
             .on_restore = .{ .context = &self.editor_opening, .run = struct {
                 fn configure(context: *anyopaque, tab: *Tab) !void {
                     const opening: *editor_service_mod.EditorOpening = @ptrCast(@alignCast(context));

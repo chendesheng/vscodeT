@@ -239,3 +239,52 @@ pub const SnapshotBatchRequest = struct {
         return if (self.listener) |listener| listener.run(listener.context, self) else false;
     }
 };
+
+/// An untyped editor input can supply its own immutable resource list instead
+/// of a registered source URI. The same resource-resolution path consumes it.
+pub const StaticResolvedMultiDiffSource = struct {
+    allocator: Allocator,
+    arena: std.heap.ArenaAllocator,
+    items: []const MultiDiffEditorItem,
+    changed: Emitter(void),
+
+    pub fn cloneItems(arena: Allocator, items: []const MultiDiffEditorItem) ![]const MultiDiffEditorItem {
+        const copy = try arena.alloc(MultiDiffEditorItem, items.len);
+        for (copy, items) |*dst, src| {
+            try src.validate();
+            dst.* = .{
+                .originalUri = try cloneUri(arena, src.originalUri),
+                .modifiedUri = try cloneUri(arena, src.modifiedUri),
+                .goToFileUri = try cloneUri(arena, src.goToFileUri),
+                .goToFileEditorTitle = if (src.goToFileEditorTitle) |title| try arena.dupe(u8, title) else null,
+            };
+        }
+        return copy;
+    }
+    fn cloneUri(arena: Allocator, value: ?std.Uri) !?std.Uri {
+        const uri = value orelse return null;
+        return try std.Uri.parse(try std.fmt.allocPrint(arena, "{f}", .{uri}));
+    }
+    pub fn create(allocator: Allocator, items: []const MultiDiffEditorItem) !IResolvedMultiDiffSource {
+        const self = try allocator.create(StaticResolvedMultiDiffSource);
+        errdefer allocator.destroy(self);
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer arena.deinit();
+        const copy = try cloneItems(arena.allocator(), items);
+        self.* = .{ .allocator = allocator, .arena = arena, .items = copy, .changed = Emitter(void).init(allocator) };
+        return self.interface();
+    }
+    fn resources(context: *anyopaque) []const MultiDiffEditorItem {
+        const self: *StaticResolvedMultiDiffSource = @ptrCast(@alignCast(context));
+        return self.items;
+    }
+    fn dispose(context: *anyopaque) void {
+        const self: *StaticResolvedMultiDiffSource = @ptrCast(@alignCast(context));
+        self.changed.deinit();
+        self.arena.deinit();
+        self.allocator.destroy(self);
+    }
+    pub fn interface(self: *StaticResolvedMultiDiffSource) IResolvedMultiDiffSource {
+        return .{ .context = self, .resources = resources, .on_did_change_resources = &self.changed, .dispose = dispose };
+    }
+};

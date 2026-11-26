@@ -140,6 +140,10 @@ pub const RestoredEditorPanes = struct {
     diff_options: @import("textDiffEditor.zig").Options = .{},
     editor_view_states: []const groups.SerializedEditorViewState = &.{},
     share_view_state: bool = false,
+    create_multi_diff: ?struct {
+        context: *anyopaque,
+        run: *const fn (*anyopaque, *@import("../../../contrib/multiDiffEditor/browser/multiDiffEditorInput.zig").MultiDiffEditorInput, usize, usize) anyerror!*Tab,
+    } = null,
     on_restore: ?struct { context: *anyopaque, run: *const fn (*anyopaque, *Tab) anyerror!void } = null,
 
     pub fn createPane(self: RestoredEditorPanes, allocator: Allocator, input: *EditorInput) !?*Tab {
@@ -149,6 +153,13 @@ pub const RestoredEditorPanes = struct {
         if (@import("../../../common/editor/diffEditorInput.zig").is(input)) |diff_input| {
             const diff = try DiffView.createFromInput(self.view_factory, allocator, self.io, diff_input, self.width, self.height, self.diff_options);
             return try Tab.initDiff(allocator, diff);
+        }
+        if (@import("../../../contrib/multiDiffEditor/browser/multiDiffEditorInput.zig").MultiDiffEditorInput.is(input)) |multi| {
+            const callback = self.create_multi_diff orelse return null;
+            const tab = try callback.run(callback.context, multi, self.width, self.height);
+            // The new pane retained the deserialized input.
+            multi.destroy();
+            return tab;
         }
         if (!std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID)) return null;
         const tab = try Tab.initFromInput(self.view_factory, allocator, @ptrCast(@alignCast(input.impl.?)));
@@ -174,7 +185,11 @@ pub const RestoredEditorPanes = struct {
             defer tab.allocator.free(resource);
             if (EditorMemento.loadEditorState(self.editor_view_states, group, resource, self.share_view_state)) |state| try diff.restoreEditorViewState(state);
         }
-        try self.history.add(tab.editor.path);
+        if (tab.multi_diff) |multi| {
+            const resource = try multi.viewStateResource(tab.allocator);
+            defer tab.allocator.free(resource);
+            if (EditorMemento.loadEditorState(self.editor_view_states, group, resource, self.share_view_state)) |state| try multi.restoreEditorViewState(state);
+        } else try self.history.add(tab.editor.path);
     }
 };
 

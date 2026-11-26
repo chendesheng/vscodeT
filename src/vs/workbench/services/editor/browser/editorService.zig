@@ -506,7 +506,10 @@ pub const EditorOpening = struct {
     /// Restored panes take the same configuration, language, worker and
     /// working-copy registration path as fresh panes after mounting.
     pub fn configureRestoredTab(self: *EditorOpening, tab: *Tab) !void {
-        self.host.configure_editor(self.host.context, tab.editor);
+        if (tab.multi_diff) |multi| {
+            const services = self.multi_diff_source_services orelse return error.MultiDiffUnavailable;
+            try self.bindMultiDiffInput(multi.input, if (services.configuration) |configuration| configuration.* else null, services.resolver, services.provider);
+        } else self.host.configure_editor(self.host.context, tab.editor);
         if (tab.diff) |diff| {
             self.host.configure_editor(self.host.context, diff.widget.original_editor);
             try self.attachDiffModel(diff.widget.view_model);
@@ -544,18 +547,7 @@ pub const EditorOpening = struct {
         const group = if (target) |id| self.part.service.getGroup(id) orelse return error.GroupPaneMissing else self.part.service.activeGroup();
         const pane = self.part.viewForGroup(group) orelse return error.GroupPaneMissing;
         const dims = pane.contentDimensions();
-        const multi = try editor_pane.MultiDiffPane.create(self.allocator, self.io, input, self.window_events, .{
-            .context = self,
-            .view_factory = self.view_factory,
-            .configure_diff = configureMultiDiffWidget,
-            .dispose_diff = disposeMultiDiffWidget,
-            .open_file = openMultiDiffFile,
-            .open_binary_diff = openMultiDiffBinary,
-        }, .{ .worker = try self.ensureDiffWorker(), .cache = &self.diff_cache }, dims.width, dims.height, preserve_focus);
-        var owned = true;
-        errdefer if (owned) multi.destroy();
-        const tab = try Tab.initMultiDiff(self.view_factory, self.allocator, self.io, multi);
-        owned = false;
+        const tab = try self.createMultiDiffTab(input, dims.width, dims.height, preserve_focus);
         var tab_owned = true;
         errdefer if (tab_owned) tab.deinit();
         try pane.tabs.ensureUnusedCapacity(1);
@@ -583,6 +575,20 @@ pub const EditorOpening = struct {
             self.host.focus_editor(self.host.context);
         }
         self.host.request_frame(self.host.context);
+    }
+
+    /// Fresh and restored multi-diff inputs mount the same pane and worker.
+    pub fn createMultiDiffTab(self: *EditorOpening, input: *multi_diff_input.MultiDiffEditorInput, width: usize, height: usize, preserve_focus: bool) !*Tab {
+        const multi = try editor_pane.MultiDiffPane.create(self.allocator, self.io, input, self.window_events, .{
+            .context = self,
+            .view_factory = self.view_factory,
+            .configure_diff = configureMultiDiffWidget,
+            .dispose_diff = disposeMultiDiffWidget,
+            .open_file = openMultiDiffFile,
+            .open_binary_diff = openMultiDiffBinary,
+        }, .{ .worker = try self.ensureDiffWorker(), .cache = &self.diff_cache }, width, height, preserve_focus);
+        errdefer multi.destroy();
+        return Tab.initMultiDiff(self.view_factory, self.allocator, self.io, multi);
     }
 
     fn configureMultiDiffWidget(context: *anyopaque, widget: *editor_pane.DiffWidget) !void {
@@ -672,18 +678,21 @@ pub const EditorOpening = struct {
         }
         const input = try multi_diff_input.MultiDiffEditorInput.create(self.allocator, source_uri, label, false);
         defer input.destroy();
-        const source = (try resolver.resolve(try std.Uri.parse(source_uri))) orelse return error.UnknownMultiDiffSource;
-        _ = try SourceBinding.create(self, input, source, provider, configuration);
+        try self.bindMultiDiffInput(input, configuration, resolver, provider);
         try self.openMultiDiffInput(input, null, false);
+    }
+
+    fn bindMultiDiffInput(self: *EditorOpening, input: *multi_diff_input.MultiDiffEditorInput, configuration: ?IConfigurationService, resolver: multi_source.IMultiDiffSourceResolverService, provider: multi_source.ResourceSnapshotProvider) !void {
+        if (input.source_binding != null) return;
+        const source = try input.resolveSource(resolver);
+        _ = try SourceBinding.create(self, input, source, provider, configuration);
     }
 
     const SourceBinding = struct {
         opening: *EditorOpening,
         input: *multi_diff_input.MultiDiffEditorInput,
-        source: multi_source.IResolvedMultiDiffSource,
         provider: multi_source.ResourceSnapshotProvider,
         configuration: ?IConfigurationService,
-        subscription: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
         request: ?*multi_source.SnapshotBatchRequest = null,
 
         fn create(opening: *EditorOpening, input: *multi_diff_input.MultiDiffEditorInput, source: multi_source.IResolvedMultiDiffSource, provider: multi_source.ResourceSnapshotProvider, configuration: ?IConfigurationService) !*SourceBinding {
@@ -691,23 +700,20 @@ pub const EditorOpening = struct {
                 source.dispose(source.context);
                 return err;
             };
-            binding.* = .{ .opening = opening, .input = input, .source = source, .provider = provider, .configuration = configuration };
-            errdefer dispose(binding);
-            binding.subscription = try source.on_did_change_resources.listenDisposable(binding, onChanged);
-            try binding.refresh();
-            input.source_binding = .{ .context = binding, .dispose = dispose };
+            binding.* = .{ .opening = opening, .input = input, .provider = provider, .configuration = configuration };
+            try input.attachResolvedSource(source, .{ .context = binding, .resolve_resources = refresh, .report_failure = reportFailure, .dispose = dispose });
             return binding;
         }
-        fn onChanged(_: void, self: *SourceBinding) !void {
-            self.refresh() catch |err| self.opening.setStatusHint("Open changes failed: {s}", .{@errorName(err)});
+        fn reportFailure(context: *anyopaque, err: anyerror) void {
+            const self: *SourceBinding = @ptrCast(@alignCast(context));
+            self.opening.setStatusHint("Open changes failed: {s}", .{@errorName(err)});
         }
-        fn refresh(self: *SourceBinding) !void {
-            if (!self.source.isReady()) return;
+        fn refresh(context: *anyopaque, resources: []const multi_source.MultiDiffEditorItem) !void {
+            const self: *SourceBinding = @ptrCast(@alignCast(context));
             if (self.request) |request| request.cancel();
             self.request = null;
-            if (self.source.failure()) |failure| return failure;
             const worker = try self.opening.ensureDiffWorker();
-            const batch = try self.provider.captureBatch(self.opening.allocator, self.source.resources(self.source.context));
+            const batch = try self.provider.captureBatch(self.opening.allocator, resources);
             const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp();
             self.request = try multi_source.SnapshotBatchRequest.submit(self.opening.allocator, worker, batch, .{ .context = self, .run = resolved }, now);
         }
@@ -769,8 +775,6 @@ pub const EditorOpening = struct {
         fn dispose(context: *anyopaque) void {
             const self: *SourceBinding = @ptrCast(@alignCast(context));
             if (self.request) |request| request.cancel();
-            if (self.subscription) |subscription| subscription.dispose();
-            self.source.dispose(self.source.context);
             self.opening.allocator.destroy(self);
         }
     };

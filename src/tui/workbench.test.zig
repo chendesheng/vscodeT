@@ -11014,3 +11014,99 @@ test "Workbench: git scm integration opens live Changes group and retains surviv
     try std.testing.expectEqualStrings("a new", try staged.input.entries[0].item.modified.?.textModel.?.model.borrowLineContent(1));
     try std.testing.expect(staged.input.entries[0].item.options.read_only);
 }
+
+test "Workbench: serialize and restore multiple diff resources after the SCM provider activates" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const input_mod = @import("../vs/workbench/contrib/multiDiffEditor/browser/multiDiffEditorInput.zig");
+    const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+    if (!try runGitTest(allocator, root, &.{"init"})) return error.SkipZigTest;
+    try std.testing.expect(try runGitTest(allocator, root, &.{ "config", "core.autocrlf", "false" }));
+    _ = try runGitTest(allocator, root, &.{ "config", "user.name", "Test User" });
+    _ = try runGitTest(allocator, root, &.{ "config", "user.email", "test@example.com" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "old A\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.txt", .data = "old B\n" });
+    try std.testing.expect(try runGitTest(allocator, root, &.{ "add", "-A" }));
+    try std.testing.expect(try runGitTest(allocator, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "initial" }));
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "new A\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.txt", .data = "new B\n" });
+
+    var registry = editor_factory.EditorFactoryRegistry.init(allocator);
+    defer registry.deinit();
+    var serializer = input_mod.MultiDiffEditorSerializer.init(allocator);
+    try registry.registerEditorSerializer(input_mod.ID, serializer.interface());
+    const settings_path = try std.fs.path.join(allocator, &.{ root, ".git", "test-settings.json" });
+    defer allocator.free(settings_path);
+    const session_path = try std.fs.path.join(allocator, &.{ root, ".git", "multi-session.json" });
+    defer allocator.free(session_path);
+    const desired_selection = Selection.init(1, 2, 1, 4);
+    {
+        const window = try TestWindow.init(allocator, io, &.{}, 120, 25);
+        defer window.deinit();
+        const wb = window.workbench;
+        try wb.setUserSettingsPaths(&.{settings_path});
+        try wb.initSidebar(root);
+        pumpSidebarForTests(wb);
+        try wb.initGit();
+        try wb.commands.execute("git.viewChanges");
+        for (0..6000) |_| {
+            if (wb.activeTab()) |tab| if (tab.multi_diff) |multi| {
+                if (!multi.widget.getViewModel().?.isLoading) break;
+            };
+            _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+        }
+        const multi = wb.activeTab().?.multi_diff orelse return error.TestExpectedMultiDiffTab;
+        const vm = multi.widget.getViewModel().?;
+        try std.testing.expectEqual(@as(usize, 2), vm.items.len);
+        try vm.items[0].setCollapsed(true);
+        const expected_doc = vm.items[1].documentDiffItem;
+        try multi.widget.reveal(.{ .original = expected_doc.original.?.uri, .modified = expected_doc.modified.?.uri }, null);
+        const control = multi.widget.activeControl() orelse return error.TestExpectedMultiDiffControl;
+        try control.modified_editor.setSelections(&.{desired_selection});
+        var state = try wb.part.createState(allocator, &registry);
+        defer state.deinit(allocator);
+        try std.testing.expectEqual(@as(usize, 1), state.groups[0].editors.len);
+        try std.testing.expectEqual(@as(usize, 1), state.editor_view_states.len);
+        const session = @import("../vs/workbench/browser/parts/editor/editorSession.zig");
+        try session.savePart(allocator, io, session_path, &state);
+    }
+    // Source metadata is restored but not resolved until the real extension
+    // registers its repository. The working text must come from current disk.
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.txt", .data = "restored new B\n" });
+    const session = @import("../vs/workbench/browser/parts/editor/editorSession.zig");
+    var loaded = (try session.loadPart(allocator, io, session_path)).?;
+    defer loaded.deinit(allocator);
+    const restored = try TestWindow.initWithOptions(allocator, io, &.{}, 120, 25, .{}, .{ .data = loaded, .registry = &registry });
+    defer restored.deinit();
+    const wb = restored.workbench;
+    try std.testing.expectEqual(@as(usize, 1), wb.tabCount());
+    const tab = wb.activeTab() orelse return error.TestExpectedMultiDiffTab;
+    const multi = tab.multi_diff orelse return error.TestExpectedMultiDiffTab;
+    try std.testing.expect(multi.widget.getViewModel().?.isLoading);
+    try std.testing.expect(multi.input.source_binding != null);
+    try wb.setUserSettingsPaths(&.{settings_path});
+    try wb.initSidebar(root);
+    pumpSidebarForTests(wb);
+    try wb.initGit();
+    for (0..6000) |_| {
+        if (!multi.widget.getViewModel().?.isLoading) break;
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+    const vm = multi.widget.getViewModel().?;
+    try std.testing.expect(!vm.isLoading);
+    try std.testing.expectEqual(@as(usize, 2), vm.items.len);
+    try std.testing.expect(vm.items[0].collapsed);
+    try std.testing.expectEqual(vm.items[1], vm.activeDiffItem.?);
+    try std.testing.expectEqualStrings("restored new B", try vm.items[1].modified.model.borrowLineContent(1));
+    const control = multi.widget.activeControl() orelse return error.TestExpectedMultiDiffControl;
+    const selections = try control.modified_editor.getSelections();
+    defer allocator.free(selections);
+    try std.testing.expectEqualSlices(Selection, &.{desired_selection}, selections);
+}
