@@ -36,6 +36,7 @@ pub const Commands = struct {
         dialogs: dialogs.IDialogService,
         resolve_repository: *const fn (*anyopaque) ?*repository_mod.Repository,
         open_path: *const fn (*anyopaque, []const u8) anyerror!void,
+        open_resource: *const fn (*anyopaque, std.Uri, []const u8) anyerror!void,
         open_diff: *const fn (*anyopaque, []const u8, git_mod.DiffRef, git_mod.DiffRef) anyerror!void,
         open_ref_diff: *const fn (*anyopaque, []const u8, ?[]const u8, ?[]const u8, []const u8, []const u8, []const u8) anyerror!void,
         focus_editor: *const fn (*anyopaque) void,
@@ -46,6 +47,14 @@ pub const Commands = struct {
 
     pub fn openChange(self: Commands, resource: *repository_mod.GitScmResource) !void {
         const host = self.host.resources orelse return error.ResourceActionsUnavailable;
+        if (resource.submodule) {
+            // The upstream change command opens the one parent-repository
+            // patch as a regular read-only resource, rather than diffing the
+            // submodule's directory or the Gitlink object.
+            const uri = try std.Uri.parse(resource.iface.multi_diff_modified_uri orelse return error.DiffResourceUnavailable);
+            try host.open_resource(self.host.context, uri, std.fs.path.basename(resource.absolute_path));
+            return;
+        }
         if (resource.provider.diffRefsForResource(resource)) |refs| {
             try host.open_diff(self.host.context, resource.absolute_path, refs.left, refs.right);
         } else try host.open_path(self.host.context, resource.absolute_path);
@@ -382,6 +391,12 @@ pub const CommandContribution = struct {
                         fn run(context: *anyopaque, path: []const u8) !void {
                             const owner: *CommandContribution = @ptrCast(@alignCast(context));
                             try owner.editors.openEditor(path, .{});
+                        }
+                    }.run,
+                    .open_resource = struct {
+                        fn run(context: *anyopaque, resource: std.Uri, label: []const u8) !void {
+                            const owner: *CommandContribution = @ptrCast(@alignCast(context));
+                            try owner.editors.requestOpenResourceUri(resource, label);
                         }
                     }.run,
                     .open_diff = struct {

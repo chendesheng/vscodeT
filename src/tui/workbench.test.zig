@@ -11857,6 +11857,34 @@ test "Workbench: Git URI models distinguish missing and binary resources and dec
         }
     }
 
+    // Resource discovery derives the submodule URI from actual porcelain
+    // status. The SCM open action resolves that virtual patch as a regular
+    // read-only resource, even when no multi-diff input has acquired it.
+    const provider = wb.git_model.repository orelse return error.TestExpectedRepository;
+    const module = for (provider.groups[1].resources.items) |resource| {
+        if (std.mem.eql(u8, resource.relative_path, "module")) break resource;
+    } else return error.TestExpectedSubmodule;
+    try std.testing.expect(module.submodule);
+    try std.testing.expect(module.iface.multi_diff_original_uri == null);
+    const superseded_path = try std.fs.path.join(scratch, &.{ root, "encoded.txt" });
+    try wb.editor_api.requestOpenResourceUri(try git_uri.toGitUri(scratch, superseded_path, "HEAD"), "Superseded");
+    try std.testing.expect(wb.editor_opening.pending_resource_open != null);
+    try module.iface.open(false);
+    for (0..5000) |_| {
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        if (wb.editor_opening.pending_resource_open == null) break;
+        std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+    const patch_tab = wb.activeTab() orelse return error.TestExpectedSubmodulePatch;
+    try std.testing.expect(patch_tab.text_resource_input != null);
+    try std.testing.expect(patch_tab.editor.isReadOnly());
+    const patch_params = try git_uri.fromGitUri(scratch, patch_tab.editor.model.uri());
+    try std.testing.expectEqualStrings(root, patch_params.submoduleOf.?);
+    try std.testing.expectEqualStrings("index", patch_params.ref);
+    var patch = try patch_tab.editor.model.getValue(.LF, false);
+    defer patch.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, patch.items, "Subproject commit 1111111111111111111111111111111111111111") != null);
+
     // Initial single-diff opens use the same raw-byte codec, preserving both
     // the real Git original and the editable UTF-16 file's encoding.
     const working_path = try std.fs.path.join(scratch, &.{ root, "encoded.txt" });

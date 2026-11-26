@@ -334,6 +334,13 @@ pub const EditorService = struct {
                     try opening.openPathWithOptions(resource, options);
                 }
             }.open,
+            .request_open_resource_uri_fn = struct {
+                fn open(context: *anyopaque, resource: std.Uri, label: []const u8) !void {
+                    const service: *EditorService = @ptrCast(@alignCast(context));
+                    const opening = service.opening orelse return error.EditorOpeningUnavailable;
+                    try opening.requestOpenResourceUri(resource, label);
+                }
+            }.open,
             .open_text_resource_fn = struct {
                 fn open(context: *anyopaque, input: *text_diff_editor_mod.TextResourceEditorInput, target: EditorTarget) !void {
                     const service: *EditorService = @ptrCast(@alignCast(context));
@@ -499,6 +506,10 @@ pub const EditorOpening = struct {
         context_menu: ?*const @import("../../../../platform/contextview/browser/contextMenuService.zig").IContextMenuService = null,
     } = null,
     pending_open: ?struct { read: *TextFileRead, options: OpenOptions } = null,
+    pending_resource_open: ?struct {
+        request: @import("../../../../editor/common/services/resolverService.zig").ModelReferenceRequest,
+        label: []u8,
+    } = null,
     diff_worker: ?*DiffWorker = null,
     diff_cache: diff_provider.Cache = .{},
     pending_diff: ?struct {
@@ -1280,7 +1291,48 @@ pub const EditorOpening = struct {
         self.setStatusHint("Opening {s}...", .{std.fs.path.basename(path)});
     }
 
+    pub fn requestOpenResourceUri(self: *EditorOpening, resource: std.Uri, label: []const u8) !void {
+        self.cancelPendingOpen();
+        self.cancelPendingDiff();
+        const owned_label = try self.allocator.dupe(u8, label);
+        errdefer self.allocator.free(owned_label);
+        const request = try self.text_model_resolver.createModelReference(resource, .{ .context = self, .complete = resourceOpenCompleted });
+        self.pending_resource_open = .{ .request = request, .label = owned_label };
+        self.setStatusHint("Opening {s}...", .{label});
+    }
+
+    fn resourceOpenCompleted(context: *anyopaque, result: @import("../../../../editor/common/services/resolverService.zig").ModelReferenceResult) void {
+        const self: *EditorOpening = @ptrCast(@alignCast(context));
+        const pending = self.pending_resource_open orelse {
+            if (result == .resolved) {
+                var reference = result.resolved;
+                reference.dispose();
+            }
+            return;
+        };
+        self.pending_resource_open = null;
+        defer self.allocator.free(pending.label);
+        self.clearStatusHint();
+        self.finishResourceOpen(result, pending.label) catch |err| self.setStatusHint("Open failed: {s}", .{@errorName(err)});
+        self.host.request_frame(self.host.context);
+    }
+
+    fn finishResourceOpen(self: *EditorOpening, result: @import("../../../../editor/common/services/resolverService.zig").ModelReferenceResult, label: []const u8) !void {
+        const reference = switch (result) {
+            .resolved => |value| value,
+            .failure => |err| return err,
+        };
+        const input = try text_diff_editor_mod.TextResourceEditorInput.initFromReference(self.allocator, reference, label);
+        defer input.destroy();
+        try self.openTextResourceInput(input);
+    }
+
     fn cancelPendingOpen(self: *EditorOpening) void {
+        if (self.pending_resource_open) |pending| {
+            self.pending_resource_open = null;
+            pending.request.cancel();
+            self.allocator.free(pending.label);
+        }
         const job = self.pending_open orelse return;
         self.pending_open = null;
         job.read.cancel();
