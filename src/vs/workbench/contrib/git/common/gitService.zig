@@ -249,10 +249,35 @@ pub const GitSubmodule = struct {
     }
 };
 
+/// Git extension Worktree descriptor, captured alongside the status snapshot.
+pub const GitWorktree = struct {
+    name: []const u8,
+    path: []const u8,
+    ref: []const u8,
+    detached: bool,
+    main: bool,
+
+    pub fn deinit(self: GitWorktree, allocator: Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.path);
+        allocator.free(self.ref);
+    }
+
+    pub fn clone(self: GitWorktree, allocator: Allocator) !GitWorktree {
+        const name = try allocator.dupe(u8, self.name);
+        errdefer allocator.free(name);
+        const path = try allocator.dupe(u8, self.path);
+        errdefer allocator.free(path);
+        return .{ .name = name, .path = path, .ref = try allocator.dupe(u8, self.ref), .detached = self.detached, .main = self.main };
+    }
+};
+
 pub const GitRepositoryState = struct {
     head: ?GitBranch = null,
     remotes: []GitRemote = &.{},
     submodules: []GitSubmodule = &.{},
+    worktrees: []GitWorktree = &.{},
+    is_worktree: bool = false,
     merge_changes: []GitChange = &.{},
     index_changes: []GitChange = &.{},
     working_tree_changes: []GitChange = &.{},
@@ -264,6 +289,7 @@ pub const GitRepositoryState = struct {
         if (!optionalBranchEql(a.head, b.head)) return false;
         if (!remotesEql(a.remotes, b.remotes)) return false;
         if (!submodulesEql(a.submodules, b.submodules)) return false;
+        if (a.is_worktree != b.is_worktree or !worktreesEql(a.worktrees, b.worktrees)) return false;
         if (!changesEql(a.merge_changes, b.merge_changes)) return false;
         if (!changesEql(a.index_changes, b.index_changes)) return false;
         if (!changesEql(a.working_tree_changes, b.working_tree_changes)) return false;
@@ -290,6 +316,8 @@ pub const GitRepositoryState = struct {
         if (self.remotes.len > 0) allocator.free(self.remotes);
         for (self.submodules) |submodule| submodule.deinit(allocator);
         if (self.submodules.len > 0) allocator.free(self.submodules);
+        for (self.worktrees) |worktree| worktree.deinit(allocator);
+        if (self.worktrees.len > 0) allocator.free(self.worktrees);
         freeChanges(self.merge_changes, allocator);
         freeChanges(self.index_changes, allocator);
         freeChanges(self.working_tree_changes, allocator);
@@ -303,6 +331,8 @@ pub const GitRepositoryState = struct {
             .head = if (self.head) |head| try cloneBranch(head, allocator) else null,
             .remotes = try cloneRemotes(self.remotes, allocator),
             .submodules = try cloneSubmodules(self.submodules, allocator),
+            .worktrees = try cloneWorktrees(self.worktrees, allocator),
+            .is_worktree = self.is_worktree,
             .merge_changes = try cloneChanges(self.merge_changes, allocator),
             .index_changes = try cloneChanges(self.index_changes, allocator),
             .working_tree_changes = try cloneChanges(self.working_tree_changes, allocator),
@@ -310,6 +340,29 @@ pub const GitRepositoryState = struct {
         };
     }
 };
+
+fn worktreesEql(a: []const GitWorktree, b: []const GitWorktree) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |left, right| {
+        if (left.main != right.main or left.detached != right.detached or !std.mem.eql(u8, left.name, right.name) or !std.mem.eql(u8, left.path, right.path) or !std.mem.eql(u8, left.ref, right.ref)) return false;
+    }
+    return true;
+}
+
+fn cloneWorktrees(worktrees: []const GitWorktree, allocator: Allocator) ![]GitWorktree {
+    if (worktrees.len == 0) return &.{};
+    const result = try allocator.alloc(GitWorktree, worktrees.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (result[0..initialized]) |worktree| worktree.deinit(allocator);
+        allocator.free(result);
+    }
+    for (worktrees, 0..) |worktree, i| {
+        result[i] = try worktree.clone(allocator);
+        initialized += 1;
+    }
+    return result;
+}
 
 fn freeRef(ref: *GitRef, allocator: Allocator) void {
     if (ref.name) |name| allocator.free(name);

@@ -12172,10 +12172,10 @@ test "Workbench: git scm integration excludes unchanged submodule trees and disc
         }
         try std.testing.expectEqual(@as(usize, 0), before.len);
         if (detect) {
-            _ = wb.git_model.submodule_scan_task.at orelse return error.TestExpectedSubmoduleScan;
+            _ = wb.git_model.repository_scan_task.at orelse return error.TestExpectedSubmoduleScan;
             for (0..1000) |_| {
                 if (wb.git_model.repositories().len == 2) break;
-                const deadline = wb.git_model.submodule_scan_task.at orelse break;
+                const deadline = wb.git_model.repository_scan_task.at orelse break;
                 _ = wb.window_events.dispatch(deadline);
             }
             try std.testing.expectEqual(@as(usize, 2), wb.git_model.repositories().len);
@@ -12196,6 +12196,102 @@ test "Workbench: git scm integration excludes unchanged submodule trees and disc
                 std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
             }
             try std.testing.expectEqualStrings("child base", try wb.activeTab().?.editor.model.borrowLineContent(1));
-        } else try std.testing.expect(wb.git_model.submodule_scan_task.at == null);
+        } else try std.testing.expect(wb.git_model.repository_scan_task.at == null);
+    }
+}
+
+test "Workbench: git scm integration discovers linked worktrees from status according to configuration and limit" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "main");
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const base = root_buffer[0..try tmp.dir.realPath(io, &root_buffer)];
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const root = try std.fs.path.join(scratch, &.{ base, "main" });
+    const child_root = try std.fs.path.join(scratch, &.{ base, "linked worktree" });
+    const child_path = try std.fs.path.join(scratch, &.{ child_root, "file.txt" });
+    if (!try runGitTest(a, root, &.{"init"})) return error.SkipZigTest;
+    try std.testing.expect(try runGitTest(a, root, &.{ "config", "user.name", "Test User" }));
+    try std.testing.expect(try runGitTest(a, root, &.{ "config", "user.email", "test@example.com" }));
+    try std.testing.expect(try runGitTest(a, root, &.{ "config", "core.autocrlf", "false" }));
+    try tmp.dir.writeFile(io, .{ .sub_path = "main/file.txt", .data = "main base\n" });
+    try std.testing.expect(try runGitTest(a, root, &.{ "add", "file.txt" }));
+    try std.testing.expect(try runGitTest(a, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "main" }));
+    try std.testing.expect(try runGitTest(a, root, &.{ "worktree", "add", "-b", "linked-branch", child_root }));
+    // A directory left behind by an incomplete worktree is ignored.
+    try tmp.dir.createDirPath(io, "main/.git/worktrees/incomplete");
+    const settings = try std.fs.path.join(scratch, &.{ root, ".git", "test-settings.json" });
+    const cases = [_]struct { detect: bool, limit: i64, count: usize }{
+        .{ .detect = false, .limit = 50, .count = 1 },
+        .{ .detect = true, .limit = 1, .count = 1 },
+        .{ .detect = true, .limit = 50, .count = 2 },
+    };
+    for (cases) |case| {
+        const window = try TestWindow.init(a, io, &.{}, 100, 30);
+        defer window.deinit();
+        const wb = window.workbench;
+        try wb.setUserSettingsPaths(&.{settings});
+        try wb.setWorkspaceFolders(&.{root});
+        try wb.setUserConfigurationValue("git.detectWorktrees", .{ .bool = case.detect });
+        try wb.setUserConfigurationValue("git.detectWorktreesLimit", .{ .integer = case.limit });
+        try wb.initGit();
+        try std.testing.expectEqual(@as(usize, 1), wb.git_model.repositories().len);
+        const parent = wb.git_model.repository.?;
+        const state = parent.repository.stateRef();
+        try std.testing.expect(!state.is_worktree);
+        try std.testing.expectEqual(@as(usize, 2), state.worktrees.len);
+        try std.testing.expect(state.worktrees[0].main and !state.worktrees[0].detached);
+        try std.testing.expectEqualStrings(root, state.worktrees[0].path);
+        try std.testing.expect(!state.worktrees[1].main and !state.worktrees[1].detached);
+        try std.testing.expectEqualStrings(child_root, state.worktrees[1].path);
+        try std.testing.expectEqualStrings("refs/heads/linked-branch", state.worktrees[1].ref);
+        if (case.detect) {
+            const deadline = wb.git_model.repository_scan_task.at orelse return error.TestExpectedWorktreeScan;
+            _ = wb.window_events.dispatch(deadline);
+        } else try std.testing.expect(wb.git_model.repository_scan_task.at == null);
+        try std.testing.expectEqual(case.count, wb.git_model.repositories().len);
+        if (case.count == 2) {
+            const child = wb.git_model.getRepository(child_path) orelse return error.TestExpectedWorktreeRepository;
+            try std.testing.expectEqualStrings(child_root, child.root);
+            try std.testing.expect(child.repository.stateRef().is_worktree);
+            try std.testing.expect(wb.git_model.repository_scan_task.at == null);
+            const child_uri: std.Uri = .{ .scheme = "file", .path = .{ .raw = child_path } };
+            const quick = try wb.scm.quick_diff_api.?.getQuickDiffs(a, child_uri, "plaintext", true);
+            defer {
+                for (quick) |*value| value.deinit(a);
+                a.free(quick);
+            }
+            try std.testing.expectEqual(@as(usize, 1), quick.len);
+            try std.testing.expect(std.mem.startsWith(u8, quick[0].id, child.id));
+
+            // The same status event discovers a new detached worktree after
+            // the initial registration, without replacing either provider.
+            const detached_root = try std.fs.path.join(scratch, &.{ base, "detached" });
+            try std.testing.expect(try runGitTest(a, root, &.{ "worktree", "add", "--detach", detached_root, "HEAD" }));
+            try parent.refresh();
+            const updated = parent.repository.stateRef();
+            try std.testing.expectEqual(@as(usize, 3), updated.worktrees.len);
+            var found_detached = false;
+            for (updated.worktrees) |worktree| {
+                if (std.mem.eql(u8, worktree.path, detached_root)) {
+                    try std.testing.expect(worktree.detached and !worktree.main);
+                    try std.testing.expect(!std.mem.startsWith(u8, worktree.ref, "refs/"));
+                    found_detached = true;
+                }
+            }
+            try std.testing.expect(found_detached);
+            for (0..10) |_| {
+                if (wb.git_model.repositories().len == 3) break;
+                const refresh_deadline = wb.git_model.repository_scan_task.at orelse break;
+                _ = wb.window_events.dispatch(refresh_deadline);
+            }
+            try std.testing.expectEqual(@as(usize, 3), wb.git_model.repositories().len);
+            try std.testing.expect(wb.git_model.repositoryForRoot(root).? == parent);
+            try std.testing.expect(wb.git_model.repositoryForRoot(child_root).? == child);
+        }
     }
 }

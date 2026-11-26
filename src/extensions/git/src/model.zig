@@ -272,9 +272,9 @@ pub const Model = struct {
     on_did_open_repository: Emitter(*Repository),
     on_did_close_repository: Emitter(*Repository),
     repository_count_buffer: [32]u8 = undefined,
-    submodule_scans: std.ArrayList(*SubmoduleScan) = .empty,
-    pending_submodule_scans: std.AutoHashMapUnmanaged(*SubmoduleScan, void) = .empty,
-    submodule_scan_task: dispatch.Task = .{},
+    repository_scans: std.ArrayList(*RepositoryScan) = .empty,
+    pending_repository_scans: std.AutoHashMapUnmanaged(*RepositoryScan, void) = .empty,
+    repository_scan_task: dispatch.Task = .{},
     repository_count_key: ?@import("../../../vs/platform/contextkey/common/contextkey.zig").IContextKey = null,
     git_missing_key: ?@import("../../../vs/platform/contextkey/common/contextkey.zig").IContextKey = null,
 
@@ -282,30 +282,36 @@ pub const Model = struct {
         return .{ .allocator = allocator, .on_did_open_repository = .init(allocator), .on_did_close_repository = .init(allocator) };
     }
 
-    const SubmoduleScan = struct {
+    const RepositoryScan = struct {
         model: *Model,
         repository: *Repository,
         notification: ?INotificationService,
         open: *const fn (*anyopaque, []const u8) anyerror!void,
         context: *anyopaque,
-        limit: usize,
+        detect_submodules: bool,
+        submodule_limit: usize,
+        detect_worktrees: bool,
+        worktree_limit: usize,
         limit_reached: bool = false,
         listener: ?usize = null,
 
-        fn statusChanged(_: void, self: *SubmoduleScan) !void {
+        fn statusChanged(_: void, self: *RepositoryScan) !void {
             if (self.limit_reached) return;
-            if (self.repository.repository.stateRef().submodules.len == 0) {
-                _ = self.model.pending_submodule_scans.remove(self);
-                if (self.model.pending_submodule_scans.count() == 0) self.model.submodule_scan_task.schedule(null);
+            const state = self.repository.repository.stateRef();
+            if ((!self.detect_submodules or state.submodules.len == 0) and (!self.detect_worktrees or state.is_worktree or state.worktrees.len == 0)) {
+                _ = self.model.pending_repository_scans.remove(self);
+                if (self.model.pending_repository_scans.count() == 0) self.model.repository_scan_task.schedule(null);
                 return;
             }
-            try self.model.pending_submodule_scans.put(self.model.allocator, self, {});
-            self.model.submodule_scan_task.schedule(time.milliTimestamp() + 500);
+            try self.model.pending_repository_scans.put(self.model.allocator, self, {});
+            self.model.repository_scan_task.schedule(time.milliTimestamp() + 500);
         }
 
-        fn scan(self: *SubmoduleScan) !bool {
-            const modules = self.repository.repository.stateRef().submodules;
-            if (modules.len > self.limit) {
+        fn scan(self: *RepositoryScan) !bool {
+            const state = self.repository.repository.stateRef();
+            const modules = if (self.detect_submodules) state.submodules else &.{};
+            const worktrees = if (self.detect_worktrees and !state.is_worktree) state.worktrees else &.{};
+            if (modules.len > self.submodule_limit) {
                 self.limit_reached = true;
                 if (self.notification) |notifications| {
                     const message = try std.fmt.allocPrint(self.model.allocator, "The \"{s}\" repository has {d} submodules which won't be opened automatically. You can still open each one individually by opening a file within.", .{ std.fs.path.basename(self.repository.root), modules.len });
@@ -313,13 +319,25 @@ pub const Model = struct {
                     notifications.warn(.{ .text = message });
                 }
             }
+            if (worktrees.len > self.worktree_limit) {
+                self.limit_reached = true;
+                if (self.notification) |notifications| {
+                    const message = try std.fmt.allocPrint(self.model.allocator, "The \"{s}\" repository has {d} worktrees which won't be opened automatically. You can still open each one individually by opening a file within.", .{ std.fs.path.basename(self.repository.root), worktrees.len });
+                    defer self.model.allocator.free(message);
+                    notifications.warn(.{ .text = message });
+                }
+            }
+            if (self.limit_reached) {
+                if (self.listener) |id| self.repository.on_did_run_git_status.unlisten(id);
+                self.listener = null;
+            }
             // Copy paths before opening: opening a nested repository can
             // dispatch status events and change the repository collection.
             var arena = std.heap.ArenaAllocator.init(self.model.allocator);
             defer arena.deinit();
             const a = arena.allocator();
             var paths: std.ArrayList([]const u8) = .empty;
-            for (modules[0..@min(modules.len, self.limit)]) |module| {
+            for (modules[0..@min(modules.len, self.submodule_limit)]) |module| {
                 const path = try std.fs.path.join(a, &.{ self.repository.root, module.path });
                 if (self.model.repositoryForRoot(path) != null) continue;
                 const dot_git = try std.fs.path.join(a, &.{ path, ".git" });
@@ -327,13 +345,20 @@ pub const Model = struct {
                 std.Io.Dir.cwd().access(cli.io, dot_git, .{}) catch continue;
                 try paths.append(a, path);
             }
+            for (worktrees[0..@min(worktrees.len, self.worktree_limit)]) |worktree| {
+                if (self.model.repositoryForRoot(worktree.path) != null) continue;
+                const cli = self.model.git orelse continue;
+                const dot_git = try std.fs.path.join(a, &.{ worktree.path, ".git" });
+                std.Io.Dir.cwd().access(cli.io, dot_git, .{}) catch continue;
+                try paths.append(a, try a.dupe(u8, worktree.path));
+            }
             const before = self.model.open_repositories.items.len;
             for (paths.items) |path| try self.open(self.context, path);
             return before != self.model.open_repositories.items.len;
         }
 
-        fn dispose(self: *SubmoduleScan) void {
-            _ = self.model.pending_submodule_scans.remove(self);
+        fn dispose(self: *RepositoryScan) void {
+            _ = self.model.pending_repository_scans.remove(self);
             if (self.listener) |id| self.repository.on_did_run_git_status.unlisten(id);
             self.model.allocator.destroy(self);
         }
@@ -447,7 +472,7 @@ pub const Model = struct {
         try provider.setConfiguration(open_options.configuration);
         try self.open_repositories.append(self.allocator, provider);
         errdefer _ = self.open_repositories.pop();
-        try self.attachSubmoduleScan(provider, open_options);
+        try self.attachRepositoryScan(provider, open_options);
         if (self.repository == null) {
             self.repository = provider;
             self.git_root = provider.root;
@@ -457,33 +482,41 @@ pub const Model = struct {
         return provider;
     }
 
-    fn attachSubmoduleScan(self: *Model, provider: *Repository, options: OpenOptions) !void {
+    fn attachRepositoryScan(self: *Model, provider: *Repository, options: OpenOptions) !void {
         const open = options.scan_repository orelse return;
-        var enabled = true;
-        var limit: usize = 10;
+        var detect_submodules = true;
+        var submodule_limit: usize = 10;
+        var detect_worktrees = false;
+        var worktree_limit: usize = 50;
         if (options.configuration) |config| {
             if (config.getValue("git.detectSubmodules", .{ .resource = provider.root })) |value| {
-                if (value.* == .bool) enabled = value.bool;
+                if (value.* == .bool) detect_submodules = value.bool;
             }
             if (config.getValue("git.detectSubmodulesLimit", .{ .resource = provider.root })) |value| {
-                if (value.* == .integer) limit = @intCast(@max(value.integer, 0));
+                if (value.* == .integer) submodule_limit = @intCast(@max(value.integer, 0));
+            }
+            if (config.getValue("git.detectWorktrees", .{ .resource = provider.root })) |value| {
+                if (value.* == .bool) detect_worktrees = value.bool;
+            }
+            if (config.getValue("git.detectWorktreesLimit", .{ .resource = provider.root })) |value| {
+                if (value.* == .integer) worktree_limit = @intCast(@max(value.integer, 0));
             }
         }
-        if (!enabled) return;
-        if (self.submodule_scan_task.queue == null) self.submodule_scan_task = .{ .queue = options.window, .context = self, .run = scanSubmodules };
-        const binding = try self.allocator.create(SubmoduleScan);
-        binding.* = .{ .model = self, .repository = provider, .notification = options.notifications, .open = open, .context = options.host.context, .limit = limit };
+        if (!detect_submodules and !detect_worktrees) return;
+        if (self.repository_scan_task.queue == null) self.repository_scan_task = .{ .queue = options.window, .context = self, .run = scanRepositories };
+        const binding = try self.allocator.create(RepositoryScan);
+        binding.* = .{ .model = self, .repository = provider, .notification = options.notifications, .open = open, .context = options.host.context, .detect_submodules = detect_submodules, .submodule_limit = submodule_limit, .detect_worktrees = detect_worktrees, .worktree_limit = worktree_limit };
         errdefer binding.dispose();
-        binding.listener = try provider.on_did_run_git_status.listen(binding, SubmoduleScan.statusChanged);
-        try self.submodule_scans.append(self.allocator, binding);
-        errdefer _ = self.submodule_scans.pop();
-        try SubmoduleScan.statusChanged({}, binding);
+        binding.listener = try provider.on_did_run_git_status.listen(binding, RepositoryScan.statusChanged);
+        try self.repository_scans.append(self.allocator, binding);
+        errdefer _ = self.repository_scans.pop();
+        try RepositoryScan.statusChanged({}, binding);
     }
 
-    fn scanSubmodules(context: *anyopaque, _: i64, _: bool) bool {
+    fn scanRepositories(context: *anyopaque, _: i64, _: bool) bool {
         const self: *Model = @ptrCast(@alignCast(context));
-        var pending = self.pending_submodule_scans;
-        self.pending_submodule_scans = .empty;
+        var pending = self.pending_repository_scans;
+        self.pending_repository_scans = .empty;
         defer pending.deinit(self.allocator);
         var iterator = pending.keyIterator();
         var changed = false;
@@ -504,9 +537,9 @@ pub const Model = struct {
         for (self.open_repositories.items, 0..) |candidate, index| {
             if (candidate != provider) continue;
             _ = self.open_repositories.orderedRemove(index);
-            for (self.submodule_scans.items, 0..) |binding, i| {
+            for (self.repository_scans.items, 0..) |binding, i| {
                 if (binding.repository != provider) continue;
-                _ = self.submodule_scans.orderedRemove(i);
+                _ = self.repository_scans.orderedRemove(i);
                 binding.dispose();
                 break;
             }
@@ -669,10 +702,10 @@ pub const Model = struct {
     pub fn deinit(self: *Model) void {
         if (self.repository_count_key) |key| key.reset();
         if (self.git_missing_key) |key| key.reset();
-        self.submodule_scan_task.schedule(null);
-        for (self.submodule_scans.items) |binding| binding.dispose();
-        self.submodule_scans.deinit(self.allocator);
-        self.pending_submodule_scans.deinit(self.allocator);
+        self.repository_scan_task.schedule(null);
+        for (self.repository_scans.items) |binding| binding.dispose();
+        self.repository_scans.deinit(self.allocator);
+        self.pending_repository_scans.deinit(self.allocator);
         for (self.open_repositories.items) |provider| {
             self.on_did_close_repository.fire(provider) catch {};
             provider.destroy();

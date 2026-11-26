@@ -38,6 +38,7 @@ const git_browser = @import("../../../vs/workbench/contrib/git/browser/gitServic
 
 pub const GitRepositoryState = git_common.GitRepositoryState;
 pub const GitSubmodule = git_common.GitSubmodule;
+pub const GitWorktree = git_common.GitWorktree;
 pub const GitChange = git_common.GitChange;
 pub const GitDiffChange = git_common.GitDiffChange;
 pub const GitBranch = git_common.GitBranch;
@@ -545,7 +546,81 @@ pub const Git = struct {
         var state = try parseStatus(self.allocator, result.stdout);
         errdefer state.deinit(self.allocator);
         state.submodules = try self.getSubmodules(root);
+        const dot_git = try self.getRepositoryDotGit(root);
+        defer dot_git.deinit(self.allocator);
+        state.is_worktree = !equalRoots(dot_git.path, dot_git.common_path, builtin.os.tag == .windows);
+        // A successful status requires a working tree, not a bare repository.
+        state.worktrees = try self.getWorktreesFS(dot_git, false);
         return state;
+    }
+
+    fn appendWorktree(self: *Git, result: *std.ArrayList(GitWorktree), name: []const u8, path: []const u8, head: []const u8, main: bool) !void {
+        const content = std.mem.trim(u8, head, " \t\r\n");
+        const symbolic = std.mem.startsWith(u8, content, "ref: ");
+        const borrowed: GitWorktree = .{ .name = name, .path = path, .ref = if (symbolic) content[5..] else content, .detached = !symbolic, .main = main };
+        const owned = try borrowed.clone(self.allocator);
+        errdefer owned.deinit(self.allocator);
+        try result.append(self.allocator, owned);
+    }
+
+    /// Upstream getWorktreesFS reads HEAD/gitdir files rather than spawning
+    /// `git worktree list`. Missing/pruned entries are ignored.
+    pub fn getWorktreesFS(self: *Git, dot_git: DotGit, is_bare: bool) ![]GitWorktree {
+        var result: std.ArrayList(GitWorktree) = .empty;
+        errdefer {
+            for (result.items) |worktree| worktree.deinit(self.allocator);
+            result.deinit(self.allocator);
+        }
+        const dir = std.Io.Dir.cwd();
+        const common = dot_git.common_path;
+        if (!is_bare) {
+            const head_path = try std.fs.path.join(self.allocator, &.{ common, "HEAD" });
+            defer self.allocator.free(head_path);
+            const head = dir.readFileAlloc(self.io, head_path, self.allocator, .unlimited) catch |err| switch (err) {
+                error.FileNotFound, error.NotDir => return result.toOwnedSlice(self.allocator),
+                else => return err,
+            };
+            defer self.allocator.free(head);
+            const main_path = std.fs.path.dirname(common) orelse common;
+            try self.appendWorktree(&result, std.fs.path.basename(main_path), main_path, head, true);
+        }
+        const worktrees_path = try std.fs.path.join(self.allocator, &.{ common, "worktrees" });
+        defer self.allocator.free(worktrees_path);
+        var worktrees = dir.openDir(self.io, worktrees_path, .{ .iterate = true }) catch |err| switch (err) {
+            error.FileNotFound, error.NotDir => return result.toOwnedSlice(self.allocator),
+            else => return err,
+        };
+        defer worktrees.close(self.io);
+        var iterator = worktrees.iterate();
+        while (try iterator.next(self.io)) |entry| {
+            if (entry.kind != .directory) continue;
+            var linked = worktrees.openDir(self.io, entry.name, .{}) catch |err| switch (err) {
+                error.FileNotFound => continue,
+                error.NotDir => break,
+                else => return err,
+            };
+            defer linked.close(self.io);
+            const head = linked.readFileAlloc(self.io, "HEAD", self.allocator, .unlimited) catch |err| switch (err) {
+                error.FileNotFound => continue,
+                error.NotDir => break,
+                else => return err,
+            };
+            defer self.allocator.free(head);
+            const gitdir = linked.readFileAlloc(self.io, "gitdir", self.allocator, .unlimited) catch |err| switch (err) {
+                error.FileNotFound => continue,
+                error.NotDir => break,
+                else => return err,
+            };
+            defer self.allocator.free(gitdir);
+            const content = std.mem.trim(u8, gitdir, " \t\r\n");
+            const suffix = std.mem.indexOf(u8, content, "/.git") orelse if (builtin.os.tag == .windows) std.mem.indexOf(u8, content, "\\.git") orelse content.len else content.len;
+            // Git uses forward-slash paths on Windows in this file too. Use
+            // the native path spelling before repository-root comparison.
+            const path = try std.fs.path.resolveAlloc(self.allocator, &.{content[0..suffix]});
+            defer self.allocator.free(path);
+            try self.appendWorktree(&result, entry.name, path, head, false);
+        }
+        return result.toOwnedSlice(self.allocator);
     }
 
     pub fn getSubmodules(self: *Git, root: []const u8) ![]GitSubmodule {
