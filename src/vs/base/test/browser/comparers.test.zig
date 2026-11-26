@@ -36,10 +36,14 @@ test "compareFileExtensions orders by extension then name" {
     try std.testing.expect(comparers.compareFileExtensions("file1.txt", "file01.txt") > 0);
 }
 
-test "comparePaths orders components with numeric runs" {
+test "comparePaths orders folders lexically and final filenames naturally" {
     try std.testing.expectEqual(@as(i32, 0), comparers.comparePaths("a/b", "a/b"));
     try std.testing.expect(comparers.comparePaths("a/b", "a/c") < 0);
-    try std.testing.expect(comparers.comparePaths("a2/b", "a10/b") < 0);
+    // comparePathComponents is lexical; only the last component uses
+    // compareFileNames and its numeric collation (upstream comparePaths).
+    try std.testing.expect(comparers.comparePaths("a2/b", "a10/b") > 0);
+    try std.testing.expect(comparers.comparePaths("a/b2", "a/b10") < 0);
+    try std.testing.expect(comparers.comparePaths("a/z", "a/a/child") < 0);
     try std.testing.expect(comparers.comparePaths("a/b/c", "a/b") > 0);
     try std.testing.expect(comparers.comparePaths("a", "b/c") < 0);
 }
