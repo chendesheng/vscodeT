@@ -17,6 +17,7 @@ pub const WorkspaceContextService = struct {
     allocator: Allocator,
     workspace: Workspace,
     owned: bool = true,
+    on_did_add_folder: @import("../../../../base/common/event.zig").Emitter([]const u8),
 
     pub fn initEmpty(allocator: Allocator, id: []const u8) !*WorkspaceContextService {
         const self = try allocator.create(WorkspaceContextService);
@@ -24,6 +25,7 @@ pub const WorkspaceContextService = struct {
         self.* = .{
             .allocator = allocator,
             .workspace = try Workspace.init(allocator, id),
+            .on_did_add_folder = .init(allocator),
         };
         return self;
     }
@@ -38,6 +40,7 @@ pub const WorkspaceContextService = struct {
     }
 
     pub fn deinit(self: *WorkspaceContextService) void {
+        self.on_did_add_folder.deinit();
         self.workspace.deinit();
         self.allocator.destroy(self);
     }
@@ -48,7 +51,8 @@ pub const WorkspaceContextService = struct {
 
     pub fn addFolder(self: *WorkspaceContextService, resource: []const u8) !void {
         const name = std.fs.path.basename(resource);
-        _ = try self.workspace.addFolder(resource, name);
+        const folder = try self.workspace.addFolder(resource, name);
+        self.on_did_add_folder.fire(folder.resource) catch {};
     }
 
     pub fn setConfiguration(self: *WorkspaceContextService, configuration: ?[]const u8) !void {

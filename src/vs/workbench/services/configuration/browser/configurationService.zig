@@ -639,6 +639,57 @@ pub const ConfigurationService = struct {
         try self.reload();
     }
 
+    /// The configuration editing boundary for workbench migrations. Each
+    /// source is edited independently, preserving its own language overrides
+    /// and avoiding merged-value writes into the wrong target.
+    pub const SourceEditor = struct {
+        context: *const anyopaque,
+        edit: *const fn (*const anyopaque, Allocator, []const u8, bool) anyerror!?[]u8,
+    };
+
+    pub fn editConfigurationSources(self: *ConfigurationService, added_folder: ?[]const u8, editor: SourceEditor) !void {
+        var changed = false;
+        if (added_folder == null) {
+            for (self.user_settings_paths) |path| changed = self.editConfigurationSource(path, false, editor) or changed;
+            if (self.workspace.getWorkspace().configuration) |path| changed = self.editConfigurationSource(path, true, editor) or changed;
+        }
+        for (self.workspace.getWorkspace().folders.items) |folder| {
+            if (added_folder) |resource| if (!std.mem.eql(u8, folder.resource, resource)) continue;
+            const path = try std.fs.path.join(self.allocator, &.{ folder.resource, ".vscode", "settings.json" });
+            defer self.allocator.free(path);
+            changed = self.editConfigurationSource(path, false, editor) or changed;
+        }
+        if (changed) try self.reload();
+    }
+
+    fn editConfigurationSource(self: *ConfigurationService, path: []const u8, workspace_file: bool, editor: SourceEditor) bool {
+        return self.editConfigurationSourceImpl(path, workspace_file, editor) catch |err| {
+            // Like the upstream migration Promise.allSettled, an invalid or
+            // inaccessible settings target does not block another target.
+            std.log.scoped(.configuration).warn("cannot edit settings {s}: {s}", .{ path, @errorName(err) });
+            return false;
+        };
+    }
+
+    fn editConfigurationSourceImpl(self: *ConfigurationService, path: []const u8, workspace_file: bool, editor: SourceEditor) !bool {
+        const cwd = Io.Dir.cwd();
+        const text = cwd.readFileAlloc(self.io, path, self.allocator, .limited(max_settings_file_size)) catch |err| switch (err) {
+            error.FileNotFound => return false,
+            else => return err,
+        };
+        defer self.allocator.free(text);
+        const replacement = (try editor.edit(editor.context, self.allocator, text, workspace_file)) orelse return false;
+        defer self.allocator.free(replacement);
+        const current = try cwd.readFileAlloc(self.io, path, self.allocator, .limited(max_settings_file_size));
+        defer self.allocator.free(current);
+        if (!std.mem.eql(u8, text, current)) return false;
+        var atomic = try cwd.createFileAtomic(self.io, path, .{ .replace = true });
+        defer atomic.deinit(self.io);
+        try atomic.file.writeStreamingAll(self.io, replacement);
+        try atomic.replace(self.io);
+        return true;
+    }
+
     pub fn settingsFilePaths(self: *const ConfigurationService, allocator: Allocator) ![]const []u8 {
         var paths = std.array_list.Managed([]u8).init(allocator);
         errdefer {
