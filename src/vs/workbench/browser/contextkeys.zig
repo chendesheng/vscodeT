@@ -14,6 +14,9 @@ const ModelLanguageChangedEvent = @import("../../editor/common/textModelEvents.z
 pub const WindowContextState = struct {
     active_editor: ?*Editor,
     active_diff: bool = false,
+    active_multi_diff: bool = false,
+    multi_diff_all_collapsed: bool = false,
+    multi_diff_render_side_by_side: bool = true,
     visible_diff: bool = false,
     comparing_moved_code: bool = false,
     diff_original_uri: []const u8 = "",
@@ -40,6 +43,10 @@ pub const WindowContextState = struct {
 
 const WindowContextKeys = struct {
     editor_focus: contextkeys.IContextKey,
+    active_editor_pane: contextkeys.IContextKey,
+    in_multi_diff_editor: contextkeys.IContextKey,
+    multi_diff_editor_all_collapsed: contextkeys.IContextKey,
+    multi_diff_editor_render_side_by_side: contextkeys.IContextKey,
     text_compare_editor_active: contextkeys.IContextKey,
     active_compare_editor_can_swap: contextkeys.IContextKey,
     text_compare_editor_visible: contextkeys.IContextKey,
@@ -80,6 +87,10 @@ const WindowContextKeys = struct {
     fn init(service: contextkeys.IContextKeyService) !WindowContextKeys {
         return .{
             .editor_focus = try service.createKey("editorFocus", .{ .boolean = false }),
+            .active_editor_pane = try service.createKey("activeEditor", .{ .string = "" }),
+            .in_multi_diff_editor = try service.createKey("inMultiDiffEditor", .{ .boolean = false }),
+            .multi_diff_editor_all_collapsed = try service.createKey("multiDiffEditorAllCollapsed", .{ .boolean = false }),
+            .multi_diff_editor_render_side_by_side = try service.createKey("multiDiffEditorRenderSideBySide", .{ .boolean = true }),
             .text_compare_editor_active = try service.createKey("textCompareEditorActive", .{ .boolean = false }),
             .active_compare_editor_can_swap = try service.createKey("activeCompareEditorCanSwap", .{ .boolean = false }),
             .text_compare_editor_visible = try service.createKey("textCompareEditorVisible", .{ .boolean = false }),
@@ -223,7 +234,11 @@ pub const WorkbenchContextKeysHandler = struct {
         keys.text_compare_editor_active.set(.{ .boolean = state.active_diff });
         keys.active_compare_editor_can_swap.set(.{ .boolean = state.active_diff });
         keys.text_compare_editor_visible.set(.{ .boolean = state.visible_diff });
-        keys.is_in_diff_editor.set(.{ .boolean = state.active_diff });
+        keys.active_editor_pane.set(.{ .string = if (state.active_multi_diff) "workbench.editor.multiDiffEditor" else "" });
+        keys.in_multi_diff_editor.set(.{ .boolean = state.active_multi_diff });
+        keys.multi_diff_editor_all_collapsed.set(.{ .boolean = state.multi_diff_all_collapsed });
+        keys.multi_diff_editor_render_side_by_side.set(.{ .boolean = state.multi_diff_render_side_by_side });
+        keys.is_in_diff_editor.set(.{ .boolean = state.active_diff or state.active_multi_diff });
         keys.comparing_moved_code.set(.{ .boolean = state.comparing_moved_code });
         self.updateUriKey(keys.diff_original_uri, &self.diff_original_uri_owned, state.diff_original_uri);
         self.updateUriKey(keys.diff_modified_uri, &self.diff_modified_uri_owned, state.diff_modified_uri);

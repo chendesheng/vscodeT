@@ -147,6 +147,7 @@ pub fn registerActions(commands: *CommandRegistry, instantiation: *Instantiation
     for (quick_diff_widget.editor_actions) |action| try commands.registerEditorAction(instantiation, action);
     for (quick_diff_widget.widget_actions) |action| try commands.registerAction(instantiation, action);
     try quick_diff_widget.registerGoMenu(&commands.menus);
+    try @import("contrib/multiDiffEditor/browser/multiDiffEditor.contribution.zig").registerActions(commands, instantiation);
     for (@import("browser/parts/editor/diffEditorCommands.zig").diff_actions) |action| try commands.registerAction(instantiation, action);
     for (@import("../editor/browser/widget/diffEditor/commands.zig").diff_actions) |action| try commands.registerAction(instantiation, action);
     for (@import("contrib/accessibility/browser/accessibleViewActions.zig").accessible_view_actions) |action| try commands.registerAction(instantiation, action);

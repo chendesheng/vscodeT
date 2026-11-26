@@ -9,7 +9,9 @@ const contextkey = @import("../../../../platform/contextkey/common/contextkey.zi
 const actions = @import("../../../../platform/actions/common/actions.zig");
 const menus = @import("../../../../platform/actions/common/menuService.zig");
 const context_menus = @import("../../../../platform/contextview/browser/contextMenuService.zig");
-const DiffWidget = @import("../../../../editor/browser/widget/diffEditor/diffEditorWidget.zig").DiffEditorWidget(@import("../../../../editor/browser/widget/codeEditor/terminalEditorView.zig").IEditorView);
+const View = @import("../../../../editor/browser/widget/codeEditor/terminalEditorView.zig").IEditorView;
+const DiffWidget = @import("../../../../editor/browser/widget/diffEditor/diffEditorWidget.zig").DiffEditorWidget(View);
+const MultiDiffWidget = @import("../../../../editor/browser/widget/multiDiffEditor/multiDiffEditorWidget.zig").MultiDiffEditorWidget(View);
 
 pub const Host = struct {
     menus: *menus.MenuService,
@@ -33,6 +35,7 @@ pub const EditorTitleControl = struct {
     host: ?Host = null,
     menu: ?*menus.Menu = null,
     widget: ?*DiffWidget = null,
+    multi_widget: ?*MultiDiffWidget = null,
     widget_listener: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
 
     pub fn attach(self: *EditorTitleControl, host: Host) !void {
@@ -61,15 +64,24 @@ pub const EditorTitleControl = struct {
         if (self.widget_listener) |listener| listener.dispose();
         self.widget_listener = null;
         self.widget = null;
+        self.multi_widget = null;
     }
 
     pub fn setActiveDiff(self: *EditorTitleControl, widget: ?*DiffWidget) !void {
-        if (self.menu == null or self.widget == widget) return;
+        if (self.menu == null or (self.widget == widget and self.multi_widget == null)) return;
         self.detachWidget();
         if (widget) |value| {
             self.widget = value;
             self.widget_listener = try value.on_did_change_context.listenSignal(self, onWidgetChanged);
         }
+        try self.refresh();
+    }
+
+    pub fn setActiveMultiDiff(self: *EditorTitleControl, widget: *MultiDiffWidget) !void {
+        if (self.menu == null or self.multi_widget == widget) return;
+        self.detachWidget();
+        self.multi_widget = widget;
+        self.widget_listener = try widget.on_did_change_layout.listenSignal(self, onWidgetChanged);
         try self.refresh();
     }
 
@@ -92,10 +104,18 @@ pub const EditorTitleControl = struct {
 
     fn getValue(ptr: *anyopaque, key: []const u8) contextkey.ContextKeyValue {
         const self: *EditorTitleControl = @ptrCast(@alignCast(ptr));
-        const widget = self.widget;
-        for ([_][]const u8{ "isInDiffEditor", "textCompareEditorActive", "activeCompareEditorCanSwap" }) |name| {
-            if (std.mem.eql(u8, key, name)) return .{ .boolean = widget != null };
+        const widget = self.widget orelse if (self.multi_widget) |multi| multi.activeControl() else null;
+        if (std.mem.eql(u8, key, "isInDiffEditor")) return .{ .boolean = self.widget != null or self.multi_widget != null };
+        for ([_][]const u8{ "textCompareEditorActive", "activeCompareEditorCanSwap" }) |name| {
+            if (std.mem.eql(u8, key, name)) return .{ .boolean = self.widget != null };
         }
+        if (std.mem.eql(u8, key, "activeEditor")) {
+            if (self.multi_widget != null) return .{ .string = "workbench.editor.multiDiffEditor" };
+            return .{ .string = "" };
+        }
+        if (std.mem.eql(u8, key, "inMultiDiffEditor")) return .{ .boolean = self.multi_widget != null };
+        if (std.mem.eql(u8, key, "multiDiffEditorAllCollapsed")) return .{ .boolean = if (self.multi_widget) |multi| multi.impl.allCollapsed() else false };
+        if (std.mem.eql(u8, key, "multiDiffEditorRenderSideBySide")) return .{ .boolean = if (self.multi_widget) |multi| multi.impl.config.render_side_by_side orelse true else true };
         if (std.mem.eql(u8, key, "diffEditorHasChanges")) return .{ .boolean = if (widget) |value| value.context_state.has_changes else false };
         if (std.mem.eql(u8, key, "diffEditorInlineMode")) return .{ .boolean = if (widget) |value| value.context_state.inline_mode else false };
         if (std.mem.eql(u8, key, "diffEditorAutomaticRenderSideBySide")) return .{ .boolean = if (widget) |value| value.context_state.automatic_side_by_side else true };
@@ -137,6 +157,10 @@ pub const EditorTitleControl = struct {
         if (std.mem.eql(u8, icon, "arrow-swap")) return '↔';
         if (std.mem.eql(u8, icon, "diff-editor-toggle-whitespace")) return '␣';
         if (std.mem.eql(u8, icon, "map")) return '▤';
+        if (std.mem.eql(u8, icon, "arrow-up")) return '↑';
+        if (std.mem.eql(u8, icon, "arrow-down")) return '↓';
+        if (std.mem.eql(u8, icon, "collapse-all")) return '⊟';
+        if (std.mem.eql(u8, icon, "expand-all")) return '⊞';
         return '•';
     }
 

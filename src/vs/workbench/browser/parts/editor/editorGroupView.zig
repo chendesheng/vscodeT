@@ -113,8 +113,12 @@ pub fn EditorGroupView(comptime View: type) type {
         pub fn attachTitleMenu(self: *Self, host: title_mod.Host) !void {
             try self.title_control.attach(host);
             if (comptime @hasField(@typeInfo(View).pointer.child, "diff")) {
-                const widget = if (self.panes.activePane()) |tab| if (tab.diff) |diff| diff.widget else null else null;
-                try self.title_control.setActiveDiff(widget);
+                if (self.panes.activePane()) |tab| {
+                    if (comptime @hasField(@typeInfo(View).pointer.child, "multi_diff")) {
+                        if (tab.multi_diff) |multi| return self.title_control.setActiveMultiDiff(multi.widget);
+                    }
+                    try self.title_control.setActiveDiff(if (tab.diff) |diff| diff.widget else null);
+                } else try self.title_control.setActiveDiff(null);
             }
         }
 
@@ -737,8 +741,13 @@ pub fn EditorGroupView(comptime View: type) type {
             self.panes.setActive(pane);
             if (pane != previous) {
                 if (comptime @hasField(@typeInfo(View).pointer.child, "diff")) {
-                    const widget = if (pane) |tab| if (tab.diff) |diff| diff.widget else null else null;
-                    self.title_control.setActiveDiff(widget) catch {};
+                    if (pane) |tab| {
+                        if (comptime @hasField(@typeInfo(View).pointer.child, "multi_diff")) {
+                            if (tab.multi_diff) |multi| {
+                                self.title_control.setActiveMultiDiff(multi.widget) catch {};
+                            } else self.title_control.setActiveDiff(if (tab.diff) |diff| diff.widget else null) catch {};
+                        } else self.title_control.setActiveDiff(if (tab.diff) |diff| diff.widget else null) catch {};
+                    } else self.title_control.setActiveDiff(null) catch {};
                 }
                 if (self.updateBreadcrumbsVisibility() and self.panes.page_position != null) self.layout();
             }

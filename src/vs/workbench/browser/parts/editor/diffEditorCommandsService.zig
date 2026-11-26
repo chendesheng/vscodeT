@@ -78,6 +78,16 @@ pub const DiffEditorCommandsService = struct {
     fn openActiveDiffSide(context: *anyopaque) !void {
         const self: *DiffEditorCommandsService = @ptrCast(@alignCast(context));
         const tab = self.editor_service.activeEditorPane() orelse return;
+        if (tab.multi_diff) |multi| {
+            const item = multi.widget.getViewModel().?.activeDiffItem orelse return;
+            const widget = multi.widget.activeControl() orelse return;
+            for (multi.input.entries) |entry| if (entry.item == item.documentDiffItem) {
+                const side = if (widget.focused == .original) entry.original else entry.modified;
+                if (side) |input| try self.editor_service.openDiffSide(input);
+                return;
+            };
+            return;
+        }
         const diff = tab.diff orelse return;
         try self.editor_service.openDiffSide(if (diff.widget.focused == .original) diff.original_input else diff.modified_input);
     }
@@ -90,17 +100,26 @@ pub const DiffEditorCommandsService = struct {
     fn focusInDiffEditor(context: *anyopaque, side: FocusSide) void {
         const self: *DiffEditorCommandsService = @ptrCast(@alignCast(context));
         const tab = self.editor_service.activeEditorPane() orelse return;
-        const diff = tab.diff orelse return;
-        diff.widget.setFocus(switch (side) {
+        const widget = tab.activeDiffWidget() orelse return;
+        widget.setFocus(switch (side) {
             .original => .original,
             .modified => .modified,
-            .toggle => if (diff.widget.focused == .original) .modified else .original,
+            .toggle => if (widget.focused == .original) .modified else .original,
         });
     }
 
     fn setViewMode(context: *anyopaque, configuration: Configuration, mode: ViewMode) !void {
         const self: *DiffEditorCommandsService = @ptrCast(@alignCast(context));
         const tab = self.editor_service.activeEditorPane() orelse return;
+        if (tab.multi_diff) |multi| {
+            const target: @import("../../../../editor/browser/widget/multiDiffEditor/diffEditorItemTemplate.zig").ViewMode = switch (mode) {
+                .inline_view => .inline_view,
+                .side_by_side => .side_by_side,
+                .automatic => .automatic,
+                .toggle => if (multi.widget.impl.config.render_side_by_side orelse true) .inline_view else .side_by_side,
+            };
+            return multi.widget.setDiffLayoutOptions(target, null);
+        }
         const diff = tab.diff orelse return;
         switch (mode) {
             .toggle => try configuration.updateValue("diffEditor.renderSideBySide", .{ .bool = !diff.widget.options.render_side_by_side }, .USER),

@@ -10787,3 +10787,120 @@ test "Diff editor commands: registered accessibility help presents read-only nav
     try wb.openPath(path);
     try std.testing.expect(!service.visible());
 }
+
+test "Workbench: git scm integration opens Graph Open Changes as a real virtualized multi-diff pane" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+    if (!try runGitTest(allocator, root, &.{"init"})) return error.SkipZigTest;
+    try std.testing.expect(try runGitTest(allocator, root, &.{ "config", "core.autocrlf", "false" }));
+    _ = try runGitTest(allocator, root, &.{ "config", "user.name", "Test User" });
+    _ = try runGitTest(allocator, root, &.{ "config", "user.email", "test@example.com" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "old\nend\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.txt", .data = "deleted\n" });
+    try std.testing.expect(try runGitTest(allocator, root, &.{ "add", "a.txt", "b.txt" }));
+    try std.testing.expect(try runGitTest(allocator, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "initial" }));
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "new\nend\n" });
+    try tmp.dir.deleteFile(io, "b.txt");
+    try tmp.dir.writeFile(io, .{ .sub_path = "new.txt", .data = "added\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "binary.dat", .data = "\x00\x01\x02" });
+    try std.testing.expect(try runGitTest(allocator, root, &.{ "add", "-A" }));
+    try std.testing.expect(try runGitTest(allocator, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "four changes" }));
+
+    const window = try TestWindow.init(allocator, io, &.{}, 120, 25);
+    defer window.deinit();
+    const wb = window.workbench;
+    const settings_path = try std.fs.path.join(allocator, &.{ root, ".git", "test-settings.json" });
+    defer allocator.free(settings_path);
+    try wb.setUserSettingsPaths(&.{settings_path});
+    try wb.initSidebar(root);
+    pumpSidebarForTests(wb);
+    try wb.initGit();
+    const graph = wb.scm.history orelse return error.TestExpectedHistoryView;
+    try graph.refresh(.reload);
+    graph.config.always_show_actions = true;
+    var graph_frame = try ui.Frame.init(allocator, 80, 10);
+    defer graph_frame.deinit();
+    graph_frame.begin();
+    const rect: ui.Rect = .{ .x = 0, .y = 0, .w = 80, .h = 10 };
+    try graph.render(&graph_frame.next, rect, true);
+    const action = for (graph_frame.next.cluster, 0..) |cp, index| {
+        if (cp == scm_history_view_mod.open_changes_glyph) break index;
+    } else return error.TestExpectedGraphOpenChangesAction;
+    var event: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = action % 80, .y = action / 80 };
+    try std.testing.expect(try graph.handleMouse(&event, rect));
+    for (0..6000) |_| {
+        if (wb.activeTab()) |tab| if (tab.multi_diff) |multi| {
+            if (!multi.widget.getViewModel().?.isLoading) break;
+        };
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+    const tab = wb.activeTab() orelse return error.TestExpectedMultiDiffTab;
+    const multi = tab.multi_diff orelse return error.TestExpectedMultiDiffTab;
+    const vm = multi.widget.getViewModel().?;
+    try std.testing.expect(!vm.isLoading);
+    try std.testing.expectEqual(@as(usize, 4), vm.items.len);
+    try std.testing.expectEqual(@as(usize, 4), multi.input.entries.len);
+    try std.testing.expect(std.mem.endsWith(u8, multi.input.base.getName(), "(4 files)"));
+    try std.testing.expect(!wb.quick_access.isPickOpen());
+    var added = false;
+    var deleted = false;
+    var binary = false;
+    var changed = false;
+    for (vm.items) |item| {
+        if (item.isBinary()) {
+            binary = true;
+            try std.testing.expect(item.documentDiffItem.modified != null);
+        } else if (item.documentDiffItem.original == null) {
+            added = true;
+            try std.testing.expectEqualStrings("added", try item.modified.model.borrowLineContent(1));
+        } else if (item.documentDiffItem.modified == null) {
+            deleted = true;
+            try std.testing.expectEqualStrings("deleted", try item.original.model.borrowLineContent(1));
+        } else {
+            changed = true;
+            try std.testing.expectEqualStrings("old", try item.original.model.borrowLineContent(1));
+            try std.testing.expectEqualStrings("new", try item.modified.model.borrowLineContent(1));
+            var resource_arena = std.heap.ArenaAllocator.init(allocator);
+            defer resource_arena.deinit();
+            try std.testing.expect(!std.mem.eql(u8, try std_uri.query(item.original.model.uri(), resource_arena.allocator()), try std_uri.query(item.modified.model.uri(), resource_arena.allocator())));
+        }
+    }
+    try std.testing.expect(added and deleted and binary and changed);
+    try std.testing.expect(multi.widget.activeControl() != null);
+    try std.testing.expectEqual(multi.widget.activeControl().?.modified_editor, wb.code_editor_api.getActiveCodeEditor().?);
+    const keys_service = try wb.ensureContextKeys();
+    try std.testing.expectEqualStrings("workbench.editor.multiDiffEditor", keys_service.getValue("activeEditor").string);
+    const first_item = vm.activeDiffItem.?;
+    const next_key: ui.KeyEvent = .{ .key = .f5, .mods = .{ .alt = true } };
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(wb, &next_key));
+    try std.testing.expect(vm.activeDiffItem.? != first_item);
+    const previous_key: ui.KeyEvent = .{ .key = .f5, .mods = .{ .alt = true, .shift = true } };
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(wb, &previous_key));
+    try std.testing.expectEqual(first_item, vm.activeDiffItem.?);
+    try wb.commands.execute("multiDiffEditor.collapseAll");
+    try std.testing.expect(multi.widget.impl.allCollapsed());
+    try std.testing.expect(keys_service.getValue("multiDiffEditorAllCollapsed").boolean);
+    try wb.commands.execute("multiDiffEditor.expandAll");
+    try std.testing.expect(!multi.widget.impl.allCollapsed());
+    try std.testing.expect(!keys_service.getValue("multiDiffEditorAllCollapsed").boolean);
+    try wb.commands.execute("diffEditor.setViewMode.inline");
+    try std.testing.expect(multi.widget.activeControl().?.inline_mode);
+    try wb.commands.execute("diffEditor.setViewMode.sideBySide");
+    try std.testing.expect(multi.widget.activeControl().?.sideBySide());
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+    try renderFrame(wb, &output.writer);
+    const rendered = try frameText(allocator, &wb.frame);
+    defer allocator.free(rendered);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "a.txt") != null);
+    try std.testing.expectEqual(@as(usize, 1), wb.tabCount());
+    try std.testing.expect(try graph.handleMouse(&event, rect));
+    try std.testing.expectEqual(tab, wb.activeTab().?);
+    try std.testing.expectEqual(@as(usize, 1), wb.tabCount());
+}
