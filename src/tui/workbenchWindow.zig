@@ -1970,8 +1970,7 @@ pub const TerminalWorkbench = struct {
     /// CLI folder arguments replace the empty workspace.
     pub fn setWorkspaceFolders(self: *TerminalWorkbench, folders: []const []const u8) !void {
         const replacement = try WorkspaceContextService.initWithFolders(self.allocator, "workspace", folders);
-        var replacement_owned = false;
-        errdefer if (!replacement_owned) replacement.deinit();
+        defer replacement.deinit();
         self.sidebar_part.setFocused(false);
         if (self.sidebar) |sidebar| {
             sidebar.deinit();
@@ -2009,11 +2008,12 @@ pub const TerminalWorkbench = struct {
         self.quick_access.endFileSession();
         if (self.terminal_service) |service| service.options.workspace_root = null;
         self.saveSidebarViewStates() catch {};
-        self.editor_opening.setMultiDiffWorkspace(replacement);
-        self.workspace.deinit();
-        self.workspace = replacement;
-        self.search_window.setWorkspace(replacement);
-        replacement_owned = true;
+        // The context service (and its subscribers) has window lifetime.
+        // Keep the previous model alive in replacement until the event has
+        // delivered both added and removed folder descriptors.
+        self.workspace.swapWorkspace(replacement);
+        self.editor_opening.setMultiDiffWorkspace(self.workspace);
+        self.search_window.setWorkspace(self.workspace);
         if (self.view_state_storage != null) {
             try self.view_descriptor_service.resetRegisteredModels();
             try self.restoreSidebarViewStates();
@@ -2025,6 +2025,7 @@ pub const TerminalWorkbench = struct {
         }
         self.layoutAll();
         try self.quick_access.setWorkspace(self.workspace);
+        try self.workspace.notifyWorkspaceFoldersChanged(replacement.getWorkspace());
         if (self.lifecycle.phase.reached(.Restored) and self.workspace.getWorkspace().folders.items.len > 0) {
             self.ensureWorkspaceWatcher() catch |err| {
                 std.log.scoped(.file_watcher).err("failed to start workspace watcher: {s}", .{@errorName(err)});
