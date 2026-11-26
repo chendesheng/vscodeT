@@ -48,8 +48,12 @@ pub const IDocumentDiffItem = struct {
         const a = if (original) |source| try source.copy(arena.allocator()) else null;
         errdefer if (a) |source| source.release();
         const b = if (modified) |source| try source.copy(arena.allocator()) else null;
-        self.* = .{ .allocator = allocator, .arena = arena, .original = a, .modified = b, .options = options, .hideOriginalLineNumbers = if (options.hide_original_line_numbers) true else null, .onOptionsDidChange = .init(allocator) };
+        self.* = .{ .allocator = allocator, .arena = arena, .original = a, .modified = b, .options = options, .hideOriginalLineNumbers = explicitOriginalLineNumbers(options), .onOptionsDidChange = .init(allocator) };
         return self;
+    }
+    fn explicitOriginalLineNumbers(options: Options) ?bool {
+        if (options.hide_original_line_numbers_override) |value| return value;
+        return if (options.hide_original_line_numbers) true else null;
     }
     pub fn retain(self: *IDocumentDiffItem) *IDocumentDiffItem {
         self.refs += 1;
@@ -73,7 +77,7 @@ pub const IDocumentDiffItem = struct {
 
     pub fn updateOptions(self: *IDocumentDiffItem, options: Options) !void {
         if (std.meta.eql(self.options, options)) return;
-        if (self.options.hide_original_line_numbers != options.hide_original_line_numbers) self.hideOriginalLineNumbers = options.hide_original_line_numbers;
+        if (explicitOriginalLineNumbers(self.options) != explicitOriginalLineNumbers(options)) self.hideOriginalLineNumbers = explicitOriginalLineNumbers(options);
         self.options = options;
         try self.onOptionsDidChange.fire({});
     }

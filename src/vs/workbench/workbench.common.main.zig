@@ -17,6 +17,11 @@ pub fn registerAccessibleViews(registry: *@import("../platform/accessibility/bro
     try registry.register(@import("contrib/codeEditor/browser/diffEditorAccessibilityHelp.zig").DiffEditorAccessibilityHelp.registration);
 }
 
+pub fn registerConfigurations(registry: *@import("../platform/configuration/common/configurationRegistry.zig").ConfigurationRegistry) !void {
+    try registry.registerConfiguration("multiDiffEditor", &@import("contrib/multiDiffEditor/common/multiDiffEditor.zig").properties);
+    try registry.registerConfiguration("diffEditor", &@import("../editor/common/config/editorConfigurationSchema.zig").diff_editor_properties);
+}
+
 pub fn registerConfigurationMigrations(registry: *@import("common/configuration.zig").ConfigurationMigrationRegistry) !void {
     try registry.registerConfigurationMigrations(&@import("contrib/codeEditor/browser/diffEditorHelper.zig").configuration_migrations);
 }

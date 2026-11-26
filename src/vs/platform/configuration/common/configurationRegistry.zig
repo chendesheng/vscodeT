@@ -18,6 +18,11 @@ pub const ConfigurationScope = configuration.ConfigurationScope;
 
 pub const PropertySchema = struct {
     key: []const u8,
+    value_types: ?[]const []const u8 = null,
+    enum_values: ?[]const []const u8 = null,
+    enum_descriptions: ?[]const []const u8 = null,
+    tags: ?[]const []const u8 = null,
+    agents_window_default: ?std.json.Value = null,
     value_type: []const u8 = "object",
     default: ?std.json.Value = null,
     scope: ConfigurationScope = .WINDOW,
@@ -33,6 +38,11 @@ pub const PropertySchema = struct {
 };
 
 pub const Property = struct {
+    value_types: ?[]const []const u8 = null,
+    enum_values: ?[]const []const u8 = null,
+    enum_descriptions: ?[]const []const u8 = null,
+    tags: ?[]const []const u8 = null,
+    agents_window_default: ?std.json.Value = null,
     value_type: []const u8,
     default: std.json.Value = .null,
     scope: ConfigurationScope = .WINDOW,
@@ -123,6 +133,13 @@ pub const ConfigurationRegistry = struct {
         self.allocator.destroy(self);
     }
 
+    fn cloneStrings(allocator: Allocator, values: ?[]const []const u8) !?[]const []const u8 {
+        const strings = values orelse return null;
+        const copy = try allocator.alloc([]const u8, strings.len);
+        for (strings, copy) |value, *owned| owned.* = try allocator.dupe(u8, value);
+        return copy;
+    }
+
     /// Registers configuration properties. A property whose policy name was
     /// already registered is skipped (upstream logs and ignores it).
     pub fn registerConfiguration(self: *ConfigurationRegistry, id: []const u8, properties: []const PropertySchema) !void {
@@ -146,6 +163,11 @@ pub const ConfigurationRegistry = struct {
             const default_value = try cloneValue(arena, base_value);
             const property = Property{
                 .value_type = try arena.dupe(u8, schema.value_type),
+                .value_types = try cloneStrings(arena, schema.value_types),
+                .enum_values = try cloneStrings(arena, schema.enum_values),
+                .enum_descriptions = try cloneStrings(arena, schema.enum_descriptions),
+                .tags = try cloneStrings(arena, schema.tags),
+                .agents_window_default = if (schema.agents_window_default) |value| try cloneValue(arena, value) else null,
                 .default = default_value,
                 .scope = schema.scope,
                 .restricted = schema.restricted,

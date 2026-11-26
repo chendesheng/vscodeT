@@ -94,6 +94,7 @@ pub const IStorageService = struct {
     context: *anyopaque,
     flush_fn: *const fn (*anyopaque, WillSaveStateReason) anyerror!void,
     on_will_save_state: *Emitter(IWillSaveStateEvent),
+    on_did_change_value: ?*Emitter(IStorageValueChangeEvent) = null,
     get_fn: ?*const fn (*anyopaque, []const u8, StorageScope, ?[]const u8) ?[]const u8 = null,
     store_fn: ?*const fn (*anyopaque, []const u8, StorageValue, StorageScope, StorageTarget) anyerror!void = null,
     remove_fn: ?*const fn (*anyopaque, []const u8, StorageScope) void = null,
@@ -365,6 +366,7 @@ pub const InMemoryStorageService = struct {
                 }
             }.flush,
             .on_will_save_state = &self.onWillSaveState,
+            .on_did_change_value = &self.onDidChangeValue,
             .get_fn = struct {
                 fn get(context: *anyopaque, key: []const u8, scope: StorageScope, fallback: ?[]const u8) ?[]const u8 {
                     const service: *InMemoryStorageService = @ptrCast(@alignCast(context));

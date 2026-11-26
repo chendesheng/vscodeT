@@ -50,6 +50,7 @@ pub const Options = struct {
     /// Additional JSON default fragments registered by the composition root
     /// after the generic terminal defaults (later defaults win).
     defaults_json: []const []const u8 = &.{},
+    register_configuration: ?*const fn (*ConfigurationRegistry) anyerror!void = null,
 };
 
 pub const ConfigurationService = struct {
@@ -83,6 +84,7 @@ pub const ConfigurationService = struct {
 
         const registry = try ConfigurationRegistry.init(allocator);
         errdefer registry.deinit();
+        if (options.register_configuration) |register| try register(registry);
         try registry.registerDefaultsJson(registry_mod.tui_defaults_json);
         for (options.defaults_json) |defaults| {
             try registry.registerDefaultsJson(defaults);

@@ -66,7 +66,12 @@ pub fn computeConfigurationForResource(configuration_service: ?configuration_mod
         options.enable_split_view_resizing = boolSetting(configuration, overrides, "diffEditor.enableSplitViewResizing", true);
         options.hide_unchanged_regions = boolSetting(configuration, overrides, "diffEditor.hideUnchangedRegions.enabled", false);
         options.compact_mode = boolSetting(configuration, overrides, "diffEditor.compactMode", false);
-        options.hide_original_line_numbers = boolSetting(configuration, overrides, "diffEditor.hideOriginalLineNumbers", false);
+        if (configuration.getValueWithOverrides("diffEditor.hideOriginalLineNumbers", overrides)) |value| {
+            if (value.* == .bool) {
+                options.hide_original_line_numbers_override = value.bool;
+                options.hide_original_line_numbers = value.bool;
+            }
+        }
         if (configuration.getValueWithOverrides("diffEditor.hideUnchangedRegions.revealLineCount", overrides)) |value| {
             switch (value.*) {
                 .integer => |number| if (number >= 0) {

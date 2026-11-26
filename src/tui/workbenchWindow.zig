@@ -2031,6 +2031,7 @@ pub const TerminalWorkbench = struct {
             self.workspace,
             .{
                 .user_settings_paths = self.user_settings_paths,
+                .register_configuration = @import("../vs/workbench/workbench.common.main.zig").registerConfigurations,
                 .defaults_json = &.{
                     search_configuration.defaults_json,
                     terminal_configuration.defaults_json,
