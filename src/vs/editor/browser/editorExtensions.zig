@@ -6,6 +6,23 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
 
+/// Upstream contribution registration policy. The factory is invoked on
+/// demand or by the code editor's instantiation lifecycle, not at binding.
+pub const EditorContributionInstantiation = enum(u8) {
+    eager,
+    after_first_render,
+    before_first_interaction,
+    eventually,
+    lazy,
+};
+
+pub const IEditorContributionDescription = struct {
+    id: []const u8,
+    instantiation: EditorContributionInstantiation,
+    context: *anyopaque,
+    instantiate: *const fn (*anyopaque) anyerror!void,
+};
+
 pub const KeybindingWeight = enum(u8) {
     editor_core = 0,
     editor_contrib = 100,

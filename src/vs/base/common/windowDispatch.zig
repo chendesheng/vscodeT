@@ -29,6 +29,7 @@ pub const Queue = struct {
     io: std.Io,
     mutex: std.Io.Mutex = .init,
     scheduled: std.DoublyLinkedList = .{},
+    idle: std.DoublyLinkedList = .{},
     wake: ?Wake = null,
     window_events: ?WindowEventEmitter = null,
     current_pointer_input: ?PointerInput = null,
@@ -95,23 +96,27 @@ pub const Queue = struct {
     pub fn nextTimeout(self: *Queue, now: i64, maximum: i32) i32 {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
+        if (self.idle.first != null) return 0;
         const node = self.scheduled.first orelse return maximum;
         const task: *Task = @alignCast(@fieldParentPtr("node", node));
         return @intCast(std.math.clamp(task.at.? -| now, 0, maximum));
     }
 
     /// One batch per turn lets input and paint run between result batches.
+    /// Due work (including an idle callback's timeout) precedes idle work;
+    /// otherwise the next idle callback runs in registration order.
     pub fn dispatch(self: *Queue, now: i64) bool {
         self.mutex.lockUncancelable(self.io);
-        const task: *Task = if (self.scheduled.first) |node| @alignCast(@fieldParentPtr("node", node)) else {
+        const due: ?*Task = if (self.scheduled.first) |node| blk: {
+            const task: *Task = @alignCast(@fieldParentPtr("node", node));
+            break :blk if (task.at.? <= now) task else null;
+        } else null;
+        const task = due orelse if (self.idle.first) |node| @as(*Task, @alignCast(@fieldParentPtr("idle_node", node))) else {
             self.mutex.unlock(self.io);
             return false;
         };
-        if (task.at.? > now) {
-            self.mutex.unlock(self.io);
-            return false;
-        }
         self.scheduled.remove(&task.node);
+        if (task.idle) self.idle.remove(&task.idle_node);
         task.at = null;
         self.mutex.unlock(self.io);
         return task.run(task.context, now, task.progress);
@@ -124,7 +129,12 @@ pub const Task = struct {
     context: *anyopaque = undefined,
     run: Callback = undefined,
     progress: bool = false,
+    /// Native adaptation of runWhenWindowIdle: this task can be dispatched
+    /// ahead of its deadline when there is no due window work. A deadline of
+    /// maxInt(i64) means there is no timeout.
+    idle: bool = false,
     node: std.DoublyLinkedList.Node = .{},
+    idle_node: std.DoublyLinkedList.Node = .{},
     at: ?i64 = null,
 
     pub fn post(self: *Task) void {
@@ -136,7 +146,11 @@ pub const Task = struct {
         queue.mutex.lockUncancelable(queue.io);
         defer queue.mutex.unlock(queue.io);
         if (self.at == at or (self.progress and self.at != null and at != null)) return;
-        if (self.at != null) queue.scheduled.remove(&self.node);
+        const was_scheduled = self.at != null;
+        if (was_scheduled) {
+            queue.scheduled.remove(&self.node);
+            if (self.idle and at == null) queue.idle.remove(&self.idle_node);
+        }
         self.at = at;
         const deadline = at orelse return;
         var cursor = queue.scheduled.last;
@@ -145,8 +159,49 @@ pub const Task = struct {
             if (other.at.? <= deadline) break;
         }
         if (cursor) |node| queue.scheduled.insertAfter(node, &self.node) else queue.scheduled.prepend(&self.node);
+        if (self.idle and !was_scheduled) queue.idle.append(&self.idle_node);
         if (self.progress) {
             if (queue.wake) |wake| wake.signal(wake.context);
         }
     }
 };
+
+test "Window dispatch prioritizes due work and runs idle callbacks in registration order" {
+    const Probe = struct {
+        order: *std.ArrayList(u8),
+        id: u8,
+        fn run(context: *anyopaque, _: i64, _: bool) bool {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.order.append(std.testing.allocator, self.id) catch unreachable;
+            return true;
+        }
+    };
+    var queue: Queue = .{ .io = std.testing.io };
+    var order: std.ArrayList(u8) = .empty;
+    defer order.deinit(std.testing.allocator);
+    var first: Probe = .{ .order = &order, .id = 1 };
+    var second: Probe = .{ .order = &order, .id = 2 };
+    var due: Probe = .{ .order = &order, .id = 3 };
+    var idle_first: Task = .{ .queue = &queue, .context = &first, .run = Probe.run, .idle = true };
+    var idle_second: Task = .{ .queue = &queue, .context = &second, .run = Probe.run, .idle = true };
+    var timed: Task = .{ .queue = &queue, .context = &due, .run = Probe.run };
+    idle_first.schedule(std.math.maxInt(i64));
+    idle_second.schedule(50);
+    timed.schedule(10);
+    try std.testing.expectEqual(@as(i32, 0), queue.nextTimeout(0, 250));
+    try std.testing.expect(queue.dispatch(10));
+    try std.testing.expect(queue.dispatch(10));
+    try std.testing.expectEqualSlices(u8, &.{ 3, 1 }, order.items);
+    idle_second.schedule(null);
+    try std.testing.expect(!queue.dispatch(10));
+    try std.testing.expectEqual(@as(i32, 250), queue.nextTimeout(10, 250));
+
+    // An idle deadline that has expired joins the timed work ordering.
+    idle_first.schedule(std.math.maxInt(i64));
+    idle_second.schedule(50);
+    timed.schedule(60);
+    try std.testing.expect(queue.dispatch(60));
+    try std.testing.expect(queue.dispatch(60));
+    try std.testing.expect(queue.dispatch(60));
+    try std.testing.expectEqualSlices(u8, &.{ 3, 1, 2, 3, 1 }, order.items);
+}
