@@ -30,6 +30,8 @@ pub const STORAGE_KEY = "workbench.scm.quickDiffProviders.hidden";
 pub const QuickDiffService = struct {
     allocator: Allocator,
     providers_list: std.array_list.Managed(*QuickDiffProvider),
+    sorted_providers: std.array_list.Managed(*QuickDiffProvider),
+    registrations: std.array_list.Managed(*Registration),
     hidden: std.StringHashMap(void),
     storage: ?*InMemoryStorageService = null,
     on_did_change_providers: Emitter(void),
@@ -37,7 +39,9 @@ pub const QuickDiffService = struct {
     pub fn init(allocator: Allocator, storage_service: ?*InMemoryStorageService) QuickDiffService {
         var self = QuickDiffService{
             .allocator = allocator,
-            .providers_list = std.array_list.Managed(*QuickDiffProvider).init(allocator),
+            .providers_list = .init(allocator),
+            .sorted_providers = .init(allocator),
+            .registrations = .init(allocator),
             .hidden = std.StringHashMap(void).init(allocator),
             .storage = storage_service,
             .on_did_change_providers = Emitter(void).init(allocator),
@@ -50,16 +54,17 @@ pub const QuickDiffService = struct {
         var iterator = self.hidden.keyIterator();
         while (iterator.next()) |key| self.allocator.free(key.*);
         self.hidden.deinit();
+        for (self.registrations.items) |registration| self.allocator.destroy(registration);
+        self.registrations.deinit();
         self.providers_list.deinit();
+        self.sorted_providers.deinit();
         self.on_did_change_providers.deinit();
         self.* = undefined;
     }
 
     /// Providers sorted by kind: primary before secondary before contributed.
     pub fn providers(self: *QuickDiffService, allocator: Allocator) ![]*QuickDiffProvider {
-        const result = try allocator.dupe(*QuickDiffProvider, self.providers_list.items);
-        std.mem.sort(*QuickDiffProvider, result, {}, providerLessThan);
-        return result;
+        return allocator.dupe(*QuickDiffProvider, self.sorted_providers.items);
     }
 
     fn providerLessThan(_: void, a: *QuickDiffProvider, b: *QuickDiffProvider) bool {
@@ -74,34 +79,52 @@ pub const QuickDiffService = struct {
         };
     }
 
-    /// Registers a provider and returns a disposable. The terminal service
-    /// keeps providers until `deinit`/`removeProviderById`; the returned
-    /// disposable is a no-op because providers are static for the life of the
-    /// workbench and do not need per-registration cleanup.
+    const Registration = struct {
+        owner: *QuickDiffService,
+        provider: *QuickDiffProvider,
+
+        fn dispose(self: *Registration) void {
+            const owner = self.owner;
+            const provider = self.provider;
+            for (owner.registrations.items, 0..) |entry, index| {
+                if (entry == self) {
+                    _ = owner.registrations.orderedRemove(index);
+                    break;
+                }
+            }
+            owner.allocator.destroy(self);
+            owner.removeProvider(provider);
+            owner.on_did_change_providers.fire({}) catch {};
+        }
+    };
+
+    /// Set registration and removal follow the upstream disposable. The
+    /// registration owner must dispose it before releasing the provider.
     pub fn addQuickDiffProvider(self: *QuickDiffService, provider: *QuickDiffProvider) !IDisposable {
-        for (self.providers_list.items) |existing| {
-            if (existing == provider) return IDisposable.none;
+        const present = std.mem.indexOfScalar(*QuickDiffProvider, self.providers_list.items, provider) != null;
+        try self.registrations.ensureUnusedCapacity(1);
+        if (!present) {
+            try self.providers_list.ensureUnusedCapacity(1);
+            try self.sorted_providers.ensureUnusedCapacity(1);
         }
-        try self.providers_list.append(provider);
+        const registration = try self.allocator.create(Registration);
+        registration.* = .{ .owner = self, .provider = provider };
+        self.registrations.appendAssumeCapacity(registration);
+        if (!present) {
+            self.providers_list.appendAssumeCapacity(provider);
+            self.sorted_providers.appendAssumeCapacity(provider);
+            std.mem.sort(*QuickDiffProvider, self.sorted_providers.items, {}, providerLessThan);
+        }
         self.on_did_change_providers.fire({}) catch {};
-        return IDisposable.none;
+        return IDisposable.from(Registration, registration, Registration.dispose);
     }
 
-    pub fn removeProvider(self: *QuickDiffService, provider: *QuickDiffProvider) void {
-        for (self.providers_list.items, 0..) |candidate, index| {
-            if (candidate != provider) continue;
+    fn removeProvider(self: *QuickDiffService, provider: *QuickDiffProvider) void {
+        if (std.mem.indexOfScalar(*QuickDiffProvider, self.providers_list.items, provider)) |index| {
             _ = self.providers_list.orderedRemove(index);
-            self.on_did_change_providers.fire({}) catch {};
-            return;
         }
-    }
-
-    pub fn removeProviderById(self: *QuickDiffService, id: []const u8) void {
-        for (self.providers_list.items, 0..) |candidate, index| {
-            if (!std.mem.eql(u8, candidate.id, id)) continue;
-            _ = self.providers_list.orderedRemove(index);
-            self.on_did_change_providers.fire({}) catch {};
-            return;
+        if (std.mem.indexOfScalar(*QuickDiffProvider, self.sorted_providers.items, provider)) |index| {
+            _ = self.sorted_providers.orderedRemove(index);
         }
     }
 
@@ -184,7 +207,6 @@ pub const QuickDiffService = struct {
             .context = self,
             .providers_fn = providersThunk,
             .add_quick_diff_provider_fn = addProviderThunk,
-            .remove_quick_diff_provider_fn = removeProviderThunk,
             .get_quick_diffs_fn = getQuickDiffsThunk,
             .toggle_visibility_fn = toggleVisibilityThunk,
             .is_visible_fn = isVisibleThunk,
@@ -194,17 +216,12 @@ pub const QuickDiffService = struct {
 
     fn providersThunk(context: *anyopaque) []const *QuickDiffProvider {
         const self: *QuickDiffService = @ptrCast(@alignCast(context));
-        return self.providers_list.items;
+        return self.sorted_providers.items;
     }
 
     fn addProviderThunk(context: *anyopaque, provider: *QuickDiffProvider) anyerror!IDisposable {
         const self: *QuickDiffService = @ptrCast(@alignCast(context));
         return self.addQuickDiffProvider(provider);
-    }
-
-    fn removeProviderThunk(context: *anyopaque, id: []const u8) void {
-        const self: *QuickDiffService = @ptrCast(@alignCast(context));
-        self.removeProviderById(id);
     }
 
     fn getQuickDiffsThunk(
@@ -407,11 +424,16 @@ test "quickDiffService: resource scheme, authority, and rooted ordering follow u
     var wrong_authority = TestProvider{};
     wrong_authority.init("other", .primary);
     wrong_authority.base.root_uri = try std.Uri.parse("remote://elsewhere/repo");
-    _ = try service.addQuickDiffProvider(&rootless.base);
-    _ = try service.addQuickDiffProvider(&rootless_primary.base);
-    _ = try service.addQuickDiffProvider(&nested.base);
-    _ = try service.addQuickDiffProvider(&primary.base);
-    _ = try service.addQuickDiffProvider(&wrong_authority.base);
+    const rootless_registration = try service.addQuickDiffProvider(&rootless.base);
+    defer rootless_registration.dispose();
+    const rootless_primary_registration = try service.addQuickDiffProvider(&rootless_primary.base);
+    defer rootless_primary_registration.dispose();
+    const nested_registration = try service.addQuickDiffProvider(&nested.base);
+    defer nested_registration.dispose();
+    const primary_registration = try service.addQuickDiffProvider(&primary.base);
+    defer primary_registration.dispose();
+    const wrong_authority_registration = try service.addQuickDiffProvider(&wrong_authority.base);
+    defer wrong_authority_registration.dispose();
 
     const matching = try service.getQuickDiffs(a, try std.Uri.parse("remote://host/repo/nested/a%23b.txt"), "plaintext", true);
     defer {
@@ -432,4 +454,34 @@ test "quickDiffService: resource scheme, authority, and rooted ordering follow u
     try std.testing.expectEqual(@as(usize, 2), file.len);
     try std.testing.expectEqualStrings("first", file[0].id);
     try std.testing.expectEqualStrings("second", file[1].id);
+}
+
+test "quickDiffService: a disposed registration removes its provider and fires change" {
+    const a = std.testing.allocator;
+    var service = QuickDiffService.init(a, null);
+    defer service.deinit();
+    var events: usize = 0;
+    const Listener = struct {
+        fn changed(_: void, count: *usize) !void {
+            count.* += 1;
+        }
+    };
+    _ = try service.on_did_change_providers.listen(&events, Listener.changed);
+    var one = TestProvider{};
+    one.init("one", .contributed);
+    var two = TestProvider{};
+    two.init("two", .primary);
+    const first = try service.interface().addQuickDiffProvider(&one.base);
+    const second = try service.interface().addQuickDiffProvider(&two.base);
+    try std.testing.expectEqual(@as(usize, 2), events);
+    const providers = service.interface().providers();
+    try std.testing.expectEqual(@as(usize, 2), providers.len);
+    try std.testing.expectEqual(&two.base, providers[0]);
+    try std.testing.expectEqual(&one.base, providers[1]);
+    first.dispose();
+    try std.testing.expectEqual(@as(usize, 3), events);
+    try std.testing.expectEqual(@as(usize, 1), service.interface().providers().len);
+    second.dispose();
+    try std.testing.expectEqual(@as(usize, 4), events);
+    try std.testing.expectEqual(@as(usize, 0), service.interface().providers().len);
 }

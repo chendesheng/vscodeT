@@ -139,7 +139,8 @@ test "quickDiffController: visible split editors share one computation and indep
     var provider = TestProvider{};
     try provider.init(&resolver, "git.primary");
     defer provider.deinit();
-    _ = try providers.addQuickDiffProvider(&provider.base);
+    const registration = try providers.addQuickDiffProvider(&provider.base);
+    defer registration.dispose();
     const editor = try EditorMod.Editor.createFromText(a, testing.io, "a\nB", "test.zig", 60, 10);
     defer {
         editor.deinit();

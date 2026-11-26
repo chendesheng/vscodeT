@@ -8407,8 +8407,8 @@ test "Workbench: git scm integration, shared working files and read-only revisio
         defer alternate_reference.dispose();
         var alternate: Quick.QuickDiffProvider = .{ .context = @constCast(&{}), .id = "alternate", .label = "Alternate", .get_original_fn = Alternate.original };
         const service = workbench.scm.quick_diff_service.?;
-        _ = try service.addQuickDiffProvider(&alternate);
-        defer service.removeProvider(&alternate);
+        const registration = try service.addQuickDiffProvider(&alternate);
+        defer registration.dispose();
         spins = 0;
         while (entry.model.quick_diffs.len < 2 and spins < 5000) : (spins += 1) {
             _ = workbench.window_events.dispatch(time_compat.milliTimestamp());

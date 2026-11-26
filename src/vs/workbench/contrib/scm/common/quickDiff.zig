@@ -90,7 +90,6 @@ pub const IQuickDiffService = struct {
     context: *anyopaque,
     providers_fn: *const fn (context: *anyopaque) []const *QuickDiffProvider,
     add_quick_diff_provider_fn: *const fn (context: *anyopaque, provider: *QuickDiffProvider) anyerror!IDisposable,
-    remove_quick_diff_provider_fn: *const fn (context: *anyopaque, id: []const u8) void,
     get_quick_diffs_fn: *const fn (
         context: *anyopaque,
         allocator: Allocator,

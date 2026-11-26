@@ -360,8 +360,8 @@ test "quickDiffModel: URI references are shared, updated by model events, and re
     };
     var primary: QuickDiffProvider = .{ .context = @constCast(&{}), .id = "one", .label = "One", .kind = .primary, .get_original_fn = Provider.get };
     var secondary: QuickDiffProvider = .{ .context = @constCast(&{}), .id = "two", .label = "Two", .kind = .secondary, .get_original_fn = Provider.get };
-    _ = try service.addQuickDiffProvider(&primary);
-    _ = try service.addQuickDiffProvider(&secondary);
+    const primary_registration = try service.addQuickDiffProvider(&primary);
+    const secondary_registration = try service.addQuickDiffProvider(&secondary);
     var worker = EditorWorkerService.init();
     defer worker.deinit();
     worker.attachWindow(&queue);
@@ -402,8 +402,8 @@ test "quickDiffModel: URI references are shared, updated by model events, and re
     try Pump.settle(&queue, &model, &worker);
     try std.testing.expectEqual(original, model.getDiffEditorModel("one").?.original_document);
     try std.testing.expectEqual(@as(usize, 0), model.all_changes.items.len);
-    service.removeProvider(&primary);
-    service.removeProvider(&secondary);
+    primary_registration.dispose();
+    secondary_registration.dispose();
     model.triggerDiff(time.milliTimestamp());
     try Pump.settle(&queue, &model, &worker);
     try std.testing.expectEqual(@as(usize, 0), model.original_models.count());
@@ -411,7 +411,8 @@ test "quickDiffModel: URI references are shared, updated by model events, and re
 
     // A model disposed before its asynchronously delivered reference must
     // cancel the acquisition without publishing a stale result.
-    _ = try service.addQuickDiffProvider(&primary);
+    const restored_registration = try service.addQuickDiffProvider(&primary);
+    defer restored_registration.dispose();
     var abandoned = QuickDiffModel.init(a, modified.model, "/repo/file.txt", &service, resolver.interface(), .{});
     abandoned.attachWindow(&queue, &worker);
     abandoned.triggerDiff(time.milliTimestamp());

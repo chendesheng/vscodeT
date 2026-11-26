@@ -41,7 +41,7 @@ pub const SCMContribution = struct {
     quick_diff_service: ?*quick_diff.QuickDiffService = null,
     quick_diff_model_service: ?*quick_models.QuickDiffModelService = null,
     quick_diff_model_api: ?*quick_models.IQuickDiffModelService = null,
-    registered_quick_providers: []*quick_diff.QuickDiffProvider = &.{},
+    registered_quick_providers: []quick_diff.IDisposable = &.{},
     quick_diff_controller: ?*QuickDiffWorkbenchController = null,
     changes: ?*scm_view.SCMViewPane = null,
     history: ?*scm_history.SCMHistoryViewPane = null,
@@ -139,8 +139,9 @@ pub const SCMContribution = struct {
         _ = try self.ensureQuickDiffServices(options.window, options.text_model_service, null);
         const quick_service = self.quick_diff_service.?;
         const models = self.quick_diff_model_service.?;
-        self.registered_quick_providers = try allocator.dupe(*quick_diff.QuickDiffProvider, quick_providers);
-        for (quick_providers) |quick| _ = try quick_service.addQuickDiffProvider(quick);
+        self.registered_quick_providers = try allocator.alloc(quick_diff.IDisposable, quick_providers.len);
+        @memset(self.registered_quick_providers, quick_diff.IDisposable.none);
+        for (quick_providers, self.registered_quick_providers) |quick, *registration| registration.* = try quick_service.addQuickDiffProvider(quick);
         try models.setRepositoryResources(provider.on_did_change_resources);
 
         const controller = try allocator.create(QuickDiffWorkbenchController);
@@ -258,7 +259,7 @@ pub const SCMContribution = struct {
             allocator.destroy(view);
         }
         if (self.quick_diff_model_service) |models| models.setRepositoryResources(null) catch {};
-        if (self.quick_diff_service) |service| for (self.registered_quick_providers) |provider| service.removeProvider(provider);
+        for (self.registered_quick_providers) |registration| registration.dispose();
         allocator.free(self.registered_quick_providers);
         if (self.repository) |repository| repository.dispose();
         if (self.storage) |storage| {
