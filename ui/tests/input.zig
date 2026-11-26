@@ -343,3 +343,15 @@ test "input decodes terminal focus reports as focus events" {
     try std.testing.expect(items.items[0].focus);
     try std.testing.expect(!items.items[1].focus);
 }
+
+test "input: complete function key range and modified SCM/help shortcuts" {
+    const allocator = std.testing.allocator;
+    var events = try decodeKeys(allocator, "\x1bOP\x1bOQ\x1bOR\x1bOS\x1b[15~\x1b[17~\x1b[18~\x1b[19~\x1b[20~\x1b[21~\x1b[23~\x1b[24~\x1b[1;3R\x1b[1;4R\x1b[17;3~\x1b[12~");
+    defer events.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 16), events.items.len);
+    const expected = [_]@TypeOf(events.items[0].key){ .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12, .f3, .f3, .f6, .f2 };
+    for (expected, events.items) |key, event| try std.testing.expectEqual(std.meta.activeTag(key), std.meta.activeTag(event.key));
+    try std.testing.expect(events.items[12].mods.alt and !events.items[12].mods.shift);
+    try std.testing.expect(events.items[13].mods.alt and events.items[13].mods.shift);
+    try std.testing.expect(events.items[14].mods.alt);
+}

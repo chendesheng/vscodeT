@@ -233,8 +233,15 @@ fn tokenize(allocator: std.mem.Allocator, input: []const u8) !Tokenized {
                 }
             },
             .ss3 => {
-                if (chr == 'P') {
-                    try result.append(allocator, .{ .key = .{ .key = .f1 } });
+                if (chr >= 'P' and chr <= 'S') {
+                    const key: Key = switch (chr) {
+                        'P' => .f1,
+                        'Q' => .f2,
+                        'R' => .f3,
+                        'S' => .f4,
+                        else => unreachable,
+                    };
+                    try result.append(allocator, .{ .key = .{ .key = key } });
                     last_pos = pos + 1;
                 } else {
                     // The terminal may also send ESC O for Alt+Shift+O.
@@ -399,6 +406,9 @@ fn decodeCsi(
     const mods = parseModifiers(csi.parameters);
     switch (csi.final) {
         'P' => try result.append(allocator, .{ .key = .{ .key = .f1, .mods = mods } }),
+        'Q' => try result.append(allocator, .{ .key = .{ .key = .f2, .mods = mods } }),
+        'R' => if (csi.parameters.len == 0 or parseFirst(csi.parameters) == 1) try result.append(allocator, .{ .key = .{ .key = .f3, .mods = mods } }),
+        'S' => try result.append(allocator, .{ .key = .{ .key = .f4, .mods = mods } }),
         'A' => try result.append(allocator, .{ .key = .{ .key = .up, .mods = mods } }),
         'B' => try result.append(allocator, .{ .key = .{ .key = .down, .mods = mods } }),
         'C' => try result.append(allocator, .{ .key = .{ .key = .right, .mods = mods } }),
@@ -416,8 +426,16 @@ fn decodeCsi(
                 5 => try result.append(allocator, .{ .key = .{ .key = .page_up, .mods = mods } }),
                 6 => try result.append(allocator, .{ .key = .{ .key = .page_down, .mods = mods } }),
                 11 => try result.append(allocator, .{ .key = .{ .key = .f1, .mods = mods } }),
+                12 => try result.append(allocator, .{ .key = .{ .key = .f2, .mods = mods } }),
+                13 => try result.append(allocator, .{ .key = .{ .key = .f3, .mods = mods } }),
+                14 => try result.append(allocator, .{ .key = .{ .key = .f4, .mods = mods } }),
                 15 => try result.append(allocator, .{ .key = .{ .key = .f5, .mods = mods } }),
+                17 => try result.append(allocator, .{ .key = .{ .key = .f6, .mods = mods } }),
                 18 => try result.append(allocator, .{ .key = .{ .key = .f7, .mods = mods } }),
+                19 => try result.append(allocator, .{ .key = .{ .key = .f8, .mods = mods } }),
+                20 => try result.append(allocator, .{ .key = .{ .key = .f9, .mods = mods } }),
+                21 => try result.append(allocator, .{ .key = .{ .key = .f10, .mods = mods } }),
+                23 => try result.append(allocator, .{ .key = .{ .key = .f11, .mods = mods } }),
                 24 => try result.append(allocator, .{ .key = .{ .key = .f12, .mods = mods } }),
                 200 => try result.append(allocator, .{ .key = .{ .key = .paste_start } }),
                 201 => try result.append(allocator, .{ .key = .{ .key = .paste_end } }),
