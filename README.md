@@ -1521,11 +1521,12 @@ console API for raw mode, sizing and input polling.
   replace-all controls (clicks do not take focus; the keyboard keeps its key
   map), and its bar/input/toggle colors resolve the `editorWidget.*`,
   `input.*` and `inputOption.*` theme ids (the terminal fallback keeps the dark
-  defaults). While find is open, `editor.find.addExtraSpaceOnTop` reserves the
-  bar's 1-2 rows above line 1 as a terminal find view zone, so the bar does not
-  cover the first lines. The inset is applied while line 1 is at the top and
-  released when the editor scrolls; it does not add scrollable space above
-  line 1. Find/replace history is kept per widget. The browser accessibility tree and macOS shared find clipboard
+  defaults). While find is open, `editor.find.addExtraSpaceOnTop` adds a real
+  model-anchored view zone above line 1, with the bar's 1-2 cell height. The
+  spacer scrolls with the editor content, while the overlay stays fixed; the
+  upstream selection-overlap rule determines whether opening adjusts the
+  scroll position. Both diff panes own independent zones and contribution
+  view state. Find/replace history is kept per widget. The browser accessibility tree and macOS shared find clipboard
   (`globalFindClipboard`) are not available; terminal clipboard support is
   host-owned. The
   find, search and quick-open inputs share the completed `InputBox` editing

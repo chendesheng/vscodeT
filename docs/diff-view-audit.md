@@ -256,9 +256,33 @@ The full suite passed 3,656 editor/workbench tests and 311 UI tests (24 skipped;
 48/48 build steps, 3,967/3,991 total). The actual Node host suite passed 20/20,
 including pointer identity for all six contributions across eviction and
 rebinding of a real multi-diff template, and the scoped portal tests verify
-Tab Focus in both directions without changing the model. Remaining work includes
-upstream contribution registration/instantiation scheduling and more Git
-repository lifecycle parity.
+Tab Focus in both directions without changing the model.
+
+### Contribution instantiation and Find view-zone checkpoint (2026-11-27)
+
+* The code editor contribution registry now owns pending descriptors and
+  instantiated contributions in registration order. Eager Find and word
+  highlighting preserve their widget lifetime; Sticky Scroll and CodeLens
+  instantiate at AfterFirstRender (50 ms fallback), Hover and Suggest before
+  first interaction, and Eventually/Lazy registrations follow their upstream
+  idle/on-demand policies. Model-bound factory contexts detach before a pooled
+  view is released. Native idle/deadline dispatch prioritizes due work.
+* Cached inert CodeLens rows remain visible without a provider until the
+  upstream 30-second timeout, which only expires the same cache entry.
+* Find now owns a real view zone before line 1 rather than a native top inset.
+  The zone follows reveal, replace-height, configuration, model and scroll
+  events; the fixed overlay and spacer have independent geometry. The code
+  editor registry saves/restores the Find widget and word-highlighter mementos
+  by their contribution IDs. The focused tests verify creation before paint,
+  scrolling and restoration with the same zone, and independent zones in both
+  real diff editors.
+
+The full suite through the shared scheduler passed 3,660 editor/workbench
+tests and 311 UI tests (24 skipped; 48/48 build steps). The actual Node suite
+passed 20/20 after native contribution scheduling, and the focused view suite
+passed 499/499 after the Find zone work. The continued parity work includes
+provider-backed and multi-model word highlighting and remaining integration
+verification.
 
 ### Native performance measurements (2026-11-27)
 
