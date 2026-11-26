@@ -940,7 +940,7 @@ pub const EditorOpening = struct {
             const language = if (modified) |side| if (side.input) |value| value.resolve().model.getLanguageId() else null else null;
             const options = text_diff_editor_mod.computeConfigurationForResource(configuration, .{ .resource = resource.path, .override_identifier = language });
             const go_to_uri = if (snapshot.go_to_file_uri) |encoded| try std.Uri.parse(encoded) else resource.uri;
-            try items.append(self.allocator, .{ .original = original, .modified = modified, .go_to_file_uri = go_to_uri, .go_to_file_title = snapshot.go_to_file_title, .options = options });
+            try items.append(self.allocator, .{ .original = original, .modified = modified, .go_to_file_uri = go_to_uri, .go_to_file_title = snapshot.go_to_file_title, .options = options, .context_keys = snapshot.context_keys });
         }
         try input.setResolvedItems(items.items);
     }

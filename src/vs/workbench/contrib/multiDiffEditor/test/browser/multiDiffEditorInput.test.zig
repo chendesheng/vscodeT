@@ -199,3 +199,34 @@ test "MultiDiffEditorInput: updates its name from the resolved source label" {
     try testing.expectEqual(@as(usize, 0), mock.label_changed.listenerCount());
     try testing.expectEqual(@as(usize, 0), mock.resources_changed.listenerCount());
 }
+
+test "MultiDiffEditorInput: source and item context keys retain their own values across updates" {
+    const a = testing.allocator;
+    const input = try input_mod.MultiDiffEditorInput.create(a, "multi-diff-editor:context", null, false);
+    defer input.destroy();
+    const source_value = try a.dupe(u8, "working");
+    try input.document_set.setContextKeys(&.{.{ .key = "scmResourceGroup", .value = .{ .string = source_value } }});
+    a.free(source_value);
+    const item_value = try a.dupe(u8, "first");
+    const first: input_mod.ResolvedItem = .{
+        .modified = .{ .uri = try std.Uri.parse("file:///first.png") },
+        .context_keys = &.{.{ .key = "itemName", .value = .{ .string = item_value } }},
+    };
+    try input.setResolvedItems(&.{first});
+    a.free(item_value);
+    var queue: dispatch.Queue = .{ .io = testing.io };
+    const vm = try input.getViewModel(testing.io, &queue, null);
+    const item = vm.items[0].documentDiffItem;
+    try testing.expectEqualStrings("working", vm.model.getContextKey("scmResourceGroup").?.string);
+    try testing.expectEqualStrings("first", item.context_keys.get("itemName").?.string);
+    try testing.expect(vm.model.getContextKey("itemName") == null);
+    try input.setResourceOrder(.tree);
+    try testing.expectEqual(item, vm.items[0].documentDiffItem);
+    try testing.expectEqualStrings("first", item.context_keys.get("itemName").?.string);
+    try input.document_set.setContextKeys(&.{.{ .key = "scmResourceGroup", .value = .{ .string = "index" } }});
+    try testing.expectEqualStrings("index", vm.model.getContextKey("scmResourceGroup").?.string);
+    try item.setContextKeys(&.{});
+    try testing.expect(item.context_keys.get("itemName") == null);
+    try input.document_set.setContextKeys(&.{});
+    try testing.expect(vm.model.getContextKey("scmResourceGroup") == null);
+}

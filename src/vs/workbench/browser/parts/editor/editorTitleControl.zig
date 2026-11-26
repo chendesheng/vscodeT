@@ -134,6 +134,7 @@ pub const EditorTitleControl = struct {
             if (std.mem.eql(u8, key, "config.diffEditor.ignoreTrimWhitespace")) return .{ .boolean = state.ignore_whitespace };
             if (std.mem.eql(u8, key, "config.diffEditor.hideUnchangedRegions.enabled")) return .{ .boolean = state.hide_unchanged };
         }
+        if (self.multi_pane) |multi| if (multi.widget.impl.getContextKey(key)) |value| return value;
         return if (self.host) |host| host.parent_context.getValue(key) else .undefined_value;
     }
 

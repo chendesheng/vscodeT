@@ -30,6 +30,7 @@ pub const ResolvedItem = struct {
     go_to_file_title: ?[]const u8 = null,
     options: DiffOptions = .{},
     source_index: usize = 0,
+    context_keys: []const @import("../../../../platform/contextkey/common/contextkey.zig").KeyValue = &.{},
 };
 
 pub const MultiDiffEditorInput = struct {
@@ -91,6 +92,7 @@ pub const MultiDiffEditorInput = struct {
             source.dispose(source.context);
         }
         self.setResolvingDocuments(false) catch {};
+        self.document_set.setContextKeys(&.{}) catch {};
     }
 
     fn onSourceResourcesChanged(_: void, self: *MultiDiffEditorInput) !void {
@@ -106,6 +108,11 @@ pub const MultiDiffEditorInput = struct {
         if (!source.isReady()) return;
         if (source.failure()) |failure| return failure;
         try self.updateSourceName();
+        if (source.get_context_keys) |read| {
+            const keys = try read(source.context).pairs(self.allocator);
+            defer self.allocator.free(keys);
+            try self.document_set.setContextKeys(keys);
+        }
         const binding = self.source_binding orelse return;
         try self.setResolvingDocuments(true);
         errdefer self.setResolvingDocuments(false) catch {};
@@ -295,6 +302,7 @@ pub const MultiDiffEditorInput = struct {
         const modified_dirty = if (b) |input| try input.interface().on_did_change_dirty.listenDisposable(self, onSideDirty) else null;
         errdefer if (modified_dirty) |subscription| subscription.dispose();
         if (existing != null) try item.updateOptions(options);
+        if (value.context_keys.len > 0 or item.context_keys.entries.len > 0) try item.setContextKeys(value.context_keys);
         return .{ .item = item, .source_index = value.source_index, .original = a, .modified = b, .go_to_file_uri = go_to, .go_to_file_title = title, .original_dirty = original_dirty, .modified_dirty = modified_dirty };
     }
     pub const FoundItem = struct { entry: *const Entry, is_original: bool };
@@ -336,6 +344,7 @@ pub const MultiDiffEditorInput = struct {
                 .go_to_file_title = entry.go_to_file_title,
                 .options = entry.item.options,
                 .source_index = entry.source_index,
+                .context_keys = entry.item.context_keys.entries,
             };
         }
         std.mem.sort(ResolvedItem, values, {}, struct {

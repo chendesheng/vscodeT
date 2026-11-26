@@ -5,6 +5,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
 const std_uri = @import("../../../../base/common/stdUri.zig");
+const contextkey = @import("../../../../platform/contextkey/common/contextkey.zig");
+const ModelContextKeys = @import("../../../../editor/browser/widget/multiDiffEditor/model.zig").ContextKeys;
 const instantiation = @import("../../../../platform/instantiation/common/instantiation.zig");
 
 pub const multi_diff_source_resolver_service_id = instantiation.ServiceIdentifier(IMultiDiffSourceResolverService, "multiDiffSourceResolverService");
@@ -14,6 +16,7 @@ pub const MultiDiffEditorItem = struct {
     modifiedUri: ?std.Uri = null,
     goToFileUri: ?std.Uri = null,
     goToFileEditorTitle: ?[]const u8 = null,
+    contextKeys: []const contextkey.KeyValue = &.{},
 
     pub fn validate(self: MultiDiffEditorItem) !void {
         if (self.originalUri == null and self.modifiedUri == null) return error.MissingDiffResources;
@@ -44,6 +47,19 @@ pub const IResolvedMultiDiffSource = struct {
     pub const ContextKeys = struct {
         scmResourceGroup: ?[]const u8 = null,
         scmProvider: ?[]const u8 = null,
+        additional: []const contextkey.KeyValue = &.{},
+        pub fn pairs(self: ContextKeys, allocator: Allocator) ![]contextkey.KeyValue {
+            const count = self.additional.len + @as(usize, @intFromBool(self.scmResourceGroup != null)) + @as(usize, @intFromBool(self.scmProvider != null));
+            const result = try allocator.alloc(contextkey.KeyValue, count);
+            @memcpy(result[0..self.additional.len], self.additional);
+            var index = self.additional.len;
+            if (self.scmResourceGroup) |group| {
+                result[index] = .{ .key = "scmResourceGroup", .value = .{ .string = group } };
+                index += 1;
+            }
+            if (self.scmProvider) |provider| result[index] = .{ .key = "scmProvider", .value = .{ .string = provider } };
+            return result;
+        }
     };
     pub fn isReady(self: IResolvedMultiDiffSource) bool {
         return if (self.is_ready) |ready| ready(self.context) else true;
@@ -138,6 +154,7 @@ pub const SnapshotItem = struct {
     modified_exists: bool = true,
     go_to_file_uri: ?[]const u8 = null,
     go_to_file_title: ?[]const u8 = null,
+    context_keys: ?ModelContextKeys = null,
 };
 pub const SnapshotBatch = struct {
     allocator: Allocator,
@@ -147,6 +164,10 @@ pub const SnapshotBatch = struct {
             item.source.destroy(item.source.context);
             if (item.go_to_file_uri) |value| self.allocator.free(value);
             if (item.go_to_file_title) |value| self.allocator.free(value);
+            if (item.context_keys) |keys| {
+                var owned = keys;
+                owned.deinit();
+            }
         }
         self.allocator.free(self.items);
     }
@@ -166,6 +187,10 @@ pub const ResourceSnapshotProvider = struct {
                 item.source.destroy(item.source.context);
                 if (item.go_to_file_uri) |value| allocator.free(value);
                 if (item.go_to_file_title) |value| allocator.free(value);
+                if (item.context_keys) |keys| {
+                    var owned = keys;
+                    owned.deinit();
+                }
             }
             allocator.free(items);
         }
@@ -178,7 +203,9 @@ pub const ResourceSnapshotProvider = struct {
             const uri = if (resource.goToFileUri) |value| try std_uri.encodedResource(allocator, value) else null;
             errdefer if (uri) |value| allocator.free(value);
             const title = if (resource.goToFileEditorTitle) |value| try allocator.dupe(u8, value) else null;
-            item.* = .{ .source = snapshot, .original_exists = resource.originalUri != null, .modified_exists = resource.modifiedUri != null, .go_to_file_uri = uri, .go_to_file_title = title };
+            errdefer if (title) |value| allocator.free(value);
+            const keys = if (resource.contextKeys.len > 0) try ModelContextKeys.clone(allocator, resource.contextKeys) else null;
+            item.* = .{ .source = snapshot, .original_exists = resource.originalUri != null, .modified_exists = resource.modifiedUri != null, .go_to_file_uri = uri, .go_to_file_title = title, .context_keys = keys };
             count += 1;
         }
         return .{ .allocator = allocator, .items = items };
@@ -228,6 +255,7 @@ pub const ResolvedSnapshot = struct {
     modified_exists: bool,
     go_to_file_uri: ?[]const u8 = null,
     go_to_file_title: ?[]const u8 = null,
+    context_keys: []const contextkey.KeyValue = &.{},
     texts: ?SnapshotSource.Texts = null,
     failure: ?anyerror = null,
 };
@@ -263,7 +291,7 @@ pub const SnapshotBatchRequest = struct {
         };
         self.result = result;
         for (self.batch.items, result) |item, *entry| {
-            entry.* = .{ .original_exists = item.original_exists, .modified_exists = item.modified_exists, .go_to_file_uri = item.go_to_file_uri, .go_to_file_title = item.go_to_file_title };
+            entry.* = .{ .original_exists = item.original_exists, .modified_exists = item.modified_exists, .go_to_file_uri = item.go_to_file_uri, .go_to_file_title = item.go_to_file_title, .context_keys = if (item.context_keys) |keys| keys.entries else &.{} };
             entry.texts = item.source.read(item.source.context, self.arena.allocator()) catch |err| blk: {
                 entry.failure = err;
                 break :blk null;
@@ -298,6 +326,7 @@ pub const StaticResolvedMultiDiffSource = struct {
                 .modifiedUri = try cloneUri(arena, src.modifiedUri),
                 .goToFileUri = try cloneUri(arena, src.goToFileUri),
                 .goToFileEditorTitle = if (src.goToFileEditorTitle) |title| try arena.dupe(u8, title) else null,
+                .contextKeys = try ModelContextKeys.copyEntries(arena, src.contextKeys),
             };
         }
         return copy;

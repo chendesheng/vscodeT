@@ -139,6 +139,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
         items_listener: ?usize = null,
         active_listener: ?usize = null,
         loading_listener: ?usize = null,
+        context_keys_listener: ?usize = null,
         layout_listener: ?usize = null,
         preserve_focus_on_load: bool = false,
         initialized_active: bool = false,
@@ -203,7 +204,9 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
                 if (self.items_listener) |id| value.on_did_change_items.unlisten(id);
                 if (self.active_listener) |id| value.on_did_change_active_item.unlisten(id);
                 if (self.loading_listener) |id| value.on_did_change_loading.unlisten(id);
+                if (self.context_keys_listener) |id| if (value.model.on_did_change_context_keys) |changed| changed.unlisten(id);
             }
+            self.context_keys_listener = null;
             self.items_listener = null;
             self.active_listener = null;
             self.loading_listener = null;
@@ -228,6 +231,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
                     self.items_listener = try source.on_did_change_items.listen(self, onItemsChanged);
                     self.active_listener = try source.on_did_change_active_item.listen(self, onActiveChanged);
                     self.loading_listener = try source.on_did_change_loading.listen(self, onLoadingChanged);
+                    if (source.model.on_did_change_context_keys) |changed| self.context_keys_listener = try changed.listen(self, onContextKeysChanged);
                 }
             }
             self.clearPendingRestorationState();
@@ -240,6 +244,12 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
         }
         fn onItemsChanged(_: void, self: *Self) !void {
             try self.updateItems();
+        }
+        fn onContextKeysChanged(_: void, self: *Self) !void {
+            try self.on_did_change_layout.fire({});
+        }
+        pub fn getContextKey(self: *const Self, key: []const u8) ?@import("../../../../platform/contextkey/common/contextkey.zig").ContextKeyValue {
+            return if (self.model) |source| source.model.getContextKey(key) else null;
         }
         fn onLoadingChanged(_: void, self: *Self) !void {
             self.finishRestoredDocs();
