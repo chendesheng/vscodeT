@@ -50,6 +50,9 @@ const panel_part_mod = @import("../vs/workbench/browser/parts/panel/panelPart.zi
 const search_widget_mod = @import("../vs/workbench/contrib/search/browser/searchWidget.zig");
 const editor_groups = @import("../vs/workbench/services/editor/common/editorGroupsService.zig");
 const extensions_registry = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
+const extensions_enablement = @import("../vs/workbench/services/extensionManagement/browser/extensionEnablementService.zig");
+const extensions_service_mod = @import("../vs/workbench/contrib/extensions/browser/extensionsWorkbenchService.zig");
+const extensions_views_mod = @import("../vs/workbench/contrib/extensions/browser/extensionsViews.zig");
 const time_compat = @import("../vs/base/common/timeCompat.zig");
 const editor_input = @import("../vs/workbench/common/editor/editorInput.zig");
 const EditorInput = editor_input.EditorInput;
@@ -2009,14 +2012,24 @@ test "Workbench: activity bar switches view containers" {
     try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "Source Control") != null);
 
+    // The fourth activity opens the Extensions container. The view has no
+    // inventory in this fixture, so it renders the empty state.
+    const extensions_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 4 };
+    try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &extensions_click));
+    try std.testing.expectEqual(@as(usize, 3), workbench.activeActivity());
+    out.clearRetainingCapacity();
+    try renderFrame(workbench, &out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "EXTENSIONS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "No extensions found") != null);
+
     // Upstream has no Settings view container: its activity bar gear is the
     // `workbench.actions.manage` global action that opens the Settings editor
     // as an editor tab, which is not ported. A click below the last entry
     // changes nothing.
-    const empty_rail_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 4 };
+    const empty_rail_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 5 };
     try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &empty_rail_click));
-    try std.testing.expectEqual(@as(usize, 2), workbench.activeActivity());
-    try std.testing.expectEqual(@as(usize, 3), workbench.activity_bar_part.count());
+    try std.testing.expectEqual(@as(usize, 3), workbench.activeActivity());
+    try std.testing.expectEqual(@as(usize, 4), workbench.activity_bar_part.count());
 
     // The overflowing rail resolves its selection through the pane-composite
     // service, without invoking a native window menu-action dispatcher.
@@ -10063,4 +10076,109 @@ test "Workbench: panel title menu follows maximization and alignment context eve
     click.y = ui.cell.snap(wb.geometry().panelRect().y);
     try std.testing.expect(terminal_workbench.handlePanelMouse(wb, &click));
     try std.testing.expect(!wb.layout.isVisible(.panel));
+}
+
+test "Workbench: extensions panel lists, filters, opens and disables" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // One installed system extension (with NLS display strings) and one user
+    // extension.
+    try tmp.dir.createDirPath(io, "system/pub.system-ext-1.0.0");
+    try tmp.dir.writeFile(io, .{ .sub_path = "system/pub.system-ext-1.0.0/package.json", .data =
+        \\{"name":"system-ext","publisher":"pub","version":"1.0.0","engines":{"vscode":"*"},"displayName":"%displayName%","description":"%description%"}
+    });
+    try tmp.dir.writeFile(io, .{ .sub_path = "system/pub.system-ext-1.0.0/package.nls.json", .data =
+        \\{"displayName":"System Ext","description":"Built-in extension."}
+    });
+    try tmp.dir.createDirPath(io, "user/pub.user-ext-1.0.0");
+    try tmp.dir.writeFile(io, .{ .sub_path = "user/pub.user-ext-1.0.0/package.json", .data =
+        \\{"name":"user-ext","publisher":"pub","version":"2.0.0","engines":{"vscode":"*"},"displayName":"User Ext","description":"User extension."}
+    });
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_length = try tmp.dir.realPath(io, &path_buffer);
+    const root = try allocator.dupe(u8, path_buffer[0..path_length]);
+    defer allocator.free(root);
+    const system_dir = try std.fs.path.join(allocator, &.{ root, "system" });
+    defer allocator.free(system_dir);
+    const user_dir = try std.fs.path.join(allocator, &.{ root, "user" });
+    defer allocator.free(user_dir);
+
+    var enablement = try extensions_enablement.ExtensionEnablementService.init(allocator, null);
+    defer enablement.deinit();
+    var service = try extensions_service_mod.ExtensionsWorkbenchService.init(allocator, io, .{
+        .system_location = system_dir,
+        .user_location = user_dir,
+        .enablement = enablement,
+    });
+    defer service.deinit();
+
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
+    workbench.setExtensionsService(service);
+    try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
+
+    try std.testing.expect(try workbench.showActivityById("extensions"));
+    try std.testing.expect(workbench.extensions_list != null);
+    const view = workbench.extensions_list.?;
+    try std.testing.expectEqual(@as(usize, 2), view.rows.len);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try renderFrame(workbench, &out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "EXTENSIONS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "System Ext") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "User Ext") != null);
+
+    // Typing filters the list; the user extension sorts before the built-in.
+    const typed = "user";
+    for (typed) |ch| {
+        var event = ui.KeyEvent{ .key = .{ .char = ch } };
+        _ = try terminal_workbench.handleSidebarKey(workbench, &event);
+    }
+    try std.testing.expectEqual(@as(usize, 1), view.rows.len);
+    try std.testing.expectEqualStrings("pub.user-ext", view.rows[0].identifier);
+
+    // The first Escape clears the search; a second Escape leaves the side bar.
+    var escape = ui.KeyEvent{ .key = .escape };
+    _ = try terminal_workbench.handleSidebarKey(workbench, &escape);
+    try std.testing.expectEqual(@as(usize, 0), view.queryText().len);
+    try std.testing.expectEqual(@as(usize, 2), view.rows.len);
+    _ = try terminal_workbench.handleSidebarKey(workbench, &escape);
+    try std.testing.expectEqual(Focus.editor, workbench.focus);
+
+    // The F1 clear-search action resolves the view through the views service.
+    _ = try workbench.showActivityById("extensions");
+    for (typed) |ch| {
+        var event = ui.KeyEvent{ .key = .{ .char = ch } };
+        _ = try terminal_workbench.handleSidebarKey(workbench, &event);
+    }
+    _ = try workbench.commands.execute("workbench.extensions.action.clearExtensionsSearchResults");
+    try std.testing.expectEqual(@as(usize, 0), view.queryText().len);
+
+    // Disabling updates the service/model and the rendered row.
+    try std.testing.expect(try service.setEnablement("pub.user-ext", .DisabledGlobally));
+    try std.testing.expectEqual(@as(usize, 1), service.enabledDescriptions().len);
+    _ = try workbench.showActivityById("extensions");
+    try std.testing.expect(!view.rows[0].isEnabled());
+    try std.testing.expectEqualStrings("pub.user-ext", view.rows[0].identifier);
+    out.clearRetainingCapacity();
+    try renderFrame(workbench, &out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "User Ext") != null);
+
+    // Refresh and open the selected extension's manifest. The user extension
+    // sorts first, so one Down from the search box followed by Enter opens it.
+    _ = try workbench.commands.execute("workbench.extensions.action.refreshExtension");
+    try std.testing.expectEqual(@as(usize, 2), view.rows.len);
+    var down = ui.KeyEvent{ .key = .down };
+    _ = try terminal_workbench.handleSidebarKey(workbench, &down);
+    var enter = ui.KeyEvent{ .key = .enter };
+    _ = try terminal_workbench.handleSidebarKey(workbench, &enter);
+    pumpOpenForTests(workbench);
+    const active = workbench.activeTab() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, active.editor.path, "user-ext") != null);
+    try std.testing.expect(std.mem.endsWith(u8, active.editor.path, "package.json"));
 }

@@ -16,6 +16,9 @@ const TerminalHostLoop = terminal_workbench.TerminalHostLoop;
 const Workbench = terminal_workbench.TerminalWorkbench;
 const extensions = @import("../vs/workbench/api/browser/extensionHostAdapter.zig");
 const extensions_registry = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
+const ExtensionStateStorage = @import("extensionStateStorage.zig").ExtensionStateStorage;
+const ExtensionEnablementService = @import("../vs/workbench/services/extensionManagement/browser/extensionEnablementService.zig").ExtensionEnablementService;
+const ExtensionsWorkbenchService = @import("../vs/workbench/contrib/extensions/browser/extensionsWorkbenchService.zig").ExtensionsWorkbenchService;
 const VimRuntime = @import("../vs/workbench/contrib/vim/browser/vimRuntime.zig").VimRuntime;
 const HelixRuntime = @import("../vs/workbench/contrib/helix/browser/helixRuntime.zig").HelixRuntime;
 const json_language = @import("../vs/workbench/services/language/common/jsonLanguageClient.zig");
@@ -322,10 +325,58 @@ pub fn main(init: std.process.Init) !void {
     defer allocator.free(executable_dir);
     const installed_extensions = try std.fs.path.resolveAlloc(allocator, &.{ executable_dir, "../share/vscode-textbuffer/extensions" });
     defer allocator.free(installed_extensions);
-    var declarative: ?extensions_registry.Registry = extensions_registry.scan(allocator, &.{installed_extensions}) catch |err| blk: {
-        report(log_service, "built-in extension scan failed: {s}", .{@errorName(err)});
+
+    // Extension inventory: installed built-ins plus the effective VS Code
+    // extensions directory. The scanner owns the manifests; the enablement
+    // service persists the disabled ids in the profile's global storage.
+    var extension_state_storage: ?ExtensionStateStorage = null;
+    if (profile.user_data_dir) |dir| {
+        extension_state_storage = ExtensionStateStorage.init(allocator, io, dir) catch |err| blk: {
+            report(log_service, "extension state storage unavailable: {s}", .{@errorName(err)});
+            break :blk null;
+        };
+    }
+    defer if (extension_state_storage) |*storage| storage.deinit();
+    const extension_enablement: ?*ExtensionEnablementService = ExtensionEnablementService.init(
+        allocator,
+        if (extension_state_storage) |*storage| storage.store() else null,
+    ) catch |err| blk: {
+        report(log_service, "extension enablement unavailable: {s}", .{@errorName(err)});
         break :blk null;
     };
+    defer if (extension_enablement) |service| service.deinit();
+    var extension_service: ?*ExtensionsWorkbenchService = null;
+    if (extension_enablement) |enablement| {
+        extension_service = ExtensionsWorkbenchService.init(allocator, io, .{
+            .system_location = installed_extensions,
+            .user_location = profile.extensions_dir,
+            .enablement = enablement,
+        }) catch |err| blk: {
+            report(log_service, "extension scan failed: {s}", .{@errorName(err)});
+            break :blk null;
+        };
+    }
+    defer if (extension_service) |service| service.deinit();
+    if (extension_service) |service| {
+        infoLog(log_service, "extensions: system={d} user={d} total={d} enabled={d} disabled={d}", .{
+            service.systemExtensions().len,
+            service.userExtensions().len,
+            service.queryLocal().len,
+            service.enabledDescriptions().len,
+            service.queryLocal().len - service.enabledDescriptions().len,
+        });
+    }
+
+    var declarative: ?extensions_registry.Registry = if (extension_service) |service|
+        extensions_registry.scanDescriptions(allocator, service.enabledDescriptions()) catch |err| blk: {
+            report(log_service, "extension contribution scan failed: {s}", .{@errorName(err)});
+            break :blk null;
+        }
+    else
+        extensions_registry.scan(allocator, &.{installed_extensions}) catch |err| blk: {
+            report(log_service, "built-in extension scan failed: {s}", .{@errorName(err)});
+            break :blk null;
+        };
     defer if (declarative) |*registry| registry.deinit();
     const tokenizer = @import("../vs/editor/common/model/tokens/textMateTokenizer.zig");
     if (declarative) |*registry| tokenizer.setGrammarCatalog(registry.grammars);
@@ -519,6 +570,7 @@ pub fn main(init: std.process.Init) !void {
     // the sequence and the frame is unaffected.
     workbench.setPointerShapes(true);
     if (declarative) |*decl_ext| workbench.setDeclarativeExtensions(decl_ext);
+    if (extension_service) |service| workbench.setExtensionsService(service);
     workbench.enableAsyncTokenization();
     workbench.enableLanguageFeatures() catch |err| report(log_service, "language features unavailable: {s}", .{@errorName(err)});
     workbench.setJsonLanguageClient(json_client);
@@ -577,28 +629,14 @@ pub fn main(init: std.process.Init) !void {
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
     });
 
-    // Color themes: the built-in theme-defaults contributions first, then the
-    // profile's extensions path (later registrations win). A missing submodule leaves only the fallback
-    // syntax theme installed by the workbench.
-    var theme_roots = ArrayList([]const u8).init(allocator);
-    defer theme_roots.deinit();
-    if (profile.extensions_dir) |dir| theme_roots.append(dir) catch {};
-    var extra_themes: ?extensions_registry.ThemeList = null;
-    if (theme_roots.items.len > 0) {
-        extra_themes = extensions_registry.scanThemes(allocator, theme_roots.items) catch |err| blk: {
-            infoLog(log_service, "theme scan failed: {s}", .{@errorName(err)});
-            break :blk null;
-        };
-    }
-    defer if (extra_themes) |*list| list.deinit();
+    // Color themes come from the enabled declarative catalog: the installed
+    // built-ins (including theme-defaults) followed by user extensions in
+    // scan order, so later registrations still win for duplicate theme ids. A
+    // missing submodule leaves only the fallback syntax theme installed by the
+    // workbench.
     if (declarative) |*decl_ext| {
         workbench.registerThemeSources(decl_ext.themes) catch |err| {
-            report(log_service, "built-in themes unavailable: {s}", .{@errorName(err)});
-        };
-    }
-    if (extra_themes) |*list| {
-        workbench.registerThemeSources(list.themes) catch |err| {
-            report(log_service, "installed themes unavailable: {s}", .{@errorName(err)});
+            report(log_service, "extension themes unavailable: {s}", .{@errorName(err)});
         };
     }
     workbench.applyThemeSettings();
@@ -643,7 +681,23 @@ pub fn main(init: std.process.Init) !void {
         for (extension_paths.items) |entry| allocator.free(entry.path);
         extension_paths.deinit();
     }
-    if (declarative) |*catalog| {
+    // Executable bundles are resolved from the installed system scan, even
+    // when a user copy of the same id overrides it declaratively (the Node
+    // host only runs the bundled built-ins). Disabling a built-in removes it
+    // from the next launch's host inventory.
+    if (extension_service) |service| {
+        for (service.systemExtensions()) |extension| {
+            if (!service.isEnabled(extension.identifier)) continue;
+            const path = try std.fs.path.join(allocator, &.{ runtime_dir, "extensions", std.fs.path.basename(extension.location) });
+            errdefer allocator.free(path);
+            if (std.Io.Dir.cwd().access(io, path, .{})) |_| {
+                try extension_paths.append(.{ .path = path, .is_builtin = true });
+            } else |err| {
+                if (err != error.FileNotFound) infoLog(log_service, "extension unavailable at {s}: {s}", .{ path, @errorName(err) });
+                allocator.free(path);
+            }
+        }
+    } else if (declarative) |*catalog| {
         for (catalog.extensions) |extension| {
             const path = try std.fs.path.join(allocator, &.{ runtime_dir, "extensions", std.fs.path.basename(extension.root) });
             errdefer allocator.free(path);

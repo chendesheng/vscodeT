@@ -1,13 +1,16 @@
 // Declarative extension scanner and contribution registry.
 //
-// Port of the data-only half of `extensionsRegistry.ts` and the subset of
-// `extensionsScannerService.ts` needed by the bundled declarative extensions.
-// Manifests and language configurations are JSONC; contribution values borrow
-// from a registry-owned arena for the process lifetime.
+// Port of the data-only half of `extensionsRegistry.ts`. The platform scanner
+// (`extensionsScannerService.zig`) owns the filesystem and manifest parsing;
+// this registry extracts the languages, grammars, themes, icon themes,
+// snippets and configuration defaults from those descriptions into a
+// process-lifetime arena. Manifests and language configurations are JSONC;
+// contribution values borrow from a registry-owned arena.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const time_compat = @import("../../../../base/common/timeCompat.zig");
 const configuration_models = @import("../../../../platform/configuration/common/configurationModels.zig");
+const scanner = @import("../../../../platform/extensionManagement/common/extensionsScannerService.zig");
 
 pub const Language = struct {
     root: []const u8,
@@ -124,7 +127,7 @@ const Contributions = struct {
     snippets: *std.array_list.Managed(Snippet),
 };
 
-/// Scans `roots`.
+/// Scans `roots` and extracts their declarative contributions.
 ///
 /// A root that is itself an extension (its `package.json` has `name`,
 /// `version` and `engines.vscode`) is scanned as one extension. A root
@@ -133,19 +136,43 @@ const Contributions = struct {
 /// with a `package.json` are scanned in location order. Missing roots and
 /// invalid manifests are skipped: a bundled fixture may be absent in a
 /// checkout without `vscode`.
+///
+/// This is a convenience wrapper around the platform scanner for tests and
+/// one-off roots. Callers that already own scanned descriptions (the
+/// workbench extension service) use `scanDescriptions` so each manifest is
+/// parsed once.
 pub fn scan(allocator: Allocator, roots: []const []const u8) !Registry {
+    const extensions = try scanner.scanExtensionsFromRoots(allocator, time_compat.io, roots, .system);
+    defer {
+        for (extensions) |*extension| extension.deinit(allocator);
+        allocator.free(extensions);
+    }
+    const descriptions = try allocator.alloc(*const scanner.ScannedExtension, extensions.len);
+    defer allocator.free(descriptions);
+    for (extensions, 0..) |*extension, index| descriptions[index] = extension;
+    return scanDescriptions(allocator, descriptions);
+}
+
+/// Extracts the declarative contributions of already-scanned extensions.
+/// Contribution strings are copied into the registry arena; the descriptions
+/// are only borrowed for the duration of the call. Invalid manifests are
+/// already filtered by the scanner.
+pub fn scanDescriptions(
+    allocator: Allocator,
+    extensions: []const *const scanner.ScannedExtension,
+) !Registry {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     const scratch = arena.allocator();
 
-    var extensions = std.array_list.Managed(Extension).init(scratch);
+    var registry_extensions = std.array_list.Managed(Extension).init(scratch);
     var languages = std.array_list.Managed(Language).init(scratch);
     var grammars = std.array_list.Managed(Grammar).init(scratch);
     var themes = std.array_list.Managed(Theme).init(scratch);
     var icon_themes = std.array_list.Managed(IconTheme).init(scratch);
     var snippets = std.array_list.Managed(Snippet).init(scratch);
     const contributions: Contributions = .{
-        .extensions = &extensions,
+        .extensions = &registry_extensions,
         .languages = &languages,
         .grammars = &grammars,
         .themes = &themes,
@@ -153,18 +180,13 @@ pub fn scan(allocator: Allocator, roots: []const []const u8) !Registry {
         .snippets = &snippets,
     };
 
-    for (roots) |root| {
-        const absolute = std.Io.Dir.cwd().realPathFileAlloc(time_compat.io, root, allocator) catch continue;
-        defer allocator.free(absolute);
-        if (try scanExtensionRoot(allocator, scratch, absolute, contributions)) continue;
-        try scanExtensionDirectory(allocator, scratch, absolute, contributions);
-    }
+    for (extensions) |extension| try collectContributions(allocator, scratch, extension, contributions);
 
     try scopes.resolveInjections(scratch, grammars.items);
     return .{
         .allocator = allocator,
         .arena = arena,
-        .extensions = try extensions.toOwnedSlice(),
+        .extensions = try registry_extensions.toOwnedSlice(),
         .languages = try languages.toOwnedSlice(),
         .grammars = try grammars.toOwnedSlice(),
         .themes = try themes.toOwnedSlice(),
@@ -173,41 +195,39 @@ pub fn scan(allocator: Allocator, roots: []const []const u8) !Registry {
     };
 }
 
-/// Scans one extension directory. Returns false when the directory does not
-/// contain a usable extension manifest, so the caller can treat it as a
-/// container of extensions instead (`vscode/extensions/package.json` is a
-/// build manifest, not an extension).
-fn scanExtensionRoot(allocator: Allocator, scratch: Allocator, absolute: []const u8, contributions: Contributions) !bool {
-    const manifest_path = try std.fs.path.join(allocator, &.{ absolute, "package.json" });
-    defer allocator.free(manifest_path);
-    const text = std.Io.Dir.cwd().readFileAlloc(time_compat.io, manifest_path, allocator, .unlimited) catch return false;
-    defer allocator.free(text);
-    // Only the extracted contributions survive startup. Release each parsed
-    // manifest (including large command/configuration sections) after scanning.
-    var parse_arena = std.heap.ArenaAllocator.init(allocator);
-    defer parse_arena.deinit();
-    const temporary = parse_arena.allocator();
-    const sanitized = configuration_models.stripJsonc(temporary, text) catch return true;
-    const value = std.json.parseFromSliceLeaky(std.json.Value, temporary, sanitized, .{}) catch return true;
-    if (value != .object) return true;
-    const object = value.object;
-
-    const name = stringField(object, "name") orelse return false;
-    const version = stringField(object, "version") orelse return false;
-    if (!hasEngines(object)) return false;
-    const publisher = stringField(object, "publisher") orelse "undefined_publisher";
-    const identifier = try std.fmt.allocPrint(scratch, "{s}.{s}@{s}", .{ publisher, name, version });
+fn collectContributions(
+    allocator: Allocator,
+    scratch: Allocator,
+    extension_description: *const scanner.ScannedExtension,
+    contributions: Contributions,
+) !void {
+    const absolute = extension_description.location;
+    const object = switch (extension_description.manifest.value) {
+        .object => |object| object,
+        else => return,
+    };
+    const identifier = try std.fmt.allocPrint(scratch, "{s}@{s}", .{ extension_description.identifier, extension_description.version });
     const root_copy = try scratch.dupe(u8, absolute);
     const extension = try contributions.extensions.addOne();
-    extension.* = .{ .root = root_copy, .identifier = identifier, .is_builtin = true };
+    extension.* = .{
+        .root = root_copy,
+        .identifier = identifier,
+        .is_builtin = extension_description.extension_type == .system,
+    };
 
-    const contributes = object.get("contributes") orelse return true;
-    if (contributes != .object) return true;
+    const contributes = object.get("contributes") orelse return;
+    if (contributes != .object) return;
     const points = contributes.object;
     if (points.get("configurationDefaults")) |defaults| {
         if (defaults == .object)
             extension.configuration_defaults = try @import("../../../../platform/configuration/common/configuration.zig").cloneValue(scratch, defaults);
     }
+
+    // Temporary strings and theme icon files live for this extension's
+    // extraction only; the extracted contributions are copied to `scratch`.
+    var parse_arena = std.heap.ArenaAllocator.init(allocator);
+    defer parse_arena.deinit();
+    const temporary = parse_arena.allocator();
 
     // VS Code manifests store theme labels as `%nlsKey%`; resolve the default
     // `package.nls.json` so the scanner exposes the same label a user sees.
@@ -310,74 +330,6 @@ fn scanExtensionRoot(allocator: Allocator, scratch: Allocator, absolute: []const
             }
         }
     }
-
-    return true;
-}
-
-/// A themes-only scan result. Installed extensions usually contribute more
-/// than themes; scanning the whole extension directory for every contribution
-/// would also register its languages and grammars, which is not part of the
-/// theme source. This keeps only the theme records.
-pub const ThemeList = struct {
-    allocator: Allocator,
-    arena: std.heap.ArenaAllocator,
-    themes: []const Theme,
-
-    pub fn deinit(self: *ThemeList) void {
-        self.arena.deinit();
-    }
-};
-
-pub fn scanThemes(allocator: Allocator, roots: []const []const u8) !ThemeList {
-    var registry = try scan(allocator, roots);
-    defer registry.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    errdefer arena.deinit();
-    const scratch = arena.allocator();
-    var themes = std.array_list.Managed(Theme).init(scratch);
-    for (registry.themes) |theme| {
-        try themes.append(.{
-            .root = try scratch.dupe(u8, theme.root),
-            .id = try scratch.dupe(u8, theme.id),
-            .settings_id = try scratch.dupe(u8, theme.settings_id),
-            .label = try scratch.dupe(u8, theme.label),
-            .ui_theme = try scratch.dupe(u8, theme.ui_theme),
-            .path = try scratch.dupe(u8, theme.path),
-        });
-    }
-    return .{
-        .allocator = allocator,
-        .arena = arena,
-        .themes = try themes.toOwnedSlice(),
-    };
-}
-
-/// Scans the direct child directories of `absolute` that contain a
-/// `package.json`, in path order.
-fn scanExtensionDirectory(allocator: Allocator, scratch: Allocator, absolute: []const u8, contributions: Contributions) !void {
-    var dir = std.Io.Dir.cwd().openDir(time_compat.io, absolute, .{ .iterate = true }) catch return;
-    defer dir.close(time_compat.io);
-
-    var children = std.array_list.Managed([]const u8).init(scratch);
-    var iterator = dir.iterate();
-    while (try iterator.next(time_compat.io)) |entry| {
-        if (entry.name.len == 0 or entry.name[0] == '.') continue;
-        const child = try std.fs.path.join(scratch, &.{ absolute, entry.name });
-        const manifest_path = try std.fs.path.join(scratch, &.{ child, "package.json" });
-        std.Io.Dir.cwd().access(time_compat.io, manifest_path, .{}) catch continue;
-        try children.append(child);
-    }
-    // Keep the scan deterministic even though directory iteration order is
-    // filesystem-specific. Upstream sorts scanned extensions by location.
-    std.mem.sort([]const u8, children.items, {}, lessThanPath);
-    for (children.items) |child| {
-        _ = try scanExtensionRoot(allocator, scratch, child, contributions);
-    }
-}
-
-fn lessThanPath(_: void, a: []const u8, b: []const u8) bool {
-    return std.mem.order(u8, a, b) == .lt;
 }
 
 fn resolveNls(nls: ?std.json.ObjectMap, raw: []const u8) []const u8 {
@@ -406,12 +358,6 @@ fn stringArray(allocator: Allocator, object: std.json.ObjectMap, name: []const u
         try result.append(try allocator.dupe(u8, item.string));
     }
     return result.toOwnedSlice();
-}
-
-fn hasEngines(object: std.json.ObjectMap) bool {
-    const engines = object.get("engines") orelse return false;
-    if (engines != .object) return false;
-    return engines.object.get("vscode") != null;
 }
 
 test "declarative scanner reads markdown-basics and theme-defaults" {
@@ -551,4 +497,58 @@ test "declarative scanner resolves include scopes and Markdown math injections" 
     const markdown = registry.grammarForLanguage("markdown") orelse return error.TestUnexpectedResult;
     try std.testing.expect(markdown.injections.len >= 2);
     for (markdown.injections) |scope| try std.testing.expect(scopes.forScope(registry.grammars, scope) != null);
+}
+
+test "declarative scanner marks user descriptions and extracts their contributions" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(time_compat.io, "pub.user-extension-1.0.0");
+    var manifest_path: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const length = try tmp.dir.realPath(time_compat.io, &manifest_path);
+    const root = manifest_path[0..length];
+    const extension_root = try std.fs.path.join(allocator, &.{ root, "pub.user-extension-1.0.0" });
+    defer allocator.free(extension_root);
+    try writeTestManifestKind(&tmp, "pub.user-extension-1.0.0",
+        \\{
+        \\  "name": "user-extension",
+        \\  "publisher": "pub",
+        \\  "version": "1.0.0",
+        \\  "engines": { "vscode": "*" },
+        \\  "contributes": {
+        \\    "languages": [{ "id": "user-lang", "extensions": [".user"] }],
+        \\    "snippets": [{ "language": "user-lang", "path": "./snippets.json" }],
+        \\    "configurationDefaults": { "editor.tabSize": 3 }
+        \\  }
+        \\}
+    );
+
+    const scanned = try scanner.scanExtensionsFromRoots(allocator, time_compat.io, &.{extension_root}, .user);
+    defer {
+        for (scanned) |*extension| extension.deinit(allocator);
+        allocator.free(scanned);
+    }
+    try std.testing.expectEqual(@as(usize, 1), scanned.len);
+
+    const descriptions = try allocator.alloc(*const scanner.ScannedExtension, scanned.len);
+    defer allocator.free(descriptions);
+    for (scanned, 0..) |*extension, index| descriptions[index] = extension;
+
+    var registry = try scanDescriptions(allocator, descriptions);
+    defer registry.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), registry.extensions.len);
+    try std.testing.expect(!registry.extensions[0].is_builtin);
+    try std.testing.expectEqualStrings("pub.user-extension@1.0.0", registry.extensions[0].identifier);
+    try std.testing.expect(registry.language("user-lang") != null);
+    try std.testing.expectEqual(@as(usize, 1), registry.snippets.len);
+    try std.testing.expect(registry.extensions[0].configuration_defaults != null);
+}
+
+fn writeTestManifestKind(tmp: *std.testing.TmpDir, directory: []const u8, text: []const u8) !void {
+    const path = try std.fs.path.join(std.testing.allocator, &.{ directory, "package.json" });
+    defer std.testing.allocator.free(path);
+    var file = try tmp.dir.createFile(time_compat.io, path, .{});
+    defer file.close(time_compat.io);
+    try file.writeStreamingAll(time_compat.io, text);
 }
