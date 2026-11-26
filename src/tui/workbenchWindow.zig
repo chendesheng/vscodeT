@@ -905,6 +905,7 @@ pub const TerminalWorkbench = struct {
                     fn configure(context: *anyopaque, tab: *Tab) void {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
                         host.editor_configuration.applyToTab(tab);
+                        if (host.language_features) |features| tab.attachLanguageRegistry(features);
                         host.attachCodeLensServices(tab);
                         host.instantiation.invokeFunction(@import("../vs/workbench/workbench.common.main.zig").attachDiffEditorContributions, .{tab}) catch {};
                         tab.attachDiffActionServices(host.clipboard_api, host.context_menu_api);

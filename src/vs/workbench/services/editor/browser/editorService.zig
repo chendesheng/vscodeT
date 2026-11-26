@@ -225,7 +225,7 @@ pub const EditorService = struct {
             if (resources.original) |resource| if (!resource.is_working_file) if (resource.encoding) |encoding| tab.diff.?.original_input.resolve().setEncoding(encoding);
             if (resources.modified) |resource| if (!resource.is_working_file) if (resource.encoding) |encoding| tab.diff.?.modified_input.resolve().setEncoding(encoding);
             if (self.opening) |opening| {
-                try opening.attachDiffModel(tab.diff.?.widget.view_model);
+                try opening.configureSingleDiff(tab.diff.?.widget);
                 opening.host.configure_tab(opening.host.context, tab);
             }
             tab.syncDiffViews();
@@ -273,7 +273,7 @@ pub const EditorService = struct {
         };
         var registered = false;
         defer if (!registered) tab.deinit();
-        if (self.opening) |opening| try opening.attachDiffModel(tab.diff.?.widget.view_model);
+        if (self.opening) |opening| try opening.configureSingleDiff(tab.diff.?.widget);
 
         try pane.tabs.ensureUnusedCapacity(1);
         errdefer if (pane.group.model.indexOfExact(tab.input) != null) {
@@ -577,17 +577,23 @@ pub const EditorOpening = struct {
         if (tab.multi_diff) |multi| {
             const services = self.multi_diff_source_services orelse return error.MultiDiffUnavailable;
             try self.bindMultiDiffInput(multi.input, if (services.configuration) |configuration| configuration.* else null, services.resolver);
+        } else if (tab.diff) |diff| {
+            for ([_]text_diff_editor_mod.SideInput{ diff.original_input, diff.modified_input }) |side| try self.text_model_resolver.registerDocument(side.resolve(), side.interface().isReadonly());
+            try self.configureSingleDiff(diff.widget);
         } else {
             self.host.configure_editor(self.host.context, tab.editor);
             if (tab.file_input != null) try self.text_model_resolver.registerDocument(tab.editor.document, false);
         }
-        if (tab.diff) |diff| {
-            for ([_]text_diff_editor_mod.SideInput{ diff.original_input, diff.modified_input }) |side| try self.text_model_resolver.registerDocument(side.resolve(), side.interface().isReadonly());
-            self.host.configure_editor(self.host.context, diff.widget.original_editor);
-            try self.attachDiffModel(diff.widget.view_model);
-        }
         self.host.configure_tab(self.host.context, tab);
         self.host.register_working_copy(self.host.context, tab);
+    }
+
+    /// Fresh, restored and refreshed diff panes configure both actual
+    /// sub-editors through the ordinary code-editor service binding.
+    fn configureSingleDiff(self: *EditorOpening, widget: *editor_pane.DiffWidget) !void {
+        self.host.configure_editor(self.host.context, widget.original_editor);
+        self.host.configure_editor(self.host.context, widget.modified_editor);
+        try self.attachDiffModel(widget.view_model);
     }
 
     fn attachDiffModel(self: *EditorOpening, model: *@import("../../../../editor/browser/widget/diffEditor/diffEditorViewModel.zig").DiffEditorViewModel) !void {

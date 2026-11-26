@@ -2588,6 +2588,11 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const original = diff.original_editor.getContribution(WordHighlighterContribution).?;
             const modified = diff.modified_editor.getContribution(WordHighlighterContribution).?;
             const features = wb.language_features.?;
+            try std.testing.expectEqual(features, diff.original_editor.language_features.?);
+            try std.testing.expectEqual(features, diff.modified_editor.language_features.?);
+            const registered_editors = wb.code_editor_api.listCodeEditors();
+            try std.testing.expect(std.mem.indexOfScalar(*Editor, registered_editors, diff.original_editor) != null);
+            try std.testing.expect(std.mem.indexOfScalar(*Editor, registered_editors, diff.modified_editor) != null);
             const deadline = time_compat.milliTimestamp() + 10_000;
             while (time_compat.milliTimestamp() < deadline) {
                 _ = extensions.pump();
