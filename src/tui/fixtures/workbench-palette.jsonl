@@ -194,6 +194,7 @@
 ["diffEditor.revert","Revert","Diff Editor","",true,false,true,false,false]
 ["editor.action.accessibleDiffViewer.next","Go to Next Difference","Accessible Diff Viewer","",true,false,true,false,false]
 ["editor.action.accessibleDiffViewer.prev","Go to Previous Difference","Accessible Diff Viewer","",true,false,true,false,false]
+["editor.action.toggleTabFocusMode","Toggle Tab Key Moves Focus","","",true,false,false,true,true]
 ["editor.action.accessibilityHelp","Open Accessibility Help","","",true,false,false,true,true]
 ["editor.action.accessibleView","Open Accessible View","","",true,false,false,true,true]
 ["editor.action.accessibleViewDisableHint","Disable Accessible View Hint","","",true,false,true,false,false]

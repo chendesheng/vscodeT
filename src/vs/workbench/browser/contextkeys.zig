@@ -32,6 +32,7 @@ pub const WindowContextState = struct {
     custom_editor_id: []const u8,
     editor_focused: bool,
     editor_text_focused: bool,
+    editor_tab_moves_focus: bool = false,
     sidebar_focused: bool,
     sidebar_visible: bool,
     active_activity: []const u8,
@@ -67,6 +68,7 @@ const WindowContextKeys = struct {
     diff_original_uri: contextkeys.IContextKey,
     diff_modified_uri: contextkeys.IContextKey,
     editor_text_focus: contextkeys.IContextKey,
+    editor_tab_moves_focus: contextkeys.IContextKey,
     editor_lang_id: contextkeys.IContextKey,
     editor_has_code_lens_provider: contextkeys.IContextKey,
     quick_diff_decoration_count: contextkeys.IContextKey,
@@ -122,6 +124,7 @@ const WindowContextKeys = struct {
             .editor_lang_id = try service.createKey("editorLangId", .{ .string = "" }),
             .active_custom_editor_id = try service.createKey("activeCustomEditorId", .{ .string = "" }),
             .editor_text_focus = try service.createKey("editorTextFocus", .{ .boolean = false }),
+            .editor_tab_moves_focus = try service.createKey("editorTabMovesFocus", .{ .boolean = false }),
             .input_focus = try service.createKey("inputFocus", .{ .boolean = false }),
             .list_focus = try service.createKey("listFocus", .{ .boolean = false }),
             .side_bar_focus = try service.createKey("sideBarFocus", .{ .boolean = false }),
@@ -269,6 +272,7 @@ pub const WorkbenchContextKeysHandler = struct {
         keys.editor_lang_id.set(.{ .string = state.language_id });
         keys.active_custom_editor_id.set(.{ .string = state.custom_editor_id });
         keys.editor_text_focus.set(.{ .boolean = state.editor_text_focused });
+        keys.editor_tab_moves_focus.set(.{ .boolean = state.editor_tab_moves_focus });
         keys.side_bar_focus.set(.{ .boolean = state.sidebar_focused });
         keys.list_focus.set(.{ .boolean = state.multi_diff_file_list_focused or (state.sidebar_focused and (!search_active or state.search_results_focused)) });
         keys.input_focus.set(.{ .boolean = state.sidebar_focused and search_active and !state.search_results_focused });

@@ -683,6 +683,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
         fn moveHeaderTab(self: *Self, item: *model.DocumentDiffItemViewModel, direction: ui.dom.FocusDirection) !bool {
             if (direction == .forward and !item.collapsed) {
                 try self.focusItem(item);
+                if (self.bindingFor(item)) |binding| if (binding.editor) |editor| editor.focusTabEdge(direction);
                 return true;
             }
             const index = for (self.manager.items, 0..) |managed, i| {
@@ -694,12 +695,56 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
             try self.revealIndex(next);
             if (direction == .backward and !adjacent.collapsed) {
                 try self.focusItem(adjacent);
+                if (self.bindingFor(adjacent)) |binding| if (binding.editor) |editor| editor.focusTabEdge(direction);
             } else if (self.bindingFor(adjacent)) |binding| {
                 _ = binding.focusHeader(direction == .backward);
                 try self.focusItemWithHeader(adjacent, true);
             }
             return true;
         }
+        pub fn focusTabEdge(self: *Self, direction: ui.dom.FocusDirection) !bool {
+            if (self.manager.items.len == 0) return false;
+            const index = if (direction == .forward) 0 else self.manager.items.len - 1;
+            const item = self.manager.items[index].item;
+            try self.revealIndex(index);
+            const binding = self.bindingFor(item) orelse return false;
+            if (direction == .backward and !item.collapsed) {
+                try self.focusItem(item);
+                if (binding.editor) |editor| editor.focusTabEdge(direction);
+            } else {
+                _ = binding.focusHeader(direction == .backward);
+                try self.focusItemWithHeader(item, true);
+            }
+            return true;
+        }
+
+        pub fn dispatchTabFocus(self: *Self, event: *ui.KeyEvent, direction: ui.dom.FocusDirection) !bool {
+            const value = self.model orelse return false;
+            const item = value.activeDiffItem orelse return self.focusTabEdge(direction);
+            const binding = self.bindingFor(item) orelse return self.focusTabEdge(direction);
+            if (binding.hasHeaderFocus()) return self.dispatchKey(event);
+            if (!item.collapsed) if (binding.editor) |editor| {
+                if (editor.dispatchTabFocus(event, direction)) return true;
+            };
+            if (direction == .backward) {
+                _ = binding.focusHeader(true);
+                try self.focusItemWithHeader(item, true);
+                return true;
+            }
+            const index = for (self.manager.items, 0..) |managed, i| {
+                if (managed.item == item) break i;
+            } else return false;
+            if (index + 1 >= self.manager.items.len) return false;
+            try self.revealIndex(index + 1);
+            const adjacent = self.manager.items[index + 1].item;
+            if (self.bindingFor(adjacent)) |next| {
+                _ = next.focusHeader(false);
+                try self.focusItemWithHeader(adjacent, true);
+                return true;
+            }
+            return false;
+        }
+
         pub fn dispatchKey(self: *Self, event: *ui.KeyEvent) !bool {
             const value = self.model orelse return false;
             const item = value.activeDiffItem orelse return false;

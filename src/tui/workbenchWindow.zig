@@ -385,6 +385,7 @@ pub const TerminalWorkbench = struct {
     tab_command_result: ?TabKeyResult = null,
     global_service: ?*keybinding_service.KeybindingService,
     context_keys: ?*context_key_mod.ContextKeyService,
+    tab_focus: @import("../vs/editor/browser/config/tabFocus.zig").TabFocus,
     configuration_context: @import("../vs/platform/contextkey/browser/contextKeyService.zig").ConfigAwareContextValuesContainer,
     workbench_context: @import("../vs/workbench/browser/contextkeys.zig").WorkbenchContextKeysHandler,
     terminal_context: @import("../vs/workbench/contrib/terminal/browser/terminalContextKeys.zig").TerminalContextKeysHandler,
@@ -499,6 +500,8 @@ pub const TerminalWorkbench = struct {
         self.tab_service = null;
         self.global_service = null;
         self.context_keys = null;
+        self.tab_focus = .init(allocator);
+        errdefer self.tab_focus.deinit();
         self.theme_service = null;
         self.syntax_theme = .{};
         self.syntax_theme_ready = false;
@@ -1182,6 +1185,8 @@ pub const TerminalWorkbench = struct {
     }
 
     fn registerNativeServices(self: *TerminalWorkbench) !void {
+        _ = try self.services.set(@import("../vs/editor/browser/config/tabFocus.zig").tab_focus_id, &self.tab_focus);
+        _ = try self.tab_focus.on_did_change_tab_focus.listen(self, onTabFocusChanged);
         self.context_menu_api = self.context_menu_service.interface();
         _ = try self.services.set(context_menus.context_menu_service_id, &self.context_menu_api);
         _ = try self.services.set(@import("../vs/platform/clipboard/common/clipboardService.zig").clipboard_service_id, &self.clipboard_api);
@@ -1617,6 +1622,7 @@ pub const TerminalWorkbench = struct {
             if (self.editor_status) |status| status.deinit();
             self.editor_status = null;
         }
+        try self.editor_status.?.bindTabFocus(&self.tab_focus);
         self.media_status = try MediaPreviewStatus.init(self.allocator, &self.statusbar);
         errdefer {
             if (self.media_status) |status| status.deinit();
@@ -1779,6 +1785,7 @@ pub const TerminalWorkbench = struct {
             status.deinit();
             self.editor_status = null;
         }
+        self.tab_focus.deinit();
         self.git_commands.deinit();
         self.deinitGit();
         self.git_file_provider.deinit();
@@ -2096,6 +2103,7 @@ pub const TerminalWorkbench = struct {
         if (self.search_window.view) |view| try view.attachConfiguration(self.configuration.?);
         if (self.core.notification_controller) |controller| try controller.attachConfiguration(self.configuration);
         try self.configuration.?.onDidChangeConfiguration(self, onWorkbenchConfigurationChange);
+        try self.tab_focus.setTabFocusMode(self.configuration.?.getBool("editor.tabFocusMode", false));
         if (self.declarative) |catalog| try self.applyExtensionDefaults(catalog);
         if (self.terminal_service) |service| service.options.configuration = self.configuration;
         self.settings_watcher = SettingsWatcher.init(self.allocator, self.io, self.configuration.?, try self.ensureFileService(), &self.window_events) catch null;
@@ -2107,8 +2115,16 @@ pub const TerminalWorkbench = struct {
         self.applyLayoutSettings(null);
     }
 
+    fn onTabFocusChanged(_: bool, self: *TerminalWorkbench) !void {
+        self.updateContextKeys();
+        self.requestFrame();
+    }
+
     fn onWorkbenchConfigurationChange(change: configuration_mod.Change, self: *TerminalWorkbench) !void {
         const config = @import("../vs/platform/configuration/common/configuration.zig");
+        if (config.affectsConfiguration(change, "editor.tabFocusMode")) {
+            try self.tab_focus.setTabFocusMode(self.configuration.?.getBool("editor.tabFocusMode", false));
+        }
         if (config.affectsConfiguration(change, "workbench") or config.affectsConfiguration(change, "zenMode")) {
             self.applyLayoutSettings(change);
             try self.layout.onZenModeConfigurationChange(change);
@@ -2274,6 +2290,43 @@ pub const TerminalWorkbench = struct {
             if (self.range_highlights) |highlights| highlights.removeHighlightRange();
         }
         self.layoutAll();
+    }
+
+    /// Browser Tab navigation crosses workbench DOM parts. Native parts
+    /// have independent focus surfaces, so move between their registered
+    /// layout containers only when the focused control has no next stop.
+    pub fn handleTabFocus(self: *TerminalWorkbench, event: *ui.KeyEvent) bool {
+        if (!self.tab_focus.getTabFocusMode() or event.mods.ctrl or event.mods.alt or self.isDialogOpen() or self.quick_access.isOpen() or self.accessible_view.visible()) return false;
+        if (event.key != .tab and event.key != .backtab) return false;
+        const direction: ui.dom.FocusDirection = if (event.key == .backtab or event.mods.shift) .backward else .forward;
+        const layout_api = self.layout.interface();
+        const part: layout_service_mod.Parts = switch (self.focus) {
+            .editor => .editor,
+            .sidebar => .sidebar,
+            .terminal, .problems => .panel,
+            .statusbar => .statusbar,
+            .breadcrumbs => return false,
+        };
+        if (part == .editor) if (self.activeTab()) |tab| {
+            if (tab.dispatchTabFocus(event, direction)) {
+                self.requestFrame();
+                return true;
+            }
+        };
+        const parts = [_]layout_service_mod.Parts{ .sidebar, .editor, .panel, .statusbar };
+        const current = for (parts, 0..) |candidate, index| {
+            if (candidate == part) break index;
+        } else return false;
+        for (1..parts.len) |offset| {
+            const index = if (direction == .forward) (current + offset) % parts.len else (current + parts.len - offset) % parts.len;
+            const next = parts[index];
+            if (!layout_api.isVisible(next)) continue;
+            layout_api.focusPart(next);
+            if (next == .editor) if (self.activeTab()) |tab| tab.focusTabEdge(direction);
+            self.requestFrame();
+            return true;
+        }
+        return true;
     }
 
     pub fn focusSidebar(self: *TerminalWorkbench) void {
@@ -3691,6 +3744,7 @@ pub const TerminalWorkbench = struct {
             .language_id = if (target) |editor| editor.languageId() else "",
             .custom_editor_id = if (markdown_preview and active.?.file_input != null) "vscode.markdown.preview.editor" else "",
             .editor_focused = self.focus == .editor,
+            .editor_tab_moves_focus = self.tab_focus.getTabFocusMode(),
             .editor_text_focused = self.focus == .editor and !(if (multi_diff) |multi| multi.fileListFocused() else false) and !terminal_editor and !markdown_preview and !self.isDialogOpen() and !self.quick_access.isOpen() and !self.accessible_view.visible() and !(if (active_diff_widget) |widget| widget.accessible_viewer.visible() else false),
             .sidebar_focused = self.focus == .sidebar and geometry_value.sidebarShown(),
             .sidebar_visible = geometry_value.sidebarShown(),

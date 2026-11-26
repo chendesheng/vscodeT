@@ -11115,6 +11115,48 @@ test "Workbench: git scm integration opens live Changes group and retains surviv
     header_key = .{ .key = .end };
     try std.testing.expect(try multi.widget.dispatchKey(&header_key));
     try std.testing.expectEqual(last_enabled, binding.template.header.doc.focusedElement().?);
+    // Tab Focus is the actual registered editor action and window context,
+    // not a special multi-diff keyboard shortcut. Traverse the real header
+    // and inner editor focus stops without changing either document.
+    wb.focusEditor();
+    _ = binding.focusHeader(true);
+    try wb.commands.execute("editor.action.toggleTabFocusMode");
+    try std.testing.expect(wb.tab_focus.getTabFocusMode());
+    const tab_keys = try wb.ensureContextKeys();
+    try std.testing.expect(tab_keys.getValue("editorTabMovesFocus").boolean);
+    const version = binding.editor.?.modified_editor.model.getVersionId();
+    var focus_key: ui.KeyEvent = .{ .key = .tab };
+    try std.testing.expect(wb.handleTabFocus(&focus_key));
+    try std.testing.expect(!binding.hasHeaderFocus());
+    const two_panes = binding.editor.?.sideBySide();
+    if (two_panes) {
+        try std.testing.expectEqual(.original, binding.editor.?.focused);
+        focus_key = .{ .key = .tab };
+        try std.testing.expect(wb.handleTabFocus(&focus_key));
+        try std.testing.expectEqual(.modified, binding.editor.?.focused);
+        focus_key = .{ .key = .backtab };
+        try std.testing.expect(wb.handleTabFocus(&focus_key));
+        try std.testing.expectEqual(.original, binding.editor.?.focused);
+    }
+    focus_key = .{ .key = .backtab };
+    try std.testing.expect(wb.handleTabFocus(&focus_key));
+    try std.testing.expect(binding.hasHeaderFocus());
+    focus_key = .{ .key = .tab };
+    try std.testing.expect(wb.handleTabFocus(&focus_key));
+    if (two_panes) {
+        focus_key = .{ .key = .tab };
+        try std.testing.expect(wb.handleTabFocus(&focus_key));
+    }
+    focus_key = .{ .key = .tab };
+    try std.testing.expect(wb.handleTabFocus(&focus_key));
+    try std.testing.expectEqual(initial_vm.items[1], initial_vm.activeDiffItem.?);
+    const other_binding = multi.widget.impl.bindingFor(initial_vm.items[1]) orelse return error.TestExpectedMultiDiffControl;
+    try std.testing.expect(other_binding.hasHeaderFocus());
+    try std.testing.expectEqual(version, target_item.modified.model.getVersionId());
+    try wb.commands.execute("editor.action.toggleTabFocusMode");
+    try std.testing.expect(!tab_keys.getValue("editorTabMovesFocus").boolean);
+    focus_key = .{ .key = .tab };
+    try std.testing.expect(!wb.handleTabFocus(&focus_key));
     try target_item.documentDiffItem.setContextKeys(&.{});
     var child = binding.template.actions.first_child;
     while (child) |value| : (child = value.next) try std.testing.expect(!std.mem.eql(u8, value.getAttribute("aria-label") orelse "", "Scoped File Action"));

@@ -202,6 +202,12 @@ pub fn MultiDiffEditor(comptime View: type) type {
         pub fn fileListPosition(self: *const Self) common.MultiDiffEditorFileListPosition {
             return if (self.composite) |value| value.position else .right;
         }
+        pub fn focusTabEdge(self: *Self, direction: ui.dom.FocusDirection) !bool {
+            return if (self.composite) |value| value.focusTabEdge(direction) else self.widget.focusTabEdge(direction);
+        }
+        pub fn dispatchTabFocus(self: *Self, input: *ui.KeyEvent, direction: ui.dom.FocusDirection) !bool {
+            return if (self.composite) |value| value.dispatchTabFocus(input, direction) else self.widget.dispatchTabFocus(input, direction);
+        }
         pub fn dispatchKey(self: *Self, input: *ui.KeyEvent) !bool {
             return if (self.composite) |value| value.dispatchKey(input) else self.widget.dispatchKey(input);
         }

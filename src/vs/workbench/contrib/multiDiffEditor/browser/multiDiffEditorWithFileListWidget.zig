@@ -202,6 +202,26 @@ pub fn MultiDiffEditorWithFileListWidget(comptime View: type) type {
             }
             return self.widget.pointerAt(x -| self.diffX(), y);
         }
+        pub fn focusTabEdge(self: *Self, direction: ui.dom.FocusDirection) !bool {
+            if (self.isFileListVisible and ((direction == .forward) == (self.position == .left))) {
+                try self.focusFileList();
+                return true;
+            }
+            try self.focusDiff();
+            return self.widget.focusTabEdge(direction);
+        }
+        pub fn dispatchTabFocus(self: *Self, input: *ui.KeyEvent, direction: ui.dom.FocusDirection) !bool {
+            const list_after_diff = (direction == .forward) == (self.position == .right);
+            if (self.isFileListFocused()) {
+                if (list_after_diff) return false;
+                try self.focusDiff();
+                return self.widget.focusTabEdge(direction);
+            }
+            if (try self.widget.dispatchTabFocus(input, direction)) return true;
+            if (!self.isFileListVisible or !list_after_diff) return false;
+            try self.focusFileList();
+            return true;
+        }
         pub fn dispatchKey(self: *Self, input: *ui.KeyEvent) !bool {
             if (self.isFileListFocused()) {
                 if (input.key == .escape) {

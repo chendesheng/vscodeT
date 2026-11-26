@@ -45,6 +45,7 @@ pub const StatusListener = struct {
     context: *anyopaque,
     on_change: *const fn (*anyopaque, StatusChange) void,
 };
+const TabFocus = @import("../../../../editor/browser/config/tabFocus.zig").TabFocus;
 const IDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
 const EditorService = @import("../../../services/editor/browser/editorService.zig").EditorService;
 const Tab = @import("editorPane.zig").Tab;
@@ -89,6 +90,9 @@ pub const EditorStatus = struct {
     pane_dispose_listener: ?usize = null,
     active_listener: ?usize = null,
     visible_listener: ?usize = null,
+    tab_focus: ?*TabFocus = null,
+    tab_focus_listener: ?usize = null,
+    tab_focus_accessor: ?EntryAccessor = null,
     selection_accessor: ?EntryAccessor = null,
     indentation_accessor: ?EntryAccessor = null,
     encoding_accessor: ?EntryAccessor = null,
@@ -177,6 +181,8 @@ pub const EditorStatus = struct {
     }
 
     pub fn deinit(self: *EditorStatus) void {
+        if (self.tab_focus) |mode| if (self.tab_focus_listener) |id| mode.on_did_change_tab_focus.unlisten(id);
+        if (self.tab_focus_accessor) |accessor| accessor.dispose();
         self.active_editor_listeners.dispose();
         self.detachActivePane();
         if (self.editor_service) |service| {
@@ -185,6 +191,29 @@ pub const EditorStatus = struct {
         }
         self.picker_arena.deinit();
         self.allocator.destroy(self);
+    }
+
+    pub fn bindTabFocus(self: *EditorStatus, mode: *TabFocus) !void {
+        self.tab_focus = mode;
+        self.tab_focus_listener = try mode.on_did_change_tab_focus.listen(self, onTabFocusModeChange);
+        try onTabFocusModeChange(mode.getTabFocusMode(), self);
+    }
+
+    fn onTabFocusModeChange(visible: bool, self: *EditorStatus) !void {
+        if (visible) {
+            if (self.tab_focus_accessor == null) {
+                self.tab_focus_accessor = try self.statusbar.addEntry(.{
+                    .name = "Accessibility Mode",
+                    .text = "Tab Moves Focus",
+                    .tooltip = "Disable Accessibility Mode",
+                    .command = .{ .id = "editor.action.toggleTabFocusMode" },
+                    .kind = .prominent,
+                }, "status.editor.tabFocusMode", .right, .{ .number = 100.7 });
+            }
+        } else if (self.tab_focus_accessor) |accessor| {
+            accessor.dispose();
+            self.tab_focus_accessor = null;
+        }
     }
 
     /// Mirrors EditorStatus.registerListeners and updateStatusBar. The

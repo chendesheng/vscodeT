@@ -806,6 +806,7 @@ pub fn main(init: std.process.Init) !void {
 
                     if (try terminal_workbench.handleQuickAccessKey(workbench, event)) continue;
                     if (workbench.core.notification_controller) |controller| if (controller.handleKey(event)) continue;
+                    if (workbench.handleTabFocus(event)) continue;
                     if (try terminal_workbench.handleTerminalKey(workbench, event)) continue;
                     if (try terminal_workbench.handlePanelKey(workbench, event)) continue;
                     if (try terminal_workbench.handleSidebarKey(workbench, event)) {

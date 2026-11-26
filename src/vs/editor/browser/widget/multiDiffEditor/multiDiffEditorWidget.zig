@@ -147,6 +147,12 @@ pub fn MultiDiffEditorWidget(comptime View: type) type {
         pub fn setFocused(self: *Self, focused: bool) !void {
             try self.impl.setFocused(focused);
         }
+        pub fn focusTabEdge(self: *Self, direction: ui.dom.FocusDirection) !bool {
+            return self.impl.focusTabEdge(direction);
+        }
+        pub fn dispatchTabFocus(self: *Self, event: *ui.KeyEvent, direction: ui.dom.FocusDirection) !bool {
+            return self.impl.dispatchTabFocus(event, direction);
+        }
         pub fn dispatchKey(self: *Self, event: *ui.KeyEvent) !bool {
             return self.impl.dispatchKey(event);
         }

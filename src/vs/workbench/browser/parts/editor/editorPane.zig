@@ -896,6 +896,20 @@ pub const Tab = struct {
         if (self.original_controllers) |controllers| controllers.suggest.cancel();
     }
 
+    pub fn focusTabEdge(self: *Tab, direction: ui.dom.FocusDirection) void {
+        if (self.multi_diff) |multi| {
+            _ = multi.focusTabEdge(direction) catch false;
+        } else if (self.diff) |diff| {
+            diff.widget.focusTabEdge(direction);
+        } else self.focusEditor();
+    }
+
+    pub fn dispatchTabFocus(self: *Tab, event: *ui.KeyEvent, direction: ui.dom.FocusDirection) bool {
+        if (self.multi_diff) |multi| return multi.dispatchTabFocus(event, direction) catch false;
+        if (self.diff) |diff| return diff.widget.dispatchTabFocus(event, direction);
+        return !self.view.hasEditorFocus() and (self.view.dispatchKey(event) or !self.view.hasEditorFocus());
+    }
+
     pub fn handleDiffKey(self: *Tab, event: *ui.KeyEvent) bool {
         if (self.multi_diff) |multi| return multi.dispatchKey(event) catch false;
         const diff = self.diff orelse return false;
