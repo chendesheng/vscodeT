@@ -549,7 +549,9 @@ pub const Model = struct {
             }
             self.updateRepositoryCount();
             self.on_did_close_repository.fire(provider) catch {};
+            const concrete = provider.repository;
             provider.destroy();
+            if (self.git) |cli| cli.removeRepository(concrete);
             return;
         }
     }

@@ -3005,17 +3005,16 @@ pub const TerminalWorkbench = struct {
     fn registerOpenedGitRepository(self: *TerminalWorkbench, provider: *@import("../extensions/git/src/repository.zig").Repository) !void {
         const scm_api = try self.scm.ensureService();
         if (scm_api.getRepository(provider.id) != null) return;
-        const first = self.scm.repository == null;
-        errdefer if (first) {
-            self.deinitGit();
-        } else {
+        const first = self.scm.changes == null;
+        errdefer {
+            if (first) self.scm.detachProvider();
             self.git_file_provider.detachSingleRepository(provider);
             self.git_model.closeRepository(provider);
-        };
+        }
         try self.git_file_provider.attachRepository(provider, &self.window_events, self.host_api);
         const quick_providers = provider.quickDiffProviders();
         if (!first) {
-            try self.scm.registerAdditionalProvider(provider.interface(), &quick_providers);
+            try self.scm.registerProvider(provider.interface(), &quick_providers);
             if (self.file_watcher_service) |files_service| provider.watch(files_service) catch {};
             return;
         }

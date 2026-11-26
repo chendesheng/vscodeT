@@ -40,30 +40,34 @@ pub const SCMContribution = struct {
     view_service: ?*SCMViewService = null,
     view_service_api: ?*scm.ISCMViewService = null,
     active_repository_listener: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
-    repository: ?*scm.ISCMRepository = null,
     storage: ?*Storage = null,
     quick_diff_service: ?*quick_diff.QuickDiffService = null,
     quick_diff_api: ?*quick_diff.IQuickDiffService = null,
     quick_diff_model_service: ?*quick_models.QuickDiffModelService = null,
     quick_diff_model_api: ?*quick_models.IQuickDiffModelService = null,
-    registered_quick_providers: []quick_diff.IDisposable = &.{},
-    additional_providers: std.ArrayList(AdditionalProvider) = .empty,
+    provider_bindings: std.ArrayList(ProviderBinding) = .empty,
     resource_events: ?*@import("../../../../base/common/event.zig").Emitter(void) = null,
-    primary_resources_listener: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
 
     quick_diff_controller: ?*QuickDiffWorkbenchController = null,
     changes: ?*scm_view.SCMViewPane = null,
     history: ?*scm_history.SCMHistoryViewPane = null,
     activity: ?*SCMActiveRepositoryController = null,
-    provider_event: ?*@import("../../../../base/common/event.zig").Emitter(void) = null,
-    provider_listener: ?usize = null,
     configuration_service: ?*ConfigurationService = null,
     configuration_listener: ?usize = null,
 
-    const AdditionalProvider = struct {
+    const ProviderBinding = struct {
         repository: *scm.ISCMRepository,
         quick_registrations: []quick_diff.IDisposable,
         resource_listener: @import("../../../../base/common/event.zig").SignalSubscription,
+        provider_listener: ?@import("../../../../base/common/event.zig").SignalSubscription,
+
+        fn dispose(self: ProviderBinding, allocator: Allocator) void {
+            self.resource_listener.dispose();
+            if (self.provider_listener) |listener| listener.dispose();
+            for (self.quick_registrations) |registration| registration.dispose();
+            allocator.free(self.quick_registrations);
+            self.repository.dispose();
+        }
     };
 
     pub fn init(allocator: Allocator) SCMContribution {
@@ -158,27 +162,22 @@ pub const SCMContribution = struct {
 
     pub fn attachProvider(self: *SCMContribution, provider: *scm.ISCMProvider, quick_providers: []const *quick_diff.QuickDiffProvider, options: Options) !void {
         const allocator = self.allocator;
-        if (self.repository != null) return error.ProviderAlreadyExists;
+        if (self.changes != null) return error.ProviderAlreadyExists;
         errdefer self.detachProvider();
         const api = try self.ensureService();
         const scm_views = self.view_service_api orelse if (options.changes_host.editor_service) |editors| try self.ensureViewService(editors) else return error.SCMViewServiceUnavailable;
-        self.repository = try api.registerSCMProvider(provider);
-
         const storage = try allocator.create(Storage);
         storage.* = Storage.init(allocator);
         self.storage = storage;
         _ = try self.ensureQuickDiffServices(options.window, options.text_model_service, null);
         const quick_service = self.quick_diff_service.?;
         const models = self.quick_diff_model_service.?;
-        self.registered_quick_providers = try allocator.alloc(quick_diff.IDisposable, quick_providers.len);
-        @memset(self.registered_quick_providers, quick_diff.IDisposable.none);
-        for (quick_providers, self.registered_quick_providers) |quick, *registration| registration.* = try quick_service.addQuickDiffProvider(quick);
         const resource_events = try allocator.create(@import("../../../../base/common/event.zig").Emitter(void));
         resource_events.* = .init(allocator);
         self.resource_events = resource_events;
         self.activity = try SCMActiveRepositoryController.create(allocator, api.*, scm_views.*, resource_events, options.activity_service, options.statusbar_service, options.configuration);
-        self.primary_resources_listener = try provider.on_did_change_resources.listenDisposable(self, onRepositoryResourcesChanged);
         try models.setRepositoryResources(resource_events);
+        try self.registerProvider(provider, quick_providers);
 
         const controller = try allocator.create(QuickDiffWorkbenchController);
         controller.* = QuickDiffWorkbenchController.init(allocator, quick_service.interface(), models);
@@ -196,17 +195,14 @@ pub const SCMContribution = struct {
         const history = try scm_history.SCMHistoryViewPane.init(allocator, options.history_host, storage);
         self.history = history;
         history.quick_input = options.quick_input;
-        self.provider_event = provider.on_did_change orelse provider.on_did_change_resources;
-        self.provider_listener = try self.provider_event.?.listen(self, onProviderChanged);
         self.active_repository_listener = try scm_views.on_did_change_active_repository.listenDisposable(self, onActiveRepositoryChanged);
         try self.setViewConfiguration(options.configuration);
         self.applyProviderState();
     }
 
-    /// Secondary repositories share the same SCM service, Changes tree and
-    /// Quick Diff model collection. The repository and Quick Diff registrations
-    /// are disposed before the extension releases their providers.
-    pub fn registerAdditionalProvider(self: *SCMContribution, provider: *scm.ISCMProvider, quick_providers: []const *quick_diff.QuickDiffProvider) !void {
+    /// All repositories share the same views and Quick Diff model collection,
+    /// with independently disposable provider registrations.
+    pub fn registerProvider(self: *SCMContribution, provider: *scm.ISCMProvider, quick_providers: []const *quick_diff.QuickDiffProvider) !void {
         const api = try self.ensureService();
         const quick_service = self.quick_diff_service orelse return error.QuickDiffUnavailable;
         const repository = try api.registerSCMProvider(provider);
@@ -218,18 +214,26 @@ pub const SCMContribution = struct {
             self.allocator.free(registrations);
         }
         for (quick_providers, registrations) |quick, *registration| registration.* = try quick_service.addQuickDiffProvider(quick);
-        const resource_listener = try provider.on_did_change_resources.listenDisposable(self, onAdditionalRepositoryResourcesChanged);
+        const resource_listener = try provider.on_did_change_resources.listenDisposable(self, onRepositoryResourcesChanged);
         errdefer resource_listener.dispose();
-        try self.additional_providers.append(self.allocator, .{ .repository = repository, .quick_registrations = registrations, .resource_listener = resource_listener });
+        const provider_listener = if (provider.on_did_change) |metadata| try metadata.listenDisposable(self, onProviderChanged) else null;
+        errdefer if (provider_listener) |listener| listener.dispose();
+        try self.provider_bindings.append(self.allocator, .{ .repository = repository, .quick_registrations = registrations, .resource_listener = resource_listener, .provider_listener = provider_listener });
         self.applyProviderState();
+    }
+
+    pub fn unregisterProvider(self: *SCMContribution, provider: *scm.ISCMProvider) void {
+        for (self.provider_bindings.items, 0..) |binding, index| {
+            if (binding.repository.provider != provider) continue;
+            _ = self.provider_bindings.orderedRemove(index);
+            binding.dispose(self.allocator);
+            self.applyProviderState();
+            return;
+        }
     }
 
     fn onRepositoryResourcesChanged(_: void, self: *SCMContribution) !void {
         if (self.resource_events) |events| try events.fire({});
-    }
-
-    fn onAdditionalRepositoryResourcesChanged(_: void, self: *SCMContribution) !void {
-        try onRepositoryResourcesChanged({}, self);
         self.applyProviderState();
     }
 
@@ -290,13 +294,19 @@ pub const SCMContribution = struct {
         }
         const repository = if (self.view_service_api) |view_service| active: {
             break :active if (view_service.activeRepository()) |active| active.repository else null;
-        } else self.repository;
-        if (repository == null) return;
-        const provider = repository.?.provider;
+        } else null;
         if (self.changes) |view| {
-            view.branch_action = provider.branch_action;
-            view.fresh_repository = provider.fresh_repository;
+            view.branch_action = if (repository) |entry| entry.provider.branch_action else null;
+            view.fresh_repository = if (repository) |entry| entry.provider.fresh_repository else false;
             view.refresh();
+        }
+        if (self.view_descriptors) |descriptors| {
+            var any_history = false;
+            for (repositories) |entry| if (entry.provider.history_provider != null) {
+                any_history = true;
+                break;
+            };
+            descriptors.setViewAvailable("graph", any_history);
         }
         if (self.container) |container| container.updateTitleArea();
     }
@@ -326,7 +336,6 @@ pub const SCMContribution = struct {
         }
         self.detachConfiguration();
         if (self.active_repository_listener) |listener| listener.dispose();
-        if (self.provider_listener) |listener| self.provider_event.?.unlisten(listener);
         if (self.activity) |activity| activity.destroy();
         if (self.history) |view| {
             view.deinit();
@@ -341,21 +350,12 @@ pub const SCMContribution = struct {
             allocator.destroy(view);
         }
         if (self.quick_diff_model_service) |models| models.setRepositoryResources(null) catch {};
-        if (self.primary_resources_listener) |listener| listener.dispose();
-        for (self.additional_providers.items) |additional| {
-            additional.resource_listener.dispose();
-            for (additional.quick_registrations) |registration| registration.dispose();
-            allocator.free(additional.quick_registrations);
-            additional.repository.dispose();
-        }
-        self.additional_providers.deinit(allocator);
+        for (self.provider_bindings.items) |binding| binding.dispose(allocator);
+        self.provider_bindings.deinit(allocator);
         if (self.resource_events) |events| {
             events.deinit();
             allocator.destroy(events);
         }
-        for (self.registered_quick_providers) |registration| registration.dispose();
-        allocator.free(self.registered_quick_providers);
-        if (self.repository) |repository| repository.dispose();
         if (self.storage) |storage| {
             storage.deinit();
             allocator.destroy(storage);

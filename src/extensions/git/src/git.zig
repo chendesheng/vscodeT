@@ -309,6 +309,16 @@ pub const Git = struct {
         return self.findRepository(root);
     }
 
+    pub fn removeRepository(self: *Git, repository: *git_browser.GitRepository) void {
+        for (self.repo_list.items, 0..) |candidate, index| {
+            if (candidate != repository) continue;
+            _ = self.repo_list.orderedRemove(index);
+            _ = self.repository_interfaces.orderedRemove(index);
+            repository.destroy();
+            return;
+        }
+    }
+
     pub fn isDisabled(self: *const Git) bool {
         return self.disabled;
     }
