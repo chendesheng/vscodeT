@@ -244,3 +244,68 @@ test "parseGitDiffShortStat: singular and missing parts" {
     try testing.expectEqual(@as(usize, 7), insert_only.insertions);
     try testing.expectEqual(@as(usize, 0), insert_only.deletions);
 }
+
+fn expectSubmodules(raw: []const u8, expected: []const git.GitSubmodule) !void {
+    const a = testing.allocator;
+    const modules = try git.parseGitmodules(a, raw);
+    defer {
+        for (modules) |module| module.deinit(a);
+        a.free(modules);
+    }
+    try testing.expectEqual(expected.len, modules.len);
+    for (expected, modules) |want, actual| {
+        try testing.expectEqualStrings(want.name, actual.name);
+        try testing.expectEqualStrings(want.path, actual.path);
+        try testing.expectEqualStrings(want.url, actual.url);
+    }
+}
+
+test "parseGitmodules: empty" {
+    try expectSubmodules("", &.{});
+}
+
+test "parseGitmodules: sample" {
+    try expectSubmodules("[submodule \"deps/spdlog\"]\n\tpath = deps/spdlog\n\turl = https://github.com/gabime/spdlog.git\n", &.{
+        .{ .name = "deps/spdlog", .path = "deps/spdlog", .url = "https://github.com/gabime/spdlog.git" },
+    });
+}
+
+test "parseGitmodules: big" {
+    const sample =
+        \\[submodule "deps/spdlog"]
+        \\ path = deps/spdlog
+        \\ url = https://github.com/gabime/spdlog.git
+        \\[submodule "deps/spdlog2"]
+        \\ path = deps/spdlog2
+        \\ url = https://github.com/gabime/spdlog.git
+        \\[submodule "deps/spdlog3"]
+        \\ path = deps/spdlog3
+        \\ url = https://github.com/gabime/spdlog.git
+        \\[submodule "deps/spdlog4"]
+        \\ path = deps/spdlog4
+        \\ url = https://github.com/gabime/spdlog4.git
+    ;
+    try expectSubmodules(sample, &.{
+        .{ .name = "deps/spdlog", .path = "deps/spdlog", .url = "https://github.com/gabime/spdlog.git" },
+        .{ .name = "deps/spdlog2", .path = "deps/spdlog2", .url = "https://github.com/gabime/spdlog.git" },
+        .{ .name = "deps/spdlog3", .path = "deps/spdlog3", .url = "https://github.com/gabime/spdlog.git" },
+        .{ .name = "deps/spdlog4", .path = "deps/spdlog4", .url = "https://github.com/gabime/spdlog4.git" },
+    });
+}
+
+test "parseGitmodules: whitespace #74844" {
+    try expectSubmodules("[submodule \"deps/spdlog\"]\n\tpath = deps/spdlog\n\turl  = https://github.com/gabime/spdlog.git\n", &.{
+        .{ .name = "deps/spdlog", .path = "deps/spdlog", .url = "https://github.com/gabime/spdlog.git" },
+    });
+}
+
+test "parseGitmodules: whitespace again #108371" {
+    try expectSubmodules("[submodule \"deps/spdlog\"]\n\tpath= deps/spdlog\n\turl=https://github.com/gabime/spdlog.git\n", &.{
+        .{ .name = "deps/spdlog", .path = "deps/spdlog", .url = "https://github.com/gabime/spdlog.git" },
+    });
+}
+
+test "parseGitmodules: first property wins and incomplete sections are ignored" {
+    const sample = "[submodule \"one\"]\npath = \"with space\"\npath = ignored\nurl = ../one\n[submodule \"missing-url\"]\npath = missing\n[remote \"origin\"]\nurl = ../remote\n";
+    try expectSubmodules(sample, &.{.{ .name = "one", .path = "with space", .url = "../one" }});
+}

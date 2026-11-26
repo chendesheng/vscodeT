@@ -37,6 +37,7 @@ const git_common = @import("../../../vs/workbench/contrib/git/common/gitService.
 const git_browser = @import("../../../vs/workbench/contrib/git/browser/gitService.zig");
 
 pub const GitRepositoryState = git_common.GitRepositoryState;
+pub const GitSubmodule = git_common.GitSubmodule;
 pub const GitChange = git_common.GitChange;
 pub const GitDiffChange = git_common.GitDiffChange;
 pub const GitBranch = git_common.GitBranch;
@@ -533,7 +534,21 @@ pub const Git = struct {
             return error.GitFailed;
         }
 
-        return parseStatus(self.allocator, result.stdout);
+        var state = try parseStatus(self.allocator, result.stdout);
+        errdefer state.deinit(self.allocator);
+        state.submodules = try self.getSubmodules(root);
+        return state;
+    }
+
+    pub fn getSubmodules(self: *Git, root: []const u8) ![]GitSubmodule {
+        const path = try std.fs.path.join(self.allocator, &.{ root, ".gitmodules" });
+        defer self.allocator.free(path);
+        const raw = std.Io.Dir.cwd().readFileAlloc(self.io, path, self.allocator, .unlimited) catch |err| switch (err) {
+            error.FileNotFound => return &.{},
+            else => return err,
+        };
+        defer self.allocator.free(raw);
+        return parseGitmodules(self.allocator, raw);
     }
 
     /// Recomputes the status for `repository` and installs it through
@@ -1984,6 +1999,90 @@ fn freeBranch(allocator: Allocator, branch: *GitBranch) void {
         allocator.free(upstream.name);
         if (upstream.commit) |commit| allocator.free(commit);
     }
+}
+
+/// Upstream GitConfigParser: section/property tokens borrow the input;
+/// duplicate property names use the first value. No Git configuration is
+/// mutated by this parser.
+const GitConfigSection = struct {
+    name: []const u8,
+    subsection: ?[]const u8 = null,
+    properties: std.StringHashMapUnmanaged([]const u8) = .empty,
+};
+
+const GitConfigParser = struct {
+    const whitespace = " \t\r\n";
+
+    fn parse(allocator: Allocator, raw: []const u8) ![]GitConfigSection {
+        var sections: std.ArrayList(GitConfigSection) = .empty;
+        errdefer {
+            for (sections.items) |*section| section.properties.deinit(allocator);
+            sections.deinit(allocator);
+        }
+        try sections.append(allocator, .{ .name = "DEFAULT" });
+        var lines = std.mem.splitScalar(u8, raw, '\n');
+        while (lines.next()) |untrimmed| {
+            const line = std.mem.trim(u8, untrimmed, whitespace);
+            if (parseSection(line)) |section| {
+                try sections.append(allocator, section);
+                continue;
+            }
+            if (parseProperty(std.mem.trimEnd(u8, untrimmed, "\r"))) |property| {
+                const map = &sections.items[sections.items.len - 1].properties;
+                const entry = try map.getOrPut(allocator, property.key);
+                if (!entry.found_existing) entry.value_ptr.* = property.value;
+            }
+        }
+        return sections.toOwnedSlice(allocator);
+    }
+
+    fn parseSection(line: []const u8) ?GitConfigSection {
+        if (line.len < 3 or line[0] != '[' or line[line.len - 1] != ']') return null;
+        const body = std.mem.trim(u8, line[1 .. line.len - 1], whitespace);
+        if (body.len == 0 or std.mem.indexOfScalar(u8, body, ']') != null) return null;
+        const quote = std.mem.indexOfScalar(u8, body, '"') orelse return .{ .name = body };
+        if (body[body.len - 1] != '"' or quote + 2 >= body.len) return null;
+        const name = std.mem.trimEnd(u8, body[0..quote], whitespace);
+        if (name.len == 0) return null;
+        const subsection = body[quote + 1 .. body.len - 1];
+        if (std.mem.indexOfScalar(u8, subsection, '"') != null) return null;
+        return .{ .name = name, .subsection = subsection };
+    }
+
+    fn parseProperty(line: []const u8) ?struct { key: []const u8, value: []const u8 } {
+        const equals = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+        const key = std.mem.trim(u8, line[0..equals], whitespace);
+        if (key.len == 0) return null;
+        for (key) |byte| if (!std.ascii.isAlphanumeric(byte) and byte != '_') return null;
+        var value = std.mem.trimStart(u8, line[equals + 1 ..], whitespace);
+        if (value.len > 0 and value[0] == '"') value = value[1..];
+        if (value.len > 0 and value[value.len - 1] == '"') value = value[0 .. value.len - 1];
+        if (value.len == 0 or std.mem.indexOfScalar(u8, value, '"') != null) return null;
+        return .{ .key = key, .value = value };
+    }
+};
+
+pub fn parseGitmodules(allocator: Allocator, raw: []const u8) ![]GitSubmodule {
+    const sections = try GitConfigParser.parse(allocator, raw);
+    defer {
+        for (sections) |*section| section.properties.deinit(allocator);
+        allocator.free(sections);
+    }
+    var modules: std.ArrayList(GitSubmodule) = .empty;
+    errdefer {
+        for (modules.items) |module| module.deinit(allocator);
+        modules.deinit(allocator);
+    }
+    for (sections) |section| {
+        if (!std.mem.eql(u8, section.name, "submodule")) continue;
+        const name = section.subsection orelse continue;
+        const path = section.properties.get("path") orelse continue;
+        const url = section.properties.get("url") orelse continue;
+        const owned = try (GitSubmodule{ .name = name, .path = path, .url = url }).clone(allocator);
+        errdefer owned.deinit(allocator);
+        try modules.append(allocator, owned);
+    }
+    return modules.toOwnedSlice(allocator);
 }
 
 // ---------------------------------------------------------------------------

@@ -227,9 +227,32 @@ pub const GitCommitOptions = struct {
     sign_commit: ?bool = null,
 };
 
+/// Mirror of the Git extension's Submodule descriptor. The native Git
+/// repository state carries this metadata with its status snapshot.
+pub const GitSubmodule = struct {
+    name: []const u8,
+    path: []const u8,
+    url: []const u8,
+
+    pub fn deinit(self: GitSubmodule, allocator: Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.path);
+        allocator.free(self.url);
+    }
+
+    pub fn clone(self: GitSubmodule, allocator: Allocator) !GitSubmodule {
+        const name = try allocator.dupe(u8, self.name);
+        errdefer allocator.free(name);
+        const path = try allocator.dupe(u8, self.path);
+        errdefer allocator.free(path);
+        return .{ .name = name, .path = path, .url = try allocator.dupe(u8, self.url) };
+    }
+};
+
 pub const GitRepositoryState = struct {
     head: ?GitBranch = null,
     remotes: []GitRemote = &.{},
+    submodules: []GitSubmodule = &.{},
     merge_changes: []GitChange = &.{},
     index_changes: []GitChange = &.{},
     working_tree_changes: []GitChange = &.{},
@@ -240,6 +263,7 @@ pub const GitRepositoryState = struct {
     pub fn eql(a: GitRepositoryState, b: GitRepositoryState) bool {
         if (!optionalBranchEql(a.head, b.head)) return false;
         if (!remotesEql(a.remotes, b.remotes)) return false;
+        if (!submodulesEql(a.submodules, b.submodules)) return false;
         if (!changesEql(a.merge_changes, b.merge_changes)) return false;
         if (!changesEql(a.index_changes, b.index_changes)) return false;
         if (!changesEql(a.working_tree_changes, b.working_tree_changes)) return false;
@@ -264,6 +288,8 @@ pub const GitRepositoryState = struct {
             if (remote.push_url) |url| allocator.free(url);
         }
         if (self.remotes.len > 0) allocator.free(self.remotes);
+        for (self.submodules) |submodule| submodule.deinit(allocator);
+        if (self.submodules.len > 0) allocator.free(self.submodules);
         freeChanges(self.merge_changes, allocator);
         freeChanges(self.index_changes, allocator);
         freeChanges(self.working_tree_changes, allocator);
@@ -276,6 +302,7 @@ pub const GitRepositoryState = struct {
         return .{
             .head = if (self.head) |head| try cloneBranch(head, allocator) else null,
             .remotes = try cloneRemotes(self.remotes, allocator),
+            .submodules = try cloneSubmodules(self.submodules, allocator),
             .merge_changes = try cloneChanges(self.merge_changes, allocator),
             .index_changes = try cloneChanges(self.index_changes, allocator),
             .working_tree_changes = try cloneChanges(self.working_tree_changes, allocator),
@@ -332,6 +359,29 @@ fn remotesEql(a: []const GitRemote, b: []const GitRemote) bool {
         if (left.is_read_only != right.is_read_only) return false;
     }
     return true;
+}
+
+fn submodulesEql(a: []const GitSubmodule, b: []const GitSubmodule) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |left, right| {
+        if (!std.mem.eql(u8, left.name, right.name) or !std.mem.eql(u8, left.path, right.path) or !std.mem.eql(u8, left.url, right.url)) return false;
+    }
+    return true;
+}
+
+fn cloneSubmodules(submodules: []const GitSubmodule, allocator: Allocator) ![]GitSubmodule {
+    if (submodules.len == 0) return &.{};
+    const result = try allocator.alloc(GitSubmodule, submodules.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (result[0..initialized]) |submodule| submodule.deinit(allocator);
+        allocator.free(result);
+    }
+    for (submodules, 0..) |submodule, i| {
+        result[i] = try submodule.clone(allocator);
+        initialized += 1;
+    }
+    return result;
 }
 
 fn changesEql(a: []const GitChange, b: []const GitChange) bool {
