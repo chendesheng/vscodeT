@@ -10300,6 +10300,21 @@ test "Diff editor commands: CodeLens action uses the active provider context and
     registration.dispose();
     registered = false;
     try std.testing.expect(!tab.editor.has_code_lens_provider);
+    const cached = tab.controllers.?.code_lens.?;
+    try std.testing.expectEqual(@as(usize, 1), cached.widgets.items.len);
+    const expiry = cached.cache_expiry.at orelse return error.TestExpectedCodeLensExpiry;
+    for (0..128) |_| {
+        if (wb.window_events.nextTimeout(expiry - 1, 1) != 0) break;
+        _ = wb.window_events.dispatch(expiry - 1);
+    }
+    try std.testing.expectEqual(@as(usize, 1), cached.widgets.items.len);
+    for (0..128) |_| {
+        if (cached.cache_expiry.at == null) break;
+        _ = wb.window_events.dispatch(expiry);
+    }
+    try std.testing.expect(cached.cache_expiry.at == null);
+    try std.testing.expectEqual(@as(usize, 0), cached.widgets.items.len);
+    try std.testing.expect((try wb.code_lens_cache.?.get(tab.editor.model)) == null);
     const after = try source.get_picks(source.context, a);
     defer a.free(after);
     for (after) |pick| try std.testing.expect(!std.mem.eql(u8, pick.command_id, "codelens.showLensesInCurrentLine"));

@@ -59,6 +59,8 @@ pub const CodeLensContribution = struct {
     widgets: std.ArrayList(*CodeLensWidget) = .empty,
     fetch_task: dispatch.Task = .{},
     resolve_task: dispatch.Task = .{},
+    cache_expiry: dispatch.Task = .{},
+    cached_identity: ?*CodeLensCache.Identity = null,
     pending_fetch: ?*model_mod.Request = null,
     pending_resolves: std.ArrayList(*ResolveSlot) = .empty,
     fetch_version: u32 = 0,
@@ -145,6 +147,7 @@ pub const CodeLensContribution = struct {
         self.resolve_info = try self.debounce.for_(key, "CodeLensResolve", .{ .min = 250, .key = "resolve" });
         self.fetch_task = .{ .queue = window, .context = self, .run = onFetchDeadline };
         self.resolve_task = .{ .queue = window, .context = self, .run = onResolveDeadline };
+        self.cache_expiry = .{ .queue = window, .context = self, .run = onCacheExpiry };
         self.handler = Handler.init(self, .{ .onConfigurationChanged = onConfiguration, .onScrollChanged = onScroll, .onFocusChanged = onFocus, .onLineMappingChanged = onLineMapping });
         self.registry_listener = try features.code_lens_provider.on_did_change.listen(self, onProvidersChanged);
         self.layout_listener = try editor.on_did_layout_change.listen(self, onLayout);
@@ -230,6 +233,9 @@ pub const CodeLensContribution = struct {
         self.pending_picker = null;
         self.fetch_task.schedule(null);
         self.resolve_task.schedule(null);
+        self.cache_expiry.schedule(null);
+        if (self.cached_identity) |identity| identity.release();
+        self.cached_identity = null;
         self.cancelFetch();
         self.cancelResolves();
         for (self.provider_listeners.items) |listener| listener.dispose();
@@ -264,7 +270,19 @@ pub const CodeLensContribution = struct {
         self.localDispose();
         const has_provider = self.features.code_lens_provider.has(self.editor.model);
         self.editor.setHasCodeLensProvider(has_provider);
-        if (!self.view_host.options.get(.codeLens) or self.editor.model.isTooLargeForTokenization() or !has_provider) return;
+        if (!self.view_host.options.get(.codeLens) or self.editor.model.isTooLargeForTokenization()) return;
+        if (try self.cache.getWithIdentity(self.editor.model)) |cached| {
+            self.model = cached.model;
+            errdefer cached.identity.release();
+            try self.renderSymbols(cached.model);
+            if (!has_provider) {
+                self.cached_identity = cached.identity;
+                self.cache_expiry.schedule(now() + 30_000);
+                return;
+            }
+            cached.identity.release();
+        }
+        if (!has_provider) return;
         self.enabled = true;
         self.providers = try self.features.code_lens_provider.ordered(self.allocator, self.editor.model, false);
         self.provider_hashes = try self.allocator.alloc(u32, self.providers.len);
@@ -278,9 +296,17 @@ pub const CodeLensContribution = struct {
                 };
             }
         }
-        self.model = try self.cache.get(self.editor.model);
-        if (self.model) |model| try self.renderSymbols(model);
         self.scheduleFetch();
+    }
+
+    fn onCacheExpiry(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *CodeLensContribution = @ptrCast(@alignCast(context));
+        const identity = self.cached_identity orelse return false;
+        self.cached_identity = null;
+        defer identity.release();
+        if (!self.view_bound or !self.editor.hasModel() or !self.cache.deleteIfSame(self.editor.model, identity)) return false;
+        self.onModelChange() catch {};
+        return true;
     }
 
     fn debounceRef(self: *CodeLensContribution) debounce_mod.ModelRef {

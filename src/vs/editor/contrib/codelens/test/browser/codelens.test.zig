@@ -136,6 +136,18 @@ test "CodeLens: cache retains inert labels and stores only line numbers at shutd
     try testing.expectEqual(1, restored_model.lenses.items.len);
     try testing.expectEqual(2, restored_model.lenses.items[0].symbol.range.startLineNumber);
     try testing.expect(restored_model.lenses.items[0].symbol.command == null);
+
+    const previous = (try cache.getWithIdentity(text.model)).?;
+    defer previous.model.dispose();
+    defer previous.identity.release();
+    try cache.put(text.model, data);
+    const latest = (try cache.getWithIdentity(text.model)).?;
+    defer latest.model.dispose();
+    defer latest.identity.release();
+    try testing.expect(previous.identity != latest.identity);
+    try testing.expect(!cache.deleteIfSame(text.model, previous.identity));
+    try testing.expect(cache.deleteIfSame(text.model, latest.identity));
+    try testing.expect((try cache.get(text.model)) == null);
 }
 
 test "CodeLens: execute provider returns commands first and resolves only the requested number" {

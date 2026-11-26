@@ -42,6 +42,31 @@ pub const CodeLensCache = struct {
         key: []const u8,
         line_count: usize,
         model: *model_mod.CodeLensModel,
+        identity: *Identity,
+    };
+
+    /// Upstream compares the cached model object by identity after an expiry
+    /// timeout. The native cache clones inert lenses, so retain a separate
+    /// object identity until the observing controller releases it. Eviction
+    /// cannot recycle an address still held by an expiry callback.
+    pub const Identity = struct {
+        allocator: Allocator,
+        refs: usize = 1,
+
+        fn retain(self: *Identity) *Identity {
+            self.refs += 1;
+            return self;
+        }
+
+        pub fn release(self: *Identity) void {
+            self.refs -= 1;
+            if (self.refs == 0) self.allocator.destroy(self);
+        }
+    };
+
+    pub const Cached = struct {
+        model: *model_mod.CodeLensModel,
+        identity: *Identity,
     };
 
     pub fn deinit(self: *CodeLensCache) void {
@@ -54,6 +79,7 @@ pub const CodeLensCache = struct {
         const item = self.entries.orderedRemove(index);
         item.model.dispose();
         self.allocator.free(item.key);
+        item.identity.release();
     }
 
     fn indexOf(self: *CodeLensCache, key: []const u8) ?usize {
@@ -63,8 +89,10 @@ pub const CodeLensCache = struct {
 
     fn putEntry(self: *CodeLensCache, key: []const u8, line_count: usize, model: *model_mod.CodeLensModel) !void {
         try self.entries.ensureUnusedCapacity(self.allocator, 1);
+        const identity = try self.allocator.create(Identity);
+        identity.* = .{ .allocator = self.allocator };
         if (self.indexOf(key)) |index| self.removeAt(index);
-        self.entries.appendAssumeCapacity(.{ .key = key, .line_count = line_count, .model = model });
+        self.entries.appendAssumeCapacity(.{ .key = key, .line_count = line_count, .model = model, .identity = identity });
         if (self.entries.items.len > 20) while (self.entries.items.len > 15) self.removeAt(0);
     }
 
@@ -98,13 +126,32 @@ pub const CodeLensCache = struct {
 
     /// The caller owns the inert copy, independent of future cache eviction.
     pub fn get(self: *CodeLensCache, model: *TextModel) !?*model_mod.CodeLensModel {
+        const cached = (try self.getWithIdentity(model)) orelse return null;
+        cached.identity.release();
+        return cached.model;
+    }
+
+    /// Caller owns the inert model and one reference to its cache identity.
+    pub fn getWithIdentity(self: *CodeLensCache, model: *TextModel) !?Cached {
         const key = try resource_key(self.allocator, model.uri());
         defer self.allocator.free(key);
         const index = self.indexOf(key) orelse return null;
         const item = self.entries.orderedRemove(index);
         self.entries.appendAssumeCapacity(item);
         if (item.line_count != model.getLineCount()) return null;
-        return try self.clone(item.model);
+        const copy = try self.clone(item.model);
+        return .{ .model = copy, .identity = item.identity.retain() };
+    }
+
+    pub fn deleteIfSame(self: *CodeLensCache, model: *TextModel, identity: *Identity) bool {
+        const key = resource_key(self.allocator, model.uri()) catch return false;
+        defer self.allocator.free(key);
+        const index = self.indexOf(key) orelse return false;
+        const item = self.entries.orderedRemove(index);
+        self.entries.appendAssumeCapacity(item);
+        if (item.identity != identity or item.line_count != model.getLineCount()) return false;
+        self.removeAt(self.entries.items.len - 1);
+        return true;
     }
 
     pub fn delete(self: *CodeLensCache, model: *TextModel) void {
