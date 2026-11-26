@@ -250,6 +250,11 @@ pub const ViewZones = struct {
         }
     }
 
+    pub fn getViewZone(self: *const ViewZones, id: []const u8) ?IViewZone {
+        const zone = self.zones.get(id) orelse return null;
+        return zone.delegate;
+    }
+
     /// Content has changed without changing the model anchor or whitespace.
     pub fn invalidateZoneContent(self: *ViewZones, id: []const u8) void {
         if (self.zones.getPtr(id)) |zone| {

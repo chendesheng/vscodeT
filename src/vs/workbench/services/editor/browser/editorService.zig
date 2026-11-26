@@ -209,7 +209,10 @@ pub const EditorService = struct {
             if (!tab.diff.?.matchesSnapshot(original_text, modified_text, options) or !tab.diff.?.widget.view_model.is_diff_up_to_date) {
                 try tab.diff.?.replaceWithDiff(original_text, modified_text, dims.width, dims.height, options, computed);
             }
-            if (self.opening) |opening| try opening.attachDiffModel(&tab.diff.?.widget.view_model);
+            if (self.opening) |opening| {
+                try opening.attachDiffModel(&tab.diff.?.widget.view_model);
+                opening.host.configure_tab(opening.host.context, tab);
+            }
             tab.syncDiffViews();
             try existing.pane.activateTab(tab);
             self.part.service.activateGroup(existing.pane.group);
@@ -275,7 +278,10 @@ pub const EditorService = struct {
 
         try pane.addTab(tab);
         registered = true;
-        if (self.opening) |opening| opening.host.register_working_copy(opening.host.context, tab);
+        if (self.opening) |opening| {
+            opening.host.configure_tab(opening.host.context, tab);
+            opening.host.register_working_copy(opening.host.context, tab);
+        }
         tab.layoutCells(dims.width, dims.height);
         tab.focusEditor();
     }
@@ -543,7 +549,6 @@ pub const EditorOpening = struct {
             self.setStatusHint("Open diff failed: {s}", .{@errorName(err)});
             return true;
         };
-        if (editors.activeEditorPane()) |tab| self.host.configure_tab(self.host.context, tab);
         self.clearStatusHint();
         self.host.focus_editor(self.host.context);
         return true;

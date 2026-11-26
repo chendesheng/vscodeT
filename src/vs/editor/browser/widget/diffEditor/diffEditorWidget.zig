@@ -28,6 +28,9 @@ const overview_feature = @import("./features/overviewRulerFeature.zig");
 const sash_mod = @import("./components/diffEditorSash.zig");
 const view_model = diff_view_model;
 const view_zones = @import("./components/diffEditorViewZones/diffEditorViewZones.zig");
+const inline_margin = @import("./components/diffEditorViewZones/inlineDiffDeletedCodeMargin.zig");
+const Clipboard = @import("../../../../platform/clipboard/common/clipboardService.zig").IClipboardService;
+const ContextMenu = @import("../../../../platform/contextview/browser/contextMenuService.zig").IContextMenuService;
 const decorations_mod = @import("./components/diffEditorDecorations.zig");
 const Range = @import("../../../common/core/range.zig").Range;
 const LineRange = @import("../../../common/core/ranges/lineRange.zig").LineRange;
@@ -79,6 +82,9 @@ pub fn DiffEditorWidget(comptime View: type) type {
         hide_unchanged: hide_unchanged_feature.HideUnchangedRegionsFeature = undefined,
         accessible_viewer: accessible_module.AccessibleDiffViewer,
         moved_blocks: moved_feature.MovedBlocksLinesFeature = undefined,
+        inline_margin_menu: inline_margin.MenuController,
+        screen_x: usize = 0,
+        screen_y: usize = 0,
         move_listener: ?usize = null,
         diff_listener: ?usize = null,
         context_state: ContextState = .{},
@@ -289,6 +295,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .view_model = diff_model,
                 .on_did_change_context = Emitter(void).init(allocator),
                 .accessible_viewer = accessible_module.AccessibleDiffViewer.init(allocator),
+                .inline_margin_menu = .{ .allocator = allocator },
                 .decorations = decorations,
                 .original_editor = original_editor,
                 .modified_editor = modified_editor,
@@ -328,6 +335,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         pub fn destroy(self: *Self) void {
             const allocator = self.allocator;
             self.accessible_viewer.close();
+            self.inline_margin_menu.deinit();
             if (self.diff_listener) |id| self.view_model.on_did_change.unlisten(id);
             if (self.move_listener) |id| self.view_model.on_did_change_active_move.unlisten(id);
             self.moved_blocks.deinit();
@@ -675,6 +683,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         fn swapSidesInternal(self: *Self) !void {
+            self.inline_margin_menu.deinit();
             const was_focused = self.focusedView().isFocused();
             const accessible = self.accessible_viewer.visible();
             self.accessible_viewer.close();
@@ -734,6 +743,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         pub fn mount(self: *Self, surface: *ui.Surface, container: *ui.Node, x: usize, y: usize) !void {
+            self.screen_x = x;
+            self.screen_y = y;
             if (self.accessible_viewer.visible()) {
                 self.original_view.detach();
                 self.modified_view.detach();
@@ -752,6 +763,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         /// Prepares both editor views and paints the center gutter.
         pub fn paint(self: *Self, frame: *ui.Frame, x: usize, y: usize, w: usize, h: usize) !void {
+            self.screen_x = x;
+            self.screen_y = y;
             if (w == 0 or h == 0) return;
             if (self.width != w or self.height != h) self.layout(w, h);
             if (self.accessible_viewer.visible()) {
@@ -810,7 +823,18 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 if (x < widths.original + widths.gutter + widths.moves) return .default;
                 return self.modified_view.pointerAt(x -| (widths.original + widths.gutter + widths.moves), y);
             }
+            if (self.inline_margin_menu.available() and x + 1 == self.modified_editor.gutterWidth() and (try self.zones.deletedAtViewportRow(y)) != null) return .pointer;
             return self.modified_view.pointerAt(x, y);
+        }
+
+        pub fn attachActionServices(self: *Self, clipboard: Clipboard, menu: ContextMenu) void {
+            self.inline_margin_menu.attach(clipboard, menu);
+        }
+
+        fn revertDeletedCode(context: *anyopaque, mapping: view_model.DetailedLineRangeMapping, original_version: u32, modified_version: u32) !void {
+            const self: *Self = @ptrCast(@alignCast(context));
+            if (self.originalModel().getVersionId() != original_version or self.modifiedModel().getVersionId() != modified_version) return;
+            try self.revert(mapping);
         }
 
         fn paintGutter(self: *Self, frame: *ui.Frame, x: usize, y: usize, height: usize) void {
@@ -928,12 +952,25 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 self.syncScrollFromPane(side);
                 return handled;
             }
+            var hover_changed = false;
+            if (self.inline_margin_menu.available() and (event.kind == .move or event.kind == .down)) {
+                const mouse_target = try self.modified_view.mouseTargetAt(event.x, event.y);
+                const deleted = if (mouse_target.type == .content_view_zone or mouse_target.type == .gutter_view_zone) try self.zones.deletedAtViewportRow(event.y) else null;
+                hover_changed = self.zones.updateDeletedHover(deleted);
+                if (hover_changed) self.modified_view.invalidate();
+                if (deleted) |hit| {
+                    if (event.kind == .down and event.button == .left and event.x + 1 == self.modified_editor.gutterWidth()) {
+                        self.setFocus(.modified);
+                        return self.inline_margin_menu.show(self.originalModel(), self.modifiedModel(), hit.mapping, hit.line, !self.modified_editor.isReadOnly(), self.canRevert(), .{ .context = self, .run = revertDeletedCode }, .{ .x = self.screen_x + event.x, .y = self.screen_y + event.y, .opening_press = true });
+                    }
+                }
+            }
             if (event.kind == .down) self.setFocus(.modified);
             if (event.kind == .up and event.x < self.modified_editor.gutterGlyphWidth()) {
                 if (self.hide_unchanged.dispatchFoldGlyph(false, event, try self.modified_view.mouseTargetAt(event.x, event.y))) return true;
             }
             const handled = if (target) |handler| try handler.dispatch(handler.context, .modified, self.modified_view, event) else try self.modified_view.dispatchMouse(event);
-            return handled;
+            return handled or hover_changed;
         }
 
         fn onMoveWidthChanged(context: *anyopaque) void {

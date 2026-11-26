@@ -835,6 +835,7 @@ pub const TerminalWorkbench = struct {
                     fn configure(context: *anyopaque, tab: *Tab) void {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
                         host.editor_configuration.applyToTab(tab);
+                        tab.attachDiffActionServices(host.clipboard_api, host.context_menu_api);
                     }
                 }.configure,
                 .register_working_copy = struct {

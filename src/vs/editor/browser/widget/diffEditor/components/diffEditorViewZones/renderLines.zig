@@ -57,7 +57,7 @@ pub const RenderLinesResult = struct {
         return self.view_line_offsets[index + 1] - self.view_line_offsets[index];
     }
 
-    fn firstModelLineAtRow(self: *const RenderLinesResult, row: usize) usize {
+    pub fn firstModelLineAtRow(self: *const RenderLinesResult, row: usize) usize {
         var low: usize = 0;
         var high = self.view_line_offsets.len - 1;
         while (low < high) {

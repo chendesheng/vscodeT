@@ -203,8 +203,9 @@ pub const Tab = struct {
         errdefer allocator.destroy(self);
         const editor = try Editor.createViewFromDocument(input.resolve(), width, height, .{ .reserve_scrollbar = true });
         errdefer {
+            const editor_allocator = editor.allocator;
             editor.deinit();
-            editor.allocator.destroy(editor);
+            editor_allocator.destroy(editor);
         }
         editor.setReadOnly(true);
         const view = try factory(allocator, editor);
@@ -349,6 +350,10 @@ pub const Tab = struct {
         if (self.controllers) |controllers| controllers.attachWindow(window);
         if (self.original_controllers) |controllers| controllers.attachWindow(window);
         if (self.diff) |diff| diff.widget.original_editor.attachWindow(window);
+    }
+
+    pub fn attachDiffActionServices(self: *Tab, clipboard: @import("../../../../platform/clipboard/common/clipboardService.zig").IClipboardService, menu: @import("../../../../platform/contextview/browser/contextMenuService.zig").IContextMenuService) void {
+        if (self.diff) |diff| diff.widget.attachActionServices(clipboard, menu);
     }
 
     pub fn ensureControllers(self: *Tab) !void {

@@ -210,6 +210,7 @@ pub fn computeRangeAlignmentFromHeights(allocator: Allocator, original_model: *T
 const ui = @import("ui");
 const ZoneView = @import("../../../../viewParts/viewZones/viewZones.zig");
 const render_lines = @import("./renderLines.zig");
+const InlineDiffDeletedCodeMargin = @import("inlineDiffDeletedCodeMargin.zig").InlineDiffDeletedCodeMargin;
 const TerminalViewHost = @import("../../../codeEditor/terminalViewHost.zig").TerminalViewHost;
 const ViewLine = @import("../../../../viewParts/viewLines/viewLine.zig").ViewLine;
 const ViewEventHandler = @import("../../../../../common/viewEventHandler.zig").ViewEventHandler;
@@ -250,6 +251,7 @@ pub const DiffEditorViewZones = struct {
     syncing_scroll: bool = false,
     batch_depth: usize = 0,
     colors: Colors = .{},
+    hovered_deleted: ?*DeletedData = null,
 
     pub const Mode = enum { disabled, side_by_side, inline_view };
     pub const Colors = struct {
@@ -275,6 +277,8 @@ pub const DiffEditorViewZones = struct {
         owner: *DiffEditorViewZones,
         spec: DeletedSpec,
         measurement: render_lines.RenderLinesResult,
+        margin: InlineDiffDeletedCodeMargin = .{},
+        zone_id: ?[]const u8 = null,
     };
     const ZoneRecord = struct { spec: ZoneSpec, id: []const u8, deleted: ?*DeletedData = null };
 
@@ -610,7 +614,45 @@ pub const DiffEditorViewZones = struct {
 
     fn buildDeletedMargin(context: ?*anyopaque, doc: *ui.Document, info: ZoneView.IViewZone.RenderInfo) anyerror!*ui.Node {
         const data: *DeletedData = @ptrCast(@alignCast(context.?));
-        return render_lines.renderMargin(doc, info, data.owner.render_indicators, data.owner.colors.indicator);
+        return data.margin.render(doc, info, data.owner.render_indicators, data.owner.colors.indicator);
+    }
+
+    pub const DeletedHit = struct {
+        data: *DeletedData,
+        row: usize,
+        line: usize,
+        mapping: diff_model.DetailedLineRangeMapping,
+    };
+
+    /// Locate the actual whitespace delegate at the pointer, without scanning
+    /// diff mappings or rebuilding the view.
+    pub fn deletedAtViewportRow(self: *DiffEditorViewZones, viewport_row: usize) !?DeletedHit {
+        if (self.mode != .inline_view) return null;
+        const absolute = self.modified.editor.scrollTop() + viewport_row;
+        const whitespace = try self.modified.editor.viewLayout().getWhitespaceAtVerticalOffset(@floatFromInt(absolute)) orelse return null;
+        const zone = self.modified.view_zones.getViewZone(whitespace.id) orelse return null;
+        if (zone.build_margin != buildDeletedMargin) return null;
+        const data: *DeletedData = @ptrCast(@alignCast(zone.context.?));
+        const row = absolute -| @as(usize, @intFromFloat(whitespace.verticalOffset));
+        const line = data.spec.range.startLineNumber + data.measurement.firstModelLineAtRow(row);
+        if (!data.spec.range.contains(line)) return null;
+        return .{ .data = data, .row = row, .line = line, .mapping = self.mappings[data.spec.diff_index].line_range_mapping };
+    }
+
+    pub fn updateDeletedHover(self: *DiffEditorViewZones, hit: ?DeletedHit) bool {
+        const next = if (hit) |value| value.data else null;
+        const row = if (hit) |value| value.row else null;
+        if (self.hovered_deleted == next and (next == null or next.?.margin.hovered_row == row)) return false;
+        if (self.hovered_deleted) |previous| {
+            previous.margin.hovered_row = null;
+            if (previous.zone_id) |id| self.modified.view_zones.invalidateZoneContent(id);
+        }
+        self.hovered_deleted = next;
+        if (next) |value| {
+            value.margin.hovered_row = row;
+            if (value.zone_id) |id| self.modified.view_zones.invalidateZoneContent(id);
+        }
+        return true;
     }
 
     fn createDeletedData(self: *DiffEditorViewZones, spec: DeletedSpec) !*DeletedData {
@@ -626,6 +668,7 @@ pub const DiffEditorViewZones = struct {
 
     fn freeDeletedData(self: *DiffEditorViewZones, data: ?*DeletedData) void {
         if (data) |deleted| {
+            if (self.hovered_deleted == deleted) self.hovered_deleted = null;
             deleted.measurement.deinit();
             self.allocator.destroy(deleted);
         }
@@ -671,6 +714,7 @@ pub const DiffEditorViewZones = struct {
                     const data = if (spec.deleted) |deleted| try tx.owner.createDeletedData(deleted) else null;
                     errdefer tx.owner.freeDeletedData(data);
                     const id = try accessor.addZone(tx.owner.delegate(spec, data));
+                    if (data) |deleted| deleted.zone_id = id;
                     tx.pane.records.appendAssumeCapacity(.{ .id = id, .spec = spec, .deleted = data });
                 }
             }

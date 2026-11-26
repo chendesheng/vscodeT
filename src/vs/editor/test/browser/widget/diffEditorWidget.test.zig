@@ -1241,6 +1241,65 @@ pub fn Tests(comptime View: type) type {
             }
         }
 
+        test "diffEditorWidget: inline deleted-code margin copies model lines and reverts the hunk" {
+            const Clipboard = @import("../../../../platform/clipboard/common/clipboardService.zig").IClipboardService;
+            const ContextMenu = @import("../../../../platform/contextview/browser/contextMenuService.zig").ContextMenuService;
+            const Copy = struct {
+                text: std.ArrayList(u8) = .empty,
+                fn write(context: *anyopaque, text: []const u8) !void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    self.text.clearRetainingCapacity();
+                    try self.text.appendSlice(testing.allocator, text);
+                }
+                fn report(_: *anyopaque, _: anyerror) void {}
+                fn interface(self: *@This()) Clipboard {
+                    return .{ .context = self, .write_text = write };
+                }
+            };
+            var copy: Copy = .{};
+            defer copy.text.deinit(testing.allocator);
+            var menus = ContextMenu.init(testing.allocator, &copy, Copy.report);
+            defer menus.deinit();
+            const widget = try DiffEditorWidget.create(View.init, testing.allocator, testing.io, "a.txt", "b.txt", "first\nold\n\nlast", "first\nlast", "Original", "Modified", 80, 8, .{ .render_side_by_side = false });
+            defer widget.destroy();
+            widget.attachActionServices(copy.interface(), menus.interface());
+            var frame = try ui.Frame.init(testing.allocator, 80, 8);
+            defer frame.deinit();
+            try widget.paint(&frame, 0, 0, 80, 8);
+            var blank_row: ?usize = null;
+            for (0..8) |row| {
+                if (try widget.zones.deletedAtViewportRow(row)) |hit| {
+                    if (hit.line == 3) blank_row = row;
+                }
+            }
+            const row = blank_row orelse return error.TestUnexpectedResult;
+            var event: ui.MouseEvent = .{ .kind = .move, .x = widget.modified_editor.gutterWidth() + 1, .y = row };
+            try testing.expect(try widget.dispatchMouse(&event));
+            try widget.paint(&frame, 0, 0, 80, 8);
+            const margin = widget.modified_editor.gutterWidth() - 1;
+            try testing.expectEqual(@as(u32, '◉'), frame.next.cluster[frame.next.index(margin, row)]);
+            event = .{ .kind = .down, .button = .left, .x = margin, .y = row };
+            try testing.expect(try widget.dispatchMouse(&event));
+            const popup = menus.current.?.popup.?;
+            try testing.expectEqualStrings("Copy deleted lines", popup.items[0].label);
+            try testing.expectEqualStrings("Copy deleted line (3)", popup.items[1].label);
+            try testing.expectEqualStrings("Revert this change", popup.items[2].label);
+            try testing.expect(menus.handleKey(&.{ .key = .home }));
+            try testing.expect(menus.handleKey(&.{ .key = .down }));
+            try testing.expect(menus.handleKey(&.{ .key = .enter }));
+            try testing.expectEqualStrings("\n", copy.text.items);
+            try testing.expect(try widget.dispatchMouse(&event));
+            try testing.expect(menus.handleKey(&.{ .key = .home }));
+            try testing.expect(menus.handleKey(&.{ .key = .enter }));
+            try testing.expectEqualStrings("old\n\n", copy.text.items);
+            try testing.expect(try widget.dispatchMouse(&event));
+            try testing.expect(menus.handleKey(&.{ .key = .end }));
+            try testing.expect(menus.handleKey(&.{ .key = .enter }));
+            try testing.expectEqual(@as(usize, 0), widget.changeCount());
+            try widget.modified_editor.undo();
+            try testing.expectEqual(@as(usize, 1), widget.changeCount());
+        }
+
         test "diffEditorWidget: inline mode disables moved block decorations" {
             const allocator = std.testing.allocator;
             const io = std.Io.Threaded.global_single_threaded.io();
