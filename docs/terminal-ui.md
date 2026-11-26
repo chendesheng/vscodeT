@@ -2118,6 +2118,16 @@ instances on rebind, unlike upstream's reusable editor widget. This is a
 portable architectural gap, not a terminal restriction. Graph revision
 sources resolve asynchronously and preserve URI identity, absent sides,
 binary placeholders, collapse state and active item across virtualization.
+The live SCM source and explicit resource-pair inputs mount the same pane and
+restore through the editor input serializer. The optional changed-files
+composite uses the existing compressed object tree and a cell-sized SplitView;
+file/folder labels and status decorations are rendered by the shared list
+renderer rather than browser CSS font/absolute-position rules. Profile state
+uses the native atomic JSON storage adapter; viewport visibility and focus
+remain event-driven. The retained header toolbar resolves actual registered
+menu actions in source/item context and passes the resource URI. Accessibility
+help is exposed through the same read-only Accessible View service; browser
+screen reader detection and native ARIA traversal are not available.
 
 ## 9. POC acceptance
 

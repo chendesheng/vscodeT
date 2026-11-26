@@ -1219,8 +1219,10 @@ console API for raw mode, sizing and input polling.
   Graph "Open Changes" opens one virtualized multi-file diff for the selected
   commit, resolving every changed resource on the native worker. Individual
   history rows still open single-file diffs.
-  Not ported: the live SCM group multi-diff source, optional multi-diff file
-  list, context menus, drag/drop, chat, clipboard copy actions and Git write
+  Changes and Staged Changes can open a live multi-file diff, and middle-click
+  on a changed resource reveals its corresponding diff without taking SCM
+  focus. The optional changed-files list follows the current visible diff.
+  Not ported: drag/drop, chat, clipboard copy actions and some Git write
   operations (checkout/cherry-pick/push/publish); the ref picker is
   single-select instead of upstream's multi-select; one repository per
   workspace so the repository picker is hidden; hover is plain text without
@@ -1327,9 +1329,18 @@ console API for raw mode, sizing and input polling.
   Alt-F5/Shift-Alt-F5 navigation across files. View mode is editor-local.
   The current native code-editor binding API recreates child views when a
   template is reused; model references and selections survive eviction.
-  Live SCM source updates, the optional file-list view, multi-diff session
-  input serialization and extension tab DTO integration remain portable
-  gaps, not terminal limitations.
+  Live SCM group and history sources use the registered source resolver and
+  preserve surviving document identities as resources change. Explicit
+  file pairs resolve without Git, including unsaved working models and encoded
+  files. The optional experimental changed-files list supports a compressed
+  folder tree or flat list, responsive split width, profile-persisted
+  visibility/mode/position, focus and accessibility help. The file header
+  resolves scoped actions from the registered menu and forwards the target
+  resource URI. Both source-backed and explicit inputs restore through the
+  normal session serializer. The Developer layout-debug command opens a
+  live JSONL report in a side editor, including geometry edits.
+  A shared general URI model-provider registry and extension-host tab DTO
+  integration remain portable gaps, not terminal limitations.
   See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
   Only one repository per workspace folder is shown.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and

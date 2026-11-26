@@ -150,6 +150,12 @@ Rules:
   | `peekViewWidget.css` | `0x0110` | peek header, title, actions and body |
   | Multi-diff editor `style.css` | `0x0120` | file header, disclosure, labels, actions and binary placeholder |
 
+  The multi-diff changed-files list's
+  `media/multiDiffEditorWithFileList.css` is projected directly through the
+  shared tree row renderer: clipped file/folder labels, one-cell spacing and
+  trailing Git status color. It has no DOM row class IDs; font and selector
+  rules are browser-only. Its geometry uses the shared SplitView.
+
 - The editor registers every sheet once in `View.init` through
   `editorCss.register(document)`. `Document.clear()` preserves them.
 - Theme variables (`var(--vscode-...)`) are an editor-boundary problem. A themed
