@@ -2,9 +2,11 @@
 // Terminal adaptation: alignment heights are in cells, with a solid theme
 // background substituting for the CSS diagonal-fill image. Both side-by-side
 // and inline modes use real model ranges, with viewport-windowed deleted code
-// constructed by renderLines.zig.
+// constructed by renderLines.zig. Native selection of deleted code captures
+// window pointer motion and clamps to the selected deleted block.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const window_dispatch = @import("../../../../../../base/common/windowDispatch.zig");
 
 const range_mapping = @import("../../../../../common/diff/rangeMapping.zig");
 const LineRange = @import("../../../../../common/core/ranges/lineRange.zig").LineRange;
@@ -255,6 +257,27 @@ pub const DiffEditorViewZones = struct {
     colors: Colors = .{},
     hovered_deleted: ?*DeletedData = null,
     selected_deleted: ?*DeletedData = null,
+    capture_window: ?*window_dispatch.Queue = null,
+    capture_host: ?DeletedCaptureHost = null,
+    deleted_capture: ?DeletedCapture = null,
+
+    pub const DeletedCaptureHost = struct {
+        context: *anyopaque,
+        invalidate: *const fn (*anyopaque) void,
+    };
+    const DeletedCapture = struct {
+        client_x: usize,
+        client_y: usize,
+        local_x: usize,
+        local_y: usize,
+        zone_top: usize,
+    };
+
+    pub fn attachWindow(self: *DiffEditorViewZones, window: *window_dispatch.Queue, host: DeletedCaptureHost) void {
+        if (self.capture_window != window) self.finishDeletedSelection();
+        self.capture_window = window;
+        self.capture_host = host;
+    }
 
     pub const Mode = enum { disabled, side_by_side, inline_view };
     pub const Colors = struct {
@@ -318,6 +341,7 @@ pub const DiffEditorViewZones = struct {
     }
 
     pub fn deinit(self: *DiffEditorViewZones) void {
+        self.finishDeletedSelection();
         self.original.editor.removeViewEventHandler(&self.original.handler);
         self.modified.editor.removeViewEventHandler(&self.modified.handler);
         self.updating = true;
@@ -666,6 +690,7 @@ pub const DiffEditorViewZones = struct {
 
     pub fn clearDeletedSelection(self: *DiffEditorViewZones) bool {
         const data = self.selected_deleted orelse return false;
+        self.finishDeletedSelection();
         self.selected_deleted = null;
         data.selection = .{};
         self.invalidateDeleted(data);
@@ -684,6 +709,50 @@ pub const DiffEditorViewZones = struct {
         self.invalidateDeleted(hit.data);
     }
 
+    pub fn captureDeletedSelectionStart(self: *DiffEditorViewZones, hit: DeletedHit, local_x: usize, local_y: usize) void {
+        const window = self.capture_window orelse return;
+        const down = window.current_pointer_input orelse return;
+        if (down.kind != .down or self.selected_deleted != hit.data) return;
+        self.deleted_capture = .{
+            .client_x = down.x,
+            .client_y = down.y,
+            .local_x = local_x,
+            .local_y = local_y,
+            .zone_top = self.modified.editor.scrollTop() + local_y -| hit.row,
+        };
+        window.capturePointer(.{ .context = self, .dispatch = capturedDeletedPointer, .cancel = cancelCapturedDeletedPointer });
+    }
+
+    fn capturedDeletedPointer(context: *anyopaque, input: window_dispatch.PointerInput) bool {
+        const self: *DiffEditorViewZones = @ptrCast(@alignCast(context));
+        const capture = self.deleted_capture orelse return false;
+        const data = self.selected_deleted orelse return false;
+        if (!data.selection.dragging) return false;
+        if (input.kind != .move and input.kind != .up and input.kind != .click) return false;
+        const x = @as(i64, @intCast(capture.local_x)) + @as(i64, @intCast(input.x)) - @as(i64, @intCast(capture.client_x));
+        const y = @as(i64, @intCast(capture.local_y)) + @as(i64, @intCast(input.y)) - @as(i64, @intCast(capture.client_y));
+        const absolute = @as(i64, @intCast(self.modified.editor.scrollTop())) + y;
+        const top: i64 = @intCast(capture.zone_top);
+        const height: i64 = @intCast(data.measurement.height_in_lines);
+        if (height > 0) {
+            const row: usize = @intCast(std.math.clamp(absolute - top, 0, height - 1));
+            const line = data.spec.range.startLineNumber + data.measurement.firstModelLineAtRow(row);
+            if (data.spec.range.contains(line)) {
+                const cell = if (absolute < top) 0 else if (absolute >= top + height) data.measurement.min_width else @as(usize, @intCast(@max(0, x - @as(i64, @intCast(self.modified.editor.gutterWidth())))));
+                const hit: DeletedHit = .{ .data = data, .row = row, .line = line, .mapping = self.mappings[data.spec.diff_index].line_range_mapping };
+                const changed = self.extendDeletedSelection(hit, cell) catch false;
+                if (changed) if (self.capture_host) |host| host.invalidate(host.context);
+            }
+        }
+        if (input.kind == .up or input.kind == .click) self.finishDeletedSelection();
+        return true;
+    }
+
+    fn cancelCapturedDeletedPointer(context: *anyopaque) void {
+        const self: *DiffEditorViewZones = @ptrCast(@alignCast(context));
+        self.finishDeletedSelection();
+    }
+
     pub fn draggingDeletedSelection(self: *const DiffEditorViewZones) bool {
         return if (self.selected_deleted) |data| data.selection.dragging else false;
     }
@@ -697,6 +766,8 @@ pub const DiffEditorViewZones = struct {
     }
 
     pub fn finishDeletedSelection(self: *DiffEditorViewZones) void {
+        if (self.capture_window) |window| window.releasePointer(self);
+        self.deleted_capture = null;
         if (self.selected_deleted) |data| data.selection.finish();
     }
 
@@ -719,7 +790,10 @@ pub const DiffEditorViewZones = struct {
     fn freeDeletedData(self: *DiffEditorViewZones, data: ?*DeletedData) void {
         if (data) |deleted| {
             if (self.hovered_deleted == deleted) self.hovered_deleted = null;
-            if (self.selected_deleted == deleted) self.selected_deleted = null;
+            if (self.selected_deleted == deleted) {
+                self.finishDeletedSelection();
+                self.selected_deleted = null;
+            }
             deleted.measurement.deinit();
             self.allocator.destroy(deleted);
         }

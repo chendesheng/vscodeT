@@ -922,6 +922,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         fn attachModelPointerCapture(self: *Self, window: *window_dispatch.Queue) void {
             self.hide_unchanged.attachWindow(window);
+            self.zones.attachWindow(window, .{ .context = self, .invalidate = capturedDeletedSelectionChanged });
             self.overview.attachWindow(window, .{ .context = self, .editor = self.modified_editor, .scrolled = capturedOverviewScrolled });
         }
 
@@ -938,6 +939,11 @@ pub fn DiffEditorWidget(comptime View: type) type {
         fn capturedSashChanged(context: *anyopaque) void {
             const self: *Self = @ptrCast(@alignCast(context));
             self.layout(self.width, self.height);
+        }
+
+        fn capturedDeletedSelectionChanged(context: *anyopaque) void {
+            const self: *Self = @ptrCast(@alignCast(context));
+            if (self.hasModel()) self.modified_view.invalidate();
         }
 
         fn capturedOverviewScrolled(context: *anyopaque) void {
@@ -1584,15 +1590,15 @@ pub fn DiffEditorWidget(comptime View: type) type {
             var adjusted = event.*;
             adjusted.x -|= widths.modifiedLeft();
             var hover_changed = false;
-            if (self.inline_margin_menu.available() and (event.kind == .move or event.kind == .down or event.kind == .up)) {
+            if (self.inline_margin_menu.available() and (event.kind == .move or event.kind == .down or event.kind == .up or event.kind == .click)) {
                 const mouse_target = try self.modified_view.mouseTargetAt(adjusted.x, event.y);
                 const deleted = if (mouse_target.type == .content_view_zone or mouse_target.type == .gutter_view_zone) try self.zones.deletedAtViewportRow(event.y) else null;
                 hover_changed = self.zones.updateDeletedHover(deleted);
                 if (hover_changed) self.modified_view.invalidate();
                 const gutter = self.modified_editor.gutterWidth();
-                if (self.zones.draggingDeletedSelection() and (event.kind == .move or event.kind == .up)) {
+                if (self.zones.draggingDeletedSelection() and (event.kind == .move or event.kind == .up or event.kind == .click)) {
                     if (deleted) |hit| if (try self.zones.extendDeletedSelection(hit, adjusted.x -| gutter)) self.modified_view.invalidate();
-                    if (event.kind == .up) self.zones.finishDeletedSelection();
+                    if (event.kind == .up or event.kind == .click) self.zones.finishDeletedSelection();
                     return true;
                 }
                 if (event.kind == .down and event.button == .left) {
@@ -1600,6 +1606,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                         if (mouse_target.type == .content_view_zone) {
                             self.setFocus(.modified);
                             try self.zones.beginDeletedSelection(hit, adjusted.x -| gutter);
+                            self.zones.captureDeletedSelectionStart(hit, adjusted.x, event.y);
                             self.modified_view.invalidate();
                             return true;
                         }

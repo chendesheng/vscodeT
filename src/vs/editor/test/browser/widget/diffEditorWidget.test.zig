@@ -1986,6 +1986,9 @@ pub fn Tests(comptime View: type) type {
                     return .{ .context = self, .write_text = write };
                 }
             };
+            const window_dispatch = @import("../../../../base/common/windowDispatch.zig");
+            var window: window_dispatch.Queue = .{ .io = testing.io, .window_events = .init(testing.allocator) };
+            defer window.deinitWindowEvents();
             var copy: Copy = .{};
             defer copy.text.deinit(testing.allocator);
             var menus = ContextMenu.init(testing.allocator, &copy, Copy.report);
@@ -1993,6 +1996,7 @@ pub fn Tests(comptime View: type) type {
             const widget = try DiffEditorWidget.create(View.init, testing.allocator, testing.io, "a.txt", "b.txt", "first\nold\n\nlast", "first\nlast", "Original", "Modified", 80, 8, .{ .render_side_by_side = false });
             defer widget.destroy();
             widget.attachActionServices(copy.interface(), menus.interface());
+            widget.attachWindow(&window);
             var frame = try ui.Frame.init(testing.allocator, 80, 8);
             defer frame.deinit();
             try widget.paint(&frame, 0, 0, 80, 8);
@@ -2017,6 +2021,24 @@ pub fn Tests(comptime View: type) type {
             try testing.expectEqualStrings("old", copy.text.items);
             var escape: ui.KeyEvent = .{ .key = .escape };
             try testing.expect(widget.dispatchKey(&escape));
+
+            // The native press selects the same original range and owns
+            // release even beyond the multi-diff pane's screen bounds.
+            try testing.expect(!window.beginPointerInput(.{ .kind = .down, .x = 300 + text_col, .y = 400 + row - 1 }));
+            event = .{ .kind = .down, .button = .left, .x = text_col, .y = row - 1 };
+            try testing.expect(try widget.dispatchMouse(&event));
+            window.endPointerInput();
+            try testing.expect(window.pointer_capture != null);
+            try testing.expect(window.beginPointerInput(.{ .kind = .move, .x = 600, .y = 600 }));
+            window.endPointerInput();
+            try testing.expect(window.beginPointerInput(.{ .kind = .up, .x = 600, .y = 600 }));
+            window.endPointerInput();
+            try testing.expect(!widget.zones.draggingDeletedSelection());
+            try testing.expect(window.pointer_capture == null);
+            try testing.expect(widget.dispatchKey(&copy_key));
+            try testing.expectEqualStrings("old\n", copy.text.items);
+            try testing.expect(widget.dispatchKey(&escape));
+
             event = .{ .kind = .move, .x = text_col + 1, .y = row };
             try testing.expect(try widget.dispatchMouse(&event));
             try widget.paint(&frame, 0, 0, 80, 8);
