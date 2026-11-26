@@ -2,7 +2,7 @@
 // Git resources are registered with the shared read-only, case-sensitive
 // filesystem provider registry. Native async reads capture immutable
 // repository/ref state and deliver raw bytes to the text-file resolver.
-// The terminal currently opens one repository per workspace.
+// Repository subscriptions and change roots follow the Git model lifecycle.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Model = @import("model.zig").Model;
@@ -24,19 +24,59 @@ pub const GitFileSystemProvider = struct {
     listeners: std.ArrayList(files.IFileChangeListener) = .empty,
     cache: std.StringHashMapUnmanaged(CacheRow) = .empty,
     open_documents: ?OpenDocuments = null,
+    repository_discovery: ?RepositoryDiscovery = null,
     mtime: i64,
-    repository_listener: ?event.SignalSubscription = null,
-    original_listener: ?event.SignalSubscription = null,
+    repository_bindings: std.ArrayList(*RepositoryBinding) = .empty,
+    changed_roots: std.AutoHashMapUnmanaged(*Repository, void) = .empty,
     focus_listener: ?event.SignalSubscription = null,
     change_deadline: dispatch.Task = .{},
     cleanup_deadline: dispatch.Task = .{},
     focused: bool = true,
     waiting_for_focus: bool = false,
 
+    const RepositoryBinding = struct {
+        owner: *GitFileSystemProvider,
+        repository: *Repository,
+        repository_listener: ?event.SignalSubscription = null,
+        original_listener: ?event.SignalSubscription = null,
+
+        fn dispose(self: *RepositoryBinding) void {
+            if (self.repository_listener) |listener| listener.dispose();
+            if (self.original_listener) |listener| listener.dispose();
+            self.owner.allocator.destroy(self);
+        }
+
+        fn changed(_: void, self: *RepositoryBinding) !void {
+            try self.owner.changed_roots.put(self.owner.allocator, self.repository, {});
+            self.owner.change_deadline.schedule(time.milliTimestamp() + 1100);
+        }
+    };
+
     const CacheRow = struct {
         path: []u8,
         timestamp: i64,
     };
+
+    pub const RepositoryDiscovery = struct {
+        context: *anyopaque,
+        open: *const fn (*anyopaque, []const u8) anyerror!void,
+    };
+
+    /// Empty windows (and upstream agent sessions) may open a Git repository
+    /// on demand. The window supplies the normal repository-open lifecycle.
+    pub fn setRepositoryDiscovery(self: *GitFileSystemProvider, discovery: RepositoryDiscovery) void {
+        self.repository_discovery = discovery;
+    }
+
+    fn getOrOpenRepository(self: *GitFileSystemProvider, uri: std.Uri) !void {
+        const discovery = self.repository_discovery orelse return;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const params = try @import("uri.zig").fromGitUri(arena.allocator(), uri);
+        const repository = if (params.submoduleOf) |parent| self.model.repositoryForRoot(parent) else self.model.getRepository(params.path);
+        if (repository != null) return;
+        try discovery.open(discovery.context, params.submoduleOf orelse params.path);
+    }
 
     pub const OpenDocuments = struct {
         context: *anyopaque,
@@ -56,23 +96,37 @@ pub const GitFileSystemProvider = struct {
     }
 
     pub fn attachRepository(self: *GitFileSystemProvider, repository: *Repository, window: *dispatch.Queue, host: IHostService) !void {
-        self.detachRepository();
-        self.change_deadline = .{ .queue = window, .context = self, .run = fireChanges };
-        self.cleanup_deadline = .{ .queue = window, .context = self, .run = cleanup };
-        self.focused = host.hasFocus();
-        self.repository_listener = try repository.on_change.listenDisposable(self, onRepositoryChanged);
-        errdefer self.detachRepository();
-        self.original_listener = try repository.on_did_change_original_resource.listenDisposable(self, onOriginalResourceChanged);
-        self.focus_listener = try host.on_did_change_focus.listenDisposable(self, onFocusChanged);
-        self.cleanup_deadline.schedule(time.milliTimestamp() + five_minutes);
+        for (self.repository_bindings.items) |binding| if (binding.repository == repository) return;
+        if (self.focus_listener == null) {
+            self.change_deadline = .{ .queue = window, .context = self, .run = fireChanges };
+            self.cleanup_deadline = .{ .queue = window, .context = self, .run = cleanup };
+            self.focused = host.hasFocus();
+            self.focus_listener = try host.on_did_change_focus.listenDisposable(self, onFocusChanged);
+            self.cleanup_deadline.schedule(time.milliTimestamp() + five_minutes);
+        }
+        const binding = try self.allocator.create(RepositoryBinding);
+        binding.* = .{ .owner = self, .repository = repository };
+        errdefer binding.dispose();
+        binding.repository_listener = try repository.on_change.listenDisposable(binding, RepositoryBinding.changed);
+        binding.original_listener = try repository.on_did_change_original_resource.listenDisposable(self, onOriginalResourceChanged);
+        try self.repository_bindings.append(self.allocator, binding);
+    }
+
+    pub fn detachSingleRepository(self: *GitFileSystemProvider, repository: *Repository) void {
+        _ = self.changed_roots.remove(repository);
+        for (self.repository_bindings.items, 0..) |binding, i| {
+            if (binding.repository != repository) continue;
+            _ = self.repository_bindings.orderedRemove(i);
+            binding.dispose();
+            return;
+        }
     }
 
     pub fn detachRepository(self: *GitFileSystemProvider) void {
-        if (self.repository_listener) |listener| listener.dispose();
-        if (self.original_listener) |listener| listener.dispose();
+        for (self.repository_bindings.items) |binding| binding.dispose();
+        self.repository_bindings.clearRetainingCapacity();
+        self.changed_roots.clearRetainingCapacity();
         if (self.focus_listener) |listener| listener.dispose();
-        self.repository_listener = null;
-        self.original_listener = null;
         self.focus_listener = null;
         self.change_deadline.schedule(null);
         self.cleanup_deadline.schedule(null);
@@ -86,6 +140,8 @@ pub const GitFileSystemProvider = struct {
         self.registration = null;
         self.listeners.deinit(self.allocator);
         self.cache.deinit(self.allocator);
+        self.repository_bindings.deinit(self.allocator);
+        self.changed_roots.deinit(self.allocator);
     }
 
     fn clearCache(self: *GitFileSystemProvider) void {
@@ -130,10 +186,6 @@ pub const GitFileSystemProvider = struct {
         return false;
     }
 
-    fn onRepositoryChanged(_: void, self: *GitFileSystemProvider) !void {
-        self.change_deadline.schedule(time.milliTimestamp() + 1100);
-    }
-
     fn onOriginalResourceChanged(resource: std.Uri, self: *GitFileSystemProvider) !void {
         if (!std.mem.eql(u8, resource.scheme, "file")) return;
         var arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -162,12 +214,16 @@ pub const GitFileSystemProvider = struct {
             return false;
         }
         self.waiting_for_focus = false;
-        const root = self.model.git_root orelse return false;
+        defer self.changed_roots.clearRetainingCapacity();
         var changes: std.ArrayList(files.IFileChange) = .empty;
         defer changes.deinit(self.allocator);
         var iterator = self.cache.iterator();
         while (iterator.next()) |entry| {
-            if (@import("../../../vs/base/common/extpath.zig").relativeToRoot(entry.value_ptr.path, root) == null) continue;
+            var roots = self.changed_roots.keyIterator();
+            const affected = while (roots.next()) |repository| {
+                if (@import("../../../vs/base/common/extpath.zig").relativeToRoot(entry.value_ptr.path, repository.*.root) != null) break true;
+            } else false;
+            if (!affected) continue;
             changes.append(self.allocator, .{ .type = .UPDATED, .resource = entry.key_ptr.* }) catch return false;
         }
         if (changes.items.len == 0) return false;
@@ -226,6 +282,7 @@ pub const GitFileSystemProvider = struct {
 
     fn capture(context: *anyopaque, resource: std.Uri) !files.FileReadRequest {
         const self: *GitFileSystemProvider = @ptrCast(@alignCast(context));
+        try self.getOrOpenRepository(resource);
         const request = try self.model.captureGitResource(self.io, resource);
         errdefer request.destroy();
         try self.remember(resource, request.path);
@@ -244,6 +301,7 @@ pub const GitFileSystemProvider = struct {
 
     fn statUri(context: *anyopaque, resource: std.Uri) files.FileSystemProviderError!files.IStat {
         const self: *GitFileSystemProvider = @ptrCast(@alignCast(context));
+        self.getOrOpenRepository(resource) catch |err| return mapError(err);
         const request = self.model.captureGitResource(self.io, resource) catch |err| return mapError(err);
         defer request.destroy();
         const size = request.stat(self.allocator) catch |err| return mapError(err);

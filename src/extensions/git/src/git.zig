@@ -330,8 +330,8 @@ pub const Git = struct {
     }
 
     fn directoryExists(self: *const Git, path: []const u8) bool {
-        std.Io.Dir.cwd().access(self.io, path, .{}) catch return false;
-        return true;
+        const stat = std.Io.Dir.cwd().statFile(self.io, path, .{}) catch return false;
+        return stat.kind == .directory;
     }
 
     /// Runs git with an explicit cwd, argv-only command line, piped and
@@ -408,9 +408,17 @@ pub const Git = struct {
 
     /// Resolves `start` to the absolute repository root, or null when git is
     /// unavailable / `start` is not inside a repository. Never panics.
-    pub fn discover(self: *Git, start: []const u8) !?[]u8 {
+    pub fn discover(self: *Git, path: []const u8) !?[]u8 {
         if (self.disabled) return null;
-        std.Io.Dir.cwd().access(self.io, start, .{}) catch return null;
+        // Resource URIs can point at a file or a revision-only path that
+        // no longer exists in the working tree. Discover from its nearest
+        // existing directory, rather than passing a file as process cwd.
+        var start = path;
+        while (!self.directoryExists(start)) {
+            const parent = std.fs.path.dirname(start) orelse return null;
+            if (parent.len == 0 or parent.len >= start.len) return null;
+            start = parent;
+        }
 
         if (try self.runRevParse(start, "--show-toplevel", discovery_output_limit)) |top| {
             defer self.allocator.free(top);

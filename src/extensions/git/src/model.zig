@@ -1,12 +1,14 @@
-// Port of the single-workspace repository-opening lifecycle from
+// Port of the repository-opening lifecycle from
 // `vscode/extensions/git/src/model.ts`. The terminal Git extension uses its
 // existing Repository/ISCMProvider adapter instead of a JavaScript extension
 // host. Repository discovery and the Git service delegate are owned here,
 // separate from the workbench's Source Control view and status UI.
 //
-// Parent-repository consent, ignored/unsafe repository tracking and
-// multi-repository discovery are not yet ported by this single-root adapter.
+// Parent-repository consent and ignored/unsafe repository tracking remain
+// unported. The primary repository is retained as the selection used by the
+// existing SCM view while the model owns the full opened repository list.
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const extpath = @import("../../../vs/base/common/extpath.zig");
 const Git = @import("git.zig").Git;
@@ -17,6 +19,7 @@ const GitService = @import("../../../vs/workbench/contrib/git/browser/gitService
 const IGitExtensionDelegate = @import("../../../vs/workbench/contrib/git/common/gitService.zig").IGitExtensionDelegate;
 const ConfigurationService = @import("../../../vs/workbench/services/configuration/browser/configurationService.zig").ConfigurationService;
 const WindowQueue = @import("../../../vs/base/common/windowDispatch.zig").Queue;
+const Emitter = @import("../../../vs/base/common/event.zig").Emitter;
 
 const SnapshotSource = @import("../../../vs/editor/browser/widget/diffEditor/diffProviderFactoryService.zig").SnapshotSource;
 
@@ -184,13 +187,19 @@ pub const Model = struct {
     git: ?*Git = null,
     git_delegate: ?*IGitExtensionDelegate = null,
     git_service: ?*GitService = null,
+    /// Initial selection for the current native SCM view. Ownership lives
+    /// exclusively in open_repositories; each repository has a stable root.
     repository: ?*Repository = null,
-    git_root: ?[]u8 = null,
+    git_root: ?[]const u8 = null,
+    open_repositories: std.ArrayList(*Repository) = .empty,
+    on_did_open_repository: Emitter(*Repository),
+    on_did_close_repository: Emitter(*Repository),
+    repository_count_buffer: [32]u8 = undefined,
     repository_count_key: ?@import("../../../vs/platform/contextkey/common/contextkey.zig").IContextKey = null,
     git_missing_key: ?@import("../../../vs/platform/contextkey/common/contextkey.zig").IContextKey = null,
 
     pub fn init(allocator: Allocator) Model {
-        return .{ .allocator = allocator };
+        return .{ .allocator = allocator, .on_did_open_repository = .init(allocator), .on_did_close_repository = .init(allocator) };
     }
 
     pub const OpenOptions = struct {
@@ -205,7 +214,7 @@ pub const Model = struct {
     };
 
     pub fn openRepository(self: *Model, repo_path: []const u8, open_options: OpenOptions) !?*Repository {
-        if (self.git != null) return self.repository;
+        if (self.repositoryForRoot(repo_path)) |provider| return provider;
         if (open_options.context_keys) |keys| {
             if (self.repository_count_key == null) self.repository_count_key = try keys.createKey("gitOpenRepositoryCount", .{ .string = "0" });
             if (self.git_missing_key == null) self.git_missing_key = try keys.createKey("git.missing", .{ .boolean = false });
@@ -237,9 +246,11 @@ pub const Model = struct {
                 if (megabytes > 0 and megabytes < 1024) options.max_file_size_kb = @intFromFloat(megabytes * 1024);
             }
         }
-        const cli = Git.init(self.allocator, options) catch return null;
-        self.git = cli;
-        errdefer self.deinit();
+        const cli = self.git orelse blk: {
+            const value = Git.init(self.allocator, options) catch return null;
+            self.git = value;
+            break :blk value;
+        };
         if (cli.isDisabled()) {
             if (self.git_missing_key) |key| key.set(.{ .boolean = true });
             return null;
@@ -248,38 +259,97 @@ pub const Model = struct {
             if (cli.isDisabled()) if (self.git_missing_key) |key| key.set(.{ .boolean = true });
             return null;
         };
+        if (self.repositoryForRoot(opened.root_path)) |provider| return provider;
         const concrete = cli.repositoryForRoot(opened.root_path) orelse return null;
+        if (self.git_service == null) {
+            const service = try self.allocator.create(GitService);
+            errdefer self.allocator.destroy(service);
+            service.* = GitService.init(self.allocator);
+            errdefer service.deinit();
+            const delegate = try self.allocator.create(IGitExtensionDelegate);
+            errdefer self.allocator.destroy(delegate);
+            delegate.* = cli.interface();
+            _ = try service.setDelegate(delegate);
+            self.git_service = service;
+            self.git_delegate = delegate;
+        }
 
-        const service = try self.allocator.create(GitService);
-        service.* = GitService.init(self.allocator);
-        self.git_service = service;
-        const delegate = try self.allocator.create(IGitExtensionDelegate);
-        delegate.* = cli.interface();
-        self.git_delegate = delegate;
-        _ = service.setDelegate(delegate) catch {};
-        const root = try self.allocator.dupe(u8, opened.root_path);
-        self.git_root = root;
-
-        const provider = try Repository.create(self.allocator, cli, concrete, root, open_options.host);
+        const provider = try Repository.create(self.allocator, cli, concrete, opened.root_path, open_options.host);
+        errdefer provider.destroy();
         provider.attachWindow(open_options.window);
-        self.repository = provider;
         if (open_options.host_service) |host| try provider.attachHostService(host);
         try provider.setConfiguration(open_options.configuration);
-        if (self.repository_count_key) |key| key.set(.{ .string = "1" });
+        try self.open_repositories.append(self.allocator, provider);
+        if (self.repository == null) {
+            self.repository = provider;
+            self.git_root = provider.root;
+        }
+        self.updateRepositoryCount();
+        self.on_did_open_repository.fire(provider) catch {};
         return provider;
     }
 
+    fn updateRepositoryCount(self: *Model) void {
+        if (self.repository_count_key) |key| {
+            const value = std.fmt.bufPrint(&self.repository_count_buffer, "{d}", .{self.open_repositories.items.len}) catch return;
+            key.set(.{ .string = value });
+        }
+    }
+
+    pub fn closeRepository(self: *Model, provider: *Repository) void {
+        for (self.open_repositories.items, 0..) |candidate, index| {
+            if (candidate != provider) continue;
+            _ = self.open_repositories.orderedRemove(index);
+            if (self.repository == provider) {
+                self.repository = if (self.open_repositories.items.len > 0) self.open_repositories.items[0] else null;
+                self.git_root = if (self.repository) |selected| selected.root else null;
+            }
+            self.updateRepositoryCount();
+            self.on_did_close_repository.fire(provider) catch {};
+            provider.destroy();
+            return;
+        }
+    }
+
+    pub fn repositories(self: *const Model) []const *Repository {
+        return self.open_repositories.items;
+    }
+
+    pub fn repositoryForRoot(self: *const Model, path: []const u8) ?*Repository {
+        for (self.open_repositories.items) |provider| {
+            if (sameRoot(path, provider.root)) return provider;
+        }
+        return null;
+    }
+
+    fn sameRoot(left: []const u8, right: []const u8) bool {
+        const a = std.mem.trimEnd(u8, left, "/\\");
+        const b = std.mem.trimEnd(u8, right, "/\\");
+        return if (builtin.os.tag == .windows) std.ascii.eqlIgnoreCase(a, b) else std.mem.eql(u8, a, b);
+    }
+
+    /// Upstream getOpenRepository prefers the most deeply nested open root.
+    /// A relative path is only meaningful for the existing selected view.
+    pub fn getRepository(self: *const Model, path: []const u8) ?*Repository {
+        if (!std.fs.path.isAbsolute(path)) return self.repository;
+        var result: ?*Repository = null;
+        for (self.open_repositories.items) |provider| {
+            if (!sameRoot(path, provider.root) and extpath.relativeToRoot(path, provider.root) == null) continue;
+            if (result == null or provider.root.len > result.?.root.len) result = provider;
+        }
+        return result;
+    }
+
     pub fn detachConfiguration(self: *Model) void {
-        if (self.repository) |provider| provider.detachConfiguration();
+        for (self.open_repositories.items) |provider| provider.detachConfiguration();
     }
 
     pub fn setConfiguration(self: *Model, config: ?*ConfigurationService) !void {
-        if (self.repository) |provider| try provider.setConfiguration(config);
+        for (self.open_repositories.items) |provider| try provider.setConfiguration(config);
     }
 
-    fn captureSnapshot(self: *Model, io: std.Io, path: []const u8, original_path: []const u8, modified_path: []const u8) !*SnapshotRead {
+    fn captureSnapshot(self: *Model, io: std.Io, root: []const u8, path: []const u8, original_path: []const u8, modified_path: []const u8) !*SnapshotRead {
         const cli = self.git orelse return error.NoGit;
-        const root = self.git_root orelse return error.NoRepository;
         const request = try std.heap.page_allocator.create(SnapshotRead);
         errdefer std.heap.page_allocator.destroy(request);
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -302,10 +372,10 @@ pub const Model = struct {
     }
 
     pub fn snapshotSource(self: *Model, io: std.Io, path: []const u8, working: ?[]const u8, left: git.DiffRef, right: git.DiffRef, has_diff: bool) !SnapshotSource {
-        if (self.repository == null) return error.NoRepository;
-        const root = self.git_root orelse return error.NoRepository;
+        const repository = self.getRepository(path) orelse return error.NoRepository;
+        const root = repository.root;
         const relative = extpath.relativeToRoot(path, root) orelse return error.OutsideRepository;
-        const request = try self.captureSnapshot(io, path, relative, relative);
+        const request = try self.captureSnapshot(io, root, path, relative, relative);
         errdefer SnapshotRead.destroy(request);
         request.source = .{ .refs = .{
             .working = if (working) |text| try request.arena.allocator().dupe(u8, text) else null,
@@ -317,13 +387,14 @@ pub const Model = struct {
     }
 
     pub fn revisionSnapshotSource(self: *Model, io: std.Io, path: []const u8, original_path: ?[]const u8, left: ?[]const u8, right: []const u8) !SnapshotSource {
-        const root = self.git_root orelse return error.NoRepository;
+        const repository = self.getRepository(path) orelse return error.NoRepository;
+        const root = repository.root;
         const relative_right = if (std.fs.path.isAbsolute(path)) extpath.relativeToRoot(path, root) orelse return error.OutsideRepository else path;
         const relative_left = if (original_path) |value|
             if (std.fs.path.isAbsolute(value)) extpath.relativeToRoot(value, root) orelse relative_right else value
         else
             relative_right;
-        const request = try self.captureSnapshot(io, path, relative_left, relative_right);
+        const request = try self.captureSnapshot(io, root, path, relative_left, relative_right);
         errdefer SnapshotRead.destroy(request);
         const allocator = request.arena.allocator();
         request.source = .{ .revisions = .{
@@ -338,7 +409,6 @@ pub const Model = struct {
     pub fn captureGitResource(self: *Model, io: std.Io, uri: std.Uri) !*GitResourceRead {
         if (!std.mem.eql(u8, uri.scheme, "git")) return error.UnsupportedDiffResourceScheme;
         const cli = self.git orelse return error.NoGit;
-        const root = self.git_root orelse return error.NoRepository;
         const request = try std.heap.page_allocator.create(GitResourceRead);
         errdefer std.heap.page_allocator.destroy(request);
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -346,15 +416,13 @@ pub const Model = struct {
         const a = arena.allocator();
         const git_uri = @import("uri.zig");
         const params = try git_uri.fromGitUri(a, uri);
-        if (params.submoduleOf) |parent| {
-            if (!std.mem.eql(u8, root, parent)) return error.NoRepository;
-        }
+        const repository = (if (params.submoduleOf) |parent| self.repositoryForRoot(parent) else self.getRepository(params.path)) orelse return error.NoRepository;
+        const root = repository.root;
         const relative = extpath.relativeToRoot(params.path, root) orelse return error.OutsideRepository;
         var ref: []const u8 = params.ref;
         if (git_uri.normalizeIndexStage(ref)) |stage| ref = try a.dupe(u8, &stage);
         if (std.mem.eql(u8, ref, "~")) {
             ref = "HEAD";
-            const repository = self.repository orelse return error.NoRepository;
             for (repository.repository.stateRef().index_changes) |change| {
                 if (std.mem.eql(u8, change.path, relative)) {
                     ref = "";
@@ -379,8 +447,8 @@ pub const Model = struct {
     }
 
     pub fn resolveDiffTexts(self: *Model, path: []const u8, working: ?[]const u8, left: git.DiffRef, right: git.DiffRef) !git.ResolvedDiffTexts {
-        if (self.repository == null) return error.NoRepository;
-        const root = self.git_root orelse return error.NoRepository;
+        const repository = self.getRepository(path) orelse return error.NoRepository;
+        const root = repository.root;
         const relative = extpath.relativeToRoot(path, root) orelse return error.OutsideRepository;
         const cli = self.git orelse return error.NoGit;
         return cli.resolveDiffTexts(root, relative, working, left, right);
@@ -393,7 +461,8 @@ pub const Model = struct {
         left_rev: ?[]const u8,
         right_rev: []const u8,
     ) !git.ResolvedDiffTexts {
-        const root = self.git_root orelse return error.NoRepository;
+        const repository = self.getRepository(path) orelse return error.NoRepository;
+        const root = repository.root;
         const cli = self.git orelse return error.NoGit;
         const relative_right = if (std.fs.path.isAbsolute(path))
             extpath.relativeToRoot(path, root) orelse return error.OutsideRepository
@@ -425,14 +494,19 @@ pub const Model = struct {
     pub fn deinit(self: *Model) void {
         if (self.repository_count_key) |key| key.reset();
         if (self.git_missing_key) |key| key.reset();
-        if (self.repository) |provider| provider.destroy();
+        for (self.open_repositories.items) |provider| {
+            self.on_did_close_repository.fire(provider) catch {};
+            provider.destroy();
+        }
+        self.open_repositories.deinit(self.allocator);
+        self.on_did_open_repository.deinit();
+        self.on_did_close_repository.deinit();
         if (self.git_service) |service| {
             service.deinit();
             self.allocator.destroy(service);
         }
         if (self.git_delegate) |delegate| self.allocator.destroy(delegate);
         if (self.git) |cli| cli.deinit();
-        if (self.git_root) |root| self.allocator.free(root);
         self.* = init(self.allocator);
     }
 };
