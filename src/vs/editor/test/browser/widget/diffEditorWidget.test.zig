@@ -269,6 +269,12 @@ pub fn Tests(comptime View: type) type {
                 }
             }
             try std.testing.expect(collapsed > 0);
+            try testing.expect(widget.nextChange());
+            const cursor = widget.modified_editor.viewCursorPosition().lineNumber;
+            try testing.expectEqual(@as(?usize, 18), widget.modified_editor.displayLineNumber(cursor));
+            try testing.expectEqual(@as(usize, 18), widget.modified_editor.modelCursorPosition().lineNumber);
+            try testing.expect(widget.previousChange());
+            try testing.expectEqual(@as(usize, 1), widget.modified_editor.modelCursorPosition().lineNumber);
         }
 
         test "diffEditorWidget: inline mode interleaves deleted and inserted lines" {

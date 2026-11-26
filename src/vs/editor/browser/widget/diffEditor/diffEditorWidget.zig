@@ -475,9 +475,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
             return self.view_model.stateRef();
         }
 
-        pub fn lineCount(self: *const Self) usize {
-            if (self.inline_mode) return self.modified_editor.viewLineCount();
-            return self.aligned.lineCount();
+        pub fn lineCount(self: *Self) usize {
+            return self.modified_editor.viewLineCount();
         }
 
         pub fn sideBySide(self: *const Self) bool {
@@ -550,8 +549,14 @@ pub fn DiffEditorWidget(comptime View: type) type {
         pub fn nextChange(self: *Self) bool {
             const count = self.changeCount();
             if (count == 0) return false;
-            const current = self.current_change orelse (count - 1);
-            const next = (current + 1) % count;
+            const cursor = self.modified_editor.modelCursorPosition().lineNumber;
+            var next: usize = 0;
+            for (0..count) |index| {
+                if (self.changeStart(index) > cursor) {
+                    next = index;
+                    break;
+                }
+            }
             self.current_change = next;
             self.revealChange(next);
             return true;
@@ -560,35 +565,40 @@ pub fn DiffEditorWidget(comptime View: type) type {
         pub fn previousChange(self: *Self) bool {
             const count = self.changeCount();
             if (count == 0) return false;
-            const current = self.current_change orelse 0;
-            const previous = if (current == 0) count - 1 else current - 1;
+            const cursor = self.modified_editor.modelCursorPosition().lineNumber;
+            var previous = count - 1;
+            var index = count;
+            while (index > 0) {
+                index -= 1;
+                if (self.changeStart(index) < cursor) {
+                    previous = index;
+                    break;
+                }
+            }
             self.current_change = previous;
             self.revealChange(previous);
             return true;
         }
 
+        fn changeStart(self: *Self, index: usize) usize {
+            return if (self.inline_mode) self.inline_change_starts[index] else self.aligned.mappings[index].modified.startLineNumber;
+        }
+
         fn revealChange(self: *Self, index: usize) void {
-            const diff_state = self.state() orelse return;
-            if (index >= diff_state.mappings.len) return;
-            const mapping = self.aligned.mappings[index];
-            const row = if (self.inline_mode)
-                @max(self.inline_change_starts[index], 1)
-            else
-                @max(mapping.modified.startLineNumber, 1);
-            const view_height = self.height;
-            const top = if (row > view_height / 2) row - view_height / 2 else 1;
-            _ = self.modified_editor.setTopViewLine(top);
-            if (!self.inline_mode) _ = self.original_editor.setTopViewLine(top);
+            if (index >= self.changeCount()) return;
+            const row = self.changeStart(index);
             self.modified_editor.setCursorPosition(.{
-                .lineNumber = @min(row, self.modified_editor.viewLineCount()),
+                .lineNumber = @min(row, self.modified_editor.model.getLineCount()),
                 .column = 1,
             }) catch {};
-            self.modified_editor.ensureCursorVisible();
+            const view_row = self.modified_editor.viewCursorPosition().lineNumber;
+            const top = @max(view_row -| (self.height / 2), 1);
+            _ = self.modified_editor.setTopViewLine(top);
             if (!self.inline_mode) {
-                self.original_editor.ensureCursorVisible();
-                self.original_view.refresh() catch {};
+                _ = self.original_editor.setTopViewLine(top);
+                self.original_view.invalidate();
             }
-            self.modified_view.refresh() catch {};
+            self.modified_view.invalidate();
         }
 
         pub fn swapSides(self: *Self) void {
@@ -666,23 +676,22 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .fg = ui.cell.packColor(.{ .r = 220, .g = 220, .b = 220 }),
                 .bg = ui.cell.packColor(.{ .r = 60, .g = 60, .b = 64 }),
             };
-            const diff_state = self.state();
-
+            const mappings = self.aligned.mappings;
+            const cursor_row = self.focusedEditor().modelCursorPosition().lineNumber;
+            const current_mapping = gutter_feature.mappingIndexAtRow(mappings, cursor_row);
             var row: usize = 0;
             while (row < height) : (row += 1) {
-                const display_row = self.modified_editor.topViewLine() + row;
+                const view_row = self.modified_editor.topViewLine() + row;
                 var glyph: u21 = '│';
                 var style = normal;
-                if (diff_state) |found_state| {
-                    for (found_state.mappings, 0..) |mapping, index| {
-                        const start = mapping.line_range_mapping.modified.startLineNumber;
-                        const end = mapping.line_range_mapping.modified.endLineNumberExclusive;
-                        if (display_row < start or display_row >= end) continue;
-                        if (self.current_change != null and self.current_change.? == index) style = current;
-                        if (display_row == start) {
-                            glyph = gutter_feature.markerForMapping(mapping.line_range_mapping);
+                if (view_row <= self.modified_editor.viewLineCount()) {
+                    const display_row = self.modified_editor.modelLineNumber(view_row);
+                    if (gutter_feature.mappingIndexAtRow(mappings, display_row)) |index| {
+                        const mapping = mappings[index];
+                        if (current_mapping == index) style = current;
+                        if (display_row == mapping.modified.startLineNumber and self.modified_editor.outputLineIndex(view_row) == 0) {
+                            glyph = gutter_feature.markerForMapping(mapping.source);
                         }
-                        break;
                     }
                 }
                 frame.next.putCodepoint(x, y + row, glyph, 1, style);

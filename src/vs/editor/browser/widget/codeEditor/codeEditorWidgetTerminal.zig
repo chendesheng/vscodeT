@@ -2023,12 +2023,13 @@ pub const Editor = struct {
     /// row with a blank number.
     pub fn displayLineNumber(self: *Editor, view_line: usize) ?usize {
         if (view_line == 0) return null;
-        if (self.line_number_map) |map| {
-            if (view_line > map.len) return null;
-            return map[view_line - 1];
-        }
         if (view_line > self.viewLineCount()) return null;
-        return self.modelLineNumber(view_line);
+        const model_line = self.modelLineNumber(view_line);
+        if (self.line_number_map) |map| {
+            if (model_line == 0 or model_line > map.len) return null;
+            return map[model_line - 1];
+        }
+        return model_line;
     }
 
     /// Native contribution registration for CodeEditorWidget.getContribution.

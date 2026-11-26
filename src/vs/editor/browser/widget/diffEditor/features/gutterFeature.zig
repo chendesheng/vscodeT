@@ -40,6 +40,23 @@ pub fn gutterGlyph(mapping: view_model.DetailedLineRangeMapping, display_row: us
     return '│';
 }
 
+/// Locate the containing hunk in the sorted, non-overlapping aligned ranges.
+/// This also handles pure deletions, whose real modified range is empty.
+pub fn mappingIndexAtRow(mappings: []const @import("../components/diffEditorViewZones.zig").AlignedMapping, row: usize) ?usize {
+    var lo: usize = 0;
+    var hi = mappings.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        const range = mappings[mid].modified;
+        if (row < range.startLineNumber) {
+            hi = mid;
+        } else if (row >= range.endLineNumberExclusive) {
+            lo = mid + 1;
+        } else return mid;
+    }
+    return null;
+}
+
 test "gutterFeature: markers for insert, delete and modify" {
     const add = view_model.DetailedLineRangeMapping{
         .original = LineRange.ofLength(2, 0),

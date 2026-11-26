@@ -173,16 +173,20 @@ pub const DiffEditorDecorations = struct {
             const original_start = moved.lineRangeMapping.original.startLineNumber;
             const original_end = moved.lineRangeMapping.original.endLineNumberExclusive;
             if (original_end > original_start) {
+                const first = aligned.displayRowForOriginal(original_start) orelse continue;
+                const last = aligned.displayRowForOriginal(original_end - 1) orelse continue;
                 try original_decorations.append(.{
-                    .range = Range.init(original_start, 1, original_end, 1),
+                    .range = Range.init(first, 1, last, 1),
                     .options = &self.moved_original,
                 });
             }
             const modified_start = moved.lineRangeMapping.modified.startLineNumber;
             const modified_end = moved.lineRangeMapping.modified.endLineNumberExclusive;
             if (modified_end > modified_start) {
+                const first = aligned.displayRowForModified(modified_start) orelse continue;
+                const last = aligned.displayRowForModified(modified_end - 1) orelse continue;
                 try modified_decorations.append(.{
-                    .range = Range.init(modified_start, 1, modified_end, 1),
+                    .range = Range.init(first, 1, last, 1),
                     .options = &self.moved_modified,
                 });
             }
