@@ -1264,13 +1264,16 @@ pub const Git = struct {
             "for-each-ref",
             "--format=%(refname)%00%(upstream:short)%00%(objectname)%00%(upstream:remotename)%00%(upstream:remoteref)",
         });
+        // The two ref arguments must outlive process.spawn, not just this
+        // branch. The page allocator makes the previous dangling argv fail
+        // immediately during a native workbench repository open.
+        var argument_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer argument_arena.deinit();
         if (std.mem.startsWith(u8, name, "refs/")) {
             try argv.append(name);
         } else {
-            const local = try std.fmt.allocPrint(self.allocator, "refs/heads/{s}", .{name});
-            defer self.allocator.free(local);
-            const remote = try std.fmt.allocPrint(self.allocator, "refs/remotes/{s}", .{name});
-            defer self.allocator.free(remote);
+            const local = try std.fmt.allocPrint(argument_arena.allocator(), "refs/heads/{s}", .{name});
+            const remote = try std.fmt.allocPrint(argument_arena.allocator(), "refs/remotes/{s}", .{name});
             try argv.append(local);
             try argv.append(remote);
         }
@@ -2946,4 +2949,23 @@ test "integration: Git buffer distinguishes binary bytes, missing refs, and conf
     const missing_at_empty = try cli.readGitBuffer(root, empty, "conflict.txt");
     defer a.free(missing_at_empty);
     try std.testing.expectEqual(@as(usize, 0), missing_at_empty.len);
+}
+
+test "integration: named Git branch argv outlives the local and remote ref construction" {
+    const a = std.heap.page_allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = root_buffer[0..try tmp.dir.realPath(io, &root_buffer)];
+    if (!try gitOk(a, root, &.{"init"})) return error.SkipZigTest;
+    try std.testing.expect(try gitOk(a, root, &.{ "symbolic-ref", "HEAD", "refs/heads/main" }));
+    try std.testing.expect(try gitOk(a, root, &.{ "config", "user.name", "Test User" }));
+    try std.testing.expect(try gitOk(a, root, &.{ "config", "user.email", "test@example.com" }));
+    try std.testing.expect(try gitOk(a, root, &.{ "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "initial" }));
+    var cli = try Git.init(a, .{ .io = io });
+    defer cli.deinit();
+    var branch = (try cli.getBranch(a, root, "main")) orelse return error.TestExpectedBranch;
+    defer branch.deinit(a);
+    try std.testing.expectEqualStrings("main", branch.ref.name.?);
 }
