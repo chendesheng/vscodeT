@@ -8332,6 +8332,95 @@ test "Workbench: git scm integration, shared working files and read-only revisio
     try std.testing.expect(!quick_diff.entries.items[0].model.ignore_trim_whitespace);
     try workbench.setUserConfigurationValue("scm.diffDecorationsIgnoreTrimWhitespace", .{ .string = "true" });
     try std.testing.expect(quick_diff.entries.items[0].model.ignore_trim_whitespace);
+    // The change peek is a real embedded diff editor inside the file's ViewZone.
+    {
+        try workbench.setUserConfigurationValue("scm.diffDecorationsIgnoreTrimWhitespace", .{ .string = "false" });
+        const entry = quick_diff.entries.items[0];
+        var spins: usize = 0;
+        while (entry.model.changes.items.len < 2 and spins < 5000) : (spins += 1) {
+            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
+        }
+        try std.testing.expectEqual(@as(usize, 2), entry.model.changes.items.len);
+        const controller = entry.peek_controller orelse return error.TestExpectedQuickDiffController;
+        const tab = workbench.activeTab().?;
+        var peek_frame: std.Io.Writer.Allocating = .init(allocator);
+        defer peek_frame.deinit();
+        try renderFrame(workbench, &peek_frame.writer);
+        const start_row = tab.view.visibleRowOf(.{ .lineNumber = 2, .column = 1 }).? + tab.editor.top_inset_rows;
+        var mouse: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = tab.editor.quickDiffCellColumn(), .y = start_row };
+        try std.testing.expect(try tab.view.dispatchMouse(&mouse));
+        mouse.kind = .up;
+        mouse.default_prevented = false;
+        try std.testing.expect(try tab.view.dispatchMouse(&mouse));
+        const peek = controller.widget.?;
+        const embedded = peek.embedded.?;
+        try std.testing.expectEqual(tab.editor.document, embedded.widget.modified_editor.document);
+        try std.testing.expectEqualStrings("git", embedded.widget.original_editor.model.uri().scheme);
+        try std.testing.expect(!embedded.widget.sideBySide());
+        try std.testing.expect(tab.editor.dirty_diff_visible);
+        try renderFrame(workbench, &peek_frame.writer);
+        try std.testing.expect(embedded.widget.modified_view.isMounted());
+        try std.testing.expect(peek.peek.zone.zone_id != null);
+        try std.testing.expect(std.mem.indexOf(u8, peek.peek.detail, "1 of 2 changes") != null);
+        try workbench.commands.execute("editor.action.dirtydiff.next");
+        try std.testing.expectEqual(@as(usize, 1), peek.index);
+        try std.testing.expectEqual(embedded, peek.embedded.?);
+        try renderFrame(workbench, &peek_frame.writer);
+        try workbench.commands.execute("editor.action.dirtydiff.previous");
+        try std.testing.expectEqual(@as(usize, 0), peek.index);
+        try workbench.commands.execute("toggleQuickDiffWidgetFocus");
+        try std.testing.expect(peek.child_focused);
+        try std.testing.expectEqual(embedded.widget.modified_editor, workbench.code_editor_api.getFocusedCodeEditor().?);
+        try std.testing.expectEqual(embedded.widget.modified_editor, workbench.code_editor_api.getFocusedDiffEditor().?.getModifiedControl().?.editor);
+        try renderFrame(workbench, &peek_frame.writer);
+        const caret = tab.cursorCell() orelse return error.TestExpectedEmbeddedCursor;
+        try std.testing.expect(caret.row > @as(usize, @intFromFloat(@max(0, peek.peek.zone.top))));
+        var escape: ui.KeyEvent = .{ .key = .escape };
+        try std.testing.expect(tab.view.dispatchKey(&escape));
+        try std.testing.expect(controller.widget == null);
+        try std.testing.expect(!tab.editor.dirty_diff_visible);
+        try renderFrame(workbench, &peek_frame.writer);
+
+        // Only providers intersecting the current change appear in the base
+        // selector. Selecting another baseline replaces only the original.
+        const Quick = @import("../vs/workbench/contrib/scm/common/quickDiff.zig");
+        const Alternate = struct {
+            fn original(_: *anyopaque, a: std.mem.Allocator, _: []const u8) !?Quick.Original {
+                const content = try a.dupe(u8, "one\nalt\nthree\n");
+                errdefer a.free(content);
+                return .{ .content = content, .ref_label = try a.dupe(u8, "Alternate") };
+            }
+        };
+        var alternate: Quick.QuickDiffProvider = .{ .context = @constCast(&{}), .id = "alternate", .label = "Alternate", .get_original_fn = Alternate.original };
+        const service = workbench.scm.quick_diff_service.?;
+        _ = try service.addQuickDiffProvider(&alternate);
+        defer service.removeProvider(&alternate);
+        spins = 0;
+        while (entry.model.quick_diffs.len < 3 and spins < 5000) : (spins += 1) {
+            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
+        }
+        try std.testing.expect(entry.model.quick_diffs.len >= 3);
+        try controller.navigate(true, 2);
+        const multi = controller.widget.?;
+        try std.testing.expect(multi.peek.picker_label.len != 0);
+        const switch_action = multi.peek.picker_action.?;
+        switch_action.run(switch_action.context);
+        const picker = workbench.quick_access.inputService().pickerRef();
+        try std.testing.expect(picker.visible);
+        for (picker.items.items, 0..) |item, index| if (std.mem.eql(u8, item.id(), "alternate")) {
+            picker.setActiveIndex(index);
+            break;
+        };
+        picker.accept();
+        try std.testing.expectEqualStrings("alternate", multi.provider_id);
+        try std.testing.expectEqual(tab.editor.document, multi.embedded.?.widget.modified_editor.document);
+        try renderFrame(workbench, &peek_frame.writer);
+        try workbench.commands.execute("closeQuickDiff");
+        try std.testing.expect(controller.widget == null);
+        try workbench.setUserConfigurationValue("scm.diffDecorationsIgnoreTrimWhitespace", .{ .string = "true" });
+    }
     const initial_tabs = workbench.tabCount();
     const provider = workbench.git_model.repository.?;
     try std.testing.expect(provider.count() >= 3);

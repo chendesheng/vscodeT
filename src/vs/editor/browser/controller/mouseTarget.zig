@@ -112,17 +112,15 @@ pub fn createMouseTarget(host: TerminalMouseHost, x: usize, y: usize) !MouseTarg
         };
     }
     if (x < geometry.gutter_width) {
+        const position = try host.position_at_view_point(host.context, @min(view_line, geometry.view_line_count), 0);
         return .{
             .element = element,
             .type = if (x + 1 == geometry.gutter_width and geometry.gutter_width >= 2)
                 .gutter_line_decorations
             else
                 .gutter_line_numbers,
-            .position = try host.position_at_view_point(
-                host.context,
-                @min(view_line, geometry.view_line_count),
-                0,
-            ),
+            .position = position,
+            .range = Range.init(position.lineNumber, position.column, position.lineNumber, position.column),
             .mouse_column = mouse_column,
         };
     }

@@ -2738,6 +2738,8 @@ pub const TerminalWorkbench = struct {
         const quick_providers = provider.quickDiffProviders();
         try self.scm.attachProvider(provider.interface(), &quick_providers, .{
             .editors = .{ .part = self.part },
+            .view_factory = self.view_factory,
+            .quick_diff_menu = .{ .menus = &self.menu_service, .parent_context = self.core.context_keys.getContext() },
             .activity_service = &self.activity_service,
             .statusbar_service = &self.statusbar,
             .window = &self.window_events,

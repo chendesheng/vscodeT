@@ -634,6 +634,10 @@ pub const Editor = struct {
     on_did_change_quick_diff_context: Emitter(void),
     quick_diff_decoration_count: usize = 0,
     dirty_diff_visible: bool = false,
+    /// An embedded editor owns the text focus inside this editor's surface.
+    /// Its containing contribution clears this borrowed handle on disposal.
+    focused_embedded: ?EmbeddedEditorFocus = null,
+
     has_code_lens_provider: bool = false,
     screen_width: usize,
     screen_height: usize,
@@ -2206,6 +2210,17 @@ pub const Editor = struct {
         if (self.quick_diff_decoration_count == count) return;
         self.quick_diff_decoration_count = count;
         self.on_did_change_quick_diff_context.fire({}) catch {};
+    }
+
+    pub const EmbeddedEditorFocus = struct {
+        view: *@import("terminalEditorView.zig").IEditorView,
+        diff: editorBrowser.IDiffEditor,
+    };
+
+    pub fn setEmbeddedFocus(self: *Editor, focus: ?EmbeddedEditorFocus) void {
+        if (self.focused_embedded) |old| _ = old.view.setFocused(false);
+        self.focused_embedded = focus;
+        if (focus) |child| _ = child.view.setFocused(true);
     }
 
     pub fn setDirtyDiffVisible(self: *Editor, visible: bool) void {

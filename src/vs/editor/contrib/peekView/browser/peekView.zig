@@ -18,6 +18,11 @@ pub const PeekViewWidget = struct {
     title: []u8 = &.{},
     detail: []u8 = &.{},
     actions: []const Action = &.{},
+    extra_actions: ?ActionSet = null,
+    pending_actions: ?ActionSet = null,
+    picker_action: ?Action = null,
+    picker_label: []u8 = &.{},
+    picker_node: ?*ui.Node = null,
     frame_color: ui.Color = .{ .r = 0, .g = 122, .b = 204 },
     node: ?*ui.Node = null,
     header: ?*ui.Node = null,
@@ -34,6 +39,15 @@ pub const PeekViewWidget = struct {
         glyph: []const u8,
         context: *anyopaque,
         run: *const fn (*anyopaque) void,
+        run_with_id: ?*const fn (*anyopaque, []const u8) void = null,
+        enabled: bool = true,
+    };
+    const ActionSet = struct {
+        arena: std.heap.ArenaAllocator,
+        actions: []Action,
+        fn deinit(self: *ActionSet) void {
+            self.arena.deinit();
+        }
     };
     pub const BodyDelegate = struct {
         context: *anyopaque,
@@ -54,6 +68,9 @@ pub const PeekViewWidget = struct {
         self.on_did_close.deinit();
         self.allocator.free(self.title);
         self.allocator.free(self.detail);
+        self.allocator.free(self.picker_label);
+        if (self.extra_actions) |*set| set.deinit();
+        if (self.pending_actions) |*set| set.deinit();
     }
 
     pub fn setTitle(self: *PeekViewWidget, title: []const u8, detail: []const u8) !void {
@@ -64,6 +81,30 @@ pub const PeekViewWidget = struct {
         self.allocator.free(self.detail);
         self.title = title_copy;
         self.detail = detail_copy;
+        if (self.zone.zone_id != null) try self.zone.refresh();
+    }
+
+    /// The action bar is rebuilt in the next zone update: event dispatch may
+    /// still have a reference to one of the old action nodes.
+    pub fn setExtraActions(self: *PeekViewWidget, actions: []const Action) !void {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        const copy = try a.dupe(Action, actions);
+        for (copy) |*action| {
+            action.id = try a.dupe(u8, action.id);
+            action.label = try a.dupe(u8, action.label);
+            action.glyph = try a.dupe(u8, action.glyph);
+        }
+        if (self.pending_actions) |*pending| pending.deinit();
+        self.pending_actions = .{ .arena = arena, .actions = copy };
+        if (self.zone.zone_id != null) self.zone.refresh() catch {};
+    }
+
+    pub fn setPickerLabel(self: *PeekViewWidget, label: []const u8) !void {
+        const copy = try self.allocator.dupe(u8, label);
+        self.allocator.free(self.picker_label);
+        self.picker_label = copy;
         if (self.zone.zone_id != null) try self.zone.refresh();
     }
 
@@ -94,24 +135,48 @@ pub const PeekViewWidget = struct {
         try root.addClass(css.Class.peekview_widget);
         self.header = try element(root, .head, .div);
         const title = try element(self.header.?, .peekview_title, .div);
+        if (self.picker_action) |*action| {
+            const picker = try element(title, .dropdown, .span);
+            try picker.setAttribute("role", "button");
+            try picker.setAttribute("aria-label", action.label);
+            try picker.addEventListener(.{ .context = action, .mouse_down = actionClick });
+            self.picker_node = picker;
+        }
         self.title_node = try element(title, .filename, .span);
         self.detail_node = try element(title, .meta, .span);
         self.action_bar = try element(self.header.?, .peekview_actions, .div);
-        for (self.actions) |*action| {
-            const button = try self.action_bar.?.document.createElement(.span);
-            try button.setAttribute("role", "button");
-            try button.setAttribute("aria-label", action.label);
-            try button.setAttribute("data-peek-action", action.id);
-            button.setStyle(.{ .width = .{ .cells = 3 }, .height = .{ .cells = 1 }, .pointer = .pointer, .text_align = .center });
-            button.setHoverStyle(.{ .background = self.color("toolbar.hoverBackground", .{ 64, 64, 64 }) });
-            try button.setTextContent(action.glyph);
-            try button.addEventListener(.{ .context = @constCast(action), .mouse_down = actionClick });
-            _ = try self.action_bar.?.appendChild(button);
-        }
+        try self.renderActions();
         self.body = try element(root, .body, .div);
         self.bottom = try root.document.createElement(.div);
         _ = try root.appendChild(self.bottom.?);
         try self.updateLayout(info);
+    }
+
+    fn renderActions(self: *PeekViewWidget) !void {
+        const bar = self.action_bar orelse return;
+        bar.document.destroyChildren(bar);
+        if (self.pending_actions) |pending| {
+            if (self.extra_actions) |*old| old.deinit();
+            self.extra_actions = pending;
+            self.pending_actions = null;
+        }
+        if (self.extra_actions) |set| for (set.actions) |*action| try self.renderAction(action);
+        for (self.actions) |*action| try self.renderAction(action);
+    }
+
+    fn renderAction(self: *PeekViewWidget, action: *const Action) !void {
+        const bar = self.action_bar.?;
+        const button = try bar.document.createElement(.span);
+        errdefer bar.document.destroy(button);
+        try button.setAttribute("role", "button");
+        try button.setAttribute("aria-label", action.label);
+        try button.setAttribute("data-peek-action", action.id);
+        if (!action.enabled) try button.setAttribute("aria-disabled", "true");
+        button.setStyle(.{ .width = .{ .cells = 3 }, .height = .{ .cells = 1 }, .pointer = if (action.enabled) .pointer else .default, .text_align = .center });
+        if (action.enabled) button.setHoverStyle(.{ .background = self.color("toolbar.hoverBackground", .{ 64, 64, 64 }) });
+        try button.setTextContent(action.glyph);
+        try button.addEventListener(.{ .context = @constCast(action), .mouse_down = actionClick });
+        _ = try bar.appendChild(button);
     }
 
     fn update(context: *anyopaque, _: *ui.Node, info: browser.IViewZone.RenderInfo) !void {
@@ -120,10 +185,15 @@ pub const PeekViewWidget = struct {
     }
 
     fn updateLayout(self: *PeekViewWidget, info: browser.IViewZone.RenderInfo) !void {
+        if (self.pending_actions != null) try self.renderActions();
         const bg = self.color("peekViewTitle.background", .{ 30, 30, 30 });
         self.header.?.setStyle(.{ .width = .{ .percent = 100 }, .background = bg });
         self.title_node.?.setStyle(.{ .color = self.color("peekViewTitleLabel.foreground", .{ 204, 204, 204 }), .bold = true });
         self.detail_node.?.setStyle(.{ .color = self.color("peekViewTitleDescription.foreground", .{ 153, 153, 153 }) });
+        if (self.picker_node) |picker| {
+            picker.setStyle(.{ .display = if (self.picker_label.len == 0) .none else .inline_block });
+            try picker.setTextContent(self.picker_label);
+        }
         try self.title_node.?.setTextContent(self.title);
         try self.detail_node.?.setTextContent(self.detail);
         const body_rows = info.height -| 2;
@@ -139,7 +209,8 @@ pub const PeekViewWidget = struct {
         const action: *const Action = @ptrCast(@alignCast(context.?));
         event.preventDefault();
         event.stopPropagation();
-        action.run(action.context);
+        if (!action.enabled) return;
+        if (action.run_with_id) |run| run(action.context, action.id) else action.run(action.context);
     }
 
     fn beforeRemove(context: *anyopaque) void {
@@ -148,6 +219,7 @@ pub const PeekViewWidget = struct {
         self.node = null;
         self.header = null;
         self.title_node = null;
+        self.picker_node = null;
         self.detail_node = null;
         self.action_bar = null;
         self.body = null;

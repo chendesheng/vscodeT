@@ -25,7 +25,10 @@ pub const CodeEditorService = struct {
             if (!hasTextControl(tab)) continue;
             if (tab.diff) |diff| {
                 if (diff.widget.focusedView().isFocused()) return diff.widget.focusedEditor();
-            } else if (tab.view.isFocused()) return tab.editor;
+            } else if (tab.view.isFocused()) {
+                if (tab.editor.focused_embedded) |child| return child.view.editor;
+                return tab.editor;
+            }
         }
         return null;
     }
@@ -36,6 +39,8 @@ pub const CodeEditorService = struct {
             const tab = group.activeTab() orelse continue;
             if (tab.diff) |diff| {
                 if (diff.widget.focusedView().isFocused()) return diff.widget.interface();
+            } else if (tab.view.isFocused()) {
+                if (tab.editor.focused_embedded) |child| return child.diff;
             }
         }
         // The accessible review surface is not a code-editor widget. The

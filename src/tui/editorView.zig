@@ -1610,6 +1610,7 @@ pub const View = struct {
     pub fn setFocused(self: *View, focused: bool) bool {
         if (self.isFocused() == focused) return false;
         if (!focused and self.mount != null) self.focusEditor();
+        if (self.editor.focused_embedded) |child| _ = child.view.setFocused(focused);
         self.editor.emitViewEvent(.{ .ViewFocusChanged = .{ .isFocused = focused } });
         self.invalidate();
         return true;
@@ -1807,6 +1808,16 @@ pub const View = struct {
     /// out. Returns null when the caret is outside the text area.
     pub fn cursorCell(self: *View) ?Cell {
         self.ensureRendered() catch return null;
+        if (self.editor.focused_embedded) |child| {
+            if (!child.view.isMounted()) return null;
+            const cursor = child.view.cursorCell() orelse return null;
+            const parent = self.surfaceContext();
+            const inner = child.view.surfaceContext();
+            const col = inner.x + cursor.col;
+            const row = inner.y + cursor.row;
+            if (col < parent.x or row < parent.y or col >= parent.x + self.editor.screen_width or row >= parent.y + self.editor.screen_height) return null;
+            return .{ .row = row - parent.y, .col = col - parent.x };
+        }
         // A focused widget paints its own caret. The editor owns the hardware cursor.
         if (self.focusedElement() != null) return null;
         const row = self.cursor_row orelse return null;

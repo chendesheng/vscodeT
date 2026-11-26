@@ -52,6 +52,8 @@ pub const SCMContribution = struct {
 
     pub const Options = struct {
         editors: EditorService,
+        view_factory: ?@import("../../../../editor/browser/widget/codeEditor/terminalEditorView.zig").EditorViewFactory = null,
+        quick_diff_menu: ?@import("quickDiffWidget.zig").MenuHost = null,
         activity_service: *ActivityService,
         statusbar_service: *@import("../../../browser/parts/statusbar/statusbarPart.zig").StatusbarService,
         window: *WindowQueue,
@@ -107,6 +109,9 @@ pub const SCMContribution = struct {
         controller.* = QuickDiffWorkbenchController.init(allocator, quick_service, options.window);
         self.quick_diff_controller = controller;
         controller.resources_changed = provider.on_did_change_resources;
+        controller.view_factory = options.view_factory;
+        controller.quick_input = options.quick_input;
+        controller.menu_host = options.quick_diff_menu;
         try controller.start(options.editors, options.configuration);
 
         const api = try allocator.create(scm.ISCMService);

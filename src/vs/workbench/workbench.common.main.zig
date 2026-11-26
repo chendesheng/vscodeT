@@ -131,6 +131,10 @@ pub fn registerActions(commands: *CommandRegistry, instantiation: *Instantiation
     for (scm_contribution.view_actions) |action| try commands.registerAction(instantiation, action);
     for (contributions.git_open) |action| try commands.registerAction(instantiation, action);
     for (contributions.git_diff) |action| try commands.registerAction(instantiation, action);
+    const quick_diff_widget = @import("contrib/scm/browser/quickDiffWidget.zig");
+    for (quick_diff_widget.editor_actions) |action| try commands.registerEditorAction(instantiation, action);
+    for (quick_diff_widget.widget_actions) |action| try commands.registerAction(instantiation, action);
+    try quick_diff_widget.registerGoMenu(&commands.menus);
     for (@import("browser/parts/editor/diffEditorCommands.zig").diff_actions) |action| try commands.registerAction(instantiation, action);
     for (@import("../editor/browser/widget/diffEditor/commands.zig").diff_actions) |action| try commands.registerAction(instantiation, action);
     try @import("browser/parts/editor/editor.contribution.zig").registerDiffEditorTitle(&commands.menus);

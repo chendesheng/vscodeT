@@ -50,6 +50,8 @@ const WindowContextKeys = struct {
     editor_text_focus: contextkeys.IContextKey,
     editor_lang_id: contextkeys.IContextKey,
     editor_has_code_lens_provider: contextkeys.IContextKey,
+    quick_diff_decoration_count: contextkeys.IContextKey,
+    dirty_diff_visible: contextkeys.IContextKey,
     active_custom_editor_id: contextkeys.IContextKey,
     input_focus: contextkeys.IContextKey,
     list_focus: contextkeys.IContextKey,
@@ -86,6 +88,8 @@ const WindowContextKeys = struct {
             .diff_original_uri = try service.createKey("diffEditorOriginalUri", .{ .string = "" }),
             .diff_modified_uri = try service.createKey("diffEditorModifiedUri", .{ .string = "" }),
             .editor_has_code_lens_provider = try service.createKey("editorHasCodeLensProvider", .{ .boolean = false }),
+            .quick_diff_decoration_count = try service.createKey("quickDiffDecorationCount", .{ .number = 0 }),
+            .dirty_diff_visible = try service.createKey("dirtyDiffVisible", .{ .boolean = false }),
             .editor_lang_id = try service.createKey("editorLangId", .{ .string = "" }),
             .active_custom_editor_id = try service.createKey("activeCustomEditorId", .{ .string = "" }),
             .editor_text_focus = try service.createKey("editorTextFocus", .{ .boolean = false }),
@@ -126,6 +130,7 @@ pub const WorkbenchContextKeysHandler = struct {
     language_listener: ?usize = null,
     read_only_listener: ?usize = null,
     code_lens_provider_listener: ?usize = null,
+    quick_diff_context_listener: ?usize = null,
     working_copy_service: *WorkingCopyService,
     dirty_working_copies: contextkeys.IContextKey,
     in_zen_mode: contextkeys.IContextKey,
@@ -260,7 +265,10 @@ pub const WorkbenchContextKeysHandler = struct {
         const read_only_listener = try active.on_did_change_read_only.listen(self, onReadOnlyChanged);
         errdefer active.on_did_change_read_only.unlisten(read_only_listener);
         self.code_lens_provider_listener = try active.on_did_change_code_lens_provider.listen(self, onCodeLensProviderChanged);
+        errdefer active.on_did_change_code_lens_provider.unlisten(self.code_lens_provider_listener.?);
+        self.quick_diff_context_listener = try active.on_did_change_quick_diff_context.listen(self, onQuickDiffContextChanged);
         self.window_keys.editor_has_code_lens_provider.set(.{ .boolean = active.has_code_lens_provider });
+        self.updateQuickDiffContext(active);
         self.read_only_listener = read_only_listener;
         self.language_listener = language_listener;
         self.active_editor = active;
@@ -271,6 +279,10 @@ pub const WorkbenchContextKeysHandler = struct {
         if (self.language_listener) |listener| editor.model.removeDidChangeLanguageListener(listener);
         if (self.read_only_listener) |listener| editor.on_did_change_read_only.unlisten(listener);
         if (self.code_lens_provider_listener) |listener| editor.on_did_change_code_lens_provider.unlisten(listener);
+        if (self.quick_diff_context_listener) |listener| editor.on_did_change_quick_diff_context.unlisten(listener);
+        self.quick_diff_context_listener = null;
+        self.window_keys.quick_diff_decoration_count.set(.{ .number = 0 });
+        self.window_keys.dirty_diff_visible.set(.{ .boolean = false });
         self.code_lens_provider_listener = null;
         self.window_keys.editor_has_code_lens_provider.set(.{ .boolean = false });
         self.language_listener = null;
@@ -284,6 +296,15 @@ pub const WorkbenchContextKeysHandler = struct {
 
     fn onCodeLensProviderChanged(has_provider: bool, self: *@This()) !void {
         self.window_keys.editor_has_code_lens_provider.set(.{ .boolean = has_provider });
+    }
+
+    fn updateQuickDiffContext(self: *@This(), editor: *Editor) void {
+        self.window_keys.quick_diff_decoration_count.set(.{ .number = @floatFromInt(editor.quick_diff_decoration_count) });
+        self.window_keys.dirty_diff_visible.set(.{ .boolean = editor.dirty_diff_visible });
+    }
+
+    fn onQuickDiffContextChanged(_: void, self: *@This()) !void {
+        if (self.active_editor) |editor| self.updateQuickDiffContext(editor);
     }
 
     fn onReadOnlyChanged(read_only: bool, self: *@This()) !void {

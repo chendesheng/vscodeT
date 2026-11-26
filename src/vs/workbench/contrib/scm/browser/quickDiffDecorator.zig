@@ -360,6 +360,9 @@ fn createDecoration(
 /// find/bracket/word/hover/search, so 6 is free.
 pub const decoration_owner: usize = 6;
 
+const QuickDiffEditorController = @import("quickDiffWidget.zig").QuickDiffEditorController;
+const EditorViewFactory = @import("../../../../editor/browser/widget/codeEditor/terminalEditorView.zig").EditorViewFactory;
+
 pub const Entry = struct {
     editor: *Editor,
     path: []u8,
@@ -369,9 +372,11 @@ pub const Entry = struct {
     provider_listener: usize = undefined,
     diff_listener: usize = undefined,
     resource_listener: ?usize = null,
+    peek_controller: ?*QuickDiffEditorController = null,
 
     fn onDiffChanged(_: void, self: *Entry) !void {
         try self.decorator.update();
+        self.editor.setQuickDiffDecorationCount(self.model.changes.items.len);
     }
 
     fn onContent(_: @import("../../../../editor/common/textModelEvents.zig").InternalModelContentChangeEvent, self: *Entry) !void {
@@ -393,6 +398,10 @@ pub const QuickDiffWorkbenchController = struct {
     resources_changed: ?*ResourceEvent = null,
     config: Config = .{},
     ignore_trim_whitespace: bool = false,
+    view_factory: ?EditorViewFactory = null,
+    quick_input: ?*@import("../../../../platform/quickinput/browser/quickInputService.zig").QuickInputService = null,
+    menu_host: ?@import("quickDiffWidget.zig").MenuHost = null,
+    gutter_action: bool = true,
     editors: ?EditorService = null,
     visible_listener: ?usize = null,
     configuration_service: ?*ConfigurationService = null,
@@ -499,7 +508,17 @@ pub const QuickDiffWorkbenchController = struct {
         defer self.removeHiddenDecorators(editors);
         var visible = editors.visibleEditorPanes();
         while (visible.next()) |pane| {
-            if (pane.file_input != null) try self.attach(pane.editor, pane.editor.path);
+            if (pane.file_input != null) {
+                try self.attach(pane.editor, pane.editor.path);
+                if (self.view_factory) |factory| for (self.entries.items) |entry| {
+                    if (entry.editor != pane.editor) continue;
+                    if (entry.peek_controller == null) entry.peek_controller = try QuickDiffEditorController.create(self.allocator, pane.view, &entry.model, factory, &self.worker, self.window);
+                    entry.peek_controller.?.gutter_action = self.gutter_action;
+                    entry.peek_controller.?.quick_input = self.quick_input;
+                    entry.peek_controller.?.menu_host = self.menu_host;
+                    break;
+                };
+            }
         }
     }
 
@@ -528,6 +547,7 @@ pub const QuickDiffWorkbenchController = struct {
         self.configuration_service = service;
         if (service) |config| {
             self.configuration_listener = try config.listenConfigurationChange(self, onDidChangeConfiguration);
+            self.applyGutterAction(config);
             try self.applyDecorationSettings(config);
             self.setIgnoreTrimWhitespace(quick_diff_model_mod.ignoreTrimWhitespace(config));
         }
@@ -535,12 +555,23 @@ pub const QuickDiffWorkbenchController = struct {
 
     fn onDidChangeConfiguration(change: configuration.Change, self: *QuickDiffWorkbenchController) !void {
         const config = self.configuration_service.?;
+        if (configuration.affectsConfiguration(change, "scm.diffDecorationsGutterAction")) self.applyGutterAction(config);
         if (configuration.affectsConfiguration(change, "scm.diffDecorations") or
             configuration.affectsConfiguration(change, "scm.diffDecorationsGutterPattern"))
             try self.applyDecorationSettings(config);
         if (configuration.affectsConfiguration(change, "scm.diffDecorationsIgnoreTrimWhitespace") or
             configuration.affectsConfiguration(change, "diffEditor.ignoreTrimWhitespace"))
             self.setIgnoreTrimWhitespace(quick_diff_model_mod.ignoreTrimWhitespace(config));
+    }
+
+    fn applyGutterAction(self: *QuickDiffWorkbenchController, config: *ConfigurationService) void {
+        self.gutter_action = true;
+        if (config.getValue("scm.diffDecorationsGutterAction", .{})) |value| {
+            if (value.* == .string) self.gutter_action = !std.mem.eql(u8, value.string, "none");
+        }
+        for (self.entries.items) |entry| if (entry.peek_controller) |controller| {
+            controller.gutter_action = self.gutter_action;
+        };
     }
 
     fn applyDecorationSettings(self: *QuickDiffWorkbenchController, service: *ConfigurationService) !void {
@@ -587,6 +618,8 @@ pub const QuickDiffWorkbenchController = struct {
     }
 
     fn destroyEntry(self: *QuickDiffWorkbenchController, entry: *Entry) void {
+        if (entry.peek_controller) |controller| controller.destroy();
+        entry.editor.setQuickDiffDecorationCount(0);
         entry.editor.model.removeDidChangeContentListener(entry.content_listener);
         self.service.on_did_change_providers.unlisten(entry.provider_listener);
         if (entry.resource_listener) |id| self.resources_changed.?.unlisten(id);
