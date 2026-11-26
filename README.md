@@ -1343,8 +1343,11 @@ console API for raw mode, sizing and input polling.
   visibility/mode/position, focus and accessibility help. The file header
   resolves scoped actions from the registered menu and forwards the target
   resource URI. The retained disclosure and toolbar support keyboard focus
-  and roving action navigation. Unchanged-region drags retain window pointer
-  capture when the pointer leaves the pane. Both source-backed and explicit
+  and roving action navigation. **Toggle Tab Key Moves Focus** enables
+  bidirectional traversal through headers, real diff panes and the optional
+  file list, with the normal status-bar indicator. Unchanged-region, sash,
+  overview-ruler and inline deleted-code selection drags retain window
+  pointer capture when the pointer leaves the pane. Both source-backed and explicit
   inputs restore through the normal session serializer. The Developer layout-debug command opens a
   live JSONL report in a side editor, including geometry edits.
   Single and multi-file diff resources share the URI model resolver, including

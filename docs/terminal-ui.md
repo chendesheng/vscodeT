@@ -2137,6 +2137,15 @@ On unbind, the model-bound Views, cursor and feature registrations detach
 through the set-model lifecycle; on direct replacement, existing Views for
 unchanged sides remain attached. The URI model resolver owns shared model
 references and delivers asynchronous provider changes on the window dispatcher.
+The native editor text caret and retained header/file-list surfaces are
+separate focus boundaries rather than one browser DOM. The upstream Tab Focus
+mode and registered toggle action move through those boundaries in both
+directions; disabled mode leaves normal editor Tab/Shift-Tab input intact.
+Cross-surface navigation uses the registered visible workbench layout parts.
+Sash, overview-ruler, unchanged-region and inline deleted-code gestures use
+window-level pointer capture; a release beyond the pane still reaches the
+owner, which cancels capture on detach.
+
 Graph revision sources resolve asynchronously and preserve URI identity, absent sides,
 binary placeholders, collapse state and active item across virtualization.
 The live SCM source and explicit resource-pair inputs mount the same pane and

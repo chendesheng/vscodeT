@@ -172,6 +172,19 @@ windows and multi-repository workspaces, further contribution lifecycle
 and focus/capture coverage. Native large-diff benchmarks are recorded below. Browser pixel geometry, browser accessibility-tree traversal and
 a native separate Agents window remain genuine terminal-boundary adaptations.
 
+### Native focus and gesture checkpoint (2026-11-27)
+
+The upstream Tab Focus action and global change emitter now drive the
+workbench context and editor-status entry. Native Tab/Shift-Tab traversal
+crosses the real original/modified panes, retained multi-diff header stops,
+adjacent items and optional file list without inserting indentation while the
+mode is enabled. The native window is the boundary between independently
+mounted focus surfaces. Sash, overview slider, unchanged-region drags and
+inline deleted-code selection use window capture through mouse release and
+cancel on detach. The focused suite passes 490/490 through this checkpoint,
+including actual action registration, header-to-body and reverse traversal,
+and the exact original text copied after a drag outside the deleted-code zone.
+
 ### Native performance measurements (2026-11-27)
 
 The opt-in `zig build bench-open --summary all` benchmark exercises native
