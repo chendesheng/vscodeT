@@ -143,6 +143,158 @@ pub fn ignoreTrimWhitespace(service: *@import("../../../services/configuration/b
     };
 }
 
+/// Upstream IQuickDiffModelService: only already-resolved text-file models
+/// can acquire an independent reference. The options are part of the key.
+pub const IQuickDiffModelService = struct {
+    context: *anyopaque,
+    acquire: *const fn (*anyopaque, std.Uri, QuickDiffModelOptions) anyerror!?QuickDiffModelReference,
+    pub fn createQuickDiffModelReference(self: IQuickDiffModelService, resource: std.Uri, options: QuickDiffModelOptions) !?QuickDiffModelReference {
+        return self.acquire(self.context, resource, options);
+    }
+};
+const instantiation = @import("../../../../platform/instantiation/common/instantiation.zig");
+pub const quick_diff_model_service_id = instantiation.ServiceIdentifier(IQuickDiffModelService, "quickDiffModelService");
+
+pub const QuickDiffModelReference = struct {
+    object: *QuickDiffModel,
+    entry: ?*QuickDiffModelService.Entry,
+
+    pub fn dispose(self: *QuickDiffModelReference) void {
+        const entry = self.entry orelse return;
+        self.entry = null;
+        entry.owner.release(entry);
+    }
+};
+
+/// Window-owned reference collection, corresponding to
+/// QuickDiffModelReferenceCollection and QuickDiffModelService in upstream.
+/// A split editor, the change peek and API consumers share one computation
+/// and one original-reference set for a canonical resource/options pair.
+pub const QuickDiffModelService = struct {
+    allocator: Allocator,
+    service: *QuickDiffService,
+    window: *@import("../../../../base/common/windowDispatch.zig").Queue,
+    resolver: ?model_resolver.ITextModelService,
+    worker: worker_service.EditorWorkerService,
+    references: std.StringHashMapUnmanaged(*Entry) = .empty,
+    resources_changed: ?*Emitter(void) = null,
+    ignore_trim_whitespace: bool = false,
+
+    const Entry = struct {
+        owner: *QuickDiffModelService,
+        key: []u8,
+        path: []u8,
+        document: *EditorDocument,
+        document_reference: ?model_resolver.ModelReference,
+        model: QuickDiffModel,
+        refs: usize = 1,
+
+        fn destroy(self: *Entry) void {
+            const a = self.owner.allocator;
+            self.model.deinit();
+            if (self.document_reference) |*reference| reference.dispose();
+            self.document.release();
+            a.free(self.path);
+            a.free(self.key);
+            a.destroy(self);
+        }
+    };
+
+    pub fn init(allocator: Allocator, service: *QuickDiffService, window: *@import("../../../../base/common/windowDispatch.zig").Queue, resolver: ?model_resolver.ITextModelService) QuickDiffModelService {
+        return .{ .allocator = allocator, .service = service, .window = window, .resolver = resolver, .worker = .init() };
+    }
+
+    pub fn interface(self: *QuickDiffModelService) IQuickDiffModelService {
+        return .{ .context = self, .acquire = acquireResource };
+    }
+
+    fn acquireResource(context: *anyopaque, resource: std.Uri, options: QuickDiffModelOptions) !?QuickDiffModelReference {
+        const self: *QuickDiffModelService = @ptrCast(@alignCast(context));
+        return self.createQuickDiffModelReference(resource, options);
+    }
+
+    pub fn createQuickDiffModelReference(self: *QuickDiffModelService, resource: std.Uri, options: QuickDiffModelOptions) !?QuickDiffModelReference {
+        if (!std.mem.eql(u8, resource.scheme, "file")) return null;
+        const resolver = self.resolver orelse return null;
+        var reference = resolver.acquireModelReference(resource) catch return null;
+        defer reference.dispose();
+        if (reference.object.isReadonly()) return null;
+        const document = TextModelResolverService.documentOf(reference);
+        return try self.acquireForDocument(document, document.path, options);
+    }
+
+    /// A native editor input already owns the resolved shared document; the
+    /// tests and decorator use this boundary instead of reopening it.
+    pub fn acquireForDocument(self: *QuickDiffModelService, document: *EditorDocument, path: []const u8, options: QuickDiffModelOptions) !QuickDiffModelReference {
+        const a = self.allocator;
+        const resource = try @import("../../../../base/common/stdUri.zig").resourceKey(a, document.model.uri());
+        defer a.free(resource);
+        const key = try std.fmt.allocPrint(a, "{s}\x00{s}:{?d}", .{ resource, @tagName(options.algorithm), options.max_computation_time_ms });
+        errdefer a.free(key);
+        if (self.references.get(key)) |entry| {
+            if (entry.document != document) return error.QuickDiffModelMismatch;
+            a.free(key);
+            entry.refs += 1;
+            return .{ .object = &entry.model, .entry = entry };
+        }
+        const entry = try a.create(Entry);
+        errdefer a.destroy(entry);
+        const path_copy = try a.dupe(u8, path);
+        errdefer a.free(path_copy);
+        document.retain();
+        errdefer document.release();
+        var reference: ?model_resolver.ModelReference = if (self.resolver) |resolver| resolver.acquireModelReference(document.model.uri()) catch null else null;
+        errdefer if (reference) |*value| value.dispose();
+        entry.* = .{
+            .owner = self,
+            .key = key,
+            .path = path_copy,
+            .document = document,
+            .document_reference = reference,
+            .model = QuickDiffModel.init(a, document.model, path_copy, self.service, options),
+        };
+        errdefer entry.model.deinit();
+        entry.model.resolver = self.resolver;
+        if (self.worker.replies_ready.queue == null) self.worker.attachWindow(self.window);
+        entry.model.attachWindow(self.window, &self.worker);
+        entry.model.setIgnoreTrimWhitespace(self.ignore_trim_whitespace);
+        try entry.model.startListening(self.resources_changed);
+        try self.references.put(a, key, entry);
+        entry.model.triggerDiff(time.milliTimestamp());
+        return .{ .object = &entry.model, .entry = entry };
+    }
+
+    fn release(self: *QuickDiffModelService, entry: *Entry) void {
+        std.debug.assert(entry.refs > 0);
+        entry.refs -= 1;
+        if (entry.refs != 0) return;
+        _ = self.references.remove(entry.key);
+        entry.destroy();
+        if (self.references.count() == 0) self.worker.stopWorker();
+    }
+
+    pub fn setRepositoryResources(self: *QuickDiffModelService, source: ?*Emitter(void)) !void {
+        if (self.resources_changed == source) return;
+        self.resources_changed = source;
+        var entries = self.references.valueIterator();
+        while (entries.next()) |entry| try entry.*.model.setRepositoryResources(source);
+    }
+
+    pub fn setIgnoreTrimWhitespace(self: *QuickDiffModelService, ignore: bool) void {
+        if (self.ignore_trim_whitespace == ignore) return;
+        self.ignore_trim_whitespace = ignore;
+        var entries = self.references.valueIterator();
+        while (entries.next()) |entry| entry.*.model.setIgnoreTrimWhitespace(ignore);
+    }
+
+    pub fn deinit(self: *QuickDiffModelService) void {
+        var entries = self.references.valueIterator();
+        while (entries.next()) |entry| entry.*.destroy();
+        self.references.deinit(self.allocator);
+        self.worker.deinit();
+    }
+};
+
 pub const QuickDiffModel = struct {
     allocator: Allocator,
     model: *TextModel,
@@ -166,6 +318,10 @@ pub const QuickDiffModel = struct {
     scheduler: @import("../../../../base/common/windowDispatch.zig").Task = .{},
     worker: ?*worker_service.EditorWorkerService = null,
     disposed: bool = false,
+    modified_listener: ?usize = null,
+    providers_listener: ?usize = null,
+    repository_resources: ?*Emitter(void) = null,
+    repository_listener: ?usize = null,
 
     const OriginalModel = struct {
         uri: []u8,
@@ -370,9 +526,31 @@ pub const QuickDiffModel = struct {
         return self;
     }
 
+    /// Model-owned listeners are independent of the decorator and the peek.
+    fn startListening(self: *QuickDiffModel, repository_resources: ?*Emitter(void)) !void {
+        self.modified_listener = try self.model.onDidChangeContentWithContextId(self, originalContentChanged);
+        self.providers_listener = try self.service.on_did_change_providers.listen(self, onResourcesChanged);
+        try self.setRepositoryResources(repository_resources);
+    }
+
+    fn onResourcesChanged(_: void, self: *QuickDiffModel) !void {
+        self.triggerDiff(time.milliTimestamp());
+    }
+
+    fn setRepositoryResources(self: *QuickDiffModel, source: ?*Emitter(void)) !void {
+        if (self.repository_listener) |id| self.repository_resources.?.unlisten(id);
+        self.repository_listener = null;
+        self.repository_resources = source;
+        if (source) |events| self.repository_listener = try events.listen(self, onResourcesChanged);
+        self.triggerDiff(time.milliTimestamp());
+    }
+
     pub fn deinit(self: *QuickDiffModel) void {
         self.scheduler.schedule(null);
         self.disposed = true;
+        if (self.modified_listener) |id| self.model.removeDidChangeContentListener(id);
+        if (self.providers_listener) |id| self.service.on_did_change_providers.unlisten(id);
+        if (self.repository_listener) |id| self.repository_resources.?.unlisten(id);
         if (self.pending) |request| request.owner = null;
         if (self.resolving) |pending| pending.destroy();
         self.resolving = null;
@@ -393,7 +571,7 @@ pub const QuickDiffModel = struct {
     pub fn setIgnoreTrimWhitespace(self: *QuickDiffModel, ignore: bool) void {
         if (self.ignore_trim_whitespace == ignore) return;
         self.ignore_trim_whitespace = ignore;
-        self.triggerDiff(0);
+        self.triggerDiff(time.milliTimestamp());
     }
 
     /// Debounced recompute trigger (upstream `ThrottledDelayer(200)`).

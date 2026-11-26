@@ -31,8 +31,10 @@ test "quickDiffController: attach, apply gutter width and detach" {
     var resources = ResourceEvent.init(allocator);
     defer resources.deinit();
     var window = @import("../../../../../base/common/windowDispatch.zig").Queue{ .io = testing.io };
-    var controller = QuickDiffWorkbenchController.init(allocator, &service, &window);
-    controller.resources_changed = &resources;
+    var models = @import("../../browser/quickDiffModel.zig").QuickDiffModelService.init(allocator, &service, &window, null);
+    defer models.deinit();
+    try models.setRepositoryResources(&resources);
+    var controller = QuickDiffWorkbenchController.init(allocator, &service, &models);
     defer controller.deinit();
 
     try controller.attach(editor, "/repo/test.zig");
@@ -41,7 +43,7 @@ test "quickDiffController: attach, apply gutter width and detach" {
     const then = time.milliTimestamp() + 201;
     try testing.expect(!window.dispatch(then));
     try testing.expect(controller.entries.items[0].model.pending != null);
-    controller.worker.waitForReply();
+    models.worker.waitForReply();
     try testing.expect(window.dispatch(then));
     try testing.expect(editor.decorationGeneration() > 0);
     try testing.expect(controller.entries.items[0].model.due_at == null);
@@ -73,7 +75,9 @@ test "quickDiffController: a scheduled diff updates after an edit and config dis
     }
 
     var window = @import("../../../../../base/common/windowDispatch.zig").Queue{ .io = testing.io };
-    var controller = QuickDiffWorkbenchController.init(allocator, &service, &window);
+    var models = @import("../../browser/quickDiffModel.zig").QuickDiffModelService.init(allocator, &service, &window, null);
+    defer models.deinit();
+    var controller = QuickDiffWorkbenchController.init(allocator, &service, &models);
     defer controller.deinit();
     try controller.attach(editor, "/repo/test.zig");
 
@@ -82,7 +86,7 @@ test "quickDiffController: a scheduled diff updates after an edit and config dis
     try testing.expect(!window.dispatch(due - 1));
     try testing.expect(!window.dispatch(due));
     try testing.expect(controller.entries.items[0].model.pending != null);
-    controller.worker.waitForReply();
+    models.worker.waitForReply();
     try testing.expect(window.dispatch(due));
 
     try controller.setConfig(.{ .decorations = .none });
@@ -116,3 +120,52 @@ const TestProvider = struct {
         };
     }
 };
+
+test "quickDiffController: visible split editors share one computation and independent model references" {
+    const a = testing.allocator;
+    var providers = QuickDiffService.init(a, null);
+    defer providers.deinit();
+    var provider = TestProvider{};
+    provider.init(a, "git.primary");
+    defer provider.deinit();
+    _ = try providers.addQuickDiffProvider(&provider.base);
+    const editor = try EditorMod.Editor.createFromText(a, testing.io, "a\nB", "test.zig", 60, 10);
+    defer {
+        editor.deinit();
+        a.destroy(editor);
+    }
+    const split = try EditorMod.Editor.createViewFromEditor(editor, 60, 10);
+    defer {
+        split.deinit();
+        a.destroy(split);
+    }
+    var queue: @import("../../../../../base/common/windowDispatch.zig").Queue = .{ .io = testing.io };
+    var resources = ResourceEvent.init(a);
+    defer resources.deinit();
+    var models = @import("../../browser/quickDiffModel.zig").QuickDiffModelService.init(a, &providers, &queue, null);
+    defer models.deinit();
+    try models.setRepositoryResources(&resources);
+    var controller = QuickDiffWorkbenchController.init(a, &providers, &models);
+    defer controller.deinit();
+    try controller.attach(editor, "/repo/test.zig");
+    try controller.attach(split, "/repo/test.zig");
+    const first = controller.entries.items[0].model;
+    try testing.expectEqual(first, controller.entries.items[1].model);
+    try testing.expectEqual(@as(usize, 1), models.references.count());
+    try testing.expectEqual(@as(usize, 1), resources.listenerCount());
+    const deadline = first.due_at.?;
+    _ = queue.dispatch(deadline);
+    models.worker.waitForReply();
+    _ = queue.dispatch(deadline);
+    try testing.expectEqual(@as(usize, 1), first.changes.items.len);
+    try testing.expectEqual(@as(usize, 1), editor.quick_diff_decoration_count);
+    try testing.expectEqual(@as(usize, 1), split.quick_diff_decoration_count);
+    controller.detach(editor);
+    try testing.expectEqual(@as(usize, 1), models.references.count());
+    try testing.expectEqual(first, controller.entries.items[0].model);
+    try resources.fire({});
+    try testing.expect(first.due_at != null);
+    controller.detach(split);
+    try testing.expectEqual(@as(usize, 0), models.references.count());
+    try testing.expect(!resources.hasListeners());
+}

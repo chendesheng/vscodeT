@@ -1224,6 +1224,7 @@ pub const TerminalWorkbench = struct {
         self.editor_api = self.editors.interface();
         _ = try self.services.set(@import("../vs/workbench/services/editor/common/editorService.zig").editor_service_id, &self.editor_api);
         _ = try self.services.set(@import("../vs/editor/common/services/resolverService.zig").text_model_service_id, &self.text_model_api);
+        _ = try self.services.set(@import("../vs/workbench/contrib/scm/browser/quickDiffModel.zig").quick_diff_model_service_id, self.scm.quick_diff_model_api.?);
         _ = try self.services.set(@import("../vs/workbench/contrib/multiDiffEditor/browser/multiDiffSourceResolverService.zig").multi_diff_source_resolver_service_id, &self.multi_diff_sources_api);
         self.diff_commands = .{
             .editor_service = &self.editors,
@@ -1359,6 +1360,7 @@ pub const TerminalWorkbench = struct {
         errdefer self.activity_service.deinit();
         const scm_api = try self.scm.ensureService();
         errdefer self.scm.deinit();
+        _ = try self.scm.ensureQuickDiffServices(&self.window_events, self.text_model_api, &self.notification_storage);
         const sources = @import("../vs/workbench/contrib/multiDiffEditor/browser/multiDiffSourceResolverService.zig");
         self.multi_diff_sources = sources.MultiDiffSourceResolverService.init(self.allocator);
         errdefer self.multi_diff_sources.deinit();

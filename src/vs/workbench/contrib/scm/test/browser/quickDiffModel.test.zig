@@ -392,3 +392,50 @@ test "quickDiffModel: URI references are shared, updated by model events, and re
     }
     try std.testing.expectEqualStrings("new", try original.model.borrowLineContent(1));
 }
+
+test "QuickDiffModelService: canonical resource and options share model lifetime independently of callers" {
+    const a = std.testing.allocator;
+    const Queue = @import("../../../../../base/common/windowDispatch.zig").Queue;
+    const Resolver = @import("../../../../services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService;
+    const Emitter = @import("../../../../../base/common/event.zig").Emitter;
+    var queue: Queue = .{ .io = std.testing.io };
+    var resolver = Resolver.init(a, std.testing.io, &queue);
+    defer resolver.deinit();
+    const uri = try std.Uri.parse("file:///repo/quick-diff.txt");
+    var working = try resolver.createResolvedModelReference(uri, "/repo/quick-diff.txt", "file", false);
+    defer working.dispose();
+    const doc = Resolver.documentOf(working);
+    var providers = quick_diff_service.QuickDiffService.init(a, null);
+    defer providers.deinit();
+    var resources = Emitter(void).init(a);
+    defer resources.deinit();
+    var models = model_mod.QuickDiffModelService.init(a, &providers, &queue, resolver.interface());
+    defer models.deinit();
+    try models.setRepositoryResources(&resources);
+    const api = models.interface();
+    try std.testing.expect((try api.createQuickDiffModelReference(try std.Uri.parse("git:/missing"), .{})) == null);
+    try std.testing.expect((try api.createQuickDiffModelReference(try std.Uri.parse("file:///repo/missing.txt"), .{})) == null);
+    var first = (try api.createQuickDiffModelReference(uri, .{})).?;
+    defer first.dispose();
+    var second = (try api.createQuickDiffModelReference(uri, .{})).?;
+    defer second.dispose();
+    var different = (try api.createQuickDiffModelReference(uri, .{ .max_computation_time_ms = null })).?;
+    defer different.dispose();
+    try std.testing.expectEqual(first.object, second.object);
+    try std.testing.expect(first.object != different.object);
+    try std.testing.expectEqual(doc.model, first.object.model);
+    try std.testing.expectEqual(@as(usize, 2), models.references.count());
+    try std.testing.expectEqual(@as(usize, 2), resources.listenerCount());
+    first.dispose();
+    try std.testing.expectEqual(@as(usize, 2), models.references.count());
+    different.dispose();
+    try std.testing.expectEqual(@as(usize, 1), resources.listenerCount());
+    const time = @import("../../../../../base/common/timeCompat.zig");
+    second.object.due_at = null;
+    second.object.scheduler.schedule(null);
+    _ = try doc.replaceGeneratedContents("new content");
+    try std.testing.expect(second.object.due_at.? >= time.milliTimestamp());
+    second.dispose();
+    try std.testing.expectEqual(@as(usize, 0), models.references.count());
+    try std.testing.expectEqual(@as(usize, 0), resources.listenerCount());
+}

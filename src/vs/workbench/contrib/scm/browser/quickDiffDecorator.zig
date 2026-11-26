@@ -365,26 +365,16 @@ const EditorViewFactory = @import("../../../../editor/browser/widget/codeEditor/
 
 pub const Entry = struct {
     editor: *Editor,
-    path: []u8,
-    model: QuickDiffModel,
+    model: *QuickDiffModel,
+    reference: quick_diff_model_mod.QuickDiffModelReference,
     decorator: QuickDiffDecorator,
-    content_listener: usize = undefined,
-    provider_listener: usize = undefined,
     diff_listener: usize = undefined,
-    resource_listener: ?usize = null,
     peek_controller: ?*QuickDiffEditorController = null,
+    peek_reference: ?quick_diff_model_mod.QuickDiffModelReference = null,
 
     fn onDiffChanged(_: void, self: *Entry) !void {
         try self.decorator.update();
         self.editor.setQuickDiffDecorationCount(self.model.changes.items.len);
-    }
-
-    fn onContent(_: @import("../../../../editor/common/textModelEvents.zig").InternalModelContentChangeEvent, self: *Entry) !void {
-        self.model.triggerDiff(time.milliTimestamp());
-    }
-
-    fn onResources(_: void, self: *Entry) !void {
-        self.model.triggerDiff(time.milliTimestamp());
     }
 };
 
@@ -393,10 +383,8 @@ pub const QuickDiffWorkbenchController = struct {
     window: *WindowQueue,
     allocator: Allocator,
     service: *QuickDiffService,
-    text_model_service: ?@import("../../../../editor/common/services/resolverService.zig").ITextModelService = null,
-    worker: EditorWorkerService,
+    model_service: *quick_diff_model_mod.QuickDiffModelService,
     entries: std.array_list.Managed(*Entry),
-    resources_changed: ?*ResourceEvent = null,
     config: Config = .{},
     ignore_trim_whitespace: bool = false,
     view_factory: ?EditorViewFactory = null,
@@ -408,12 +396,12 @@ pub const QuickDiffWorkbenchController = struct {
     configuration_service: ?*ConfigurationService = null,
     configuration_listener: ?usize = null,
 
-    pub fn init(allocator: Allocator, service: *QuickDiffService, window: *WindowQueue) QuickDiffWorkbenchController {
+    pub fn init(allocator: Allocator, service: *QuickDiffService, models: *quick_diff_model_mod.QuickDiffModelService) QuickDiffWorkbenchController {
         return .{
             .allocator = allocator,
             .service = service,
-            .worker = EditorWorkerService.init(),
-            .window = window,
+            .model_service = models,
+            .window = models.window,
             .entries = std.array_list.Managed(*Entry).init(allocator),
         };
     }
@@ -423,7 +411,6 @@ pub const QuickDiffWorkbenchController = struct {
         if (self.visible_listener) |id| self.editors.?.onDidVisibleEditorsChange().unlisten(id);
         for (self.entries.items) |entry| self.destroyEntry(entry);
         self.entries.deinit();
-        self.worker.deinit();
         self.* = undefined;
     }
 
@@ -445,37 +432,18 @@ pub const QuickDiffWorkbenchController = struct {
         if (self.contains(editor)) return;
         const entry = try self.allocator.create(Entry);
         errdefer self.allocator.destroy(entry);
-        const path_copy = try self.allocator.dupe(u8, path);
-        errdefer self.allocator.free(path_copy);
-
+        var reference = try self.model_service.acquireForDocument(editor.document, path, .{});
+        errdefer reference.dispose();
         entry.* = .{
             .editor = editor,
-            .path = path_copy,
-            .model = QuickDiffModel.init(
-                self.allocator,
-                editor.model,
-                path_copy,
-                self.service,
-                .{ .algorithm = .advanced, .max_computation_time_ms = 1000 },
-            ),
+            .model = reference.object,
+            .reference = reference,
             .decorator = undefined,
         };
-        errdefer entry.model.deinit();
-        entry.model.resolver = self.text_model_service;
-        if (self.worker.replies_ready.queue == null) self.worker.attachWindow(self.window);
-        entry.model.attachWindow(self.window, &self.worker);
-        entry.model.setIgnoreTrimWhitespace(self.ignore_trim_whitespace);
-        entry.model.triggerDiff(time.milliTimestamp());
-        entry.content_listener = try editor.model.onDidChangeContentWithContextId(entry, Entry.onContent);
-        errdefer editor.model.removeDidChangeContentListener(entry.content_listener);
-        entry.provider_listener = try self.service.on_did_change_providers.listen(entry, Entry.onResources);
-        errdefer self.service.on_did_change_providers.unlisten(entry.provider_listener);
-        if (self.resources_changed) |source| entry.resource_listener = try source.listen(entry, Entry.onResources);
-        errdefer if (entry.resource_listener) |id| self.resources_changed.?.unlisten(id);
         entry.decorator = QuickDiffDecorator.init(
             self.allocator,
             editor.model,
-            &entry.model,
+            entry.model,
             self.service,
             self.config,
             decoration_owner,
@@ -494,7 +462,6 @@ pub const QuickDiffWorkbenchController = struct {
             if (entry.editor != editor) continue;
             _ = self.entries.orderedRemove(index);
             self.destroyEntry(entry);
-            if (self.entries.items.len == 0) self.worker.stopWorker();
             return;
         }
     }
@@ -514,7 +481,12 @@ pub const QuickDiffWorkbenchController = struct {
                 try self.attach(pane.editor, pane.editor.path);
                 if (self.view_factory) |factory| for (self.entries.items) |entry| {
                     if (entry.editor != pane.editor) continue;
-                    if (entry.peek_controller == null) entry.peek_controller = try QuickDiffEditorController.create(self.allocator, pane.view, &entry.model, factory, &self.worker, self.window);
+                    if (entry.peek_controller == null) {
+                        var reference = try self.model_service.acquireForDocument(pane.editor.document, pane.editor.path, .{});
+                        errdefer reference.dispose();
+                        entry.peek_controller = try QuickDiffEditorController.create(self.allocator, pane.view, reference.object, factory, &self.model_service.worker, self.window);
+                        entry.peek_reference = reference;
+                    }
                     entry.peek_controller.?.gutter_action = self.gutter_action;
                     entry.peek_controller.?.quick_input = self.quick_input;
                     entry.peek_controller.?.menu_host = self.menu_host;
@@ -607,10 +579,7 @@ pub const QuickDiffWorkbenchController = struct {
     pub fn setIgnoreTrimWhitespace(self: *QuickDiffWorkbenchController, ignore: bool) void {
         if (self.ignore_trim_whitespace == ignore) return;
         self.ignore_trim_whitespace = ignore;
-        for (self.entries.items) |entry| {
-            entry.model.setIgnoreTrimWhitespace(ignore);
-            entry.model.triggerDiff(time.milliTimestamp());
-        }
+        self.model_service.setIgnoreTrimWhitespace(ignore);
     }
 
     fn applyEditorState(self: *QuickDiffWorkbenchController, entry: *Entry) void {
@@ -622,14 +591,11 @@ pub const QuickDiffWorkbenchController = struct {
     fn destroyEntry(self: *QuickDiffWorkbenchController, entry: *Entry) void {
         if (entry.peek_controller) |controller| controller.destroy();
         entry.editor.setQuickDiffDecorationCount(0);
-        entry.editor.model.removeDidChangeContentListener(entry.content_listener);
-        self.service.on_did_change_providers.unlisten(entry.provider_listener);
-        if (entry.resource_listener) |id| self.resources_changed.?.unlisten(id);
         entry.model.on_did_change.unlisten(entry.diff_listener);
         entry.decorator.deinit();
-        entry.model.deinit();
+        if (entry.peek_reference) |*reference| reference.dispose();
+        entry.reference.dispose();
         entry.editor.setLineDecorationsWidth(0);
-        self.allocator.free(entry.path);
         self.allocator.destroy(entry);
     }
 };
