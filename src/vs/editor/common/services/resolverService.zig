@@ -103,6 +103,11 @@ pub const ModelReferenceRequest = struct {
     }
 };
 
+pub const VirtualContentListener = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, anyerror!void) void,
+};
+
 pub const ITextModelService = struct {
     context: *anyopaque,
     create_model_reference: *const fn (*anyopaque, std.Uri, ModelReferenceListener) anyerror!ModelReferenceRequest,
@@ -111,7 +116,7 @@ pub const ITextModelService = struct {
     create_synthetic_document: *const fn (*anyopaque, []const u8, ?[]const u8) anyerror!ModelReference,
     can_handle_resource: *const fn (*anyopaque, std.Uri) bool,
     register_provider: *const fn (*anyopaque, []const u8, ITextModelContentProvider) anyerror!ContentProviderRegistration,
-    update_virtual_content: ?*const fn (*anyopaque, std.Uri, []const u8) anyerror!void = null,
+    update_virtual_content: ?*const fn (*anyopaque, std.Uri, []const u8, VirtualContentListener) anyerror!?IDisposable = null,
 
     pub fn createModelReference(self: ITextModelService, resource: std.Uri, listener: ModelReferenceListener) !ModelReferenceRequest {
         return self.create_model_reference(self.context, resource, listener);
@@ -137,9 +142,9 @@ pub const ITextModelService = struct {
         return self.register_provider(self.context, scheme, provider);
     }
 
-    pub fn updateVirtualContent(self: ITextModelService, resource: std.Uri, text: []const u8) !void {
+    pub fn updateVirtualContent(self: ITextModelService, resource: std.Uri, text: []const u8, listener: VirtualContentListener) !?IDisposable {
         const update = self.update_virtual_content orelse return error.VirtualContentUpdateUnavailable;
-        try update(self.context, resource, text);
+        return update(self.context, resource, text, listener);
     }
 
     pub fn canHandleResource(self: ITextModelService, resource: std.Uri) bool {

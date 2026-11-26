@@ -14,6 +14,8 @@ const resolver = @import("../../../../editor/common/services/resolverService.zig
 const EditorDocument = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").EditorDocument;
 const dispatch = @import("../../../../base/common/windowDispatch.zig");
 const worker_mod = @import("../../../../editor/browser/services/editorWorkerService.zig");
+const IDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
+const web_worker = @import("../../../../editor/common/services/editorWebWorker.zig");
 const WorkingCopyListener = @import("../../workingCopy/common/workingCopy.zig").WorkingCopyListener;
 
 /// The resource collection retains one native document while any resolver
@@ -34,6 +36,7 @@ pub const TextModelResolverService = struct {
     pending_listeners: std.AutoHashMapUnmanaged(u64, *PendingReference) = .empty,
     next_request_id: u64 = 0,
     delivering: ?*PendingReference = null,
+    virtual_updates: std.AutoHashMapUnmanaged(*EditorDocument, *VirtualUpdate) = .empty,
 
     const ProviderEntry = struct {
         service: *TextModelResolverService,
@@ -108,6 +111,11 @@ pub const TextModelResolverService = struct {
         }
         self.pending.deinit(self.allocator);
         self.pending_listeners.deinit(self.allocator);
+        while (self.virtual_updates.count() != 0) {
+            var updates = self.virtual_updates.valueIterator();
+            updates.next().?.*.detach(true);
+        }
+        self.virtual_updates.deinit(self.allocator);
         if (self.worker) |worker| {
             worker.deinit();
             self.allocator.destroy(worker);
@@ -221,12 +229,108 @@ pub const TextModelResolverService = struct {
         return error.UnableToResolveResource;
     }
 
-    pub fn updateVirtualContent(self: *TextModelResolverService, resource: std.Uri, text: []const u8) !void {
-        if (std.mem.eql(u8, resource.scheme, "file")) return;
-        var reference = (try self.acquireExisting(resource)) orelse return;
-        defer reference.dispose();
-        _ = try documentOf(reference).replaceGeneratedContents(text);
+    /// The editor worker computes minimal whole-model edits, raced against
+    /// the upstream one-second fallback. One outstanding update per live
+    /// model; disposal and replacement detach the older completion.
+    pub fn updateVirtualContent(self: *TextModelResolverService, resource: std.Uri, text: []const u8, listener: resolver.VirtualContentListener) !?IDisposable {
+        if (std.mem.eql(u8, resource.scheme, "file")) return null;
+        const key = try uri_util.resourceKey(self.allocator, resource);
+        defer self.allocator.free(key);
+        const entry = self.collection.entries.get(key) orelse return null;
+        const document = entry.document;
+        if (self.virtual_updates.get(document)) |previous| previous.detach(true);
+        const worker = try self.ensureWorker();
+        const update = try self.allocator.create(VirtualUpdate);
+        errdefer self.allocator.destroy(update);
+        update.* = .{ .allocator = self.allocator, .service = self, .document = document, .listener = listener, .version = document.model.getVersionId(), .eol = document.model.getEOL(), .skip_minimal = document.model.isTooLargeForSyncing() };
+        errdefer update.arena.deinit();
+        const a = update.arena.allocator();
+        var original = try document.model.getValue(.TextDefined, false);
+        defer original.deinit();
+        update.original = try a.dupe(u8, original.items);
+        update.text = try a.dupe(u8, text);
+        update.deadline = .{ .queue = self.window, .context = update, .run = VirtualUpdate.timeout };
+        update.dispose_listener = try document.on_will_dispose.listen(update, VirtualUpdate.onDocumentDisposed);
+        errdefer document.on_will_dispose.unlisten(update.dispose_listener.?);
+        try self.virtual_updates.put(self.allocator, document, update);
+        const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp();
+        update.deadline.schedule(now + 1000);
+        worker.computeDiff(&update.message, now);
+        return IDisposable.from(VirtualUpdate, update, VirtualUpdate.cancel);
     }
+
+    const VirtualUpdate = struct {
+        allocator: Allocator,
+        service: ?*TextModelResolverService,
+        document: *EditorDocument,
+        listener: resolver.VirtualContentListener,
+        version: u32,
+        skip_minimal: bool,
+        eol: @import("../../../../editor/common/core/misc/eolCounter.zig").EOL,
+        arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator),
+        original: []const u8 = "",
+        text: []const u8 = "",
+        result: ?web_worker.MinimalEdits = null,
+        dispose_listener: ?usize = null,
+        deadline: dispatch.Task = .{},
+        message: worker_mod.Request = .{ .compute = compute, .reply = reply },
+
+        fn compute(message: *worker_mod.Request) void {
+            const self: *VirtualUpdate = @fieldParentPtr("message", message);
+            if (self.skip_minimal) return;
+            self.result = web_worker.computeMoreMinimalEdits(self.arena.allocator(), self.original, self.text, self.eol, false) catch null;
+        }
+
+        fn reply(message: *worker_mod.Request) bool {
+            const self: *VirtualUpdate = @fieldParentPtr("message", message);
+            defer {
+                self.arena.deinit();
+                self.allocator.destroy(self);
+            }
+            return self.apply(self.result);
+        }
+
+        fn timeout(context: *anyopaque, _: i64, _: bool) bool {
+            const self: *VirtualUpdate = @ptrCast(@alignCast(context));
+            return self.apply(null);
+        }
+
+        fn apply(self: *VirtualUpdate, result: ?web_worker.MinimalEdits) bool {
+            if (self.service == null) return false;
+            const document = self.document;
+            document.retain();
+            defer document.release();
+            self.detach(false);
+            const changed = if (result != null and document.model.getVersionId() == self.version)
+                document.applyGeneratedEdits(result.?)
+            else
+                document.replaceGeneratedContents(self.text);
+            const value = changed catch |err| {
+                self.listener.complete(self.listener.context, err);
+                return false;
+            };
+            self.listener.complete(self.listener.context, {});
+            return value;
+        }
+
+        fn onDocumentDisposed(_: void, self: *VirtualUpdate) !void {
+            self.detach(true);
+        }
+
+        fn detach(self: *VirtualUpdate, notify: bool) void {
+            const service = self.service orelse return;
+            _ = service.virtual_updates.remove(self.document);
+            self.service = null;
+            self.deadline.schedule(null);
+            if (self.dispose_listener) |id| self.document.on_will_dispose.unlisten(id);
+            self.dispose_listener = null;
+            if (notify) self.listener.complete(self.listener.context, {});
+        }
+
+        fn cancel(self: *VirtualUpdate) void {
+            self.detach(false);
+        }
+    };
 
     pub fn registerDocument(self: *TextModelResolverService, document: *EditorDocument, readonly: bool) !void {
         _ = try self.collection.register(document, readonly);
@@ -599,9 +703,9 @@ pub const TextModelResolverService = struct {
                 const service: *TextModelResolverService = @ptrCast(@alignCast(context));
                 return service.createSyntheticDocument(value, language);
             }
-            fn updateVirtualContent(context: *anyopaque, uri: std.Uri, text: []const u8) !void {
+            fn updateVirtualContent(context: *anyopaque, uri: std.Uri, text: []const u8, listener: resolver.VirtualContentListener) !?IDisposable {
                 const service: *TextModelResolverService = @ptrCast(@alignCast(context));
-                try service.updateVirtualContent(uri, text);
+                return service.updateVirtualContent(uri, text, listener);
             }
             fn register(context: *anyopaque, scheme: []const u8, provider: resolver.ITextModelContentProvider) !resolver.ContentProviderRegistration {
                 const service: *TextModelResolverService = @ptrCast(@alignCast(context));

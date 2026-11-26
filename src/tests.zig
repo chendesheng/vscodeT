@@ -667,6 +667,7 @@ comptime {
     _ = @import("./vs/editor/browser/widget/diffEditor/diffEditorViewModel.zig");
     _ = @import("./vs/editor/browser/widget/diffEditor/diffProviderFactoryService.zig");
     _ = @import("./vs/editor/browser/services/editorWorkerService.zig");
+    _ = @import("./vs/editor/test/common/services/editorWebWorker.test.zig");
     _ = @import("./vs/editor/browser/widget/diffEditor/components/diffEditorViewZones/diffEditorViewZones.zig");
     _ = @import("./vs/editor/browser/widget/diffEditor/components/diffEditorDecorations.zig");
     _ = @import("./vs/editor/browser/widget/diffEditor/components/diffEditorEditors.zig");
@@ -723,6 +724,7 @@ comptime {
     _ = @import("./vs/workbench/browser/quickaccess.zig");
     _ = @import("./vs/workbench/api/browser/extensionHostAdapter.zig").Tests(@import("./tui/workbench.zig").TerminalWorkbench, @import("./tui/editorView.zig").View.createHandle);
     _ = @import("./vs/workbench/api/test/browser/mainThreadDiagnostics.test.zig");
+    _ = @import("./vs/workbench/api/test/browser/mainThreadDocumentContentProviders.test.zig");
     _ = @import("./vs/workbench/api/test/browser/mainThreadMessageService.test.zig");
     _ = @import("./vs/workbench/api/common/keyInput.zig");
     _ = @import("./vs/workbench/api/common/extensionApi.zig");

@@ -18,6 +18,7 @@ pub const MainThreadDocumentContentProviders = struct {
     resolver_service: resolver.ITextModelService,
     proxy: HostProxy,
     providers: std.AutoHashMapUnmanaged(u32, *Provider) = .empty,
+    updates: std.ArrayList(*UpdateRequest) = .empty,
 
     pub fn init(allocator: Allocator, service: resolver.ITextModelService, proxy: HostProxy) MainThreadDocumentContentProviders {
         return .{ .allocator = allocator, .resolver_service = service, .proxy = proxy };
@@ -27,6 +28,11 @@ pub const MainThreadDocumentContentProviders = struct {
         var iterator = self.providers.valueIterator();
         while (iterator.next()) |provider| provider.*.destroy();
         self.providers.deinit(self.allocator);
+        while (self.updates.pop()) |update| {
+            update.pending.dispose();
+            update.destroy();
+        }
+        self.updates.deinit(self.allocator);
     }
 
     pub fn invoke(self: *MainThreadDocumentContentProviders, method: []const u8, args: []const rpc.Arg) !rpc.HandlerReply {
@@ -34,10 +40,14 @@ pub const MainThreadDocumentContentProviders = struct {
             const uri_value = jsonArg(args, 0) orelse return error.InvalidArguments;
             const content = jsonArg(args, 1) orelse return error.InvalidArguments;
             if (content != .string) return error.InvalidArguments;
-            const encoded = try std_uri.encodedResourceFromJson(self.allocator, uri_value);
-            defer self.allocator.free(encoded);
-            try self.resolver_service.updateVirtualContent(try std.Uri.parse(encoded), content.string);
-            return .empty;
+            const request = try self.allocator.create(UpdateRequest);
+            errdefer self.allocator.destroy(request);
+            request.* = .{ .owner = self, .encoded = try std_uri.encodedResourceFromJson(self.allocator, uri_value) };
+            errdefer self.allocator.free(request.encoded);
+            request.text = try self.allocator.dupe(u8, content.string);
+            errdefer self.allocator.free(request.text);
+            try self.updates.append(self.allocator, request);
+            return .{ .deferred = .{ .context = request, .start = UpdateRequest.start } };
         }
         const handle_value = jsonArg(args, 0) orelse return error.InvalidArguments;
         if (handle_value != .integer or handle_value.integer < 0 or handle_value.integer > std.math.maxInt(u32)) return error.InvalidArguments;
@@ -54,6 +64,46 @@ pub const MainThreadDocumentContentProviders = struct {
         }
         return .{ .err = .{ .name = "Unsupported", .message = method } };
     }
+
+    const UpdateRequest = struct {
+        owner: *MainThreadDocumentContentProviders,
+        encoded: []const u8,
+        text: []u8 = undefined,
+        channel: *rpc.RpcProtocol = undefined,
+        request_id: u32 = 0,
+        pending: IDisposable = .none,
+
+        fn start(context: *anyopaque, channel: *rpc.RpcProtocol, request_id: u32) void {
+            const self: *UpdateRequest = @ptrCast(@alignCast(context));
+            self.channel = channel;
+            self.request_id = request_id;
+            const uri = std.Uri.parse(self.encoded) catch |err| return complete(self, err);
+            const pending = self.owner.resolver_service.updateVirtualContent(uri, self.text, .{ .context = self, .complete = complete }) catch |err| return complete(self, err);
+            if (pending) |request| self.pending = request else complete(self, {});
+        }
+
+        fn complete(context: *anyopaque, result: anyerror!void) void {
+            const self: *UpdateRequest = @ptrCast(@alignCast(context));
+            if (result) |_| {
+                self.channel.sendReply(self.request_id, .empty);
+            } else |err| {
+                self.channel.sendReply(self.request_id, .{ .err = .{ .name = @errorName(err), .message = @errorName(err) } });
+            }
+            for (self.owner.updates.items, 0..) |update, index| {
+                if (update != self) continue;
+                _ = self.owner.updates.swapRemove(index);
+                break;
+            }
+            self.destroy();
+        }
+
+        fn destroy(self: *UpdateRequest) void {
+            const a = self.owner.allocator;
+            a.free(self.encoded);
+            a.free(self.text);
+            a.destroy(self);
+        }
+    };
 
     fn registerProvider(self: *MainThreadDocumentContentProviders, handle: u32, scheme: []const u8) !void {
         if (self.providers.fetchRemove(handle)) |entry| entry.value.destroy();

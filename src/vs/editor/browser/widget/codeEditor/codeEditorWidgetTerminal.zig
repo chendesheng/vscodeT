@@ -571,6 +571,29 @@ pub const EditorDocument = struct {
         return true;
     }
 
+    /// Apply the worker's minimal changes to the live generated model so
+    /// retained decorations and selections outside the edited ranges survive.
+    pub fn applyGeneratedEdits(self: *EditorDocument, result: @import("../../../common/services/editorWebWorker.zig").MinimalEdits) !bool {
+        if (result.changes.len == 0) return false;
+        const operations = try self.allocator.alloc(IdentifiedSingleEditOperation, result.changes.len);
+        defer self.allocator.free(operations);
+        for (result.changes, operations) |change, *operation| {
+            const start_offset: usize = @intCast(change.originalStart);
+            const end_offset: usize = @intCast(change.getOriginalEnd());
+            const start = self.model.getPositionAt(start_offset);
+            const end = self.model.getPositionAt(end_offset);
+            if (self.model.getOffsetAt(start) != start_offset or self.model.getOffsetAt(end) != end_offset) return self.replaceGeneratedContents(result.text);
+            const text = result.text[@intCast(change.modifiedStart)..@intCast(change.getModifiedEnd())];
+            operation.* = .init(Range.init(start.lineNumber, start.column, end.lineNumber, end.column), if (text.len == 0) null else String.initBorrowed(text));
+        }
+        _ = try self.model.applyEdits(operations, false);
+        self.model.clearUndoRedo();
+        self.saved_version = self.model.getAlternativeVersionId();
+        self.clearConflict();
+        self.refreshDirtyState();
+        return true;
+    }
+
     /// Append to a generated read-only document using the normal content
     /// change event, without replacing previous lines or their selections.
     pub fn appendGeneratedContents(self: *EditorDocument, text: []const u8) !void {
