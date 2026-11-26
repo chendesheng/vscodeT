@@ -231,10 +231,5 @@ pub fn handleMouseEvent(
     if (event.kind == .down and target.type != .content_widget) {
         if (suggest) |controller| controller.cancel();
     }
-    const top_before = editor.topViewLine();
-    const handled = try view.dispatchMouse(event);
-    if (event.kind == .wheel and !event.default_prevented) {
-        hover.onEditorScrollChanged(editor.topViewLine() != top_before);
-    }
-    return handled;
+    return view.dispatchMouse(event);
 }

@@ -115,17 +115,28 @@ pub const SuggestModel = struct {
         };
     }
 
-    pub fn deinit(self: *SuggestModel) void {
+    pub fn unregisterListeners(self: *SuggestModel) void {
         if (self.cursor_listener) |id| self.editor.on_did_change_cursor_selection.unlisten(id);
+        self.cursor_listener = null;
         if (self.type_listener) |id| self.editor.on_did_type.unlisten(id);
+        self.type_listener = null;
         if (self.content_listener) |id| self.editor.model.removeDidChangeContentListener(id);
+        self.content_listener = null;
         if (self.language_listener) |id| self.editor.model.removeDidChangeLanguageListener(id);
+        self.language_listener = null;
         if (self.focus_handler_registered) self.editor.removeViewEventHandler(&self.focus_handler);
+        self.focus_handler_registered = false;
+    }
+
+    pub fn deinit(self: *SuggestModel) void {
+        self.unregisterListeners();
         self.resetSession();
         self.arena.deinit();
     }
 
     pub fn registerListeners(self: *SuggestModel) !void {
+        errdefer self.unregisterListeners();
+        self.current_selection = self.editor.modelSelection();
         self.cursor_listener = try self.editor.on_did_change_cursor_selection.listen(self, onCursorSelectionChanged);
         self.content_listener = try self.editor.model.onDidChangeContentWithContextId(self, onModelContentChanged);
         self.language_listener = try self.editor.model.listenDidChangeLanguage(self, onLanguageChanged);

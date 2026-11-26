@@ -2770,6 +2770,12 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const Find = @import("../../../editor/contrib/find/browser/findController.zig").FindController;
             const Word = @import("../../../editor/contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
             const Sticky = @import("../../../editor/contrib/stickyScroll/browser/stickyScrollController.zig").StickyScrollController;
+            const Hover = @import("../../../editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
+            const first_hover = first_control.modified_editor.getContribution(Hover).?;
+            const first_hover_widget = first_hover.widget();
+            const Suggest = @import("../../../editor/contrib/suggest/browser/suggestController.zig").SuggestController;
+            const first_suggest = first_control.modified_editor.getContribution(Suggest).?;
+            const first_suggest_widget = first_suggest.widget;
             const first_lens = first_control.modified_editor.getContribution(Lens).?;
             const first_find = first_control.modified_editor.getContribution(Find).?;
             const first_word = first_control.modified_editor.getContribution(Word).?;
@@ -2785,6 +2791,12 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqual(first_find, recycled.modified_editor.getContribution(Find).?);
             try std.testing.expectEqual(first_word, recycled.modified_editor.getContribution(Word).?);
             try std.testing.expectEqual(first_sticky, recycled.modified_editor.getContribution(Sticky).?);
+            try std.testing.expectEqual(first_hover, recycled.modified_editor.getContribution(Hover).?);
+            try std.testing.expectEqual(first_hover_widget, first_hover.widget());
+            try std.testing.expectEqual(first_suggest, recycled.modified_editor.getContribution(Suggest).?);
+            try std.testing.expectEqual(first_suggest_widget, first_suggest.widget);
+            try std.testing.expectEqual(last.modified.model, first_suggest.editor.model);
+            try std.testing.expectEqual(last.modified.model, first_hover.model);
             try std.testing.expectEqual(last.modified.model, first_lens.editor.model);
             try std.testing.expectEqual(recycled.modified_view.terminal_view_host, first_lens.view_host);
             try multi.widget.reveal(.{ .original = resources[2].original, .modified = resources[2].modified }, null);

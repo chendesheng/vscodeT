@@ -12,6 +12,8 @@ const Allocator = std.mem.Allocator;
 const Position = @import("../../../common/core/position.zig").Position;
 const Range = @import("../../../common/core/range.zig").Range;
 const TextModel = @import("../../../common/model/textModel.zig").TextModel;
+const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const ModelChange = @import("../../../common/editorCommon.zig").IModelChangedEvent;
 const time_compat = @import("../../../../base/common/timeCompat.zig");
 
 const ui = @import("ui");
@@ -138,6 +140,11 @@ pub const ContentHoverController = struct {
     settings: HoverSettings,
     host: ContentHoverControllerHost,
     wrapper: *ContentHoverWidgetWrapper,
+    editor: ?*Editor = null,
+    will_change_listener: ?usize = null,
+    content_listener: ?usize = null,
+    scroll_handler: @import("../../../common/viewEventHandler.zig").ViewEventHandler = .{},
+    scroll_handler_attached: bool = false,
     operation_timer: DeadlineTimer = .{},
     react_timer: DeadlineTimer = .{},
     last_mouse_event: ?EditorMouseEvent = null,
@@ -162,7 +169,37 @@ pub const ContentHoverController = struct {
             .wrapper = undefined,
         };
 
-        const wrapper_host = HoverWidgetWrapperHost{
+        self.wrapper = try ContentHoverWidgetWrapper.init(
+            allocator,
+            model,
+            participants,
+            self.wrapperHost(),
+            settings.sticky,
+            self.operation_timer.interface(),
+        );
+        return self;
+    }
+
+    pub fn getOrCreate(editor: *Editor, participants: []const IEditorHoverParticipant, settings: HoverSettings, host: ContentHoverControllerHost) !*ContentHoverController {
+        if (editor.getContribution(ContentHoverController)) |controller| {
+            controller.unbindModel();
+            controller.host = host;
+            controller.model = editor.model;
+            controller.settings = settings;
+            try controller.wrapper.attachModel(editor.model, participants, controller.wrapperHost(), settings.sticky);
+            errdefer controller.unbindModel();
+            try controller.attachModelEvents();
+            return controller;
+        }
+        const self = try init(editor.allocator, editor.model, participants, settings, host);
+        errdefer self.deinit();
+        try self.attachEditorEvents(editor);
+        try editor.registerOwnedContribution(ContentHoverController, self, deinit);
+        return self;
+    }
+
+    fn wrapperHost(self: *ContentHoverController) HoverWidgetWrapperHost {
+        return .{
             .context = self,
             .widget = .{
                 .context = self,
@@ -172,7 +209,7 @@ pub const ContentHoverController = struct {
                 .hide = widgetHide,
                 .focus_editor = widgetFocusEditor,
             },
-            .coordinates = host.coordinates orelse HoverCoordinatesHost{
+            .coordinates = self.host.coordinates orelse HoverCoordinatesHost{
                 .context = self,
                 .model_column_at_view_line_start = defaultLineStartColumn,
             },
@@ -181,15 +218,49 @@ pub const ContentHoverController = struct {
             .focus_editor = widgetFocusEditor,
             .set_hover_decoration = widgetSetHoverDecoration,
         };
-        self.wrapper = try ContentHoverWidgetWrapper.init(
-            allocator,
-            model,
-            participants,
-            wrapper_host,
-            settings.sticky,
-            self.operation_timer.interface(),
-        );
-        return self;
+    }
+
+    pub fn attachEditorEvents(self: *ContentHoverController, editor: *Editor) !void {
+        std.debug.assert(self.editor == null and editor.model == self.model);
+        self.editor = editor;
+        self.will_change_listener = try editor.on_will_change_model.listen(self, onWillChangeModel);
+        try self.attachModelEvents();
+    }
+
+    fn attachModelEvents(self: *ContentHoverController) !void {
+        const editor = self.editor orelse return;
+        self.content_listener = try editor.model.onDidChangeContentWithContextId(self, onContentChanged);
+        self.scroll_handler = @import("../../../common/viewEventHandler.zig").ViewEventHandler.init(self, .{ .onScrollChanged = onScrollChanged });
+        editor.addViewEventHandler(&self.scroll_handler);
+        self.scroll_handler_attached = true;
+    }
+
+    fn onContentChanged(_: @import("../../../common/textModelEvents.zig").InternalModelContentChangeEvent, self: *ContentHoverController) !void {
+        self.onDidChangeModelContent();
+    }
+
+    fn onScrollChanged(context: *anyopaque, event: *const @import("../../../common/viewEvents.zig").ViewScrollChangedEvent) bool {
+        const self: *ContentHoverController = @ptrCast(@alignCast(context));
+        self.onEditorScrollChanged(event.scrollTopChanged or event.scrollLeftChanged);
+        return false;
+    }
+
+    fn onWillChangeModel(_: ModelChange, self: *ContentHoverController) !void {
+        self.unbindModel();
+    }
+
+    pub fn unbindModel(self: *ContentHoverController) void {
+        if (self.editor) |editor| {
+            if (self.content_listener) |id| self.model.removeDidChangeContentListener(id);
+            self.content_listener = null;
+            if (self.scroll_handler_attached) editor.removeViewEventHandler(&self.scroll_handler);
+            self.scroll_handler_attached = false;
+        }
+        self.cancelScheduler();
+        self.wrapper.detachModel();
+        self.operation_timer.cancel();
+        self.is_mouse_down = false;
+        self.should_keep_open_on_editor_mouse_move_or_leave = false;
     }
 
     pub fn attachWindow(self: *ContentHoverController, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
@@ -198,6 +269,8 @@ pub const ContentHoverController = struct {
     }
 
     pub fn deinit(self: *ContentHoverController) void {
+        if (self.will_change_listener) |id| self.editor.?.on_will_change_model.unlisten(id);
+        self.unbindModel();
         self.wrapper.deinit();
         self.react_timer.cancel();
         self.operation_timer.cancel();
@@ -209,7 +282,7 @@ pub const ContentHoverController = struct {
     }
 
     pub fn showsOrWillShow(self: *ContentHoverController, event: EditorMouseEvent) bool {
-        return self.wrapper.showsOrWillShow(event);
+        return self.wrapper.model_attached and self.wrapper.showsOrWillShow(event);
     }
 
     fn defaultLineStartColumn(_: *anyopaque, _: Position) usize {
@@ -285,7 +358,7 @@ pub const ContentHoverController = struct {
     }
 
     pub fn onMouseMove(self: *ContentHoverController, event: EditorMouseEvent) void {
-        if (self.ignore_mouse_events) return;
+        if (!self.wrapper.model_attached or self.ignore_mouse_events) return;
         if (self.is_mouse_down and !self.shouldKeepHoverWidgetVisible(event)) {
             self.cancelSchedulerAndHide();
             return;
@@ -331,7 +404,7 @@ pub const ContentHoverController = struct {
     /// Called when the pointer leaves the text area (gutter, status row, an
     /// overlay widget) or the terminal sends no more motion over the editor.
     pub fn onEditorMouseLeave(self: *ContentHoverController, event: EditorMouseEvent) void {
-        if (self.ignore_mouse_events) return;
+        if (!self.wrapper.model_attached or self.ignore_mouse_events) return;
         if (self.should_keep_open_on_editor_mouse_move_or_leave) return;
         self.react_timer.cancel();
         if (self.shouldKeepCurrentHover(event)) return;
@@ -340,7 +413,7 @@ pub const ContentHoverController = struct {
 
     /// Returns true when the key was consumed by the hover.
     pub fn onKeyDown(self: *ContentHoverController, event: *ui.KeyEvent) bool {
-        if (self.ignore_mouse_events or !self.wrapper.isVisible()) return false;
+        if (!self.wrapper.model_attached or self.ignore_mouse_events or !self.wrapper.isVisible()) return false;
 
         if (self.settings.enabled == .on_keyboard_modifier and
             hoverUtils.isTriggerModifierPressed(self.settings.multi_cursor_modifier, modifierState(event.mods)) and
@@ -366,7 +439,6 @@ pub const ContentHoverController = struct {
 
     pub fn onDidChangeModelContent(self: *ContentHoverController) void {
         self.cancelScheduler();
-        self.hideContentHover();
     }
 
     pub fn onDidChangeModel(self: *ContentHoverController) void {
@@ -375,6 +447,7 @@ pub const ContentHoverController = struct {
 
     pub fn hideContentHover(self: *ContentHoverController) void {
         self.react_timer.cancel();
+        if (!self.wrapper.model_attached) return;
         const had_focus = self.wrapper.isFocused();
         self.wrapper.hide();
         if (had_focus) self.host.focus_editor(self.host.context);
@@ -382,7 +455,7 @@ pub const ContentHoverController = struct {
 
     pub fn cancel(self: *ContentHoverController) void {
         self.cancelScheduler();
-        self.wrapper.hide();
+        if (self.wrapper.model_attached) self.wrapper.hide();
     }
 
     pub fn showContentHover(
@@ -392,7 +465,7 @@ pub const ContentHoverController = struct {
         source: HoverStartSource,
         focus: bool,
     ) void {
-        self.wrapper.startShowingAtRange(range, mode, source, focus);
+        if (self.wrapper.model_attached) self.wrapper.startShowingAtRange(range, mode, source, focus);
     }
 
     pub fn setTheme(self: *ContentHoverController, theme: @import("./contentHoverWidget.zig").Theme) void {

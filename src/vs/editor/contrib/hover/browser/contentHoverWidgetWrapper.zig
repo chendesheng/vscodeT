@@ -50,6 +50,7 @@ pub const HoverWidgetWrapperHost = struct {
 pub const ContentHoverWidgetWrapper = struct {
     allocator: Allocator,
     model: *TextModel,
+    model_attached: bool = true,
     participants: []IEditorHoverParticipant,
     host: HoverWidgetWrapperHost,
     sticky: bool,
@@ -107,12 +108,36 @@ pub const ContentHoverWidgetWrapper = struct {
         self.widget.setTheme(theme);
     }
 
-    pub fn deinit(self: *ContentHoverWidgetWrapper) void {
+    /// The hover wrapper and its content widget belong to the code editor.
+    /// Cancel old computations before the model and native participants leave.
+    pub fn detachModel(self: *ContentHoverWidgetWrapper) void {
+        if (!self.model_attached) return;
         self.hide();
-        self.operation.deinit();
-        self.widget.deinit();
+        self.model_attached = false;
         self.computer.deinit();
         self.allocator.free(self.participants);
+        self.participants = &.{};
+        self.widget.root = null;
+        self.widget.focused = false;
+    }
+
+    pub fn attachModel(self: *ContentHoverWidgetWrapper, model: *TextModel, participants: []const IEditorHoverParticipant, host: HoverWidgetWrapperHost, sticky: bool) !void {
+        std.debug.assert(!self.model_attached);
+        const sorted = try self.allocator.dupe(IEditorHoverParticipant, participants);
+        std.mem.sort(IEditorHoverParticipant, sorted, {}, lessThanOrdinal);
+        self.model = model;
+        self.participants = sorted;
+        self.host = host;
+        self.widget.host = host.widget;
+        self.sticky = sticky;
+        self.computer = ContentHoverComputer.init(self.allocator, model, sorted);
+        self.model_attached = true;
+    }
+
+    pub fn deinit(self: *ContentHoverWidgetWrapper) void {
+        self.detachModel();
+        self.operation.deinit();
+        self.widget.deinit();
         self.allocator.destroy(self);
     }
 
@@ -241,6 +266,7 @@ pub const ContentHoverWidgetWrapper = struct {
 
     /// Returns true when the hover shows now or will show after the delay.
     pub fn showsOrWillShow(self: *ContentHoverWidgetWrapper, mouse_event: EditorMouseEvent) bool {
+        if (!self.model_attached) return false;
         const anchor = self.findHoverAnchor(mouse_event);
         if (anchor) |value| {
             var hover_anchor = value;
@@ -348,11 +374,13 @@ pub const ContentHoverWidgetWrapper = struct {
     }
 
     pub fn startShowingAtRange(self: *ContentHoverWidgetWrapper, range: Range, mode: HoverStartMode, source: HoverStartSource, should_focus: bool) void {
+        if (!self.model_attached) return;
         var anchor = HoverAnchor{ .range = HoverRangeAnchor.init(0, range) };
         _ = self.startShowingOrUpdateHover(&anchor, mode, source, should_focus, null);
     }
 
     pub fn hide(self: *ContentHoverWidgetWrapper) void {
+        if (!self.model_attached) return;
         self.operation.cancel();
         self.clearCurrentResult();
         self.hideHover();

@@ -30,6 +30,11 @@ pub const OvertypingCapturer = struct {
         self.last_overtyped.deinit(self.allocator);
     }
 
+    pub fn reset(self: *OvertypingCapturer) void {
+        self.unlock();
+        self.clear();
+    }
+
     fn clear(self: *OvertypingCapturer) void {
         for (self.last_overtyped.items) |entry| {
             if (entry) |value| self.allocator.free(value.value);

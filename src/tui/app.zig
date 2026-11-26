@@ -1442,6 +1442,7 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
         .set_hover_decoration = viewSetHoverDecoration,
     });
     defer hover.deinit();
+    try hover.attachEditorEvents(editor);
 
     var word_sink = View.ModelDecorationSink{ .model = editor.model, .owner = 3 };
     const word_highlighter = try WordHighlighterContribution.init(allocator, editor, .{
@@ -1568,7 +1569,7 @@ test "app: hover coordinate host uses the wrapped segment start" {
 test "app: hovering a word shows the rendered markdown hover" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const editor = try Editor.createFromText(allocator, io, "const value = 42;", "test.zig", 60, 8);
+    const editor = try Editor.createFromText(allocator, io, "const value = 42;\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore", "test.zig", 60, 8);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -1597,7 +1598,11 @@ test "app: hovering a word shows the rendered markdown hover" {
         },
     });
     defer hover.deinit();
+    try hover.attachEditorEvents(editor);
     try view.addContentWidget(hover.widget().contentWidget());
+    // Establish the viewport before generating browser-equivalent hover input.
+    try view.refresh();
+    try view.paint();
 
     const target = editorBrowser.MouseTarget{
         .type = .content_text,
@@ -1679,6 +1684,15 @@ test "app: hovering a word shows the rendered markdown hover" {
     try std.testing.expect(view.dispatchKey(&escape));
     try std.testing.expect(!hover.isVisible());
     try std.testing.expect(view.surface.document().focusedElement() == null);
+
+    // Programmatic scroll delivers the same editor event without a native
+    // mouse-wheel sample, and the hover disappears before another frame.
+    hover.onMouseMove(event);
+    _ = hover.onTick(time_compat.milliTimestamp() + 3000);
+    _ = hover.onTick(time_compat.milliTimestamp() + 4000);
+    try std.testing.expect(hover.isVisible());
+    _ = editor.setTopViewLine(3);
+    try std.testing.expect(!hover.isVisible());
 }
 
 test "app: vim motions reach the hover before the extension key handler" {
@@ -1794,7 +1808,11 @@ test "app: hover renders a GFM table and task list" {
         },
     });
     defer hover.deinit();
+    try hover.attachEditorEvents(editor);
     try view.addContentWidget(hover.widget().contentWidget());
+    // Establish the viewport before generating browser-equivalent hover input.
+    try view.refresh();
+    try view.paint();
 
     const target = editorBrowser.MouseTarget{
         .type = .content_text,
@@ -1895,7 +1913,11 @@ test "app: long hover content scrolls without moving the editor" {
         .set_hover_decoration = viewSetHoverDecoration,
     });
     defer hover.deinit();
+    try hover.attachEditorEvents(editor);
     try view.addContentWidget(hover.widget().contentWidget());
+    // Establish the viewport before generating browser-equivalent hover input.
+    try view.refresh();
+    try view.paint();
 
     const target = editorBrowser.MouseTarget{
         .type = .content_text,
@@ -1961,6 +1983,7 @@ test "app: decoded clicks, drags and wheel reach the editor" {
         .set_hover_decoration = viewSetHoverDecoration,
     });
     defer hover.deinit();
+    try hover.attachEditorEvents(editor);
 
     const gutter = editor.gutterWidth();
     var press_buf: [40]u8 = undefined;

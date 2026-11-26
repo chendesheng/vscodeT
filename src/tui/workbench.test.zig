@@ -5679,6 +5679,11 @@ test "Workbench: content widgets show diagnostics in a rounded hover" {
         },
     }, null);
 
+    // Mount the workbench layout first. Its initial viewport may clamp the
+    // scroll position; upstream hides an open hover on that scroll event.
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try renderFrame(workbench, &out.writer);
     try tab.editor.setCursorPosition(Position.init(2, 2));
     try std.testing.expect(try workbench.showHover());
     const controllers = tab.controllers orelse return error.TestUnexpectedResult;
@@ -5686,8 +5691,6 @@ test "Workbench: content widgets show diagnostics in a rounded hover" {
     const content = controllers.hover.widget().getWidgetContent() orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, content, "Error: boom") != null);
 
-    var out: std.Io.Writer.Allocating = .init(allocator);
-    defer out.deinit();
     try renderFrame(workbench, &out.writer);
     const rendered = try frameText(allocator, &workbench.frame);
     defer allocator.free(rendered);

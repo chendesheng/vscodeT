@@ -458,6 +458,25 @@ pub fn Tests(comptime ViewType: type) type {
             controller.cancel();
             try std.testing.expect(!queue.dispatch(10));
             try std.testing.expect(!controller.isOpen());
+
+            // Editor model replacement must cancel the same provider request
+            // before destroying its previous document. The contribution and
+            // completion widget themselves remain available to the new model.
+            const widget = controller.widget;
+            _ = try controller.model.triggerExplicit(0);
+            try std.testing.expect(controller.model.isLoading());
+            const Document = @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").EditorDocument;
+            const next = try Document.createFromText(allocator, io, "next.txt", "f", null);
+            defer next.release();
+            try editor.setModel(next);
+            try std.testing.expect(!queue.dispatch(10));
+            try std.testing.expect(!controller.isOpen());
+            try std.testing.expectEqual(widget, controller.widget);
+            try editor.setCursorPosition(Position.init(1, 2));
+            _ = try controller.model.triggerExplicit(0);
+            try std.testing.expect(controller.model.isLoading());
+            try std.testing.expect(queue.dispatch(10));
+            try std.testing.expectEqualStrings("foo", controller.model.selectedItem().?.label);
         }
 
         test "SuggestController: resolved documentation appears in the details pane" {

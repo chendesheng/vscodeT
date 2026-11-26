@@ -26,6 +26,7 @@ pub const SuggestControllerHost = struct {
 };
 
 pub const SuggestController = struct {
+    pub const ID = "editor.contrib.suggestController";
     allocator: Allocator,
     editor: *Editor,
     model: SuggestModel,
@@ -35,6 +36,10 @@ pub const SuggestController = struct {
     overtyping_capturer: OvertypingCapturer,
     host: SuggestControllerHost,
     will_type_listener: ?usize = null,
+    will_change_listener: ?usize = null,
+    did_change_listener: ?usize = null,
+    host_bound: bool = true,
+    model_attached: bool = false,
 
     pub fn init(
         allocator: Allocator,
@@ -72,15 +77,73 @@ pub const SuggestController = struct {
         errdefer self.widget.deinit();
         self.model.overtyping_capturer = self.overtyping_capturer.interface();
         self.model.listener = .{ .context = self, .on_change = onModelChanged };
-        try self.model.registerListeners();
-        self.will_type_listener = try editor.on_will_type.listen(self, onWillType);
+        self.will_change_listener = try editor.on_will_change_model.listen(self, onWillChangeModel);
+        errdefer editor.on_will_change_model.unlisten(self.will_change_listener.?);
+        self.did_change_listener = try editor.on_did_change_model.listen(self, onDidChangeModel);
+        errdefer editor.on_did_change_model.unlisten(self.did_change_listener.?);
+        try self.attachModel();
         return self;
     }
 
-    pub fn deinit(self: *SuggestController) void {
+    pub fn getOrCreate(editor: *Editor, providers: []const completion.CompletionItemProvider, host: SuggestControllerHost, registry: ?*@import("../../../common/languageFeatureRegistry.zig").LanguageFeatureRegistry(completion.CompletionItemProvider)) !*SuggestController {
+        if (editor.getContribution(SuggestController)) |self| {
+            self.unbindHost();
+            self.host = host;
+            self.host_bound = true;
+            self.model.providers = providers;
+            self.model.active_providers = providers;
+            self.model.registry = registry;
+            errdefer self.unbindHost();
+            try self.attachModel();
+            return self;
+        }
+        const self = try initWithRegistry(editor.allocator, editor, providers, host, registry);
+        errdefer self.deinit();
+        try editor.registerOwnedContribution(SuggestController, self, deinit);
+        return self;
+    }
+
+    fn onWillChangeModel(_: @import("../../../common/editorCommon.zig").IModelChangedEvent, self: *SuggestController) !void {
+        self.detachModel();
+    }
+
+    fn onDidChangeModel(_: @import("../../../common/editorCommon.zig").IModelChangedEvent, self: *SuggestController) !void {
+        try self.attachModel();
+    }
+
+    fn attachModel(self: *SuggestController) !void {
+        if (!self.host_bound or !self.editor.hasModel() or self.model_attached) return;
+        try self.model.registerListeners();
+        errdefer self.model.unregisterListeners();
+        self.will_type_listener = try self.editor.on_will_type.listen(self, onWillType);
+        self.model_attached = true;
+    }
+
+    fn detachModel(self: *SuggestController) void {
+        if (!self.model_attached) return;
         if (self.will_type_listener) |id| self.editor.on_will_type.unlisten(id);
-        if (self.snippet_session) |session| session.deinit();
-        self.snippet_session = null;
+        self.will_type_listener = null;
+        self.model.unregisterListeners();
+        self.model.cancel();
+        self.cancelSnippetSession();
+        self.overtyping_capturer.reset();
+        self.hideWidget();
+        self.model.active_providers = self.model.providers;
+        self.model_attached = false;
+    }
+
+    pub fn unbindHost(self: *SuggestController) void {
+        self.detachModel();
+        self.host_bound = false;
+        self.model.providers = &.{};
+        self.model.active_providers = &.{};
+        self.model.registry = null;
+    }
+
+    pub fn deinit(self: *SuggestController) void {
+        if (self.will_change_listener) |id| self.editor.on_will_change_model.unlisten(id);
+        if (self.did_change_listener) |id| self.editor.on_did_change_model.unlisten(id);
+        self.detachModel();
         self.overtyping_capturer.deinit();
         self.widget.deinit();
         self.model.deinit();
@@ -136,6 +199,7 @@ pub const SuggestController = struct {
 
     fn onModelChanged(context: *anyopaque) void {
         const self: *SuggestController = @ptrCast(@alignCast(context));
+        if (!self.model_attached) return;
         if (!self.host.has_editor_focus(self.host.context)) {
             self.cancel();
         } else if (self.model.isOpen()) {
@@ -146,7 +210,7 @@ pub const SuggestController = struct {
     }
 
     pub fn onTick(self: *SuggestController, now_ms: i64) !bool {
-        if (!self.model.hasPendingTrigger()) return false;
+        if (!self.model_attached or !self.model.hasPendingTrigger()) return false;
         if (!self.host.has_editor_focus(self.host.context)) {
             self.cancel();
             return false;
@@ -158,6 +222,7 @@ pub const SuggestController = struct {
 
     /// Allows isolated controller tests to deliver typed line context.
     pub fn onTypedCharacter(self: *SuggestController, ch: u8, now_ms: i64) !bool {
+        if (!self.model_attached) return false;
         if (!self.host.has_editor_focus(self.host.context)) {
             self.cancel();
             return false;
@@ -172,6 +237,7 @@ pub const SuggestController = struct {
     }
 
     pub fn onCursorMoved(self: *SuggestController) void {
+        if (!self.model_attached) return;
         if (self.snippet_session) |session| {
             const within = session.isSelectionWithinPlaceholders() catch false;
             if (!within or session.isAtLastPlaceholder()) {
@@ -185,6 +251,7 @@ pub const SuggestController = struct {
 
     /// Returns true when suggest consumed the key.
     pub fn handleKey(self: *SuggestController, event: *ui.KeyEvent, now_ms: i64) !bool {
+        if (!self.model_attached) return false;
         if (self.choice_active and self.model.isOpen()) {
             switch (event.key) {
                 .up => {
@@ -327,6 +394,7 @@ pub const SuggestController = struct {
     }
 
     pub fn cancel(self: *SuggestController) void {
+        if (!self.model_attached) return;
         self.overtyping_capturer.unlock();
         self.model.cancel();
         self.hideWidget();

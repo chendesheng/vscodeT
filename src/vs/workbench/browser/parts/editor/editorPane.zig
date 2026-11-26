@@ -1463,7 +1463,7 @@ pub const Controllers = struct {
             self.hover_participant.interface(),
         };
 
-        self.hover = try ContentHoverController.init(allocator, editor.model, &self.participants, .{}, .{
+        self.hover = try ContentHoverController.getOrCreate(editor, &self.participants, .{}, .{
             .context = view,
             .decoration_context = self.hover_sink.context(),
             .text_height = viewTextHeight,
@@ -1476,7 +1476,7 @@ pub const Controllers = struct {
                 .model_column_at_view_line_start = viewModelColumnAtViewLineStart,
             },
         });
-        errdefer self.hover.deinit();
+        errdefer self.hover.unbindModel();
 
         self.word_highlighter = try WordHighlighterContribution.getOrCreate(editor, .{
             .context = view,
@@ -1500,11 +1500,8 @@ pub const Controllers = struct {
         }
 
         const suggest_host = SuggestControllerHostForView(view);
-        self.suggest = if (features) |service|
-            try SuggestController.initWithRegistry(allocator, editor, &.{}, suggest_host, &service.completion_provider)
-        else
-            try SuggestController.init(allocator, editor, self.completion_providers[0..self.completion_count], suggest_host);
-        errdefer self.suggest.deinit();
+        self.suggest = try SuggestController.getOrCreate(editor, if (features != null) &.{} else self.completion_providers[0..self.completion_count], suggest_host, if (features) |service| &service.completion_provider else null);
+        errdefer self.suggest.unbindHost();
 
         // Suggest controllers only exist after the block above; applying the
         // theme earlier dereferenced an unset widget.
@@ -1513,7 +1510,6 @@ pub const Controllers = struct {
         self.find.applyConfiguration(view.terminal_view_host.options.get(.find));
         try view.addConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
         errdefer view.removeConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
-        try editor.registerContribution(ContentHoverController, self.hover);
         return self;
     }
 
@@ -1589,13 +1585,12 @@ pub const Controllers = struct {
         self.find.widget().on_layout = null;
         self.sticky.unbindHost();
         self.word_highlighter.unbindHost();
-        self.editor.unregisterContribution(ContentHoverController, self.hover);
+        self.hover.unbindModel();
         // The sink context points at this controller; detach before it dies.
         self.editor.setSearchHighlightSink(null);
         self.view.removeConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
         if (self.hover_registration) |registration| registration.dispose();
-        self.suggest.deinit();
-        self.hover.deinit();
+        self.suggest.unbindHost();
         self.marker_hover_participant.deinit();
         self.hover_participant.deinit();
         self.hover_provider.deinit();
