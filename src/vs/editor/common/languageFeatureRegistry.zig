@@ -195,16 +195,24 @@ pub fn LanguageFeatureRegistry(comptime T: type) type {
         /// selector to filter the other models before asking the provider.
         /// The selector is borrowed from its registration and must not
         /// outlive that registration (consume it before starting a request).
-        pub const OrderedProvider = struct { provider: T, selector: selector_mod.CompiledSelector };
+        pub const OrderedProvider = struct { provider: T, selector: selector_mod.CompiledSelector, registration_time: u64 };
 
         pub fn orderedWithSelectors(self: *Self, allocator: Allocator, model: *TextModel, recursive: bool) ![]OrderedProvider {
             try self.updateScores(model, recursive);
             var result: std.ArrayList(OrderedProvider) = .empty;
             errdefer result.deinit(allocator);
             for (self.entries.items) |entry| {
-                if (entry.score > 0) try result.append(allocator, .{ .provider = entry.provider, .selector = entry.selector });
+                if (entry.score > 0) try result.append(allocator, .{ .provider = entry.provider, .selector = entry.selector, .registration_time = entry.time });
             }
             return result.toOwnedSlice(allocator);
+        }
+
+        /// A sequential async query can outlive a provider registration.
+        /// Check the identity captured with its ordered snapshot before
+        /// invoking the provider's native context (which may have been freed).
+        pub fn hasRegistration(self: *const Self, time: u64) bool {
+            for (self.entries.items) |entry| if (entry.time == time) return true;
+            return false;
         }
 
         fn collect(self: *Self, allocator: Allocator, model: *TextModel, recursive: bool) ![]T {

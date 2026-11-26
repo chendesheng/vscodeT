@@ -738,3 +738,25 @@ test "WordHighlighterContribution: cancels in-flight merged results on setting a
     try std.testing.expectEqual(Position.init(1, 6), editor.modelCursorPosition());
     try std.testing.expectEqual(2, try countModelHighlights(replacement.model));
 }
+
+test "DocumentHighlightProviders: a sequential request skips disposed registrations while awaiting a higher provider" {
+    const a = std.testing.allocator;
+    var text = try TestModel.init(a, "word word word", "plaintext");
+    defer text.deinit();
+    var registry = Registry.init(a);
+    defer registry.deinit();
+    var calls: std.ArrayList([]const u8) = .empty;
+    defer calls.deinit(a);
+    var lower: HighlightProvider = .{ .name = "lower", .calls = &calls, .answer = &.{second_highlight} };
+    var higher: HighlightProvider = .{ .name = "higher", .calls = &calls };
+    const low = try registry.register(.{ .language = "*" }, lower.interface(false));
+    const high = try registry.register(.{ .language = "plaintext" }, higher.interface(true));
+    defer high.dispose();
+    var receiver: HighlightReceiver = .{};
+    defer receiver.deinit();
+    try std.testing.expect((try highlighter.getOccurrencesAtPosition(a, &registry, text.model, Position.init(1, 2), .None, false, receiver.listener())) != null);
+    low.dispose();
+    higher.resolve(null);
+    try std.testing.expectEqual(1, calls.items.len);
+    try std.testing.expect(receiver.result.?.get(text.model.uri()) == null);
+}

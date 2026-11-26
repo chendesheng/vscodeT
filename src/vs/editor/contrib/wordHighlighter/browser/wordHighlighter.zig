@@ -92,8 +92,17 @@ pub const OccurrenceRequest = struct {
     canceled: bool = false,
 
     const Provider = union(enum) {
-        single: editor_languages.DocumentHighlightProvider,
-        multi: struct { provider: editor_languages.MultiDocumentHighlightProvider, models: []const *TextModel },
+        single: struct {
+            provider: editor_languages.DocumentHighlightProvider,
+            registry: *registry_mod.LanguageFeatureRegistry(editor_languages.DocumentHighlightProvider),
+            registration_time: u64,
+        },
+        multi: struct {
+            provider: editor_languages.MultiDocumentHighlightProvider,
+            registry: *registry_mod.LanguageFeatureRegistry(editor_languages.MultiDocumentHighlightProvider),
+            registration_time: u64,
+            models: []const *TextModel,
+        },
     };
 
     const MultiEntry = struct { key: []const u8, highlights: []const DocumentHighlight };
@@ -184,7 +193,9 @@ pub const OccurrenceRequest = struct {
         slot.started = true;
         const a = self.result.arena.allocator();
         switch (slot.provider) {
-            .single => |provider| {
+            .single => |entry| {
+                if (!entry.registry.hasRegistration(entry.registration_time)) return slot.ready(null);
+                const provider = entry.provider;
                 if (provider.request_document_highlights) |request| {
                     const pending = request(provider.context, a, self.primary, self.position, self.token, .{ .context = slot, .complete = Slot.documentReady }) catch |err| {
                         Slot.documentReady(slot, err);
@@ -197,6 +208,7 @@ pub const OccurrenceRequest = struct {
                 } else Slot.documentReady(slot, provider.provide_document_highlights(provider.context, a, self.primary, self.position, self.token));
             },
             .multi => |entry| {
+                if (!entry.registry.hasRegistration(entry.registration_time)) return slot.ready(null);
                 const provider = entry.provider;
                 if (provider.request_multi_document_highlights) |request| {
                     const pending = request(provider.context, a, self.primary, self.position, entry.models, self.token, .{ .context = slot, .complete = Slot.multiReady }) catch |err| {
@@ -284,23 +296,23 @@ pub const OccurrenceRequest = struct {
 pub fn getOccurrencesAtPosition(allocator: Allocator, registry: *registry_mod.LanguageFeatureRegistry(editor_languages.DocumentHighlightProvider), model: *TextModel, position: Position, token: cancellation.CancellationToken, merge: bool, listener: OccurrenceListener) !?*OccurrenceRequest {
     const result = try OccurrenceResult.create(allocator);
     errdefer result.dispose();
-    const providers = try registry.ordered(result.arena.allocator(), model, false);
+    const providers = try registry.orderedWithSelectors(result.arena.allocator(), model, false);
     var exclude_textual = false;
     if (merge) for (providers) |provider| {
-        if (!provider.textual_fallback) {
+        if (!provider.provider.textual_fallback) {
             exclude_textual = true;
             break;
         }
     };
     var count: usize = 0;
-    for (providers) |provider| if (!exclude_textual or !provider.textual_fallback) {
+    for (providers) |provider| if (!exclude_textual or !provider.provider.textual_fallback) {
         count += 1;
     };
     const request = try OccurrenceRequest.create(result, model, position, token, merge, count, listener);
     var index: usize = 0;
     for (providers) |provider| {
-        if (exclude_textual and provider.textual_fallback) continue;
-        request.slots[index] = .{ .owner = request, .provider = .{ .single = provider } };
+        if (exclude_textual and provider.provider.textual_fallback) continue;
+        request.slots[index] = .{ .owner = request, .provider = .{ .single = .{ .provider = provider.provider, .registry = registry, .registration_time = provider.registration_time } } };
         index += 1;
     }
     return request.start();
@@ -320,7 +332,7 @@ pub fn getOccurrencesAcrossMultipleModels(allocator: Allocator, registry: *regis
             const candidate = try selector_mod.candidateFromUri(a, other.uri(), other.getLanguageId(), true);
             if (selector_mod.scoreCompiled(entry.selector, candidate) > 0) try filtered.append(a, other);
         }
-        slot.* = .{ .owner = request, .provider = .{ .multi = .{ .provider = entry.provider, .models = filtered.items } } };
+        slot.* = .{ .owner = request, .provider = .{ .multi = .{ .provider = entry.provider, .registry = registry, .registration_time = entry.registration_time, .models = filtered.items } } };
     }
     return request.start();
 }
