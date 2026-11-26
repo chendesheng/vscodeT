@@ -1,7 +1,7 @@
 // Port of the pane geometry/synchronization subset of
 // `src/vs/editor/browser/widget/diffEditor/components/diffEditorEditors.ts`.
 //
-// Terminal adaptation: the widget owns the two snapshot `Editor`/`View`
+// Terminal adaptation: the widget owns the two real-model `Editor`/`View`
 // instances directly (the terminal `Editor` bundles model, undo and view, and a
 // separate editor-pane wrapper would add no behavior). This module keeps the
 // portable pane math and top-line synchronization shared by the widget and its

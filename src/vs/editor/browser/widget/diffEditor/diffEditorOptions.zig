@@ -5,8 +5,8 @@
 // editor layer, so the workbench reads `diffEditor.*` settings and passes this
 // plain value. `normalize` applies the upstream validation rules that matter to
 // the terminal (algorithm fallback, bounded split ratio, non-negative
-// computation time); CSS/rendering options that have no terminal counterpart
-// (`renderMarginRevertIcon`, inline mode, ...) are not represented.
+// computation time); renderer options are represented where they affect cell
+// presentation, model state, or command availability.
 const std = @import("std");
 
 const doc_diff = @import("../../../common/diff/documentDiffProvider.zig");

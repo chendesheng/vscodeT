@@ -1262,7 +1262,10 @@ console API for raw mode, sizing and input polling.
   blocks are surfaced as model decorations, gutter connectors and Compare controls
   in side-by-side mode only; the active comparison aligns both moved ranges.
   Hide-unchanged uses the upstream unchanged-region range model, direct model
-  hidden areas, and model-anchored disclosures with keyboard support.
+  hidden areas, and model-anchored disclosures with keyboard support, tracked
+  ranges across edits, and lower-edge scroll anchoring during reveal.
+  Symbol breadcrumbs use the shared outline service and reveal the selected
+  symbol from the bottom of the hidden range.
   `renderSideBySide: false` inserts original deleted code in view zones above
   the real modified model, with token and inner-character decorations. Both panes share editor input dispatch and own independent
   find, hover and other editor contribution controllers. Scrolling the focused
@@ -1284,9 +1287,12 @@ console API for raw mode, sizing and input polling.
   layer. Experimental true-inline mode uses injected deleted text and
   strikethrough; empty character ranges render a one-cell marker. The accessible
   diff viewer uses grouped unified review rows (F7/Shift-F7), arrow-key line
-  navigation, and Enter to reveal the selected source. Remaining gaps include
-  title/hunk action rendering, deleted-code margin actions, disclosure
-  breadcrumbs and code lens.
+  navigation, and Enter to reveal the selected source. The retained editor title
+  and gutter menus expose Git hunk and selected-inner-change staging without
+  rewriting the working file; legacy margin revert buttons are available when
+  the gutter menu is disabled. Inline deleted-code controls copy original text,
+  reveal original line numbers, support selection, and apply undoable revert.
+  Remaining gaps include persistent view state and code lens.
   See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
   Only one repository per workspace folder is shown.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and

@@ -2035,6 +2035,19 @@ Terminal substitutions and their reasons:
   Git revision resources resolve to read-only models owned by the
   TextResourceEditorInput. The working copy is registered once per document,
   regardless of the number of mounted file or diff views.
+- **Diff action controls.** The registered editor-title and gutter menus keep
+  upstream context keys and actions. A hunk toolbar places the primary and
+  overflow affordances in two adjacent terminal cells instead of vertically
+  stacking browser buttons; actual gutter items use the real layout bounds.
+  Legacy revert arrows use model-anchored glyph-margin widgets. The inline
+  deleted-code margin exposes the original line numbers, selection and exact
+  copy via the terminal clipboard service. Both normal and compact disclosure
+  controls project the browser's narrow top and bottom drag strips alongside
+  the text in a one-cell row, with separate hit targets and model-driven lower
+  scroll anchoring. The hand-ported diff stylesheet registers those classes;
+  pixel transforms, CSS selectors, transitions and shadows are omitted.
+  Symbol breadcrumbs use shared terminal symbol glyphs and a chevron, with
+  compact keyboard focus targets and the same outline-based reveal behavior.
 - **Combined overview ruler and sash.** The upstream ruler's original and
   modified lanes occupy one terminal cell each; markers use the existing
   overview renderer's half-cell projection and the viewport slider uses
