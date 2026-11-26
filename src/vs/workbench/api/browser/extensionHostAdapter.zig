@@ -599,7 +599,7 @@ pub const Extensions = struct {
             const provider = if (self.language_features_actor) |*actor| actor else return error.LanguageFeaturesUnavailable;
             return provider.executeCodeLensCommand(document, count, self.services.common.commands, self.services.window);
         }
-        if (std.mem.eql(u8, method, "$executeCommand") and args.len > 1 and args[0] == .json and args[0].json == .string and std.mem.eql(u8, args[0].json.string, "_executeDocumentHighlights")) {
+        if (std.mem.eql(u8, method, "$executeCommand") and args.len > 1 and args[0] == .json and args[0].json == .string) if (@import("mainThreadLanguageFeatures.zig").ModelPositionCommand.fromId(args[0].json.string)) |command| {
             if (args[1] != .json or args[1].json != .array or args[1].json.array.items.len < 2) return error.InvalidArguments;
             const parameters = args[1].json.array.items;
             const components = try std_uri.componentsFromJson(parameters[0], arena);
@@ -616,8 +616,8 @@ pub const Extensions = struct {
             const column = parameters[1].object.get("column") orelse return error.InvalidArguments;
             if (line != .integer or column != .integer or line.integer < 1 or column.integer < 1) return error.InvalidArguments;
             const provider = if (self.language_features_actor) |*actor| actor else return error.LanguageFeaturesUnavailable;
-            return provider.executeDocumentHighlightCommand(resource, Position.init(@intCast(line.integer), @intCast(column.integer)), self.models.documentForResource(key), self.services.text_model_service, self.services.common.commands);
-        }
+            return provider.executeModelPositionCommand(command, resource, Position.init(@intCast(line.integer), @intCast(column.integer)), self.models.documentForResource(key), self.services.text_model_service, self.services.common.commands);
+        };
         if (self.commands_actor) |*actor| return actor.invoke(method, args, arena);
         return .empty;
     }
@@ -2676,7 +2676,25 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqual(2, value.array.items[0].object.get("start").?.integer);
             try std.testing.expectEqual(6, value.array.items[0].object.get("end").?.integer);
             try std.testing.expectEqual(1, value.array.items[0].object.get("kind").?.integer);
-            try std.testing.expectEqual(0, extensions.language_features_actor.?.highlight_commands.items.len);
+            try std.testing.expectEqual(0, extensions.language_features_actor.?.model_position_commands.items.len);
+            const modified_uri = try std_uri.encodedResource(scratch.allocator(), diff.modifiedModel().uri());
+            for ([_][]const u8{ original_uri, modified_uri }) |uri| {
+                for ([_]bool{ false, true }) |recursive| {
+                    const hovers = try extensions.host.requestSync(scratch.allocator(), command, "$executeContributedCommand", &.{ .{ .json = .{ .string = "fixture.executeHovers" } }, .{ .json = .{ .string = uri } }, .{ .json = .{ .bool = recursive } } }, null, 5000);
+                    var found = false;
+                    for (hovers.array.items) |item| {
+                        for (item.object.get("contents").?.array.items) |value_item| {
+                            if (std.mem.eql(u8, value_item.string, "fixture hover")) {
+                                found = true;
+                                try std.testing.expectEqual(@as(i64, 2), item.object.get("start").?.integer);
+                                try std.testing.expectEqual(@as(i64, 6), item.object.get("end").?.integer);
+                            }
+                        }
+                    }
+                    try std.testing.expect(found);
+                    try std.testing.expectEqual(0, extensions.language_features_actor.?.model_position_commands.items.len);
+                }
+            }
             original.applyConfiguration(.{ .occurrences_highlight = .off });
             try std.testing.expect(!original.saveViewState() and !modified.saveViewState());
         }

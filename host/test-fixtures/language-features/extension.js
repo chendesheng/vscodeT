@@ -101,6 +101,11 @@ function activate(context) {
     }
   }));
   context.subscriptions.push(vscode.commands.registerCommand('fixture.hoverState', () => hoverEvents));
+  context.subscriptions.push(vscode.commands.registerCommand('fixture.executeHovers', async (uri, recursive) => {
+    const command = recursive ? 'vscode.experimental.executeHoverProvider_recursive' : 'vscode.executeHoverProvider';
+    const items = await vscode.commands.executeCommand(command, vscode.Uri.parse(uri), new vscode.Position(0, 3));
+    return items?.map(item => ({ contents: item.contents.map(content => content.value), start: item.range.start.character, end: item.range.end.character }));
+  }));
   context.subscriptions.push(vscode.commands.registerCommand('fixture.releaseHover', name => {
     const finish = delayedHovers.get(name);
     if (!finish) return false;

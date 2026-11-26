@@ -193,6 +193,7 @@ pub fn registerActions(commands: *CommandRegistry, instantiation: *Instantiation
     try commands.registerEditorAction(instantiation, @import("../editor/contrib/codelens/browser/codelensController.zig").show_lenses_action);
     try commands.registerAction(instantiation, @import("../editor/contrib/codelens/browser/codelens.zig").execute_provider_action);
     try commands.registerAction(instantiation, @import("../editor/contrib/wordHighlighter/browser/wordHighlighter.zig").execute_provider_action);
+    for (@import("../editor/contrib/hover/browser/getHover.zig").execute_provider_actions) |action| try commands.registerAction(instantiation, action);
     for (@import("../editor/contrib/wordHighlighter/browser/wordHighlighter.zig").navigation_actions) |action| try commands.registerEditorAction(instantiation, action);
 }
 

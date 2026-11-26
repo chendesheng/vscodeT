@@ -191,14 +191,39 @@ const CodeLensCommandRequest = struct {
 
 pub const InlineProvider = struct { handle: u32, supports_events: bool };
 
+const hover_model = @import("../../../editor/contrib/hover/browser/getHover.zig");
 const occurrence_model = @import("../../../editor/contrib/wordHighlighter/browser/wordHighlighter.zig");
 const resolver = @import("../../../editor/common/services/resolverService.zig");
 
+pub const ModelPositionCommand = enum {
+    document_highlights,
+    hover,
+    hover_recursive,
+
+    pub fn id(self: ModelPositionCommand) []const u8 {
+        return switch (self) {
+            .document_highlights => "_executeDocumentHighlights",
+            .hover => "_executeHoverProvider",
+            .hover_recursive => "_executeHoverProvider_recursive",
+        };
+    }
+
+    pub fn fromId(command: []const u8) ?ModelPositionCommand {
+        for (std.enums.values(ModelPositionCommand)) |value| if (std.mem.eql(u8, command, value.id())) return value;
+        return null;
+    }
+};
+
 // registerModelAndPositionCommand retains the resolved model throughout the
 // asynchronous provider execution, including an unmounted resource.
-const DocumentHighlightCommandRequest = struct {
+const ModelPositionCommandRequest = struct {
     owner: *MainThreadLanguageFeatures,
     commands: *CommandRegistry,
+    command: ModelPositionCommand,
+    arena: std.heap.ArenaAllocator,
+    hover_items: std.json.Array,
+    hover_error: ?anyerror = null,
+    pending_hover: ?IDisposable = null,
     resolver_service: resolver.ITextModelService,
     resource_string: []const u8,
     input_position: Position, // upstream UTF-16 columns
@@ -212,7 +237,7 @@ const DocumentHighlightCommandRequest = struct {
     finished: bool = false,
 
     fn start(context: *anyopaque, channel: *rpc.RpcProtocol, request_id: u32) void {
-        const self: *DocumentHighlightCommandRequest = @ptrCast(@alignCast(context));
+        const self: *ModelPositionCommandRequest = @ptrCast(@alignCast(context));
         self.channel = channel;
         self.request_id = request_id;
         if (self.document) |document| {
@@ -224,7 +249,7 @@ const DocumentHighlightCommandRequest = struct {
     }
 
     fn modelReady(context: *anyopaque, result: resolver.ModelReferenceResult) void {
-        const self: *DocumentHighlightCommandRequest = @ptrCast(@alignCast(context));
+        const self: *ModelPositionCommandRequest = @ptrCast(@alignCast(context));
         self.resolving = null;
         switch (result) {
             .failure => |err| self.fail(err),
@@ -235,29 +260,78 @@ const DocumentHighlightCommandRequest = struct {
         }
     }
 
-    fn currentModel(self: *DocumentHighlightCommandRequest) *TextModel {
+    fn currentModel(self: *ModelPositionCommandRequest) *TextModel {
         return if (self.document) |document| document.model else self.reference.?.object.textEditorModel;
     }
 
-    fn run(self: *DocumentHighlightCommandRequest, model: *TextModel) void {
-        const command = self.commands.get("_executeDocumentHighlights") orelse return self.fail(error.CommandNotFound);
+    fn run(self: *ModelPositionCommandRequest, model: *TextModel) void {
+        const command = self.commands.get(self.command.id()) orelse return self.fail(error.CommandNotFound);
         const position = Position.init(self.input_position.lineNumber, columnForModel(model, self.input_position.lineNumber, self.input_position.column));
-        const args: occurrence_model.ExecuteDocumentHighlightsArgs = .{
-            .allocator = self.owner.allocator,
-            .registry = &self.owner.features.document_highlight_provider,
-            .model = model,
-            .position = position,
-            .listener = .{ .context = self, .complete = ready },
-            .pending = &self.pending,
-        };
         self.starting = true;
-        command.executeWithArgument(@import("../../../platform/commands/common/commands.zig").CommandArgument.from(occurrence_model.ExecuteDocumentHighlightsArgs, &args)) catch |err| self.fail(err);
+        switch (self.command) {
+            .document_highlights => {
+                const args: occurrence_model.ExecuteDocumentHighlightsArgs = .{
+                    .allocator = self.owner.allocator,
+                    .registry = &self.owner.features.document_highlight_provider,
+                    .model = model,
+                    .position = position,
+                    .listener = .{ .context = self, .complete = ready },
+                    .pending = &self.pending,
+                };
+                command.executeWithArgument(@import("../../../platform/commands/common/commands.zig").CommandArgument.from(occurrence_model.ExecuteDocumentHighlightsArgs, &args)) catch |err| self.fail(err);
+            },
+            .hover, .hover_recursive => {
+                const args: hover_model.ExecuteHoverProviderArgs = .{
+                    .allocator = self.owner.allocator,
+                    .registry = &self.owner.features.hover_provider,
+                    .model = model,
+                    .position = position,
+                    .listener = .{ .context = self, .emit = hoverResult, .complete = hoverComplete },
+                    .pending = &self.pending_hover,
+                };
+                command.executeWithArgument(@import("../../../platform/commands/common/commands.zig").CommandArgument.from(hover_model.ExecuteHoverProviderArgs, &args)) catch |err| self.fail(err);
+            },
+        }
         self.starting = false;
         if (self.finished) self.dispose();
     }
 
+    fn hoverResult(context: *anyopaque, result: hover_model.HoverProviderResult) void {
+        const self: *ModelPositionCommandRequest = @ptrCast(@alignCast(context));
+        if (self.hover_error != null) return;
+        self.appendHover(result.hover) catch |err| {
+            self.hover_error = err;
+        };
+    }
+
+    fn appendHover(self: *ModelPositionCommandRequest, hover: languages.Hover) !void {
+        const a = self.arena.allocator();
+        var dto: std.json.ObjectMap = .empty;
+        try dto.put(a, "range", try rangeJson(a, self.currentModel(), hover.range.?));
+        var contents = std.json.Array.init(a);
+        for (hover.contents) |content| {
+            var item: std.json.ObjectMap = .empty;
+            try item.put(a, "value", .{ .string = try a.dupe(u8, content.value) });
+            if (content.is_trusted) |flag| try item.put(a, "isTrusted", .{ .bool = flag });
+            if (content.support_theme_icons) |flag| try item.put(a, "supportThemeIcons", .{ .bool = flag });
+            if (content.support_html) |flag| try item.put(a, "supportHtml", .{ .bool = flag });
+            try contents.append(.{ .object = item });
+        }
+        try dto.put(a, "contents", .{ .array = contents });
+        if (hover.can_increase_verbosity) |flag| try dto.put(a, "canIncreaseVerbosity", .{ .bool = flag });
+        if (hover.can_decrease_verbosity) |flag| try dto.put(a, "canDecreaseVerbosity", .{ .bool = flag });
+        try self.hover_items.append(.{ .object = dto });
+    }
+
+    fn hoverComplete(context: *anyopaque) void {
+        const self: *ModelPositionCommandRequest = @ptrCast(@alignCast(context));
+        self.pending_hover = null;
+        if (self.hover_error) |err| return self.fail(err);
+        self.reply(.{ .json = .{ .array = self.hover_items } });
+    }
+
     fn ready(context: *anyopaque, result: *occurrence_model.OccurrenceResult) void {
-        const self: *DocumentHighlightCommandRequest = @ptrCast(@alignCast(context));
+        const self: *ModelPositionCommandRequest = @ptrCast(@alignCast(context));
         self.pending = null;
         defer result.dispose();
         const model = self.currentModel();
@@ -275,11 +349,11 @@ const DocumentHighlightCommandRequest = struct {
         self.reply(.{ .json = .{ .array = items } });
     }
 
-    fn fail(self: *DocumentHighlightCommandRequest, err: anyerror) void {
+    fn fail(self: *ModelPositionCommandRequest, err: anyerror) void {
         self.reply(.{ .err = .{ .name = @errorName(err), .message = @errorName(err) } });
     }
 
-    fn reply(self: *DocumentHighlightCommandRequest, value: rpc.HandlerReply) void {
+    fn reply(self: *ModelPositionCommandRequest, value: rpc.HandlerReply) void {
         if (self.finished) return;
         self.finished = true;
         if (self.channel) |channel| channel.sendReply(self.request_id, value);
@@ -287,15 +361,17 @@ const DocumentHighlightCommandRequest = struct {
         if (!self.starting) self.dispose();
     }
 
-    fn dispose(self: *DocumentHighlightCommandRequest) void {
+    fn dispose(self: *ModelPositionCommandRequest) void {
         if (self.resolving) |request| request.cancel();
         if (self.pending) |request| request.cancel();
+        if (self.pending_hover) |request| request.dispose();
+        self.arena.deinit();
         if (self.reference) |*reference| reference.dispose();
         if (self.document) |document| document.release();
         const owner = self.owner;
-        for (owner.highlight_commands.items, 0..) |candidate, index| {
+        for (owner.model_position_commands.items, 0..) |candidate, index| {
             if (candidate != self) continue;
-            _ = owner.highlight_commands.swapRemove(index);
+            _ = owner.model_position_commands.swapRemove(index);
             break;
         }
         owner.allocator.free(self.resource_string);
@@ -310,7 +386,7 @@ pub const MainThreadLanguageFeatures = struct {
     registrations: std.AutoHashMap(u32, *Registration),
     code_lens_events: std.AutoHashMap(u32, *CodeLensState),
     code_lens_commands: std.ArrayList(*CodeLensCommandRequest) = .empty,
-    highlight_commands: std.ArrayList(*DocumentHighlightCommandRequest) = .empty,
+    model_position_commands: std.ArrayList(*ModelPositionCommandRequest) = .empty,
     inline_providers: @import("../../../editor/common/languageFeatureRegistry.zig").LanguageFeatureRegistry(InlineProvider),
 
     pub fn init(allocator: Allocator, features: *features_mod.LanguageFeaturesService, proxy: HostProxy) MainThreadLanguageFeatures {
@@ -325,8 +401,8 @@ pub const MainThreadLanguageFeatures = struct {
     }
 
     pub fn deinit(self: *MainThreadLanguageFeatures) void {
-        while (self.highlight_commands.items.len != 0) self.highlight_commands.items[self.highlight_commands.items.len - 1].dispose();
-        self.highlight_commands.deinit(self.allocator);
+        while (self.model_position_commands.items.len != 0) self.model_position_commands.items[self.model_position_commands.items.len - 1].dispose();
+        self.model_position_commands.deinit(self.allocator);
         while (self.code_lens_commands.items.len != 0) self.code_lens_commands.items[self.code_lens_commands.items.len - 1].dispose();
         var iterator = self.registrations.valueIterator();
         while (iterator.next()) |registration_ptr| self.destroyRegistration(registration_ptr.*);
@@ -352,16 +428,18 @@ pub const MainThreadLanguageFeatures = struct {
         return .{ .deferred = .{ .context = request, .start = CodeLensCommandRequest.start } };
     }
 
-    pub fn executeDocumentHighlightCommand(self: *MainThreadLanguageFeatures, resource: std.Uri, position: Position, document: ?*EditorDocument, resolver_service: resolver.ITextModelService, commands: *CommandRegistry) !rpc.HandlerReply {
-        const request = try self.allocator.create(DocumentHighlightCommandRequest);
+    pub fn executeModelPositionCommand(self: *MainThreadLanguageFeatures, command: ModelPositionCommand, resource: std.Uri, position: Position, document: ?*EditorDocument, resolver_service: resolver.ITextModelService, commands: *CommandRegistry) !rpc.HandlerReply {
+        const request = try self.allocator.create(ModelPositionCommandRequest);
         errdefer self.allocator.destroy(request);
         const resource_string = try std_uri.encodedResource(self.allocator, resource);
         errdefer self.allocator.free(resource_string);
         if (document) |loaded| loaded.retain();
         errdefer if (document) |loaded| loaded.release();
-        request.* = .{ .owner = self, .commands = commands, .resolver_service = resolver_service, .resource_string = resource_string, .input_position = position, .document = document };
-        try self.highlight_commands.append(self.allocator, request);
-        return .{ .deferred = .{ .context = request, .start = DocumentHighlightCommandRequest.start } };
+        request.* = .{ .owner = self, .commands = commands, .command = command, .arena = .init(self.allocator), .hover_items = undefined, .resolver_service = resolver_service, .resource_string = resource_string, .input_position = position, .document = document };
+        errdefer request.arena.deinit();
+        request.hover_items = .init(request.arena.allocator());
+        try self.model_position_commands.append(self.allocator, request);
+        return .{ .deferred = .{ .context = request, .start = ModelPositionCommandRequest.start } };
     }
 
     fn destroyRegistration(self: *MainThreadLanguageFeatures, registration: *Registration) void {

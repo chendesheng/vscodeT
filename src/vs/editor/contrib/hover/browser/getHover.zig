@@ -206,12 +206,42 @@ pub fn getHovers(
 }
 
 pub fn isValid(hover: Hover) bool {
-    if (hover.range == null) return false;
-    for (hover.contents) |content| {
-        if (content.value.len > 0) return true;
-    }
-    return false;
+    return hover.range != null and hover.contents.len > 0;
 }
+
+/// registerModelAndPositionCommand retains the resolved resource and passes
+/// its model here; the provider stream owns its DTOs until each emit returns.
+pub const ExecuteHoverProviderArgs = struct {
+    allocator: Allocator,
+    registry: *Registry,
+    model: *TextModel,
+    position: Position,
+    listener: HoverResultListener,
+    pending: *?Disposable,
+};
+const ServicesAccessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
+const CommandArgument = @import("../../../../platform/commands/common/commands.zig").CommandArgument;
+const Action2 = @import("../../../../platform/actions/common/actions.zig").Action2;
+
+fn providerAction(comptime recursive: bool) Action2 {
+    return .{
+        .command = .{ .id = if (recursive) "_executeHoverProvider_recursive" else "_executeHoverProvider", .title = "Execute Hover Provider" },
+        .context = @constCast(&{}),
+        .run_fn = struct {
+            fn run(_: *anyopaque, _: ServicesAccessor) !void {
+                return error.InvalidArgument;
+            }
+        }.run,
+        .run_with_argument_fn = struct {
+            fn run(_: *anyopaque, _: ServicesAccessor, argument: CommandArgument) !void {
+                const args = argument.as(ExecuteHoverProviderArgs) orelse return error.InvalidArgument;
+                args.pending.* = try requestHoverProviderResults(args.allocator, .{ .registry = args.registry }, args.model, args.position, .None, null, recursive, args.listener);
+            }
+        }.run,
+    };
+}
+
+pub const execute_provider_actions = [_]Action2{ providerAction(false), providerAction(true) };
 
 test "getHover: aggregates valid provider results" {
     const std_testing = std.testing;
