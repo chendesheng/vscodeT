@@ -525,7 +525,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.modified_view.invalidate();
             self.overview.invalidate();
             self.accessible_viewer.layout(self.width, self.height) catch {};
-            if (self.sync_top_line and self.sideBySide()) self.syncTopLines();
+            if (self.sync_top_line) self.syncTopLines();
             self.updateContextState(smart_inline);
         }
 
@@ -571,6 +571,12 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 self.options.split_view_default_ratio,
                 3,
             );
+            if (!self.sideBySide() and !self.options.hide_original_line_numbers and !self.options.compact_mode) {
+                // Inline mode retains the original editor up to decorationsLeft.
+                // Clip to a whole number of cells and preserve one modified cell.
+                result.original = @min(@max(@as(usize, 1), self.original_editor.gutterGlyphWidth() + self.original_editor.gutterNumberWidth()), result.modified -| 1);
+                result.modified -= result.original;
+            }
             result.overview = overview;
             result.moves = moved_width;
             return result;
@@ -671,10 +677,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
             const bounds = gutter_feature.hunkBounds(self.state().?.mappings[index].line_range_mapping, self.original_editor, self.modified_editor);
             const top = bounds.startLineNumber -| (self.height / 2);
             _ = self.modified_editor.setScrollTop(top);
-            if (!self.inline_mode) {
-                _ = self.original_editor.setScrollTop(top);
-                self.original_view.invalidate();
-            }
+            _ = self.original_editor.setScrollTop(top);
+            self.original_view.invalidate();
             self.modified_view.invalidate();
         }
 
@@ -756,8 +760,11 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 try self.original_view.mountInto(surface, container, x, y, 0);
                 try self.modified_view.mountInto(surface, container, x + offset, y, offset);
             } else {
-                self.original_view.detach();
-                try self.modified_view.mountInto(surface, container, x, y, 0);
+                const widths = self.paneWidths();
+                if (widths.original > 0) {
+                    try self.original_view.mountInto(surface, container, x, y, 0);
+                } else self.original_view.detach();
+                try self.modified_view.mountInto(surface, container, x + widths.original, y, widths.original);
             }
         }
 
@@ -793,8 +800,12 @@ pub fn DiffEditorWidget(comptime View: type) type {
                     h,
                 );
             } else {
+                if (widths.original > 0) {
+                    try self.original_view.paint();
+                    if (!self.original_view.isMounted()) try ui.CellGrid.blit(&frame.next, self.original_view.grid(), x, y, widths.original, h);
+                }
                 try self.modified_view.paint();
-                if (!self.modified_view.isMounted()) try ui.CellGrid.blit(&frame.next, self.modified_view.grid(), x, y, widths.modified, h);
+                if (!self.modified_view.isMounted()) try ui.CellGrid.blit(&frame.next, self.modified_view.grid(), x + widths.original, y, widths.modified, h);
             }
             if (widths.overview > 0) {
                 try self.overview.prepareRender(
@@ -823,8 +834,10 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 if (x < widths.original + widths.gutter + widths.moves) return .default;
                 return self.modified_view.pointerAt(x -| (widths.original + widths.gutter + widths.moves), y);
             }
-            if (self.inline_margin_menu.available() and x + 1 == self.modified_editor.gutterWidth() and (try self.zones.deletedAtViewportRow(y)) != null) return .pointer;
-            return self.modified_view.pointerAt(x, y);
+            if (x < widths.original) return .default;
+            const modified_x = x - widths.original;
+            if (self.inline_margin_menu.available() and modified_x + 1 == self.modified_editor.gutterWidth() and (try self.zones.deletedAtViewportRow(y)) != null) return .pointer;
+            return self.modified_view.pointerAt(modified_x, y);
         }
 
         pub fn attachActionServices(self: *Self, clipboard: Clipboard, menu: ContextMenu) void {
@@ -969,15 +982,24 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 self.syncScrollFromPane(side);
                 return handled;
             }
+            // The original editor remains mounted as a line-number margin. Its
+            // content is clipped; wheel events use the modified viewport.
+            if (event.x < widths.original and event.kind != .wheel and !self.zones.draggingDeletedSelection()) {
+                const changed = self.zones.updateDeletedHover(null);
+                if (changed) self.modified_view.invalidate();
+                return changed;
+            }
+            var adjusted = event.*;
+            adjusted.x -|= widths.original;
             var hover_changed = false;
             if (self.inline_margin_menu.available() and (event.kind == .move or event.kind == .down or event.kind == .up)) {
-                const mouse_target = try self.modified_view.mouseTargetAt(event.x, event.y);
+                const mouse_target = try self.modified_view.mouseTargetAt(adjusted.x, event.y);
                 const deleted = if (mouse_target.type == .content_view_zone or mouse_target.type == .gutter_view_zone) try self.zones.deletedAtViewportRow(event.y) else null;
                 hover_changed = self.zones.updateDeletedHover(deleted);
                 if (hover_changed) self.modified_view.invalidate();
                 const gutter = self.modified_editor.gutterWidth();
                 if (self.zones.draggingDeletedSelection() and (event.kind == .move or event.kind == .up)) {
-                    if (deleted) |hit| if (try self.zones.extendDeletedSelection(hit, event.x -| gutter)) self.modified_view.invalidate();
+                    if (deleted) |hit| if (try self.zones.extendDeletedSelection(hit, adjusted.x -| gutter)) self.modified_view.invalidate();
                     if (event.kind == .up) self.zones.finishDeletedSelection();
                     return true;
                 }
@@ -985,7 +1007,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                     if (deleted) |hit| {
                         if (mouse_target.type == .content_view_zone) {
                             self.setFocus(.modified);
-                            try self.zones.beginDeletedSelection(hit, event.x -| gutter);
+                            try self.zones.beginDeletedSelection(hit, adjusted.x -| gutter);
                             self.modified_view.invalidate();
                             return true;
                         }
@@ -993,17 +1015,17 @@ pub fn DiffEditorWidget(comptime View: type) type {
                     if (self.zones.clearDeletedSelection()) self.modified_view.invalidate();
                 }
                 if (deleted) |hit| {
-                    if (event.kind == .down and event.button == .left and event.x + 1 == gutter) {
+                    if (event.kind == .down and event.button == .left and adjusted.x + 1 == gutter) {
                         self.setFocus(.modified);
                         return self.inline_margin_menu.show(self.originalModel(), self.modifiedModel(), hit.mapping, hit.line, !self.modified_editor.isReadOnly(), self.canRevert(), .{ .context = self, .run = revertDeletedCode }, .{ .x = self.screen_x + event.x, .y = self.screen_y + event.y, .opening_press = true });
                     }
                 }
             }
             if (event.kind == .down) self.setFocus(.modified);
-            if (event.kind == .up and event.x < self.modified_editor.gutterGlyphWidth()) {
-                if (self.hide_unchanged.dispatchFoldGlyph(false, event, try self.modified_view.mouseTargetAt(event.x, event.y))) return true;
+            if (event.kind == .up and adjusted.x < self.modified_editor.gutterGlyphWidth()) {
+                if (self.hide_unchanged.dispatchFoldGlyph(false, &adjusted, try self.modified_view.mouseTargetAt(adjusted.x, event.y))) return true;
             }
-            const handled = if (target) |handler| try handler.dispatch(handler.context, .modified, self.modified_view, event) else try self.modified_view.dispatchMouse(event);
+            const handled = if (target) |handler| try handler.dispatch(handler.context, .modified, self.modified_view, &adjusted) else try self.modified_view.dispatchMouse(&adjusted);
             return handled or hover_changed;
         }
 

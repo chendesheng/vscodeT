@@ -51,6 +51,7 @@ pub fn computeConfiguration(configuration_service: ?@import("../../../../platfor
         options.enable_split_view_resizing = configuration.getBool("diffEditor.enableSplitViewResizing", true);
         options.hide_unchanged_regions = configuration.getBool("diffEditor.hideUnchangedRegions.enabled", false);
         options.compact_mode = configuration.getBool("diffEditor.compactMode", false);
+        options.hide_original_line_numbers = configuration.getBool("diffEditor.hideOriginalLineNumbers", false);
         if (configuration.getValue("diffEditor.hideUnchangedRegions.revealLineCount")) |value| {
             switch (value.*) {
                 .integer => |number| if (number >= 0) {

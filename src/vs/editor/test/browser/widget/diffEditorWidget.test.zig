@@ -425,8 +425,8 @@ pub fn Tests(comptime View: type) type {
             defer widget.destroy();
             try testing.expect(!widget.sideBySide());
             const widths = widget.paneWidths();
-            try testing.expectEqual(@as(usize, 0), widths.original);
-            try testing.expectEqual(@as(usize, 28), widths.modified);
+            try testing.expectEqual(widget.original_editor.gutterGlyphWidth() + widget.original_editor.gutterNumberWidth(), widths.original);
+            try testing.expectEqual(@as(usize, 28), widths.modified + widths.original);
             try testing.expectEqual(@as(usize, 2), widths.overview);
             try testing.expect(widget.inline_mode);
             var original = try widget.originalModel().getLineContent(1);
@@ -1120,6 +1120,36 @@ pub fn Tests(comptime View: type) type {
             try std.testing.expect(std.mem.indexOf(u8, inserted_row, "B") != null);
         }
 
+        test "diffEditorWidget: inline original line numbers follow real aligned model and hide options" {
+            const allocator = testing.allocator;
+            const widget = try DiffEditorWidget.create(View.init, allocator, testing.io, "a.txt", "b.txt", "initial\nold\nlast", "initial\nnew\nlast", "Original", "Modified", 80, 8, .{ .render_side_by_side = false });
+            defer widget.destroy();
+            const original_width = widget.paneWidths().original;
+            try testing.expect(original_width > 0);
+            var frame = try ui.Frame.init(allocator, 80, 8);
+            defer frame.deinit();
+            try widget.paint(&frame, 0, 0, 80, 8);
+            const column = widget.original_editor.gutterGlyphWidth() + widget.original_editor.gutterNumberWidth() - 1;
+            try testing.expectEqual(@as(u32, '1'), frame.next.cluster[frame.next.index(column, 0)]);
+            try testing.expectEqual(@as(u32, '2'), frame.next.cluster[frame.next.index(column, 1)]);
+            const blank = frame.next.cluster[frame.next.index(column, 2)];
+            try testing.expect(blank == 0 or blank == ' ');
+            try testing.expectEqual(@as(u32, '3'), frame.next.cluster[frame.next.index(column, 3)]);
+            const editor = widget.original_editor;
+            var options = widget.options;
+            options.hide_original_line_numbers = true;
+            _ = try widget.updateOptions(options);
+            try testing.expectEqual(@as(usize, 0), widget.paneWidths().original);
+            try testing.expectEqual(editor, widget.original_editor);
+            options.hide_original_line_numbers = false;
+            options.compact_mode = true;
+            _ = try widget.updateOptions(options);
+            try testing.expectEqual(@as(usize, 0), widget.paneWidths().original);
+            options.compact_mode = false;
+            _ = try widget.updateOptions(options);
+            try testing.expectEqual(original_width, widget.paneWidths().original);
+        }
+
         test "diffEditorWidget: large deleted-code view zone renders only visible rows" {
             const allocator = testing.allocator;
             var original: std.ArrayList(u8) = .empty;
@@ -1273,7 +1303,7 @@ pub fn Tests(comptime View: type) type {
                 }
             }
             const row = blank_row orelse return error.TestUnexpectedResult;
-            const text_col = widget.modified_editor.gutterWidth();
+            const text_col = widget.paneWidths().original + widget.modified_editor.gutterWidth();
             var event: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = text_col, .y = row - 1 };
             try testing.expect(try widget.dispatchMouse(&event));
             event = .{ .kind = .move, .button = .left, .x = text_col + 3, .y = row - 1 };
@@ -1290,7 +1320,7 @@ pub fn Tests(comptime View: type) type {
             event = .{ .kind = .move, .x = text_col + 1, .y = row };
             try testing.expect(try widget.dispatchMouse(&event));
             try widget.paint(&frame, 0, 0, 80, 8);
-            const margin = widget.modified_editor.gutterWidth() - 1;
+            const margin = widget.paneWidths().original + widget.modified_editor.gutterWidth() - 1;
             try testing.expectEqual(@as(u32, '◉'), frame.next.cluster[frame.next.index(margin, row)]);
             event = .{ .kind = .down, .button = .left, .x = margin, .y = row };
             try testing.expect(try widget.dispatchMouse(&event));

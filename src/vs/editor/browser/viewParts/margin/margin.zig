@@ -216,7 +216,9 @@ pub const TerminalMargin = struct {
     ) !void {
         const total = editor.viewLineCount();
         const top = editor.topViewLine();
-        const marker_width = editor.lineDecorationsWidth();
+        // The decorations column is anchored in the full editor layout, not
+        // moved into the last visible line-number cell when the margin is clipped.
+        const marker_width = if (gutter >= editor.gutterWidth()) editor.lineDecorationsWidth() else 0;
         const fold_column = editor.foldCellColumn();
         const fold_width = editor.gutterFoldWidth();
         const number_width = editor.gutterNumberWidth();
