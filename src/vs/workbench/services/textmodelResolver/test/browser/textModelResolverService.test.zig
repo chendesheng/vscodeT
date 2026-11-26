@@ -324,8 +324,8 @@ test "TextModelResolverService: canceling a loading reference detaches only that
     var active: AsyncReference = .{};
     defer active.deinit();
     const first = try service.createModelReference(uri, canceled.listener());
-    first.cancel();
     const second = try service.createModelReference(uri, active.listener());
+    first.cancel();
     defer second.cancel();
     try std.testing.expectEqual(@as(usize, 1), provider.calls);
     service.worker.?.waitForReply();
@@ -333,4 +333,53 @@ test "TextModelResolverService: canceling a loading reference detaches only that
     try std.testing.expect(!canceled.completed);
     try std.testing.expect(active.completed);
     try std.testing.expectEqualStrings("shared", try active.reference.?.object.textEditorModel.borrowLineContent(1));
+}
+
+test "TextModelResolverService: provider refresh updates the retained model without replacing it" {
+    const a = std.testing.allocator;
+    var queue: dispatch.Queue = .{ .io = std.testing.io };
+    var service = resolver.TextModelResolverService.init(a, std.testing.io, &queue);
+    defer service.deinit();
+    var provider: TestProvider = .{ .text = "new revision" };
+    const registration = try service.registerTextModelContentProvider("test", provider.interface());
+    defer registration.dispose();
+    const uri = try std.Uri.parse("test:/resource");
+    var existing = try service.createResolvedModelReference(uri, "/resource", "old revision", true);
+    defer existing.dispose();
+    const model = existing.object.textEditorModel;
+    var normal: AsyncReference = .{};
+    defer normal.deinit();
+    var refreshed: AsyncReference = .{};
+    defer refreshed.deinit();
+    const first = try service.createModelReference(uri, normal.listener());
+    defer first.cancel();
+    const second = try service.refreshModelReference(uri, refreshed.listener());
+    defer second.cancel();
+    try std.testing.expectEqual(@as(usize, 1), provider.calls);
+    service.worker.?.waitForReply();
+    flush(&queue);
+    try std.testing.expect(normal.completed and refreshed.completed);
+    try std.testing.expectEqual(model, normal.reference.?.object.textEditorModel);
+    try std.testing.expectEqual(model, refreshed.reference.?.object.textEditorModel);
+    try std.testing.expectEqualStrings("new revision", try model.borrowLineContent(1));
+    try std.testing.expect(!resolver.TextModelResolverService.documentOf(existing).isDirty());
+}
+
+test "TextModelResolverService: a fully abandoned acquisition does not publish a model" {
+    const a = std.testing.allocator;
+    var queue: dispatch.Queue = .{ .io = std.testing.io };
+    var service = resolver.TextModelResolverService.init(a, std.testing.io, &queue);
+    defer service.deinit();
+    var provider: TestProvider = .{ .text = "abandoned" };
+    const registration = try service.registerTextModelContentProvider("test", provider.interface());
+    defer registration.dispose();
+    const uri = try std.Uri.parse("test:/resource");
+    var canceled: AsyncReference = .{};
+    defer canceled.deinit();
+    const request = try service.createModelReference(uri, canceled.listener());
+    request.cancel();
+    service.worker.?.waitForReply();
+    flush(&queue);
+    try std.testing.expect(!canceled.completed);
+    try std.testing.expect((try service.acquireExisting(uri)) == null);
 }
