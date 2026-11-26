@@ -4,7 +4,8 @@
 // singleton decorators. The contribution owns the service and the Changes,
 // Graph and quick-diff controllers, while the sidebar hosts its view panes.
 // The native extension supplies ISCMProvider and QuickDiffProvider objects;
-// multi-repository view and working-set controllers remain unported.
+// the active repository follows SCMViewService. Explicit repository-list
+// visibility/sorting and working-set controllers remain unported.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const scm = @import("../common/scm.zig");

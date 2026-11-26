@@ -199,11 +199,19 @@ and the exact original text copied after a drag outside the deleted-code zone.
   then publish the repository and its providers on the window dispatcher.
   Cancellation before publication is covered by the focused suite (496/496).
   Direct synchronous filesystem stat retains its synchronous discovery path.
-  Linked worktrees now follow the upstream filesystem metadata and configured
+  Linked worktrees follow the upstream filesystem metadata and configured
   detection/limit checks on status events, including detached refs and pruned
-  entries. The native integration suite passes 497/497. Active history
-  repository selection and workspace repository removal need further parity
-  work.
+  entries. Submodule/worktree scans and workspace-folder additions use the
+  immutable repository-open worker. A stable workspace context emits the
+  folder delta after configuration is loaded. Removed folders release their
+  Git/SCM/Quick Diff registrations independently unless a visible real text
+  editor (including mounted multi-diff children) or another workspace ancestor
+  retains them. `SCMViewService` owns the latest active editor/repository focus
+  and pinned selection; Graph, Git actions, activity counts and the status bar
+  follow it. The native integration suite passes 497/497, including cancellation
+  before publication and shared-view identity across provider removal and
+  reopen. Initial workspace startup and direct stat remain synchronous;
+  explicit repository-list selection and working sets are still unported.
 * Async Quick Diff queries preserve provider priority and cancellation while
   independently resolving contributed originals. Real extension-host actors
   now register Quick Diff and virtual text content providers through RPC.

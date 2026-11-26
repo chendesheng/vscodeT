@@ -5,8 +5,8 @@
 // separate from the workbench's Source Control view and status UI.
 //
 // Parent-repository consent and ignored/unsafe repository tracking remain
-// unported. The primary repository is retained as the selection used by the
-// existing SCM view while the model owns the full opened repository list.
+// unported. The full opened repository list is owned here; the SCM view
+// service supplies the active selection used by commands and history.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const extpath = @import("../../../vs/base/common/extpath.zig");

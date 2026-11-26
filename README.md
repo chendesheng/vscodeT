@@ -1370,10 +1370,14 @@ console API for raw mode, sizing and input polling.
   raw buffers, stat, merge-stage and submodule resources, and exact change
   events use the shared file service. Multiple workspace repositories and
   configured initialized submodules and linked worktrees register independent
-  SCM and Quick Diff sources. Git URI reads in empty windows discover the containing repository
-  and capture initial status on the worker before publishing it; direct
-  synchronous filesystem stat retains its synchronous discovery path.
-  Active-repository selection and removal remain partial.
+  SCM and Quick Diff sources. Git URI reads in empty windows discover the
+  containing repository and capture initial status on the worker before
+  publishing it; submodule/worktree scans and workspace-folder additions use
+  the same capture. Direct synchronous filesystem stat and initial workspace
+  startup retain their synchronous paths. SCM active-repository selection
+  follows active editors, tree focus and pinning; workspace-folder removal
+  releases independent providers unless visible text editors or a remaining
+  workspace ancestor retain the repository.
   See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and
   `src/vs/workbench/contrib/search/browser/searchWidget.zig`) over the upstream-shaped portable view:

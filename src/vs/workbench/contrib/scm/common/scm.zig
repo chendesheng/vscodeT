@@ -1,15 +1,14 @@
 // Port of `src/vs/workbench/contrib/scm/common/scm.ts`.
 //
 // Terminal adaptations:
-// - Resources are local filesystem paths (`[]const u8`) instead of `URI`; the
-//   terminal workbench is single-process and has no virtual file system
-//   provider for SCM resources.
+// - Resource identity in SCM rows uses local filesystem paths (`[]const u8`);
+//   virtual revision URIs for comparison inputs use the shared file service.
 // - `Event` fields become emitters reachable through accessors, and
 //   `IObservable` provider properties (count, context value, ...) become plain
 //   fields refreshed by the provider. The observable system is not ported.
-// - Menus, artifacts, input validation/history and the multi-repository view
-//   service are not ported. The history provider is exposed here so the Graph
-//   view can reach it.
+// - Artifacts, input validation/history, repository-list visibility/sorting
+//   and working sets are not ported. The history provider and active-repository
+//   view service drive the Graph and active-repository status.
 const std = @import("std");
 
 const languages = @import("../../../../editor/common/languages.zig");
