@@ -53,10 +53,10 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(view.widget.modified_editor.isReadOnly());
             try testing.expect(view.widget.original_editor.isReadOnly());
 
-            view.widget.split_ratio = 0.7;
+            view.widget.sash_layout.ratio = 0.7;
             try view.replace("a\nb\nc", "a\nB", 80, 10, .{});
             try testing.expectEqual(@as(usize, 1), view.widget.changeCount());
-            try testing.expectEqual(@as(f64, 0.7), view.widget.split_ratio);
+            try testing.expectEqual(@as(f64, 0.7), view.widget.sash_layout.getRatio(0.5, true));
             view.swapSides();
             try testing.expectEqualStrings("Working Tree", view.model.original_label);
             try testing.expectEqualStrings("HEAD", view.model.modified_label);

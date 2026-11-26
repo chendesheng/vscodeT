@@ -667,6 +667,7 @@ comptime {
     _ = @import("./vs/editor/browser/widget/diffEditor/features/gutterFeature.zig");
     _ = @import("./vs/editor/browser/widget/diffEditor/features/overviewRulerFeature.zig");
     _ = @import("./vs/editor/browser/widget/diffEditor/diffEditorWidget.zig");
+    _ = @import("./vs/editor/browser/widget/diffEditor/components/diffEditorSash.zig");
     _ = @import("./vs/editor/test/browser/widget/diffEditorWidget.test.zig").Tests(@import("./tui/editorView.zig").View);
     _ = @import("./vs/editor/browser/viewParts/linesDecorations/linesDecorations.zig");
     _ = @import("./vs/editor/browser/viewParts/marginDecorations/marginDecorations.zig");

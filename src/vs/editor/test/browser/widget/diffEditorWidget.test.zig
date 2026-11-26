@@ -128,7 +128,8 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(!widget.sideBySide());
             const widths = widget.paneWidths();
             try testing.expectEqual(@as(usize, 0), widths.original);
-            try testing.expectEqual(@as(usize, 30), widths.modified);
+            try testing.expectEqual(@as(usize, 28), widths.modified);
+            try testing.expectEqual(@as(usize, 2), widths.overview);
             try testing.expect(widget.inline_mode);
             var deleted = try widget.modifiedModel().getLineContent(1);
             defer deleted.deinit();
@@ -170,6 +171,59 @@ pub fn Tests(comptime View: type) type {
             const gutter = widget.paneWidths().original;
             try testing.expectEqual(@as(u32, '-'), frame.next.cluster[frame.next.index(gutter, 1)]);
             try testing.expectEqual(@as(u32, '~'), frame.next.cluster[frame.next.index(gutter, 3)]);
+        }
+
+        test "diffEditorWidget: combined overview reserves two lanes and scrolls both panes" {
+            const allocator = testing.allocator;
+            const common = "2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20";
+            const widget = try DiffEditorWidget.create(
+                View.init,
+                allocator,
+                Io.Threaded.global_single_threaded.io(),
+                "a.txt",
+                "b.txt",
+                "old\n" ++ common,
+                "new\n" ++ common,
+                "Original",
+                "Modified",
+                80,
+                8,
+                .{},
+            );
+            defer widget.destroy();
+            const widths = widget.paneWidths();
+            try testing.expectEqual(@as(usize, 2), widths.overview);
+            try testing.expectEqual(@as(usize, 80), widths.original + widths.modified + widths.gutter + widths.overview);
+            var frame = try ui.Frame.init(allocator, 80, 8);
+            defer frame.deinit();
+            try widget.paint(&frame, 0, 0, 80, 8);
+            try testing.expect(frame.next.cluster[frame.next.index(78, 0)] != ' ');
+            try testing.expect(frame.next.cluster[frame.next.index(79, 0)] != ' ');
+            var down = ui.MouseEvent{ .kind = .down, .button = .left, .x = 79, .y = 7 };
+            try testing.expect(try widget.dispatchMouse(&down));
+            try testing.expect(widget.modified_editor.topViewLine() > 1);
+            try testing.expectEqual(widget.modified_editor.topViewLine(), widget.original_editor.topViewLine());
+            var up = ui.MouseEvent{ .kind = .up, .button = .left, .x = 79, .y = 7 };
+            try testing.expect(try widget.dispatchMouse(&up));
+
+            const no_overview = try DiffEditorWidget.create(
+                View.init,
+                allocator,
+                Io.Threaded.global_single_threaded.io(),
+                "a.txt",
+                "b.txt",
+                "old",
+                "new",
+                "Original",
+                "Modified",
+                80,
+                8,
+                .{ .render_overview_ruler = false },
+            );
+            defer no_overview.destroy();
+            const without = no_overview.paneWidths();
+            try testing.expectEqual(@as(usize, 0), without.overview);
+            try testing.expectEqual(@as(usize, 80), without.original + without.modified + without.gutter);
         }
 
         test "diffEditorWidget: read-only snapshot editors reject edits" {
@@ -218,10 +272,10 @@ pub fn Tests(comptime View: type) type {
             _ = try widget.dispatchMouse(&down);
             var drag = ui.MouseEvent{ .kind = .move, .x = 60, .y = 3, .button = .left };
             _ = try widget.dispatchMouse(&drag);
-            try testing.expect(widget.split_ratio > 0.5);
+            try testing.expect(widget.sash_layout.getRatio(0.5, true) > 0.5);
             var up = ui.MouseEvent{ .kind = .up, .x = 60, .y = 3, .button = .left };
             _ = try widget.dispatchMouse(&up);
-            try testing.expect(!widget.dragging_split);
+            try testing.expect(widget.sash.drag == null);
         }
 
         test "diffEditorWidget: wheel keeps the focused side while syncing both panes" {

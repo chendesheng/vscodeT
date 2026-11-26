@@ -14,8 +14,8 @@
 // character and moved-block decorations plus an inline line-number map. It
 // also supports hide-unchanged folding over the interleaved rows. Not ported
 // in this milestone: the accessible
-// diff viewer, editing either side, and the combined two-lane overview ruler
-// (each pane keeps its own scrollbar markers). Moved-block detection is wired through
+// diff viewer and editing either side. The combined overview ruler reserves
+// one terminal cell per lane. Moved-block detection is wired through
 // `state.moved_texts` into `movedOriginal`/`movedModified` block decorations.
 // Hide-unchanged regions are applied as collapsed user-defined folding ranges
 // over both aligned display texts, keeping context around each change.
@@ -31,6 +31,8 @@ const diff_view_model = @import("./diffEditorViewModel.zig");
 const diff_editor_options = @import("./diffEditorOptions.zig");
 const diff_editor_editors = @import("./components/diffEditorEditors.zig");
 const gutter_feature = @import("./features/gutterFeature.zig");
+const overview_feature = @import("./features/overviewRulerFeature.zig");
+const sash_mod = @import("./components/diffEditorSash.zig");
 const view_model = diff_view_model;
 const view_zones = @import("./components/diffEditorViewZones.zig");
 const decorations_mod = @import("./components/diffEditorDecorations.zig");
@@ -220,6 +222,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         view_model: DiffEditorViewModel,
         aligned: AlignedRows,
         decorations: *DiffEditorDecorations,
+        overview: overview_feature.OverviewRulerFeature = undefined,
 
         original_text: []u8,
         modified_text: []u8,
@@ -228,14 +231,14 @@ pub fn DiffEditorWidget(comptime View: type) type {
         original_view: *View,
         modified_view: *View,
 
-        split_ratio: f64,
+        sash_layout: sash_mod.SashLayout = .{},
+        sash: sash_mod.DiffEditorSash = .{},
         focused: Side = .modified,
         current_change: ?usize = null,
         /// Set when either pane is scrolled; the other is aligned on the next
         /// paint.
         sync_top_line: bool = true,
         message: ?[]u8 = null,
-        dragging_split: bool = false,
         is_pasting: bool = false,
         width: usize = 0,
         height: usize = 0,
@@ -407,7 +410,9 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 1001,
                 .{
                     .render_indicators = options.render_indicators,
-                    .render_overview_ruler = options.render_overview_ruler,
+                    // The diff owns its combined overview ruler, not the
+                    // individual editors' decoration rulers.
+                    .render_overview_ruler = false,
                 },
             );
             errdefer decorations.deinit();
@@ -444,13 +449,13 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .modified_editor = modified_editor,
                 .original_view = original_view,
                 .modified_view = modified_view,
-                .split_ratio = clampRatio(options.split_view_default_ratio),
             };
             if (is_inline) {
                 try self.applyInlineDecorations();
                 if (self.options.hide_unchanged_regions) try self.applyInlineHideUnchanged();
             }
 
+            self.overview.init(allocator, original_editor, modified_editor);
             // Keep the line views alive for layout changes and recomputation.
             self.layout(width, height);
             self.selectInitialChange();
@@ -459,6 +464,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         pub fn destroy(self: *Self) void {
             const allocator = self.allocator;
+            self.overview.deinit(self.original_editor, self.modified_editor);
             self.decorations.deinit();
             allocator.destroy(self.decorations);
             self.aligned.deinit();
@@ -597,18 +603,23 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.modified_editor.setViewport(widths.modified, self.height);
             self.original_view.invalidate();
             self.modified_view.invalidate();
+            self.overview.invalidate();
             if (self.sync_top_line and self.sideBySide()) self.syncTopLines();
         }
 
         pub const PaneWidths = diff_editor_editors.PaneWidths;
 
         pub fn paneWidths(self: *const Self) PaneWidths {
-            return diff_editor_editors.computePaneWidths(
-                self.width,
+            const overview = if (self.options.render_overview_ruler and self.width >= (if (self.sideBySide()) @as(usize, 3) else 1) + overview_feature.width) overview_feature.width else 0;
+            var result = diff_editor_editors.computePaneWidths(
+                self.width - overview,
                 self.sideBySide(),
-                if (self.options.enable_split_view_resizing) self.split_ratio else self.options.split_view_default_ratio,
+                self.sash_layout.getRatio(self.options.split_view_default_ratio, self.options.enable_split_view_resizing),
+                self.options.split_view_default_ratio,
                 3,
             );
+            result.overview = overview;
+            return result;
         }
 
         /// Syncs the two panes to the same top display row.
@@ -778,7 +789,22 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 );
             } else {
                 try self.modified_view.paint();
-                if (!self.modified_view.isMounted()) try ui.CellGrid.blit(&frame.next, self.modified_view.grid(), x, y, w, h);
+                if (!self.modified_view.isMounted()) try ui.CellGrid.blit(&frame.next, self.modified_view.grid(), x, y, widths.modified, h);
+            }
+            if (widths.overview > 0) {
+                try self.overview.prepareRender(
+                    self.aligned.mappings,
+                    if (self.inline_mode) self.modified_editor else self.original_editor,
+                    self.modified_editor,
+                    if (self.inline_mode) self.inline_original_rows else self.aligned.original_to_display,
+                    if (self.inline_mode) self.inline_modified_rows else self.aligned.modified_to_display,
+                    h,
+                );
+                const palette = self.modified_view.themeColors();
+                const removed = if (palette) |colors| colors.color("diffEditorOverview.removedForeground", overview_feature.removed_foreground) else ui.Color{ .r = overview_feature.removed_foreground[0], .g = overview_feature.removed_foreground[1], .b = overview_feature.removed_foreground[2] };
+                const inserted = if (palette) |colors| colors.color("diffEditorOverview.insertedForeground", overview_feature.inserted_foreground) else ui.Color{ .r = overview_feature.inserted_foreground[0], .g = overview_feature.inserted_foreground[1], .b = overview_feature.inserted_foreground[2] };
+                const thumb = if (palette) |colors| colors.color("scrollbarSlider.background", .{ 60, 60, 60 }) else ui.Color{ .r = 60, .g = 60, .b = 60 };
+                self.overview.paint(&frame.next, x + w - widths.overview, y, self.modified_editor, removed, inserted, thumb);
             }
         }
 
@@ -786,6 +812,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         /// owns the cell, the split-view resize cursor over the center gutter.
         pub fn pointerAt(self: *Self, x: usize, y: usize) !ui.Pointer {
             const widths = self.paneWidths();
+            if (widths.overview > 0 and x >= self.width - widths.overview) return .default;
             if (self.sideBySide()) {
                 if (x < widths.original) return self.original_view.pointerAt(x, y);
                 if (x < widths.original + widths.gutter) return if (self.options.enable_split_view_resizing) sash_css.pointer(.vertical) else .default;
@@ -847,29 +874,21 @@ pub fn DiffEditorWidget(comptime View: type) type {
         /// keeps both panes aligned after a wheel scroll.
         pub fn dispatchMouse(self: *Self, event: *ui.MouseEvent) !bool {
             const widths = self.paneWidths();
-            if (self.sideBySide() and event.x == widths.original) {
-                switch (event.kind) {
-                    .down => {
-                        self.dragging_split = self.options.enable_split_view_resizing;
+            if (self.overview.drag != null or (widths.overview > 0 and event.x >= self.width - widths.overview and self.sash.drag == null)) {
+                if (self.overview.dispatchMouse(self.modified_editor, event, self.height)) {
+                    if (self.sideBySide()) self.syncScrollFromPane(.modified);
+                    return true;
+                }
+                return false;
+            }
+            if (self.sideBySide() or self.sash.drag != null) {
+                switch (self.sash.dispatchMouse(&self.sash_layout, event, widths.original, self.width -| widths.overview -| widths.gutter, self.sideBySide() and self.options.enable_split_view_resizing, @import("../../../../base/common/timeCompat.zig").milliTimestamp())) {
+                    .changed => {
+                        self.layout(self.width, self.height);
                         return true;
                     },
-                    else => {},
-                }
-            }
-            if (self.dragging_split) {
-                defer {
-                    if (event.kind == .up) self.dragging_split = false;
-                }
-                if (event.kind == .move) {
-                    if (self.options.enable_split_view_resizing and self.width > 2) {
-                        self.split_ratio = std.math.clamp(
-                            @as(f64, @floatFromInt(event.x)) / @as(f64, @floatFromInt(self.width -| 1)),
-                            0.1,
-                            0.9,
-                        );
-                        self.layout(self.width, self.height);
-                    }
-                    return true;
+                    .handled => return true,
+                    .none => {},
                 }
             }
 
@@ -1051,11 +1070,6 @@ fn flipMapping(mapping: *view_model.DetailedLineRangeMapping) void {
             std.mem.swap(Range, &change.originalRange, &change.modifiedRange);
         }
     }
-}
-
-fn clampRatio(ratio: f64) f64 {
-    if (!std.math.isFinite(ratio)) return 0.5;
-    return std.math.clamp(ratio, 0.1, 0.9);
 }
 
 pub fn applyHideUnchangedRegions(

@@ -12,20 +12,21 @@ pub const PaneWidths = struct {
     original: usize,
     modified: usize,
     gutter: usize,
+    overview: usize = 0,
 };
 
 /// Splits the cell width into the original pane, the one-cell gutter and the
 /// modified pane. Below `minimum_width` the modified pane uses the full width.
-pub fn computePaneWidths(width: usize, side_by_side: bool, ratio: f64, minimum_width: usize) PaneWidths {
+pub fn computePaneWidths(width: usize, side_by_side: bool, ratio: f64, default_ratio: f64, minimum_width: usize) PaneWidths {
     if (!side_by_side or width < minimum_width) {
         return .{ .original = 0, .modified = width, .gutter = 0 };
     }
     const gutter: usize = 1;
     const available = width -| gutter;
-    const clamped_ratio = if (std.math.isFinite(ratio)) std.math.clamp(ratio, 0.1, 0.9) else 0.5;
-    var original: usize = @intFromFloat(@floor(@as(f64, @floatFromInt(available)) * clamped_ratio));
-    // 100px minimum editor width mapped to six cells using the shared
-    // workbench horizontal scale.
+    // SashLayout uses the default midpoint when both minimum editor widths
+    // cannot fit; otherwise the desired ratio is constrained by those widths.
+    const effective_ratio = if (available <= 12 or !std.math.isFinite(ratio)) default_ratio else ratio;
+    var original: usize = @intFromFloat(@floor(@as(f64, @floatFromInt(available)) * std.math.clamp(effective_ratio, 0, 1)));
     const minimum = if (available > 12) @as(usize, 6) else 1;
     original = std.math.clamp(original, minimum, available -| minimum);
     return .{ .original = original, .modified = available - original, .gutter = gutter };
@@ -38,20 +39,20 @@ pub fn alignedTopLine(focused_top: usize) usize {
 }
 
 test "diffEditorEditors: pane widths and narrow fallback" {
-    const wide = computePaneWidths(80, true, 0.5, 50);
+    const wide = computePaneWidths(80, true, 0.5, 0.5, 50);
     try std.testing.expectEqual(@as(usize, 39), wide.original);
     try std.testing.expectEqual(@as(usize, 40), wide.modified);
     try std.testing.expectEqual(@as(usize, 1), wide.gutter);
     try std.testing.expectEqual(wide.original + wide.modified + wide.gutter, 80);
 
-    const narrow = computePaneWidths(30, true, 0.5, 50);
+    const narrow = computePaneWidths(30, true, 0.5, 0.5, 50);
     try std.testing.expectEqual(@as(usize, 0), narrow.original);
     try std.testing.expectEqual(@as(usize, 30), narrow.modified);
 
-    // The ratio is clamped to the upstream 0.1..0.9 range.
-    const extreme = computePaneWidths(100, true, 0.99, 50);
-    try std.testing.expectEqual(@as(usize, 89), extreme.original);
-    try std.testing.expectEqual(@as(usize, 10), extreme.modified);
+    // Dragging is clamped by the minimum editor width, not the default-ratio validation.
+    const extreme = computePaneWidths(100, true, 0.99, 0.5, 50);
+    try std.testing.expectEqual(@as(usize, 93), extreme.original);
+    try std.testing.expectEqual(@as(usize, 6), extreme.modified);
     try std.testing.expectEqual(@as(usize, 5), alignedTopLine(5));
     try std.testing.expectEqual(@as(usize, 1), alignedTopLine(0));
 }
