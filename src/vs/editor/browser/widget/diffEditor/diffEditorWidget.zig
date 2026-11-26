@@ -168,7 +168,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
         width_based_layout: diff_editor_options.WidthBasedLayout = .{},
         smooth_resize: SmoothResize = .{},
 
-        view_model: DiffEditorViewModel,
+        view_model: *DiffEditorViewModel,
+        owns_view_model: bool,
         zones: view_zones.DiffEditorViewZones = undefined,
         decorations: *DiffEditorDecorations,
         overview: overview_feature.OverviewRulerFeature = undefined,
@@ -360,6 +361,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
         pub const ModelSources = struct {
             original: ?*EditorDocument = null,
             modified: ?*EditorDocument = null,
+            /// A multi-diff item owns its model independently of a bound view.
+            view_model: ?*DiffEditorViewModel = null,
         };
 
         pub fn createWithModelSources(
@@ -419,15 +422,17 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 );
             errdefer destroyEditor(modified_editor);
 
-            var diff_model = DiffEditorViewModel.init(allocator, original_editor.model, modified_editor.model, .{
-                .ignore_trim_whitespace = options.ignore_trim_whitespace,
-                .max_computation_time_ms = options.max_computation_time_ms,
-                .diff_algorithm = options.diff_algorithm,
-                .show_moves = options.show_moves,
-            });
-            var model_owned = true;
-            errdefer if (model_owned) diff_model.deinit();
-            if (computed) |result| try diff_model.applyComputedDiff(result) else try diff_model.compute();
+            const owns_view_model = sources.view_model == null;
+            const diff_model = sources.view_model orelse try allocator.create(DiffEditorViewModel);
+            if (owns_view_model) diff_model.* = DiffEditorViewModel.init(allocator, original_editor.model, modified_editor.model, computationOptions(normalized_options));
+            errdefer if (owns_view_model) {
+                diff_model.deinit();
+                allocator.destroy(diff_model);
+            };
+            if (diff_model.model.original != original_editor.model or diff_model.model.modified != modified_editor.model) return error.DiffModelMismatch;
+            if (owns_view_model) {
+                if (computed) |result| try diff_model.applyComputedDiff(result) else try diff_model.compute();
+            } else if (computed != null) return error.SharedDiffModelAlreadyComputed;
             const diff_state = diff_model.stateRef() orelse return error.DiffUnavailable;
 
             const original_view = try factory(allocator, original_editor);
@@ -480,6 +485,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .options = normalized_options,
                 .inline_mode = is_inline,
                 .view_model = diff_model,
+                .owns_view_model = owns_view_model,
                 .on_did_change_context = Emitter(void).init(allocator),
                 .on_did_change_focused_side = Emitter(Side).init(allocator),
                 .on_did_update_diff = Emitter(void).init(allocator),
@@ -491,22 +497,20 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .original_view = original_view,
                 .modified_view = modified_view,
             };
-            model_owned = false;
-            self.gutter_toolbar = .{ .allocator = allocator, .model = &self.view_model, .original = original_editor, .modified = modified_editor };
+            self.gutter_toolbar = .{ .allocator = allocator, .model = self.view_model, .original = original_editor, .modified = modified_editor };
             errdefer self.on_did_change_context.deinit();
             errdefer self.on_did_change_focused_side.deinit();
             errdefer self.on_did_update_diff.deinit();
-            errdefer self.view_model.deinit();
             try self.view_model.initializeUnchangedRegions(normalized_options.hide_unchanged_regions, normalized_options.hide_unchanged_regions_minimum_line_count, normalized_options.hide_unchanged_regions_context_line_count);
             self.overview.init(allocator, original_editor, modified_editor);
             self.zones.init(allocator, original_editor, original_view.viewZones(), modified_editor, modified_view.viewZones(), modified_view.terminal_view_host, modified_view.lineStyleFunction(), modified_view.decorationBitsFunction(), normalized_options.render_indicators, self.state().?.mappings);
             errdefer self.zones.deinit();
             errdefer self.overview.deinit(original_editor, modified_editor);
-            try self.hide_unchanged.init(allocator, &self.view_model, &self.zones, original_editor, original_view.viewZones(), modified_editor, modified_view.viewZones(), normalized_options);
+            try self.hide_unchanged.init(allocator, self.view_model, &self.zones, original_editor, original_view.viewZones(), modified_editor, modified_view.viewZones(), normalized_options);
             errdefer self.hide_unchanged.deinit();
-            try self.revert_buttons.init(allocator, &self.view_model, modified_editor, modified_view.terminal_view_host, .{ .context = self, .revert = revertMarginChange });
+            try self.revert_buttons.init(allocator, self.view_model, modified_editor, modified_view.terminal_view_host, .{ .context = self, .revert = revertMarginChange });
             errdefer self.revert_buttons.deinit();
-            try self.moved_blocks.init(allocator, &self.view_model, &self.zones, original_editor, original_view.viewZones(), modified_editor, modified_view.viewZones(), self, onMoveWidthChanged, onCompareMove);
+            try self.moved_blocks.init(allocator, self.view_model, &self.zones, original_editor, original_view.viewZones(), modified_editor, modified_view.viewZones(), self, onMoveWidthChanged, onCompareMove);
             errdefer self.moved_blocks.deinit();
             self.move_listener = try self.view_model.on_did_change_active_move.listen(self, onMoveStateChanged);
             errdefer self.view_model.on_did_change_active_move.unlisten(self.move_listener.?);
@@ -544,7 +548,10 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.overview.deinit(self.original_editor, self.modified_editor);
             self.decorations.deinit();
             allocator.destroy(self.decorations);
-            self.view_model.deinit();
+            if (self.owns_view_model) {
+                self.view_model.deinit();
+                allocator.destroy(self.view_model);
+            }
             self.on_did_change_context.deinit();
             self.on_did_change_focused_side.deinit();
             self.on_did_update_diff.deinit();
@@ -932,6 +939,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         fn swapSidesInternal(self: *Self) !void {
+            if (!self.owns_view_model) return error.SharedDiffModelCannotSwap;
             self.inline_margin_menu.deinit();
             const was_focused = self.focusedView().isFocused();
             const accessible = self.accessible_viewer.visible();
@@ -958,10 +966,10 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.decorations.original_model = self.original_editor.model;
             self.decorations.modified_model = self.modified_editor.model;
             self.zones.init(self.allocator, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self.modified_view.terminal_view_host, self.modified_view.lineStyleFunction(), self.modified_view.decorationBitsFunction(), self.options.render_indicators, diff_state.mappings);
-            try self.hide_unchanged.init(self.allocator, &self.view_model, &self.zones, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self.options);
+            try self.hide_unchanged.init(self.allocator, self.view_model, &self.zones, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self.options);
             if (self.breadcrumbs_factory) |factory| try self.hide_unchanged.attachBreadcrumbs(factory);
-            try self.revert_buttons.init(self.allocator, &self.view_model, self.modified_editor, self.modified_view.terminal_view_host, .{ .context = self, .revert = revertMarginChange });
-            try self.moved_blocks.init(self.allocator, &self.view_model, &self.zones, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self, onMoveWidthChanged, onCompareMove);
+            try self.revert_buttons.init(self.allocator, self.view_model, self.modified_editor, self.modified_view.terminal_view_host, .{ .context = self, .revert = revertMarginChange });
+            try self.moved_blocks.init(self.allocator, self.view_model, &self.zones, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self, onMoveWidthChanged, onCompareMove);
             self.applyZoneTheme(self.modified_view.themeColors());
             self.focused = .modified;
             try onMoveStateChanged({}, self);

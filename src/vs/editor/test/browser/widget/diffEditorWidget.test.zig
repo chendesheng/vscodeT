@@ -617,6 +617,42 @@ pub fn Tests(comptime View: type) type {
             try testing.expectEqual(@as(usize, 1), widget.changeCount());
         }
 
+        test "diffEditorWidget: shared view model survives virtualized widget disposal and rebind" {
+            const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+            const original = try Editor.createFromText(testing.allocator, testing.io, "old\nend", "old.txt", 80, 8);
+            defer {
+                original.deinit();
+                testing.allocator.destroy(original);
+            }
+            const modified = try Editor.createFromText(testing.allocator, testing.io, "new\nend", "working.txt", 80, 8);
+            defer {
+                modified.deinit();
+                testing.allocator.destroy(modified);
+            }
+            var model = @import("../../../browser/widget/diffEditor/diffEditorViewModel.zig").DiffEditorViewModel.init(testing.allocator, original.model, modified.model, .{});
+            defer model.deinit();
+            try model.compute();
+            try model.startListening();
+            const sources: DiffEditorWidget.ModelSources = .{ .original = original.document, .modified = modified.document, .view_model = &model };
+            {
+                const widget = try DiffEditorWidget.createWithModelSources(View.init, testing.allocator, testing.io, "old.txt", "working.txt", "", "", "Original", "Modified", 80, 8, .{}, sources, null);
+                defer widget.destroy();
+                try testing.expectEqual(&model, widget.view_model);
+                try testing.expectEqual(@as(usize, 1), widget.changeCount());
+            }
+            try modified.setCursorPosition(.{ .lineNumber = 2, .column = 4 });
+            try modified.insertText("!");
+            try testing.expect(model.is_diff_up_to_date);
+            try testing.expectEqual(@as(usize, 2), model.stateRef().?.mappings[0].line_range_mapping.modified.length());
+            {
+                const widget = try DiffEditorWidget.createWithModelSources(View.init, testing.allocator, testing.io, "old.txt", "working.txt", "", "", "Original", "Modified", 80, 8, .{}, sources, null);
+                defer widget.destroy();
+                try testing.expectEqual(&model, widget.view_model);
+                try testing.expectEqualStrings("end!", try widget.modifiedModel().borrowLineContent(2));
+                try testing.expectEqual(@as(usize, 2), widget.state().?.mappings[0].line_range_mapping.modified.length());
+            }
+        }
+
         test "diffEditorWidget: editable options and revert focused hunk are undoable" {
             const widget = try DiffEditorWidget.create(View.init, testing.allocator, testing.io, "a.txt", "b.txt", "old\na\nb\nc\nd\ne\nf\ng\nlast-old\nend", "new\na\nb\nc\nd\ne\nf\ng\nlast-new\nend", "Original", "Modified", 80, 8, .{});
             defer widget.destroy();

@@ -210,7 +210,7 @@ pub const EditorService = struct {
                 try tab.diff.?.replaceWithDiff(original_text, modified_text, dims.width, dims.height, options, computed);
             }
             if (self.opening) |opening| {
-                try opening.attachDiffModel(&tab.diff.?.widget.view_model);
+                try opening.attachDiffModel(tab.diff.?.widget.view_model);
                 opening.host.configure_tab(opening.host.context, tab);
             }
             tab.syncDiffViews();
@@ -258,7 +258,7 @@ pub const EditorService = struct {
         };
         var registered = false;
         defer if (!registered) tab.deinit();
-        if (self.opening) |opening| try opening.attachDiffModel(&tab.diff.?.widget.view_model);
+        if (self.opening) |opening| try opening.attachDiffModel(tab.diff.?.widget.view_model);
 
         try pane.tabs.ensureUnusedCapacity(1);
         errdefer if (pane.group.model.indexOfExact(tab.input) != null) {
@@ -482,7 +482,7 @@ pub const EditorOpening = struct {
         self.host.configure_editor(self.host.context, tab.editor);
         if (tab.diff) |diff| {
             self.host.configure_editor(self.host.context, diff.widget.original_editor);
-            try self.attachDiffModel(&diff.widget.view_model);
+            try self.attachDiffModel(diff.widget.view_model);
         }
         self.host.configure_tab(self.host.context, tab);
         self.host.register_working_copy(self.host.context, tab);
