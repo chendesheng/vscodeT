@@ -83,21 +83,24 @@ function activate(context) {
   context.subscriptions.push(vscode.languages.registerHoverProvider({ language: 'json' }, {
     provideHover(document, position, token, hoverContext) {
       const name = document.uri.query;
-      if (hoverContext) {
+      const delayed = name === 'HoverOriginal' || name === 'HoverModified';
+      if (!delayed && hoverContext) {
         return { contents: [`fixture hover verbosity ${hoverContext.verbosityDelta}: ${hoverContext.previousHover.contents[0]}`], canIncreaseVerbosity: true, canDecreaseVerbosity: true };
       }
-      if (name !== 'HoverOriginal' && name !== 'HoverModified') return { contents: ['fixture hover'], canIncreaseVerbosity: true };
-      hoverEvents.push({ name, kind: 'start', text: document.lineAt(position.line).text });
+      if (!delayed) return { contents: ['fixture hover'], canIncreaseVerbosity: true };
+      const prefix = hoverContext ? 'verbosity-' : '';
+      hoverEvents.push({ name, kind: `${prefix}start`, text: document.lineAt(position.line).text, delta: hoverContext?.verbosityDelta });
       return new Promise(resolve => {
         let subscription;
         const finish = (kind, value) => {
-          if (!delayedHovers.has(name)) return;
+          if (delayedHovers.get(name) !== release) return;
           delayedHovers.delete(name);
           subscription?.dispose();
-          hoverEvents.push({ name, kind });
+          hoverEvents.push({ name, kind: `${prefix}${kind}` });
           resolve(value);
         };
-        delayedHovers.set(name, () => finish('complete', { contents: [`semantic ${name}`], range: new vscode.Range(0, 2, 0, 6) }));
+        const release = () => finish('complete', { contents: [hoverContext ? `${hoverContext.previousHover.contents[0]} verbosity ${hoverContext.verbosityDelta}` : `semantic ${name}`], range: new vscode.Range(0, 2, 0, 6), canIncreaseVerbosity: true, canDecreaseVerbosity: !!hoverContext });
+        delayedHovers.set(name, release);
         subscription = token.onCancellationRequested(() => finish('cancel', undefined));
         if (token.isCancellationRequested) finish('cancel', undefined);
       });

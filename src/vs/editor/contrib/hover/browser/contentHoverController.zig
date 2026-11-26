@@ -214,6 +214,7 @@ pub const ContentHoverController = struct {
                 .hide = widgetHide,
                 .focus_editor = widgetFocusEditor,
                 .state_changed = widgetStateChanged,
+                .update_verbosity = widgetUpdateVerbosity,
             },
             .coordinates = self.host.coordinates orelse HoverCoordinatesHost{
                 .context = self,
@@ -315,6 +316,11 @@ pub const ContentHoverController = struct {
     fn widgetHide(context: *anyopaque) void {
         const self: *ContentHoverController = @ptrCast(@alignCast(context));
         self.hideContentHover();
+    }
+
+    fn widgetUpdateVerbosity(context: *anyopaque, action: hoverTypes.HoverVerbosityAction, index: isize, focus: bool) void {
+        const self: *ContentHoverController = @ptrCast(@alignCast(context));
+        self.wrapper.updateHoverVerbosityLevel(action, index, focus);
     }
 
     fn widgetStateChanged(context: *anyopaque, visible: bool, focused: bool) void {

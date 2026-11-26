@@ -2768,6 +2768,21 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                     }
                     return error.HoverFixtureDidNotSettle;
                 }
+                fn findAction(root: *@import("ui").Node, action: []const u8) ?*@import("ui").Node {
+                    if (root.getAttribute("data-hover-verbosity")) |value| if (std.mem.eql(u8, value, action)) return root;
+                    var child = root.firstChild();
+                    while (child) |node| : (child = node.nextSibling()) if (findAction(node, action)) |found| return found;
+                    return null;
+                }
+                fn waitForContent(host: *Extensions, controller: *HoverController, content: []const u8) !void {
+                    const limit = time_compat.milliTimestamp() + 10_000;
+                    while (time_compat.milliTimestamp() < limit) {
+                        _ = host.pump();
+                        if (controller.widget().getWidgetContent()) |value| if (std.mem.indexOf(u8, value, content) != null) return;
+                        time_compat.sleepMillis(5);
+                    }
+                    return error.HoverVerbosityDidNotComplete;
+                }
                 fn settle(host: *Extensions, controller: *HoverController) !void {
                     const limit = time_compat.milliTimestamp() + 10_000;
                     while (time_compat.milliTimestamp() < limit) {
@@ -2807,6 +2822,34 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try Pump.settle(extensions, modified);
             try std.testing.expect(std.mem.indexOf(u8, modified.widget().getWidgetContent().?, "semantic HoverModified") != null);
             try std.testing.expect(!original.isVisible());
+
+            // Use the actual rendered hover part's button, then repeat before
+            // the extension resolves. Upstream cancels and accumulates delta.
+            try diff.modified_view.paint();
+            const widget = modified.widget().widget;
+            const plus = Pump.findAction(widget.root.?, "increase") orelse return error.ExpectedVerbosityButton;
+            var click: @import("ui").MouseEvent = .{ .kind = .click, .button = .left };
+            plus.document.dispatchMouse(plus, &click);
+            try Pump.waitFor(extensions, arena, command, "HoverModified", "verbosity-start", 1);
+            plus.document.dispatchMouse(plus, &click);
+            try Pump.waitFor(extensions, arena, command, "HoverModified", "verbosity-cancel", 1);
+            try Pump.waitFor(extensions, arena, command, "HoverModified", "verbosity-start", 2);
+            try std.testing.expect((try Pump.call(extensions, arena, command, "fixture.releaseHover", "HoverModified")).bool);
+            try Pump.waitForContent(extensions, modified, "semantic HoverModified verbosity 2");
+            try std.testing.expect(modified.isFocused());
+            try diff.modified_view.paint();
+            const minus = Pump.findAction(widget.root.?, "decrease") orelse return error.ExpectedVerbosityButton;
+            try std.testing.expect(minus.document.focus(minus));
+            _ = minus.document.dispatchKey(.enter, .{});
+            try Pump.waitFor(extensions, arena, command, "HoverModified", "verbosity-start", 3);
+            try std.testing.expect((try Pump.call(extensions, arena, command, "fixture.releaseHover", "HoverModified")).bool);
+            try Pump.waitForContent(extensions, modified, "semantic HoverModified verbosity 2 verbosity -1");
+            try std.testing.expect(!original.isVisible());
+            modified.widget().updateHoverVerbosityLevel(.Increase, -1, false);
+            try Pump.waitFor(extensions, arena, command, "HoverModified", "verbosity-start", 4);
+            modified.hideContentHover();
+            try Pump.waitFor(extensions, arena, command, "HoverModified", "verbosity-cancel", 2);
+            try std.testing.expect(!modified.isVisible());
         }
 
         test "Extensions: Quick Diff providers resolve virtual originals and publish source-control information asynchronously" {

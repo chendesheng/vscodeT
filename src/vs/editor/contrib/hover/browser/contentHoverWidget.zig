@@ -18,6 +18,7 @@ const ui = @import("ui");
 
 const Position = @import("../../../common/core/position.zig").Position;
 const editorBrowser = @import("../../../browser/editorBrowser.zig");
+const HoverVerbosityAction = @import("hoverTypes.zig").HoverVerbosityAction;
 const RenderedContentHover = @import("./contentHoverRendered.zig").RenderedContentHover;
 
 const hover_css = @import("hover_css.zig");
@@ -41,6 +42,7 @@ pub const ContentHoverWidgetHost = struct {
     hide: *const fn (context: *anyopaque) void,
     focus_editor: *const fn (context: *anyopaque) void,
     state_changed: ?*const fn (context: *anyopaque, visible: bool, focused: bool) void = null,
+    update_verbosity: ?*const fn (*anyopaque, HoverVerbosityAction, isize, bool) void = null,
 };
 
 pub const ContentHoverWidget = struct {
@@ -51,6 +53,8 @@ pub const ContentHoverWidget = struct {
     rendered: ?*RenderedContentHover = null,
     scroll_top: usize = 0,
     focused: bool = false,
+    focused_part: isize = -1,
+    focused_action: ?HoverVerbosityAction = null,
     root: ?*ui.Node = null,
 
     last_cols: usize = 0,
@@ -102,10 +106,16 @@ pub const ContentHoverWidget = struct {
         // Keep focus when a new result replaces the contents of a focused
         // hover; the view re-focuses the rebuilt box.
         const was_focused = self.focused;
+        const previous_part = self.focused_part;
+        const previous_action = self.focused_action;
         self.clearRendered();
         self.rendered = rendered;
         self.scroll_top = 0;
         self.focused = was_focused;
+        if (previous_part >= 0 and previous_part < rendered.parts.len) {
+            self.focused_part = previous_part;
+            self.focused_action = previous_action;
+        }
         self.minimum_width = 1;
         self.minimum_height = 1;
         self.publishState();
@@ -165,10 +175,7 @@ pub const ContentHoverWidget = struct {
     }
 
     pub fn focusedHoverPartIndex(self: *const ContentHoverWidget) isize {
-        _ = self;
-        // Hover parts are not individually focusable in the terminal port;
-        // only the box itself takes focus.
-        return -1;
+        return self.focused_part;
     }
 
     pub fn scrollUp(self: *ContentHoverWidget) void {
@@ -217,6 +224,8 @@ pub const ContentHoverWidget = struct {
         self.rendered = null;
         self.root = null;
         self.focused = false;
+        self.focused_part = -1;
+        self.focused_action = null;
         self.scroll_top = 0;
     }
 
@@ -332,7 +341,49 @@ pub const ContentHoverWidget = struct {
 
     fn focusNode(context: *anyopaque) ?*ui.Node {
         const self: *ContentHoverWidget = @ptrCast(@alignCast(context));
-        return self.root;
+        const root = self.root orelse return null;
+        if (self.focused_part >= 0) {
+            if (findPart(root, self.focused_part)) |part| {
+                if (self.focused_action) |action| if (findAction(part, action)) |button| return button;
+                return part;
+            }
+        }
+        return root;
+    }
+
+    fn findPart(root: *ui.Node, index: isize) ?*ui.Node {
+        if (root.getAttribute("data-hover-part")) |value| {
+            if ((std.fmt.parseInt(isize, value, 10) catch -1) == index) return root;
+        }
+        var child = root.firstChild();
+        while (child) |node| : (child = node.nextSibling()) if (findPart(node, index)) |part| return part;
+        return null;
+    }
+
+    fn actionAt(node: *ui.Node) ?HoverVerbosityAction {
+        const value = node.getAttribute("data-hover-verbosity") orelse return null;
+        return if (std.mem.eql(u8, value, "increase")) .Increase else .Decrease;
+    }
+
+    fn findAction(root: *ui.Node, action: HoverVerbosityAction) ?*ui.Node {
+        if (actionAt(root) == action) return root;
+        var child = root.firstChild();
+        while (child) |node| : (child = node.nextSibling()) if (findAction(node, action)) |button| return button;
+        return null;
+    }
+
+    fn targetPart(self: *ContentHoverWidget, target: ?*ui.Node) struct { index: isize = -1, action: ?HoverVerbosityAction = null } {
+        var result: struct { index: isize = -1, action: ?HoverVerbosityAction = null } = .{};
+        var current = target;
+        while (current) |node| : (current = node.parent) {
+            if (node == self.root) break;
+            if (result.action == null) result.action = actionAt(node);
+            if (node.getAttribute("data-hover-part")) |value| {
+                result.index = std.fmt.parseInt(isize, value, 10) catch -1;
+                break;
+            }
+        }
+        return .{ .index = result.index, .action = result.action };
     }
 
     fn isFocusedCallback(context: *anyopaque) bool {
@@ -360,7 +411,7 @@ pub const ContentHoverWidget = struct {
         root.asElement().focusable = true;
         try root.addEventListener(.{ .context = self, .key_down = onKey });
         try root.addEventListener(.{ .context = self, .wheel = onWheel });
-        try root.addEventListener(.{ .context = self, .focus = onFocus, .blur = onBlur });
+        try root.addEventListener(.{ .context = self, .focus_in = onFocus, .focus_out = onBlur, .click = onClick });
         self.root = root;
         _ = try rendered.build(doc, widget.contentsDomNode, self.content_width, 0);
         return root;
@@ -368,7 +419,7 @@ pub const ContentHoverWidget = struct {
 
     fn onWheel(context: ?*anyopaque, event: *ui.MouseEvent) void {
         const self: *ContentHoverWidget = @ptrCast(@alignCast(context orelse return));
-        if (event.delta_y == 0) return;
+        if (event.delta_y == 0 or !self.show_scrollbar) return;
         event.preventDefault();
         event.stopPropagation();
         self.scrollBy(@as(isize, @intCast(event.delta_y)));
@@ -377,6 +428,12 @@ pub const ContentHoverWidget = struct {
     fn onKey(context: ?*anyopaque, event: *ui.KeyEvent) void {
         const self: *ContentHoverWidget = @ptrCast(@alignCast(context orelse return));
         event.stopPropagation();
+        if (event.key == .enter or (event.key == .char and event.key.char == ' ')) {
+            if (self.activateTarget(event.target)) {
+                event.preventDefault();
+                return;
+            }
+        }
         switch (event.key) {
             .escape => {
                 event.preventDefault();
@@ -407,11 +464,14 @@ pub const ContentHoverWidget = struct {
                 self.goToBottom();
             },
             .tab, .backtab => {
-                // There are no focusable hover actions in the terminal port;
-                // Tab hands the keyboard back to the editor without closing
-                // the hover, matching upstream's focus-out behavior.
                 event.preventDefault();
+                if (self.root) |root| {
+                    const direction: ui.FocusDirection = if (event.key == .backtab or event.mods.shift) .backward else .forward;
+                    if (root.document.moveFocusWithin(root, direction)) return;
+                }
                 self.focused = false;
+                self.focused_part = -1;
+                self.focused_action = null;
                 self.publishState();
                 self.host.focus_editor(self.host.context);
             },
@@ -419,18 +479,40 @@ pub const ContentHoverWidget = struct {
         }
     }
 
-    fn onFocus(context: ?*anyopaque, event: *ui.FocusEvent) void {
-        _ = event;
+    fn activateTarget(self: *ContentHoverWidget, target: ?*ui.Node) bool {
+        const selected = self.targetPart(target);
+        const action = selected.action orelse return false;
+        if (selected.index < 0 or !self.isVisible()) return false;
+        const update = self.host.update_verbosity orelse return false;
+        update(self.host.context, action, selected.index, true);
+        return true;
+    }
+
+    fn onClick(context: ?*anyopaque, event: *ui.MouseEvent) void {
         const self: *ContentHoverWidget = @ptrCast(@alignCast(context orelse return));
+        if (self.activateTarget(event.target)) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+    }
+
+    fn onFocus(context: ?*anyopaque, event: *ui.FocusEvent) void {
+        const self: *ContentHoverWidget = @ptrCast(@alignCast(context orelse return));
+        const selected = self.targetPart(event.target);
         self.focused = true;
+        self.focused_part = selected.index;
+        self.focused_action = selected.action;
         self.publishState();
         self.host.request_frame(self.host.context);
     }
 
     fn onBlur(context: ?*anyopaque, event: *ui.FocusEvent) void {
-        _ = event;
         const self: *ContentHoverWidget = @ptrCast(@alignCast(context orelse return));
+        var related = event.related_target;
+        while (related) |node| : (related = node.parent) if (node == self.root) return;
         self.focused = false;
+        self.focused_part = -1;
+        self.focused_action = null;
         self.publishState();
         self.host.request_frame(self.host.context);
     }

@@ -9,12 +9,18 @@ pub const base: u16 = 0x0140;
 pub const Class = enum(u16) {
     monaco_hover = base,
     focused = base + 1,
+    verbosity_actions = base + 2,
+    verbosity_action = base + 3,
+    verbosity_action_disabled = base + 4,
 };
 
-fn styles(theme: Theme) [2]ui.Style {
+fn styles(theme: Theme) [5]ui.Style {
     return .{
         .{ .background = theme.background, .color = theme.foreground, .border_color = theme.border, .border_style = .rounded },
         .{ .border_color = theme.focused_border },
+        .{ .position = .absolute, .overflow = .hidden },
+        .{ .pointer = .pointer, .text_align = .center },
+        .{ .pointer = .default, .dim = true },
     };
 }
 const default_styles = styles(.{});

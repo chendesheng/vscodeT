@@ -15,6 +15,7 @@ const actions = @import("../../../../platform/actions/common/actions.zig");
 const contextkey = @import("../../../../platform/contextkey/common/contextkey.zig");
 const keybindings = @import("../../../../platform/keybinding/common/keybindingsRegistry.zig");
 const hover_focused = contextkey.Expr{ .Defined = "hoverFocused" };
+const hover_visible = contextkey.Expr{ .Defined = "hoverVisible" };
 const editor_text_focus = contextkey.Expr{ .Defined = "editorTextFocus" };
 
 pub const show_or_focus_hover_action = blk: {
@@ -56,6 +57,39 @@ fn scrollAction(comptime id: []const u8, comptime title: []const u8, comptime to
     }.execute);
     action.keybindings = &.{.{ .id = id, .weight = @backingInt(keybindings.KeybindingWeight.EditorContrib), .when = &hover_focused, .bindings = .{ .primary = @backingInt(primary), .secondary = if (secondary) |value| &.{value} else null } }};
     return action;
+}
+
+pub const HoverVerbosityArgs = struct { index: ?isize = null, focus: bool = false };
+const VerbosityAction = @import("../../../common/languages.zig").HoverVerbosityAction;
+const Accessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
+const CommandArgument = @import("../../../../platform/commands/common/commands.zig").CommandArgument;
+
+pub const verbosity_actions = [_]actions.Action2{
+    verbosityAction(ids.INCREASE_HOVER_VERBOSITY_ACTION_ID, ids.INCREASE_HOVER_VERBOSITY_ACTION_LABEL, .Increase),
+    verbosityAction(ids.DECREASE_HOVER_VERBOSITY_ACTION_ID, ids.DECREASE_HOVER_VERBOSITY_ACTION_LABEL, .Decrease),
+};
+
+fn verbosityAction(comptime id: []const u8, comptime label: []const u8, comptime action: VerbosityAction) actions.Action2 {
+    var command = EditorCommand.action(.{ .id = id, .title = label, .precondition = &hover_visible }, false, struct {
+        fn execute(editor: *Editor) !void {
+            updateVerbosity(editor, action, .{});
+        }
+    }.execute);
+    command.run_with_argument_fn = struct {
+        fn execute(_: *anyopaque, accessor: Accessor, argument: CommandArgument) !void {
+            const args = argument.as(HoverVerbosityArgs) orelse return error.InvalidArgument;
+            const service = try accessor.get(@import("../../../browser/services/codeEditorService.zig").code_editor_service_id);
+            const editor = service.getFocusedCodeEditor() orelse service.getActiveCodeEditor() orelse return;
+            updateVerbosity(editor, action, args.*);
+        }
+    }.execute;
+    return command;
+}
+
+fn updateVerbosity(editor: *Editor, action: VerbosityAction, args: HoverVerbosityArgs) void {
+    const controller = editor.getContribution(ContentHoverController) orelse return;
+    const wrapper = controller.widget();
+    wrapper.updateHoverVerbosityLevel(action, args.index orelse wrapper.focusedHoverPartIndex(), args.focus);
 }
 
 fn hide(editor: *Editor) !void {

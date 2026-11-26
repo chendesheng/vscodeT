@@ -458,6 +458,47 @@ pub const ContentHoverWidgetWrapper = struct {
         self.widget.goToBottom();
     }
 
+    pub fn updateHoverVerbosityLevel(self: *ContentHoverWidgetWrapper, action: hoverTypes.HoverVerbosityAction, index: isize, should_focus: bool) void {
+        const rendered = self.widget.rendered orelse return;
+        const start: usize = if (index < 0) 0 else @intCast(index);
+        const end = if (index < 0) rendered.parts.len else @min(start + 1, rendered.parts.len);
+        if (start >= end) return;
+        const snapshot = self.allocator.alloc(IHoverPart, end - start) catch return;
+        defer self.allocator.free(snapshot);
+        for (rendered.parts[start..end], snapshot) |part, *copy| copy.* = part.hover_part;
+        for (snapshot) |part| {
+            const current = self.current_result orelse return;
+            var still_present = false;
+            for (current.hover_parts) |item| if (item.data == part.data and item.owner == part.owner) {
+                still_present = true;
+                break;
+            };
+            if (!still_present) continue;
+            for (self.participants) |participant| {
+                if (participant.context != part.owner) continue;
+                const supports = participant.supports_verbosity orelse break;
+                const update = participant.update_verbosity orelse break;
+                if (supports(participant.context, part, action)) update(participant.context, part, action, should_focus, .{ .context = self, .complete = updateVerbosityResult }) catch {};
+                break;
+            }
+        }
+    }
+
+    fn updateVerbosityResult(context: *anyopaque, previous: IHoverPart, replacement: IHoverPart, should_focus: bool) void {
+        const self: *ContentHoverWidgetWrapper = @ptrCast(@alignCast(context));
+        if (!self.model_attached) return;
+        const current = &(self.current_result orelse return);
+        for (current.hover_parts) |*part| {
+            if (part.owner != previous.owner or part.data != previous.data) continue;
+            part.* = replacement;
+            const scroll = self.widget.scroll_top;
+            self.showHover();
+            self.widget.scroll_top = scroll;
+            if (should_focus) self.widget.focus();
+            return;
+        }
+    }
+
     pub fn hasPendingOperation(self: *ContentHoverWidgetWrapper) bool {
         return !self.operation.isIdle();
     }

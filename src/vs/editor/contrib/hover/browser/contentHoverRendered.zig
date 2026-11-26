@@ -170,10 +170,15 @@ pub const RenderedContentHover = struct {
         return self.parts.len > 0 or self.status_bar.hasContent();
     }
 
+    fn verbosityWidth(part: IRenderedHoverPart, width: usize) usize {
+        return if (width >= 3 and (part.can_increase_verbosity or part.can_decrease_verbosity)) 2 else 0;
+    }
+
     pub fn measureWidth(self: *const RenderedContentHover, max_width: usize) usize {
         var width: usize = 1;
         for (self.parts) |part| {
-            width = @max(width, part.measure(part.context, max_width));
+            const actions_width = verbosityWidth(part, max_width);
+            width = @max(width, part.measure(part.context, max_width -| actions_width) + actions_width);
         }
         return @min(width, max_width);
     }
@@ -182,17 +187,49 @@ pub const RenderedContentHover = struct {
         var rows: usize = 0;
         for (self.parts) |part| {
             if (rows > 0) rows += 1;
-            rows += part.height(part.context, width);
+            const actions_width = verbosityWidth(part, width);
+            rows += @max(part.height(part.context, width -| actions_width), if (actions_width > 0) @as(usize, 2) else 1);
         }
         if (self.status_bar.hasContent()) rows += 1;
         return @max(rows, 1);
     }
 
     pub fn build(self: *const RenderedContentHover, doc: *ui.Document, parent: *ui.Node, width: usize, top: usize) !usize {
+        const hover_css = @import("hover_css.zig");
         var row = top;
-        for (self.parts) |part| {
+        for (self.parts, 0..) |part, index| {
             if (row > top) row += 1;
-            row += try part.build(part.context, doc, parent, width, row);
+            const actions_width = verbosityWidth(part, width);
+            const content_width = width -| actions_width;
+            const height = @max(part.height(part.context, content_width), if (actions_width > 0) @as(usize, 2) else 1);
+            const element = try doc.createElement(.div);
+            _ = try parent.appendChild(element);
+            element.asElement().focusable = true;
+            var index_buffer: [32]u8 = undefined;
+            try element.setAttribute("data-hover-part", try std.fmt.bufPrint(&index_buffer, "{d}", .{index}));
+            element.setStyle(.{ .position = .absolute, .left = .{ .cells = 0 }, .top = .{ .cells = @floatFromInt(row) }, .width = .{ .cells = @floatFromInt(width) }, .height = .{ .cells = @floatFromInt(height) }, .overflow = .hidden });
+            const contents = try doc.createElement(.div);
+            _ = try element.appendChild(contents);
+            contents.setStyle(.{ .position = .absolute, .left = .{ .cells = @floatFromInt(actions_width) }, .top = .{ .cells = 0 }, .width = .{ .cells = @floatFromInt(content_width) }, .height = .{ .cells = @floatFromInt(height) } });
+            _ = try part.build(part.context, doc, contents, content_width, 0);
+            if (actions_width > 0) {
+                const actions = try doc.createElement(.div);
+                try actions.addClass(hover_css.Class.verbosity_actions);
+                _ = try element.appendChild(actions);
+                actions.setStyle(.{ .left = .{ .cells = 0 }, .top = .{ .cells = 0 }, .width = .{ .cells = 2 }, .height = .{ .cells = 2 } });
+                for ([_]bool{ part.can_increase_verbosity, part.can_decrease_verbosity }, 0..) |enabled, action_index| {
+                    const button = try doc.createElement(.div);
+                    try button.addClass(hover_css.Class.verbosity_action);
+                    if (!enabled) try button.addClass(hover_css.Class.verbosity_action_disabled);
+                    _ = try actions.appendChild(button);
+                    button.setStyle(.{ .position = .absolute, .left = .{ .cells = 0 }, .top = .{ .cells = @floatFromInt(action_index) }, .width = .{ .cells = 1 }, .height = .{ .cells = 1 } });
+                    button.asElement().focusable = enabled;
+                    if (enabled) try button.setAttribute("data-hover-verbosity", if (action_index == 0) "increase" else "decrease");
+                    try button.setAttribute("aria-label", if (action_index == 0) "Increase Hover Verbosity Level" else "Decrease Hover Verbosity Level");
+                    _ = try button.appendChild(try doc.createText(if (action_index == 0) "+" else "−"));
+                }
+            }
+            row += height;
         }
         row += try self.status_bar.build(doc, parent, width, row);
         return row - top;

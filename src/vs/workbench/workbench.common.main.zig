@@ -205,4 +205,5 @@ pub fn registerEditorNavigationActions(commands: *CommandRegistry, instantiation
     try commands.registerEditorAction(instantiation, hover_actions.show_or_focus_hover_action);
     try commands.registerEditorAction(instantiation, hover_actions.hide_hover_action);
     for (hover_actions.scroll_actions) |action| try commands.registerEditorAction(instantiation, action);
+    for (hover_actions.verbosity_actions) |action| try commands.registerEditorAction(instantiation, action);
 }
