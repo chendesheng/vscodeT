@@ -53,6 +53,7 @@ pub const CompletionItem = struct {
 
 pub const Hover = struct {
     text: []u8,
+    range: ?LspRange = null,
 };
 
 pub const FormattingEdit = struct {
@@ -352,22 +353,28 @@ pub const Client = struct {
         return items.toOwnedSlice();
     }
 
-    pub fn hover(self: *Client, arena: Allocator, uri: []const u8, line: u32, character: u32) !?Hover {
+    fn hoverParams(arena: Allocator, uri: []const u8, line: u32, character: u32) !std.json.Value {
         var doc: std.json.ObjectMap = .empty;
-        try doc.put(arena, "uri", .{ .string = try arena.dupe(u8, uri) });
-        var position: std.json.ObjectMap = .empty;
-        try position.put(arena, "line", .{ .integer = @intCast(line) });
-        try position.put(arena, "character", .{ .integer = @intCast(character) });
+        try doc.put(arena, "uri", .{ .string = uri });
         var params: std.json.ObjectMap = .empty;
         try params.put(arena, "textDocument", .{ .object = doc });
-        try params.put(arena, "position", .{ .object = position });
-        var response = try self.request(arena, "textDocument/hover", .{ .object = params });
+        try params.put(arena, "position", try lspPosition(arena, line, character));
+        return .{ .object = params };
+    }
+
+    pub fn hover(self: *Client, arena: Allocator, uri: []const u8, line: u32, character: u32) !?Hover {
+        var response = try self.request(arena, "textDocument/hover", try hoverParams(arena, uri, line, character));
         defer response.arena.deinit();
-        const result = response.result();
-        if (result != .object) return null;
-        const contents = result.object.get("contents") orelse return null;
-        const text = try hoverText(arena, contents);
-        return .{ .text = text };
+        return parseHover(arena, response.result());
+    }
+
+    /// The asynchronous language-feature provider publishes its result on the
+    /// existing response dispatcher; abandonment sends $/cancelRequest.
+    pub fn requestHover(self: *Client, arena: Allocator, uri: []const u8, line: u32, character: u32, handler: ResponseHandler) !u32 {
+        try self.handlers.ensureUnusedCapacity(self.allocator, 1);
+        const id = try self.sendRequest(arena, "textDocument/hover", try hoverParams(arena, uri, line, character));
+        self.handlers.putAssumeCapacity(id, handler);
+        return id;
     }
 
     pub fn documentSymbols(self: *Client, arena: Allocator, uri: []const u8) ![]JsonDocumentSymbol {
@@ -700,6 +707,12 @@ fn parseDocumentSymbol(arena: Allocator, object: std.json.ObjectMap) !?JsonDocum
         .selection_range = selection_range,
         .children = children,
     };
+}
+
+pub fn parseHover(allocator: Allocator, result: std.json.Value) !?Hover {
+    if (result != .object) return null;
+    const contents = result.object.get("contents") orelse return null;
+    return .{ .text = try hoverText(allocator, contents), .range = parseLspRange(result.object.get("range")) };
 }
 
 fn parseLspRange(value: ?std.json.Value) ?LspRange {
