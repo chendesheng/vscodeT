@@ -298,6 +298,8 @@ pub const TerminalWorkbench = struct {
     async_io: Io,
     disk_files: @import("../vs/platform/files/common/fileService.zig").DiskFileService,
     text_file_service: text_files.TextFileService,
+    resource_file_service: @import("../vs/platform/files/common/fileService.zig").ProviderFileService,
+    file_service_api: @import("../vs/platform/files/common/files.zig").IFileService,
     text_model_resolver: @import("../vs/workbench/services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService,
     text_model_api: @import("../vs/editor/common/services/resolverService.zig").ITextModelService,
     /// Native file opening and event-driven reload owner.
@@ -527,12 +529,24 @@ pub const TerminalWorkbench = struct {
         self.explorer_panes = null;
         self.window_events = .{ .io = self.async_io, .window_events = .init(allocator) };
         errdefer self.window_events.deinitWindowEvents();
+        self.resource_file_service = .init(allocator);
+        errdefer self.resource_file_service.deinit();
+        self.file_service_api = self.resource_file_service.interface();
         self.text_model_resolver = .init(allocator, self.async_io, &self.window_events);
         errdefer self.text_model_resolver.deinit();
+        try self.text_model_resolver.bindFileService(self.file_service_api);
         self.text_model_api = self.text_model_resolver.interface();
         self.git_file_provider = .init(allocator, &self.git_model, self.async_io);
         errdefer self.git_file_provider.deinit();
-        try self.git_file_provider.register(self.text_model_api);
+        try self.git_file_provider.register(self.file_service_api, .{
+            .context = &self.text_model_resolver,
+            .is_open = struct {
+                fn isOpen(context: *anyopaque, path: []const u8) bool {
+                    const resolver: *@import("../vs/workbench/services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService = @ptrCast(@alignCast(context));
+                    return resolver.hasResolvedModel(.{ .scheme = "file", .path = .{ .raw = path } });
+                }
+            }.isOpen,
+        });
         self.user_keybindings = try user_keybindings_mod.UserKeybindingsLoader.create(allocator, io, self.async_io, &self.window_events);
         errdefer self.user_keybindings.destroy();
         _ = try self.user_keybindings.on_did_change.listen(self, onUserKeybindingsChanged);
@@ -1224,6 +1238,7 @@ pub const TerminalWorkbench = struct {
         self.editors = .{ .part = self.part, .opening = &self.editor_opening };
         self.editor_api = self.editors.interface();
         _ = try self.services.set(@import("../vs/workbench/services/editor/common/editorService.zig").editor_service_id, &self.editor_api);
+        _ = try self.services.set(@import("../vs/platform/files/common/files.zig").file_service_id, &self.file_service_api);
         _ = try self.services.set(@import("../vs/editor/common/services/resolverService.zig").text_model_service_id, &self.text_model_api);
         _ = try self.services.set(@import("../vs/workbench/contrib/scm/common/quickDiff.zig").quick_diff_service_id, self.scm.quick_diff_api.?);
         _ = try self.services.set(@import("../vs/workbench/contrib/scm/browser/quickDiffModel.zig").quick_diff_model_service_id, self.scm.quick_diff_model_api.?);
@@ -1815,6 +1830,7 @@ pub const TerminalWorkbench = struct {
         // The part owns the group views; disposing it disposes the tab views.
         self.part.deinit();
         self.text_model_resolver.deinit();
+        self.resource_file_service.deinit();
         self.window_events.deinitWindowEvents();
         if (self.layout.main_container) |main| main.document.destroy(main);
         self.terminal_tabbed_view.deinit(self.allocator);

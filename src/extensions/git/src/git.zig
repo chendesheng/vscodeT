@@ -655,6 +655,58 @@ pub const Git = struct {
         return result.stdout;
     }
 
+    /// Repository.getObjectDetails, reduced to the size needed by stat.
+    /// Index stages use ls-files and its first-entry fallback; tree refs use
+    /// ls-tree -l so Git links have size zero, as in upstream.
+    pub fn getObjectSize(self: *Git, root: []const u8, ref: []const u8, path: []const u8) !u64 {
+        if (!isSafeRelativePath(path) or !self.directoryExists(root)) return error.FileNotFound;
+        if (std.mem.indexOfScalar(u8, ref, 0) != null or std.mem.startsWith(u8, ref, "-")) return error.InvalidGitReference;
+        const index = ref.len == 0 or (ref.len == 2 and ref[0] == ':' and ref[1] >= '1' and ref[1] <= '3');
+        if (index) {
+            const entries = try self.run(&.{ self.exe, "--literal-pathspecs", "ls-files", "--stage", "-z", "--", path }, root, discovery_output_limit);
+            defer self.allocator.free(entries.stdout);
+            defer self.allocator.free(entries.stderr);
+            if (!entries.term.success()) return error.FileNotFound;
+            var records = std.mem.splitScalar(u8, entries.stdout, 0);
+            var object: ?[]const u8 = null;
+            while (records.next()) |record| {
+                if (record.len == 0) continue;
+                const tab = std.mem.indexOfScalar(u8, record, '\t') orelse continue;
+                var parts = std.mem.tokenizeScalar(u8, record[0..tab], ' ');
+                _ = parts.next() orelse continue;
+                const oid = parts.next() orelse continue;
+                const stage_number = parts.next() orelse continue;
+                if (object == null) object = oid;
+                if (ref.len != 0 and stage_number.len == 1 and stage_number[0] == ref[1]) {
+                    object = oid;
+                    break;
+                }
+            }
+            const result = try self.run(&.{ self.exe, "cat-file", "-s", object orelse return error.FileNotFound }, root, 1024);
+            defer self.allocator.free(result.stdout);
+            defer self.allocator.free(result.stderr);
+            if (!result.term.success()) return error.FileNotFound;
+            return std.fmt.parseInt(u64, std.mem.trim(u8, result.stdout, " \t\r\n"), 10);
+        }
+        const entries = try self.run(&.{ self.exe, "--literal-pathspecs", "ls-tree", "-l", "-z", ref, "--", path }, root, discovery_output_limit);
+        defer self.allocator.free(entries.stdout);
+        defer self.allocator.free(entries.stderr);
+        if (entries.term.success() and entries.stdout.len != 0) {
+            const tab = std.mem.indexOfScalar(u8, entries.stdout, '\t') orelse return error.FileNotFound;
+            var parts = std.mem.tokenizeScalar(u8, entries.stdout[0..tab], ' ');
+            _ = parts.next() orelse return error.FileNotFound; // mode
+            _ = parts.next() orelse return error.FileNotFound; // type
+            _ = parts.next() orelse return error.FileNotFound; // object
+            return std.fmt.parseInt(u64, parts.next() orelse return error.FileNotFound, 10) catch 0;
+        }
+        if (ref.len == 40 or ref.len == 64) {
+            const empty = try self.getEmptyTree(root);
+            defer self.allocator.free(empty);
+            if (std.mem.eql(u8, empty, ref)) return 0;
+        }
+        return error.FileNotFound;
+    }
+
     fn readWorkingFile(self: *Git, root: []const u8, path: []const u8) !?[]u8 {
         const full_path = std.fs.path.join(self.allocator, &.{ root, path }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,

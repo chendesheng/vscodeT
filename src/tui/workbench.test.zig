@@ -11765,6 +11765,21 @@ test "Workbench: Git URI models distinguish missing and binary resources and dec
             try git_uri.toGitUriWithOptions(scratch, path, "index", .{ .submodule_of = root })
         else
             try git_uri.toGitUri(scratch, path, "HEAD");
+        try std.testing.expect(wb.file_service_api.hasProvider(uri));
+        const encoded = try @import("../vs/base/common/stdUri.zig").encodedResource(scratch, uri);
+        try std.testing.expectError(error.FileReadonly, wb.resource_file_service.writeFile(encoded, "forbidden", .{ .create = false, .overwrite = true }));
+        if (index == 0 or index == 1) {
+            const stat = try wb.file_service_api.stat(uri);
+            try std.testing.expectEqual(@as(u64, if (index == 0) 8 else 3), stat.size);
+            try std.testing.expectEqual(@as(i64, 0), stat.ctime);
+            try std.testing.expect(stat.mtime > 0);
+            var raw = try wb.resource_file_service.readFile(a, encoded, 0);
+            defer raw.deinit(a);
+            try std.testing.expectEqualSlices(u8, if (index == 0) "\xff\xfeA\x00\n\x00B\x00" else "a\x00b", raw.bytes);
+        } else {
+            // A staged submodule addition has a patch but no HEAD gitlink to stat.
+            try std.testing.expectError(error.FileNotFound, wb.file_service_api.stat(uri));
+        }
         const outcome = try Harness.resolve(wb, uri);
         switch (index) {
             0 => {

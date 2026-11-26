@@ -1,43 +1,70 @@
-// Port of the Git URI read path of `vscode/extensions/git/src/fileSystemProvider.ts`.
-// The native asynchronous file-service boundary captures immutable repository
-// state on the window thread. Until ProviderFileService supports URI worker
-// reads, its read-only content is registered with ITextModelService instead.
-// The repository model remains the owner of ref resolution and Git IO.
+// Port of `vscode/extensions/git/src/fileSystemProvider.ts`.
+// Git resources are registered with the shared read-only, case-sensitive
+// filesystem provider registry. Native async reads capture immutable
+// repository/ref state and deliver raw bytes to the text-file resolver.
+// The terminal currently opens one repository per workspace.
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const Model = @import("model.zig").Model;
-const SnapshotSource = @import("../../../vs/editor/browser/widget/diffEditor/diffProviderFactoryService.zig").SnapshotSource;
-const resolver = @import("../../../vs/editor/common/services/resolverService.zig");
+const GitResourceRead = @import("model.zig").GitResourceRead;
+const files = @import("../../../vs/platform/files/common/files.zig");
+const IDisposable = @import("../../../vs/base/common/lifecycle.zig").IDisposable;
 const Repository = @import("repository.zig").Repository;
 const dispatch = @import("../../../vs/base/common/windowDispatch.zig");
 const event = @import("../../../vs/base/common/event.zig");
 const IHostService = @import("../../../vs/workbench/services/host/browser/host.zig").IHostService;
 const time = @import("../../../vs/base/common/timeCompat.zig");
+const uri_util = @import("../../../vs/base/common/stdUri.zig");
 
 pub const GitFileSystemProvider = struct {
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
     model: *Model,
     io: std.Io,
-    registration: ?resolver.ContentProviderRegistration = null,
-    on_did_change: event.Emitter(resolver.ContentChange),
+    registration: ?IDisposable = null,
+    listeners: std.ArrayList(files.IFileChangeListener) = .empty,
+    cache: std.StringHashMapUnmanaged(CacheRow) = .empty,
+    open_documents: ?OpenDocuments = null,
+    mtime: i64,
     repository_listener: ?event.SignalSubscription = null,
     original_listener: ?event.SignalSubscription = null,
     focus_listener: ?event.SignalSubscription = null,
     change_deadline: dispatch.Task = .{},
+    cleanup_deadline: dispatch.Task = .{},
     focused: bool = true,
     waiting_for_focus: bool = false,
 
-    pub fn init(allocator: std.mem.Allocator, model: *Model, io: std.Io) GitFileSystemProvider {
-        return .{ .allocator = allocator, .model = model, .io = io, .on_did_change = .init(allocator) };
+    const CacheRow = struct {
+        path: []u8,
+        timestamp: i64,
+    };
+
+    pub const OpenDocuments = struct {
+        context: *anyopaque,
+        is_open: *const fn (*anyopaque, []const u8) bool,
+    };
+
+    const three_minutes = 3 * 60 * 1000;
+    const five_minutes = 5 * 60 * 1000;
+
+    pub fn init(allocator: Allocator, model: *Model, io: std.Io) GitFileSystemProvider {
+        return .{ .allocator = allocator, .model = model, .io = io, .mtime = time.milliTimestamp() };
+    }
+
+    pub fn register(self: *GitFileSystemProvider, service: files.IFileService, open_documents: OpenDocuments) !void {
+        self.registration = try service.registerProvider("git", self.interface());
+        self.open_documents = open_documents;
     }
 
     pub fn attachRepository(self: *GitFileSystemProvider, repository: *Repository, window: *dispatch.Queue, host: IHostService) !void {
         self.detachRepository();
         self.change_deadline = .{ .queue = window, .context = self, .run = fireChanges };
+        self.cleanup_deadline = .{ .queue = window, .context = self, .run = cleanup };
         self.focused = host.hasFocus();
         self.repository_listener = try repository.on_change.listenDisposable(self, onRepositoryChanged);
         errdefer self.detachRepository();
         self.original_listener = try repository.on_did_change_original_resource.listenDisposable(self, onOriginalResourceChanged);
         self.focus_listener = try host.on_did_change_focus.listenDisposable(self, onFocusChanged);
+        self.cleanup_deadline.schedule(time.milliTimestamp() + five_minutes);
     }
 
     pub fn detachRepository(self: *GitFileSystemProvider) void {
@@ -48,7 +75,59 @@ pub const GitFileSystemProvider = struct {
         self.original_listener = null;
         self.focus_listener = null;
         self.change_deadline.schedule(null);
+        self.cleanup_deadline.schedule(null);
         self.waiting_for_focus = false;
+        self.clearCache();
+    }
+
+    pub fn deinit(self: *GitFileSystemProvider) void {
+        self.detachRepository();
+        if (self.registration) |registration| registration.dispose();
+        self.registration = null;
+        self.listeners.deinit(self.allocator);
+        self.cache.deinit(self.allocator);
+    }
+
+    fn clearCache(self: *GitFileSystemProvider) void {
+        var iterator = self.cache.iterator();
+        while (iterator.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.path);
+        }
+        self.cache.clearRetainingCapacity();
+    }
+
+    fn remember(self: *GitFileSystemProvider, resource: std.Uri, path: []const u8) !void {
+        const a = self.allocator;
+        const key = try uri_util.encodedResource(a, resource);
+        errdefer a.free(key);
+        if (self.cache.getPtr(key)) |row| {
+            row.timestamp = time.milliTimestamp();
+            a.free(key);
+            return;
+        }
+        const owned = try a.dupe(u8, path);
+        errdefer a.free(owned);
+        try self.cache.put(a, key, .{ .path = owned, .timestamp = time.milliTimestamp() });
+    }
+
+    fn cleanup(context: *anyopaque, now: i64, _: bool) bool {
+        const self: *GitFileSystemProvider = @ptrCast(@alignCast(context));
+        defer self.cleanup_deadline.schedule(now + five_minutes);
+        var expired: std.ArrayList([]const u8) = .empty;
+        defer expired.deinit(self.allocator);
+        var iterator = self.cache.iterator();
+        while (iterator.next()) |entry| {
+            const row = entry.value_ptr;
+            if (now - row.timestamp < three_minutes) continue;
+            if (self.open_documents) |docs| if (docs.is_open(docs.context, row.path)) continue;
+            expired.append(self.allocator, entry.key_ptr.*) catch return false;
+        }
+        for (expired.items) |key| if (self.cache.fetchRemove(key)) |entry| {
+            self.allocator.free(entry.key);
+            self.allocator.free(entry.value.path);
+        };
+        return false;
     }
 
     fn onRepositoryChanged(_: void, self: *GitFileSystemProvider) !void {
@@ -60,13 +139,15 @@ pub const GitFileSystemProvider = struct {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const a = arena.allocator();
-        const path = try @import("../../../vs/base/common/stdUri.zig").fsPath(resource, a);
+        const path = try uri_util.fsPath(resource, a);
         const uri = @import("uri.zig");
-        const originals = [_]std.Uri{
-            try uri.toGitUri(a, path, "~"),
-            try uri.toGitUriWithOptions(a, path, "", .{ .replace_file_extension = true }),
-        };
-        try self.on_did_change.fire(.{ .resources = &originals });
+        const ordinary = try uri.toGitUri(a, path, "~");
+        const quick = try uri.toGitUriWithOptions(a, path, "", .{ .replace_file_extension = true });
+        self.mtime = time.milliTimestamp();
+        self.emit(&.{
+            .{ .type = .UPDATED, .resource = try uri_util.encodedResource(a, ordinary) },
+            .{ .type = .UPDATED, .resource = try uri_util.encodedResource(a, quick) },
+        });
     }
 
     fn onFocusChanged(focused: bool, self: *GitFileSystemProvider) !void {
@@ -81,48 +162,169 @@ pub const GitFileSystemProvider = struct {
             return false;
         }
         self.waiting_for_focus = false;
-        self.on_did_change.fire(.all) catch {};
+        const root = self.model.git_root orelse return false;
+        var changes: std.ArrayList(files.IFileChange) = .empty;
+        defer changes.deinit(self.allocator);
+        var iterator = self.cache.iterator();
+        while (iterator.next()) |entry| {
+            if (@import("../../../vs/base/common/extpath.zig").relativeToRoot(entry.value_ptr.path, root) == null) continue;
+            changes.append(self.allocator, .{ .type = .UPDATED, .resource = entry.key_ptr.* }) catch return false;
+        }
+        if (changes.items.len == 0) return false;
+        self.mtime = time.milliTimestamp();
+        self.emit(changes.items);
         return true;
     }
 
-    pub fn register(self: *GitFileSystemProvider, service: resolver.ITextModelService) !void {
-        self.registration = try service.registerTextModelContentProvider("git", self.interface());
+    fn emit(self: *GitFileSystemProvider, changes: []const files.IFileChange) void {
+        for (self.listeners.items) |listener| listener.callback(listener.context, changes);
     }
 
-    pub fn deinit(self: *GitFileSystemProvider) void {
-        self.detachRepository();
-        if (self.registration) |registration| registration.dispose();
-        self.registration = null;
-        self.on_did_change.deinit();
-    }
-
-    pub fn interface(self: *GitFileSystemProvider) resolver.ITextModelContentProvider {
-        return .{ .context = self, .capture = capture, .on_did_change_content = &self.on_did_change };
-    }
-
-    fn capture(context: *anyopaque, resource: std.Uri) !?resolver.TextContentRequest {
+    fn addListener(context: *anyopaque, listener: files.IFileChangeListener) void {
         const self: *GitFileSystemProvider = @ptrCast(@alignCast(context));
-        if (!std.mem.eql(u8, resource.scheme, "git")) return null;
-        const request = try std.heap.page_allocator.create(ReadRequest);
-        errdefer std.heap.page_allocator.destroy(request);
-        request.* = .{ .source = try self.model.resourceSnapshotSource(self.io, resource, null, null, null) };
-        return .{ .context = request, .read = ReadRequest.read, .destroy = ReadRequest.destroy };
+        self.listeners.append(self.allocator, listener) catch {};
     }
 
-    const ReadRequest = struct {
-        source: SnapshotSource,
-
-        fn read(context: *anyopaque, a: std.mem.Allocator) !resolver.TextContentRequest.Result {
-            const self: *ReadRequest = @ptrCast(@alignCast(context));
-            const result = try self.source.read(self.source.context, a);
-            const resource = result.original_resource orelse return error.UnableToResolveResource;
-            return .{ .uri = resource.uri, .path = resource.path, .text = if (result.original_available) result.original else null, .encoding = if (resource.encoding) |value| @tagName(value) else null, .failure = resource.failure };
+    fn removeListener(context: *anyopaque, listener: files.IFileChangeListener) void {
+        const self: *GitFileSystemProvider = @ptrCast(@alignCast(context));
+        for (self.listeners.items, 0..) |candidate, i| {
+            if (candidate.context == listener.context and candidate.callback == listener.callback) {
+                _ = self.listeners.orderedRemove(i);
+                return;
+            }
         }
+    }
 
-        fn destroy(context: *anyopaque) void {
-            const self: *ReadRequest = @ptrCast(@alignCast(context));
-            self.source.destroy(self.source.context);
-            std.heap.page_allocator.destroy(self);
+    pub fn interface(self: *GitFileSystemProvider) files.IFileSystemProvider {
+        return .{
+            .context = self,
+            .capabilities = capabilities,
+            .stat = statPath,
+            .mkdir = unsupportedMutation,
+            .readdir = unsupportedDirectory,
+            .delete = unsupportedDelete,
+            .rename = unsupportedRename,
+            .read_file = readPath,
+            .write_file = unsupportedWrite,
+            .open = unsupportedOpen,
+            .close = unsupportedClose,
+            .read = unsupportedRead,
+            .write = unsupportedFdWrite,
+            .watch = watch,
+            .add_change_listener = addListener,
+            .remove_change_listener = removeListener,
+            .capture_read_uri = capture,
+            .stat_uri = statUri,
+            .change_resources_are_uris = true,
+        };
+    }
+
+    fn capabilities(_: *anyopaque) u32 {
+        const c = files.FileSystemProviderCapabilities;
+        return c.FileReadWrite | c.Readonly | c.PathCaseSensitive;
+    }
+
+    fn capture(context: *anyopaque, resource: std.Uri) !files.FileReadRequest {
+        const self: *GitFileSystemProvider = @ptrCast(@alignCast(context));
+        const request = try self.model.captureGitResource(self.io, resource);
+        errdefer request.destroy();
+        try self.remember(resource, request.path);
+        return .{ .context = request, .read = read, .destroy = destroy, .display_path = request.path };
+    }
+
+    fn read(context: *anyopaque, allocator: Allocator) ![]u8 {
+        const request: *GitResourceRead = @ptrCast(@alignCast(context));
+        return request.read(allocator);
+    }
+
+    fn destroy(context: *anyopaque) void {
+        const request: *GitResourceRead = @ptrCast(@alignCast(context));
+        request.destroy();
+    }
+
+    fn statUri(context: *anyopaque, resource: std.Uri) files.FileSystemProviderError!files.IStat {
+        const self: *GitFileSystemProvider = @ptrCast(@alignCast(context));
+        const request = self.model.captureGitResource(self.io, resource) catch |err| return mapError(err);
+        defer request.destroy();
+        const size = request.stat(self.allocator) catch |err| return mapError(err);
+        return .{ .type = files.FileType.File, .size = size, .mtime = self.mtime, .ctime = 0, .permissions = files.FilePermission.Readonly };
+    }
+
+    fn statPath(context: *anyopaque, path: []const u8) files.FileSystemProviderError!files.IStat {
+        const self: *GitFileSystemProvider = @ptrCast(@alignCast(context));
+        const encoded = std.fmt.allocPrint(self.allocator, "git:{s}", .{path}) catch return error.OutOfMemory;
+        defer self.allocator.free(encoded);
+        return statUri(context, std.Uri.parse(encoded) catch return error.FileNotFound);
+    }
+
+    fn readPath(context: *anyopaque, path: []const u8) files.FileSystemProviderError![]u8 {
+        const self: *GitFileSystemProvider = @ptrCast(@alignCast(context));
+        const encoded = std.fmt.allocPrint(self.allocator, "git:{s}", .{path}) catch return error.OutOfMemory;
+        defer self.allocator.free(encoded);
+        const request = capture(context, std.Uri.parse(encoded) catch return error.FileNotFound) catch |err| return mapError(err);
+        defer request.destroy(request.context);
+        return request.read(request.context, self.allocator) catch |err| return mapError(err);
+    }
+
+    fn mapError(err: anyerror) files.FileSystemProviderError {
+        return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.FileNotFound, error.NoRepository, error.OutsideRepository, error.NoGit => error.FileNotFound,
+            else => error.Unavailable,
+        };
+    }
+
+    fn unsupportedMutation(_: *anyopaque, _: []const u8) files.FileSystemProviderError!void {
+        return error.FileReadonly;
+    }
+    fn unsupportedDirectory(_: *anyopaque, _: []const u8) files.FileSystemProviderError![]files.DirectoryEntry {
+        return error.Unavailable;
+    }
+    fn unsupportedDelete(_: *anyopaque, _: []const u8, _: files.IFileDeleteOptions) files.FileSystemProviderError!void {
+        return error.FileReadonly;
+    }
+    fn unsupportedRename(_: *anyopaque, _: []const u8, _: []const u8, _: files.IFileOverwriteOptions) files.FileSystemProviderError!void {
+        return error.FileReadonly;
+    }
+    fn unsupportedWrite(_: *anyopaque, _: []const u8, _: []const u8, _: files.IFileWriteOptions) files.FileSystemProviderError!void {
+        return error.FileReadonly;
+    }
+    fn unsupportedOpen(_: *anyopaque, _: []const u8, _: files.IFileOpenOptions) files.FileSystemProviderError!u32 {
+        return error.Unavailable;
+    }
+    fn unsupportedClose(_: *anyopaque, _: u32) files.FileSystemProviderError!void {
+        return error.Unavailable;
+    }
+    fn unsupportedRead(_: *anyopaque, _: u32, _: usize, _: []u8, _: usize, _: usize) files.FileSystemProviderError!usize {
+        return error.Unavailable;
+    }
+    fn unsupportedFdWrite(_: *anyopaque, _: u32, _: usize, _: []const u8, _: usize, _: usize) files.FileSystemProviderError!usize {
+        return error.FileReadonly;
+    }
+    fn watch(_: *anyopaque, _: []const u8, _: files.IWatchOptions) files.FileSystemProviderError!void {}
+};
+
+test "Git file provider cache retains fresh resources and open working documents" {
+    const a = std.testing.allocator;
+    var model = Model.init(a);
+    var provider = GitFileSystemProvider.init(a, &model, std.testing.io);
+    defer provider.deinit();
+    const Now: i64 = 1_000_000;
+    const Open = struct {
+        fn isOpen(_: *anyopaque, path: []const u8) bool {
+            return std.mem.eql(u8, path, "/repo/open.txt");
         }
     };
-};
+    provider.open_documents = .{ .context = @constCast(&{}), .is_open = Open.isOpen };
+    try provider.remember(try std.Uri.parse("git:/repo/old.txt?ref=HEAD"), "/repo/old.txt");
+    try provider.remember(try std.Uri.parse("git:/repo/open.txt?ref=HEAD"), "/repo/open.txt");
+    try provider.remember(try std.Uri.parse("git:/repo/fresh.txt?ref=HEAD"), "/repo/fresh.txt");
+    var iterator = provider.cache.valueIterator();
+    while (iterator.next()) |row| {
+        row.timestamp = if (std.mem.eql(u8, row.path, "/repo/fresh.txt")) Now - 1000 else Now - GitFileSystemProvider.three_minutes;
+    }
+    _ = GitFileSystemProvider.cleanup(&provider, Now, false);
+    try std.testing.expectEqual(@as(usize, 2), provider.cache.count());
+    try std.testing.expect(provider.cache.contains("git:/repo/open.txt?ref=HEAD"));
+    try std.testing.expect(provider.cache.contains("git:/repo/fresh.txt?ref=HEAD"));
+}

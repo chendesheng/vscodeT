@@ -36,17 +36,7 @@ const SnapshotRead = struct {
     source: union(enum) {
         refs: struct { working: ?[]const u8, left: git.DiffRef, right: git.DiffRef, has_diff: bool },
         revisions: struct { left: ?[]const u8, right: []const u8 },
-        resources: struct { original: ?ResourceSpec, modified: ?ResourceSpec },
     },
-
-    const ResourceSpec = struct {
-        encoded_uri: []const u8,
-        path: []const u8,
-        relative: []const u8,
-        ref: ?[]const u8,
-        working: ?[]const u8,
-        submodule: bool = false,
-    };
 
     fn destroy(context: *anyopaque) void {
         const self: *SnapshotRead = @ptrCast(@alignCast(context));
@@ -72,33 +62,6 @@ const SnapshotRead = struct {
         };
     }
 
-    fn readResource(self: *SnapshotRead, reader: *Git, allocator: Allocator, spec: ?ResourceSpec) !struct { resource: ?SnapshotSource.Resource, text: ?[]const u8 } {
-        const entry = spec orelse return .{ .resource = null, .text = null };
-        var resolved: SnapshotSource.Resource = .{
-            .path = try allocator.dupe(u8, entry.path),
-            .uri = try std.Uri.parse(try allocator.dupe(u8, entry.encoded_uri)),
-        };
-        if (entry.ref) |ref| {
-            const bytes = (if (entry.submodule)
-                reader.readSubmoduleDiff(self.root, entry.relative, std.mem.eql(u8, ref, "index"))
-            else
-                reader.readGitBuffer(self.root, ref, entry.relative)) catch |err| {
-                if (err == error.OutOfMemory) return err;
-                resolved.failure = err;
-                return .{ .resource = resolved, .text = null };
-            };
-            defer reader.allocator.free(bytes);
-            const encoding = @import("../../../vs/workbench/services/textfile/common/encoding.zig");
-            const detected = if (encoding.detectBOM(bytes)) |bom| bom.encoding else encoding.Encoding.utf8;
-            if (!encoding.isUTF16(detected) and std.mem.indexOfScalar(u8, bytes, 0) != null) return .{ .resource = resolved, .text = null };
-            resolved.encoding = detected;
-            return .{ .resource = resolved, .text = try encoding.decode(allocator, bytes, detected) };
-        }
-        const text = if (entry.working) |working| try allocator.dupe(u8, working) else try reader.readRef(self.root, entry.relative, .working);
-        resolved.is_working_file = text != null;
-        return .{ .resource = resolved, .text = text };
-    }
-
     fn read(context: *anyopaque, allocator: Allocator) !SnapshotSource.Texts {
         const self: *SnapshotRead = @ptrCast(@alignCast(context));
         const reader = try Git.init(allocator, .{ .git_path = self.exe, .io = self.io });
@@ -122,18 +85,6 @@ const SnapshotRead = struct {
                     .modified_available = text.modified_available,
                 };
             },
-            .resources => |refs| {
-                const original = try self.readResource(reader, allocator, refs.original);
-                const modified = try self.readResource(reader, allocator, refs.modified);
-                return .{
-                    .original = original.text orelse "",
-                    .modified = modified.text orelse "",
-                    .original_available = original.text != null,
-                    .modified_available = modified.text != null,
-                    .original_resource = original.resource,
-                    .modified_resource = modified.resource,
-                };
-            },
             .revisions => |refs| {
                 const original = if (refs.left) |revision| reader.readRefAt(allocator, self.root, self.original_path, revision) catch null else null;
                 const modified = reader.readRefAt(allocator, self.root, self.modified_path, refs.right) catch null;
@@ -151,6 +102,44 @@ const SnapshotRead = struct {
 
     fn interface(self: *SnapshotRead) SnapshotSource {
         return .{ .context = self, .read = read, .destroy = destroy };
+    }
+};
+
+/// Immutable read/stat request for a registered Git filesystem resource.
+pub const GitResourceRead = struct {
+    arena: std.heap.ArenaAllocator,
+    io: std.Io,
+    exe: []const u8,
+    timeout: std.Io.Timeout,
+    max_file_size: usize,
+    root: []const u8,
+    path: []const u8,
+    relative: []const u8,
+    ref: []const u8,
+    submodule: bool,
+
+    pub fn read(self: *const GitResourceRead, allocator: Allocator) ![]u8 {
+        const reader = try Git.init(allocator, .{ .git_path = self.exe, .io = self.io });
+        defer reader.deinit();
+        reader.timeout = self.timeout;
+        reader.max_file_size = self.max_file_size;
+        return if (self.submodule)
+            reader.readSubmoduleDiff(self.root, self.relative, std.mem.eql(u8, self.ref, "index"))
+        else
+            reader.readGitBuffer(self.root, self.ref, self.relative);
+    }
+
+    pub fn stat(self: *const GitResourceRead, allocator: Allocator) !u64 {
+        const reader = try Git.init(allocator, .{ .git_path = self.exe, .io = self.io });
+        defer reader.deinit();
+        reader.timeout = self.timeout;
+        const ref = if (self.submodule and (std.mem.eql(u8, self.ref, "index") or std.mem.eql(u8, self.ref, "wt"))) "HEAD" else self.ref;
+        return reader.getObjectSize(self.root, ref, self.relative);
+    }
+
+    pub fn destroy(self: *GitResourceRead) void {
+        self.arena.deinit();
+        std.heap.page_allocator.destroy(self);
     }
 };
 
@@ -308,63 +297,51 @@ pub const Model = struct {
         return request.interface();
     }
 
-    fn captureResource(self: *Model, allocator: Allocator, uri: std.Uri, working: ?[]const u8) !SnapshotRead.ResourceSpec {
-        const std_uri = @import("../../../vs/base/common/stdUri.zig");
+    /// Capture repository/ref policy on the window thread; the Git file
+    /// provider reads or stats this immutable request on its own boundary.
+    pub fn captureGitResource(self: *Model, io: std.Io, uri: std.Uri) !*GitResourceRead {
+        if (!std.mem.eql(u8, uri.scheme, "git")) return error.UnsupportedDiffResourceScheme;
+        const cli = self.git orelse return error.NoGit;
         const root = self.git_root orelse return error.NoRepository;
-        var path: []const u8 = undefined;
-        var ref: ?[]const u8 = null;
-        var submodule = false;
-        if (std.mem.eql(u8, uri.scheme, "git")) {
-            const git_uri = @import("uri.zig");
-            const params = try git_uri.fromGitUri(allocator, uri);
-            path = params.path;
-            ref = params.ref;
-            if (params.submoduleOf) |parent| {
-                if (!std.mem.eql(u8, root, parent)) return error.NoRepository;
-                submodule = true;
-            }
-            if (git_uri.normalizeIndexStage(params.ref)) |stage| ref = try allocator.dupe(u8, &stage);
-            // Upstream sanitizeRef chooses the index for staged paths.
-            if (std.mem.eql(u8, ref.?, "~")) {
-                const relative = extpath.relativeToRoot(path, root) orelse return error.OutsideRepository;
-                ref = "HEAD";
-                const repository = self.repository orelse return error.NoRepository;
-                for (repository.repository.stateRef().index_changes) |change| {
-                    if (std.mem.eql(u8, change.path, relative)) {
-                        ref = "";
-                        break;
-                    }
+        const request = try std.heap.page_allocator.create(GitResourceRead);
+        errdefer std.heap.page_allocator.destroy(request);
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        const git_uri = @import("uri.zig");
+        const params = try git_uri.fromGitUri(a, uri);
+        if (params.submoduleOf) |parent| {
+            if (!std.mem.eql(u8, root, parent)) return error.NoRepository;
+        }
+        const relative = extpath.relativeToRoot(params.path, root) orelse return error.OutsideRepository;
+        var ref: []const u8 = params.ref;
+        if (git_uri.normalizeIndexStage(ref)) |stage| ref = try a.dupe(u8, &stage);
+        if (std.mem.eql(u8, ref, "~")) {
+            ref = "HEAD";
+            const repository = self.repository orelse return error.NoRepository;
+            for (repository.repository.stateRef().index_changes) |change| {
+                if (std.mem.eql(u8, change.path, relative)) {
+                    ref = "";
+                    break;
                 }
             }
-        } else if (std.mem.eql(u8, uri.scheme, "file")) {
-            path = try allocator.dupe(u8, try std_uri.fsPath(uri, allocator));
-        } else return error.UnsupportedDiffResourceScheme;
-        const relative = extpath.relativeToRoot(path, root) orelse return error.OutsideRepository;
-        return .{
-            .encoded_uri = try std_uri.encodedResource(allocator, uri),
-            .path = path,
+        }
+        request.* = .{
+            .arena = undefined,
+            .io = io,
+            .exe = try a.dupe(u8, cli.exe),
+            .timeout = cli.timeout,
+            .max_file_size = cli.max_file_size,
+            .root = try a.dupe(u8, root),
+            .path = params.path,
             .relative = relative,
             .ref = ref,
-            .working = if (ref == null) if (working) |text| try allocator.dupe(u8, text) else null else null,
-            .submodule = submodule,
+            .submodule = params.submoduleOf != null,
         };
+        request.arena = arena;
+        return request;
     }
 
-    /// Capture the exact independently resolved URI pair from the SCM source.
-    /// The worker reads Git and file resources without the provider or editor.
-    pub fn resourceSnapshotSource(self: *Model, io: std.Io, original: ?std.Uri, modified: ?std.Uri, original_working: ?[]const u8, modified_working: ?[]const u8) !SnapshotSource {
-        const request = try self.captureSnapshot(io, "", "", "");
-        errdefer SnapshotRead.destroy(request);
-        const a = request.arena.allocator();
-        request.source = .{ .resources = .{
-            .original = if (original) |uri| try self.captureResource(a, uri, original_working) else null,
-            .modified = if (modified) |uri| try self.captureResource(a, uri, modified_working) else null,
-        } };
-        return request.interface();
-    }
-
-    /// The terminal projects Git's virtual text resources to snapshot buffers
-    /// for the editor service. Both returned slices are owned by the caller.
     pub fn resolveDiffTexts(self: *Model, path: []const u8, working: ?[]const u8, left: git.DiffRef, right: git.DiffRef) !git.ResolvedDiffTexts {
         if (self.repository == null) return error.NoRepository;
         const root = self.git_root orelse return error.NoRepository;
