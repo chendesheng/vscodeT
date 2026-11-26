@@ -347,6 +347,7 @@ pub const EditorOpening = struct {
     },
     pending_open: ?struct { read: *TextFileRead, options: OpenOptions } = null,
     diff_worker: ?*DiffWorker = null,
+    diff_cache: diff_provider.Cache = .{},
     pending_diff: ?struct {
         request: *DiffProvider.Request,
         path: []u8,
@@ -369,6 +370,7 @@ pub const EditorOpening = struct {
             worker.deinit();
             self.allocator.destroy(worker);
         }
+        self.diff_cache.deinit();
         self.reload_jobs.deinit();
     }
 
@@ -394,7 +396,7 @@ pub const EditorOpening = struct {
         errdefer self.allocator.free(right_copy);
         const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp();
         source_owned = false;
-        const request = try DiffProvider.computeResolvedDiff(worker, source, options, .{
+        const request = try DiffProvider.computeResolvedDiff(worker, &self.diff_cache, source, options, .{
             .context = self,
             .run = diffCompleted,
         }, now);
