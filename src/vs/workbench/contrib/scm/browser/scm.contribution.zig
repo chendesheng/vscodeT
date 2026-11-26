@@ -9,6 +9,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const scm = @import("../common/scm.zig");
 const SCMService = @import("../common/scmService.zig").SCMService;
+const SCMViewService = @import("scmViewService.zig").SCMViewService;
 const quick_diff = @import("../common/quickDiffService.zig");
 const QuickDiffWorkbenchController = @import("quickDiffDecorator.zig").QuickDiffWorkbenchController;
 const scm_view = @import("scmViewPane.zig");
@@ -36,6 +37,9 @@ pub const SCMContribution = struct {
     view_descriptors: ?*ViewDescriptorService = null,
     service: ?*SCMService = null,
     service_api: ?*scm.ISCMService = null,
+    view_service: ?*SCMViewService = null,
+    view_service_api: ?*scm.ISCMViewService = null,
+    active_repository_listener: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
     repository: ?*scm.ISCMRepository = null,
     storage: ?*Storage = null,
     quick_diff_service: ?*quick_diff.QuickDiffService = null,
@@ -78,6 +82,18 @@ pub const SCMContribution = struct {
         api.* = service.interface();
         self.service = service;
         self.service_api = api;
+        return api;
+    }
+
+    pub fn ensureViewService(self: *SCMContribution, editors: @import("../../../services/editor/common/editorService.zig").IEditorService) !*scm.ISCMViewService {
+        if (self.view_service_api) |api| return api;
+        const service = try self.ensureService();
+        const view = try SCMViewService.create(self.allocator, service.*, editors);
+        errdefer view.destroy();
+        const api = try self.allocator.create(scm.ISCMViewService);
+        api.* = view.interface();
+        self.view_service = view;
+        self.view_service_api = api;
         return api;
     }
 
@@ -145,8 +161,8 @@ pub const SCMContribution = struct {
         if (self.repository != null) return error.ProviderAlreadyExists;
         errdefer self.detachProvider();
         const api = try self.ensureService();
+        const scm_views = self.view_service_api orelse if (options.changes_host.editor_service) |editors| try self.ensureViewService(editors) else return error.SCMViewServiceUnavailable;
         self.repository = try api.registerSCMProvider(provider);
-        self.activity = try SCMActiveRepositoryController.create(allocator, provider, options.activity_service, options.statusbar_service, options.configuration);
 
         const storage = try allocator.create(Storage);
         storage.* = Storage.init(allocator);
@@ -160,6 +176,7 @@ pub const SCMContribution = struct {
         const resource_events = try allocator.create(@import("../../../../base/common/event.zig").Emitter(void));
         resource_events.* = .init(allocator);
         self.resource_events = resource_events;
+        self.activity = try SCMActiveRepositoryController.create(allocator, api.*, scm_views.*, resource_events, options.activity_service, options.statusbar_service, options.configuration);
         self.primary_resources_listener = try provider.on_did_change_resources.listenDisposable(self, onRepositoryResourcesChanged);
         try models.setRepositoryResources(resource_events);
 
@@ -173,6 +190,7 @@ pub const SCMContribution = struct {
 
         const view = try allocator.create(scm_view.SCMViewPane);
         view.* = scm_view.SCMViewPane.init(allocator, api, options.changes_host);
+        view.scm_view_service = scm_views.*;
         self.changes = view;
 
         const history = try scm_history.SCMHistoryViewPane.init(allocator, options.history_host, storage);
@@ -180,6 +198,7 @@ pub const SCMContribution = struct {
         history.quick_input = options.quick_input;
         self.provider_event = provider.on_did_change orelse provider.on_did_change_resources;
         self.provider_listener = try self.provider_event.?.listen(self, onProviderChanged);
+        self.active_repository_listener = try scm_views.on_did_change_active_repository.listenDisposable(self, onActiveRepositoryChanged);
         try self.setViewConfiguration(options.configuration);
         self.applyProviderState();
     }
@@ -211,7 +230,7 @@ pub const SCMContribution = struct {
 
     fn onAdditionalRepositoryResourcesChanged(_: void, self: *SCMContribution) !void {
         try onRepositoryResourcesChanged({}, self);
-        if (self.changes) |view| view.refresh();
+        self.applyProviderState();
     }
 
     pub fn detachConfiguration(self: *SCMContribution) void {
@@ -253,14 +272,27 @@ pub const SCMContribution = struct {
         self.applyProviderState();
     }
 
+    fn onActiveRepositoryChanged(active: ?scm.ActiveRepository, self: *SCMContribution) !void {
+        if (self.history) |view| {
+            const provider = if (active) |entry| entry.repository.provider.history_provider else null;
+            if (view.provider != provider) view.setProvider(provider);
+        }
+        self.applyProviderState();
+    }
+
     fn applyProviderState(self: *SCMContribution) void {
         const service = self.service_api orelse return;
         const repositories = service.repositories();
-        if (repositories.len == 0) return;
-        const repository = repositories[0];
-        const provider = repository.provider;
-        if (provider.input_box_visible) |visible| repository.input.setVisible(visible);
-        if (provider.input_box_placeholder) |placeholder| repository.input.setPlaceholder(placeholder);
+        for (repositories) |repository| {
+            const provider = repository.provider;
+            if (provider.input_box_visible) |visible| repository.input.setVisible(visible);
+            if (provider.input_box_placeholder) |placeholder| repository.input.setPlaceholder(placeholder);
+        }
+        const repository = if (self.view_service_api) |view_service| active: {
+            break :active if (view_service.activeRepository()) |active| active.repository else null;
+        } else self.repository;
+        if (repository == null) return;
+        const provider = repository.?.provider;
         if (self.changes) |view| {
             view.branch_action = provider.branch_action;
             view.fresh_repository = provider.fresh_repository;
@@ -293,6 +325,7 @@ pub const SCMContribution = struct {
             descriptors.setViewAvailable("graph", false);
         }
         self.detachConfiguration();
+        if (self.active_repository_listener) |listener| listener.dispose();
         if (self.provider_listener) |listener| self.provider_event.?.unlisten(listener);
         if (self.activity) |activity| activity.destroy();
         if (self.history) |view| {
@@ -329,6 +362,8 @@ pub const SCMContribution = struct {
         }
         const service = self.service;
         const api = self.service_api;
+        const view_service = self.view_service;
+        const view_api = self.view_service_api;
         const quick_service = self.quick_diff_service;
         const quick_api = self.quick_diff_api;
         const models = self.quick_diff_model_service;
@@ -336,6 +371,8 @@ pub const SCMContribution = struct {
         self.* = init(allocator);
         self.service = service;
         self.service_api = api;
+        self.view_service = view_service;
+        self.view_service_api = view_api;
         self.quick_diff_service = quick_service;
         self.quick_diff_api = quick_api;
         self.quick_diff_model_service = models;
@@ -344,6 +381,10 @@ pub const SCMContribution = struct {
 
     pub fn deinit(self: *SCMContribution) void {
         self.detachProvider();
+        if (self.view_service_api) |api| self.allocator.destroy(api);
+        if (self.view_service) |service| service.destroy();
+        self.view_service_api = null;
+        self.view_service = null;
         if (self.quick_diff_model_api) |api| self.allocator.destroy(api);
         if (self.quick_diff_model_service) |models| {
             models.deinit();

@@ -235,6 +235,7 @@ pub const SCMViewPane = struct {
 
     allocator: Allocator,
     service: *ISCMService,
+    scm_view_service: ?scm.ISCMViewService = null,
     host: Host,
     config: Config = .{},
     view_mode: scm.ViewMode = .list,
@@ -408,6 +409,9 @@ pub const SCMViewPane = struct {
     }
 
     fn activeRepository(self: *const SCMViewPane) ?*const ISCMRepository {
+        if (self.scm_view_service) |service| {
+            return if (service.activeRepository()) |active| active.repository else null;
+        }
         const repositories = self.service.repositories();
         if (repositories.len == 0) return null;
         return &repositories[0];
@@ -567,11 +571,12 @@ pub const SCMViewPane = struct {
 
         const show_repositories = self.config.always_show_repositories or repositories.len > 1;
         if (!show_repositories) {
-            try self.appendGroups(&repositories[0], 0);
+            try self.appendGroups(self.service.getRepository(repositories[0].id).?, 0);
             return;
         }
 
-        for (repositories) |*repository| {
+        for (repositories) |entry| {
+            const repository = self.service.getRepository(entry.id).?;
             const count = repositoryResourceCount(repository);
             const collapsed = self.collapsed_repositories.contains(repository.id);
             try self.rows.append(.{
@@ -864,6 +869,7 @@ pub const SCMViewPane = struct {
     }
 
     fn ensureSelectionVisible(self: *SCMViewPane) void {
+        defer self.focusSelection();
         const selected = (self.selection orelse return) + self.input_rows;
         if (self.visible_rows == 0) return;
         if (selected < self.scroll) {
@@ -872,6 +878,15 @@ pub const SCMViewPane = struct {
             self.scroll = selected - self.visible_rows + 1;
         }
         self.clampScroll();
+    }
+
+    fn focusSelection(self: *SCMViewPane) void {
+        const service = self.scm_view_service orelse return;
+        const index = self.selectedRowIndex() orelse return;
+        const row = self.rows.items[index];
+        const id = if (row.repository) |repository| repository.id else if (row.group) |group| group.provider.id else return;
+        const repository = self.service.getRepository(id) orelse return;
+        service.focus(repository);
     }
 
     fn clampScroll(self: *SCMViewPane) void {
@@ -1111,11 +1126,13 @@ pub const SCMViewPane = struct {
                 if (self.inlineActions(row_index, list_width).hit(col)) |action| {
                     if (resolveResource(&self.rows.items[row_index])) |resource| {
                         self.selection = row_index;
+                        defer self.focusSelection();
                         if (self.host.resource_action) |run| try run(self.host.context, action, resource);
                         return true;
                     }
                 }
                 self.selection = row_index;
+                defer self.focusSelection();
                 const resource_row = self.rows.items[row_index];
                 if (resource_row.collapsible) {
                     try self.setRowCollapsed(resource_row);

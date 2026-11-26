@@ -558,6 +558,19 @@ pub const Model = struct {
         return self.open_repositories.items;
     }
 
+    pub fn setActiveRepository(self: *Model, id: ?[]const u8) void {
+        self.repository = null;
+        if (id) |provider_id| {
+            for (self.open_repositories.items) |provider| {
+                if (std.mem.eql(u8, provider.id, provider_id)) {
+                    self.repository = provider;
+                    break;
+                }
+            }
+        }
+        self.git_root = if (self.repository) |provider| provider.root else null;
+    }
+
     pub fn repositoryForRoot(self: *const Model, path: []const u8) ?*Repository {
         for (self.open_repositories.items) |provider| {
             if (git_util.pathEquals(self.allocator, path, provider.root) catch false) return provider;

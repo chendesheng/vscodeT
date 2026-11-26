@@ -12042,6 +12042,7 @@ test "Workbench: git scm integration discovers Git URI repositories in empty win
         defer window.deinit();
         const wb = window.workbench;
         try wb.setUserSettingsPaths(&.{settings});
+        try wb.setUserConfigurationValue("scm.countBadge", .{ .string = "all" });
         if (!empty_window) {
             try wb.setWorkspaceFolders(&roots);
             try wb.initGit();
@@ -12120,6 +12121,33 @@ test "Workbench: git scm integration discovers Git URI repositories in empty win
         const entry = multi.widget.getViewModel().?.items[0];
         try std.testing.expectEqualStrings("second base", try entry.original.model.borrowLineContent(1));
         try std.testing.expectEqualStrings("second working", try entry.modified.model.borrowLineContent(1));
+
+        // The active repository follows the latest real file editor or SCM
+        // focus event. Virtual diff inputs do not discard the last selection.
+        const first_provider = wb.git_model.repositoryForRoot(roots[0]).?;
+        const scm_view_service = wb.scm.view_service_api.?;
+        const first_scm = wb.scm.service_api.?.getRepository(first_provider.id).?;
+        const second_scm = wb.scm.service_api.?.getRepository(second_provider.id).?;
+        try std.testing.expect(scm_view_service.activeRepository().?.repository == first_scm);
+        try std.testing.expectEqual(first_provider.interface().history_provider, wb.scm.history.?.provider);
+        try std.testing.expectEqual(first_provider.count() + second_provider.count(), wb.scm.activity.?.count);
+        try wb.editor_api.openEditor(paths[1], .{});
+        try std.testing.expect(scm_view_service.activeRepository().?.repository == second_scm);
+        try std.testing.expectEqual(second_provider, wb.git_model.repository.?);
+        try std.testing.expectEqual(second_provider.interface().history_provider, wb.scm.history.?.provider);
+        try wb.setUserConfigurationValue("scm.countBadge", .{ .string = "focused" });
+        try std.testing.expectEqual(second_provider.count(), wb.scm.activity.?.count);
+        scm_view_service.focus(first_scm);
+        try std.testing.expectEqual(first_provider, wb.git_model.repository.?);
+        try std.testing.expectEqual(first_provider.interface().history_provider, wb.scm.history.?.provider);
+        scm_view_service.pinActiveRepository(first_scm);
+        scm_view_service.focus(second_scm);
+        try std.testing.expect(scm_view_service.activeRepository().?.pinned);
+        try std.testing.expectEqual(first_provider, wb.git_model.repository.?);
+        scm_view_service.pinActiveRepository(null);
+        try std.testing.expectEqual(second_provider, wb.git_model.repository.?);
+        try std.testing.expectEqual(second_provider.interface().history_provider, wb.scm.history.?.provider);
+        try std.testing.expect(!scm_view_service.activeRepository().?.pinned);
     }
 }
 

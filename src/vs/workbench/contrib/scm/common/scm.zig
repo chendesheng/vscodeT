@@ -193,6 +193,41 @@ pub const ISCMRepository = struct {
     }
 };
 
+pub const ActiveRepository = struct {
+    repository: *ISCMRepository,
+    pinned: bool,
+};
+
+/// Observable active-repository and focus portions of upstream ISCMViewService.
+/// The native implementation delivers the corresponding change events.
+pub const ISCMViewService = struct {
+    context: *anyopaque,
+    active_repository_fn: *const fn (*anyopaque) ?ActiveRepository,
+    focused_repository_fn: *const fn (*anyopaque) ?*ISCMRepository,
+    focus_fn: *const fn (*anyopaque, *ISCMRepository) void,
+    pin_active_repository_fn: *const fn (*anyopaque, ?*ISCMRepository) void,
+    on_did_change_active_repository: *Emitter(?ActiveRepository),
+    on_did_focus_repository: *Emitter(?*ISCMRepository),
+
+    pub fn activeRepository(self: ISCMViewService) ?ActiveRepository {
+        return self.active_repository_fn(self.context);
+    }
+
+    pub fn focusedRepository(self: ISCMViewService) ?*ISCMRepository {
+        return self.focused_repository_fn(self.context);
+    }
+
+    pub fn focus(self: ISCMViewService, repository: *ISCMRepository) void {
+        self.focus_fn(self.context, repository);
+    }
+
+    pub fn pinActiveRepository(self: ISCMViewService, repository: ?*ISCMRepository) void {
+        self.pin_active_repository_fn(self.context, repository);
+    }
+};
+
+pub const scm_view_service_id = @import("../../../../platform/instantiation/common/instantiation.zig").ServiceIdentifier(ISCMViewService, "scmView");
+
 /// Terminal port of `ISCMService`. `get_repository_by_path_fn` performs the
 /// upstream longest-root match for local filesystem paths.
 pub const ISCMService = struct {

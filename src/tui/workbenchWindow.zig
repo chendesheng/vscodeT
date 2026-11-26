@@ -1246,6 +1246,9 @@ pub const TerminalWorkbench = struct {
         self.editors = .{ .part = self.part, .opening = &self.editor_opening };
         self.editor_api = self.editors.interface();
         _ = try self.services.set(@import("../vs/workbench/services/editor/common/editorService.zig").editor_service_id, &self.editor_api);
+        const scm_view = try self.scm.ensureViewService(self.editor_api);
+        _ = try self.services.set(@import("../vs/workbench/contrib/scm/common/scm.zig").scm_view_service_id, scm_view);
+        _ = try scm_view.on_did_change_active_repository.listen(self, onActiveScmRepositoryChanged);
         _ = try self.services.set(@import("../vs/platform/files/common/files.zig").file_service_id, &self.file_service_api);
         _ = try self.services.set(@import("../vs/editor/common/services/resolverService.zig").text_model_service_id, &self.text_model_api);
         _ = try self.services.set(@import("../vs/editor/common/services/modelService.zig").model_service_id, &self.model_service_api);
@@ -2933,6 +2936,10 @@ pub const TerminalWorkbench = struct {
     }
 
     // --- begin git / source control
+
+    fn onActiveScmRepositoryChanged(active: ?@import("../vs/workbench/contrib/scm/common/scm.zig").ActiveRepository, self: *TerminalWorkbench) !void {
+        self.git_model.setActiveRepository(if (active) |entry| entry.repository.id else null);
+    }
 
     fn deinitGit(self: *TerminalWorkbench) void {
         self.git_file_provider.detachRepository();
