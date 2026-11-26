@@ -602,6 +602,7 @@ pub const Editor = struct {
     gutter_line_numbers: bool = true,
     gutter_line_numbers_min_chars: usize = 5,
     gutter_folding: bool = true,
+    folding_override: ?bool = null,
     /// Extra gutter cells after the fold cell used by quick-diff markers.
     /// `0` hides the marker column; `1` is the terminal representation of the
     /// upstream `scm.diffDecorationsGutterWidth` gutter.
@@ -2001,18 +2002,28 @@ pub const Editor = struct {
         line_numbers_min_chars: usize,
         folding_enabled: bool,
     ) void {
+        const effective_folding = self.folding_override orelse folding_enabled;
         const min_chars = @max(line_numbers_min_chars, 1);
         if (self.gutter_line_numbers == line_numbers and
             self.gutter_line_numbers_min_chars == min_chars and
-            self.gutter_folding == folding_enabled)
+            self.gutter_folding == effective_folding)
         {
             return;
         }
         self.gutter_line_numbers = line_numbers;
         self.gutter_line_numbers_min_chars = min_chars;
-        self.gutter_folding = folding_enabled;
+        self.gutter_folding = effective_folding;
         self.refreshLayout() catch {};
         self.ensureCursorVisible();
+    }
+
+    /// Diff sub-editors disable the ordinary folding contribution; their
+    /// hidden areas are owned by HideUnchangedRegionsFeature instead.
+    pub fn disableFolding(self: *Editor) void {
+        self.folding_override = false;
+        self.folding_dirty = false;
+        self.folding_task.schedule(null);
+        self.setGutterOptions(self.gutter_line_numbers, self.gutter_line_numbers_min_chars, false);
     }
 
     /// Extra gutter cells reserved for the quick-diff marker column.
@@ -2160,6 +2171,7 @@ pub const Editor = struct {
 
     /// Recomputes the provider ranges and applies the resulting hidden areas.
     fn refreshFolding(self: *Editor) !void {
+        if (self.folding_override == false) return;
         self.folding_task.schedule(null);
         const start_us = std.Io.Timestamp.now(time_compat.io, .awake).toMicroseconds();
         // A line-count change may leave the wrapping model one change behind;
@@ -2179,6 +2191,7 @@ pub const Editor = struct {
     /// Applies the fold controller's hidden ranges to the view model and keeps
     /// selections out of them, mirroring `onHiddenRangesChanges`.
     fn applyFoldingVisibility(self: *Editor) !void {
+        if (self.folding_override == false) return;
         // Keep the model line at the top of the viewport stable across the
         // mapping change. Revealing the cursor here would jump a scrolled
         // viewport back to the cursor whenever a fold is toggled.
@@ -2219,6 +2232,7 @@ pub const Editor = struct {
 
     /// Content and language changes reset the folding model update deadline.
     fn triggerFoldingUpdate(self: *Editor, now_ms: i64) void {
+        if (self.folding_override == false) return;
         self.folding_dirty = true;
         self.folding_task.schedule(now_ms + self.folding_delay_ms);
     }
@@ -2280,6 +2294,7 @@ pub const Editor = struct {
     }
 
     pub fn foldStateAtModelLine(self: *Editor, line: usize) folding.FoldState {
+        if (self.folding_override == false) return .none;
         return self.folding.foldStateAtLine(line);
     }
 
@@ -2312,6 +2327,7 @@ pub const Editor = struct {
         self.emitViewEvent(.{ .ViewFlushed = .{} });
         self.emitViewEvent(.{ .ViewLineMappingChanged = .{} });
         self.emitViewEvent(.{ .ViewDecorationsChanged = view_events.ViewDecorationsChangedEvent.init(null) });
+        try self.resetCursorViewState();
         const top_position = self.viewPositionOfModelPosition(Position.init(top_model_line, 1));
         _ = self.setTopViewLine(top_position.lineNumber);
     }

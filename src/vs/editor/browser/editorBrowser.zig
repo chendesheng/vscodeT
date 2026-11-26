@@ -46,9 +46,12 @@ pub const IViewZone = struct {
     context: ?*anyopaque = null,
     build: ?Build = null,
     build_margin: ?Build = null,
+    update: ?Update = null,
+    update_margin: ?Update = null,
     on_computed_height: ?*const fn (?*anyopaque, usize) void = null,
     on_dom_node_top: ?*const fn (?*anyopaque, f64) void = null,
 
+    pub const Update = *const fn (?*anyopaque, *ui.Node, RenderInfo) anyerror!void;
     pub const Build = *const fn (?*anyopaque, *ui.Document, RenderInfo) anyerror!*ui.Node;
     pub const RenderInfo = struct {
         width: usize,

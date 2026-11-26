@@ -278,8 +278,8 @@ pub const ViewZones = struct {
         const viewport_height = if (self.editor) |editor| editor.textHeight() else 0;
         var values = self.zones.valueIterator();
         while (values.next()) |zone| {
-            try renderNode(doc, host, content_root, &zone.content, zone, zone.delegate.build, gutter, text_width, scroll_left, viewport_height);
-            try renderNode(doc, host, margin_root, &zone.margin, zone, zone.delegate.build_margin, 0, gutter, 0, viewport_height);
+            try renderNode(doc, host, content_root, &zone.content, zone, zone.delegate.build, zone.delegate.update, gutter, text_width, scroll_left, viewport_height);
+            try renderNode(doc, host, margin_root, &zone.margin, zone, zone.delegate.build_margin, zone.delegate.update_margin, 0, gutter, 0, viewport_height);
             zone.dirty = false;
         }
     }
@@ -289,7 +289,7 @@ pub const ViewZones = struct {
         doc.destroy(node);
     }
 
-    fn renderNode(doc: *ui.Document, host: ?*browser.RetainedViewPartHost, root: *ui.Node, state: *NodeState, zone: *Zone, builder: ?IViewZone.Build, left: usize, width: usize, scroll_left: usize, viewport_height: usize) !void {
+    fn renderNode(doc: *ui.Document, host: ?*browser.RetainedViewPartHost, root: *ui.Node, state: *NodeState, zone: *Zone, builder: ?IViewZone.Build, updater: ?IViewZone.Update, left: usize, width: usize, scroll_left: usize, viewport_height: usize) !void {
         if (!zone.visible or builder == null or width == 0) {
             if (state.node) |node| destroyNode(doc, node, host);
             state.* = .{};
@@ -308,6 +308,20 @@ pub const ViewZones = struct {
             return;
         }
         const rebuild = zone.dirty or state.left != left or state.width != width or state.height != height or state.scroll_left != scroll_left or state.visible_start != visible_start or state.visible_end != visible_end;
+        const info: IViewZone.RenderInfo = .{ .width = width, .height = zone.height, .scroll_left = scroll_left, .visible_start_row = visible_start, .visible_end_row = visible_end };
+        if (rebuild and updater != null and state.node != null) {
+            const node = state.node.?;
+            var style = node.asElement().style;
+            style.left = .{ .cells = @floatFromInt(left) };
+            style.top = .{ .cells = top };
+            style.width = .{ .cells = @floatFromInt(width) };
+            style.height = .{ .cells = @floatFromInt(height) };
+            node.setStyle(style);
+            try updater.?(zone.delegate.context, node.first_child.?, info);
+            if (host) |retained| try retained.rebuildSubtree(node);
+            state.* = .{ .node = node, .top = top, .left = left, .width = width, .height = height, .scroll_left = scroll_left, .visible_start = visible_start, .visible_end = visible_end };
+            return;
+        }
         if (rebuild) {
             if (state.node) |node| destroyNode(doc, node, host);
             state.* = .{};
@@ -332,7 +346,7 @@ pub const ViewZones = struct {
             .height = .{ .cells = @floatFromInt(height) },
             .overflow = .hidden,
         });
-        const content = try builder.?(zone.delegate.context, doc, .{ .width = width, .height = zone.height, .scroll_left = scroll_left, .visible_start_row = visible_start, .visible_end_row = visible_end });
+        const content = try builder.?(zone.delegate.context, doc, info);
         _ = try node.appendChild(content);
         _ = try root.appendChild(node);
         if (host) |retained| try retained.addSubtree(node);

@@ -642,21 +642,43 @@ pub fn Tests(comptime View: type) type {
             );
             defer widget.destroy();
 
-            const model = widget.original_editor.foldingModel();
-            var collapsed: usize = 0;
-            var index: usize = 0;
-            while (index < model.length()) : (index += 1) {
-                if (model.getRegion(index)) |region| {
-                    if (region.isCollapsed) collapsed += 1;
-                }
-            }
-            try std.testing.expect(collapsed > 0);
+            try testing.expectEqual(@as(usize, 1), widget.view_model.unchanged_regions.len);
+            try testing.expect(!widget.original_editor.isModelLineVisible(8));
+            try testing.expect(widget.original_editor.isModelLineVisible(4));
             try testing.expect(widget.nextChange());
             const cursor = widget.modified_editor.viewCursorPosition().lineNumber;
             try testing.expectEqual(@as(?usize, 18), widget.modified_editor.displayLineNumber(cursor));
             try testing.expectEqual(@as(usize, 18), widget.modified_editor.modelCursorPosition().lineNumber);
             try testing.expect(widget.previousChange());
             try testing.expectEqual(@as(usize, 1), widget.modified_editor.modelCursorPosition().lineNumber);
+        }
+
+        test "diffEditorWidget: unchanged disclosure owns direct hidden areas and its fold glyph" {
+            const allocator = testing.allocator;
+            const io = Io.Threaded.global_single_threaded.io();
+            const original = "a\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\nz";
+            const modified = "A\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\nZ";
+            const widget = try DiffEditorWidget.create(View.init, allocator, io, "a.txt", "b.txt", original, modified, "Original", "Modified", 80, 30, .{ .hide_unchanged_regions = true });
+            defer widget.destroy();
+            const region = &widget.view_model.unchanged_regions[0];
+            const initial = region.getHiddenModifiedRange().length();
+            try testing.expect(initial > 0);
+            try widget.modified_view.paint();
+            const toggle = findDisclosure(widget.modified_view.zone_content_root.?).?;
+            try testing.expect(toggle.focus());
+            var key: ui.KeyEvent = .{ .key = .enter };
+            try testing.expect(widget.dispatchKey(&key));
+            try widget.modified_view.paint();
+            try testing.expectEqual(@as(usize, 0), region.getHiddenModifiedRange().length());
+            try testing.expect(widget.modified_editor.isModelLineVisible(8));
+            const glyph_row = widget.modified_editor.visibleRowOfViewLine(region.modified_line_number).?;
+            try testing.expect(widget.modified_editor.gutterGlyphWidth() > 0);
+            var mouse: ui.MouseEvent = .{ .kind = .up, .button = .left, .x = widget.paneWidths().original + widget.paneWidths().gutter, .y = glyph_row };
+            try testing.expect(try widget.dispatchMouse(&mouse));
+            try testing.expectEqual(initial, region.getHiddenModifiedRange().length());
+            try testing.expect(!widget.modified_editor.isModelLineVisible(8));
+            widget.modified_editor.refreshFoldingIfDirty();
+            try testing.expect(!widget.modified_editor.isModelLineVisible(8));
         }
 
         test "diffEditorWidget: inline mode interleaves deleted and inserted lines" {
@@ -779,15 +801,69 @@ pub fn Tests(comptime View: type) type {
             );
             defer widget.destroy();
 
-            const model = widget.modified_editor.foldingModel();
-            var collapsed: usize = 0;
-            var index: usize = 0;
-            while (index < model.length()) : (index += 1) {
-                if (model.getRegion(index)) |region| {
-                    if (region.isCollapsed) collapsed += 1;
-                }
+            try testing.expectEqual(@as(usize, 1), widget.view_model.unchanged_regions.len);
+            try testing.expect(!widget.modified_editor.isModelLineVisible(8));
+            try testing.expect(widget.modified_editor.isModelLineVisible(4));
+        }
+
+        fn findDisclosure(node: *ui.Node) ?*ui.Node {
+            if (node.getAttribute("class")) |class| {
+                if (std.mem.eql(u8, class, "disclosure-toggle") and std.mem.eql(u8, node.getAttribute("data-region-index") orelse "", "0")) return node;
             }
-            try std.testing.expect(collapsed > 0);
+            var child = node.first_child;
+            while (child) |current| : (child = current.next) {
+                if (findDisclosure(current)) |found| return found;
+            }
+            return null;
+        }
+
+        test "diffEditorWidget: compact disclosures expand and collapse with a persistent keyboard target" {
+            const allocator = testing.allocator;
+            const io = Io.Threaded.global_single_threaded.io();
+            var original: std.ArrayList(u8) = .empty;
+            defer original.deinit(allocator);
+            var modified: std.ArrayList(u8) = .empty;
+            defer modified.deinit(allocator);
+            for (0..40) |i| {
+                var buffer: [80]u8 = undefined;
+                const line = try std.fmt.bufPrint(&buffer, "const value{d} = {d};", .{ i, i });
+                if (i > 0) {
+                    try original.append(allocator, '\n');
+                    try modified.append(allocator, '\n');
+                }
+                try original.appendSlice(allocator, line);
+                try modified.appendSlice(allocator, if (i == 20) "const value20 = 100;" else line);
+            }
+            for ([_]bool{ true, false }) |side_by_side| {
+                const widget = try DiffEditorWidget.create(View.init, allocator, io, "a.txt", "b.txt", original.items, modified.items, "Original", "Modified", 80, 50, .{
+                    .render_side_by_side = side_by_side,
+                    .use_inline_view_when_space_is_limited = false,
+                    .hide_unchanged_regions = true,
+                    .hide_unchanged_regions_context_line_count = 2,
+                    .hide_unchanged_regions_minimum_line_count = 4,
+                    .variant = .compact,
+                });
+                defer widget.destroy();
+                _ = widget.modified_editor.setScrollTop(0);
+                try widget.modified_view.paint();
+                const region = &widget.view_model.unchanged_regions[0];
+                const toggle = findDisclosure(widget.modified_view.zone_content_root.?) orelse return error.DisclosureMissing;
+                const initially_hidden = region.getHiddenModifiedRange().length();
+                try testing.expect(initially_hidden > 0);
+                try testing.expect(toggle.focus());
+                var key: ui.KeyEvent = .{ .key = .enter };
+                try testing.expect(widget.dispatchKey(&key));
+                try widget.modified_view.paint();
+                try testing.expectEqual(@as(usize, 0), region.getHiddenModifiedRange().length());
+                try testing.expectEqualStrings("true", toggle.getAttribute("aria-expanded").?);
+                try testing.expectEqual(toggle, toggle.document.focusedElement().?);
+                try testing.expectEqual(toggle, findDisclosure(widget.modified_view.zone_content_root.?).?);
+                key = .{ .key = .{ .char = ' ' } };
+                try testing.expect(widget.dispatchKey(&key));
+                try widget.modified_view.paint();
+                try testing.expectEqual(initially_hidden, region.getHiddenModifiedRange().length());
+                try testing.expectEqualStrings("false", toggle.getAttribute("aria-expanded").?);
+            }
         }
 
         test "diffEditorWidget: inline mode disables moved block decorations" {

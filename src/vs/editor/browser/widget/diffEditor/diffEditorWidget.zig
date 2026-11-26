@@ -6,7 +6,7 @@
 // heights, and inserts the original's deleted code above modified lines in
 // inline mode. The gutter uses vertical-layout offsets and the combined
 // overview ruler reserves one cell per lane. The accessible viewer, true-inline
-// word diff and editable models remain open; hide-unchanged still uses folding.
+// word diff and editable models remain open.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -18,6 +18,7 @@ const terminal_input = @import("../codeEditor/codeEditorWidgetTerminalInput.zig"
 const diff_view_model = @import("./diffEditorViewModel.zig");
 const diff_editor_options = @import("./diffEditorOptions.zig");
 const diff_editor_editors = @import("./components/diffEditorEditors.zig");
+const hide_unchanged_feature = @import("./features/hideUnchangedRegionsFeature.zig");
 const gutter_feature = @import("./features/gutterFeature.zig");
 const overview_feature = @import("./features/overviewRulerFeature.zig");
 const sash_mod = @import("./components/diffEditorSash.zig");
@@ -56,6 +57,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         zones: view_zones.DiffEditorViewZones = undefined,
         decorations: *DiffEditorDecorations,
         overview: overview_feature.OverviewRulerFeature = undefined,
+        hide_unchanged: hide_unchanged_feature.HideUnchangedRegionsFeature = undefined,
 
         original_editor: *Editor,
         modified_editor: *Editor,
@@ -181,18 +183,9 @@ pub fn DiffEditorWidget(comptime View: type) type {
             modified_editor.setLineDecorationsWidth(if (normalized_options.render_indicators) 1 else 0);
             original_view.setStatusBarVisible(false) catch {};
             modified_view.setStatusBarVisible(false) catch {};
-            if (normalized_options.hide_unchanged_regions) {
-                try applyHideUnchangedRegions(
-                    allocator,
-                    original_editor,
-                    modified_editor,
-                    diff_state,
-                    original_lines.len,
-                    modified_lines.len,
-                    normalized_options.hide_unchanged_regions_context_line_count,
-                    normalized_options.hide_unchanged_regions_minimum_line_count,
-                );
-            }
+            original_editor.disableFolding();
+            modified_editor.disableFolding();
+            try diff_model.initializeUnchangedRegions(normalized_options.hide_unchanged_regions, normalized_options.hide_unchanged_regions_minimum_line_count, normalized_options.hide_unchanged_regions_context_line_count);
 
             // The model decorations store pointers into the options structs owned
             // by `DiffEditorDecorations`, so it must live at a stable address
@@ -236,6 +229,9 @@ pub fn DiffEditorWidget(comptime View: type) type {
             };
             self.overview.init(allocator, original_editor, modified_editor);
             self.zones.init(allocator, original_editor, original_view.viewZones(), modified_editor, modified_view.viewZones(), modified_view.terminal_view_host, modified_view.lineStyleFunction(), modified_view.decorationBitsFunction(), normalized_options.render_indicators, self.state().?.mappings);
+            errdefer self.zones.deinit();
+            errdefer self.overview.deinit(original_editor, modified_editor);
+            try self.hide_unchanged.init(allocator, &self.view_model, &self.zones, original_editor, original_view.viewZones(), modified_editor, modified_view.viewZones(), normalized_options);
             // Keep the line views alive for layout changes and recomputation.
             self.layout(width, height);
             self.selectInitialChange();
@@ -244,6 +240,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         pub fn destroy(self: *Self) void {
             const allocator = self.allocator;
+            self.hide_unchanged.deinit();
             self.zones.deinit();
             self.overview.deinit(self.original_editor, self.modified_editor);
             self.decorations.deinit();
@@ -435,6 +432,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         fn swapSidesInternal(self: *Self) !void {
             const was_focused = self.focusedView().isFocused();
+            self.hide_unchanged.deinit();
             self.zones.deinit();
             self.decorations.detach();
 
@@ -445,6 +443,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             std.mem.swap([][]u8, &self.original_lines, &self.modified_lines);
             std.mem.swap([]const []const u8, &self.view_model.original_lines, &self.view_model.modified_lines);
             const diff_state = if (self.view_model.state) |*state_value| state_value else unreachable;
+            for (self.view_model.unchanged_regions) |*region| std.mem.swap(usize, &region.original_line_number, &region.modified_line_number);
             for (diff_state.mappings) |*mapping| flipMapping(&mapping.line_range_mapping);
             for (diff_state.moved_texts) |*moved| {
                 moved.lineRangeMapping = moved.lineRangeMapping.flip();
@@ -453,6 +452,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.decorations.original_model = self.original_editor.model;
             self.decorations.modified_model = self.modified_editor.model;
             self.zones.init(self.allocator, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self.modified_view.terminal_view_host, self.modified_view.lineStyleFunction(), self.modified_view.decorationBitsFunction(), self.options.render_indicators, diff_state.mappings);
+            try self.hide_unchanged.init(self.allocator, &self.view_model, &self.zones, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self.options);
             self.applyZoneTheme(self.modified_view.themeColors());
             try self.decorations.update(diff_state, self.options.show_moves and !self.inline_mode);
             self.focused = .modified;
@@ -602,6 +602,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         pub fn dispatchMouseWith(self: *Self, event: *ui.MouseEvent, target: ?MouseTarget) !bool {
+            if (self.hide_unchanged.dispatchDrag(event)) return true;
+            defer if (event.kind == .down) self.hide_unchanged.captureDragStart(event.y);
             const widths = self.paneWidths();
             if (self.overview.drag != null or (widths.overview > 0 and event.x >= self.width - widths.overview and self.sash.drag == null)) {
                 if (self.overview.dispatchMouse(self.modified_editor, event, self.height)) {
@@ -627,11 +629,13 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 const view = if (side == .original) self.original_view else self.modified_view;
                 var adjusted = event.*;
                 if (side == .modified) adjusted.x -|= widths.original + widths.gutter;
+                if (self.hide_unchanged.dispatchFoldGlyph(side == .original, &adjusted, view.top_inset_rows)) return true;
                 const handled = if (target) |handler| try handler.dispatch(handler.context, side, view, &adjusted) else try view.dispatchMouse(&adjusted);
                 self.syncScrollFromPane(side);
                 return handled;
             }
             if (event.kind == .down) self.setFocus(.modified);
+            if (self.hide_unchanged.dispatchFoldGlyph(false, event, self.modified_view.top_inset_rows)) return true;
             const handled = if (target) |handler| try handler.dispatch(handler.context, .modified, self.modified_view, event) else try self.modified_view.dispatchMouse(event);
             return handled;
         }
@@ -660,42 +664,6 @@ fn flipMapping(mapping: *view_model.DetailedLineRangeMapping) void {
             std.mem.swap(Range, &change.originalRange, &change.modifiedRange);
         }
     }
-}
-
-pub fn applyHideUnchangedRegions(
-    allocator: Allocator,
-    original_editor: *Editor,
-    modified_editor: *Editor,
-    state: *const DiffState,
-    original_count: usize,
-    modified_count: usize,
-    context_line_count: usize,
-    minimum_line_count: usize,
-) !void {
-    const regions = try unchangedRegions(allocator, state, original_count, modified_count, context_line_count, minimum_line_count);
-    defer allocator.free(regions);
-    const FoldRange = @import("../../../contrib/folding/browser/foldingRanges.zig").FoldRange;
-    var original_folds: std.ArrayList(FoldRange) = .empty;
-    defer original_folds.deinit(allocator);
-    var modified_folds: std.ArrayList(FoldRange) = .empty;
-    defer modified_folds.deinit(allocator);
-    for (regions) |region| {
-        const original_range = region.getHiddenOriginalRange();
-        const modified_range = region.getHiddenModifiedRange();
-        if (original_range.isEmpty() or modified_range.isEmpty()) continue;
-        try original_folds.append(allocator, .{ .startLineNumber = original_range.startLineNumber, .endLineNumber = original_range.endLineNumberExclusive - 1, .isCollapsed = true, .source = .user_defined });
-        try modified_folds.append(allocator, .{ .startLineNumber = modified_range.startLineNumber, .endLineNumber = modified_range.endLineNumberExclusive - 1, .isCollapsed = true, .source = .user_defined });
-    }
-    try original_editor.addFoldingRanges(original_folds.items);
-    try modified_editor.addFoldingRanges(modified_folds.items);
-}
-
-fn unchangedRegions(allocator: Allocator, state: *const DiffState, original_count: usize, modified_count: usize, context_line_count: usize, minimum_line_count: usize) ![]diff_view_model.UnchangedRegion {
-    const LineRangeMapping = @import("../../../common/diff/rangeMapping.zig").LineRangeMapping;
-    const changes = try allocator.alloc(LineRangeMapping, state.mappings.len);
-    defer allocator.free(changes);
-    for (state.mappings, changes) |mapping, *change| change.* = mapping.line_range_mapping.toLineRangeMapping();
-    return diff_view_model.UnchangedRegion.fromDiffs(allocator, changes, original_count, modified_count, minimum_line_count, context_line_count);
 }
 
 fn splitOwnedLines(allocator: Allocator, text: []const u8) ![][]u8 {

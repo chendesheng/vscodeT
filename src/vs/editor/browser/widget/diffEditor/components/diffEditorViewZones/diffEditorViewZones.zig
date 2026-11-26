@@ -344,9 +344,14 @@ pub const DiffEditorViewZones = struct {
         const pane: *Pane = @ptrCast(@alignCast(context));
         const self = pane.owner;
         if (self.mode != .inline_view or pane != &self.original) return false;
+        var changed = false;
         for (self.modified.records.items) |record| {
-            if (record.deleted != null) self.modified.view_zones.invalidateZoneContent(record.id);
+            if (record.deleted != null) {
+                self.modified.view_zones.invalidateZoneContent(record.id);
+                changed = true;
+            }
         }
+        if (changed) self.modified.editor.emitViewEvent(.{ .ViewZonesChanged = .{} });
         return false;
     }
 

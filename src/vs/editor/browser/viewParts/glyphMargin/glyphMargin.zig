@@ -337,6 +337,9 @@ const GlyphColor = struct {
 /// Terminal mapping for the upstream glyph CSS classes. The upstream classes
 /// are icon-font names; the terminal substitutes a single cell glyph.
 pub fn glyphForClass(class_name: []const u8) ?GlyphColor {
+    if (std.mem.indexOf(u8, class_name, "fold-unchanged") != null) {
+        return .{ .codepoint = 0x25BE, .color = .{ .r = 160, .g = 160, .b = 160 } };
+    }
     if (std.mem.indexOf(u8, class_name, "error") != null) {
         return .{ .codepoint = 0x25CF, .color = .{ .r = 241, .g = 76, .b = 76 } };
     }

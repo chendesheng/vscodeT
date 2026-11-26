@@ -5,8 +5,6 @@
 // - The view model works on line arrays and computes synchronously; there is
 //   no observable system, cancellation token source or incremental edit
 //   application. `recompute` replaces the whole `DiffState`.
-// - Unchanged regions (`UnchangedRegion`, hide-unchanged-regions) are outside
-//   the read-only terminal scope and are not ported.
 // - `normalizeDocumentDiff`/`normalizeRangeMapping` and `toLineChanges` keep
 //   the upstream rules: inner ranges that end at the line max column are
 //   widened to the next line, and line changes encode empty insert/delete
@@ -201,6 +199,8 @@ pub const DiffEditorViewModel = struct {
     provider: doc_diff.LineDiffProvider,
     state: ?DiffState = null,
     on_did_change: Emitter(void),
+    unchanged_regions: []UnchangedRegion = &.{},
+    on_did_change_unchanged_regions: Emitter(void),
     computed_once: bool = false,
 
     pub fn init(
@@ -216,12 +216,15 @@ pub const DiffEditorViewModel = struct {
             .options = options,
             .provider = doc_diff.LineDiffProvider.init(options.diff_algorithm),
             .on_did_change = Emitter(void).init(allocator),
+            .on_did_change_unchanged_regions = Emitter(void).init(allocator),
         };
     }
 
     pub fn deinit(self: *DiffEditorViewModel) void {
         if (self.state) |*state| state.deinit(self.allocator);
         self.on_did_change.deinit();
+        self.on_did_change_unchanged_regions.deinit();
+        self.allocator.free(self.unchanged_regions);
         self.* = undefined;
     }
 
@@ -247,6 +250,33 @@ pub const DiffEditorViewModel = struct {
         self.state = normalized;
         self.computed_once = true;
         self.on_did_change.fire({}) catch {};
+    }
+
+    pub fn initializeUnchangedRegions(self: *DiffEditorViewModel, enabled: bool, minimum: usize, context: usize) !void {
+        const state = self.stateRef() orelse return;
+        const changes = try self.allocator.alloc(range_mapping.LineRangeMapping, state.mappings.len);
+        defer self.allocator.free(changes);
+        for (state.mappings, changes) |mapping, *change| change.* = mapping.line_range_mapping.toLineRangeMapping();
+        const regions = if (enabled)
+            try UnchangedRegion.fromDiffs(self.allocator, changes, self.original_lines.len, self.modified_lines.len, minimum, context)
+        else
+            try self.allocator.alloc(UnchangedRegion, 0);
+        self.allocator.free(self.unchanged_regions);
+        self.unchanged_regions = regions;
+        try self.on_did_change_unchanged_regions.fire({});
+    }
+
+    pub fn ensureLineVisible(self: *DiffEditorViewModel, original: bool, line: usize) bool {
+        for (self.unchanged_regions) |*region| {
+            const old = region.*;
+            if (original) region.showOriginalLine(line, .from_closer_side) else region.showModifiedLine(line, .from_closer_side);
+            if (old.visible_line_count_top != region.visible_line_count_top or old.visible_line_count_bottom != region.visible_line_count_bottom) return true;
+        }
+        return false;
+    }
+
+    pub fn notifyUnchangedRegions(self: *DiffEditorViewModel) !void {
+        try self.on_did_change_unchanged_regions.fire({});
     }
 
     pub fn stateRef(self: *const DiffEditorViewModel) ?*const DiffState {

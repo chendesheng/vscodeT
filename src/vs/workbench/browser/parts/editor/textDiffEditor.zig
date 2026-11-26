@@ -47,6 +47,15 @@ pub fn computeConfiguration(configuration_service: ?@import("../../../../platfor
         options.render_overview_ruler = configuration.getBool("diffEditor.renderOverviewRuler", true);
         options.enable_split_view_resizing = configuration.getBool("diffEditor.enableSplitViewResizing", true);
         options.hide_unchanged_regions = configuration.getBool("diffEditor.hideUnchangedRegions.enabled", false);
+        options.compact_mode = configuration.getBool("diffEditor.compactMode", false);
+        if (configuration.getValue("diffEditor.hideUnchangedRegions.revealLineCount")) |value| {
+            switch (value.*) {
+                .integer => |number| if (number >= 0) {
+                    options.hide_unchanged_regions_reveal_line_count = @intCast(number);
+                },
+                else => {},
+            }
+        }
         if (configuration.getValue("diffEditor.hideUnchangedRegions.contextLineCount")) |value| {
             switch (value.*) {
                 .integer => |number| if (number >= 0) {
