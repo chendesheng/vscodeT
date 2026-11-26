@@ -1955,14 +1955,19 @@ service/provider/resource subset and the quick-diff service, and
 `src/extensions/git/src/repository.zig` maps the repository state to the upstream
 `Merge Changes`/`Staged Changes`/`Changes` groups, maps porcelain `XY` statuses
 to the upstream file decoration letters, status texts and theme colors, and
-provides the primary/secondary quick-diff providers. Model edits and repository
-refreshes schedule the same 200 ms quick-diff delay. A lazily started native editor worker
-serves the file editors visible in the editor groups. Changing tabs detaches the hidden editor.
-The SCM controller reads its own whitespace and gutter-pattern settings on configuration changes. It receives owned original and modified text because the terminal provider supplies file
-contents and the worker has no synchronized URI-backed models. The UI thread
-delivers replies in order. Each live model publishes the completed result with
-its captured version and the decorator receives the model's change event.
-Closing a model detaches its outstanding reply.
+registers the primary/secondary quick-diff providers in
+`src/extensions/git/src/quickDiffProvider.zig`. These return original resource
+URIs selected by working-tree and index state. The window's QuickDiffModelService
+shares one model per resource and computation options across decorators and
+the peek; its model, provider and repository events schedule the same 200 ms
+delay. A lazily started native editor worker serves the file editors visible
+in the editor groups. The SCM controller reads its own whitespace and
+gutter-pattern settings on configuration changes. The original model references
+resolve asynchronously through the URI resolver, with immutable original and
+modified snapshots passed to the worker. The UI thread delivers replies in
+order; each live model publishes its captured version and the decorator receives
+the model's change event. Releasing the last model reference cancels/resolves
+outstanding work without republishing to a closed editor.
 
 The Source Control Changes view (`src/vs/workbench/contrib/scm/browser/scmViewPane.zig`)
 keeps the upstream `SCMTreeDataSource`/`SCMTreeSorter`/`SCMTreeFilter` behavior
@@ -2127,7 +2132,10 @@ file/folder labels and status decorations are rendered by the shared list
 renderer rather than browser CSS font/absolute-position rules. Profile state
 uses the native atomic JSON storage adapter; viewport visibility and focus
 remain event-driven. The retained header toolbar resolves actual registered
-menu actions in source/item context and passes the resource URI. Accessibility
+menu actions in source/item context and passes the resource URI. The
+disclosure and toolbar are focusable DOM nodes with roving action navigation.
+Hide-unchanged-region drag uses the window dispatcher pointer capture so
+motion outside the pane still resizes the model-anchored region. Accessibility
 help is exposed through the same read-only Accessible View service; browser
 screen reader detection and native ARIA traversal are not available.
 

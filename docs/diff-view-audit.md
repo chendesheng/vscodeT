@@ -112,14 +112,37 @@ fixtures cover provider-event targeting, a newer event during an immutable
 worker capture, and real Git model refresh after window focus. Final full-suite
 and end-to-end verification of later changes are still required.
 
-Still portable and not yet complete: quick-diff original-model reference
-ownership through the URI resolver and shared quick-diff model service,
-remaining native header keyboard and captured pointer interactions, remaining
-upstream action/interaction fixtures and end-to-end large-diff native latency
-measurement. The Git provider's full read-only file-system registration and
-submodule behavior are not yet ported. Browser-only pixel geometry, web
-accessibility-tree traversal and the separate Agents window are not reproduced
-by the terminal.
+### Shared Quick Diff service and interaction checkpoint (2026-11-27)
+
+* The window owns the Quick Diff model reference collection. Split editors
+  and the change peek share one model per canonical resource and computation
+  options, with independent reference lifetimes and one worker. Providers
+  return original Git URIs; their original models resolve asynchronously
+  through the shared text-model service. The worker captures immutable
+  snapshots from these models, and the peek mounts the same URI document.
+  The provider registry now matches actual resource URI schemes, authorities,
+  parent roots and language selectors; rooted providers have priority over
+  unrooted providers.
+* The Git primary and secondary providers live in the upstream
+  `quickDiffProvider` module. The primary excludes merge/untracked resources,
+  non-regular files and Git internals; the secondary is offered only when
+  the file is in the index group. Encoded original URIs preserve special
+  characters and the quick-diff extension.
+* Multi-diff header disclosure and scoped toolbar actions participate in
+  retained DOM focus and keyboard navigation; the toolbar has roving focus.
+  Hide-unchanged-region drag uses window pointer capture, including motion
+  outside the editor and release on cancellation/disposal. Both upstream
+  multi-diff layout-debug action cases exercise target selection; native
+  auxiliary windows are unavailable, not silently replaced by side groups.
+
+The full suite through the action fixtures passes 3,620/3,642 (22 skipped;
+48/48 build steps), and the focused view suite through pointer capture passes
+488/488. Remaining portable gaps include eliminating the old inline-content
+provider fallback, completing the Git read-only file-system provider
+registration and ref/encoding/submodule behavior, further contribution
+lifecycle and focus/capture coverage, and end-to-end native large-diff
+benchmarks. Browser pixel geometry, browser accessibility-tree traversal and
+a native separate Agents window remain genuine terminal-boundary adaptations.
 
 ## 0. Re-audit update (2026-11-26)
 

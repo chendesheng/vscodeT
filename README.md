@@ -1233,12 +1233,14 @@ console API for raw mode, sizing and input polling.
   `dirty-diff-*` classes: whole-line added/modified/deleted ranges, the
   one-cell gutter marker (`+`/`~`/`-`, primary/secondary/pattern variants
   dimmed) and overview-ruler entries. `QuickDiffWorkbenchController` in `quickDiffDecorator.zig`
-  attaches a `QuickDiffModel`/`QuickDiffDecorator` per visible file editor, skips diff
-  tabs, and schedules worker diffs after model content events or Git status
-  changes with the upstream 200 ms debounce. Git status refreshes on file
-  changes and resumes when the window regains focus. Open files share a native editor
-  worker. It receives owned text snapshots and delivers versioned results to
-  the decoration listener. It honors `scm.diffDecorations`,
+  attaches a `QuickDiffDecorator` per visible file editor, skips diff tabs,
+  and acquires a resource/options-keyed model reference from the window's
+  `QuickDiffModelService`. Split editors and the peek share that model; its
+  content, provider and Git status events schedule the upstream 200 ms
+  debounce. Git status refreshes on file changes and resumes when the window
+  regains focus. The original URI models resolve through the same text-model
+  service as ordinary diffs. The shared native editor worker receives
+  immutable snapshots and publishes versioned results to the decoration listeners. It honors `scm.diffDecorations`,
   `scm.diffDecorationsIgnoreTrimWhitespace` (including `inherit`) and
   `scm.diffDecorationsGutterPattern`. Clicking a change marker (when
   `scm.diffDecorationsGutterAction` is `diff`) and Alt-F3/Shift-Alt-F3 open or
@@ -1338,15 +1340,19 @@ console API for raw mode, sizing and input polling.
   folder tree or flat list, responsive split width, profile-persisted
   visibility/mode/position, focus and accessibility help. The file header
   resolves scoped actions from the registered menu and forwards the target
-  resource URI. Both source-backed and explicit inputs restore through the
-  normal session serializer. The Developer layout-debug command opens a
+  resource URI. The retained disclosure and toolbar support keyboard focus
+  and roving action navigation. Unchanged-region drags retain window pointer
+  capture when the pointer leaves the pane. Both source-backed and explicit
+  inputs restore through the normal session serializer. The Developer layout-debug command opens a
   live JSONL report in a side editor, including geometry edits.
   Single and multi-file diff resources share the URI model resolver, including
   asynchronous model-reference acquisition, cancellation and live provider
   updates. The extension host mirrors offscreen documents and sends typed
   diff/multi-diff Tabs API events with actual group move and close operations.
-  Quick diff still uses the earlier snapshot path; see the audit for the
-  remaining portable gaps.
+  Quick Diff's native Git providers return original URIs; the shared model
+  resolver owns the baselines and the peek reuses their documents. The
+  legacy inline-content provider fallback and full Git file-system provider
+  registration are still portable gaps; see the audit.
   See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
   Only one repository per workspace folder is shown.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and
