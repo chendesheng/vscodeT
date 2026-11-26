@@ -139,6 +139,33 @@ pub fn DiffEditorWidget(comptime View: type) type {
             options: Options,
             computed: ?IDocumentDiff,
         ) !*Self {
+            return createWithModelSources(factory, allocator, io, original_path, modified_path, original_text, modified_text, original_label, modified_label, width, height, options, .{}, computed);
+        }
+
+        /// Create independently owned inner editor views over resolved model
+        /// sources. The source editors remain owned by their inputs; a snapshot
+        /// without a resolved model uses the provided immutable text.
+        pub const ModelSources = struct {
+            original: ?*Editor = null,
+            modified: ?*Editor = null,
+        };
+
+        pub fn createWithModelSources(
+            factory: *const fn (Allocator, *Editor) anyerror!*View,
+            allocator: Allocator,
+            io: Io,
+            original_path: []const u8,
+            modified_path: []const u8,
+            original_text: []const u8,
+            modified_text: []const u8,
+            original_label: []const u8,
+            modified_label: []const u8,
+            width: usize,
+            height: usize,
+            options: Options,
+            sources: ModelSources,
+            computed: ?IDocumentDiff,
+        ) !*Self {
             const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
             const normalized_options = options.normalize();
@@ -153,32 +180,32 @@ pub fn DiffEditorWidget(comptime View: type) type {
             errdefer allocator.free(modified_label_copy);
 
             const is_inline = !normalized_options.renderSideBySide(width);
-            const original_editor = try Editor.createFromTextWithOptions(
-                allocator,
-                io,
-                original_text,
-                original_path,
-                @max(width, 1),
-                @max(height, 1),
-                .{ .reserve_scrollbar = false },
-            );
-            errdefer {
-                original_editor.deinit();
-                allocator.destroy(original_editor);
-            }
-            const modified_editor = try Editor.createFromTextWithOptions(
-                allocator,
-                io,
-                modified_text,
-                modified_path,
-                @max(width, 1),
-                @max(height, 1),
-                .{ .reserve_scrollbar = false },
-            );
-            errdefer {
-                modified_editor.deinit();
-                allocator.destroy(modified_editor);
-            }
+            const original_editor = if (sources.original) |source|
+                try Editor.createViewFromEditorWithOptions(source, @max(width, 1), @max(height, 1), .{ .reserve_scrollbar = false })
+            else
+                try Editor.createFromTextWithOptions(
+                    allocator,
+                    io,
+                    original_text,
+                    original_path,
+                    @max(width, 1),
+                    @max(height, 1),
+                    .{ .reserve_scrollbar = false },
+                );
+            errdefer destroyEditor(original_editor);
+            const modified_editor = if (sources.modified) |source|
+                try Editor.createViewFromEditorWithOptions(source, @max(width, 1), @max(height, 1), .{ .reserve_scrollbar = false })
+            else
+                try Editor.createFromTextWithOptions(
+                    allocator,
+                    io,
+                    modified_text,
+                    modified_path,
+                    @max(width, 1),
+                    @max(height, 1),
+                    .{ .reserve_scrollbar = false },
+                );
+            errdefer destroyEditor(modified_editor);
 
             var diff_model = DiffEditorViewModel.init(allocator, original_editor.model, modified_editor.model, .{
                 .ignore_trim_whitespace = options.ignore_trim_whitespace,
@@ -271,6 +298,12 @@ pub fn DiffEditorWidget(comptime View: type) type {
             return self;
         }
 
+        fn destroyEditor(editor: *Editor) void {
+            const allocator = editor.allocator;
+            editor.deinit();
+            allocator.destroy(editor);
+        }
+
         pub fn destroy(self: *Self) void {
             const allocator = self.allocator;
             self.accessible_viewer.close();
@@ -286,10 +319,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
             self.original_view.deinit();
             self.modified_view.deinit();
-            self.original_editor.deinit();
-            allocator.destroy(self.original_editor);
-            self.modified_editor.deinit();
-            allocator.destroy(self.modified_editor);
+            destroyEditor(self.original_editor);
+            destroyEditor(self.modified_editor);
 
             allocator.free(self.original_path);
             allocator.free(self.modified_path);

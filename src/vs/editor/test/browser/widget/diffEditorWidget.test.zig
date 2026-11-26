@@ -555,6 +555,27 @@ pub fn Tests(comptime View: type) type {
             try testing.expectError(error.ReadOnly, widget.original_editor.undo());
         }
 
+        test "diffEditorWidget: resolved modified editor shares a live working document" {
+            const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+            const source = try Editor.createFromText(testing.allocator, testing.io, "new\nend", "working.txt", 80, 8);
+            defer {
+                source.deinit();
+                testing.allocator.destroy(source);
+            }
+            const widget = try DiffEditorWidget.createWithModelSources(View.init, testing.allocator, testing.io, "old.txt", "working.txt", "old\nend", "", "HEAD", "Working Tree", 80, 8, .{}, .{ .modified = source }, null);
+            defer widget.destroy();
+            try testing.expectEqual(source.model, widget.modifiedModel());
+            try testing.expect(widget.modified_editor != source);
+            try testing.expectEqual(@as(usize, 1), widget.changeCount());
+            try widget.revert(widget.state().?.mappings[0].line_range_mapping);
+            try testing.expectEqualStrings("old", try source.model.borrowLineContent(1));
+            try testing.expect(source.isDirty());
+            try source.undo();
+            try testing.expectEqualStrings("new", try widget.modifiedModel().borrowLineContent(1));
+            try testing.expect(!source.isDirty());
+            try testing.expectEqual(@as(usize, 1), widget.changeCount());
+        }
+
         test "diffEditorWidget: editable options and revert focused hunk are undoable" {
             const widget = try DiffEditorWidget.create(View.init, testing.allocator, testing.io, "a.txt", "b.txt", "old\na\nb\nc\nd\ne\nf\ng\nlast-old\nend", "new\na\nb\nc\nd\ne\nf\ng\nlast-new\nend", "Original", "Modified", 80, 8, .{});
             defer widget.destroy();

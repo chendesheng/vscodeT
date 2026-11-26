@@ -981,12 +981,14 @@ pub const Editor = struct {
     /// saved/dirty state are shared; wrapping, cursors, folding, selection and
     /// scroll position are independent view state.
     pub fn createViewFromEditor(source: *Editor, width: usize, height: usize) !*Editor {
+        return createViewFromEditorWithOptions(source, width, height, .{ .reserve_scrollbar = source.scrollbar_width != 0 });
+    }
+
+    pub fn createViewFromEditorWithOptions(source: *Editor, width: usize, height: usize, options: CreateOptions) !*Editor {
         source.document.retain();
         errdefer source.document.release();
 
-        const editor = try createView(source.allocator, source.document, width, height, .{
-            .reserve_scrollbar = source.scrollbar_width != 0,
-        });
+        const editor = try createView(source.allocator, source.document, width, height, options);
         editor.read_only = source.read_only;
         editor.status_row = source.status_row;
         editor.gutter_line_numbers = source.gutter_line_numbers;
