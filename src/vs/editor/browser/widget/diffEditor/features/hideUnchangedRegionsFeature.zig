@@ -2,6 +2,7 @@
 // The terminal displays the disclosure controls in a single cell row, attached
 // to the same model-anchored view zones as the upstream overlay widgets.
 const std = @import("std");
+const window_dispatch = @import("../../../../../base/common/windowDispatch.zig");
 const ui = @import("ui");
 const css = @import("../style_css.zig");
 const vm = @import("../diffEditorViewModel.zig");
@@ -73,6 +74,7 @@ pub const HideUnchangedRegionsFeature = struct {
     initialized: bool = true,
     updating: bool = false,
     drag: ?Drag = null,
+    capture_window: ?*window_dispatch.Queue = null,
     breadcrumbs_source: ?IDiffEditorBreadcrumbsSource = null,
     side_by_side: bool = true,
     original_scroll_anchor: ?EditorScrollAnchor = null,
@@ -252,6 +254,7 @@ pub const HideUnchangedRegionsFeature = struct {
             if (event.button != .left) return;
             event.preventDefault();
             event.stopPropagation();
+            self.pane.owner.cancelDrag(true);
             const r = self.region();
             r.is_dragged = if (top) .top else .bottom;
             self.pane.owner.drag = .{ .binding = self, .top = top, .initial_count = if (top) r.visible_line_count_top else r.visible_line_count_bottom };
@@ -294,10 +297,51 @@ pub const HideUnchangedRegionsFeature = struct {
 
     /// The first down is routed through the pane DOM; subsequent drag
     /// motion/release is captured by the diff widget even outside that pane.
+    pub fn attachWindow(self: *HideUnchangedRegionsFeature, window: *window_dispatch.Queue) void {
+        if (self.capture_window == window) return;
+        self.cancelDrag(true);
+        self.capture_window = window;
+    }
+
     pub fn captureDragStart(self: *HideUnchangedRegionsFeature, y: usize) void {
         if (self.drag) |*drag| if (drag.start_y == null) {
+            if (self.capture_window) |window| if (window.current_pointer_input) |input| {
+                if (input.kind == .down) {
+                    drag.start_y = input.y;
+                    window.capturePointer(.{ .context = self, .dispatch = capturedPointer, .cancel = cancelCapturedPointer });
+                    return;
+                }
+            };
+            // Isolated widget tests/embedders can still use local coordinates
+            // for the same gesture when not routed by a native window.
             drag.start_y = y;
         };
+    }
+
+    fn capturedPointer(context: *anyopaque, input: window_dispatch.PointerInput) bool {
+        const self: *HideUnchangedRegionsFeature = @ptrCast(@alignCast(context));
+        var event: ui.MouseEvent = .{ .kind = switch (input.kind) {
+            .move => .move,
+            .up => .up,
+            .click => .click,
+            else => return false,
+        }, .button = .left, .x = input.x, .y = input.y };
+        return self.dispatchDrag(&event);
+    }
+
+    fn cancelCapturedPointer(context: *anyopaque) void {
+        const self: *HideUnchangedRegionsFeature = @ptrCast(@alignCast(context));
+        const active = self.drag != null;
+        self.cancelDrag(true);
+        if (active) self.model.notifyUnchangedRegions() catch {};
+    }
+
+    fn cancelDrag(self: *HideUnchangedRegionsFeature, current_region: bool) void {
+        if (self.capture_window) |window| window.releasePointer(self);
+        if (current_region) if (self.drag) |drag| {
+            drag.binding.region().is_dragged = null;
+        };
+        self.drag = null;
     }
 
     /// CollapsedCodeOverlayWidget._runWithLowerScrollAnchor: bottom-edge
@@ -344,8 +388,7 @@ pub const HideUnchangedRegionsFeature = struct {
             const self: *DragUpdate = @ptrCast(@alignCast(context));
             const r = self.binding.region();
             if (self.release_drag) {
-                r.is_dragged = null;
-                self.owner.drag = null;
+                self.owner.cancelDrag(true);
             }
             switch (self.operation) {
                 .none => {},
@@ -396,7 +439,7 @@ pub const HideUnchangedRegionsFeature = struct {
                 change.operation = .{ .set_counts = .{ .top = r.visible_line_count_top, .bottom = next } };
                 anchored = true;
             }
-        } else if (event.kind == .up) {
+        } else if (event.kind == .up or event.kind == .click) {
             change.release_drag = true;
             if (!drag.moved) {
                 if (self.options.variant == .compact and r.getHiddenModifiedRange().isEmpty()) {
@@ -408,7 +451,7 @@ pub const HideUnchangedRegionsFeature = struct {
                     anchored = true;
                 }
             }
-        } else return true;
+        } else return false;
         const update: ScrollAnchorUpdate = .{ .context = &change, .run = DragUpdate.apply };
         const result = if (anchored) self.runWithLowerScrollAnchor(change.binding, update) else update.run(update.context);
         result catch |err| self.modified.editor.setMessage("unchanged regions: {s}", .{@errorName(err)});
@@ -436,7 +479,8 @@ pub const HideUnchangedRegionsFeature = struct {
     pub fn deinit(self: *HideUnchangedRegionsFeature) void {
         if (!self.initialized) return;
         self.initialized = false;
-        self.drag = null;
+        self.cancelDrag(true);
+        self.capture_window = null;
         self.detachBreadcrumbs();
         if (self.subscription) |id| self.model.on_did_change_unchanged_regions.unlisten(id);
         self.alignment.beginBatch();
@@ -484,8 +528,7 @@ pub const HideUnchangedRegionsFeature = struct {
         const changed = self.options.variant != options.variant or self.options.compact_mode != options.compact_mode;
         self.options = options;
         if (changed) {
-            if (self.drag) |drag| drag.binding.region().is_dragged = null;
-            self.drag = null;
+            self.cancelDrag(true);
             try self.apply();
         }
     }
@@ -502,7 +545,7 @@ pub const HideUnchangedRegionsFeature = struct {
             // The upstream derivedDisposable owns each region's gesture
             // listeners. A new collection disposes the old bindings even
             // when it contains the same number of ranges.
-            self.drag = null;
+            self.cancelDrag(false);
             self.alignment.beginBatch();
             defer self.alignment.endBatch();
             for ([_]*Pane{ &self.original, &self.modified }) |pane| {

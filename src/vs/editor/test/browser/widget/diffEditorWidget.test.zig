@@ -1472,6 +1472,74 @@ pub fn Tests(comptime View: type) type {
             try testing.expectEqual(editor.scrollTop(), widget.original_editor.scrollTop());
         }
 
+        test "diffEditorWidget: window capture delivers bottom disclosure drag outside its pane and cancels on model detach" {
+            const a = testing.allocator;
+            const window_dispatch = @import("../../../../base/common/windowDispatch.zig");
+            var window: window_dispatch.Queue = .{ .io = testing.io, .window_events = .init(a) };
+            defer window.deinitWindowEvents();
+            var original: std.ArrayList(u8) = .empty;
+            defer original.deinit(a);
+            var modified: std.ArrayList(u8) = .empty;
+            defer modified.deinit(a);
+            try original.appendSlice(a, "old\n");
+            try modified.appendSlice(a, "new\n");
+            for (0..40) |_| {
+                try original.appendSlice(a, "unchanged\n");
+                try modified.appendSlice(a, "unchanged\n");
+            }
+            try original.appendSlice(a, "old end");
+            try modified.appendSlice(a, "new end");
+            const widget = try DiffEditorWidget.create(View.init, a, testing.io, "a.txt", "b.txt", original.items, modified.items, "Original", "Modified", 120, 6, .{ .hide_unchanged_regions = true, .hide_unchanged_regions_reveal_line_count = 2 });
+            defer widget.destroy();
+            widget.attachWindow(&window);
+            _ = widget.modified_editor.setScrollTop(2);
+            const region = &widget.view_model.unchangedRegions()[0];
+            const anchor_line = region.modifiedUnchangedRange().endLineNumberExclusive;
+            const editor = widget.modified_editor;
+            const before_row = editor.visibleRowOfViewLine(editor.viewPositionOfModelPosition(.{ .lineNumber = anchor_line, .column = 1 }).lineNumber).?;
+            var frame = try ui.Frame.init(a, 120, 6);
+            defer frame.deinit();
+            const Hit = struct {
+                x: usize,
+                y: usize,
+                fn find(w: *DiffEditorWidget, f: *ui.Frame) !@This() {
+                    f.begin();
+                    try w.paint(f, 0, 0, 120, 6);
+                    for (0..6) |row| for (w.paneWidths().modifiedLeft()..120 - w.paneWidths().overview) |col| {
+                        if (f.next.cluster[f.next.index(col, row)] == '↓') return .{ .x = col, .y = row };
+                    };
+                    return error.DisclosureMissing;
+                }
+                fn press(self: @This(), w: *DiffEditorWidget, queue: *window_dispatch.Queue) !void {
+                    // The diff may be painted into an offscreen body frame;
+                    // the gesture starts in true window coordinates.
+                    try testing.expect(!queue.beginPointerInput(.{ .kind = .down, .x = 30 + self.x, .y = 20 + self.y }));
+                    defer queue.endPointerInput();
+                    var event: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = self.x, .y = self.y };
+                    _ = try w.dispatchMouse(&event);
+                    try testing.expect(queue.pointer_capture != null);
+                }
+            };
+            const hit = try Hit.find(widget, &frame);
+            try hit.press(widget, &window);
+            try testing.expect(region.is_dragged == .bottom);
+            // Motion and release are outside the editor's hit-tested pane.
+            try testing.expect(window.beginPointerInput(.{ .kind = .move, .x = 0, .y = 20 + hit.y - 2 }));
+            window.endPointerInput();
+            try testing.expectEqual(@as(usize, 2), region.visible_line_count_bottom);
+            try testing.expect(window.beginPointerInput(.{ .kind = .up, .x = 0, .y = 20 + hit.y - 2 }));
+            window.endPointerInput();
+            try testing.expectEqual(@as(usize, 2), region.visible_line_count_bottom);
+            try testing.expect(region.is_dragged == null and window.pointer_capture == null);
+            const after_row = editor.visibleRowOfViewLine(editor.viewPositionOfModelPosition(.{ .lineNumber = anchor_line, .column = 1 }).lineNumber).?;
+            try testing.expectEqual(before_row, after_row);
+            try (try Hit.find(widget, &frame)).press(widget, &window);
+            try widget.setDiffModel(null);
+            try testing.expect(window.pointer_capture == null);
+            try testing.expect(!window.beginPointerInput(.{ .kind = .up, .x = 0, .y = 0 }));
+            window.endPointerInput();
+        }
+
         test "diffEditorWidget: compact disclosures expand and collapse with a persistent keyboard target" {
             const allocator = testing.allocator;
             const io = Io.Threaded.global_single_threaded.io();

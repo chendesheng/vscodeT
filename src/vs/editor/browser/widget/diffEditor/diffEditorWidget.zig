@@ -655,6 +655,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             errdefer self.overview.deinit(original_editor, modified_editor);
             try self.hide_unchanged.init(allocator, self.view_model, &self.zones, original_editor, original_view.viewZones(), modified_editor, modified_view.viewZones(), normalized_options);
             errdefer self.hide_unchanged.deinit();
+            if (self.smooth_resize.scheduler.queue) |window| self.hide_unchanged.attachWindow(window);
             try self.revert_buttons.init(allocator, self.view_model, modified_editor, modified_view.terminal_view_host, .{ .context = self, .revert = revertMarginChange });
             errdefer self.revert_buttons.deinit();
             try self.moved_blocks.init(allocator, self.view_model, &self.zones, original_editor, original_view.viewZones(), modified_editor, modified_view.viewZones(), self, onMoveWidthChanged, onCompareMove);
@@ -911,6 +912,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         pub fn attachWindow(self: *Self, window: *window_dispatch.Queue) void {
             self.smooth_resize.attach(window) catch {};
+            if (self.hasModel()) self.hide_unchanged.attachWindow(window);
         }
 
         pub fn layout(self: *Self, width: usize, height: usize) void {
@@ -1183,6 +1185,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.decorations.modified_model = self.modified_editor.model;
             self.zones.init(self.allocator, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self.modified_view.terminal_view_host, self.modified_view.lineStyleFunction(), self.modified_view.decorationBitsFunction(), self.options.render_indicators, diff_state.mappings);
             try self.hide_unchanged.init(self.allocator, self.view_model, &self.zones, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self.options);
+            if (self.smooth_resize.scheduler.queue) |window| self.hide_unchanged.attachWindow(window);
             self.hide_unchanged.setScrollAnchors(self.original_scroll_anchor, self.modified_scroll_anchor);
             if (self.breadcrumbs_factory) |factory| try self.hide_unchanged.attachBreadcrumbs(factory);
             try self.revert_buttons.init(self.allocator, self.view_model, self.modified_editor, self.modified_view.terminal_view_host, .{ .context = self, .revert = revertMarginChange });

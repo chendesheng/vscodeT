@@ -888,6 +888,25 @@ pub fn main(init: std.process.Init) !void {
                         .up, .click => workbench.window_events.fireWindowEvent(.pointer_up),
                         else => {},
                     }
+                    // Deliver captured window gestures before any pane or
+                    // overlay performs local hit testing. The owner consumes
+                    // window coordinates just like a browser window listener.
+                    const pointer_captured = workbench.window_events.beginPointerInput(.{
+                        .kind = switch (event.kind) {
+                            .down => .down,
+                            .move => .move,
+                            .up => .up,
+                            .click => .click,
+                            .wheel => .wheel,
+                        },
+                        .x = event.x,
+                        .y = event.y,
+                    });
+                    defer workbench.window_events.endPointerInput();
+                    if (pointer_captured) {
+                        needs_render = true;
+                        continue;
+                    }
                     // Only motion re-resolves the whole workbench: a press or
                     // release keeps the shape the last move established, so a
                     // click on a row does not flicker back to the arrow.

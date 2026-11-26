@@ -12,18 +12,76 @@ pub const Wake = struct {
 pub const WindowEvent = enum { resize, pointer_down, pointer_up };
 pub const WindowEventEmitter = @import("event.zig").Emitter(WindowEvent);
 
+/// Window/client coordinates stay independent of the hit-tested editor's
+/// local surface. Capture mirrors window mousemove/mouseup listeners.
+pub const PointerInput = struct {
+    kind: enum { down, move, up, click, wheel },
+    x: usize,
+    y: usize,
+};
+pub const PointerCapture = struct {
+    context: *anyopaque,
+    dispatch: *const fn (*anyopaque, PointerInput) bool,
+    cancel: *const fn (*anyopaque) void,
+};
+
 pub const Queue = struct {
     io: std.Io,
     mutex: std.Io.Mutex = .init,
     scheduled: std.DoublyLinkedList = .{},
     wake: ?Wake = null,
     window_events: ?WindowEventEmitter = null,
+    current_pointer_input: ?PointerInput = null,
+    pointer_capture: ?PointerCapture = null,
 
     pub fn fireWindowEvent(self: *Queue, event: WindowEvent) void {
         if (self.window_events) |*emitter| emitter.fire(event) catch {};
     }
 
+    /// Called once per native input before hit testing. A captured move or
+    /// release belongs to the owner even outside its original editor pane.
+    pub fn beginPointerInput(self: *Queue, input: PointerInput) bool {
+        self.current_pointer_input = input;
+        const capture = self.pointer_capture orelse return false;
+        switch (input.kind) {
+            .down => {
+                self.pointer_capture = null;
+                capture.cancel(capture.context);
+                return false;
+            },
+            .up, .click => self.pointer_capture = null,
+            .wheel => return false,
+            .move => {},
+        }
+        return capture.dispatch(capture.context, input);
+    }
+
+    pub fn endPointerInput(self: *Queue) void {
+        self.current_pointer_input = null;
+    }
+
+    pub fn capturePointer(self: *Queue, capture: PointerCapture) void {
+        if (self.pointer_capture) |previous| {
+            if (previous.context != capture.context) {
+                self.pointer_capture = null;
+                previous.cancel(previous.context);
+            }
+        }
+        self.pointer_capture = capture;
+    }
+
+    pub fn releasePointer(self: *Queue, context: *anyopaque) void {
+        if (self.pointer_capture) |capture| {
+            if (capture.context == context) self.pointer_capture = null;
+        }
+    }
+
     pub fn deinitWindowEvents(self: *Queue) void {
+        if (self.pointer_capture) |capture| {
+            self.pointer_capture = null;
+            capture.cancel(capture.context);
+        }
+        self.current_pointer_input = null;
         if (self.window_events) |*emitter| emitter.deinit();
         self.window_events = null;
     }
