@@ -19,7 +19,7 @@ pub const GitQuickDiffProvider = struct {
             .context = repository,
             .id = id,
             .label = "Git Local Changes (Working Tree)",
-            .root_path = repository.root,
+            .root_uri = .{ .scheme = "file", .path = .{ .raw = repository.root } },
             .kind = .primary,
             .get_original_fn = provideOriginalResource,
         } };
@@ -29,7 +29,11 @@ pub const GitQuickDiffProvider = struct {
         return &self.base;
     }
 
-    fn provideOriginalResource(context: *anyopaque, allocator: Allocator, path: []const u8) !?quick_diff.Original {
+    fn provideOriginalResource(context: *anyopaque, allocator: Allocator, uri: std.Uri) !?quick_diff.Original {
+        if (!std.mem.eql(u8, uri.scheme, "file")) return null;
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const path = try std_uri.fsPath(uri, arena.allocator());
         const repository: *Repository = @ptrCast(@alignCast(context));
         const relative = paths.relativeToRoot(path, repository.root) orelse return null;
         if (std.mem.eql(u8, relative, ".git") or paths.relativeToRoot(relative, ".git") != null) return null;
@@ -55,7 +59,7 @@ pub const StagedResourceQuickDiffProvider = struct {
             .context = repository,
             .id = id,
             .label = "Git Local Changes (Index)",
-            .root_path = repository.root,
+            .root_uri = .{ .scheme = "file", .path = .{ .raw = repository.root } },
             .kind = .secondary,
             .get_original_fn = provideOriginalResource,
         } };
@@ -65,7 +69,11 @@ pub const StagedResourceQuickDiffProvider = struct {
         return &self.base;
     }
 
-    fn provideOriginalResource(context: *anyopaque, allocator: Allocator, path: []const u8) !?quick_diff.Original {
+    fn provideOriginalResource(context: *anyopaque, allocator: Allocator, uri: std.Uri) !?quick_diff.Original {
+        if (!std.mem.eql(u8, uri.scheme, "file")) return null;
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const path = try std_uri.fsPath(uri, arena.allocator());
         const repository: *Repository = @ptrCast(@alignCast(context));
         if (!isRegularResource(repository, path)) return null;
         for (repository.groups[1].resources.items) |resource| {

@@ -67,6 +67,27 @@ pub fn fragment(uri: std.Uri, arena: Allocator) ![]const u8 {
     return "";
 }
 
+/// Resource parent comparison from upstream resources.ExtUri. The caller
+/// supplies its filesystem provider's path casing policy.
+pub fn isEqualOrParent(resource: std.Uri, root: std.Uri, arena: Allocator, ignore_path_case: bool) !bool {
+    if (!std.mem.eql(u8, resource.scheme, root.scheme)) return false;
+    if (!std.ascii.eqlIgnoreCase(try authority(resource, arena), try authority(root, arena))) return false;
+    if (!std.mem.eql(u8, try query(resource, arena), try query(root, arena))) return false;
+    if (!std.mem.eql(u8, try fragment(resource, arena), try fragment(root, arena))) return false;
+    const is_file = std.mem.eql(u8, resource.scheme, "file");
+    const resource_path = if (is_file) try fsPath(resource, arena) else try path(resource, arena);
+    const parent = if (is_file) try fsPath(root, arena) else try path(root, arena);
+    const separators = if (is_file and builtin.os.tag == .windows) "/\\" else "/";
+    const trimmed = std.mem.trimEnd(u8, parent, separators);
+    if (pathEquals(resource_path, parent, ignore_path_case) or pathEquals(resource_path, trimmed, ignore_path_case)) return true;
+    if (resource_path.len <= trimmed.len or !pathEquals(resource_path[0..trimmed.len], trimmed, ignore_path_case)) return false;
+    return std.mem.indexOfScalar(u8, separators, resource_path[trimmed.len]) != null;
+}
+
+fn pathEquals(a: []const u8, b: []const u8, ignore_case: bool) bool {
+    return if (ignore_case) std.ascii.eqlIgnoreCase(a, b) else std.mem.eql(u8, a, b);
+}
+
 /// Serializes a model URI without mistaking a native drive path for the
 /// authority component. File models use native paths, while serialized URIs
 /// use slash-separated absolute paths and percent-encoded components.

@@ -8396,7 +8396,7 @@ test "Workbench: git scm integration, shared working files and read-only revisio
         // selector. Selecting another baseline replaces only the original.
         const Quick = @import("../vs/workbench/contrib/scm/common/quickDiff.zig");
         const Alternate = struct {
-            fn original(_: *anyopaque, a: std.mem.Allocator, _: []const u8) !?Quick.Original {
+            fn original(_: *anyopaque, a: std.mem.Allocator, _: std.Uri) !?Quick.Original {
                 const content = try a.dupe(u8, "one\nalt\nthree\n");
                 errdefer a.free(content);
                 return .{ .content = content, .ref_label = try a.dupe(u8, "Alternate") };

@@ -86,8 +86,8 @@ const ModelProvider = struct {
         if (self.content) |content| self.allocator.free(content);
     }
 
-    fn getOriginal(context: *anyopaque, allocator: Allocator, path: []const u8) anyerror!?quick_diff.Original {
-        _ = path;
+    fn getOriginal(context: *anyopaque, allocator: Allocator, resource: std.Uri) anyerror!?quick_diff.Original {
+        _ = resource;
         const self: *ModelProvider = @ptrCast(@alignCast(context));
         const content = self.content orelse return null;
         return .{
@@ -317,7 +317,7 @@ test "quickDiffModel: URI references are shared, updated by model events, and re
     var service = quick_diff_service.QuickDiffService.init(a, null);
     defer service.deinit();
     const Provider = struct {
-        fn get(_: *anyopaque, allocator: Allocator, _: []const u8) !?quick_diff.Original {
+        fn get(_: *anyopaque, allocator: Allocator, _: std.Uri) !?quick_diff.Original {
             const resource = try allocator.dupe(u8, "test:/quick-diff-original");
             errdefer allocator.free(resource);
             return .{ .content = &.{}, .ref_label = try allocator.dupe(u8, "Original"), .resource_uri = resource };

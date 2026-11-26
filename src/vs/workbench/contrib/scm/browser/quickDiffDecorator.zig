@@ -631,8 +631,8 @@ const TestProvider = struct {
         if (self.content) |content| self.allocator.free(content);
     }
 
-    fn getOriginal(context: *anyopaque, allocator: Allocator, path: []const u8) anyerror!?quick_diff.Original {
-        _ = path;
+    fn getOriginal(context: *anyopaque, allocator: Allocator, resource: std.Uri) anyerror!?quick_diff.Original {
+        _ = resource;
         const self: *TestProvider = @ptrCast(@alignCast(context));
         const content = self.content orelse return null;
         return .{

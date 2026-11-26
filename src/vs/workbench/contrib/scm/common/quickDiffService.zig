@@ -5,14 +5,14 @@
 //   delegate is local and bounded by its command deadline.
 // - The hidden-provider set is persisted through the in-memory storage service
 //   under the upstream key, serialized as a JSON array.
-// - Paths replace `URI` and the selector score uses the ported
-//   `languageSelector.score` with a local-file candidate.
+// - Provider matching and selectors use the actual text-model std.Uri.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const quick_diff = @import("./quickDiff.zig");
 const language_selector = @import("../../../../editor/common/languageSelector.zig");
 const storage = @import("../../../../platform/storage/common/storage.zig");
+const std_uri = @import("../../../../base/common/stdUri.zig");
 const lifecycle = @import("../../../../base/common/lifecycle.zig");
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
 
@@ -108,25 +108,27 @@ pub const QuickDiffService = struct {
     pub fn getQuickDiffs(
         self: *QuickDiffService,
         allocator: Allocator,
-        path: []const u8,
+        resource: std.Uri,
         language: ?[]const u8,
         is_synchronized: bool,
     ) ![]QuickDiff {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const scratch = arena.allocator();
         var candidates = std.array_list.Managed(*QuickDiffProvider).init(allocator);
         defer candidates.deinit();
         for (self.providers_list.items) |provider| {
-            if (provider.root_path) |root| {
-                if (!pathIsEqualOrParent(path, root)) continue;
+            if (provider.root_uri) |root| {
+                if (!try std_uri.isEqualOrParent(resource, root, scratch, std.mem.eql(u8, resource.scheme, "file") and (@import("builtin").os.tag == .windows or @import("builtin").os.tag == .macos))) continue;
             }
             try candidates.append(provider);
         }
+        // All surviving rooted providers are parents. Upstream sorts those by
+        // kind before unrooted providers, whose registration order is retained.
         std.mem.sort(*QuickDiffProvider, candidates.items, {}, struct {
             fn lessThan(_: void, a: *QuickDiffProvider, b: *QuickDiffProvider) bool {
-                // The most specific root (longest parent) comes first, then the
-                // primary/secondary/contributed kind order.
-                const a_root = if (a.root_path) |root| root.len else 0;
-                const b_root = if (b.root_path) |root| root.len else 0;
-                if (a_root != b_root) return a_root > b_root;
+                if (a.root_uri == null) return false;
+                if (b.root_uri == null) return true;
                 return providerKindRank(a.kind) < providerKindRank(b.kind);
             }
         }.lessThan);
@@ -136,24 +138,22 @@ pub const QuickDiffService = struct {
             for (result.items) |*entry| entry.deinit(allocator);
             result.deinit();
         }
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
-
+        const candidate = try language_selector.candidateFromUri(scratch, resource, language orelse "", is_synchronized);
         for (candidates.items) |provider| {
             const score_value: i32 = if (provider.selector) |selector|
-                language_selector.score(arena.allocator(), selector, .{
-                    .scheme = "file",
-                    .fs_path = path,
-                    .language = language orelse "",
-                    .synchronized = is_synchronized,
-                }) catch 0
+                language_selector.score(scratch, selector, candidate) catch 0
             else
                 10;
             if (score_value <= 0) continue;
-            const original = (provider.getOriginalResource(allocator, path) catch continue) orelse continue;
+            var original = (provider.getOriginalResource(allocator, resource) catch continue) orelse continue;
+            errdefer original.deinit(allocator);
+            const id = try allocator.dupe(u8, provider.id);
+            errdefer allocator.free(id);
+            const label = try allocator.dupe(u8, provider.label);
+            errdefer allocator.free(label);
             try result.append(.{
-                .id = try allocator.dupe(u8, provider.id),
-                .label = try allocator.dupe(u8, provider.label),
+                .id = id,
+                .label = label,
                 .original = original,
                 .kind = provider.kind,
             });
@@ -210,12 +210,12 @@ pub const QuickDiffService = struct {
     fn getQuickDiffsThunk(
         context: *anyopaque,
         allocator: Allocator,
-        path: []const u8,
+        resource: std.Uri,
         language: ?[]const u8,
         is_synchronized: bool,
     ) anyerror![]QuickDiff {
         const self: *QuickDiffService = @ptrCast(@alignCast(context));
-        return self.getQuickDiffs(allocator, path, language, is_synchronized);
+        return self.getQuickDiffs(allocator, resource, language, is_synchronized);
     }
 
     fn toggleVisibilityThunk(context: *anyopaque, id: []const u8) void {
@@ -270,13 +270,6 @@ pub const QuickDiffService = struct {
     }
 };
 
-fn pathIsEqualOrParent(path: []const u8, root: []const u8) bool {
-    const trimmed = std.mem.trimEnd(u8, root, "/\\");
-    if (trimmed.len == 0) return false;
-    if (!std.mem.startsWith(u8, path, trimmed)) return false;
-    return path.len == trimmed.len or path[trimmed.len] == '/' or path[trimmed.len] == '\\';
-}
-
 test "quickDiffService: provider ordering, selector and visibility storage" {
     const allocator = std.testing.allocator;
     var storage_service = InMemoryStorageService.init(allocator);
@@ -286,9 +279,11 @@ test "quickDiffService: provider ordering, selector and visibility storage" {
 
     var contributed = TestProvider{};
     contributed.init("contributed", .contributed);
+    contributed.base.root_uri = try std.Uri.parse("file:///repo");
     defer contributed.deinit();
     var primary = TestProvider{};
     primary.init("primary", .primary);
+    primary.base.root_uri = try std.Uri.parse("file:///repo");
     defer primary.deinit();
 
     const contributed_disposable = try service.addQuickDiffProvider(&contributed.base);
@@ -300,7 +295,7 @@ test "quickDiffService: provider ordering, selector and visibility storage" {
     defer allocator.free(ordered);
     try std.testing.expectEqualStrings("primary", ordered[0].id);
 
-    const diffs = try service.getQuickDiffs(allocator, "/repo/a.zig", "zig", true);
+    const diffs = try service.getQuickDiffs(allocator, try std.Uri.parse("file:///repo/a.zig"), "zig", true);
     defer {
         for (diffs) |*entry| entry.deinit(allocator);
         allocator.free(diffs);
@@ -331,21 +326,21 @@ test "quickDiffService: providers are filtered by root and language" {
     var provider = TestProvider{};
     provider.init("git", .primary);
     defer provider.deinit();
-    provider.base.root_path = "/repo";
+    provider.base.root_uri = try std.Uri.parse("file:///repo");
     provider.base.selector = .{ .language = "zig" };
     const disposable = try service.addQuickDiffProvider(&provider.base);
     defer disposable.dispose();
 
-    const outside = try service.getQuickDiffs(allocator, "/other/a.zig", "zig", true);
+    const outside = try service.getQuickDiffs(allocator, try std.Uri.parse("file:///other/a.zig"), "zig", true);
     defer allocator.free(outside);
     try std.testing.expectEqual(@as(usize, 0), outside.len);
 
-    const matching = try service.getQuickDiffs(allocator, "/repo/a.zig", "zig", true);
+    const matching = try service.getQuickDiffs(allocator, try std.Uri.parse("file:///repo/a.zig"), "zig", true);
     defer allocator.free(matching);
     try std.testing.expectEqual(@as(usize, 1), matching.len);
     matching[0].deinit(allocator);
 
-    const wrong_language = try service.getQuickDiffs(allocator, "/repo/a.txt", "plaintext", true);
+    const wrong_language = try service.getQuickDiffs(allocator, try std.Uri.parse("file:///repo/a.txt"), "plaintext", true);
     defer allocator.free(wrong_language);
     try std.testing.expectEqual(@as(usize, 0), wrong_language.len);
 }
@@ -362,7 +357,7 @@ test "quickDiffService: missing originals are skipped" {
     const disposable = try service.addQuickDiffProvider(&provider.base);
     defer disposable.dispose();
 
-    const diffs = try service.getQuickDiffs(allocator, "/repo/a.zig", "zig", true);
+    const diffs = try service.getQuickDiffs(allocator, try std.Uri.parse("file:///repo/a.zig"), "zig", true);
     defer allocator.free(diffs);
     try std.testing.expectEqual(@as(usize, 0), diffs.len);
 }
@@ -384,9 +379,9 @@ const TestProvider = struct {
 
     fn deinit(_: *TestProvider) void {}
 
-    fn getOriginal(context: *anyopaque, allocator: Allocator, path: []const u8) anyerror!?quick_diff.Original {
+    fn getOriginal(context: *anyopaque, allocator: Allocator, resource: std.Uri) anyerror!?quick_diff.Original {
         const self: *TestProvider = @ptrCast(@alignCast(context));
-        _ = path;
+        _ = resource;
         if (!self.return_original) return null;
         return .{
             .content = try allocator.dupe(u8, "original"),
@@ -394,3 +389,48 @@ const TestProvider = struct {
         };
     }
 };
+
+test "quickDiffService: resource scheme, authority, and rooted ordering follow upstream" {
+    const a = std.testing.allocator;
+    var service = QuickDiffService.init(a, null);
+    defer service.deinit();
+    var rootless = TestProvider{};
+    rootless.init("first", .contributed);
+    var rootless_primary = TestProvider{};
+    rootless_primary.init("second", .primary);
+    var nested = TestProvider{};
+    nested.init("nested", .secondary);
+    nested.base.root_uri = try std.Uri.parse("remote://host/repo/nested");
+    var primary = TestProvider{};
+    primary.init("parent", .primary);
+    primary.base.root_uri = try std.Uri.parse("remote://host/repo");
+    primary.base.selector = .{ .filter = .{ .scheme = "remote" } };
+    var wrong_authority = TestProvider{};
+    wrong_authority.init("other", .primary);
+    wrong_authority.base.root_uri = try std.Uri.parse("remote://elsewhere/repo");
+    _ = try service.addQuickDiffProvider(&rootless.base);
+    _ = try service.addQuickDiffProvider(&rootless_primary.base);
+    _ = try service.addQuickDiffProvider(&nested.base);
+    _ = try service.addQuickDiffProvider(&primary.base);
+    _ = try service.addQuickDiffProvider(&wrong_authority.base);
+
+    const matching = try service.getQuickDiffs(a, try std.Uri.parse("remote://host/repo/nested/a%23b.txt"), "plaintext", true);
+    defer {
+        for (matching) |*entry| entry.deinit(a);
+        a.free(matching);
+    }
+    try std.testing.expectEqual(@as(usize, 4), matching.len);
+    try std.testing.expectEqualStrings("parent", matching[0].id);
+    try std.testing.expectEqualStrings("nested", matching[1].id);
+    try std.testing.expectEqualStrings("first", matching[2].id);
+    try std.testing.expectEqualStrings("second", matching[3].id);
+
+    const file = try service.getQuickDiffs(a, try std.Uri.parse("file:///repo/nested/a%23b.txt"), "plaintext", true);
+    defer {
+        for (file) |*entry| entry.deinit(a);
+        a.free(file);
+    }
+    try std.testing.expectEqual(@as(usize, 2), file.len);
+    try std.testing.expectEqualStrings("first", file[0].id);
+    try std.testing.expectEqualStrings("second", file[1].id);
+}

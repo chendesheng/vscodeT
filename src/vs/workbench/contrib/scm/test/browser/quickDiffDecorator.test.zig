@@ -112,7 +112,7 @@ const TestProvider = struct {
         if (self.content.len > 0) testing.allocator.free(self.content);
     }
 
-    fn getOriginal(context: *anyopaque, allocator: Allocator, _: []const u8) anyerror!?quick_diff.Original {
+    fn getOriginal(context: *anyopaque, allocator: Allocator, _: std.Uri) anyerror!?quick_diff.Original {
         const self: *TestProvider = @ptrCast(@alignCast(context));
         return .{
             .content = try allocator.dupe(u8, self.content),

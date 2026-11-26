@@ -723,7 +723,7 @@ pub const QuickDiffModel = struct {
     }
 
     fn getOriginals(self: *QuickDiffModel) ![]QuickDiff {
-        return if (self.model.isTooLargeForSyncing()) &.{} else try self.service.getQuickDiffs(self.allocator, self.path, self.model.getLanguageId(), true);
+        return if (self.model.isTooLargeForSyncing()) &.{} else try self.service.getQuickDiffs(self.allocator, self.model.uri(), self.model.getLanguageId(), true);
     }
 
     fn prepareDiff(self: *QuickDiffModel) !*DiffRequest {

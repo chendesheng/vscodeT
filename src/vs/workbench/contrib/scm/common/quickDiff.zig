@@ -5,7 +5,7 @@
 //   the actual URI-backed model asynchronously through ITextModelService.
 //   The native Original descriptor still supports inline content from older
 //   in-process providers while migrating those callers to the URI contract.
-// - Paths replace `URI` values.
+// - Resource arguments use std.Uri; encoded original descriptors retain their owned backing slices.
 // - The upstream color registrations become terminal RGB defaults. Cells have
 //   no alpha, so translucent overview colors are composited over the dark
 //   editor background and the secondary gutter colors are pre-darkened.
@@ -48,15 +48,15 @@ pub const QuickDiffProvider = struct {
     context: *anyopaque,
     id: []const u8,
     label: []const u8,
-    root_path: ?[]const u8 = null,
+    root_uri: ?std.Uri = null,
     selector: ?Selector = null,
     kind: QuickDiffProviderKind = .contributed,
-    /// Returns the original resource for `path`, or null when the provider
+    /// Returns the original resource for `resource`, or null when the provider
     /// has no baseline. The returned value owns its slices.
-    get_original_fn: *const fn (context: *anyopaque, allocator: Allocator, path: []const u8) anyerror!?Original,
+    get_original_fn: *const fn (context: *anyopaque, allocator: Allocator, resource: std.Uri) anyerror!?Original,
 
-    pub fn getOriginalResource(self: QuickDiffProvider, allocator: Allocator, path: []const u8) !?Original {
-        return self.get_original_fn(self.context, allocator, path);
+    pub fn getOriginalResource(self: QuickDiffProvider, allocator: Allocator, resource: std.Uri) !?Original {
+        return self.get_original_fn(self.context, allocator, resource);
     }
 };
 
@@ -99,7 +99,7 @@ pub const IQuickDiffService = struct {
     get_quick_diffs_fn: *const fn (
         context: *anyopaque,
         allocator: Allocator,
-        path: []const u8,
+        resource: std.Uri,
         language: ?[]const u8,
         is_synchronized: bool,
     ) anyerror![]QuickDiff,
@@ -118,11 +118,11 @@ pub const IQuickDiffService = struct {
     pub fn getQuickDiffs(
         self: IQuickDiffService,
         allocator: Allocator,
-        path: []const u8,
+        resource: std.Uri,
         language: ?[]const u8,
         is_synchronized: bool,
     ) ![]QuickDiff {
-        return self.get_quick_diffs_fn(self.context, allocator, path, language, is_synchronized);
+        return self.get_quick_diffs_fn(self.context, allocator, resource, language, is_synchronized);
     }
 
     pub fn toggleQuickDiffProviderVisibility(self: IQuickDiffService, id: []const u8) void {
