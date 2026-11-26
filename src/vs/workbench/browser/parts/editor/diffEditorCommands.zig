@@ -8,6 +8,8 @@ const service = @import("diffEditorCommandsService.zig");
 const configuration = @import("../../../../platform/configuration/common/configuration.zig");
 const Expr = @import("../../../../platform/contextkey/common/contextkey.zig").Expr;
 const compare_active = Expr{ .Defined = "textCompareEditorActive" };
+const can_swap = Expr{ .Defined = "activeCompareEditorCanSwap" };
+const compare_can_swap = Expr{ .And = @constCast(&[_]*const Expr{ &compare_active, &can_swap }) };
 const compare_visible = Expr{ .Defined = "textCompareEditorVisible" };
 const in_diff = Expr{ .Defined = "isInDiffEditor" };
 const keys = @import("../../../../base/common/keyCodes.zig");
@@ -36,17 +38,20 @@ pub const diff_actions = [_]actions.Action2{
         .context = @constCast(&{}),
         .run_fn = previous,
     },
-    .{ .command = .{ .id = "workbench.action.compareEditor.swapSides", .title = "Swap Sides", .category = "Diff" }, .f1 = true, .context = @constCast(&{}), .run_fn = swap },
+    .{ .command = .{ .id = "workbench.action.compareEditor.swapSides", .title = "Swap Left and Right Editor Side", .category = "Compare", .precondition = &compare_can_swap }, .f1 = true, .context = @constCast(&{}), .run_fn = swap },
     .{ .command = .{ .id = "workbench.action.compareEditor.refreshDiff", .title = "Refresh Diff", .category = "Diff" }, .f1 = true, .context = @constCast(&{}), .run_fn = refresh },
     viewModeAction("toggle.diff.renderSideBySide", "Toggle Inline View", .toggle, true),
     viewModeAction("diffEditor.setViewMode.inline", "Inline View", .inline_view, false),
     viewModeAction("diffEditor.setViewMode.sideBySide", "Side by Side View", .side_by_side, false),
     viewModeAction("diffEditor.setViewMode.automatic", "Automatic View", .automatic, false),
+    .{ .command = .{ .id = "diffEditor.viewMode.inlineTemporary", .title = "Inline (Temporary)" }, .context = @constCast(&{}), .run_fn = noOp },
     focusAction("workbench.action.compareEditor.focusPrimarySide", "Focus Modified Side", .modified),
     focusAction("workbench.action.compareEditor.focusSecondarySide", "Focus Original Side", .original),
     focusAction("workbench.action.compareEditor.focusOtherSide", "Focus Other Side", .toggle),
     .{ .command = .{ .id = "toggle.diff.ignoreTrimWhitespace", .title = "Toggle Ignore Trim Whitespace" }, .context = @constCast(&{}), .run_fn = toggleWhitespace },
 };
+
+fn noOp(_: *anyopaque, _: ServicesAccessor) !void {}
 
 fn openSide(_: *anyopaque, accessor: ServicesAccessor) !void {
     try (try accessor.get(service.diff_editor_commands_service_id)).openActiveDiffSide();

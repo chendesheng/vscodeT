@@ -119,6 +119,7 @@ pub fn registerActions(commands: *CommandRegistry, instantiation: *Instantiation
     for (contributions.git_open) |action| try commands.registerAction(instantiation, action);
     for (@import("browser/parts/editor/diffEditorCommands.zig").diff_actions) |action| try commands.registerAction(instantiation, action);
     for (@import("../editor/browser/widget/diffEditor/commands.zig").diff_actions) |action| try commands.registerAction(instantiation, action);
+    try @import("browser/parts/editor/editor.contribution.zig").registerDiffEditorTitle(&commands.menus);
     try commands.registerAction(instantiation, @import("browser/actions/layoutActions.zig").toggle_sidebar_visibility_action);
     for (@import("browser/parts/sidebar/sidebarActions.zig").sidebar_actions) |action| try commands.registerAction(instantiation, action);
     for (activity_bar_mod.switch_sidebar_actions) |action| try commands.registerAction(instantiation, action);

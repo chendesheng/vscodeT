@@ -418,6 +418,7 @@ pub const TerminalWorkbench = struct {
     hovered_tab: ?*Tab = null,
     hovered_pane: ?*GroupPane = null,
     hovered_title_action_pane: ?*GroupPane = null,
+    hovered_title_toolbar_id: ?[]const u8 = null,
     /// Pointer capture for the side-bar divider drag.
     hovered_sash: ?union(enum) { workbench: WorkbenchGrid.Sash, editor: *LayoutNode } = null,
     declarative: ?*const extensions_registry.Registry = null,
@@ -1062,6 +1063,8 @@ pub const TerminalWorkbench = struct {
         self.focus_subscriptions[4] = try self.activity_bar_part.on_did_change.listenSignal(self, updatePartFocus);
         _ = try self.layout.on_did_change.listen(self, onGridChanged);
         self.menu_service.useContextService(self.context_keys.?);
+        try self.part.attachTitleMenus(.{ .menus = &self.menu_service, .parent_context = self.core.context_keys.getContext(), .context = self, .request_frame = requestWorkbenchFrame });
+        errdefer self.part.disposeTitleMenus();
         try self.panel_part.attachTitleMenu(&self.menu_service, self.core.context_keys.getContext());
         _ = try self.panel_part.on_did_change.listenSignal(self, struct {
             fn run(host: *TerminalWorkbench) !void {
@@ -1577,6 +1580,10 @@ pub const TerminalWorkbench = struct {
         if (self.terminal_focus_subscription) |subscription| subscription.dispose();
         self.terminal_tabbed_view.on_list_focus = null;
         self.core.cancelRestoreTimer();
+        // Title menus subscribe to the shared registry and scoped contexts.
+        // Detach them before those services are disposed, not with the later
+        // native tab/view teardown.
+        self.part.disposeTitleMenus();
         if (self.context_keys != null) {
             self.terminal_context.deinit();
             self.workbench_context.deinit();
@@ -3743,6 +3750,7 @@ pub const TerminalWorkbench = struct {
         self.hovered_tab = null;
         self.hovered_pane = null;
         self.hovered_title_action_pane = null;
+        self.hovered_title_toolbar_id = null;
         if (self.breadcrumbs.activeControl()) |control| control.clearHover();
     }
 

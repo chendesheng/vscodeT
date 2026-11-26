@@ -9910,6 +9910,69 @@ test "Diff editor commands resolve the active snapshot pane through their servic
     try std.testing.expect(wb.activeTab().?.editor.isReadOnly());
 }
 
+test "Diff editor commands: retained title menu exposes navigation, toggles and view modes" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "title.txt", "a\nb\n");
+    defer allocator.free(path);
+    const settings = try seedFile(allocator, io, &tmp, "settings.json", "{}");
+    defer allocator.free(settings);
+    const window = try TestWindow.init(allocator, io, &.{}, 100, 25);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.setUserSettingsPaths(&.{settings});
+    wb.ensureConfigurationReady();
+    try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "old\na\nb\nc\nd\ne\nf\ng\nlast", "new\na\nb\nc\nd\ne\nf\ng\nLAST", "old", "new");
+    const pane = wb.activePane().?;
+    const widget = pane.activeTab().?.diff.?.widget;
+    var frame: std.Io.Writer.Allocating = .init(allocator);
+    defer frame.deinit();
+    try renderFrame(wb, &frame.writer);
+    try std.testing.expectEqual(@as(usize, 6), pane.toolbar_hits.items.len);
+    try std.testing.expectEqualStrings("workbench.action.compareEditor.previousChange", pane.toolbar_hits.items[0].id);
+    try std.testing.expectEqualStrings("workbench.action.compareEditor.nextChange", pane.toolbar_hits.items[1].id);
+    try std.testing.expect(pane.toolbar_hits.items[1].enabled);
+    const before = widget.current_change.?;
+    var click: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = pane.toolbar_hits.items[1].start + 1, .y = ui.cell.snap(pane.rect.y) };
+    try std.testing.expect(terminal_workbench.handleTabMouse(wb, &click));
+    try std.testing.expect(widget.current_change.? != before);
+    try std.testing.expectEqualStrings("toggle.diff.ignoreTrimWhitespace", pane.toolbar_hits.items[3].id);
+    click.x = pane.toolbar_hits.items[3].start + 1;
+    try std.testing.expect(terminal_workbench.handleTabMouse(wb, &click));
+    try std.testing.expect(!widget.options.ignore_trim_whitespace);
+    try renderFrame(wb, &frame.writer);
+    const overflow = pane.toolbar_hits.items[pane.toolbar_hits.items.len - 1];
+    try std.testing.expectEqualStrings("editorTitle.overflow", overflow.id);
+    click.x = overflow.start + 1;
+    try std.testing.expect(terminal_workbench.handleTabMouse(wb, &click));
+    const menu = wb.context_menu_service.current.?.popup.?;
+    try std.testing.expectEqualStrings("Diff View", menu.items[0].label);
+    const modes = menu.items[0].submenu;
+    try std.testing.expectEqual(@as(usize, 3), modes.len);
+    try std.testing.expectEqualStrings("Inline", modes[0].label);
+    try std.testing.expectEqualStrings("Side by Side", modes[1].label);
+    try std.testing.expectEqualStrings("Automatic (Currently Side by Side)", modes[2].label);
+    try std.testing.expect(modes[2].checked);
+    try std.testing.expect(wb.context_menu_service.handleKey(&.{ .key = .home }));
+    try std.testing.expect(wb.context_menu_service.handleKey(&.{ .key = .right }));
+    try std.testing.expect(wb.context_menu_service.handleKey(&.{ .key = .enter }));
+    try std.testing.expect(widget.inline_mode);
+
+    // The inactive group's menu continues to use its own diff context.
+    try wb.commands.execute("workbench.action.newGroupRight");
+    try wb.openPath(path);
+    const file_pane = wb.activePane().?;
+    try std.testing.expect(file_pane != pane);
+    try renderFrame(wb, &frame.writer);
+    try std.testing.expectEqual(@as(usize, 0), file_pane.toolbar_hits.items.len);
+    try std.testing.expect(pane.toolbar_hits.items.len > 0);
+    click.x = pane.toolbar_hits.items[0].start + 1;
+    try std.testing.expect(terminal_workbench.handleTabMouse(wb, &click));
+    try std.testing.expectEqual(pane, wb.activePane().?);
+}
+
 fn chooseContextMenuItem(wb: *Workbench, label: []const u8) !void {
     const service = &wb.context_menu_service;
     try std.testing.expect(service.handleKey(&.{ .key = .home }));

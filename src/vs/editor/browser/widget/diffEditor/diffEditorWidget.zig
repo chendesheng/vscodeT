@@ -41,6 +41,22 @@ pub const DiffEditorDecorations = decorations_mod.DiffEditorDecorations;
 pub const Options = diff_editor_options.Options;
 
 pub const Side = enum { original, modified };
+
+/// The upstream diff-editor context keys are derived from the current model,
+/// display options and width layout, and notify title/menu consumers on change.
+pub const ContextState = struct {
+    has_changes: bool = false,
+    inline_mode: bool = false,
+    automatic_side_by_side: bool = false,
+    temporary_inline_mode: bool = false,
+    render_side_by_side: bool = true,
+    auto_inline: bool = true,
+    ignore_whitespace: bool = true,
+    hide_unchanged: bool = false,
+};
+
+const Emitter = @import("../../../../base/common/event.zig").Emitter;
+
 /// Terminal adapter type is supplied by the editor composition root. The
 /// diff widget owns both editors and their upstream layout/selection flow.
 pub fn DiffEditorWidget(comptime View: type) type {
@@ -65,6 +81,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
         moved_blocks: moved_feature.MovedBlocksLinesFeature = undefined,
         move_listener: ?usize = null,
         diff_listener: ?usize = null,
+        context_state: ContextState = .{},
+        on_did_change_context: Emitter(void),
         laying_out: bool = false,
         layout_pending: bool = false,
 
@@ -269,6 +287,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .options = normalized_options,
                 .inline_mode = is_inline,
                 .view_model = diff_model,
+                .on_did_change_context = Emitter(void).init(allocator),
                 .accessible_viewer = accessible_module.AccessibleDiffViewer.init(allocator),
                 .decorations = decorations,
                 .original_editor = original_editor,
@@ -277,6 +296,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .modified_view = modified_view,
             };
             model_owned = false;
+            errdefer self.on_did_change_context.deinit();
             errdefer self.view_model.deinit();
             try self.view_model.initializeUnchangedRegions(normalized_options.hide_unchanged_regions, normalized_options.hide_unchanged_regions_minimum_line_count, normalized_options.hide_unchanged_regions_context_line_count);
             self.overview.init(allocator, original_editor, modified_editor);
@@ -317,6 +337,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.decorations.deinit();
             allocator.destroy(self.decorations);
             self.view_model.deinit();
+            self.on_did_change_context.deinit();
 
             self.original_view.deinit();
             self.modified_view.deinit();
@@ -497,6 +518,23 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.overview.invalidate();
             self.accessible_viewer.layout(self.width, self.height) catch {};
             if (self.sync_top_line and self.sideBySide()) self.syncTopLines();
+            self.updateContextState(smart_inline);
+        }
+
+        fn updateContextState(self: *Self, smart_inline: bool) void {
+            const next: ContextState = .{
+                .has_changes = self.changeCount() > 0,
+                .inline_mode = self.inline_mode,
+                .automatic_side_by_side = self.width_based_layout.renderSideBySideInAutomaticMode(self.options, false, smart_inline),
+                .temporary_inline_mode = self.width_based_layout.temporaryInlineMode(),
+                .render_side_by_side = self.options.render_side_by_side,
+                .auto_inline = self.options.use_inline_view_when_space_is_limited,
+                .ignore_whitespace = self.options.ignore_trim_whitespace,
+                .hide_unchanged = self.options.hide_unchanged_regions,
+            };
+            if (std.meta.eql(self.context_state, next)) return;
+            self.context_state = next;
+            self.on_did_change_context.fire({}) catch {};
         }
 
         fn isSimpleDiff(self: *const Self) bool {

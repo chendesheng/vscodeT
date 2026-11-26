@@ -31,6 +31,7 @@ const ui = @import("ui");
 const theme_colors_mod = @import("../../themeColors.zig");
 const file_icon = @import("../../../services/themes/browser/fileIconThemeData.zig");
 const editor_group_view = @import("./editorGroupView.zig");
+const title_control = @import("editorTitleControl.zig");
 
 const CellGrid = ui.CellGrid;
 const PaintStyle = ui.cell.PaintStyle;
@@ -68,6 +69,9 @@ pub const DrawOptions = struct {
     group_active: bool = true,
     hovered: ?usize = null,
     title_action: ?TitleAction = null,
+    title_toolbar: ?*const title_control.EditorTitleControl = null,
+    toolbar_hits: ?*std.array_list.Managed(title_control.ToolbarHit) = null,
+    toolbar_hovered: ?[]const u8 = null,
     /// Ordered insertion index of a live tab drag over this strip, or null.
     /// Upstream paints this as `drop-target-left`/`drop-target-right`.
     drop_index: ?usize = null,
@@ -217,6 +221,7 @@ pub const RedrawOptions = struct {
     group_active: bool,
     hovered_tab: ?*Tab,
     title_hovered: bool,
+    toolbar_hovered: ?[]const u8 = null,
     drop_index: ?usize,
     cell_borders: bool,
 };
@@ -234,6 +239,7 @@ pub fn tabSizing(config: ?*ConfigurationService) TabSizing {
 pub fn redraw(pane: *GroupView, grid: *CellGrid, options: RedrawOptions) !void {
     if (pane.titleHeight() == 0) {
         pane.title_action_hit = null;
+        pane.toolbar_hits.clearRetainingCapacity();
         pane.hits.clearRetainingCapacity();
         return;
     }
@@ -284,6 +290,9 @@ pub fn redraw(pane: *GroupView, grid: *CellGrid, options: RedrawOptions) !void {
             .close_button_left = std.mem.eql(u8, close_button, "left"),
             .tab_sizing = tabSizing(options.configuration),
             .title_action = title_action,
+            .title_toolbar = &pane.title_control,
+            .toolbar_hits = &pane.toolbar_hits,
+            .toolbar_hovered = options.toolbar_hovered,
             .drop_index = options.drop_index,
             .cell_borders = options.cell_borders,
         },
@@ -388,6 +397,7 @@ pub fn draw(
     palette: ?*const theme_colors_mod.ThemeColors,
 ) !?TitleActionHit {
     hits.clearRetainingCapacity();
+    if (options.toolbar_hits) |toolbar_hits| toolbar_hits.clearRetainingCapacity();
     if (row >= grid.rows) return null;
     if (x >= grid.cols) return null;
 
@@ -470,12 +480,29 @@ pub fn draw(
     grid.fillRect(@floatFromInt(x), @floatFromInt(row), @floatFromInt(cols), 1, strip_background);
     if (tabs.len == 0) return null;
 
-    const action_width: usize = if (options.title_action != null and cols >= 16) 3 else 0;
+    const toolbar = options.title_toolbar;
+    const primary_actions = if (toolbar) |control| control.primaryActions() else &.{};
+    var primary_count: usize = 0;
+    for (primary_actions) |action| if (title_control.EditorTitleControl.actionVisible(action)) {
+        primary_count += 1;
+    };
+    const has_secondary = if (toolbar) |control| control.hasSecondaryActions() else false;
+    // Keep the active label intact whenever the title row has room, then
+    // move excess primary actions into the overflow rather than clipping it.
+    const active_width = if (active < tabs.len) tabWidth(tabs[active], cols, if (options.tab_sizing == .fixed) .fixed else .shrink, 1) else 5;
+    const reserved_tab_width = @max(@min(active_width, cols -| 3), 5);
+    const max_slots = (cols -| reserved_tab_width) / 3;
+    const use_toolbar = (primary_count > 0 or has_secondary) and max_slots > 0;
+    const show_overflow = use_toolbar and (has_secondary or primary_count > max_slots);
+    const visible_primary = if (use_toolbar) @min(primary_count, max_slots -| @intFromBool(show_overflow)) else 0;
+    const legacy_action = !use_toolbar and options.title_action != null and cols >= 16;
+    const action_width = if (use_toolbar) 3 * (visible_primary + @intFromBool(show_overflow)) else if (legacy_action) @as(usize, 3) else 0;
     const layout_cols = cols -| action_width;
     const widths = try grid.allocator.alloc(usize, tabs.len);
     defer grid.allocator.free(widths);
     for (tabs, 0..) |tab, index| {
-        widths[index] = tabWidth(tab, layout_cols, options.tab_sizing, tabs.len);
+        const sizing = if (use_toolbar and index == active and options.tab_sizing != .fixed) .shrink else options.tab_sizing;
+        widths[index] = tabWidth(tab, layout_cols, sizing, tabs.len);
     }
 
     // Find the first tab to paint. Start at zero unless the active tab would
@@ -611,7 +638,32 @@ pub fn draw(
         drawDropIndicator(grid, row, x, layout_cols, hits.items, drop_index, drop_style, options.cell_borders);
     }
 
-    if (options.title_action) |action| {
+    if (use_toolbar) {
+        var slot: usize = 0;
+        for (primary_actions) |action| {
+            if (!title_control.EditorTitleControl.actionVisible(action)) continue;
+            if (slot == visible_primary) break;
+            const start = x + layout_cols + slot * 3;
+            const hovered = if (options.toolbar_hovered) |id| std.mem.eql(u8, id, action.id()) else false;
+            var paint = if (action.checked() == true) title_action_active_style else if (hovered) title_action_hover_style else title_action_style;
+            if (!action.enabled()) paint.fg = inactive_style.fg;
+            for (start..start + 3) |cell| grid.putCodepoint(cell, row, ' ', 1, paint);
+            grid.putCodepoint(start + 1, row, title_control.EditorTitleControl.glyph(action), 1, paint);
+            if (options.toolbar_hits) |toolbar_hits| try toolbar_hits.append(.{ .start = start, .end = start + 3, .id = action.id(), .enabled = action.enabled() });
+            slot += 1;
+        }
+        if (show_overflow) {
+            const start = x + layout_cols + slot * 3;
+            const hovered = if (options.toolbar_hovered) |id| std.mem.eql(u8, id, title_control.overflow_id) else false;
+            const paint = if (hovered) title_action_hover_style else title_action_style;
+            for (start..start + 3) |cell| grid.putCodepoint(cell, row, ' ', 1, paint);
+            grid.putCodepoint(start + 1, row, '…', 1, paint);
+            if (options.toolbar_hits) |toolbar_hits| try toolbar_hits.append(.{ .start = start, .end = start + 3, .id = title_control.overflow_id, .enabled = true, .include_navigation = visible_primary < primary_count });
+        }
+        return null;
+    }
+    if (legacy_action) {
+        const action = options.title_action.?;
         const start = x + cols - 2;
         const paint = if (action.active)
             title_action_active_style

@@ -72,6 +72,7 @@ pub fn EditorPart(comptime GroupView: type) type {
         /// Last viewport assigned by `layout`; sash resizes reuse it.
         viewport: ui.Rect = .{},
         window: ?*@import("../../../../base/common/windowDispatch.zig").Queue = null,
+        title_host: ?@import("editorTitleControl.zig").Host = null,
 
         /// Creates the part and the group view for the service's first group.
         pub fn init(
@@ -838,6 +839,17 @@ pub fn EditorPart(comptime GroupView: type) type {
             if (@hasDecl(GroupView, "attachWindow")) for (self.group_views.items) |view| view.attachWindow(window);
         }
 
+        pub fn attachTitleMenus(self: *Self, host: @import("editorTitleControl.zig").Host) !void {
+            self.title_host = host;
+            errdefer self.disposeTitleMenus();
+            if (@hasDecl(GroupView, "attachTitleMenu")) for (self.group_views.items) |view| try view.attachTitleMenu(host);
+        }
+
+        pub fn disposeTitleMenus(self: *Self) void {
+            self.title_host = null;
+            if (@hasDecl(GroupView, "attachTitleMenu")) for (self.group_views.items) |view| view.title_control.deinit();
+        }
+
         fn createView(self: *Self, group: *editor_groups.EditorGroup) !*GroupView {
             const view = try self.allocator.create(GroupView);
             errdefer self.allocator.destroy(view);
@@ -845,6 +857,7 @@ pub fn EditorPart(comptime GroupView: type) type {
             if (@hasDecl(GroupView, "attachWindow")) if (self.window) |window| view.attachWindow(window);
             errdefer view.deinit();
             if (@hasDecl(GroupView, "registerModelListeners")) try view.registerModelListeners();
+            if (@hasDecl(GroupView, "attachTitleMenu")) if (self.title_host) |host| try view.attachTitleMenu(host);
             // Upstream `doCreateGroupView`: a focused group becomes the active
             // group (`doSetGroupActive`); the group view owns the focus event.
             _ = try view.on_did_focus.listen(self, onGroupDidFocus);

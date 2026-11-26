@@ -473,6 +473,7 @@ fn renderPane(self: *Workbench, pane: *shell.GroupPane) !void {
     if (pane.isEmpty()) {
         pane.hits.clearRetainingCapacity();
         pane.title_action_hit = null;
+        pane.toolbar_hits.clearRetainingCapacity();
         return;
     }
 
@@ -485,6 +486,7 @@ fn renderPane(self: *Workbench, pane: *shell.GroupPane) !void {
         .group_active = active_group,
         .hovered_tab = if (self.hovered_pane == pane) self.hovered_tab else null,
         .title_hovered = self.hovered_title_action_pane == pane,
+        .toolbar_hovered = if (self.hovered_title_action_pane == pane) self.hovered_title_toolbar_id else null,
         .drop_index = if (self.editor_drop_target.drag_tab_drop) |drop| (if (drop.pane == pane) drop.index else null) else null,
         .cell_borders = self.part.cell_borders,
     });
@@ -1018,6 +1020,14 @@ pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
     if (event.kind == .move) {
         if (pane.tabs_visible and event.y == pane_y) {
             self.hovered_pane = pane;
+            self.hovered_title_toolbar_id = null;
+            if (@import("../vs/workbench/browser/parts/editor/editorTitleControl.zig").EditorTitleControl.hitAt(pane.toolbar_hits.items, event.x)) |hit| {
+                self.hovered_title_action_pane = pane;
+                self.hovered_title_toolbar_id = hit.id;
+                self.hovered_tab = null;
+                self.pointer = if (hit.enabled) .pointer else .default;
+                return true;
+            }
             if (pane.title_action_hit) |hit| {
                 if (event.x >= hit.start and event.x < hit.end) {
                     self.hovered_title_action_pane = pane;
@@ -1091,10 +1101,12 @@ pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
     // Every non-move event on the tab row resolves the shape here, before
     // the click paths below return early.
     {
-        const over_action = if (pane.title_action_hit) |action_hit|
+        const over_toolbar = @import("../vs/workbench/browser/parts/editor/editorTitleControl.zig").EditorTitleControl.hitAt(pane.toolbar_hits.items, event.x);
+        const over_legacy = if (pane.title_action_hit) |action_hit|
             event.x >= action_hit.start and event.x < action_hit.end
         else
             false;
+        const over_action = over_legacy or (over_toolbar != null and over_toolbar.?.enabled);
         self.pointer = if (over_action or tab_bar.hitAt(pane.hits.items, event.x) != null)
             .pointer
         else
@@ -1131,6 +1143,12 @@ pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         }
 
         if (event.button == .left) {
+            if (@import("../vs/workbench/browser/parts/editor/editorTitleControl.zig").EditorTitleControl.hitAt(pane.toolbar_hits.items, event.x)) |hit| {
+                pane.title_control.runAction(hit, self.context_menu_api, .mouse(event)) catch |err| self.setStatusHint("Editor title action failed: {s}", .{@errorName(err)});
+                if (self.context_menu_service.current == null) self.focusEditor();
+                self.requestFrame();
+                return true;
+            }
             if (pane.title_action_hit) |hit| {
                 if (event.x >= hit.start and event.x < hit.end) {
                     if (pane.activeTab()) |tab| {

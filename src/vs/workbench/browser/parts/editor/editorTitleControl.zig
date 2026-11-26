@@ -1,0 +1,169 @@
+// Port of the EditorTitleControl menu/toolbar ownership in
+// src/vs/workbench/browser/parts/editor/editorTitleControl.ts.
+// The terminal draws the primary icon actions and overflow in one title row.
+// The retained menu observes registry/context events; the group binds the
+// active diff widget's context rather than deriving it during paint.
+const std = @import("std");
+const action_mod = @import("../../../../base/common/actions.zig");
+const contextkey = @import("../../../../platform/contextkey/common/contextkey.zig");
+const actions = @import("../../../../platform/actions/common/actions.zig");
+const menus = @import("../../../../platform/actions/common/menuService.zig");
+const context_menus = @import("../../../../platform/contextview/browser/contextMenuService.zig");
+const DiffWidget = @import("../../../../editor/browser/widget/diffEditor/diffEditorWidget.zig").DiffEditorWidget(@import("../../../../editor/browser/widget/codeEditor/terminalEditorView.zig").IEditorView);
+
+pub const Host = struct {
+    menus: *menus.MenuService,
+    parent_context: contextkey.IContext,
+    context: *anyopaque,
+    request_frame: *const fn (*anyopaque) void,
+};
+
+pub const ToolbarHit = struct {
+    start: usize,
+    end: usize,
+    id: []const u8,
+    enabled: bool,
+    include_navigation: bool = false,
+};
+
+pub const overflow_id = "editorTitle.overflow";
+
+pub const EditorTitleControl = struct {
+    allocator: std.mem.Allocator,
+    host: ?Host = null,
+    menu: ?*menus.Menu = null,
+    widget: ?*DiffWidget = null,
+    widget_listener: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
+
+    pub fn attach(self: *EditorTitleControl, host: Host) !void {
+        if (self.menu != null) return;
+        self.host = host;
+        const menu = try host.menus.createMenu(self.allocator, actions.menu_ids.EditorTitle, self.context());
+        errdefer {
+            menu.deinit();
+            self.allocator.destroy(menu);
+        }
+        _ = try menu.onDidChange.listenSignal(self, onMenuChanged);
+        self.menu = menu;
+    }
+
+    pub fn deinit(self: *EditorTitleControl) void {
+        self.detachWidget();
+        if (self.menu) |menu| {
+            menu.deinit();
+            self.allocator.destroy(menu);
+        }
+        self.menu = null;
+        self.host = null;
+    }
+
+    fn detachWidget(self: *EditorTitleControl) void {
+        if (self.widget_listener) |listener| listener.dispose();
+        self.widget_listener = null;
+        self.widget = null;
+    }
+
+    pub fn setActiveDiff(self: *EditorTitleControl, widget: ?*DiffWidget) !void {
+        if (self.menu == null or self.widget == widget) return;
+        self.detachWidget();
+        if (widget) |value| {
+            self.widget = value;
+            self.widget_listener = try value.on_did_change_context.listenSignal(self, onWidgetChanged);
+        }
+        try self.refresh();
+    }
+
+    fn onWidgetChanged(self: *EditorTitleControl) !void {
+        try self.refresh();
+    }
+
+    fn refresh(self: *EditorTitleControl) !void {
+        if (self.menu) |menu| try menu.refresh();
+        try onMenuChanged(self);
+    }
+
+    fn onMenuChanged(self: *EditorTitleControl) !void {
+        if (self.host) |host| host.request_frame(host.context);
+    }
+
+    fn context(self: *EditorTitleControl) contextkey.IContext {
+        return .{ .context = self, .get_value = getValue };
+    }
+
+    fn getValue(ptr: *anyopaque, key: []const u8) contextkey.ContextKeyValue {
+        const self: *EditorTitleControl = @ptrCast(@alignCast(ptr));
+        const widget = self.widget;
+        for ([_][]const u8{ "isInDiffEditor", "textCompareEditorActive", "activeCompareEditorCanSwap" }) |name| {
+            if (std.mem.eql(u8, key, name)) return .{ .boolean = widget != null };
+        }
+        if (std.mem.eql(u8, key, "diffEditorHasChanges")) return .{ .boolean = if (widget) |value| value.context_state.has_changes else false };
+        if (std.mem.eql(u8, key, "diffEditorInlineMode")) return .{ .boolean = if (widget) |value| value.context_state.inline_mode else false };
+        if (std.mem.eql(u8, key, "diffEditorAutomaticRenderSideBySide")) return .{ .boolean = if (widget) |value| value.context_state.automatic_side_by_side else true };
+        if (std.mem.eql(u8, key, "diffEditorTemporaryInlineMode")) return .{ .boolean = if (widget) |value| value.context_state.temporary_inline_mode else false };
+        if (widget) |value| {
+            const state = value.context_state;
+            if (std.mem.eql(u8, key, "config.diffEditor.renderSideBySide")) return .{ .boolean = state.render_side_by_side };
+            if (std.mem.eql(u8, key, "config.diffEditor.useInlineViewWhenSpaceIsLimited")) return .{ .boolean = state.auto_inline };
+            if (std.mem.eql(u8, key, "config.diffEditor.ignoreTrimWhitespace")) return .{ .boolean = state.ignore_whitespace };
+            if (std.mem.eql(u8, key, "config.diffEditor.hideUnchangedRegions.enabled")) return .{ .boolean = state.hide_unchanged };
+        }
+        return if (self.host) |host| host.parent_context.getValue(key) else .undefined_value;
+    }
+
+    pub fn primaryActions(self: *const EditorTitleControl) []const action_mod.IAction {
+        const menu = self.menu orelse return &.{};
+        for (menu.getActions()) |group| {
+            if (std.mem.eql(u8, group.id, "navigation")) return group.actions;
+        }
+        return &.{};
+    }
+
+    pub fn hasSecondaryActions(self: *const EditorTitleControl) bool {
+        const menu = self.menu orelse return false;
+        for (menu.getActions()) |group| {
+            if (!std.mem.eql(u8, group.id, "navigation") and group.actions.len > 0) return true;
+        }
+        return false;
+    }
+
+    pub fn actionVisible(action: action_mod.IAction) bool {
+        return if (menus.MenuItemAction.from(action)) |item| !item.hidden else true;
+    }
+
+    pub fn glyph(action: action_mod.IAction) u21 {
+        const icon = if (menus.MenuItemAction.from(action)) |item| item.item.icon orelse "" else "";
+        if (std.mem.eql(u8, icon, "diff-editor-previous-change")) return '↑';
+        if (std.mem.eql(u8, icon, "diff-editor-next-change")) return '↓';
+        if (std.mem.eql(u8, icon, "arrow-swap")) return '↔';
+        if (std.mem.eql(u8, icon, "diff-editor-toggle-whitespace")) return '␣';
+        if (std.mem.eql(u8, icon, "map")) return '▤';
+        return '•';
+    }
+
+    pub fn hitAt(hits: []const ToolbarHit, column: usize) ?ToolbarHit {
+        for (hits) |hit| {
+            if (column >= hit.start and column < hit.end) return hit;
+        }
+        return null;
+    }
+
+    pub fn runAction(self: *EditorTitleControl, hit: ToolbarHit, service: context_menus.IContextMenuService, anchor: context_menus.Anchor) !void {
+        if (!hit.enabled) return;
+        if (std.mem.eql(u8, hit.id, overflow_id)) {
+            const host = self.host orelse return;
+            const Context = struct {
+                fn run(_: *@This(), _: []const u8) !void {}
+            };
+            const menu = try context_menus.Menu.init(self.allocator, Context{}, Context.run);
+            errdefer menu.deinit();
+            try menu.appendMenuActions(host.menus, actions.menu_ids.EditorTitle, self.context(), !hit.include_navigation);
+            try service.showContextMenu(menu, anchor);
+            return;
+        }
+        for (self.primaryActions()) |action| {
+            if (!std.mem.eql(u8, action.id(), hit.id)) continue;
+            if (action.enabled()) try action.execute(null);
+            return;
+        }
+    }
+};

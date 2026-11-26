@@ -34,6 +34,7 @@ const Emitter = @import("../../../../base/common/event.zig").Emitter;
 const EditorGroupWatermark = @import("editorGroupWatermark.zig").EditorGroupWatermark;
 const editorPanes = @import("editorPanes.zig");
 const tab_bar = @import("multiEditorTabsControl.zig");
+const title_mod = @import("editorTitleControl.zig");
 const editor_groups = @import("../../../services/editor/common/editorGroupsService.zig");
 const editor_input = @import("../../../common/editor/editorInput.zig");
 const editor_mod = @import("../../../common/editor.zig");
@@ -78,6 +79,8 @@ pub fn EditorGroupView(comptime View: type) type {
         tabs: std.array_list.Managed(View),
         hits: std.array_list.Managed(TabHit),
         title_action_hit: ?tab_bar.TitleActionHit = null,
+        title_control: title_mod.EditorTitleControl,
+        toolbar_hits: std.array_list.Managed(title_mod.ToolbarHit),
         rect: ui.Rect = .{},
         /// The workbench reserves a breadcrumb row when `breadcrumbs.enabled`.
         breadcrumbs_visible: bool = false,
@@ -100,9 +103,19 @@ pub fn EditorGroupView(comptime View: type) type {
                 .group = group,
                 .tabs = std.array_list.Managed(View).init(allocator),
                 .hits = std.array_list.Managed(TabHit).init(allocator),
+                .title_control = .{ .allocator = allocator },
+                .toolbar_hits = .init(allocator),
                 .on_did_focus = Emitter(*Self).init(allocator),
                 .on_did_change_active_editor_pane = .init(allocator),
             };
+        }
+
+        pub fn attachTitleMenu(self: *Self, host: title_mod.Host) !void {
+            try self.title_control.attach(host);
+            if (comptime @hasField(@typeInfo(View).pointer.child, "diff")) {
+                const widget = if (self.panes.activePane()) |tab| if (tab.diff) |diff| diff.widget else null else null;
+                try self.title_control.setActiveDiff(widget);
+            }
         }
 
         pub fn registerModelListeners(self: *Self) !void {
@@ -131,6 +144,8 @@ pub fn EditorGroupView(comptime View: type) type {
         /// disposing the group's editors, then frees the registries.
         pub fn deinit(self: *Self) void {
             self.disposeModelListeners();
+            self.title_control.deinit();
+            self.toolbar_hits.deinit();
             if (self.dom) |dom| {
                 // A tab can already belong to another group before its editor
                 // instance is moved to the new group's container.
@@ -714,6 +729,10 @@ pub fn EditorGroupView(comptime View: type) type {
             const previous = self.panes.activePane();
             self.panes.setActive(pane);
             if (pane != previous) {
+                if (comptime @hasField(@typeInfo(View).pointer.child, "diff")) {
+                    const widget = if (pane) |tab| if (tab.diff) |diff| diff.widget else null else null;
+                    self.title_control.setActiveDiff(widget) catch {};
+                }
                 if (self.updateBreadcrumbsVisibility() and self.panes.page_position != null) self.layout();
             }
             if (pane != previous) {

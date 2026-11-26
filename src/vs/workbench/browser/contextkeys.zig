@@ -39,6 +39,7 @@ pub const WindowContextState = struct {
 const WindowContextKeys = struct {
     editor_focus: contextkeys.IContextKey,
     text_compare_editor_active: contextkeys.IContextKey,
+    active_compare_editor_can_swap: contextkeys.IContextKey,
     text_compare_editor_visible: contextkeys.IContextKey,
     is_in_diff_editor: contextkeys.IContextKey,
     comparing_moved_code: contextkeys.IContextKey,
@@ -73,6 +74,7 @@ const WindowContextKeys = struct {
         return .{
             .editor_focus = try service.createKey("editorFocus", .{ .boolean = false }),
             .text_compare_editor_active = try service.createKey("textCompareEditorActive", .{ .boolean = false }),
+            .active_compare_editor_can_swap = try service.createKey("activeCompareEditorCanSwap", .{ .boolean = false }),
             .text_compare_editor_visible = try service.createKey("textCompareEditorVisible", .{ .boolean = false }),
             .is_in_diff_editor = try service.createKey("isInDiffEditor", .{ .boolean = false }),
             .comparing_moved_code = try service.createKey("comparingMovedCode", .{ .boolean = false }),
@@ -189,6 +191,7 @@ pub const WorkbenchContextKeysHandler = struct {
         const scm_active = std.mem.eql(u8, state.active_activity, "scm");
         keys.editor_focus.set(.{ .boolean = state.editor_focused });
         keys.text_compare_editor_active.set(.{ .boolean = state.active_diff });
+        keys.active_compare_editor_can_swap.set(.{ .boolean = state.active_diff });
         keys.text_compare_editor_visible.set(.{ .boolean = state.visible_diff });
         keys.is_in_diff_editor.set(.{ .boolean = state.active_diff });
         keys.comparing_moved_code.set(.{ .boolean = state.comparing_moved_code });
