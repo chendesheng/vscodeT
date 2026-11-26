@@ -395,24 +395,30 @@ fn lessThanOrdinal(_: void, left: IHoverPart, right: IHoverPart) bool {
 
 fn measureRenderedMarkdown(context: *const anyopaque, max_width: usize) usize {
     const state: *const RenderedMarkdownHover = @ptrCast(@alignCast(context));
+    return measureMarkdownContents(state.contents, max_width);
+}
+
+pub fn measureMarkdownContents(contents: []const markdown.Content, max_width: usize) usize {
     var width: usize = 1;
-    for (state.contents) |content| {
-        width = @max(width, @min(content.maxLineWidth(), max_width));
-    }
+    for (contents) |content| width = @max(width, @min(content.maxLineWidth(), max_width));
     return width;
 }
 
 fn heightRenderedMarkdown(context: *const anyopaque, width: usize) usize {
     const state: *const RenderedMarkdownHover = @ptrCast(@alignCast(context));
+    return heightMarkdownContents(state.allocator, state.contents, width);
+}
+
+pub fn heightMarkdownContents(allocator: Allocator, contents: []const markdown.Content, width: usize) usize {
     var rows: usize = 0;
-    for (state.contents, 0..) |content, content_index| {
+    for (contents, 0..) |content, content_index| {
         if (content_index > 0) rows += 1;
         for (content.lines) |line| {
             if (line.rule or line.no_wrap) {
                 rows += 1;
                 continue;
             }
-            var scratch = std.heap.ArenaAllocator.init(state.allocator);
+            var scratch = std.heap.ArenaAllocator.init(allocator);
             defer scratch.deinit();
             const wrapped = markdown.wrapLine(scratch.allocator(), line, width) catch {
                 rows += 1;
@@ -432,12 +438,16 @@ fn buildRenderedMarkdown(
     top: usize,
 ) !usize {
     const state: *const RenderedMarkdownHover = @ptrCast(@alignCast(context));
+    return buildMarkdownContents(state.contents, doc, parent, width, top);
+}
+
+pub fn buildMarkdownContents(contents: []const markdown.Content, doc: *ui.Document, parent: *ui.Node, width: usize, top: usize) !usize {
     var scratch = std.heap.ArenaAllocator.init(doc.allocator);
     defer scratch.deinit();
     const allocator = scratch.allocator();
 
     var row = top;
-    for (state.contents, 0..) |content, content_index| {
+    for (contents, 0..) |content, content_index| {
         if (content_index > 0) row += 1; // blank separator between hover rows
         for (content.lines) |line| {
             if (line.rule) {

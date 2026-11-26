@@ -215,6 +215,8 @@ pub const OverlayWidgetPositionPreference = enum {
     top_left_corner,
 };
 
+pub const OverlayWidgetCoordinates = struct { left: usize, top: usize };
+
 /// Mirrors upstream `IOverlayWidget`. Positions are computed by the host: a
 /// widget reports its size in cells and the host anchors the container.
 pub const IOverlayWidget = struct {
@@ -224,6 +226,9 @@ pub const IOverlayWidget = struct {
     get_id: *const fn (context: *anyopaque) []const u8,
 
     get_position: *const fn (context: *anyopaque) OverlayWidgetPositionPreference,
+    /// Upstream overlay position coordinates (or a widget-owned DOM position).
+    /// The terminal resolves the same relative coordinates into its cell grid.
+    get_position_coordinates: ?*const fn (*anyopaque, usize, usize, usize, usize) ?OverlayWidgetCoordinates = null,
 
     /// Width in cells at the given editor width.
     width: *const fn (context: *anyopaque, cols: usize) usize,

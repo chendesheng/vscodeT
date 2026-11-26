@@ -82,15 +82,21 @@ pub const ViewOverlayWidgets = struct {
             const height = @min(widget.height(widget.context), editor_height);
             if (width == 0 or height == 0) continue;
 
-            const top: usize = switch (widget.get_position(widget.context)) {
+            var top: usize = switch (widget.get_position(widget.context)) {
                 .top_right_corner, .top_center, .top_left_corner => 0,
                 .bottom_right_corner => editor_height -| height,
             };
-            const left: usize = switch (widget.get_position(widget.context)) {
+            var left: usize = switch (widget.get_position(widget.context)) {
                 .top_right_corner, .bottom_right_corner => cols -| width,
                 .top_center => (cols -| width) / 2,
                 .top_left_corner => 0,
             };
+
+            if (widget.get_position_coordinates) |position| {
+                const coordinates = position(widget.context, cols, editor_height, width, height) orelse continue;
+                top = @min(coordinates.top, editor_height -| height);
+                left = @min(coordinates.left, cols -| width);
+            }
 
             const container = try doc.createElement(.div);
             container.setStyle(.{
@@ -321,4 +327,28 @@ test "overlay widgets place bottom-right/top-center and restore focus" {
     try testing.expectEqual(@as(usize, 8), part.entries.items[1].left);
     try testing.expectEqual(@as(usize, 0), part.entries.items[1].top);
     try testing.expectEqual(center.node.?, doc.activeElement());
+}
+
+test "overlay widgets honor and clamp explicit relative position coordinates" {
+    const allocator = testing.allocator;
+    var doc = try ui.Document.init(allocator, .{ .cols = 20, .rows = 10 });
+    defer doc.deinit();
+    const root = try doc.createElement(.div);
+    doc.setRoot(root);
+    var widget = FakeWidget{};
+    var api = widget.interface();
+    api.get_position_coordinates = struct {
+        fn coordinates(_: *anyopaque, _: usize, _: usize, _: usize, _: usize) ?editorBrowser.OverlayWidgetCoordinates {
+            return .{ .left = 19, .top = 10 };
+        }
+    }.coordinates;
+    var part = ViewOverlayWidgets.init(allocator);
+    defer part.deinit();
+    try part.add(api);
+    try part.render(&doc, root, 20, 10);
+    try testing.expectEqual(1, part.entries.items.len);
+    const rect = part.entries.items[0];
+    try testing.expectEqual(14, rect.left);
+    try testing.expectEqual(8, rect.top);
+    try testing.expect(rect.contains(19, 9));
 }
