@@ -183,6 +183,12 @@ test "ConfigurationService: workspace file settings and folder override" {
     try std.testing.expectEqual(@as(i64, 3), inspected.workspace.?.integer);
     try std.testing.expectEqual(@as(i64, 5), inspected.workspace_folder.?.integer);
     try std.testing.expectEqual(@as(i64, 5), inspected.value.?.integer);
+    try service.interface().updateResourceValue("editor.tabSize", .{ .integer = 7 }, .{ .resource = file_path }, null);
+    try std.testing.expectEqual(@as(i64, 7), service.getValue("editor.tabSize", .{ .resource = file_path }).?.integer);
+    try std.testing.expectEqual(@as(i64, 3), service.getValue("editor.tabSize", .{}).?.integer);
+    try service.interface().updateResourceValue("files.eol", .{ .string = "\r\n" }, .{ .resource = file_path }, null);
+    try std.testing.expectEqualStrings("\r\n", service.getValue("files.eol", .{}).?.string);
+    try std.testing.expectEqual(@as(i64, 7), service.getValue("editor.tabSize", .{ .resource = file_path }).?.integer);
 }
 
 test "ConfigurationService: reload emits a change event" {
@@ -323,6 +329,10 @@ test "ConfigurationService: language overrides from workspace settings" {
     try std.testing.expectEqual(@as(i64, 4), typescript_inspect.value.?.integer);
     try std.testing.expectEqual(@as(usize, 1), typescript_inspect.override_identifiers.len);
     try std.testing.expectEqualStrings("typescript", typescript_inspect.override_identifiers[0]);
+    try service.interface().updateResourceValue("editor.tabSize", .{ .integer = 6 }, .{ .resource = resource, .override_identifier = "typescript" }, null);
+    try std.testing.expectEqual(@as(i64, 6), service.getValue("editor.tabSize", .{ .resource = resource, .override_identifier = "typescript" }).?.integer);
+    try std.testing.expectEqual(@as(i64, 2), service.getValue("editor.tabSize", .{ .resource = resource, .override_identifier = "python" }).?.integer);
+    try std.testing.expectEqual(@as(i64, 2), service.getValue("editor.tabSize", .{}).?.integer);
 }
 
 test "ConfigurationService: untrusted workspaces ignore restricted workspace values" {

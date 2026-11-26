@@ -97,11 +97,19 @@ pub const IConfigurationService = struct {
     get_value: *const fn (context: *anyopaque, key: []const u8) ?*const Value,
     get_value_with_overrides: ?*const fn (*anyopaque, []const u8, Overrides) ?*const Value = null,
     update_value: ?*const fn (*anyopaque, []const u8, ?Value, ConfigurationTarget) anyerror!void = null,
+    update_resource_value: ?*const fn (*anyopaque, []const u8, ?Value, Overrides, ?ConfigurationTarget) anyerror!void = null,
     on_did_change_configuration: ?*@import("../../../base/common/event.zig").Emitter(Change) = null,
 
     pub fn updateValue(self: IConfigurationService, key: []const u8, value: ?Value, target: ConfigurationTarget) !void {
         const update = self.update_value orelse return error.ConfigurationReadOnly;
         try update(self.context, key, value, target);
+    }
+
+    /// Updates the effective configuration location for a resource and its
+    /// language, rather than always overwriting the user setting.
+    pub fn updateResourceValue(self: IConfigurationService, key: []const u8, value: ?Value, overrides: Overrides, target: ?ConfigurationTarget) !void {
+        if (self.update_resource_value) |update| return update(self.context, key, value, overrides, target);
+        return self.updateValue(key, value, target orelse .USER);
     }
 
     pub fn getValue(self: IConfigurationService, key: []const u8) ?*const Value {

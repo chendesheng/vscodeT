@@ -27,16 +27,27 @@ fn snapshotOptions(options: Options) Options {
 }
 
 // Project the diffEditor configuration merged by upstream TextDiffEditor.
-pub fn computeConfiguration(configuration_service: ?@import("../../../../platform/configuration/common/configuration.zig").IConfigurationService) Options {
+const configuration_mod = @import("../../../../platform/configuration/common/configuration.zig");
+
+pub fn computeConfiguration(configuration_service: ?configuration_mod.IConfigurationService) Options {
+    return computeConfigurationForResource(configuration_service, .{});
+}
+
+fn boolSetting(configuration: configuration_mod.IConfigurationService, overrides: configuration_mod.Overrides, key: []const u8, default: bool) bool {
+    const value = configuration.getValueWithOverrides(key, overrides) orelse return default;
+    return if (value.* == .bool) value.bool else default;
+}
+
+pub fn computeConfigurationForResource(configuration_service: ?configuration_mod.IConfigurationService, overrides: configuration_mod.Overrides) Options {
     var options = snapshotOptions(.{});
     if (configuration_service) |configuration| {
-        options.diff_code_lens = configuration.getBool("diffEditor.codeLens", false);
-        options.show_empty_decorations = configuration.getBool("diffEditor.experimental.showEmptyDecorations", true);
-        options.use_true_inline_view = configuration.getBool("diffEditor.experimental.useTrueInlineView", false);
-        options.ignore_trim_whitespace = configuration.getBool("diffEditor.ignoreTrimWhitespace", true);
-        options.render_side_by_side = configuration.getBool("diffEditor.renderSideBySide", true);
-        options.use_inline_view_when_space_is_limited = configuration.getBool("diffEditor.useInlineViewWhenSpaceIsLimited", true);
-        if (configuration.getValue("diffEditor.renderSideBySideInlineBreakpoint")) |value| {
+        options.diff_code_lens = boolSetting(configuration, overrides, "diffEditor.codeLens", false);
+        options.show_empty_decorations = boolSetting(configuration, overrides, "diffEditor.experimental.showEmptyDecorations", true);
+        options.use_true_inline_view = boolSetting(configuration, overrides, "diffEditor.experimental.useTrueInlineView", false);
+        options.ignore_trim_whitespace = boolSetting(configuration, overrides, "diffEditor.ignoreTrimWhitespace", true);
+        options.render_side_by_side = boolSetting(configuration, overrides, "diffEditor.renderSideBySide", true);
+        options.use_inline_view_when_space_is_limited = boolSetting(configuration, overrides, "diffEditor.useInlineViewWhenSpaceIsLimited", true);
+        if (configuration.getValueWithOverrides("diffEditor.renderSideBySideInlineBreakpoint", overrides)) |value| {
             switch (value.*) {
                 .integer => |number| if (number >= 0) {
                     options.minimum_side_by_side_width = @import("../../../services/layout/browser/layoutService.zig").widthInCells(@intCast(number));
@@ -44,18 +55,18 @@ pub fn computeConfiguration(configuration_service: ?@import("../../../../platfor
                 else => {},
             }
         }
-        if (configuration.getValue("diffEditor.wordWrap")) |value| {
+        if (configuration.getValueWithOverrides("diffEditor.wordWrap", overrides)) |value| {
             if (value.* == .string) options.diff_word_wrap = std.meta.stringToEnum(@TypeOf(options.diff_word_wrap), value.string) orelse .inherit;
         }
-        options.render_indicators = configuration.getBool("diffEditor.renderIndicators", true);
-        options.render_gutter_menu = configuration.getBool("diffEditor.renderGutterMenu", true);
-        options.render_margin_revert_icon = configuration.getBool("diffEditor.renderMarginRevertIcon", true);
-        options.render_overview_ruler = configuration.getBool("diffEditor.renderOverviewRuler", true);
-        options.enable_split_view_resizing = configuration.getBool("diffEditor.enableSplitViewResizing", true);
-        options.hide_unchanged_regions = configuration.getBool("diffEditor.hideUnchangedRegions.enabled", false);
-        options.compact_mode = configuration.getBool("diffEditor.compactMode", false);
-        options.hide_original_line_numbers = configuration.getBool("diffEditor.hideOriginalLineNumbers", false);
-        if (configuration.getValue("diffEditor.hideUnchangedRegions.revealLineCount")) |value| {
+        options.render_indicators = boolSetting(configuration, overrides, "diffEditor.renderIndicators", true);
+        options.render_gutter_menu = boolSetting(configuration, overrides, "diffEditor.renderGutterMenu", true);
+        options.render_margin_revert_icon = boolSetting(configuration, overrides, "diffEditor.renderMarginRevertIcon", true);
+        options.render_overview_ruler = boolSetting(configuration, overrides, "diffEditor.renderOverviewRuler", true);
+        options.enable_split_view_resizing = boolSetting(configuration, overrides, "diffEditor.enableSplitViewResizing", true);
+        options.hide_unchanged_regions = boolSetting(configuration, overrides, "diffEditor.hideUnchangedRegions.enabled", false);
+        options.compact_mode = boolSetting(configuration, overrides, "diffEditor.compactMode", false);
+        options.hide_original_line_numbers = boolSetting(configuration, overrides, "diffEditor.hideOriginalLineNumbers", false);
+        if (configuration.getValueWithOverrides("diffEditor.hideUnchangedRegions.revealLineCount", overrides)) |value| {
             switch (value.*) {
                 .integer => |number| if (number >= 0) {
                     options.hide_unchanged_regions_reveal_line_count = @intCast(number);
@@ -63,7 +74,7 @@ pub fn computeConfiguration(configuration_service: ?@import("../../../../platfor
                 else => {},
             }
         }
-        if (configuration.getValue("diffEditor.hideUnchangedRegions.contextLineCount")) |value| {
+        if (configuration.getValueWithOverrides("diffEditor.hideUnchangedRegions.contextLineCount", overrides)) |value| {
             switch (value.*) {
                 .integer => |number| if (number >= 0) {
                     options.hide_unchanged_regions_context_line_count = @intCast(number);
@@ -71,7 +82,7 @@ pub fn computeConfiguration(configuration_service: ?@import("../../../../platfor
                 else => {},
             }
         }
-        if (configuration.getValue("diffEditor.hideUnchangedRegions.minimumLineCount")) |value| {
+        if (configuration.getValueWithOverrides("diffEditor.hideUnchangedRegions.minimumLineCount", overrides)) |value| {
             switch (value.*) {
                 .integer => |number| if (number >= 0) {
                     options.hide_unchanged_regions_minimum_line_count = @intCast(number);
@@ -79,26 +90,26 @@ pub fn computeConfiguration(configuration_service: ?@import("../../../../platfor
                 else => {},
             }
         }
-        if (configuration.getValue("diffEditor.maxComputationTime")) |value| {
+        if (configuration.getValueWithOverrides("diffEditor.maxComputationTime", overrides)) |value| {
             switch (value.*) {
                 .integer => |number| options.max_computation_time_ms = number,
                 else => {},
             }
         }
-        if (configuration.getValue("diffEditor.splitViewDefaultRatio")) |value| {
+        if (configuration.getValueWithOverrides("diffEditor.splitViewDefaultRatio", overrides)) |value| {
             switch (value.*) {
                 .float => |number| options.split_view_default_ratio = number,
                 .integer => |number| options.split_view_default_ratio = @floatFromInt(number),
                 else => {},
             }
         }
-        if (configuration.getValue("diffEditor.experimental.showMoves")) |value| {
+        if (configuration.getValueWithOverrides("diffEditor.experimental.showMoves", overrides)) |value| {
             switch (value.*) {
                 .bool => |enabled| options.show_moves = enabled,
                 else => {},
             }
         }
-        if (configuration.getValue("diffEditor.diffAlgorithm")) |value| {
+        if (configuration.getValueWithOverrides("diffEditor.diffAlgorithm", overrides)) |value| {
             switch (value.*) {
                 .string => |name| options.diff_algorithm = widget_mod.DiffAlgorithmName.fromName(name) orelse .advanced,
                 else => {},

@@ -186,7 +186,7 @@ pub const EditorService = struct {
         left_label: []const u8,
         right_label: []const u8,
     ) !void {
-        try self.openSnapshotDiffWithDiff(factory, io, path, original_text, modified_text, left_label, right_label, text_diff_editor_mod.computeConfiguration(configuration), null, null, .{});
+        try self.openSnapshotDiffWithDiff(factory, io, path, original_text, modified_text, left_label, right_label, text_diff_editor_mod.computeConfigurationForResource(configuration, .{ .resource = path }), null, null, .{});
     }
 
     fn openSnapshotDiffWithDiff(
@@ -498,7 +498,7 @@ pub const EditorOpening = struct {
         errdefer if (source_owned) source.destroy(source.context);
         self.cancelPendingOpen();
         self.cancelPendingDiff();
-        const options = text_diff_editor_mod.computeConfiguration(configuration);
+        const options = text_diff_editor_mod.computeConfigurationForResource(configuration, .{ .resource = path });
         const worker = try self.ensureDiffWorker();
         const path_copy = try self.allocator.dupe(u8, path);
         errdefer self.allocator.free(path_copy);

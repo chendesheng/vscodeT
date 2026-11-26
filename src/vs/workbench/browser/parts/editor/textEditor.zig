@@ -140,7 +140,7 @@ pub const TextEditorConfiguration = struct {
     pub fn applyToTab(self: *TextEditorConfiguration, tab: *Tab) void {
         if (tab.diff) |diff| {
             if (self.configuration.service) |service| {
-                const options = @import("textDiffEditor.zig").computeConfiguration(service.interface());
+                const options = @import("textDiffEditor.zig").computeConfigurationForResource(service.interface(), .{ .resource = diff.widget.modified_editor.path, .override_identifier = diff.widget.modified_editor.languageId() });
                 if (diff.updateOptions(options) catch false) tab.syncDiffViews();
             }
             const settings = self.reader();

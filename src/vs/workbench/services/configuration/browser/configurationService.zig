@@ -420,12 +420,17 @@ pub const ConfigurationService = struct {
     }
 
     pub fn interface(self: *ConfigurationService) configuration.IConfigurationService {
-        return .{ .context = self, .get_value = getValueForInterface, .get_value_with_overrides = getValueWithOverridesForInterface, .update_value = updateValueForInterface, .on_did_change_configuration = &self.change_emitter };
+        return .{ .context = self, .get_value = getValueForInterface, .get_value_with_overrides = getValueWithOverridesForInterface, .update_value = updateValueForInterface, .update_resource_value = updateResourceValueForInterface, .on_did_change_configuration = &self.change_emitter };
     }
 
     fn updateValueForInterface(context: *anyopaque, key: []const u8, value: ?Value, target: configuration.ConfigurationTarget) !void {
         const self: *ConfigurationService = @ptrCast(@alignCast(context));
         try self.updateValue(key, value, target);
+    }
+
+    fn updateResourceValueForInterface(context: *anyopaque, key: []const u8, value: ?Value, overrides: configuration.Overrides, target: ?configuration.ConfigurationTarget) !void {
+        const self: *ConfigurationService = @ptrCast(@alignCast(context));
+        try self.updateResourceValue(key, value, overrides, target);
     }
 
     fn getValueForInterface(context: *anyopaque, key: []const u8) ?*const Value {
@@ -537,31 +542,95 @@ pub const ConfigurationService = struct {
     /// Writes a user setting to the highest-precedence user settings file and
     /// reloads the effective model. JSONC comments are not preserved when the
     /// file has to be rewritten; the terminal keeps the parsed value tree.
-    pub fn updateValue(self: *ConfigurationService, key: []const u8, value: ?std.json.Value, target: configuration.ConfigurationTarget) !void {
-        if (target != .USER) return error.UnsupportedConfigurationTarget;
+    pub fn updateValue(self: *ConfigurationService, key: []const u8, value: ?Value, target: configuration.ConfigurationTarget) !void {
+        if (target != .USER and target != .USER_LOCAL) return error.UnsupportedConfigurationTarget;
         if (self.user_settings_paths.len == 0) return error.NoWritableUserSettings;
-        const path = self.user_settings_paths[self.user_settings_paths.len - 1];
+        try self.writeSettings(self.user_settings_paths[self.user_settings_paths.len - 1], false, key, value, null);
+    }
 
+    fn hasLanguageValue(model: *const ConfigurationModel, key: []const u8, language: ?[]const u8) bool {
+        const identifier = language orelse return false;
+        for (model.overrides) |entry| {
+            for (entry.identifiers) |candidate| {
+                if (std.mem.eql(u8, candidate, identifier) and configuration.getConfigurationValue(&entry.contents, key) != null) return true;
+            }
+        }
+        return false;
+    }
+
+    /// TextResourceConfigurationService's effective-target rule, projected
+    /// onto the local user/workspace/folder stores. Application/remote/memory
+    /// stores are not available in the terminal configuration service.
+    pub fn updateResourceValue(self: *ConfigurationService, key: []const u8, value: ?Value, overrides: configuration.Overrides, explicit_target: ?configuration.ConfigurationTarget) !void {
+        const allow_workspace = if (self.registry.getConfigurationProperties().get(key)) |property| self.allowsWorkspaceValue(property) else self.trusted;
+        const folder = if (allow_workspace) self.folderModel(overrides.resource) else null;
+        const language = overrides.override_identifier;
+        const folder_language = if (folder) |model| hasLanguageValue(model, key, language) else false;
+        const workspace_language = allow_workspace and hasLanguageValue(&self.workspace_model, key, language);
+        const user_language = hasLanguageValue(&self.user, key, language);
+        const target: configuration.ConfigurationTarget = explicit_target orelse if (folder_language) .WORKSPACE_FOLDER else if (workspace_language) .WORKSPACE else if (user_language) .USER_LOCAL else if (folder != null and folder.?.getValue(key) != null) .WORKSPACE_FOLDER else if (allow_workspace and self.workspace_model.getValue(key) != null) .WORKSPACE else .USER_LOCAL;
+        const use_language = folder_language or workspace_language or user_language or hasLanguageValue(&self.defaults, key, language);
+        const identifier = if (use_language) language else null;
+        switch (target) {
+            .USER, .USER_LOCAL => {
+                if (self.user_settings_paths.len == 0) return error.NoWritableUserSettings;
+                try self.writeSettings(self.user_settings_paths[self.user_settings_paths.len - 1], false, key, value, identifier);
+            },
+            .WORKSPACE_FOLDER => {
+                if (!allow_workspace) return error.UnsupportedConfigurationTarget;
+                const resource = overrides.resource orelse return error.NoWorkspaceFolder;
+                const selected = self.workspace.getWorkspaceFolder(resource) orelse return error.NoWorkspaceFolder;
+                const path = try std.fs.path.join(self.allocator, &.{ selected.resource, ".vscode", "settings.json" });
+                defer self.allocator.free(path);
+                try self.writeSettings(path, false, key, value, identifier);
+            },
+            .WORKSPACE => {
+                if (!allow_workspace) return error.UnsupportedConfigurationTarget;
+                if (self.workspace.getWorkspace().configuration) |path| {
+                    try self.writeSettings(path, true, key, value, identifier);
+                } else {
+                    const folders = self.workspace.getWorkspace().folders.items;
+                    if (folders.len != 1) return error.NoWorkspaceFolder;
+                    const path = try std.fs.path.join(self.allocator, &.{ folders[0].resource, ".vscode", "settings.json" });
+                    defer self.allocator.free(path);
+                    try self.writeSettings(path, false, key, value, identifier);
+                }
+            },
+            else => return error.UnsupportedConfigurationTarget,
+        }
+    }
+
+    fn writeSettings(self: *ConfigurationService, path: []const u8, is_workspace_file: bool, key: []const u8, value: ?Value, language: ?[]const u8) !void {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
-        const arena_allocator = arena.allocator();
-        var root: std.json.Value = .{ .object = .{} };
+        const a = arena.allocator();
+        var root: Value = .{ .object = .{} };
         if (Io.Dir.cwd().readFileAlloc(self.io, path, self.allocator, .limited(max_settings_file_size))) |bytes| {
             defer self.allocator.free(bytes);
-            var sanitized = std.array_list.Managed(u8).init(arena_allocator);
-            try sanitized.appendSlice(try configurationModels.stripJsonc(arena_allocator, bytes));
-            if (std.json.parseFromSliceLeaky(std.json.Value, arena_allocator, sanitized.items, .{})) |parsed| {
-                if (std.meta.activeTag(parsed) == .object) root = parsed;
+            const sanitized = try configurationModels.stripJsonc(a, bytes);
+            if (std.json.parseFromSliceLeaky(Value, a, sanitized, .{ .duplicate_field_behavior = .use_last })) |parsed| {
+                if (parsed == .object) root = parsed;
             } else |_| {}
         } else |_| {}
-
-        if (value == null or std.meta.activeTag(value.?) == .null) {
-            _ = root.object.orderedRemove(key);
-        } else {
-            try root.object.put(arena_allocator, key, value.?);
+        var settings = &root;
+        if (is_workspace_file) {
+            const entry = try root.object.getOrPut(a, "settings");
+            if (!entry.found_existing or entry.value_ptr.* != .object) entry.value_ptr.* = .{ .object = .{} };
+            settings = entry.value_ptr;
         }
-
-        if (std.fs.path.dirname(path)) |dir| Io.Dir.cwd().createDirPath(self.io, dir) catch {};
+        if (language) |identifier| {
+            // Reuse a matching single-language override. The combination keys
+            // are independent scopes; only the explicitly requested language
+            // is changed when a new override must be introduced.
+            const language_key = try std.fmt.allocPrint(a, "[{s}]", .{identifier});
+            const entry = try settings.object.getOrPut(a, language_key);
+            if (!entry.found_existing or entry.value_ptr.* != .object) entry.value_ptr.* = .{ .object = .{} };
+            settings = entry.value_ptr;
+        }
+        if (value == null or value.? == .null) {
+            _ = settings.object.orderedRemove(key);
+        } else try settings.object.put(a, key, value.?);
+        if (std.fs.path.dirname(path)) |dir| try Io.Dir.cwd().createDirPath(self.io, dir);
         var out: Io.Writer.Allocating = .init(self.allocator);
         defer out.deinit();
         try std.json.Stringify.value(root, .{}, &out.writer);
@@ -742,7 +811,7 @@ pub const ConfigurationServiceBinding = struct {
     }
 
     pub fn interface(self: *ConfigurationServiceBinding) configuration.IConfigurationService {
-        return .{ .context = self, .get_value = getValue, .get_value_with_overrides = getValueWithOverrides, .update_value = updateValue, .on_did_change_configuration = &self.on_did_change_configuration };
+        return .{ .context = self, .get_value = getValue, .get_value_with_overrides = getValueWithOverrides, .update_value = updateValue, .update_resource_value = updateResourceValue, .on_did_change_configuration = &self.on_did_change_configuration };
     }
 
     fn getValue(context: *anyopaque, key: []const u8) ?*const Value {
@@ -761,6 +830,12 @@ pub const ConfigurationServiceBinding = struct {
         const self: *ConfigurationServiceBinding = @ptrCast(@alignCast(context));
         const service = self.service orelse return error.ConfigurationUnavailable;
         try service.updateValue(key, value, target);
+    }
+
+    fn updateResourceValue(context: *anyopaque, key: []const u8, value: ?Value, overrides: configuration.Overrides, target: ?configuration.ConfigurationTarget) !void {
+        const self: *ConfigurationServiceBinding = @ptrCast(@alignCast(context));
+        const service = self.service orelse return error.ConfigurationUnavailable;
+        try service.updateResourceValue(key, value, overrides, target);
     }
 
     fn forwardChange(change: configuration.Change, self: *ConfigurationServiceBinding) !void {
