@@ -129,3 +129,78 @@ test "Editor: setModel detaches shared cursor tracking and reattaches model upda
     try std.testing.expectEqual(@as(usize, 0), next.editors.items.len);
     try std.testing.expectEqual(@as(usize, 3), second.viewLineCount());
 }
+
+test "CodeEditorWidget: owned Find contribution survives model changes and restarts the query" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const FindController = @import("../../../contrib/find/browser/findController.zig").FindController;
+    const first = try EditorDocument.createFromText(a, io, "first.txt", "alpha\nbeta\nalpha", null);
+    defer first.release();
+    const second = try EditorDocument.createFromText(a, io, "second.txt", "alpha alpha alpha", null);
+    defer second.release();
+    const editor = try Editor.createViewFromDocument(first, 100, 8, .{});
+    defer {
+        editor.deinit();
+        a.destroy(editor);
+    }
+    const find = try FindController.getOrCreate(editor);
+    const widget = find.widget();
+    find.setSeedSearchStringFromSelection(.never);
+    try find.open(false);
+    try widget.find_input.setValue("alpha");
+    try std.testing.expectEqual(@as(usize, 2), find.state.matches_count);
+    try editor.setModel(null);
+    try std.testing.expectEqual(find, editor.getContribution(FindController).?);
+    try std.testing.expectEqual(widget, find.widget());
+    try std.testing.expect(widget.model == null);
+    try std.testing.expect(find.isOpen());
+    try std.testing.expectEqualStrings("alpha", find.state.search_string);
+    try std.testing.expectEqual(@as(usize, 0), find.state.matches_count);
+    try editor.setModel(second);
+    try std.testing.expectEqual(find, try FindController.getOrCreate(editor));
+    try std.testing.expectEqual(widget, find.widget());
+    try std.testing.expectEqual(find.model, widget.model.?);
+    try std.testing.expectEqual(@as(usize, 3), find.state.matches_count);
+    _ = try first.replaceGeneratedContents("no matches");
+    try std.testing.expectEqual(@as(usize, 3), find.state.matches_count);
+}
+
+test "CodeEditorWidget: word highlighter contribution and view state survive model replacement" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const Word = @import("../../../contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
+    const decoration = @import("../../../browser/editorBrowser.zig").Decoration;
+    const Host = struct {
+        fn focus(_: *anyopaque) bool {
+            return true;
+        }
+        fn set(_: *anyopaque, _: []const decoration) void {}
+        fn frame(_: *anyopaque) void {}
+    };
+    const first = try EditorDocument.createFromText(a, io, "first.txt", "alpha alpha", null);
+    defer first.release();
+    const second = try EditorDocument.createFromText(a, io, "second.txt", "alpha alpha alpha", null);
+    defer second.release();
+    const editor = try Editor.createViewFromDocument(first, 100, 8, .{});
+    defer {
+        editor.deinit();
+        a.destroy(editor);
+    }
+    const host: @import("../../../contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterHost = .{ .context = editor, .has_text_focus = Host.focus, .set_decorations = Host.set, .request_frame = Host.frame };
+    const word = try Word.getOrCreate(editor, host, .{});
+    word.trigger();
+    try std.testing.expect(word.saveViewState());
+    var state = try editor.saveViewState(a);
+    defer state.deinit(a);
+    try std.testing.expectEqual(true, state.contributionsState.@"editor.contrib.wordHighlighter".?);
+    word.unbindHost();
+    try editor.setModel(null);
+    try std.testing.expectEqual(word, editor.getContribution(Word).?);
+    try std.testing.expect(word.word_highlighter == null);
+    try editor.setModel(second);
+    try std.testing.expectEqual(word, try Word.getOrCreate(editor, host, .{}));
+    try std.testing.expectEqual(second.model, word.word_highlighter.?.model);
+    try editor.restoreViewState(state);
+    _ = word.onTick(std.math.maxInt(i64));
+    try std.testing.expect(word.saveViewState());
+}

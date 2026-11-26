@@ -42,6 +42,8 @@ const ViewEventHandler = @import("../../../common/viewEventHandler.zig").ViewEve
 const ICursorPositionChangedEvent = @import("../../../common/cursorEvents.zig").ICursorPositionChangedEvent;
 const ModelContentChange = @import("../../../common/textModelEvents.zig").InternalModelContentChangeEvent;
 const highlightDecorations = @import("./highlightDecorations.zig");
+const ModelChange = @import("../../../common/editorCommon.zig").IModelChangedEvent;
+const WindowQueue = @import("../../../../base/common/windowDispatch.zig").Queue;
 
 /// Port of the `editor.occurrencesHighlight` option values.
 pub const OccurrencesHighlight = enum {
@@ -346,7 +348,14 @@ pub const WordHighlighter = struct {
 pub const WordHighlighterContribution = struct {
     pub const ID = "editor.contrib.wordHighlighter";
     allocator: Allocator,
-    word_highlighter: ?*WordHighlighter,
+    editor: *Editor,
+    word_highlighter: ?*WordHighlighter = null,
+    host: ?WordHighlighterHost,
+    settings: WordHighlighterSettings,
+    native_model_sink: bool = false,
+    window: ?*WindowQueue = null,
+    will_change_listener: usize = undefined,
+    did_change_listener: usize = undefined,
 
     pub fn init(
         allocator: Allocator,
@@ -356,25 +365,99 @@ pub const WordHighlighterContribution = struct {
     ) !*WordHighlighterContribution {
         const self = try allocator.create(WordHighlighterContribution);
         errdefer allocator.destroy(self);
-        self.* = .{
-            .allocator = allocator,
-            .word_highlighter = null,
-        };
-        // Upstream only creates the highlighter when the model is not too
-        // large for tokenization.
-        if (!editor.model.isTooLargeForTokenization()) {
-            self.word_highlighter = try WordHighlighter.init(allocator, editor, host, settings);
-        }
+        self.* = .{ .allocator = allocator, .editor = editor, .host = host, .settings = settings };
+        self.will_change_listener = try editor.on_will_change_model.listen(self, onWillChangeModel);
+        errdefer editor.on_will_change_model.unlisten(self.will_change_listener);
+        self.did_change_listener = try editor.on_did_change_model.listen(self, onDidChangeModel);
+        errdefer editor.on_did_change_model.unlisten(self.did_change_listener);
+        try self.createWordHighlighterIfPossible();
         return self;
     }
 
-    pub fn attachWindow(self: *WordHighlighterContribution, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+    pub fn getOrCreate(editor: *Editor, host: WordHighlighterHost, settings: WordHighlighterSettings) !*WordHighlighterContribution {
+        if (editor.getContribution(WordHighlighterContribution)) |self| {
+            self.bindHost(host);
+            return self;
+        }
+        const self = try init(editor.allocator, editor, host, settings);
+        errdefer self.deinit();
+        self.native_model_sink = true;
+        try editor.registerOwnedContribution(WordHighlighterContribution, self, deinit);
+        return self;
+    }
+
+    fn createWordHighlighterIfPossible(self: *WordHighlighterContribution) !void {
+        const model = self.editor.getModel() orelse return;
+        if (model.isTooLargeForTokenization() or std.mem.eql(u8, model.uri().scheme, "accessible-view")) return;
+        const highlighter = try WordHighlighter.init(self.allocator, self.editor, .{
+            .context = self,
+            .has_text_focus = hasTextFocus,
+            .set_decorations = setDecorations,
+            .request_frame = requestFrame,
+        }, self.settings);
+        self.word_highlighter = highlighter;
+        if (self.window) |window| highlighter.attachWindow(window);
+    }
+
+    fn hasTextFocus(context: *anyopaque) bool {
+        const self: *WordHighlighterContribution = @ptrCast(@alignCast(context));
+        const host = self.host orelse return false;
+        return host.has_text_focus(host.context);
+    }
+
+    fn setDecorations(context: *anyopaque, decorations: []const editorBrowser.Decoration) void {
+        const self: *WordHighlighterContribution = @ptrCast(@alignCast(context));
+        if (self.native_model_sink) {
+            const model = self.editor.getModel() orelse return;
+            @import("../../../browser/widget/codeEditor/terminalModelDecorations.zig").replaceModelDecorationsFor(model, 3, decorations) catch {};
+        } else if (self.host) |host| {
+            host.set_decorations(host.decoration_context orelse host.context, decorations);
+        }
+    }
+
+    fn requestFrame(context: *anyopaque) void {
+        const self: *WordHighlighterContribution = @ptrCast(@alignCast(context));
+        if (self.host) |host| host.request_frame(host.context);
+    }
+
+    fn disposeWordHighlighter(self: *WordHighlighterContribution) void {
+        if (self.word_highlighter) |highlighter| highlighter.deinit();
+        self.word_highlighter = null;
+    }
+
+    fn onWillChangeModel(_: ModelChange, self: *WordHighlighterContribution) !void {
+        self.disposeWordHighlighter();
+    }
+
+    fn onDidChangeModel(_: ModelChange, self: *WordHighlighterContribution) !void {
+        try self.createWordHighlighterIfPossible();
+    }
+
+    pub fn bindHost(self: *WordHighlighterContribution, host: WordHighlighterHost) void {
+        self.host = host;
+        if (self.word_highlighter) |highlighter| {
+            highlighter.text_focused = host.has_text_focus(host.context);
+            if (highlighter.text_focused) highlighter.run(WordHighlighter.timeNow());
+        }
+    }
+
+    pub fn unbindHost(self: *WordHighlighterContribution) void {
+        if (self.word_highlighter) |highlighter| {
+            highlighter.text_focused = false;
+            highlighter.stopHighlighting();
+        }
+        self.host = null;
+    }
+
+    pub fn attachWindow(self: *WordHighlighterContribution, window: *WindowQueue) void {
+        self.window = window;
         if (self.word_highlighter) |highlighter| highlighter.attachWindow(window);
     }
 
     pub fn deinit(self: *WordHighlighterContribution) void {
-        if (self.word_highlighter) |highlighter| highlighter.deinit();
-        self.word_highlighter = null;
+        self.editor.on_will_change_model.unlisten(self.will_change_listener);
+        self.editor.on_did_change_model.unlisten(self.did_change_listener);
+        self.disposeWordHighlighter();
         self.allocator.destroy(self);
     }
 

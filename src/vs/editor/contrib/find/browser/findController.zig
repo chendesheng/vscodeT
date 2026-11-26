@@ -16,6 +16,8 @@ const FindWidget = @import("./findWidget.zig").FindWidget;
 const FindWidgetTheme = @import("./findWidget.zig").Theme;
 const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const Range = @import("../../../common/core/range.zig").Range;
+const ModelChange = @import("../../../common/editorCommon.zig").IModelChangedEvent;
+const WindowQueue = @import("../../../../base/common/windowDispatch.zig").Queue;
 
 /// The decoration sink. The controller does not depend on the TUI view type;
 /// the app can point it at a model-decoration sink.
@@ -36,6 +38,11 @@ pub const FindController = struct {
     seed_search_string_from_selection: SeedSearchString = .always,
     auto_find_in_selection: AutoFindInSelection = .never,
     model: *FindModel,
+    model_attached: bool = true,
+    will_change_listener: usize = undefined,
+    did_change_listener: usize = undefined,
+    window: ?*WindowQueue = null,
+    cursor_move_on_type: bool = true,
     find_widget: *FindWidget,
     sink: DecorationSink,
 
@@ -64,13 +71,60 @@ pub const FindController = struct {
 
         self.find_widget.close_context = self;
         self.find_widget.on_close = onClose;
+        self.will_change_listener = try editor.on_will_change_model.listen(self, onWillChangeModel);
+        errdefer editor.on_will_change_model.unlisten(self.will_change_listener);
+        self.did_change_listener = try editor.on_did_change_model.listen(self, onDidChangeModel);
 
         return self;
     }
 
-    pub fn deinit(self: *FindController) void {
-        self.find_widget.deinit();
+    /// The widget owns the contribution; the model-bound search and its
+    /// decorations follow the model change events. Native view adapters only
+    /// mount and unmount the retained FindWidget.
+    pub fn getOrCreate(editor: *Editor) !*FindController {
+        if (editor.getContribution(FindController)) |find| return find;
+        const self = try init(editor.allocator, editor, .{ .context = editor, .set = setModelDecorations });
+        errdefer self.deinit();
+        try editor.registerOwnedContribution(FindController, self, deinit);
+        return self;
+    }
+
+    fn setModelDecorations(context: ?*anyopaque, decorations: []const editorBrowser.Decoration) void {
+        const editor: *Editor = @ptrCast(@alignCast(context orelse return));
+        const model = editor.getModel() orelse return;
+        @import("../../../browser/widget/codeEditor/terminalModelDecorations.zig").replaceModelDecorationsFor(model, 1, decorations) catch {};
+    }
+
+    fn disposeModel(self: *FindController) void {
+        if (!self.model_attached) return;
+        self.model_attached = false;
+        self.find_widget.model = null;
         self.model.deinit();
+        self.model = undefined;
+        if (self.sink.set) |set| set(self.sink.context, &.{});
+    }
+
+    fn onWillChangeModel(change: ModelChange, self: *FindController) !void {
+        if (change.newModelUrl == null) self.find_widget.focused = false;
+        self.disposeModel();
+    }
+
+    fn onDidChangeModel(_: ModelChange, self: *FindController) !void {
+        self.state.change(.{ .search_scope = .none }, false, false);
+        self.state.changeMatchInfo(0, 0, null, true);
+        if (!self.editor.hasModel()) return;
+        self.model = try FindModel.init(self.allocator, self.editor, self.state, onDecorationsChanged, self);
+        self.model_attached = true;
+        self.model.cursor_move_on_type = self.cursor_move_on_type;
+        self.find_widget.model = self.model;
+        if (self.window) |window| self.model.attachWindow(window);
+    }
+
+    pub fn deinit(self: *FindController) void {
+        self.editor.on_will_change_model.unlisten(self.will_change_listener);
+        self.editor.on_did_change_model.unlisten(self.did_change_listener);
+        self.disposeModel();
+        self.find_widget.deinit();
         self.state.deinit();
         self.allocator.destroy(self.state);
         self.allocator.destroy(self);
@@ -81,7 +135,8 @@ pub const FindController = struct {
     }
 
     pub fn applyConfiguration(self: *FindController, options: EditorFindOptions) void {
-        self.model.cursor_move_on_type = options.cursor_move_on_type;
+        self.cursor_move_on_type = options.cursor_move_on_type;
+        if (self.model_attached) self.model.cursor_move_on_type = options.cursor_move_on_type;
         self.setSeedSearchStringFromSelection(options.seed_search_string_from_selection);
         self.setAutoFindInSelection(options.auto_find_in_selection);
         self.state.loop = options.loop;
@@ -110,6 +165,7 @@ pub const FindController = struct {
     }
 
     pub fn startFind(self: *FindController) !void {
+        if (!self.model_attached) return;
         if (self.state.is_revealed) {
             self.find_widget.open();
             return;
@@ -118,6 +174,7 @@ pub const FindController = struct {
     }
 
     pub fn startReplace(self: *FindController) !void {
+        if (!self.model_attached) return;
         if (self.editor.isReadOnly()) return self.startFind();
         if (!self.state.is_revealed) {
             try self.open(true);
@@ -139,11 +196,12 @@ pub const FindController = struct {
     /// them when the editor scrolls, approximating the zone without adding
     /// scrollable space above line 1.
     pub fn viewZoneRows(self: *FindController) usize {
-        if (self.editor.topViewLine() != 1) return 0;
+        if (!self.model_attached or self.editor.topViewLine() != 1) return 0;
         return self.find_widget.viewZoneRows();
     }
 
     pub fn open(self: *FindController, requested_replace: bool) !void {
+        if (!self.model_attached) return;
         const replace = requested_replace and !self.editor.isReadOnly();
         if (self.state.is_revealed) {
             if (replace) {
@@ -218,7 +276,8 @@ pub const FindController = struct {
     }
 
     pub fn attachWindow(self: *FindController, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
-        self.model.attachWindow(window);
+        self.window = window;
+        if (self.model_attached) self.model.attachWindow(window);
     }
 
     fn onClose(context: ?*anyopaque) void {

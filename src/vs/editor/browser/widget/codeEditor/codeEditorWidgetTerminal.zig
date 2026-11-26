@@ -651,12 +651,13 @@ pub const EditorDocument = struct {
 };
 
 /// The serializable CodeEditorWidget view state. The contribution map is
-/// typed for the currently implemented stateful editor contribution.
+/// typed for the currently implemented stateful editor contributions.
 pub const ICodeEditorViewState = struct {
     cursorState: []editor_common.ICursorState,
     viewState: editor_common.IViewState,
     contributionsState: struct {
         @"editor.contrib.folding": ?folding.FoldingStateMemento = null,
+        @"editor.contrib.wordHighlighter": ?bool = null,
     } = .{},
 
     pub fn deinit(self: *ICodeEditorViewState, allocator: Allocator) void {
@@ -782,7 +783,7 @@ pub const Editor = struct {
     /// but every text mutation and save is rejected with `error.ReadOnly`.
     read_only: bool,
     on_did_change_read_only: Emitter(bool),
-    contributions: std.StringHashMapUnmanaged(*anyopaque) = .empty,
+    contributions: @import("codeEditorContributions.zig").CodeEditorContributions = .{},
     /// Rightmost columns reserved by the view for the overview ruler and
     /// scrollbar. Zero for the read-only preview and for editors used without
     /// the TUI view.
@@ -1913,6 +1914,7 @@ pub const Editor = struct {
 
     pub fn deinit(self: *Editor) void {
         self.on_will_dispose.fire({}) catch {};
+        self.contributions.deinit(self.allocator);
         self.detachModel();
         self.on_will_dispose.deinit();
         self.on_will_change_model.deinit();
@@ -1923,7 +1925,6 @@ pub const Editor = struct {
         self.on_will_type.deinit();
         self.on_did_type.deinit();
         self.on_did_change_read_only.deinit();
-        self.contributions.deinit(self.allocator);
         self.working_copy_dirty_listeners.deinit();
         self.working_copy_content_listeners.deinit();
         self.scroll_listeners.deinit();
@@ -2389,22 +2390,23 @@ pub const Editor = struct {
         return model_line;
     }
 
-    /// Native contribution registration for CodeEditorWidget.getContribution.
-    /// The controller's owning editor pane disposes it and unregisters the
-    /// borrowed pointer before the controller is destroyed.
+    /// Native registration of a view-bound adapter. Widget-level contributions
+    /// use registerOwnedContribution and survive setModel.
     pub fn registerContribution(self: *Editor, comptime Contribution: type, value: *Contribution) !void {
-        if (self.contributions.contains(Contribution.ID)) return error.DuplicateEditorContribution;
-        try self.contributions.put(self.allocator, Contribution.ID, value);
+        try self.contributions.register(self.allocator, Contribution, value, .none);
+    }
+
+    pub fn registerOwnedContribution(self: *Editor, comptime Contribution: type, value: *Contribution, comptime dispose: fn (*Contribution) void) !void {
+        const Disposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
+        try self.contributions.register(self.allocator, Contribution, value, Disposable.from(Contribution, value, dispose));
     }
 
     pub fn getContribution(self: *Editor, comptime Contribution: type) ?*Contribution {
-        const value = self.contributions.get(Contribution.ID) orelse return null;
-        return @ptrCast(@alignCast(value));
+        return self.contributions.get(Contribution);
     }
 
     pub fn unregisterContribution(self: *Editor, comptime Contribution: type, value: *Contribution) void {
-        const registered = self.getContribution(Contribution) orelse return;
-        if (registered == value) _ = self.contributions.remove(Contribution.ID);
+        self.contributions.unregister(Contribution, value);
     }
 
     pub fn setQuickDiffDecorationCount(self: *Editor, count: usize) void {
@@ -4796,10 +4798,14 @@ pub const Editor = struct {
             .position = selection.getPosition(),
         };
         const state = @import("../../../common/viewModel/viewModelImpl.zig").saveState(&self.view_lines, self.converter.interface(), &self.view_layout);
+        const WordHighlighter = @import("../../../contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
         return .{
             .cursorState = cursor_state,
             .viewState = state,
-            .contributionsState = .{ .@"editor.contrib.folding" = if (self.folding_override == false) null else try self.folding.saveViewState(allocator) },
+            .contributionsState = .{
+                .@"editor.contrib.folding" = if (self.folding_override == false) null else try self.folding.saveViewState(allocator),
+                .@"editor.contrib.wordHighlighter" = if (self.getContribution(WordHighlighter)) |highlight| highlight.saveViewState() else null,
+            },
         };
     }
 
@@ -4819,6 +4825,10 @@ pub const Editor = struct {
             try self.folding.restoreViewState(folding_state);
             try self.applyFoldingVisibility();
         };
+        const WordHighlighter = @import("../../../contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
+        if (state.contributionsState.@"editor.contrib.wordHighlighter" orelse false) {
+            if (self.getContribution(WordHighlighter)) |highlight| highlight.restoreViewState(250);
+        }
         self.restoreScrollState(state.viewState);
     }
 

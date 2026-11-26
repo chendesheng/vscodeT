@@ -1323,7 +1323,6 @@ fn SuggestControllerHostForView(view: *View) @import("../../../../editor/contrib
 pub const Controllers = struct {
     allocator: Allocator,
     editor: *Editor,
-    find_sink: ModelDecorationSink,
     search_highlight_sink: ModelDecorationSink,
     hover_sink: ModelDecorationSink,
     word_sink: ModelDecorationSink,
@@ -1413,20 +1412,19 @@ pub const Controllers = struct {
         self.diff_find_zone = false;
         self.diff_find_handler = .{};
 
-        self.find_sink = .{ .model = editor.model, .owner = 1 };
         self.search_highlight_sink = ModelDecorationSink.incrementalSearch(editor.model);
         editor.setSearchHighlightSink(.{
             .context = self.search_highlight_sink.context(),
             .set = ModelDecorationSink.set,
         });
         errdefer editor.setSearchHighlightSink(null);
-        self.find = try FindController.init(allocator, editor, .{
-            .context = self.find_sink.context(),
-            .set = ModelDecorationSink.set,
-        });
-        errdefer self.find.deinit();
+        self.find = try FindController.getOrCreate(editor);
         self.find.widget().layout_context = view;
         self.find.widget().on_layout = requestViewRender;
+        errdefer {
+            self.find.widget().layout_context = null;
+            self.find.widget().on_layout = null;
+        }
         editor.setFindController(self.find, FindController.startFromContext);
         errdefer editor.setFindController(null, null);
 
@@ -1480,14 +1478,14 @@ pub const Controllers = struct {
         });
         errdefer self.hover.deinit();
 
-        self.word_highlighter = try WordHighlighterContribution.init(allocator, editor, .{
+        self.word_highlighter = try WordHighlighterContribution.getOrCreate(editor, .{
             .context = view,
             .decoration_context = self.word_sink.context(),
             .has_text_focus = viewHasWordTextFocus,
             .set_decorations = ModelDecorationSink.set,
             .request_frame = viewRequestFrame,
         }, .{});
-        errdefer self.word_highlighter.deinit();
+        errdefer self.word_highlighter.unbindHost();
 
         self.word_provider = WordBasedCompletionProvider.init();
         self.completion_providers[0] = self.word_provider.interface();
@@ -1515,12 +1513,8 @@ pub const Controllers = struct {
         self.find.applyConfiguration(view.terminal_view_host.options.get(.find));
         try view.addConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
         errdefer view.removeConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
-        try editor.registerContribution(FindController, self.find);
-        errdefer editor.unregisterContribution(FindController, self.find);
         try editor.registerContribution(StickyScrollController, self.sticky);
         errdefer editor.unregisterContribution(StickyScrollController, self.sticky);
-        try editor.registerContribution(WordHighlighterContribution, self.word_highlighter);
-        errdefer editor.unregisterContribution(WordHighlighterContribution, self.word_highlighter);
         try editor.registerContribution(ContentHoverController, self.hover);
         return self;
     }
@@ -1593,9 +1587,10 @@ pub const Controllers = struct {
             self.view.removeContentWidget(suggest.get_id(suggest.context)) catch {};
         }
         self.editor.setFindController(null, null);
-        self.editor.unregisterContribution(FindController, self.find);
+        self.find.widget().layout_context = null;
+        self.find.widget().on_layout = null;
         self.editor.unregisterContribution(StickyScrollController, self.sticky);
-        self.editor.unregisterContribution(WordHighlighterContribution, self.word_highlighter);
+        self.word_highlighter.unbindHost();
         self.editor.unregisterContribution(ContentHoverController, self.hover);
         // The sink context points at this controller; detach before it dies.
         self.editor.setSearchHighlightSink(null);
@@ -1603,12 +1598,10 @@ pub const Controllers = struct {
         self.sticky.deinit();
         if (self.hover_registration) |registration| registration.dispose();
         self.suggest.deinit();
-        self.word_highlighter.deinit();
         self.hover.deinit();
         self.marker_hover_participant.deinit();
         self.hover_participant.deinit();
         self.hover_provider.deinit();
-        self.find.deinit();
         self.allocator.destroy(self);
     }
 };
