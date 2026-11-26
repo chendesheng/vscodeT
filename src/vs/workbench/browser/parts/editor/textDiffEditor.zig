@@ -47,6 +47,8 @@ pub fn computeConfiguration(configuration_service: ?@import("../../../../platfor
             if (value.* == .string) options.diff_word_wrap = std.meta.stringToEnum(@TypeOf(options.diff_word_wrap), value.string) orelse .inherit;
         }
         options.render_indicators = configuration.getBool("diffEditor.renderIndicators", true);
+        options.render_gutter_menu = configuration.getBool("diffEditor.renderGutterMenu", true);
+        options.render_margin_revert_icon = configuration.getBool("diffEditor.renderMarginRevertIcon", true);
         options.render_overview_ruler = configuration.getBool("diffEditor.renderOverviewRuler", true);
         options.enable_split_view_resizing = configuration.getBool("diffEditor.enableSplitViewResizing", true);
         options.hide_unchanged_regions = configuration.getBool("diffEditor.hideUnchangedRegions.enabled", false);

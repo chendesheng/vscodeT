@@ -30,6 +30,11 @@ pub const IDiffEditor = struct {
     show_all: *const fn (*anyopaque) anyerror!void,
     accessible_next: *const fn (*anyopaque) anyerror!void,
     accessible_previous: *const fn (*anyopaque) anyerror!void,
+    run_gutter_hunk: ?*const fn (*anyopaque, []const u8) anyerror!void = null,
+
+    pub fn runGutterHunk(self: IDiffEditor, id: []const u8) !void {
+        if (self.run_gutter_hunk) |run| try run(self.context, id);
+    }
 
     pub fn switchSide(self: IDiffEditor) !void {
         try self.switch_side(self.context);

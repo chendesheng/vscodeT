@@ -16,6 +16,8 @@ pub const WindowContextState = struct {
     active_diff: bool = false,
     visible_diff: bool = false,
     comparing_moved_code: bool = false,
+    diff_original_uri: []const u8 = "",
+    diff_modified_uri: []const u8 = "",
     language_visible: bool,
     language_id: []const u8,
     custom_editor_id: []const u8,
@@ -43,6 +45,8 @@ const WindowContextKeys = struct {
     text_compare_editor_visible: contextkeys.IContextKey,
     is_in_diff_editor: contextkeys.IContextKey,
     comparing_moved_code: contextkeys.IContextKey,
+    diff_original_uri: contextkeys.IContextKey,
+    diff_modified_uri: contextkeys.IContextKey,
     editor_text_focus: contextkeys.IContextKey,
     editor_lang_id: contextkeys.IContextKey,
     active_custom_editor_id: contextkeys.IContextKey,
@@ -78,6 +82,8 @@ const WindowContextKeys = struct {
             .text_compare_editor_visible = try service.createKey("textCompareEditorVisible", .{ .boolean = false }),
             .is_in_diff_editor = try service.createKey("isInDiffEditor", .{ .boolean = false }),
             .comparing_moved_code = try service.createKey("comparingMovedCode", .{ .boolean = false }),
+            .diff_original_uri = try service.createKey("diffEditorOriginalUri", .{ .string = "" }),
+            .diff_modified_uri = try service.createKey("diffEditorModifiedUri", .{ .string = "" }),
             .editor_lang_id = try service.createKey("editorLangId", .{ .string = "" }),
             .active_custom_editor_id = try service.createKey("activeCustomEditorId", .{ .string = "" }),
             .editor_text_focus = try service.createKey("editorTextFocus", .{ .boolean = false }),
@@ -112,6 +118,8 @@ pub const WorkbenchContextKeysHandler = struct {
     layout_service: services.IWorkbenchLayoutService,
     window_keys: WindowContextKeys,
     active_editor: ?*Editor = null,
+    diff_original_uri_owned: []const u8 = "",
+    diff_modified_uri_owned: []const u8 = "",
     language_visible: bool = false,
     language_listener: ?usize = null,
     read_only_listener: ?usize = null,
@@ -173,6 +181,10 @@ pub const WorkbenchContextKeysHandler = struct {
     }
 
     pub fn deinit(self: *@This()) void {
+        self.window_keys.diff_original_uri.reset();
+        self.window_keys.diff_modified_uri.reset();
+        self.working_copy_service.allocator.free(self.diff_original_uri_owned);
+        self.working_copy_service.allocator.free(self.diff_modified_uri_owned);
         if (self.active_editor) |editor| self.detachEditor(editor);
         self.working_copy_service.on_did_change_dirty.unlisten(self.dirty_listener);
         self.layout_service.on_did_change_panel_position.unlisten(self.position_listener);
@@ -180,6 +192,16 @@ pub const WorkbenchContextKeysHandler = struct {
         self.layout_service.on_did_change_part_visibility.unlisten(self.visibility_listener);
         self.layout_service.on_did_change_main_editor_centered.unlisten(self.centered_listener);
         self.layout_service.on_did_change_zen_mode.unlisten(self.zen_listener);
+    }
+
+    fn updateUriKey(self: *@This(), key: contextkeys.IContextKey, owned: *[]const u8, value: []const u8) void {
+        if (std.mem.eql(u8, owned.*, value)) return;
+        const allocator = self.working_copy_service.allocator;
+        const copy = allocator.dupe(u8, value) catch return;
+        const old = owned.*;
+        owned.* = copy;
+        key.set(.{ .string = copy });
+        allocator.free(old);
     }
 
     pub fn updateWindowContext(self: *@This(), state: WindowContextState) void {
@@ -195,6 +217,8 @@ pub const WorkbenchContextKeysHandler = struct {
         keys.text_compare_editor_visible.set(.{ .boolean = state.visible_diff });
         keys.is_in_diff_editor.set(.{ .boolean = state.active_diff });
         keys.comparing_moved_code.set(.{ .boolean = state.comparing_moved_code });
+        self.updateUriKey(keys.diff_original_uri, &self.diff_original_uri_owned, state.diff_original_uri);
+        self.updateUriKey(keys.diff_modified_uri, &self.diff_modified_uri_owned, state.diff_modified_uri);
         keys.editor_lang_id.set(.{ .string = state.language_id });
         keys.active_custom_editor_id.set(.{ .string = state.custom_editor_id });
         keys.editor_text_focus.set(.{ .boolean = state.editor_text_focused });

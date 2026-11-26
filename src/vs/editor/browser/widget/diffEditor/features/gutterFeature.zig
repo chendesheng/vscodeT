@@ -1,11 +1,8 @@
-// Port of the center-gutter marker subset of
-// `src/vs/editor/browser/widget/diffEditor/features/gutterFeature.ts`.
-//
-// Terminal adaptation: upstream builds a DOM gutter with revert/insert/delete
-// indicators and drag handles. The terminal has one cell between the panes, so
-// this module maps each aligned mapping to the marker glyph (`+`, `~`, `-`) and
-// paints `│` on the rest of the block; the widget owns hit testing and the
-// split-ratio drag.
+// Port of `src/vs/editor/browser/widget/diffEditor/features/gutterFeature.ts`.
+// The retained menus, cursor/selection mapping, action context and staged
+// text calculation follow the upstream gutter. The cell grid maps its DOM
+// toolbar to adjacent primary/overflow cells and uses the shared EditorGutter
+// iterator for visible hunk layout; the separate cell sash retains resizing.
 const std = @import("std");
 
 const view_model = @import("../diffEditorViewModel.zig");
@@ -78,6 +75,353 @@ pub fn computeStagedValue(allocator: std.mem.Allocator, mapping: view_model.Deta
     defer edit.deinit();
     return edit.apply(allocator, &original_text);
 }
+
+const ui = @import("ui");
+const menu_api = @import("../../../../../platform/actions/common/menuService.zig");
+const menu_ids = @import("../../../../../platform/actions/common/actions.zig").menu_ids;
+const MenuId = @import("../../../../../platform/actions/common/actions.zig").MenuId;
+const contextkey = @import("../../../../../platform/contextkey/common/contextkey.zig");
+const context_menu = @import("../../../../../platform/contextview/browser/contextMenuService.zig");
+const CommandArgument = @import("../../../../../platform/commands/common/commands.zig").CommandArgument;
+const IAction = @import("../../../../../base/common/actions.zig").IAction;
+const SignalSubscription = @import("../../../../../base/common/event.zig").SignalSubscription;
+const SelectionEvent = @import("../../../../common/cursorEvents.zig").ICursorSelectionChangedEvent;
+const URI = @import("../../../../../base/common/uri.zig").URI;
+
+// Upstream DiffEditorSelectionHunkToolbarContext. The encoding is included
+// at the terminal boundary so the Git extension encodes the same document
+// without reopening the resource or losing its unsaved encoding choice.
+pub const DiffEditorSelectionHunkToolbarContext = struct {
+    mapping: view_model.DetailedLineRangeMapping,
+    originalWithModifiedChanges: []const u8,
+    modifiedUri: std.Uri,
+    originalUri: std.Uri,
+    modifiedEncoding: []const u8,
+};
+
+pub const toolbar_width: usize = 2;
+
+/// Retained menu and selected-diff state owned by the diff widget. One cell
+/// represents the primary action and the adjacent cell opens overflow, in
+/// place of a browser toolbar of nested buttons with subpixel geometry.
+pub const DiffGutterToolbar = struct {
+    allocator: std.mem.Allocator,
+    model: *view_model.DiffEditorViewModel,
+    original: *Editor,
+    modified: *Editor,
+    host: ?Host = null,
+    hunk_menu: ?*menu_api.Menu = null,
+    selection_menu: ?*menu_api.Menu = null,
+    selection_listener: ?SignalSubscription = null,
+    original_uri: []const u8 = "",
+    modified_uri: []const u8 = "",
+    selected_mapping: ?view_model.DetailedLineRangeMapping = null,
+    current_diff: ?usize = null,
+    hovered: bool = false,
+    open: bool = false,
+    pressed: ?Press = null,
+
+    pub const Host = struct {
+        menus: *menu_api.MenuService,
+        parent_context: contextkey.IContext,
+        context_menu: context_menu.IContextMenuService,
+        context: *anyopaque,
+        changed: *const fn (*anyopaque, bool) void,
+    };
+
+    const Press = struct { row: usize, col: usize, original_version: u32, modified_version: u32 };
+    const Item = struct { index: ?usize, mapping: view_model.DetailedLineRangeMapping, bounds: LineRange, menu: MenuId };
+    const Buttons = struct { primary: ?IAction = null, count: usize = 0 };
+
+    pub fn attach(self: *DiffGutterToolbar, host: Host) !void {
+        if (self.host != null) return;
+        self.host = host;
+        errdefer self.deinit();
+        try self.updateUris();
+        self.hunk_menu = try host.menus.createMenu(self.allocator, menu_ids.DiffEditorHunkToolbar, self.context());
+        self.selection_menu = try host.menus.createMenu(self.allocator, menu_ids.DiffEditorSelectionToolbar, self.context());
+        _ = try self.hunk_menu.?.onDidChange.listenSignal(self, onMenuChanged);
+        _ = try self.selection_menu.?.onDidChange.listenSignal(self, onMenuChanged);
+        self.selection_listener = try self.modified.on_did_change_cursor_selection.listenDisposable(self, onSelection);
+        try self.updateSelection();
+        host.changed(host.context, true);
+    }
+
+    pub fn deinit(self: *DiffGutterToolbar) void {
+        if (self.open) if (self.host) |host| host.context_menu.hideContextMenu();
+        self.open = false;
+        if (self.selection_listener) |listener| listener.dispose();
+        self.selection_listener = null;
+        for ([_]?*menu_api.Menu{ self.hunk_menu, self.selection_menu }) |menu| if (menu) |value| {
+            value.deinit();
+            self.allocator.destroy(value);
+        };
+        self.hunk_menu = null;
+        self.selection_menu = null;
+        if (self.selected_mapping) |*mapping| mapping.deinit(self.allocator);
+        self.selected_mapping = null;
+        self.allocator.free(self.original_uri);
+        self.allocator.free(self.modified_uri);
+        self.original_uri = "";
+        self.modified_uri = "";
+        self.host = null;
+        self.pressed = null;
+        self.hovered = false;
+    }
+
+    fn updateUris(self: *DiffGutterToolbar) !void {
+        var original = try URI.fromStd(self.allocator, self.original.model.uri());
+        defer original.deinit();
+        var modified = try URI.fromStd(self.allocator, self.modified.model.uri());
+        defer modified.deinit();
+        const original_uri = try original.toStringEncoded(self.allocator);
+        errdefer self.allocator.free(original_uri);
+        const modified_uri = try modified.toStringEncoded(self.allocator);
+        self.allocator.free(self.original_uri);
+        self.allocator.free(self.modified_uri);
+        self.original_uri = original_uri;
+        self.modified_uri = modified_uri;
+    }
+
+    pub fn setEditors(self: *DiffGutterToolbar, original: *Editor, modified: *Editor) !void {
+        const host = self.host;
+        self.deinit();
+        self.original = original;
+        self.modified = modified;
+        if (host) |value| try self.attach(value);
+    }
+
+    fn context(self: *DiffGutterToolbar) contextkey.IContext {
+        return .{ .context = self, .get_value = getValue };
+    }
+
+    fn getValue(ptr: *anyopaque, key: []const u8) contextkey.ContextKeyValue {
+        const self: *DiffGutterToolbar = @ptrCast(@alignCast(ptr));
+        if (std.mem.eql(u8, key, "diffEditorOriginalUri")) return .{ .string = self.original_uri };
+        if (std.mem.eql(u8, key, "diffEditorModifiedUri")) return .{ .string = self.modified_uri };
+        if (std.mem.eql(u8, key, "diffEditorModifiedWritable")) return .{ .boolean = !self.modified.isReadOnly() };
+        if (std.mem.eql(u8, key, "isInDiffEditor")) return .{ .boolean = true };
+        return if (self.host) |host| host.parent_context.getValue(key) else .undefined_value;
+    }
+
+    fn onMenuChanged(self: *DiffGutterToolbar) !void {
+        if (self.host) |host| host.changed(host.context, true);
+    }
+
+    fn onSelection(_: SelectionEvent, self: *DiffGutterToolbar) !void {
+        try self.updateSelection();
+        if (self.host) |host| host.changed(host.context, false);
+    }
+
+    pub fn refreshMenus(self: *DiffGutterToolbar) !void {
+        if (self.hunk_menu) |menu| try menu.refresh();
+        if (self.selection_menu) |menu| try menu.refresh();
+    }
+
+    pub fn updateSelection(self: *DiffGutterToolbar) !void {
+        if (self.host == null) return;
+        if (self.selected_mapping) |*mapping| mapping.deinit(self.allocator);
+        self.selected_mapping = null;
+        self.current_diff = null;
+        const state = self.model.stateRef() orelse return;
+        self.current_diff = mappingIndexAtModelLine(state.mappings, false, self.modified.modelCursorPosition().lineNumber);
+        const selections = try self.modified.getSelections();
+        defer self.modified.allocator.free(selections);
+        var selected = try selectedDiffs(self.allocator, state.mappings, selections);
+        defer selected.deinit(self.allocator);
+        if (selected.range_mappings.len > 0) self.selected_mapping = try view_model.DetailedLineRangeMapping.fromRangeMappings(self.allocator, selected.range_mappings);
+    }
+
+    pub fn hasActions(self: *const DiffGutterToolbar) bool {
+        return if (self.hunk_menu) |menu| menu.getActions().len > 0 else false;
+    }
+
+    pub fn setHovered(self: *DiffGutterToolbar, hovered: bool) bool {
+        if (self.hovered == hovered) return false;
+        self.hovered = hovered;
+        return true;
+    }
+
+    fn getButtons(self: *const DiffGutterToolbar, id: MenuId) Buttons {
+        const menu = if (std.mem.eql(u8, id.id, menu_ids.DiffEditorSelectionToolbar.id)) self.selection_menu else self.hunk_menu;
+        var result: Buttons = .{};
+        if (menu) |value| for (value.getActions()) |group| {
+            result.count += group.actions.len;
+            if (result.primary == null and group.actions.len > 0 and std.mem.startsWith(u8, group.id, "primary")) result.primary = group.actions[0];
+        };
+        return result;
+    }
+
+    fn getSelectedItem(self: *const DiffGutterToolbar) ?Item {
+        const mapping = self.selected_mapping orelse return null;
+        return .{ .index = null, .mapping = mapping, .bounds = hunkBounds(mapping, self.original, self.modified), .menu = menu_ids.DiffEditorSelectionToolbar };
+    }
+
+    fn getHunkItem(self: *const DiffGutterToolbar, index: usize) ?Item {
+        const state = self.model.stateRef() orelse return null;
+        if (index >= state.mappings.len) return null;
+        const mapping = state.mappings[index].line_range_mapping;
+        return .{ .index = index, .mapping = mapping, .bounds = hunkBounds(mapping, self.original, self.modified), .menu = menu_ids.DiffEditorHunkToolbar };
+    }
+
+    fn buttonRow(bounds: LineRange, top: usize, height: usize) ?usize {
+        const visible = bounds.intersect(LineRange.ofLength(top, height)) orelse return null;
+        if (visible.isEmpty()) return null;
+        return std.math.clamp(bounds.startLineNumber + (bounds.length() - 1) / 2, visible.startLineNumber, visible.endLineNumberExclusive - 1) - top;
+    }
+
+    fn itemAt(self: *const DiffGutterToolbar, row: usize, height: usize) ?Item {
+        const top = self.modified.scrollTop();
+        const item = self.getSelectedItem() orelse blk: {
+            const state = self.model.stateRef() orelse return null;
+            const index = mappingIndexAtVerticalOffset(state.mappings, self.original, self.modified, top + row) orelse return null;
+            break :blk self.getHunkItem(index) orelse return null;
+        };
+        if (buttonRow(item.bounds, top, height) != row) return null;
+        return item;
+    }
+
+    fn glyph(action: IAction) u21 {
+        const item = menu_api.MenuItemAction.from(action) orelse return '•';
+        const icon = item.item.icon orelse return '•';
+        if (std.mem.eql(u8, icon, "plus") or std.mem.eql(u8, icon, "add")) return '+';
+        if (std.mem.eql(u8, icon, "arrow-right")) return '→';
+        if (std.mem.eql(u8, icon, "trash")) return '×';
+        return '•';
+    }
+
+    fn paintItem(self: *const DiffGutterToolbar, grid: *ui.CellGrid, x: usize, y: usize, width: usize, height: usize, item: Item, normal: ui.cell.PaintStyle, active: ui.cell.PaintStyle) void {
+        const row = buttonRow(item.bounds, self.modified.scrollTop(), height) orelse return;
+        const buttons = self.getButtons(item.menu);
+        if (buttons.primary) |primary| {
+            grid.putCodepoint(x, y + row, glyph(primary), 1, if (primary.enabled() and self.model.is_diff_up_to_date) active else normal);
+            if (width > 1 and buttons.count > 1) grid.putCodepoint(x + 1, y + row, '…', 1, active);
+        } else if (buttons.count > 0) grid.putCodepoint(x, y + row, '…', 1, active);
+    }
+
+    pub fn paint(self: *const DiffGutterToolbar, grid: *ui.CellGrid, x: usize, y: usize, width: usize, height: usize, normal: ui.cell.PaintStyle, active: ui.cell.PaintStyle) void {
+        if (width == 0) return;
+        if (self.getSelectedItem()) |item| return self.paintItem(grid, x, y, width, height, item, normal, active);
+        if (!self.hovered) {
+            if (self.current_diff) |index| if (self.getHunkItem(index)) |item| self.paintItem(grid, x, y, width, height, item, normal, active);
+            return;
+        }
+        const state = self.model.stateRef() orelse return;
+        const items: DiffEditorGutter = .{ .mappings = state.mappings, .original = self.original, .modified = self.modified };
+        var visible = items.render(self.modified.scrollTop(), height);
+        while (visible.next()) |item| if (self.getHunkItem(item.index)) |hunk| self.paintItem(grid, x, y, width, height, hunk, normal, active);
+    }
+
+    pub fn pointerAt(self: *const DiffGutterToolbar, col: usize, row: usize, height: usize) ui.Pointer {
+        const item = self.itemAt(row, height) orelse return .default;
+        const buttons = self.getButtons(item.menu);
+        return if (buttons.count > 0 and (col == 0 or (col == 1 and buttons.count > 1))) .pointer else .default;
+    }
+
+    pub fn dispatch(self: *DiffGutterToolbar, event: *const ui.MouseEvent, col: usize, height: usize, anchor: context_menu.Anchor) !bool {
+        if (event.kind == .wheel) return false;
+        if (event.kind == .move) return true;
+        if (event.button != .left) return false;
+        const old_press = if (event.kind == .up) self.pressed else null;
+        if (event.kind == .up) self.pressed = null;
+        const item = self.itemAt(event.y, height) orelse return true;
+        if (self.pointerAt(col, event.y, height) != .pointer) return true;
+        if (event.kind == .down) {
+            self.pressed = .{ .row = event.y, .col = col, .original_version = self.original.model.getVersionId(), .modified_version = self.modified.model.getVersionId() };
+            return true;
+        }
+        if (event.kind == .up) {
+            const press = old_press orelse return true;
+            if (press.row != event.y or press.col != col or !self.versionsMatch(press.original_version, press.modified_version)) return true;
+        } else if (event.kind != .click) return true;
+        if (!self.model.is_diff_up_to_date) return true;
+        const buttons = self.getButtons(item.menu);
+        if (col == 0 and buttons.primary != null) {
+            const action = buttons.primary.?;
+            if (action.enabled()) try self.runItem(item, action.id());
+        } else try self.showOverflow(item, anchor);
+        return true;
+    }
+
+    fn versionsMatch(self: *const DiffGutterToolbar, original: u32, modified: u32) bool {
+        return self.original.model.getVersionId() == original and self.modified.model.getVersionId() == modified and self.model.is_diff_up_to_date;
+    }
+
+    fn mappingForAction(self: *const DiffGutterToolbar, item: Item, allocator: std.mem.Allocator) !view_model.DetailedLineRangeMapping {
+        _ = self;
+        if (item.index != null) return item.mapping.withInnerChangesFromLineRanges(allocator);
+        return .{ .original = item.mapping.original, .modified = item.mapping.modified, .inner_changes = if (item.mapping.inner_changes) |inner| try allocator.dupe(view_model.RangeMapping, inner) else null };
+    }
+
+    pub fn runCurrentHunk(self: *DiffGutterToolbar, id: []const u8) !bool {
+        if (!self.model.is_diff_up_to_date) return false;
+        const index = self.current_diff orelse return false;
+        const item = self.getHunkItem(index) orelse return false;
+        try self.runItem(item, id);
+        return true;
+    }
+
+    fn runItem(self: *DiffGutterToolbar, item: Item, id: []const u8) !void {
+        const allocator = self.allocator;
+        var mapping = try self.mappingForAction(item, allocator);
+        defer mapping.deinit(allocator);
+        try self.runMapping(item.menu, mapping, id);
+    }
+
+    fn runMapping(self: *DiffGutterToolbar, menu: MenuId, mapping: view_model.DetailedLineRangeMapping, id: []const u8) !void {
+        const host = self.host orelse return;
+        const allocator = self.allocator;
+        var resolved = try host.menus.getMenuActionsWithOptions(allocator, menu, self.context(), .{ .should_forward_args = true });
+        defer resolved.deinit();
+        for (resolved.groups) |group| for (group.actions) |action| {
+            if (!std.mem.eql(u8, id, action.id()) or !action.enabled()) continue;
+            const command = menu_api.MenuItemAction.from(action) orelse continue;
+            const staged_value = try computeStagedValue(allocator, mapping, self.original.model, self.modified.model);
+            defer allocator.free(staged_value);
+            const argument: DiffEditorSelectionHunkToolbarContext = .{ .mapping = mapping, .originalWithModifiedChanges = staged_value, .modifiedUri = self.modified.model.uri(), .originalUri = self.original.model.uri(), .modifiedEncoding = @tagName(self.modified.getEncoding()) };
+            try command.runWithArgument(CommandArgument.from(DiffEditorSelectionHunkToolbarContext, &argument));
+            return;
+        };
+    }
+
+    const OverflowContext = struct {
+        owner: *DiffGutterToolbar,
+        menu: MenuId,
+        mapping: view_model.DetailedLineRangeMapping,
+        original_version: u32,
+        modified_version: u32,
+        fn run(self: *OverflowContext, id: []const u8) !void {
+            if (!self.owner.versionsMatch(self.original_version, self.modified_version)) return;
+            try self.owner.runMapping(self.menu, self.mapping, id);
+        }
+        fn hide(ptr: *anyopaque) void {
+            const self: *OverflowContext = @ptrCast(@alignCast(ptr));
+            self.owner.open = false;
+        }
+    };
+
+    fn showOverflow(self: *DiffGutterToolbar, item: Item, anchor: context_menu.Anchor) !void {
+        const host = self.host orelse return;
+        const menu = try context_menu.Menu.init(self.allocator, OverflowContext{ .owner = self, .menu = item.menu, .mapping = undefined, .original_version = self.original.model.getVersionId(), .modified_version = self.modified.model.getVersionId() }, OverflowContext.run);
+        errdefer menu.deinit();
+        menu.on_hide = OverflowContext.hide;
+        const arena = menu.arena.allocator();
+        menu.getActionsContext(OverflowContext).?.mapping = try self.mappingForAction(item, arena);
+        var resolved = try host.menus.getMenuActions(self.allocator, item.menu, self.context());
+        defer resolved.deinit();
+        for (resolved.groups) |group| {
+            if (group.actions.len == 0) continue;
+            if (menu.items.items.len > 0) try menu.separator();
+            for (group.actions) |action| try menu.add(try arena.dupe(u8, action.id()), .{ .label = try arena.dupe(u8, action.label()), .enabled = action.enabled() });
+        }
+        if (menu.items.items.len == 0) {
+            menu.deinit();
+            return;
+        }
+        try host.context_menu.showContextMenu(menu, anchor);
+        self.open = true;
+    }
+};
 
 pub const marker_column_width: usize = 1;
 

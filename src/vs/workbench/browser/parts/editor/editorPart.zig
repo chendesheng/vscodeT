@@ -847,7 +847,7 @@ pub fn EditorPart(comptime GroupView: type) type {
 
         pub fn disposeTitleMenus(self: *Self) void {
             self.title_host = null;
-            if (@hasDecl(GroupView, "attachTitleMenu")) for (self.group_views.items) |view| view.title_control.deinit();
+            if (@hasDecl(GroupView, "disposeEditorMenus")) for (self.group_views.items) |view| view.disposeEditorMenus();
         }
 
         fn createView(self: *Self, group: *editor_groups.EditorGroup) !*GroupView {

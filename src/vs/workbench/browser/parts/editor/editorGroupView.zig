@@ -118,6 +118,13 @@ pub fn EditorGroupView(comptime View: type) type {
             }
         }
 
+        pub fn disposeEditorMenus(self: *Self) void {
+            self.title_control.deinit();
+            if (comptime @hasDecl(@typeInfo(View).pointer.child, "detachDiffGutterServices")) {
+                for (self.tabs.items) |tab| tab.detachDiffGutterServices();
+            }
+        }
+
         pub fn registerModelListeners(self: *Self) !void {
             self.model_listener = try self.group.model.on_did_model_change.listen(self, onDidModelChange);
         }

@@ -31,6 +31,15 @@ pub const PaneWidths = struct {
     gutter: usize,
     overview: usize = 0,
     moves: usize = 0,
+    toolbar: usize = 0,
+
+    pub fn modifiedLeft(self: PaneWidths) usize {
+        return self.original + self.gutter + self.moves + self.toolbar;
+    }
+
+    pub fn toolbarLeft(self: PaneWidths, side_by_side: bool) usize {
+        return if (side_by_side) self.original + self.gutter + self.moves else 0;
+    }
 };
 
 /// Splits the cell width into the original pane, the one-cell gutter and the

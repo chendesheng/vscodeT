@@ -837,6 +837,7 @@ pub const TerminalWorkbench = struct {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
                         host.editor_configuration.applyToTab(tab);
                         tab.attachDiffActionServices(host.clipboard_api, host.context_menu_api);
+                        if (tab.diff != null) tab.attachDiffGutterServices(&host.menu_service, host.core.context_keys.getContext(), host.context_menu_api);
                     }
                 }.configure,
                 .register_working_copy = struct {
@@ -3437,6 +3438,8 @@ pub const TerminalWorkbench = struct {
         self.workbench_context.updateWindowContext(.{
             .active_editor = if (active) |tab| if (!tab.isDiff()) tab.editor else null else null,
             .active_diff = if (active) |tab| tab.isDiff() else false,
+            .diff_original_uri = if (active) |tab| if (tab.diff) |diff| diff.widget.gutter_toolbar.original_uri else "" else "",
+            .diff_modified_uri = if (active) |tab| if (tab.diff) |diff| diff.widget.gutter_toolbar.modified_uri else "" else "",
             .visible_diff = visible_diff,
             .comparing_moved_code = if (active) |tab| if (tab.diff) |diff| diff.widget.view_model.moved_text_to_compare != null else false else false,
             .language_visible = text_editor,

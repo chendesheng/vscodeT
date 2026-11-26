@@ -359,6 +359,14 @@ pub const Tab = struct {
         if (self.diff) |diff| diff.widget.attachActionServices(clipboard, menu);
     }
 
+    pub fn attachDiffGutterServices(self: *Tab, menus: *@import("../../../../platform/actions/common/menuService.zig").MenuService, context: @import("../../../../platform/contextkey/common/contextkey.zig").IContext, menu: @import("../../../../platform/contextview/browser/contextMenuService.zig").IContextMenuService) void {
+        if (self.diff) |diff| diff.widget.attachGutterServices(menus, context, menu) catch {};
+    }
+
+    pub fn detachDiffGutterServices(self: *Tab) void {
+        if (self.diff) |diff| diff.widget.detachGutterServices();
+    }
+
     pub fn ensureControllers(self: *Tab) !void {
         if (self.markdown_preview != null or self.image_preview != null or self.terminal_input != null) return;
         if (self.controllers == null) {
