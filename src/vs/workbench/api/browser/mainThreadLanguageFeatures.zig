@@ -752,30 +752,39 @@ pub const MainThreadLanguageFeatures = struct {
 
     // --- provider implementations
 
-    fn hoverArgs(allocator: Allocator, handle: u32, model: *TextModel, position: Position) ![4]rpc.Arg {
+    fn hoverArgs(allocator: Allocator, handle: u32, model: *TextModel, position: Position, hover_context: ?*const languages.HoverContext) ![4]rpc.Arg {
+        var context: std.json.ObjectMap = .empty;
+        if (hover_context) |value| if (value.verbosity_request) |verbosity| {
+            if (verbosity.previous_hover.id) |id| {
+                var previous: std.json.ObjectMap = .empty;
+                try previous.put(allocator, "id", .{ .integer = id });
+                var request: std.json.ObjectMap = .empty;
+                try request.put(allocator, "verbosityDelta", .{ .integer = verbosity.verbosity_delta });
+                try request.put(allocator, "previousHover", .{ .object = previous });
+                try context.put(allocator, "verbosityRequest", .{ .object = request });
+            }
+        };
         return .{
             .{ .json = .{ .integer = handle } },
             .{ .json = try std_uri.jsonComponents(allocator, model.uri()) },
             .{ .json = try positionJson(allocator, model, position) },
-            .{ .json = .{ .object = .empty } },
+            .{ .json = .{ .object = context } },
         };
     }
 
-    fn parseHoverReply(allocator: Allocator, proxy: HostProxy, handle: u32, model: *TextModel, reply: std.json.Value) !?languages.Hover {
+    fn parseHoverReply(allocator: Allocator, model: *TextModel, reply: std.json.Value) !?languages.Hover {
         if (reply != .object) return null;
         const object = reply.object;
-        // The terminal currently renders the complete result without IDE
-        // verbosity controls. Release the cached extension-host hover after
-        // copying its DTO, rather than retaining unowned provider handles.
-        if (object.get("id")) |id_value| if (id_value == .integer) {
-            const release = [_]rpc.Arg{ .{ .json = .{ .integer = handle } }, .{ .json = id_value } };
-            proxy.notify(proxy.context, "$releaseHover", &release) catch {};
-        };
+        // Match upstream: the extension host owns a bounded cache of ten
+        // original Hover objects. Retain their IDs for verbosity requests;
+        // upstream's FinalizationRegistry release is deliberately disabled.
+        const id: ?u32 = if (object.get("id")) |value| if (value == .integer and value.integer >= 0 and value.integer <= std.math.maxInt(u32)) @intCast(value.integer) else null else null;
         const contents_value = object.get("contents") orelse return null;
         var contents = std.array_list.Managed(languages.IMarkdownString).init(allocator);
         try appendHoverContents(&contents, allocator, contents_value);
         if (contents.items.len == 0) return null;
         return .{
+            .id = id,
             .contents = try contents.toOwnedSlice(),
             .range = if (object.get("range")) |range| rangeFromJson(model, range) else null,
             .can_increase_verbosity = optionalBool(object.get("canIncreaseVerbosity")),
@@ -784,27 +793,24 @@ pub const MainThreadLanguageFeatures = struct {
     }
 
     fn provideHover(context: *anyopaque, model: *TextModel, position: Position, token: CancellationToken, hover_context: ?*const languages.HoverContext) anyerror!?languages.Hover {
-        _ = hover_context;
         const state: *HoverState = @ptrCast(@alignCast(context));
         const self = state.registration.owner;
         _ = state.arena.reset(.retain_capacity);
         const scratch = state.arena.allocator();
-        const args = try hoverArgs(scratch, state.registration.handle, model, position);
+        const args = try hoverArgs(scratch, state.registration.handle, model, position, hover_context);
         const reply = self.call(scratch, "$provideHover", &args, token, timeout_hover_ms) catch return null;
-        return parseHoverReply(scratch, self.proxy, state.registration.handle, model, reply);
+        return parseHoverReply(scratch, model, reply);
     }
 
     const HoverAsyncRequest = struct {
         allocator: Allocator,
-        proxy: HostProxy,
-        handle: u32,
         model: *TextModel,
         callback: languages.HoverCallback,
 
         fn ready(context: *anyopaque, reply: rpc.Reply) void {
             const self: *HoverAsyncRequest = @ptrCast(@alignCast(context));
             self.callback.complete(self.callback.context, switch (reply) {
-                .json => |value| parseHoverReply(self.allocator, self.proxy, self.handle, self.model, value),
+                .json => |value| parseHoverReply(self.allocator, self.model, value),
                 .err => error.RequestFailed,
                 else => null,
             });
@@ -819,8 +825,8 @@ pub const MainThreadLanguageFeatures = struct {
             var scratch = std.heap.ArenaAllocator.init(state.registration.owner.allocator);
             defer scratch.deinit();
             const pending = try allocator.create(HoverAsyncRequest);
-            pending.* = .{ .allocator = allocator, .proxy = proxy, .handle = state.registration.handle, .model = model, .callback = callback };
-            const args = try hoverArgs(scratch.allocator(), state.registration.handle, model, position);
+            pending.* = .{ .allocator = allocator, .model = model, .callback = callback };
+            const args = try hoverArgs(scratch.allocator(), state.registration.handle, model, position, hover_context);
             return try request(proxy.context, "$provideHover", &args, .{ .context = pending, .callback = HoverAsyncRequest.ready });
         }
         callback.complete(callback.context, provideHover(context, model, position, token, hover_context));

@@ -81,9 +81,12 @@ function activate(context) {
   const hoverEvents = [];
   const delayedHovers = new Map();
   context.subscriptions.push(vscode.languages.registerHoverProvider({ language: 'json' }, {
-    provideHover(document, position, token) {
+    provideHover(document, position, token, hoverContext) {
       const name = document.uri.query;
-      if (name !== 'HoverOriginal' && name !== 'HoverModified') return { contents: ['fixture hover'] };
+      if (hoverContext) {
+        return { contents: [`fixture hover verbosity ${hoverContext.verbosityDelta}: ${hoverContext.previousHover.contents[0]}`], canIncreaseVerbosity: true, canDecreaseVerbosity: true };
+      }
+      if (name !== 'HoverOriginal' && name !== 'HoverModified') return { contents: ['fixture hover'], canIncreaseVerbosity: true };
       hoverEvents.push({ name, kind: 'start', text: document.lineAt(position.line).text });
       return new Promise(resolve => {
         let subscription;

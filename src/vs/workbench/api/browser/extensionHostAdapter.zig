@@ -2345,6 +2345,11 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                 null,
             );
             try std.testing.expect(hover != null);
+            try std.testing.expect(hover.?.id != null and hover.?.can_increase_verbosity.?);
+            const verbosity_context: @import("../../../editor/common/languages.zig").HoverContext = .{ .verbosity_request = .{ .verbosity_delta = 2, .previous_hover = hover.? } };
+            const verbose = (try hover_providers[0].provide_hover(hover_providers[0].context, model, Position.init(1, 1), .None, &verbosity_context)).?;
+            try std.testing.expectEqualStrings("fixture hover verbosity 2: fixture hover", verbose.contents[0].value);
+            try std.testing.expect(verbose.can_decrease_verbosity.?);
 
             const completion_providers = try features.completion_provider.ordered(allocator, model, false);
             defer allocator.free(completion_providers);

@@ -386,6 +386,9 @@ pub const HoverVerbosityAction = enum(u32) {
 /// Additional information for a symbol or word, rendered in a tooltip-like
 /// widget by the editor.
 pub const Hover = struct {
+    /// Extension-host `HoverWithId`; retained in the provider's upstream
+    /// bounded ten-result cache for a subsequent verbosity request.
+    id: ?u32 = null,
     contents: []const IMarkdownString,
     range: ?Range = null,
     can_increase_verbosity: ?bool = null,
