@@ -18,7 +18,10 @@ const Repository = repository_mod.Repository;
 const GitService = @import("../../../vs/workbench/contrib/git/browser/gitService.zig").GitService;
 const IGitExtensionDelegate = @import("../../../vs/workbench/contrib/git/common/gitService.zig").IGitExtensionDelegate;
 const ConfigurationService = @import("../../../vs/workbench/services/configuration/browser/configurationService.zig").ConfigurationService;
-const WindowQueue = @import("../../../vs/base/common/windowDispatch.zig").Queue;
+const dispatch = @import("../../../vs/base/common/windowDispatch.zig");
+const WindowQueue = dispatch.Queue;
+const time = @import("../../../vs/base/common/timeCompat.zig");
+const INotificationService = @import("../../../vs/platform/notification/common/notification.zig").INotificationService;
 const Emitter = @import("../../../vs/base/common/event.zig").Emitter;
 
 const SnapshotSource = @import("../../../vs/editor/browser/widget/diffEditor/diffProviderFactoryService.zig").SnapshotSource;
@@ -195,12 +198,72 @@ pub const Model = struct {
     on_did_open_repository: Emitter(*Repository),
     on_did_close_repository: Emitter(*Repository),
     repository_count_buffer: [32]u8 = undefined,
+    submodule_scans: std.ArrayList(*SubmoduleScan) = .empty,
+    pending_submodule_scans: std.AutoHashMapUnmanaged(*SubmoduleScan, void) = .empty,
+    submodule_scan_task: dispatch.Task = .{},
     repository_count_key: ?@import("../../../vs/platform/contextkey/common/contextkey.zig").IContextKey = null,
     git_missing_key: ?@import("../../../vs/platform/contextkey/common/contextkey.zig").IContextKey = null,
 
     pub fn init(allocator: Allocator) Model {
         return .{ .allocator = allocator, .on_did_open_repository = .init(allocator), .on_did_close_repository = .init(allocator) };
     }
+
+    const SubmoduleScan = struct {
+        model: *Model,
+        repository: *Repository,
+        notification: ?INotificationService,
+        open: *const fn (*anyopaque, []const u8) anyerror!void,
+        context: *anyopaque,
+        limit: usize,
+        limit_reached: bool = false,
+        listener: ?usize = null,
+
+        fn statusChanged(_: void, self: *SubmoduleScan) !void {
+            if (self.limit_reached) return;
+            if (self.repository.repository.stateRef().submodules.len == 0) {
+                _ = self.model.pending_submodule_scans.remove(self);
+                if (self.model.pending_submodule_scans.count() == 0) self.model.submodule_scan_task.schedule(null);
+                return;
+            }
+            try self.model.pending_submodule_scans.put(self.model.allocator, self, {});
+            self.model.submodule_scan_task.schedule(time.milliTimestamp() + 500);
+        }
+
+        fn scan(self: *SubmoduleScan) !bool {
+            const modules = self.repository.repository.stateRef().submodules;
+            if (modules.len > self.limit) {
+                self.limit_reached = true;
+                if (self.notification) |notifications| {
+                    const message = try std.fmt.allocPrint(self.model.allocator, "The \"{s}\" repository has {d} submodules which won't be opened automatically. You can still open each one individually by opening a file within.", .{ std.fs.path.basename(self.repository.root), modules.len });
+                    defer self.model.allocator.free(message);
+                    notifications.warn(.{ .text = message });
+                }
+            }
+            // Copy paths before opening: opening a nested repository can
+            // dispatch status events and change the repository collection.
+            var arena = std.heap.ArenaAllocator.init(self.model.allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            var paths: std.ArrayList([]const u8) = .empty;
+            for (modules[0..@min(modules.len, self.limit)]) |module| {
+                const path = try std.fs.path.join(a, &.{ self.repository.root, module.path });
+                if (self.model.repositoryForRoot(path) != null) continue;
+                const dot_git = try std.fs.path.join(a, &.{ path, ".git" });
+                const cli = self.model.git orelse continue;
+                std.Io.Dir.cwd().access(cli.io, dot_git, .{}) catch continue;
+                try paths.append(a, path);
+            }
+            const before = self.model.open_repositories.items.len;
+            for (paths.items) |path| try self.open(self.context, path);
+            return before != self.model.open_repositories.items.len;
+        }
+
+        fn dispose(self: *SubmoduleScan) void {
+            _ = self.model.pending_submodule_scans.remove(self);
+            if (self.listener) |id| self.repository.on_did_run_git_status.unlisten(id);
+            self.model.allocator.destroy(self);
+        }
+    };
 
     pub const OpenOptions = struct {
         io: std.Io,
@@ -211,6 +274,8 @@ pub const Model = struct {
         host: repository_mod.Host,
         on_disabled: ?*const fn (?*anyopaque, []const u8) void = null,
         on_disabled_context: ?*anyopaque = null,
+        scan_repository: ?*const fn (*anyopaque, []const u8) anyerror!void = null,
+        notifications: ?INotificationService = null,
     };
 
     pub fn openRepository(self: *Model, repo_path: []const u8, open_options: OpenOptions) !?*Repository {
@@ -280,6 +345,8 @@ pub const Model = struct {
         if (open_options.host_service) |host| try provider.attachHostService(host);
         try provider.setConfiguration(open_options.configuration);
         try self.open_repositories.append(self.allocator, provider);
+        errdefer _ = self.open_repositories.pop();
+        try self.attachSubmoduleScan(provider, open_options);
         if (self.repository == null) {
             self.repository = provider;
             self.git_root = provider.root;
@@ -287,6 +354,42 @@ pub const Model = struct {
         self.updateRepositoryCount();
         self.on_did_open_repository.fire(provider) catch {};
         return provider;
+    }
+
+    fn attachSubmoduleScan(self: *Model, provider: *Repository, options: OpenOptions) !void {
+        const open = options.scan_repository orelse return;
+        var enabled = true;
+        var limit: usize = 10;
+        if (options.configuration) |config| {
+            if (config.getValue("git.detectSubmodules", .{ .resource = provider.root })) |value| {
+                if (value.* == .bool) enabled = value.bool;
+            }
+            if (config.getValue("git.detectSubmodulesLimit", .{ .resource = provider.root })) |value| {
+                if (value.* == .integer) limit = @intCast(@max(value.integer, 0));
+            }
+        }
+        if (!enabled) return;
+        if (self.submodule_scan_task.queue == null) self.submodule_scan_task = .{ .queue = options.window, .context = self, .run = scanSubmodules };
+        const binding = try self.allocator.create(SubmoduleScan);
+        binding.* = .{ .model = self, .repository = provider, .notification = options.notifications, .open = open, .context = options.host.context, .limit = limit };
+        errdefer binding.dispose();
+        binding.listener = try provider.on_did_run_git_status.listen(binding, SubmoduleScan.statusChanged);
+        try self.submodule_scans.append(self.allocator, binding);
+        errdefer _ = self.submodule_scans.pop();
+        try SubmoduleScan.statusChanged({}, binding);
+    }
+
+    fn scanSubmodules(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *Model = @ptrCast(@alignCast(context));
+        var pending = self.pending_submodule_scans;
+        self.pending_submodule_scans = .empty;
+        defer pending.deinit(self.allocator);
+        var iterator = pending.keyIterator();
+        var changed = false;
+        while (iterator.next()) |binding| {
+            changed = (binding.*.scan() catch false) or changed;
+        }
+        return changed;
     }
 
     fn updateRepositoryCount(self: *Model) void {
@@ -300,6 +403,12 @@ pub const Model = struct {
         for (self.open_repositories.items, 0..) |candidate, index| {
             if (candidate != provider) continue;
             _ = self.open_repositories.orderedRemove(index);
+            for (self.submodule_scans.items, 0..) |binding, i| {
+                if (binding.repository != provider) continue;
+                _ = self.submodule_scans.orderedRemove(i);
+                binding.dispose();
+                break;
+            }
             if (self.repository == provider) {
                 self.repository = if (self.open_repositories.items.len > 0) self.open_repositories.items[0] else null;
                 self.git_root = if (self.repository) |selected| selected.root else null;
@@ -489,6 +598,10 @@ pub const Model = struct {
     pub fn deinit(self: *Model) void {
         if (self.repository_count_key) |key| key.reset();
         if (self.git_missing_key) |key| key.reset();
+        self.submodule_scan_task.schedule(null);
+        for (self.submodule_scans.items) |binding| binding.dispose();
+        self.submodule_scans.deinit(self.allocator);
+        self.pending_submodule_scans.deinit(self.allocator);
         for (self.open_repositories.items) |provider| {
             self.on_did_close_repository.fire(provider) catch {};
             provider.destroy();

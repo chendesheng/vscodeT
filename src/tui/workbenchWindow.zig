@@ -2952,6 +2952,11 @@ pub const TerminalWorkbench = struct {
         try self.openGitRepository(path);
     }
 
+    fn scanGitRepository(context: *anyopaque, root: []const u8) !void {
+        const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
+        try self.openGitRepository(root);
+    }
+
     fn openGitRepository(self: *TerminalWorkbench, root: []const u8) !void {
         const provider = (try self.git_model.openRepository(root, .{
             .io = self.io,
@@ -2962,6 +2967,8 @@ pub const TerminalWorkbench = struct {
             .host = .{ .context = self, .open_change = providerOpenChange, .refresh = scmRefresh },
             .on_disabled = gitDisabled,
             .on_disabled_context = self,
+            .scan_repository = scanGitRepository,
+            .notifications = self.notification_api,
         })) orelse return;
         const scm_api = try self.scm.ensureService();
         if (scm_api.getRepository(provider.id) != null) return;

@@ -12054,3 +12054,80 @@ test "Workbench: git scm integration discovers Git URI repositories in empty win
         try std.testing.expectEqualStrings("second working", try entry.modified.model.borrowLineContent(1));
     }
 }
+
+test "Workbench: git scm integration excludes unchanged submodule trees and discovers initialized submodules after status" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = root_buffer[0..try tmp.dir.realPath(io, &root_buffer)];
+    if (!try runGitTest(a, root, &.{"init"})) return error.SkipZigTest;
+    try tmp.dir.createDirPath(io, "module");
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const child_root = try std.fs.path.join(scratch, &.{ root, "module" });
+    const child_path = try std.fs.path.join(scratch, &.{ child_root, "child.txt" });
+    try std.testing.expect(try runGitTest(a, child_root, &.{"init"}));
+    for ([_][]const u8{ root, child_root }) |repository_root| {
+        _ = try runGitTest(a, repository_root, &.{ "config", "user.name", "Test User" });
+        _ = try runGitTest(a, repository_root, &.{ "config", "user.email", "test@example.com" });
+        try std.testing.expect(try runGitTest(a, repository_root, &.{ "config", "core.autocrlf", "false" }));
+    }
+    try tmp.dir.writeFile(io, .{ .sub_path = "module/child.txt", .data = "child base\n" });
+    try std.testing.expect(try runGitTest(a, child_root, &.{ "add", "child.txt" }));
+    try std.testing.expect(try runGitTest(a, child_root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "child" }));
+    try tmp.dir.writeFile(io, .{ .sub_path = ".gitmodules", .data = "[submodule \"module\"]\npath = module\nurl = ../local-module\n" });
+    try std.testing.expect(try runGitTest(a, root, &.{ "-c", "advice.addEmbeddedRepo=false", "add", ".gitmodules", "module" }));
+    try std.testing.expect(try runGitTest(a, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "parent" }));
+    const settings = try std.fs.path.join(scratch, &.{ root, ".git", "test-settings.json" });
+    for ([_]bool{ false, true }) |detect| {
+        const window = try TestWindow.init(a, io, &.{}, 100, 30);
+        defer window.deinit();
+        const wb = window.workbench;
+        try wb.setUserSettingsPaths(&.{settings});
+        try wb.setWorkspaceFolders(&.{root});
+        try wb.setUserConfigurationValue("git.detectSubmodules", .{ .bool = detect });
+        try wb.initGit();
+        try std.testing.expectEqual(@as(usize, 1), wb.git_model.repositories().len);
+        const parent = wb.git_model.repository.?;
+        try std.testing.expectEqual(@as(usize, 1), parent.repository.stateRef().submodules.len);
+        try std.testing.expectEqual(@as(usize, 0), parent.count());
+        try std.testing.expect(parent.containsSubmodule(child_path));
+        try std.testing.expect(wb.git_model.getRepository(child_path) == null);
+        const child_uri: std.Uri = .{ .scheme = "file", .path = .{ .raw = child_path } };
+        const before = try wb.scm.quick_diff_api.?.getQuickDiffs(a, child_uri, "plaintext", true);
+        defer {
+            for (before) |*quick| quick.deinit(a);
+            a.free(before);
+        }
+        try std.testing.expectEqual(@as(usize, 0), before.len);
+        if (detect) {
+            _ = wb.git_model.submodule_scan_task.at orelse return error.TestExpectedSubmoduleScan;
+            for (0..1000) |_| {
+                if (wb.git_model.repositories().len == 2) break;
+                const deadline = wb.git_model.submodule_scan_task.at orelse break;
+                _ = wb.window_events.dispatch(deadline);
+            }
+            try std.testing.expectEqual(@as(usize, 2), wb.git_model.repositories().len);
+            const child = wb.git_model.getRepository(child_path) orelse return error.TestExpectedSubmoduleRepository;
+            try std.testing.expectEqualStrings(child_root, child.root);
+            const quick = try wb.scm.quick_diff_api.?.getQuickDiffs(a, child_uri, "plaintext", true);
+            defer {
+                for (quick) |*value| value.deinit(a);
+                a.free(quick);
+            }
+            try std.testing.expectEqual(@as(usize, 1), quick.len);
+            try std.testing.expect(std.mem.startsWith(u8, quick[0].id, child.id));
+            const uri = try @import("../extensions/git/src/uri.zig").toGitUri(scratch, child_path, "HEAD");
+            try wb.editor_api.requestOpenResourceUri(uri, "Child revision");
+            for (0..5000) |_| {
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                if (wb.editor_opening.pending_resource_open == null) break;
+                std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+            }
+            try std.testing.expectEqualStrings("child base", try wb.activeTab().?.editor.model.borrowLineContent(1));
+        } else try std.testing.expect(wb.git_model.submodule_scan_task.at == null);
+    }
+}

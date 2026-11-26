@@ -125,6 +125,7 @@ pub const Repository = struct {
     base: scm.ISCMProvider,
     on_resources: Emitter(void),
     on_change: Emitter(void),
+    on_did_run_git_status: Emitter(void),
     on_did_change_original_resource: Emitter(std.Uri),
     input_placeholder_buffer: [160]u8 = undefined,
     configuration_service: ?*ConfigurationService = null,
@@ -185,6 +186,7 @@ pub const Repository = struct {
             .base = undefined,
             .on_resources = Emitter(void).init(allocator),
             .on_change = Emitter(void).init(allocator),
+            .on_did_run_git_status = Emitter(void).init(allocator),
             .on_did_change_original_resource = Emitter(std.Uri).init(allocator),
             .on_groups = Emitter(void).init(allocator),
             .primary_quick_diff = undefined,
@@ -193,6 +195,7 @@ pub const Repository = struct {
         errdefer {
             self.on_resources.deinit();
             self.on_change.deinit();
+            self.on_did_run_git_status.deinit();
             self.on_did_change_original_resource.deinit();
             self.on_groups.deinit();
         }
@@ -377,6 +380,7 @@ pub const Repository = struct {
         }
         self.on_resources.deinit();
         self.on_change.deinit();
+        self.on_did_run_git_status.deinit();
         self.on_did_change_original_resource.deinit();
         self.on_groups.deinit();
         if (self.branch) |branch| allocator.free(branch);
@@ -527,8 +531,11 @@ pub const Repository = struct {
 
     /// Recomputes the status and rebuilds the group resource lists.
     pub fn refresh(self: *Repository) !void {
+        var status_succeeded = false;
         if (self.git) |git| {
-            git.refresh(self.repository) catch {};
+            if (git.refresh(self.repository)) |_| {
+                status_succeeded = true;
+            } else |_| {}
         }
         self.rebuild();
         self.updateUpstreamWatcher();
@@ -538,6 +545,7 @@ pub const Repository = struct {
         }
         self.on_resources.fire({}) catch {};
         self.on_change.fire({}) catch {};
+        if (status_succeeded) self.on_did_run_git_status.fire({}) catch {};
     }
 
     fn rebuild(self: *Repository) void {
