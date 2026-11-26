@@ -384,6 +384,21 @@ pub const Tab = struct {
         try self.view.refresh();
     }
 
+    /// A comparison only contributes the file-backed sides as working
+    /// copies. Immutable virtual resources must never register as disk files.
+    pub fn workingCopyAt(self: *Tab, index: usize) ?*Editor {
+        if (self.diff) |diff| {
+            const side = switch (index) {
+                0 => diff.original_input,
+                1 => diff.modified_input,
+                else => return null,
+            };
+            const input = side.fileInput() orelse return null;
+            return input.editor;
+        }
+        return if (index == 0 and self.file_input != null) self.editor else null;
+    }
+
     pub fn isDiff(self: *const Tab) bool {
         return self.diff != null;
     }

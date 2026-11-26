@@ -50,6 +50,67 @@ pub const EditorService = struct {
         return null;
     }
 
+    /// Resolve a file input already held by a normal pane or by either side
+    /// of an open comparison. Both use the same working document.
+    pub fn findResolvedFileInput(self: EditorService, io: std.Io, path: []const u8) ?*FileEditorInput {
+        if (self.findOpenFileInput(io, path)) |input| return input;
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                const diff = tab.diff orelse continue;
+                for ([_]text_diff_editor_mod.SideInput{ diff.original_input, diff.modified_input }) |side| {
+                    const input = side.fileInput() orelse continue;
+                    if (text_files.samePath(self.part.allocator, io, input.editor.path, path)) return input;
+                }
+            }
+        }
+        return null;
+    }
+
+    const DiffResources = struct {
+        original: ?diff_provider.SnapshotSource.Resource = null,
+        modified: ?diff_provider.SnapshotSource.Resource = null,
+    };
+
+    fn matchesResolvedSide(self: EditorService, io: std.Io, side: text_diff_editor_mod.SideInput, resource: ?diff_provider.SnapshotSource.Resource) bool {
+        const resolved = resource orelse return true;
+        if (resolved.is_working_file) {
+            const file = side.fileInput() orelse return false;
+            return text_files.samePath(self.part.allocator, io, file.editor.path, resolved.path);
+        }
+        if (side.fileInput() != null) return false;
+        const key = @import("../../../../base/common/stdUri.zig").resourceKey(self.part.allocator, resolved.uri) catch return false;
+        defer self.part.allocator.free(key);
+        return std.mem.eql(u8, side.interface().resource orelse return false, key);
+    }
+
+    fn findResolvedDiffTab(self: EditorService, io: std.Io, path: []const u8, left: []const u8, right: []const u8, resources: DiffResources) ?struct { pane: *GroupView, tab: *Tab } {
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                const diff = tab.diff orelse continue;
+                if (!diff.matches(path, left, right)) continue;
+                if (!self.matchesResolvedSide(io, diff.original_input, resources.original)) continue;
+                if (!self.matchesResolvedSide(io, diff.modified_input, resources.modified)) continue;
+                return .{ .pane = pane, .tab = tab };
+            }
+        }
+        return null;
+    }
+
+    fn resolveDiffSide(self: EditorService, io: std.Io, resource: ?diff_provider.SnapshotSource.Resource, text: []const u8, width: usize, height: usize, created: *?*FileEditorInput) !text_diff_editor_mod.SideSource {
+        const resolved = resource orelse return .{};
+        if (!resolved.is_working_file) return .{ .resource = resolved.uri };
+        if (self.findResolvedFileInput(io, resolved.path)) |input| return .{ .file = input };
+        const editor = try Editor.createFromTextWithOptions(self.part.allocator, io, text, resolved.path, width, height, .{ .reserve_scrollbar = true });
+        errdefer {
+            editor.deinit();
+            self.part.allocator.destroy(editor);
+        }
+        if (self.opening) |opening| opening.host.configure_editor(opening.host.context, editor);
+        const input = try FileEditorInput.init(self.part.allocator, editor);
+        created.* = input;
+        return .{ .file = input };
+    }
+
     pub fn findOpenImageInput(self: EditorService, io: std.Io, path: []const u8) ?*ImagePreviewEditorInput {
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
@@ -117,7 +178,7 @@ pub const EditorService = struct {
         left_label: []const u8,
         right_label: []const u8,
     ) !void {
-        try self.openSnapshotDiffWithDiff(factory, io, path, original_text, modified_text, left_label, right_label, text_diff_editor_mod.computeConfiguration(configuration), null, null);
+        try self.openSnapshotDiffWithDiff(factory, io, path, original_text, modified_text, left_label, right_label, text_diff_editor_mod.computeConfiguration(configuration), null, null, .{});
     }
 
     fn openSnapshotDiffWithDiff(
@@ -132,11 +193,14 @@ pub const EditorService = struct {
         options: text_diff_editor_mod.Options,
         computed: ?text_diff_editor_mod.IDocumentDiff,
         target: ?GroupIdentifier,
+        resources: DiffResources,
     ) !void {
-        if (self.findDiffTab(path, left_label, right_label)) |existing| {
+        if (self.findResolvedDiffTab(io, path, left_label, right_label, resources)) |existing| {
             const tab = existing.tab;
             const dims = existing.pane.contentDimensions();
-            try tab.diff.?.replaceWithDiff(original_text, modified_text, dims.width, dims.height, options, computed);
+            if (!tab.diff.?.matchesSnapshot(original_text, modified_text, options) or !tab.diff.?.widget.view_model.is_diff_up_to_date) {
+                try tab.diff.?.replaceWithDiff(original_text, modified_text, dims.width, dims.height, options, computed);
+            }
             if (self.opening) |opening| try opening.attachDiffModel(&tab.diff.?.widget.view_model);
             tab.syncDiffViews();
             try existing.pane.activateTab(tab);
@@ -149,13 +213,24 @@ pub const EditorService = struct {
         const pane = if (target) |id| self.part.viewForGroup(self.part.service.getGroup(id) orelse return error.GroupPaneMissing) orelse return error.GroupPaneMissing else self.part.activeView() orelse return error.GroupPaneMissing;
         const dims = pane.contentDimensions();
         const tab = blk: {
-            const view = try editor_pane.DiffView.createWithDiff(
+            var created_original: ?*FileEditorInput = null;
+            defer if (created_original) |input| input.deinit();
+            var created_modified: ?*FileEditorInput = null;
+            defer if (created_modified) |input| input.deinit();
+            const original = try self.resolveDiffSide(io, resources.original, original_text, dims.width, dims.height, &created_original);
+            const modified = if (original.file) |file| blk_side: {
+                if (resources.modified) |resolved| {
+                    if (resolved.is_working_file and text_files.samePath(self.part.allocator, io, file.editor.path, resolved.path)) break :blk_side text_diff_editor_mod.SideSource{ .file = file };
+                }
+                break :blk_side try self.resolveDiffSide(io, resources.modified, modified_text, dims.width, dims.height, &created_modified);
+            } else try self.resolveDiffSide(io, resources.modified, modified_text, dims.width, dims.height, &created_modified);
+            const view = try editor_pane.DiffView.createWithSources(
                 factory,
                 self.part.allocator,
                 io,
                 .{
-                    .original_path = path,
-                    .modified_path = path,
+                    .original_path = if (resources.original) |resource| resource.path else path,
+                    .modified_path = if (resources.modified) |resource| resource.path else path,
                     .original_label = left_label,
                     .modified_label = right_label,
                 },
@@ -164,6 +239,7 @@ pub const EditorService = struct {
                 dims.width,
                 dims.height,
                 options,
+                .{ .original = original, .modified = modified },
                 computed,
             );
             errdefer view.destroy();
@@ -191,6 +267,7 @@ pub const EditorService = struct {
 
         try pane.addTab(tab);
         registered = true;
+        if (self.opening) |opening| opening.host.register_working_copy(opening.host.context, tab);
         tab.layoutCells(dims.width, dims.height);
         tab.focusEditor();
     }
@@ -454,17 +531,7 @@ pub const EditorOpening = struct {
         };
         if (self.part.service.getGroup(pending.group) == null) return false;
         const editors = EditorService{ .part = self.part, .opening = self };
-        if (editors.findDiffTab(pending.path, pending.left, pending.right)) |existing| {
-            if (existing.tab.diff.?.matchesSnapshot(request.original, request.modified, request.options)) {
-                existing.pane.activateTab(existing.tab) catch return false;
-                self.part.service.activateGroup(existing.pane.group);
-                existing.tab.focusEditor();
-                self.host.focus_editor(self.host.context);
-                self.clearStatusHint();
-                return true;
-            }
-        }
-        editors.openSnapshotDiffWithDiff(self.view_factory, self.io, pending.path, request.original, request.modified, pending.left, pending.right, request.options, computed, pending.group) catch |err| {
+        editors.openSnapshotDiffWithDiff(self.view_factory, self.io, pending.path, request.original, request.modified, pending.left, pending.right, request.options, computed, pending.group, .{ .original = request.original_resource, .modified = request.modified_resource }) catch |err| {
             self.setStatusHint("Open diff failed: {s}", .{@errorName(err)});
             return true;
         };
@@ -479,7 +546,7 @@ pub const EditorOpening = struct {
     }
 
     fn findOpenInput(self: *EditorOpening, path: []const u8) ?*FileEditorInput {
-        return (EditorService{ .part = self.part }).findOpenFileInput(self.io, path);
+        return (EditorService{ .part = self.part }).findResolvedFileInput(self.io, path);
     }
 
     fn findOpenImageInput(self: *EditorOpening, path: []const u8) ?*ImagePreviewEditorInput {
@@ -565,7 +632,13 @@ pub const EditorOpening = struct {
 
     fn openExistingInput(self: *EditorOpening, path: []const u8, existing: *FileEditorInput, options: OpenOptions) !void {
         const service = EditorService{ .part = self.part };
-        try self.finishTextEditorOpen(path, try service.openExistingFileInput(existing, options), options);
+        if (service.findOpenFileInput(self.io, path)) |mounted| {
+            try self.finishTextEditorOpen(path, try service.openExistingFileInput(mounted, options), options);
+        } else {
+            const size = (self.part.activeView() orelse return error.GroupPaneMissing).contentDimensions();
+            const editor = try Editor.createViewFromEditorWithOptions(existing.editor, size.width, size.height, .{ .reserve_scrollbar = true });
+            try self.openCreatedTextEditor(path, editor, options);
+        }
     }
 
     fn openCreatedTextEditor(self: *EditorOpening, path: []const u8, editor: *Editor, options: OpenOptions) !void {
@@ -801,12 +874,12 @@ pub const EditorOpening = struct {
                     if (tab.markdown_preview) |preview| {
                         if (preview.usesImagePath(change.resource)) preview.refresh(false);
                     }
-                    if (tab.isDiff()) continue;
-                    if (!self.samePath(tab.editor.path, change.resource)) continue;
-                    if (tab.editor.isDirty()) {
-                        tab.editor.markConflict();
-                        continue;
-                    }
+                }
+            }
+            if (self.findOpenInput(change.resource)) |input| {
+                if (input.editor.isDirty()) {
+                    input.editor.markConflict();
+                } else {
                     self.requestFileReload(change.resource);
                 }
             }

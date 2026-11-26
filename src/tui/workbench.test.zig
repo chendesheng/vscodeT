@@ -8096,7 +8096,7 @@ test "Workbench: closing the active tab detaches the outline editor handler" {
     try std.testing.expectEqual(workbench.activeTab().?.editor, view.editor.?);
 }
 
-test "Workbench: git scm integration, diff tabs and read-only snapshots" {
+test "Workbench: git scm integration, shared working files and read-only revision snapshots" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
@@ -8349,13 +8349,18 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     // Open the working-tree diff from SCM, which owns the resource path only
     // until the next refresh.
     const working_resource = provider.groups[2].resources.items[0];
+    const working_input = workbench.findOpenInput(path).?;
     try std.testing.expectEqualStrings("a.txt", working_resource.relative_path);
     try workbench.scm.changes.?.host.open_change(workbench.scm.changes.?.host.context, &working_resource.iface);
     try pumpDiffForTests(workbench);
     var tab = workbench.activeTab() orelse return error.TestExpectedTab;
     try std.testing.expect(tab.isDiff());
     try std.testing.expectEqual(@as(usize, 2), tab.diff.?.widget.changeCount());
-    try std.testing.expect(tab.editor.isReadOnly());
+    try std.testing.expect(!tab.editor.isReadOnly());
+    try std.testing.expect(tab.diff.?.widget.original_editor.isReadOnly());
+    try std.testing.expectEqual(working_input.editor.model, tab.editor.model);
+    try std.testing.expectEqualStrings("git", tab.diff.?.widget.originalModel().uri().scheme);
+    try std.testing.expectEqualStrings("file", tab.editor.model.uri().scheme);
     try std.testing.expect(tab.diff.?.model.modified_path.ptr != working_resource.absolute_path.ptr);
 
     // The diff tab composites both panes, the center gutter and its title.
@@ -8389,15 +8394,27 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expectEqual(TabKeyResult.handled, try terminal_workbench.handleTabKey(workbench, &previous_key));
     try std.testing.expectEqual(before_change, tab.diff.?.widget.current_change);
 
-    // Save/revert are inert for a diff tab (the read-only snapshot editor
-    // rejects the low-level save as well).
-    try std.testing.expectError(error.ReadOnly, tab.editor.save());
+    // A comparison edits the same working resource and forwards dirty state;
+    // the revision side remains immutable. Undo restores the file contents.
+    try std.testing.expectError(error.ReadOnly, widget.original_editor.save());
+    try widget.modified_editor.setCursorPosition(.{ .lineNumber = 1, .column = 1 });
+    try widget.modified_editor.insertText("x");
+    try std.testing.expect(tab.input.isDirty());
+    try std.testing.expect(working_input.editor.isDirty());
+    try std.testing.expectEqualStrings("xone", try working_input.editor.model.borrowLineContent(1));
+    try widget.modified_editor.undo();
+    try std.testing.expect(!tab.input.isDirty());
+    try std.testing.expect(!working_input.editor.isDirty());
+    _ = try tab.input.save(0);
+    try std.testing.expectEqualStrings("one", try working_input.editor.model.borrowLineContent(1));
 
     // Staged and untracked diffs open with distinct titles/keys.
     try workbench.openDiff(staged_path, .head, .index);
     try pumpDiffForTests(workbench);
     const staged_tab = workbench.activeTab().?;
     try std.testing.expect(staged_tab.isDiff());
+    try std.testing.expect(staged_tab.editor.isReadOnly());
+    try std.testing.expectEqualStrings("git", staged_tab.editor.model.uri().scheme);
     try std.testing.expect(std.mem.indexOf(u8, staged_tab.input.getName(), "HEAD") != null);
     try std.testing.expect(std.mem.indexOf(u8, staged_tab.input.getName(), "Index") != null);
 
@@ -8407,6 +8424,8 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try pumpDiffForTests(workbench);
     const index_working_tab = workbench.activeTab().?;
     try std.testing.expect(index_working_tab.isDiff());
+    try std.testing.expect(!index_working_tab.editor.isReadOnly());
+    try std.testing.expectEqualStrings("file", index_working_tab.editor.model.uri().scheme);
     try std.testing.expect(std.mem.indexOf(u8, index_working_tab.input.getName(), "Index") != null);
     try std.testing.expect(std.mem.indexOf(u8, index_working_tab.input.getName(), "Working Tree") != null);
     // Snapshot identities use the filesystem path, not its spelling.
@@ -8474,6 +8493,17 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     // Only the normal file tab is serialized; the three diff inputs have no
     // serializer and are skipped.
     try std.testing.expectEqual(initial_tabs, serialized_editors);
+
+    // A working file that was first resolved by a comparison can be opened
+    // separately without a duplicate working copy.
+    const working_model = index_working_tab.editor.model;
+    try workbench.openPath(staged_path);
+    const staged_file_tab = workbench.activeTab().?;
+    try std.testing.expect(!staged_file_tab.isDiff());
+    try std.testing.expectEqual(working_model, staged_file_tab.editor.model);
+    try std.testing.expect(workbench.workingCopyService().hasResource(staged_file_tab.editor.path));
+    _ = try workbench.closeActive();
+    try std.testing.expect(workbench.workingCopyService().hasResource(index_working_tab.editor.path));
 
     // Quick-diff decorations can be disabled and detach the gutter cell.
     try workbench.openPath(path);

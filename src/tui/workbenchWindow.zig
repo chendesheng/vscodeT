@@ -1959,13 +1959,21 @@ pub const TerminalWorkbench = struct {
     }
 
     fn registerWorkingCopy(self: *TerminalWorkbench, tab: *Tab) void {
-        tab.editor.undo_redo.setNotificationService(self.notification_api);
-        if (self.search_window.view) |view| view.model.result.onModelAdded(tab.editor.path, tab.editor.model) catch {};
-        self.working_copy_service.acquireWorkingCopy(tui_editor_mod.workingCopyInterface(tab.editor)) catch {};
+        for (0..2) |index| {
+            const editor = tab.workingCopyAt(index) orelse continue;
+            editor.undo_redo.setNotificationService(self.notification_api);
+            if (!self.working_copy_service.hasResource(editor.path)) {
+                if (self.search_window.view) |view| view.model.result.onModelAdded(editor.path, editor.model) catch {};
+            }
+            self.working_copy_service.acquireWorkingCopy(tui_editor_mod.workingCopyInterface(editor)) catch {};
+        }
     }
 
     fn unregisterWorkingCopy(self: *TerminalWorkbench, tab: *Tab) void {
-        _ = self.working_copy_service.releaseWorkingCopy(tui_editor_mod.workingCopyInterface(tab.editor));
+        for (0..2) |index| {
+            const editor = tab.workingCopyAt(index) orelse continue;
+            _ = self.working_copy_service.releaseWorkingCopy(tui_editor_mod.workingCopyInterface(editor));
+        }
     }
 
     fn initAfterRestoredWorkspaceWatcher(context: *anyopaque) !void {
