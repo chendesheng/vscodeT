@@ -534,6 +534,7 @@ pub const Editor = struct {
     language_service: *LanguageService,
     content_listener_id: Emitter(InternalModelContentChangeEvent).ListenerId = 0,
     decorations_listener_id: Emitter(ModelDecorationsChangedEvent).ListenerId = 0,
+    injected_text_listener_id: usize = 0,
     /// True while this view keeps selection markers in the shared model so
     /// edits in another pane can move its cursors.
     cursor_tracking: bool = false,
@@ -964,6 +965,7 @@ pub const Editor = struct {
 
         editor.content_listener_id = try model.onDidChangeContentWithContextId(editor, contentChangedCallback);
         editor.decorations_listener_id = try model.onDidChangeDecorationsWithContextId(editor, decorationChangedCallback);
+        editor.injected_text_listener_id = try model.listenDidChangeInjectedText(editor, injectedTextChangedCallback);
         editor.attached_view = try model.onBeforeAttached();
         try document.addEditor(editor);
         // Establish the initial model selection before any contribution or
@@ -1697,6 +1699,7 @@ pub const Editor = struct {
         // this view while a split copy stays open.
         self.model.removeDidChangeContentListener(self.content_listener_id);
         self.model.removeDidChangeDecorationsListener(self.decorations_listener_id);
+        self.model.removeDidChangeInjectedTextListener(self.injected_text_listener_id);
         if (self.json_completion_registration) |registration| registration.dispose();
         if (self.marker_decorations) |service| {
             if (self.marker_model_registered) {
@@ -1762,6 +1765,36 @@ pub const Editor = struct {
     fn decorationChangedCallback(event: @import("../../../common/textModelEvents.zig").ModelDecorationsChangedEvent, editor: *Editor) anyerror!void {
         editor.decoration_generation +%= 1;
         editor.emitViewEvent(.{ .ViewDecorationsChanged = view_events.ViewDecorationsChangedEvent.init(event) });
+    }
+
+    /// ViewModelImpl.onDidChangeContentOrInjectedText: only view projections
+    /// change for an injection event. The text model/version and undo state
+    /// are untouched; the view events precede the model decoration event.
+    fn injectedTextChangedCallback(event: @import("../../../common/textModelEvents.zig").ModelInjectedTextChangedEvent, editor: *Editor) anyerror!void {
+        _ = editor.view_event_dispatcher.beginEmitViewEvents();
+        defer editor.view_event_dispatcher.endEmitViewEvents();
+        var mapping_changed = false;
+        for (event.changes) |change| {
+            const line = change.lineNumber;
+            const old_count = editor.view_lines.getModelLineViewLineCount(line);
+            const start = editor.view_lines.getViewLineNumber(line, 0);
+            try editor.view_lines.replaceLine(line);
+            const new_count = editor.view_lines.getModelLineViewLineCount(line);
+            const changed = @min(old_count, new_count);
+            if (changed > 0) editor.emitViewEvent(.{ .ViewLinesChanged = .{ .fromLineNumber = start, .count = changed } });
+            if (new_count > old_count) {
+                editor.emitViewEvent(.{ .ViewLinesInserted = .{ .fromLineNumber = start + old_count, .toLineNumber = start + new_count - 1 } });
+                mapping_changed = true;
+            } else if (new_count < old_count) {
+                editor.emitViewEvent(.{ .ViewLinesDeleted = .{ .fromLineNumber = start + new_count, .toLineNumber = start + old_count - 1 } });
+                mapping_changed = true;
+            }
+        }
+        if (mapping_changed) {
+            editor.emitViewEvent(.{ .ViewLineMappingChanged = .{} });
+            editor.emitViewEvent(.{ .ViewDecorationsChanged = view_events.ViewDecorationsChangedEvent.init(null) });
+        }
+        try editor.resetCursorViewState();
     }
 
     fn emitModelContentChangedEvents(self: *Editor) void {
@@ -5218,6 +5251,40 @@ test "Editor: split copy shares the model and keeps view state independent" {
     const after_close = try source.model.getLineContent(1);
     defer after_close.deinit();
     try std.testing.expectEqualStrings("Y0", after_close.items);
+}
+
+test "Editor: model injected-text event changes projected lines without editing the model" {
+    const allocator = std.testing.allocator;
+    const editor = try Editor.createFromText(allocator, std.testing.io, "abcd", "test.txt", 11, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const version = editor.model.getVersionId();
+    const original_count = editor.viewLineCount();
+    var options = ModelDecorationOptions.init("injected", .AlwaysGrowsWhenTypingAtEdges);
+    options.showIfCollapsed = true;
+    options.before = .{
+        .content = "XYZ",
+        .inlineClassName = "injected-class",
+        .inlineClassNameAffectsLetterSpacing = false,
+        .attachedData = null,
+        .cursorStops = .Both,
+    };
+    const ids = try editor.model.deltaDecorations(&.{}, &.{.{ .range = Range.init(1, 3, 1, 3), .options = &options }}, 98);
+    defer allocator.free(ids);
+    try std.testing.expect(editor.viewLineCount() > original_count);
+    try std.testing.expectEqual(editor.viewLineCount(), editor.viewLayout().getLineCount());
+    const data = try editor.viewLineData(1);
+    try std.testing.expectEqualStrings("abXYZ", data.content);
+    try std.testing.expectEqualStrings("injected-class", data.inlineDecorations.?[0].inlineClassName);
+    try std.testing.expectEqual(@as(usize, 3), editor.modelColumnOfViewPosition(1, 4));
+    try std.testing.expectEqual(version, editor.model.getVersionId());
+    const removed = try editor.model.deltaDecorations(ids, &.{}, 98);
+    defer allocator.free(removed);
+    try std.testing.expectEqual(original_count, editor.viewLineCount());
+    try std.testing.expectEqualStrings("abcd", (try editor.viewLineData(1)).content);
+    try std.testing.expectEqual(version, editor.model.getVersionId());
 }
 
 test "Editor: viewport reflows wrapping" {

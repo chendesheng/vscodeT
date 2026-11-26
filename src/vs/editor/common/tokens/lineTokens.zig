@@ -216,7 +216,9 @@ pub const LineTokens = struct {
         return self.sliceAndInflate(range.start, range.endExclusive, 0);
     }
 
-    pub fn withInserted(self: *const LineTokens, insertTokens: []const struct { offset: usize, text: []const u8, tokenMetadata: TokenMetadata }) !LineTokens {
+    pub const InsertedToken = struct { offset: usize, text: []const u8, tokenMetadata: TokenMetadata };
+
+    pub fn withInserted(self: *const LineTokens, insertTokens: []const InsertedToken) !LineTokens {
         if (insertTokens.len == 0) {
             return self.clone(self._text.allocator);
         }

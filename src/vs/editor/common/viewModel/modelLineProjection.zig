@@ -1,9 +1,9 @@
-// Port of the no-injection core of
+// Port of
 // `src/vs/editor/common/viewModel/modelLineProjection.ts`.
 //
-// The TUI does not use injected text or inline decorations, so this port
-// implements wrapping and identity projections only. A wrapped projection owns
-// its `ModelLineProjectionData` break arrays.
+// A projected line owns break and injected-text arrays. Model decoration
+// text remains borrowed; the model injected-text event replaces affected
+// projections before disposing decoration data.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -40,6 +40,8 @@ pub const ModelLineProjection = struct {
 
     pub fn deinit(self: *ModelLineProjection) void {
         if (self.data) |data| {
+            if (data.injectionOffsets) |offsets| self.allocator.free(offsets);
+            if (data.injectionOptions) |options| self.allocator.free(options);
             if (data.breakOffsets.len > 0) self.allocator.free(data.breakOffsets);
             if (data.breakOffsetsVisibleColumn.len > 0) self.allocator.free(data.breakOffsetsVisibleColumn);
         }
@@ -94,7 +96,15 @@ pub const ModelLineProjection = struct {
             const start = if (output_index > 0) data.breakOffsets[output_index - 1] else 0;
             const end = data.breakOffsets[output_index];
             if (output_index > 0) try buffer.appendNTimes(' ', data.wrappedTextIndentLength);
-            try buffer.appendSlice(line.items[start..end]);
+            if (data.injectionOffsets) |offsets| {
+                const LineInjectedText = @import("../textModelEvents.zig").LineInjectedText;
+                const injected = try self.allocator.alloc(LineInjectedText, offsets.len);
+                defer self.allocator.free(injected);
+                for (offsets, data.injectionOptions.?, injected) |offset, options, *item| item.* = .{ .ownerId = 0, .lineNumber = model_line, .column = offset + 1, .options = options, .order = 0 };
+                const combined = try LineInjectedText.applyInjectedText(self.allocator, line.items, injected);
+                defer self.allocator.free(combined);
+                try buffer.appendSlice(combined[start..end]);
+            } else try buffer.appendSlice(line.items[start..end]);
         } else {
             try buffer.appendSlice(line.items);
         }
@@ -115,6 +125,16 @@ pub const ModelLineProjection = struct {
 
         const line_tokens = try model.tokenization().getLineTokens(model_line);
         tokens.* = line_tokens;
+        if (self.data) |data| {
+            if (data.injectionOffsets) |offsets| {
+                const injections = try self.allocator.alloc(LineTokens.InsertedToken, offsets.len);
+                defer self.allocator.free(injections);
+                for (offsets, data.injectionOptions.?, injections) |offset, options, *token| token.* = .{ .offset = offset, .text = options.content, .tokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata.default };
+                const result = try tokens.*.?.withInserted(injections);
+                tokens.*.?.deinit();
+                tokens.* = result;
+            }
+        }
 
         const stored = if (tokens.*) |*t| t else unreachable;
         content.clearRetainingCapacity();

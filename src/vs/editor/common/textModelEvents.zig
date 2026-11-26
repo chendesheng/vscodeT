@@ -110,19 +110,19 @@ pub const LineInjectedText = struct {
     options: InjectedTextOptions,
     order: usize,
 
-    pub fn applyInjectedText(lineText: []const u8, injectedTexts: ?[]LineInjectedText) []const u8 {
-        if (injectedTexts == null or injectedTexts.len == 0) {
-            return lineText;
+    /// Caller owns the returned source with the injections applied.
+    pub fn applyInjectedText(allocator: Allocator, line_text: []const u8, injected_texts: []const LineInjectedText) ![]u8 {
+        var result = ArrayList(u8).init(allocator);
+        errdefer result.deinit();
+        var last_offset: usize = 0;
+        for (injected_texts) |injected| {
+            const offset = @min(injected.column -| 1, line_text.len);
+            try result.appendSlice(line_text[last_offset..offset]);
+            try result.appendSlice(injected.options.content);
+            last_offset = offset;
         }
-        var result: []const u8 = "";
-        var lastOriginalOffset: usize = 0;
-        for (injectedTexts.?) |injectedText| {
-            result = result ++ lineText[lastOriginalOffset .. injectedText.column - 1];
-            lastOriginalOffset = injectedText.column - 1;
-            result += injectedText.options.content;
-        }
-        result = result ++ lineText[lastOriginalOffset..];
-        return result;
+        try result.appendSlice(line_text[last_offset..]);
+        return result.toOwnedSlice();
     }
 
     pub fn fromDecorations(allocator: Allocator, decorations: []const ModelDecoration) !ArrayList(LineInjectedText) {

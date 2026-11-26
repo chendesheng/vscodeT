@@ -2,11 +2,11 @@
 // `src/vs/editor/common/viewModel/monospaceLineBreaksComputer.ts`.
 //
 // The browser implementation reasons in pixels because injected text can ask
-// for arbitrary `widthInEm` widths. The TUI has no injected text and a fixed
+// for arbitrary `widthInEm` widths. The TUI has a fixed
 // monospace cell grid, so this port works in visible columns and uses
 // `CursorColumns.nextVisibleColumn` for tab/CJK/emoji widths.
 //
-// Omitted from this port: injected text, fixed-width `widthInEm` ranges,
+// Omitted from this port: fixed-width `widthInEm` ranges,
 // DOM line-break strategies and `wrapOnEscapedLineFeeds`.
 
 const std = @import("std");
@@ -216,6 +216,27 @@ fn findBreak(classifier: *const WrappingCharacterClassifier, text: []const u8, t
 
 /// Computes the wrapping of a single line. Returns null when the line fits and
 /// does not need a projection.
+/// Apply the line's injected text before computing wrapping offsets, as
+/// upstream createLineBreaks does. The projection owns the injection arrays;
+/// option contents remain borrowed from the attached model decorations.
+pub fn computeLineBreaksWithInjections(allocator: Allocator, classifier: *const WrappingCharacterClassifier, text: []const u8, injected: []const @import("../textModelEvents.zig").LineInjectedText, tab_size: usize, width: usize, indent: WrappingIndent, word_break: WordBreak) !ModelLineProjectionData {
+    const LineInjectedText = @import("../textModelEvents.zig").LineInjectedText;
+    const combined = try LineInjectedText.applyInjectedText(allocator, text, injected);
+    defer allocator.free(combined);
+    const offsets = try allocator.alloc(usize, injected.len);
+    errdefer allocator.free(offsets);
+    const options = try allocator.alloc(@import("../model.zig").InjectedTextOptions, injected.len);
+    errdefer allocator.free(options);
+    for (injected, offsets, options) |item, *offset, *option| {
+        offset.* = item.column -| 1;
+        option.* = item.options;
+    }
+    var data = try computeLineBreaks(allocator, classifier, combined, tab_size, width, indent, word_break) orelse ModelLineProjectionData.init(null, null, try allocator.dupe(usize, &.{combined.len}), &.{}, 0);
+    data.injectionOffsets = offsets;
+    data.injectionOptions = options;
+    return data;
+}
+
 pub fn computeLineBreaks(
     allocator: Allocator,
     classifier: *const WrappingCharacterClassifier,

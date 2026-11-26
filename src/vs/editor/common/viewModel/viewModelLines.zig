@@ -28,8 +28,11 @@ const LineTokens = @import("../tokens/lineTokens.zig").LineTokens;
 const ICursorSimpleModel = @import("../cursorCommon.zig").ICursorSimpleModel;
 const ICoordinatesConverter = @import("../coordinatesConverter.zig").ICoordinatesConverter;
 const ModelLineProjection = @import("./modelLineProjection.zig").ModelLineProjection;
+const inline_mod = @import("./inlineDecorations.zig");
+const InlineDecoration = inline_mod.InlineDecoration;
 const ModelLineProjectionData = @import("../modelLineProjectionData.zig").ModelLineProjectionData;
 const WordBreak = @import("../modelLineProjectionData.zig").WordBreak;
+const LineInjectedText = @import("../textModelEvents.zig").LineInjectedText;
 const ModelRawContentChangedEvent = @import("../textModelEvents.zig").ModelRawContentChangedEvent;
 const WrappingIndent = @import("../config/editorOptions.zig").WrappingIndent;
 const monospace = @import("./monospaceLineBreaksComputer.zig");
@@ -74,6 +77,7 @@ pub const ProjectedViewModelLines = struct {
     cursor_line_content: ArrayList(u8),
     view_line_content: ArrayList(u8),
     view_line_tokens: ?LineTokens,
+    view_line_inline_decorations: ArrayList(InlineDecoration),
 
     pub fn init(
         allocator: Allocator,
@@ -113,6 +117,7 @@ pub const ProjectedViewModelLines = struct {
             .cursor_line_content = ArrayList(u8).init(allocator),
             .view_line_content = ArrayList(u8).init(allocator),
             .view_line_tokens = null,
+            .view_line_inline_decorations = ArrayList(InlineDecoration).init(allocator),
         };
         classifier_owned = false;
         projections_owned = false;
@@ -130,22 +135,32 @@ pub const ProjectedViewModelLines = struct {
         self.classifier.deinit();
         self.cursor_line_content.deinit();
         self.view_line_content.deinit();
+        self.view_line_inline_decorations.deinit();
         if (self.view_line_tokens) |*tokens| tokens.deinit();
         self.view_line_tokens = null;
     }
 
-    fn computeProjection(self: *ProjectedViewModelLines, line_number: usize, previous: ?ModelLineProjectionData) !ModelLineProjection {
+    fn computeProjectionForLine(self: *ProjectedViewModelLines, line_number: usize) !ModelLineProjection {
+        const injected = try self.model.getInjectedTextInLine(line_number);
+        defer self.model.getAllocator().free(injected);
+        return self.computeProjection(line_number, null, injected);
+    }
+
+    fn computeProjection(self: *ProjectedViewModelLines, line_number: usize, previous: ?ModelLineProjectionData, injected: []const LineInjectedText) !ModelLineProjection {
         const line = try self.model.borrowLineContent(line_number);
-        const data = try monospace.computeLineBreaksWithPrevious(
-            previous,
-            self.allocator,
-            &self.classifier,
-            line,
-            self.tab_size,
-            self.wrapping_column,
-            self.wrapping_indent,
-            self.word_break,
-        );
+        const data = if (injected.len > 0)
+            try monospace.computeLineBreaksWithInjections(self.allocator, &self.classifier, line, injected, self.tab_size, self.wrapping_column, self.wrapping_indent, self.word_break)
+        else
+            try monospace.computeLineBreaksWithPrevious(
+                previous,
+                self.allocator,
+                &self.classifier,
+                line,
+                self.tab_size,
+                self.wrapping_column,
+                self.wrapping_indent,
+                self.word_break,
+            );
         var projection = ModelLineProjection.init(self.allocator, data);
         projection.visible = !self.isModelLineHidden(line_number);
         return projection;
@@ -224,10 +239,17 @@ pub const ProjectedViewModelLines = struct {
         const line_count = self.model.getLineCount();
         try new_projections.ensureTotalCapacityPrecise(line_count);
         try counts.ensureTotalCapacityPrecise(line_count);
+        const decorations = try self.model.getInjectedTextDecorations(0);
+        defer self.model.getAllocator().free(decorations);
+        var injected = try LineInjectedText.fromDecorations(self.allocator, decorations);
+        defer injected.deinit();
+        var injection_index: usize = 0;
         var line_number: usize = 1;
         while (line_number <= line_count) : (line_number += 1) {
             const previous = if (only_wrapping_column_changed) self.projections.items[line_number - 1].data else null;
-            var projection = try self.computeProjection(line_number, previous);
+            const start = injection_index;
+            while (injection_index < injected.items.len and injected.items[injection_index].lineNumber == line_number) : (injection_index += 1) {}
+            var projection = try self.computeProjection(line_number, previous, injected.items[start..injection_index]);
             const view_line_count = projection.getViewLineCount();
             new_projections.append(projection) catch |err| {
                 projection.deinit();
@@ -314,7 +336,7 @@ pub const ProjectedViewModelLines = struct {
 
         var line_number = from_line;
         while (line_number <= to_line) : (line_number += 1) {
-            var projection = try self.computeProjection(line_number, null);
+            var projection = try self.computeProjectionForLine(line_number);
             const view_line_count = projection.getViewLineCount();
             new_projections.append(projection) catch |err| {
                 projection.deinit();
@@ -330,7 +352,7 @@ pub const ProjectedViewModelLines = struct {
     }
 
     pub fn replaceLine(self: *ProjectedViewModelLines, line_number: usize) !void {
-        var projection = try self.computeProjection(line_number, null);
+        var projection = try self.computeProjectionForLine(line_number);
         errdefer projection.deinit();
         const index = line_number - 1;
         self.projections.items[index].deinit();
@@ -399,14 +421,56 @@ pub const ProjectedViewModelLines = struct {
 
     pub fn getViewLineData(self: *ProjectedViewModelLines, view_line_number: usize) !ViewLineData {
         const info = self.getViewLineInfo(view_line_number);
-        return self.projections.items[info.model_line - 1].getViewLineData(
+        var result = try self.projections.items[info.model_line - 1].getViewLineData(
             self.model,
             info.model_line,
             info.output_index,
             &self.view_line_tokens,
             &self.view_line_content,
         );
+        self.view_line_inline_decorations.clearRetainingCapacity();
+        if (self.projections.items[info.model_line - 1].data) |data| {
+            if (data.injectionOffsets != null) {
+                var computer = inline_mod.InjectedTextInlineDecorationsComputer.init(self.allocator, .{
+                    .context = self,
+                    .getInjectionOptions = InjectionContext.getOptions,
+                    .getInjectionOffsets = InjectionContext.getOffsets,
+                    .getBreakOffsets = InjectionContext.getBreaks,
+                    .getWrappedTextIndentLength = InjectionContext.getIndent,
+                    .getBaseViewLineNumber = InjectionContext.getBaseLine,
+                });
+                var decorations = try computer.getInlineDecorations(info.model_line);
+                defer decorations.deinit();
+                try self.view_line_inline_decorations.appendSlice(decorations.lines[info.output_index]);
+                result.inlineDecorations = self.view_line_inline_decorations.items;
+            }
+        }
+        return result;
     }
+
+    const InjectionContext = struct {
+        fn lines(context: *anyopaque) *ProjectedViewModelLines {
+            return @ptrCast(@alignCast(context));
+        }
+        fn data(context: *anyopaque, line: usize) ModelLineProjectionData {
+            return lines(context).projections.items[line - 1].data.?;
+        }
+        fn getOptions(context: *anyopaque, line: usize) ?[]const @import("../model.zig").InjectedTextOptions {
+            return data(context, line).injectionOptions;
+        }
+        fn getOffsets(context: *anyopaque, line: usize) ?[]const usize {
+            return data(context, line).injectionOffsets;
+        }
+        fn getBreaks(context: *anyopaque, line: usize) []const usize {
+            return data(context, line).breakOffsets;
+        }
+        fn getIndent(context: *anyopaque, line: usize) usize {
+            return data(context, line).wrappedTextIndentLength;
+        }
+        fn getBaseLine(context: *anyopaque, line: usize) usize {
+            return lines(context).getViewLineNumber(line, 0);
+        }
+    };
 
     pub fn getLineContent(self: *ProjectedViewModelLines, view_line_number: usize) []const u8 {
         const info = self.getViewLineInfo(view_line_number);

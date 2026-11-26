@@ -377,6 +377,14 @@ pub const TextModel = struct {
         try self._onDidChangeInjectedText.event(callback);
     }
 
+    pub fn listenDidChangeInjectedText(self: *TextModel, context: anytype, callback: fn (ModelInjectedTextChangedEvent, @TypeOf(context)) anyerror!void) !usize {
+        return self._onDidChangeInjectedText.listen(context, callback);
+    }
+
+    pub fn removeDidChangeInjectedTextListener(self: *TextModel, id: usize) void {
+        self._onDidChangeInjectedText.unlisten(id);
+    }
+
     pub fn onDidChangeLineHeight(self: *TextModel, callback: fn (ModelLineHeightChangedEvent) void) !void {
         try self._onDidChangeLineHeight.event(callback);
     }
@@ -1764,7 +1772,7 @@ pub const TextModel = struct {
                 }
 
                 for (affectedLines.items) |lineNumber| {
-                    var event = ModelRawLineChanged.init(lineNumber, try self.getLineContent(lineNumber), try self._getInjectedTextInLine(lineNumber));
+                    var event = ModelRawLineChanged.init(lineNumber, try self.getLineContent(lineNumber), try self.getInjectedTextInLine(lineNumber));
                     event.owns_injected_text = true;
                     try lineChangeEvents.append(event);
                 }
@@ -1983,13 +1991,26 @@ pub const TextModel = struct {
         return decorations.toOwnedSlice();
     }
 
-    fn _getInjectedTextInLine(self: *TextModel, lineNumber: usize) ![]LineInjectedText {
+    pub fn getInjectedTextInLine(self: *TextModel, lineNumber: usize) ![]LineInjectedText {
         const startOffset = self._buffer.getOffsetAt(lineNumber, 1);
         const endOffset = startOffset + self._buffer.getLineLength(lineNumber);
 
         const result = try self._decorationsTree.getInjectedTextInInterval(self, startOffset, endOffset, 0);
         defer result.deinit();
-        var res = try LineInjectedText.fromDecorations(self.getAllocator(), result.items);
+        var visible = ArrayList(ModelDecoration).init(self.getAllocator());
+        defer visible.deinit();
+        for (result.items) |decoration| {
+            if ((decoration.options.showIfCollapsed orelse false) or !decoration.range.isEmpty()) try visible.append(decoration);
+        }
+        var res = try LineInjectedText.fromDecorations(self.getAllocator(), visible.items);
+        var count: usize = 0;
+        for (res.items) |injected| {
+            if (injected.lineNumber == lineNumber) {
+                res.items[count] = injected;
+                count += 1;
+            }
+        }
+        res.shrinkRetainingCapacity(count);
         return try res.toOwnedSlice();
     }
 
@@ -2832,15 +2853,15 @@ pub const DecorationsTrees = struct {
         const versionId = host.getVersionId();
         var searchResult = try self._injectedTextDecorationsTree.search(filterOwnerId, false, versionId, false);
         defer searchResult.deinit();
-        const result = try _ensureNodesHaveRanges(host, searchResult);
-        var write_index = 0;
-        for (result) |i| {
-            if (i.options.showIfCollapsed or !i.range.isEmpty()) {
+        var result = try _ensureNodesHaveRanges(host, searchResult);
+        var write_index: usize = 0;
+        for (result.items) |i| {
+            if ((i.options.showIfCollapsed orelse false) or !i.range.isEmpty()) {
                 result.items[write_index] = i;
                 write_index += 1;
             }
         }
-        result.resize(write_index);
+        result.shrinkRetainingCapacity(write_index);
         return result;
     }
 
@@ -2849,7 +2870,7 @@ pub const DecorationsTrees = struct {
         var searchResult = try self._search(filterOwnerId, false, false, versionId, false);
         defer searchResult.deinit();
         const result = try _ensureNodesHaveRanges(host, searchResult);
-        var write_index = 0;
+        var write_index: usize = 0;
         for (result.items) |node| {
             if (node.options.lineHeight != null) {
                 result.items[write_index] = node;

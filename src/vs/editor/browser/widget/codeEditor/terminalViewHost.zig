@@ -177,6 +177,7 @@ pub const TerminalViewHost = struct {
     context: ViewContext,
     view: View,
     scratch_text: StringBuilder,
+    scratch_inline_decorations: std.ArrayList(InlineDecoration) = .empty,
     decorations: *ViewModelDecorations,
     line_numbers: LineNumbersOverlay,
     indent_guides: IndentGuidesOverlay,
@@ -369,6 +370,7 @@ pub const TerminalViewHost = struct {
         self.editor.removeViewEventHandler(&self.view_model_handler);
         self.view.deinit();
         self.scratch_text.deinit();
+        self.scratch_inline_decorations.deinit(self.allocator);
         self.view_cursors.deinit();
         self.current_line.deinit();
         self.current_line_margin.deinit();
@@ -1011,6 +1013,12 @@ pub const TerminalViewHost = struct {
         }
         if (line_index < collection.hasVariableFonts.len) {
             has_variable_fonts = collection.hasVariableFonts[line_index];
+        }
+        if (data.inlineDecorations) |injected| {
+            self.scratch_inline_decorations.clearRetainingCapacity();
+            try self.scratch_inline_decorations.appendSlice(self.allocator, inline_decorations);
+            try self.scratch_inline_decorations.appendSlice(self.allocator, injected);
+            inline_decorations = self.scratch_inline_decorations.items;
         }
 
         return view_model.ViewLineRenderingData.init(
