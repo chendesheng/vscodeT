@@ -536,8 +536,9 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
                 if (try self.uriEquals(original, resource.original) and try self.uriEquals(modified, resource.modified)) {
                     try self.revealIndex(index);
                     if (range) |r| if (managed.binding()) |binding| if (binding.editor) |editor| {
-                        const target = if (resource.modified != null) editor.modified_editor else editor.original_editor;
-                        try target.setCursorPosition(r.getStartPosition());
+                        const target = if (resource.original != null) editor.original_editor else editor.modified_editor;
+                        _ = target.revealRange(r, .Center);
+                        try binding.highlightRange(target, r);
                         try self.syncInnerScroll(binding, target.scrollTop());
                     };
                     return;

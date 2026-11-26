@@ -14,11 +14,22 @@ const editor_css = @import("../../editorCss.zig");
 const DiffWidget = @import("../diffEditor/diffEditorWidget.zig").DiffEditorWidget;
 const DiffOptions = @import("../diffEditor/diffEditorOptions.zig").Options;
 const Editor = @import("../codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const TextModel = @import("../../../common/model/textModel.zig").TextModel;
+const model_types = @import("../../../common/model.zig");
+const Range = @import("../../../common/core/range.zig").Range;
+const time = @import("../../../../base/common/timeCompat.zig");
 const OffsetRange = @import("../../../common/core/ranges/offsetRange.zig").OffsetRange;
 const dispatch = @import("../../../../base/common/windowDispatch.zig");
 const ContentSizeChangedEvent = @import("../../../common/viewModelEventDispatcher.zig").ContentSizeChangedEvent;
 const ThemeColors = @import("../../../../workbench/browser/themeColors.zig").ThemeColors;
 const std_uri = @import("../../../../base/common/stdUri.zig");
+
+const symbol_highlight_options = blk: {
+    var options = model_types.ModelDecorationOptions.init("symbol-navigate-action-highlight", .NeverGrowsWhenTypingAtEdges);
+    options.className = "symbolHighlight";
+    options.inlineClassName = "symbolHighlight";
+    break :blk options;
+};
 
 pub const binaryFilePlaceholderContentHeight: usize = 5;
 pub const ItemAction = enum { collapse, open_file, open_binary_diff };
@@ -98,6 +109,8 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
             hidden: bool = false,
             setting_data: bool = false,
             vertical_update: dispatch.Task = .{},
+            highlight_timeout: dispatch.Task = .{},
+            highlighted_model: ?*TextModel = null,
             options_listener: ?usize = null,
             original_size_listener: ?usize = null,
             modified_size_listener: ?usize = null,
@@ -180,8 +193,31 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
             pub fn hide(self: *Binding) void {
                 self.hidden = true;
             }
+            /// Port of the transient symbol-highlight decoration used by
+            /// multiDiffEditorWidgetImpl.reveal. The binding owns the model
+            /// decoration and the 350 ms timeout, including unbind cleanup.
+            pub fn highlightRange(self: *Binding, target: *Editor, range: Range) !void {
+                self.clearHighlight();
+                const text_model = target.model;
+                const ids = try text_model.deltaDecorations(&.{}, &.{.{ .range = range, .options = @constCast(&symbol_highlight_options) }}, @intFromPtr(self));
+                text_model.getAllocator().free(ids);
+                self.highlighted_model = text_model;
+                self.highlight_timeout.schedule(time.milliTimestamp() +| 350);
+            }
+            fn clearHighlight(self: *Binding) void {
+                self.highlight_timeout.schedule(null);
+                const text_model = self.highlighted_model orelse return;
+                self.highlighted_model = null;
+                text_model.removeAllDecorationsWithOwnerId(@intFromPtr(self)) catch {};
+            }
+            fn onHighlightTimeout(context: *anyopaque, _: i64, _: bool) bool {
+                const self: *Binding = @ptrCast(@alignCast(context));
+                self.clearHighlight();
+                return true;
+            }
             pub fn destroy(self: *Binding) void {
                 self.vertical_update.schedule(null);
+                self.clearHighlight();
                 if (self.options_listener) |id| self.item.on_did_change_options.unlisten(id);
                 if (self.editor) |editor| {
                     if (self.original_size_listener) |id| editor.original_editor.viewLayout().onDidContentSizeChange().unlisten(id);
@@ -386,6 +422,7 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
                 .measured_height = height,
                 .observed_height = height,
                 .vertical_update = .{ .queue = self.queue, .context = binding, .run = Binding.onVerticalUpdate },
+                .highlight_timeout = .{ .queue = self.queue, .context = binding, .run = Binding.onHighlightTimeout },
             };
             errdefer binding.destroy();
             if (!item.isBinary()) {

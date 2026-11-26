@@ -10989,6 +10989,35 @@ test "Workbench: git scm integration opens live Changes group and retains surviv
     try std.testing.expectEqual(tab, wb.activeTab().?);
     try std.testing.expectEqual(initial_vm.items[0], initial_vm.activeDiffItem.?);
     try std.testing.expectEqual(.sidebar, wb.focus);
+    const target_item = initial_vm.items[0];
+    const binding = multi.widget.impl.bindingFor(target_item) orelse return error.TestExpectedMultiDiffControl;
+    const original_editor = binding.editor.?.original_editor;
+    const selection = @import("../vs/editor/common/core/selection.zig").Selection.init(1, 1, 1, 1);
+    try original_editor.setSelections(&.{selection});
+    const highlight = @import("../vs/editor/common/core/range.zig").Range.init(1, 2, 1, 5);
+    try multi.widget.reveal(.{ .original = target_item.documentDiffItem.original.?.uri, .modified = target_item.documentDiffItem.modified.?.uri }, highlight);
+    const selected = try original_editor.getSelections();
+    defer allocator.free(selected);
+    try std.testing.expectEqualSlices(@TypeOf(selection), &.{selection}, selected);
+    const owner = @intFromPtr(binding);
+    {
+        const decorations = try original_editor.model.getAllDecorations(owner, false);
+        defer original_editor.model.getAllocator().free(decorations);
+        const found = for (decorations) |decoration| {
+            if (std.mem.eql(u8, decoration.options.description, "symbol-navigate-action-highlight")) break decoration;
+        } else return error.TestExpectedSymbolHighlight;
+        try std.testing.expectEqual(highlight, found.range);
+        try std.testing.expectEqualStrings("symbolHighlight", found.options.className.?);
+    }
+    const deadline = binding.highlight_timeout.at.?;
+    for (0..1000) |_| {
+        if (binding.highlight_timeout.at == null) break;
+        _ = wb.window_events.dispatch(deadline);
+    }
+    try std.testing.expect(binding.highlight_timeout.at == null);
+    const after_highlight = try original_editor.model.getAllDecorations(owner, false);
+    defer allocator.free(after_highlight);
+    for (after_highlight) |decoration| try std.testing.expect(!std.mem.eql(u8, decoration.options.description, "symbol-navigate-action-highlight"));
     // The normal group action follows the same input matching path.
     mouse = .{ .kind = .down, .button = .left, .x = action % 60, .y = action / 60 };
     try std.testing.expect(try changes.handleMouse(&mouse, rect));

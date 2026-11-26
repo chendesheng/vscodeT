@@ -244,6 +244,7 @@ const CellFlag = struct {
     const search_editor_match: u32 = 1 << 23;
     const inline_deleted_text: u32 = 1 << 24;
     const diff_deleted_selection: u32 = 1 << 25;
+    const symbol_highlight: u32 = 1 << 26;
 };
 
 const find_match_background = [3]u8{ 80, 70, 20 };
@@ -2745,6 +2746,9 @@ fn applyFlagPaint(style: *ui.style.PaintStyle, flag: u32, palette: ?*const theme
     if (flag & CellFlag.search_range_highlight != 0) {
         style.background = themedColor(palette, "editor.rangeHighlightBackground", search_range_highlight_background);
     }
+    if (flag & CellFlag.symbol_highlight != 0) {
+        style.background = themedColor(palette, "editor.symbolHighlightBackground", find_match_background);
+    }
     if (flag & CellFlag.word_highlight_text != 0) {
         style.background = themedColor(palette, "editor.wordHighlightBackground", word_highlight_background);
     } else if (flag & CellFlag.word_highlight != 0) {
@@ -2907,6 +2911,7 @@ fn decorationBit(class_name: []const u8) ?u32 {
     if (std.mem.eql(u8, class_name, "finish-snippet-placeholder")) return CellFlag.finish_snippet_placeholder;
     if (std.mem.eql(u8, class_name, "valueSetReplacement")) return CellFlag.value_set_replacement;
     if (std.mem.eql(u8, class_name, "rangeHighlight")) return CellFlag.search_range_highlight;
+    if (std.mem.eql(u8, class_name, "symbolHighlight")) return CellFlag.symbol_highlight;
     if (std.mem.eql(u8, class_name, "char-insert")) return CellFlag.char_insert;
     if (std.mem.eql(u8, class_name, "char-delete")) return CellFlag.char_delete;
     if (std.mem.eql(u8, class_name, "inline-deleted-text")) return CellFlag.inline_deleted_text;
@@ -5743,6 +5748,7 @@ test "view: diagnostic decoration classes map to cell flags" {
     try std.testing.expectEqual(CellFlag.diagnostic_inline_unnecessary, decorationBit("squiggly-inline-unnecessary").?);
     try std.testing.expectEqual(CellFlag.diagnostic_deprecated, decorationBit("squiggly-inline-deprecated").?);
     try std.testing.expectEqual(CellFlag.search_range_highlight, decorationBit("rangeHighlight").?);
+    try std.testing.expectEqual(CellFlag.symbol_highlight, decorationBit("symbolHighlight").?);
 }
 
 test "view: diagnostic flags select terminal underline styles" {
