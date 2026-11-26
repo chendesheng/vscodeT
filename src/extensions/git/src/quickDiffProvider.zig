@@ -95,18 +95,17 @@ fn originalResource(allocator: Allocator, path: []const u8, ref: []const u8, lab
     defer allocator.free(uri.query.?.raw);
     const resource = try std_uri.encodedResource(allocator, uri);
     errdefer allocator.free(resource);
-    return .{ .content = &.{}, .ref_label = try allocator.dupe(u8, label), .resource_uri = resource };
+    return .{ .ref_label = try allocator.dupe(u8, label), .resource_uri = resource };
 }
 
 test "Git QuickDiffProvider: original resource preserves escaped path and quick diff extension" {
     const a = std.testing.allocator;
     var original = try originalResource(a, "/repo/a #b.txt", "", "Index");
     defer original.deinit(a);
-    const uri = try std.Uri.parse(original.resource_uri.?);
+    const uri = try std.Uri.parse(original.resource_uri);
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     try std.testing.expectEqualStrings("git", uri.scheme);
     try std.testing.expectEqualStrings("/repo/a #b.txt.git", try std_uri.path(uri, arena.allocator()));
     try std.testing.expectEqualStrings("{\"path\":\"/repo/a #b.txt\",\"ref\":\"\"}", try std_uri.query(uri, arena.allocator()));
-    try std.testing.expectEqual(@as(usize, 0), original.content.len);
 }

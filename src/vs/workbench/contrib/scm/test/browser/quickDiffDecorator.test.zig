@@ -125,7 +125,7 @@ const TestProvider = struct {
         _ = context;
         const uri = try allocator.dupe(u8, "test-quickdiff:/original");
         errdefer allocator.free(uri);
-        return .{ .content = &.{}, .resource_uri = uri, .ref_label = try allocator.dupe(u8, "HEAD") };
+        return .{ .resource_uri = uri, .ref_label = try allocator.dupe(u8, "HEAD") };
     }
 };
 

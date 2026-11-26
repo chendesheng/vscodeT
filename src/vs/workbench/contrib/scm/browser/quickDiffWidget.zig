@@ -134,22 +134,13 @@ pub const QuickDiffWidget = struct {
         self.invalidate();
     }
 
-    fn ensureEmbedded(self: *QuickDiffWidget, provider_id: []const u8, refresh: bool) !void {
+    fn ensureEmbedded(self: *QuickDiffWidget, provider_id: []const u8) !void {
         const c = self.controller;
         const original = c.model.getDiffEditorModel(provider_id) orelse return error.OriginalUnavailable;
         if (self.embedded) |embedded| {
-            if (std.mem.eql(u8, self.provider_id, provider_id)) {
-                if (original.original_document) |document| {
-                    if (embedded.widget.original_editor.document == document) return;
-                } else if (!refresh) return;
-                var current = try embedded.widget.original_editor.model.getValue(null, true);
-                defer current.deinit();
-                if (original.original_document == null and std.mem.eql(u8, current.items, original.original_content)) return;
-            }
+            if (std.mem.eql(u8, self.provider_id, provider_id) and embedded.widget.original_editor.document == original.original_document) return;
         }
-        const uri = if (original.resource_uri) |resource| try std.Uri.parse(resource) else std.Uri{ .scheme = "vscode-quickdiff", .path = .{ .raw = c.view.editor.path }, .query = .{ .raw = provider_id } };
-        const document = original.original_document orelse try editor_mod.EditorDocument.createFromText(c.allocator, c.view.editor.io, c.view.editor.path, original.original_content, uri);
-        defer if (original.original_document == null) document.release();
+        const document = original.original_document;
         var mappings: std.ArrayList(model_mod.DetailedLineRangeMapping) = .empty;
         defer mappings.deinit(c.allocator);
         if (!c.model.ignore_trim_whitespace and c.model.changes_version_id == c.view.editor.model.getVersionId()) {
@@ -175,7 +166,7 @@ pub const QuickDiffWidget = struct {
         const c = self.controller;
         if (index >= c.model.changes.items.len) return;
         const labeled = c.model.changes.items[index];
-        try self.ensureEmbedded(labeled.provider_id, !use_position);
+        try self.ensureEmbedded(labeled.provider_id);
         self.index = index;
         self.change = labeled.change;
         self.reveal_pending = true;
@@ -250,7 +241,7 @@ pub const QuickDiffWidget = struct {
         defer schemes.deinit(a);
         errdefer for (schemes.items) |scheme| a.free(scheme.string);
         for (self.controller.model.quick_diffs) |provider| {
-            const scheme = if (provider.original.resource_uri) |resource| (std.Uri.parse(resource) catch continue).scheme else "vscode-quickdiff";
+            const scheme = (std.Uri.parse(provider.original.resource_uri) catch continue).scheme;
             try schemes.ensureUnusedCapacity(a, 1);
             schemes.appendAssumeCapacity(.{ .string = try a.dupe(u8, scheme) });
         }
@@ -553,7 +544,7 @@ pub const QuickDiffEditorController = struct {
             return;
         }
         if (widget.child_focused) return;
-        if (self.model.getDiffEditorModel(widget.provider_id) != null) try widget.ensureEmbedded(widget.provider_id, true);
+        if (self.model.getDiffEditorModel(widget.provider_id) != null) try widget.ensureEmbedded(widget.provider_id);
         if (widget.index >= self.model.changes.items.len or !std.mem.eql(u8, widget.provider_id, self.model.changes.items[widget.index].provider_id) or quick.compareChanges(widget.change.?, self.model.changes.items[widget.index].change) != 0) {
             try self.navigate(true, null);
         } else try widget.showChange(widget.index, false);

@@ -70,7 +70,7 @@ pub const SCMContribution = struct {
         return api;
     }
 
-    pub fn ensureQuickDiffServices(self: *SCMContribution, window: *WindowQueue, resolver: ?@import("../../../../editor/common/services/resolverService.zig").ITextModelService, storage: ?*Storage) !*quick_models.IQuickDiffModelService {
+    pub fn ensureQuickDiffServices(self: *SCMContribution, window: *WindowQueue, resolver: @import("../../../../editor/common/services/resolverService.zig").ITextModelService, storage: ?*Storage) !*quick_models.IQuickDiffModelService {
         if (self.quick_diff_model_api) |api| return api;
         const a = self.allocator;
         const service = try a.create(quick_diff.QuickDiffService);
@@ -91,7 +91,7 @@ pub const SCMContribution = struct {
 
     pub const Options = struct {
         editors: EditorService,
-        text_model_service: ?@import("../../../../editor/common/services/resolverService.zig").ITextModelService = null,
+        text_model_service: @import("../../../../editor/common/services/resolverService.zig").ITextModelService,
         view_factory: ?@import("../../../../editor/browser/widget/codeEditor/terminalEditorView.zig").EditorViewFactory = null,
         quick_diff_menu: ?@import("quickDiffWidget.zig").MenuHost = null,
         activity_service: *ActivityService,

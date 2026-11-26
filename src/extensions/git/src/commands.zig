@@ -580,7 +580,7 @@ pub const CommandContribution = struct {
                         if (!std.mem.eql(u8, ref, "HEAD")) return;
                         var working_provider: ?[]const u8 = null;
                         for (changes.baselines) |baseline| {
-                            const resource = baseline.original.resource_uri orelse continue;
+                            const resource = baseline.original.resource_uri;
                             const baseline_ref = (try gitRef(a, std.Uri.parse(resource) catch continue)) orelse continue;
                             if (baseline_ref.len == 0 or std.mem.eql(u8, baseline_ref, "~")) {
                                 working_provider = baseline.id;

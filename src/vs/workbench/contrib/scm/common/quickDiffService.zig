@@ -383,10 +383,9 @@ const TestProvider = struct {
         const self: *TestProvider = @ptrCast(@alignCast(context));
         _ = resource;
         if (!self.return_original) return null;
-        return .{
-            .content = try allocator.dupe(u8, "original"),
-            .ref_label = try allocator.dupe(u8, "HEAD"),
-        };
+        const original_uri = try allocator.dupe(u8, "test-quickdiff:/original");
+        errdefer allocator.free(original_uri);
+        return .{ .resource_uri = original_uri, .ref_label = try allocator.dupe(u8, "HEAD") };
     }
 };
 

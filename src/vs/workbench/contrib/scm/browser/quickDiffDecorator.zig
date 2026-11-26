@@ -644,7 +644,7 @@ const TestProvider = struct {
         const self: *TestProvider = @ptrCast(@alignCast(context));
         const uri = try allocator.dupe(u8, self.uri orelse return null);
         errdefer allocator.free(uri);
-        return .{ .content = &.{}, .resource_uri = uri, .ref_label = try allocator.dupe(u8, "HEAD") };
+        return .{ .resource_uri = uri, .ref_label = try allocator.dupe(u8, "HEAD") };
     }
 };
 
@@ -667,8 +667,7 @@ const Harness = struct {
         self.worker = TestWorker.init();
         self.service = quick_diff_service_mod.QuickDiffService.init(self.allocator, null);
         self.model = try TestModel.init(self.allocator, text, "zig");
-        self.quick_model = QuickDiffModel.init(self.allocator, self.model.model, "/repo/file.zig", &self.service, .{});
-        self.quick_model.resolver = self.resolver.interface();
+        self.quick_model = QuickDiffModel.init(self.allocator, self.model.model, "/repo/file.zig", &self.service, self.resolver.interface(), .{});
         try self.provider.init(self.allocator, &self.resolver, "git.primary", .primary, original);
         self.disposable = try self.service.addQuickDiffProvider(&self.provider.base);
         const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp();

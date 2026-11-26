@@ -44,9 +44,9 @@ const Harness = struct {
             self.model.model,
             "/repo/file.zig",
             &self.service,
+            self.resolver.interface(),
             .{},
         );
-        self.quick_model.resolver = self.resolver.interface();
     }
 
     fn deinit(self: *Harness) void {
@@ -126,7 +126,7 @@ const ModelProvider = struct {
         const self: *ModelProvider = @ptrCast(@alignCast(context));
         const uri = try allocator.dupe(u8, self.uri orelse return null);
         errdefer allocator.free(uri);
-        return .{ .content = &.{}, .resource_uri = uri, .ref_label = try allocator.dupe(u8, "HEAD") };
+        return .{ .resource_uri = uri, .ref_label = try allocator.dupe(u8, "HEAD") };
     }
 };
 
@@ -355,7 +355,7 @@ test "quickDiffModel: URI references are shared, updated by model events, and re
         fn get(_: *anyopaque, allocator: Allocator, _: std.Uri) !?quick_diff.Original {
             const resource = try allocator.dupe(u8, "test:/quick-diff-original");
             errdefer allocator.free(resource);
-            return .{ .content = &.{}, .ref_label = try allocator.dupe(u8, "Original"), .resource_uri = resource };
+            return .{ .ref_label = try allocator.dupe(u8, "Original"), .resource_uri = resource };
         }
     };
     var primary: QuickDiffProvider = .{ .context = @constCast(&{}), .id = "one", .label = "One", .kind = .primary, .get_original_fn = Provider.get };
@@ -365,8 +365,7 @@ test "quickDiffModel: URI references are shared, updated by model events, and re
     var worker = EditorWorkerService.init();
     defer worker.deinit();
     worker.attachWindow(&queue);
-    var model = QuickDiffModel.init(a, modified.model, "/repo/file.txt", &service, .{});
-    model.resolver = resolver.interface();
+    var model = QuickDiffModel.init(a, modified.model, "/repo/file.txt", &service, resolver.interface(), .{});
     model.attachWindow(&queue, &worker);
     defer model.deinit();
     const Pump = struct {
@@ -391,17 +390,17 @@ test "quickDiffModel: URI references are shared, updated by model events, and re
     try Pump.settle(&queue, &model, &worker);
     try std.testing.expectEqual(@as(usize, 1), model.original_models.count());
     try std.testing.expectEqual(@as(usize, 2), model.quickDiffs().len);
-    try std.testing.expectEqual(original, model.getDiffEditorModel("one").?.original_document.?);
-    try std.testing.expectEqual(original, model.getDiffEditorModel("two").?.original_document.?);
+    try std.testing.expectEqual(original, model.getDiffEditorModel("one").?.original_document);
+    try std.testing.expectEqual(original, model.getDiffEditorModel("two").?.original_document);
     try std.testing.expectEqual(@as(usize, 2), model.all_changes.items.len);
     try std.testing.expectEqual(@as(usize, 1), model.changes.items.len);
-    try std.testing.expectEqual(@as(usize, 0), model.quickDiffs()[0].original.content.len);
+    try std.testing.expectEqualStrings("test:/quick-diff-original", model.quickDiffs()[0].original.resource_uri);
 
     // The original model's content event is sufficient to schedule the next
     // diff; there is no provider or renderer polling for changed bytes.
     _ = try original.replaceGeneratedContents("new");
     try Pump.settle(&queue, &model, &worker);
-    try std.testing.expectEqual(original, model.getDiffEditorModel("one").?.original_document.?);
+    try std.testing.expectEqual(original, model.getDiffEditorModel("one").?.original_document);
     try std.testing.expectEqual(@as(usize, 0), model.all_changes.items.len);
     service.removeProvider(&primary);
     service.removeProvider(&secondary);
@@ -413,8 +412,7 @@ test "quickDiffModel: URI references are shared, updated by model events, and re
     // A model disposed before its asynchronously delivered reference must
     // cancel the acquisition without publishing a stale result.
     _ = try service.addQuickDiffProvider(&primary);
-    var abandoned = QuickDiffModel.init(a, modified.model, "/repo/file.txt", &service, .{});
-    abandoned.resolver = resolver.interface();
+    var abandoned = QuickDiffModel.init(a, modified.model, "/repo/file.txt", &service, resolver.interface(), .{});
     abandoned.attachWindow(&queue, &worker);
     abandoned.triggerDiff(time.milliTimestamp());
     const deadline = abandoned.due_at.?;

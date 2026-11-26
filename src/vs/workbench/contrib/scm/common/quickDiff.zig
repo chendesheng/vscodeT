@@ -3,8 +3,6 @@
 // Terminal adaptations:
 // - Git returns its canonical original URI; QuickDiffModel resolves and owns
 //   the actual URI-backed model asynchronously through ITextModelService.
-//   The native Original descriptor still supports inline content from older
-//   in-process providers while migrating those callers to the URI contract.
 // - Resource arguments use std.Uri; encoded original descriptors retain their owned backing slices.
 // - The upstream color registrations become terminal RGB defaults. Cells have
 //   no alpha, so translucent overview colors are composited over the dark
@@ -28,18 +26,15 @@ pub const QuickDiffProviderKind = enum {
     contributed,
 };
 
-/// Original URI/label descriptor and the optional immutable text captured
-/// for the native worker. Owned by the receiver.
+/// Original resource descriptor owned by the receiver. Text is resolved
+/// through ITextModelService, never supplied by a Quick Diff provider.
 pub const Original = struct {
-    content: []u8,
     ref_label: []u8,
-    /// Canonical provider resource; legacy providers may supply only text.
-    resource_uri: ?[]u8 = null,
+    resource_uri: []u8,
 
     pub fn deinit(self: *Original, allocator: Allocator) void {
-        allocator.free(self.content);
         allocator.free(self.ref_label);
-        if (self.resource_uri) |uri| allocator.free(uri);
+        allocator.free(self.resource_uri);
         self.* = undefined;
     }
 };

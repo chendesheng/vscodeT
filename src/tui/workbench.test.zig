@@ -8360,8 +8360,8 @@ test "Workbench: git scm integration, shared working files and read-only revisio
         const embedded = peek.embedded.?;
         try std.testing.expectEqual(tab.editor.document, embedded.widget.modified_editor.document);
         const baseline = entry.model.getDiffEditorModel(peek.provider_id).?;
-        try std.testing.expectEqual(baseline.original_document.?, embedded.widget.original_editor.document);
-        try std.testing.expectEqual(@as(usize, 0), baseline.original_content.len);
+        try std.testing.expectEqual(baseline.original_document, embedded.widget.original_editor.document);
+        try std.testing.expectEqualStrings("git", (try std.Uri.parse(baseline.resource_uri)).scheme);
         var original_reference = try workbench.text_model_api.acquireModelReference(embedded.widget.original_editor.model.uri());
         defer original_reference.dispose();
         try std.testing.expectEqual(embedded.widget.original_editor.model, original_reference.object.textEditorModel);
@@ -8400,7 +8400,7 @@ test "Workbench: git scm integration, shared working files and read-only revisio
             fn original(_: *anyopaque, a: std.mem.Allocator, _: std.Uri) !?Quick.Original {
                 const uri = try a.dupe(u8, resource);
                 errdefer a.free(uri);
-                return .{ .content = &.{}, .resource_uri = uri, .ref_label = try a.dupe(u8, "Alternate") };
+                return .{ .resource_uri = uri, .ref_label = try a.dupe(u8, "Alternate") };
             }
         };
         var alternate_reference = try workbench.text_model_resolver.createResolvedModelReference(try std.Uri.parse(Alternate.resource), "alternate.txt", "one\nalt\nthree\n", true);
@@ -10671,7 +10671,7 @@ test "Workbench: git scm integration peek actions stage and revert only the sele
         }
     };
     try Harness.wait(workbench, entry, primary, 2);
-    const retained_original = entry.model.getDiffEditorModel(primary).?.original_document.?;
+    const retained_original = entry.model.getDiffEditorModel(primary).?.original_document;
     try std.testing.expectEqualStrings("two", try retained_original.model.borrowLineContent(2));
     var frame: std.Io.Writer.Allocating = .init(a);
     defer frame.deinit();
@@ -10690,7 +10690,7 @@ test "Workbench: git scm integration peek actions stage and revert only the sele
     try Harness.wait(workbench, entry, primary, 1);
     try std.testing.expectEqual(@as(usize, 2), entry.model.quick_diffs.len);
     try std.testing.expectEqual(.secondary, entry.model.quick_diffs[1].kind);
-    try std.testing.expectEqual(retained_original, entry.model.getDiffEditorModel(primary).?.original_document.?);
+    try std.testing.expectEqual(retained_original, entry.model.getDiffEditorModel(primary).?.original_document);
     try std.testing.expectEqualStrings("TWO", try retained_original.model.borrowLineContent(2));
     try std.testing.expect(!retained_original.isDirty());
     try controller.navigate(true, 6);
