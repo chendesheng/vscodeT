@@ -175,6 +175,9 @@ pub const EditorGroup = struct {
     }
 };
 
+/// Upstream IEditorsChangeEvent: the group identity accompanies its model event.
+pub const EditorsChangeEvent = struct { group_id: GroupIdentifier, event: group_mod.GroupModelChangeEvent };
+
 pub const EditorGroupsService = struct {
     allocator: Allocator,
     groups: std.array_list.Managed(*EditorGroup),
@@ -183,7 +186,8 @@ pub const EditorGroupsService = struct {
     on_did_active_editor_change: Emitter(?*EditorInput),
     // Multiplex each IEditorGroup.onDidModelChange without retaining a group
     // pointer after its model is disposed.
-    on_did_change_group_model: Emitter(group_mod.GroupModelChangeEvent),
+    on_did_change_group_model: Emitter(EditorsChangeEvent),
+    on_did_change_input_resources: Emitter(*EditorInput),
     next_creation_order: u64 = 1,
     most_recent_active_groups: std.ArrayList(*EditorGroup) = .empty,
 
@@ -198,6 +202,7 @@ pub const EditorGroupsService = struct {
             .on_did_visible_editors_change = .init(allocator),
             .on_did_active_editor_change = Emitter(?*EditorInput).init(allocator),
             .on_did_change_group_model = .init(allocator),
+            .on_did_change_input_resources = .init(allocator),
         };
 
         errdefer self.groups.deinit();
@@ -217,6 +222,7 @@ pub const EditorGroupsService = struct {
         self.on_did_visible_editors_change.deinit();
         self.on_did_active_editor_change.deinit();
         self.on_did_change_group_model.deinit();
+        self.on_did_change_input_resources.deinit();
         self.groups.deinit();
         self.allocator.destroy(self);
     }
@@ -452,7 +458,7 @@ pub const EditorGroupsService = struct {
         if (event == .EDITOR_ACTIVE and group.service.active == group) {
             try group.service.on_did_active_editor_change.fire(group.model.activeEditor());
         }
-        try group.service.on_did_change_group_model.fire(event);
+        try group.service.on_did_change_group_model.fire(.{ .group_id = group.id, .event = event });
     }
 
     fn indexOf(self: *const EditorGroupsService, group: *EditorGroup) ?usize {

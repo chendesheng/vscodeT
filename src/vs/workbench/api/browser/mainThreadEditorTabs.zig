@@ -1,8 +1,7 @@
 // Port of `src/vs/workbench/api/browser/mainThreadEditorTabs.ts`.
 //
-// Terminal adaptation: the adapter owns the tab list; this actor owns the tab
-// model signature and suppresses duplicate `$acceptEditorTabModel` deliveries within editor/group event batches.
-// Move/close operations are forwarded to the adapter.
+// The actor owns the tab-group DTO model and patches it on editor model
+// events. The terminal adapter supplies group/inputs and native move/close.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const rpc = @import("../../services/extensions/common/rpcProtocol.zig");
@@ -44,11 +43,11 @@ pub const TabInputSpec = union(enum) {
             .custom => |custom| {
                 try object.put(arena, "kind", .{ .integer = 6 });
                 try object.put(arena, "uri", try std_uri.jsonComponents(arena, custom.uri));
-                try object.put(arena, "viewType", .{ .string = custom.view_type });
+                try object.put(arena, "viewType", .{ .string = try arena.dupe(u8, custom.view_type) });
             },
             .webview => |view_type| {
                 try object.put(arena, "kind", .{ .integer = 7 });
-                try object.put(arena, "viewType", .{ .string = view_type });
+                try object.put(arena, "viewType", .{ .string = try arena.dupe(u8, view_type) });
             },
             .terminal => try object.put(arena, "kind", .{ .integer = 8 }),
             .multi_diff => |diffs| {
@@ -74,10 +73,10 @@ pub const TabSpec = struct {
 
     fn dto(self: TabSpec, arena: Allocator) !std.json.Value {
         var object: std.json.ObjectMap = .empty;
-        try object.put(arena, "id", .{ .string = self.id });
-        try object.put(arena, "label", .{ .string = self.label });
+        try object.put(arena, "id", .{ .string = try arena.dupe(u8, self.id) });
+        try object.put(arena, "label", .{ .string = try arena.dupe(u8, self.label) });
         try object.put(arena, "input", try self.input.dto(arena));
-        if (self.editor_id) |editor_id| try object.put(arena, "editorId", .{ .string = editor_id });
+        if (self.editor_id) |editor_id| try object.put(arena, "editorId", .{ .string = try arena.dupe(u8, editor_id) });
         try object.put(arena, "isActive", .{ .bool = self.is_active });
         try object.put(arena, "isPinned", .{ .bool = self.is_pinned });
         try object.put(arena, "isPreview", .{ .bool = self.is_preview });
@@ -112,23 +111,147 @@ pub fn tabModel(arena: Allocator, groups: []const GroupSpec) !std.json.Value {
 
 pub const Host = struct {
     context: *anyopaque,
-    notify: *const fn (context: *anyopaque, model: std.json.Value) anyerror!void,
+    notify: *const fn (context: *anyopaque, method: []const u8, model: std.json.Value) anyerror!void,
     move_tab: *const fn (context: *anyopaque, tab_id: []const u8, index: usize) anyerror!void,
     close_tab: *const fn (context: *anyopaque, tab_id: []const u8) anyerror!bool,
     close_group: *const fn (context: *anyopaque, group_id: i64) anyerror!bool,
 };
 
+const StoredTab = struct {
+    arena: std.heap.ArenaAllocator,
+    dto: std.json.Value,
+
+    fn init(allocator: Allocator, spec: TabSpec) !StoredTab {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer arena.deinit();
+        const dto = try spec.dto(arena.allocator());
+        return .{ .dto = dto, .arena = arena };
+    }
+    fn deinit(self: *StoredTab) void {
+        self.arena.deinit();
+    }
+    fn id(self: StoredTab) []const u8 {
+        return self.dto.object.get("id").?.string;
+    }
+    fn setActive(self: *StoredTab, active: bool) void {
+        self.dto.object.getPtr("isActive").?.* = .{ .bool = active };
+    }
+};
+
+const StoredGroup = struct {
+    id: u32,
+    view_column: usize,
+    is_active: bool,
+    tabs: std.ArrayList(StoredTab) = .empty,
+
+    fn init(allocator: Allocator, spec: GroupSpec) !StoredGroup {
+        var result: StoredGroup = .{ .id = spec.id, .view_column = spec.view_column, .is_active = spec.is_active };
+        errdefer result.deinit(allocator);
+        try result.tabs.ensureTotalCapacity(allocator, spec.tabs.len);
+        for (spec.tabs) |tab| result.tabs.appendAssumeCapacity(try StoredTab.init(allocator, tab));
+        return result;
+    }
+    fn deinit(self: *StoredGroup, allocator: Allocator) void {
+        for (self.tabs.items) |*tab| tab.deinit();
+        self.tabs.deinit(allocator);
+    }
+    fn dto(self: StoredGroup, arena: Allocator) !std.json.Value {
+        var tabs = std.json.Array.init(arena);
+        for (self.tabs.items) |tab| try tabs.append(tab.dto);
+        var object: std.json.ObjectMap = .empty;
+        try object.put(arena, "groupId", .{ .integer = self.id });
+        try object.put(arena, "viewColumn", .{ .integer = @intCast(self.view_column) });
+        try object.put(arena, "isActive", .{ .bool = self.is_active });
+        try object.put(arena, "tabs", .{ .array = tabs });
+        return .{ .object = object };
+    }
+    fn findTab(self: *StoredGroup, id: []const u8) ?usize {
+        for (self.tabs.items, 0..) |tab, index| if (std.mem.eql(u8, tab.id(), id)) return index;
+        return null;
+    }
+};
+
+const OperationKind = enum(u8) { open, close, update, move };
+
 pub const MainThreadEditorTabs = struct {
     allocator: Allocator,
     host: Host,
-    signature: ?u64 = null,
+    groups: std.ArrayList(StoredGroup) = .empty,
+    active_group_id: ?u32 = null,
 
     pub fn init(allocator: Allocator, host: Host) MainThreadEditorTabs {
         return .{ .allocator = allocator, .host = host };
     }
 
     pub fn deinit(self: *MainThreadEditorTabs) void {
-        _ = self;
+        for (self.groups.items) |*group| group.deinit(self.allocator);
+        self.groups.deinit(self.allocator);
+    }
+
+    fn findGroup(self: *MainThreadEditorTabs, id: u32) ?*StoredGroup {
+        for (self.groups.items) |*group| if (group.id == id) return group;
+        return null;
+    }
+
+    fn operation(self: *MainThreadEditorTabs, kind: OperationKind, group_id: u32, index: usize, tab: std.json.Value, old_index: ?usize) !void {
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        var object: std.json.ObjectMap = .empty;
+        try object.put(a, "kind", .{ .integer = @backingInt(kind) });
+        try object.put(a, "groupId", .{ .integer = group_id });
+        try object.put(a, "index", .{ .integer = @intCast(index) });
+        try object.put(a, "tabDto", tab);
+        if (old_index) |old| try object.put(a, "oldIndex", .{ .integer = @intCast(old) });
+        try self.host.notify(self.host.context, "$acceptTabOperation", .{ .object = object });
+    }
+
+    pub fn open(self: *MainThreadEditorTabs, group_id: u32, index: usize, spec: TabSpec) !void {
+        const group = self.findGroup(group_id) orelse return error.UnknownTabGroup;
+        if (index > group.tabs.items.len or group.findTab(spec.id) != null) return error.InvalidTabModel;
+        var tab = try StoredTab.init(self.allocator, spec);
+        errdefer tab.deinit();
+        try group.tabs.insert(self.allocator, index, tab);
+        errdefer _ = group.tabs.orderedRemove(index);
+        if (spec.is_active) for (group.tabs.items, 0..) |*entry, i| entry.setActive(i == index);
+        try self.operation(.open, group_id, index, group.tabs.items[index].dto, null);
+    }
+
+    pub fn close(self: *MainThreadEditorTabs, group_id: u32, index: usize) !void {
+        const group = self.findGroup(group_id) orelse return error.UnknownTabGroup;
+        if (index >= group.tabs.items.len) return error.InvalidTabModel;
+        var tab = group.tabs.orderedRemove(index);
+        defer tab.deinit();
+        try self.operation(.close, group_id, index, tab.dto, null);
+    }
+
+    pub fn move(self: *MainThreadEditorTabs, group_id: u32, old_index: usize, index: usize, id: []const u8) !void {
+        const group = self.findGroup(group_id) orelse return error.UnknownTabGroup;
+        if (old_index >= group.tabs.items.len or index >= group.tabs.items.len or !std.mem.eql(u8, group.tabs.items[old_index].id(), id)) return error.InvalidTabModel;
+        if (old_index == index) return;
+        const tab = group.tabs.orderedRemove(old_index);
+        group.tabs.insertAssumeCapacity(index, tab);
+        try self.operation(.move, group_id, index, tab.dto, old_index);
+    }
+
+    pub fn update(self: *MainThreadEditorTabs, group_id: u32, spec: TabSpec) !void {
+        const group = self.findGroup(group_id) orelse return error.UnknownTabGroup;
+        const index = group.findTab(spec.id) orelse return error.InvalidTabModel;
+        const replacement = try StoredTab.init(self.allocator, spec);
+        group.tabs.items[index].deinit();
+        group.tabs.items[index] = replacement;
+        if (spec.is_active) for (group.tabs.items, 0..) |*entry, i| entry.setActive(i == index);
+        try self.operation(.update, group_id, index, replacement.dto, null);
+    }
+
+    pub fn activateGroup(self: *MainThreadEditorTabs, group_id: u32) !void {
+        if (self.active_group_id == group_id) return;
+        const group = self.findGroup(group_id) orelse return error.UnknownTabGroup;
+        for (self.groups.items) |*entry| entry.is_active = entry.id == group_id;
+        self.active_group_id = group_id;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        try self.host.notify(self.host.context, "$acceptTabGroupUpdate", try group.dto(scratch.allocator()));
     }
 
     pub fn invoke(self: *MainThreadEditorTabs, method: []const u8, args: []const rpc.Arg, arena: Allocator) !rpc.HandlerReply {
@@ -163,15 +286,24 @@ pub const MainThreadEditorTabs = struct {
         return .empty;
     }
 
-    /// Called by editor-group and input lifecycle events. Here all wire
-    /// fields (including declared multi-diff URI pairs) affect the model.
+    /// Initial delivery and structural group changes only. Ordinary tab
+    /// lifecycle events patch the model through the methods above.
     pub fn sync(self: *MainThreadEditorTabs, arena: Allocator, groups: []const GroupSpec) !void {
-        const model = try tabModel(arena, groups);
-        const encoded = try std.json.Stringify.valueAlloc(arena, model, .{});
-        const signature = std.hash.Wyhash.hash(0, encoded);
-        if (signature == self.signature) return;
-        try self.host.notify(self.host.context, model);
-        self.signature = signature;
+        var next: std.ArrayList(StoredGroup) = .empty;
+        errdefer {
+            for (next.items) |*group| group.deinit(self.allocator);
+            next.deinit(self.allocator);
+        }
+        try next.ensureTotalCapacity(self.allocator, groups.len);
+        var active: ?u32 = null;
+        for (groups) |spec| {
+            next.appendAssumeCapacity(try StoredGroup.init(self.allocator, spec));
+            if (spec.is_active) active = spec.id;
+        }
+        try self.host.notify(self.host.context, "$acceptEditorTabModel", try tabModel(arena, groups));
+        self.deinit();
+        self.groups = next;
+        self.active_group_id = active;
     }
 };
 
@@ -182,12 +314,16 @@ fn methodKind(method: []const u8) protocol.MethodKind {
     return .notification;
 }
 
-test "MainThreadEditorTabs: emits only when the tab model changes" {
+test "MainThreadEditorTabs: sends the initial model and incremental tab operations" {
     const allocator = std.testing.allocator;
     const Fake = struct {
         var notifications: usize = 0;
-        fn notify(_: *anyopaque, _: std.json.Value) anyerror!void {
+        var last_kind: ?i64 = null;
+        var is_group_update = false;
+        fn notify(_: *anyopaque, method: []const u8, value: std.json.Value) anyerror!void {
             notifications += 1;
+            last_kind = if (std.mem.eql(u8, method, "$acceptTabOperation")) value.object.get("kind").?.integer else null;
+            is_group_update = std.mem.eql(u8, method, "$acceptTabGroupUpdate");
         }
         fn move(_: *anyopaque, _: []const u8, _: usize) anyerror!void {}
         fn close(_: *anyopaque, _: []const u8) anyerror!bool {
@@ -204,18 +340,30 @@ test "MainThreadEditorTabs: emits only when the tab model changes" {
         .close_tab = Fake.close,
         .close_group = Fake.closeGroup,
     });
+    defer actor.deinit();
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const tabs = [_]TabSpec{.{ .id = "a", .input = .{ .text = try std.Uri.parse("file:///a.ts") }, .label = "a.ts", .is_active = true, .is_dirty = false }};
     const groups = [_]GroupSpec{.{ .id = 1, .view_column = 1, .is_active = true, .tabs = &tabs }};
     try actor.sync(arena.allocator(), &groups);
     try std.testing.expectEqual(@as(usize, 1), Fake.notifications);
-    try actor.sync(arena.allocator(), &groups);
-    try std.testing.expectEqual(@as(usize, 1), Fake.notifications);
-    try actor.sync(arena.allocator(), &.{});
+    var changed = tabs[0];
+    changed.is_dirty = true;
+    try actor.update(1, changed);
     try std.testing.expectEqual(@as(usize, 2), Fake.notifications);
-    try actor.sync(arena.allocator(), &.{});
-    try std.testing.expectEqual(@as(usize, 2), Fake.notifications);
+    try actor.close(1, 0);
+    try std.testing.expectEqual(@as(usize, 3), Fake.notifications);
+    try actor.open(1, 0, tabs[0]);
+    try std.testing.expectEqual(@as(usize, 4), Fake.notifications);
+    try std.testing.expectEqual(@as(?i64, 0), Fake.last_kind);
+    var second = tabs[0];
+    second.id = "b";
+    try actor.open(1, 1, second);
+    try actor.move(1, 1, 0, second.id);
+    try std.testing.expectEqual(@as(?i64, 3), Fake.last_kind);
+    try std.testing.expectEqualStrings("b", actor.groups.items[0].tabs.items[0].id());
+    try std.testing.expectEqualStrings("a", actor.groups.items[0].tabs.items[1].id());
+    try std.testing.expect(!actor.groups.items[0].tabs.items[1].dto.object.get("isActive").?.bool);
 }
 
 test "MainThreadEditorTabs: group columns, sticky flags and declared multi-diff URI pairs" {

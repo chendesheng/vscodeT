@@ -29,7 +29,12 @@ function activate(context) {
     const items = await vscode.commands.executeCommand('vscode.executeCodeLensProvider', vscode.Uri.parse(uri), count);
     return items.map(item => ({ title: item.command?.title, start: item.range.start.character }));
   }));
+  const tabEvents = [];
+  context.subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(event => {
+    tabEvents.push({ opened: event.opened.map(tab => tab.label), closed: event.closed.map(tab => tab.label), changed: event.changed.map(tab => tab.label) });
+  }));
   context.subscriptions.push(vscode.commands.registerCommand('fixture.tabState', () => ({
+    tabEvents,
     activeDocument: vscode.window.activeTextEditor?.document.uri.toString(),
     documents: vscode.workspace.textDocuments.map(document => ({ uri: document.uri.toString(), firstLine: document.lineAt(0).text })),
     groups: vscode.window.tabGroups.all.map(group => ({

@@ -461,7 +461,7 @@ pub const Tab = struct {
         self.* = .{ .allocator = allocator, .editor = editor, .view = view, .file_input = null, .input = pane.input.interface(), .multi_diff = pane };
         self.multi_diff_listener = try pane.changed.listen(self, onMultiDiffChanged);
         errdefer pane.changed.unlisten(self.multi_diff_listener.?);
-        self.multi_diff_resources_listener = try pane.input.on_did_change_resources.listen(self, onMultiDiffChanged);
+        self.multi_diff_resources_listener = try pane.input.on_did_change_resources.listen(self, onMultiDiffResourcesChanged);
         errdefer pane.input.on_did_change_resources.unlisten(self.multi_diff_resources_listener.?);
         self.multi_diff_documents_listener = try pane.input.document_set.on_did_change_documents.listen(self, onMultiDiffChanged);
         return self;
@@ -469,6 +469,10 @@ pub const Tab = struct {
 
     fn onMultiDiffChanged(_: void, self: *Tab) !void {
         if (self.control_change_service) |service| try service.on_did_visible_editors_change.fire({});
+    }
+
+    fn onMultiDiffResourcesChanged(_: void, self: *Tab) !void {
+        if (self.control_change_service) |service| try service.on_did_change_input_resources.fire(self.input);
     }
 
     fn detachMultiDiffListeners(self: *Tab, pane: *MultiDiffPane) void {
@@ -727,6 +731,7 @@ pub const Tab = struct {
         }
         if (changed and had_controllers) self.ensureControllers() catch {};
         if (changed) if (self.control_change_service) |service| {
+            service.on_did_change_input_resources.fire(self.input) catch {};
             service.on_did_visible_editors_change.fire({}) catch {};
         };
     }

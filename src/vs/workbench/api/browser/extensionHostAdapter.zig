@@ -27,7 +27,13 @@ const GroupPane = @import("../../browser/parts/editor/editorGroupView.zig").Edit
 const Tab = @import("../../browser/parts/editor/editorPane.zig").Tab;
 const EditorInput = @import("../../common/editor/editorInput.zig").EditorInput;
 const EditorService = @import("../../services/editor/browser/editorService.zig").EditorService;
-const GroupModelChangeEvent = @import("../../common/editor/editorGroupModel.zig").GroupModelChangeEvent;
+const groups_service = @import("../../services/editor/common/editorGroupsService.zig");
+const EditorGroup = groups_service.EditorGroup;
+const EditorsChangeEvent = groups_service.EditorsChangeEvent;
+const FileEditorInput = @import("../../contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
+const TextResourceEditorInput = @import("../../common/editor/textResourceEditorInput.zig").TextResourceEditorInput;
+const diff_input_mod = @import("../../common/editor/diffEditorInput.zig");
+const MultiDiffEditorInput = @import("../../contrib/multiDiffEditor/browser/multiDiffEditorInput.zig").MultiDiffEditorInput;
 const Task = @import("../../../base/common/windowDispatch.zig").Task;
 const ModelLanguageChangedEvent = @import("../../../editor/common/textModelEvents.zig").ModelLanguageChangedEvent;
 const ViewEventHandler = @import("../../../editor/common/viewEventHandler.zig").ViewEventHandler;
@@ -125,6 +131,7 @@ pub const Extensions = struct {
     active_editor_listener: ?usize = null,
     visible_editors_listener: ?usize = null,
     group_model_listener: ?usize = null,
+    input_resources_listener: ?usize = null,
     add_group_listener: ?usize = null,
     remove_group_listener: ?usize = null,
     move_group_listener: ?usize = null,
@@ -622,10 +629,10 @@ pub const Extensions = struct {
         return uri;
     }
 
-    fn editorTabsNotifyHost(context: *anyopaque, model: std.json.Value) anyerror!void {
+    fn editorTabsNotifyHost(context: *anyopaque, method: []const u8, model: std.json.Value) anyerror!void {
         const self: *Extensions = @ptrCast(@alignCast(context));
         var args = [_]rpc.Arg{.{ .json = model }};
-        _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostEditorTabs), "$acceptEditorTabModel", &args, null, manager.noop_callback) catch {};
+        _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostEditorTabs), method, &args, null, manager.noop_callback) catch {};
     }
 
     fn editorTabsMoveHost(_: *anyopaque, _: []const u8, _: usize) anyerror!void {}
@@ -637,7 +644,7 @@ pub const Extensions = struct {
         defer arena.deinit();
         for (self.editor_service.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
-                if (std.mem.eql(u8, id, try tabId(arena.allocator(), pane, tab))) return .{ .pane = pane, .tab = tab };
+                if (std.mem.eql(u8, id, try tabId(arena.allocator(), pane.group.id, tab.input))) return .{ .pane = pane, .tab = tab };
             }
         }
         return null;
@@ -894,6 +901,7 @@ pub const Extensions = struct {
         self.visible_editors_listener = try self.editor_service.onDidVisibleEditorsChange().listen(self, onVisibleEditorsChanged);
         const part = self.editor_service.part;
         self.group_model_listener = try part.service.on_did_change_group_model.listen(self, onGroupModelChanged);
+        self.input_resources_listener = try part.service.on_did_change_input_resources.listen(self, onInputResourcesChanged);
         self.add_group_listener = try part.on_did_add_group.listen(self, onGroupChanged);
         self.remove_group_listener = try part.on_did_remove_group.listen(self, onGroupChanged);
         self.move_group_listener = try part.on_did_move_group.listen(self, onGroupChanged);
@@ -903,6 +911,7 @@ pub const Extensions = struct {
         if (self.visible_editors_listener) |id| self.editor_service.onDidVisibleEditorsChange().unlisten(id);
         const part = self.editor_service.part;
         if (self.group_model_listener) |id| part.service.on_did_change_group_model.unlisten(id);
+        if (self.input_resources_listener) |id| part.service.on_did_change_input_resources.unlisten(id);
         if (self.add_group_listener) |id| part.on_did_add_group.unlisten(id);
         if (self.remove_group_listener) |id| part.on_did_remove_group.unlisten(id);
         if (self.move_group_listener) |id| part.on_did_move_group.unlisten(id);
@@ -913,28 +922,57 @@ pub const Extensions = struct {
     }
     fn onActiveEditorChanged(_: ?*EditorInput, self: *Extensions) !void {
         self.syncActiveDocument() catch {};
-        self.tabs_task.post();
+        if (self.editor_tabs_actor) |*actor| actor.activateGroup(self.editor_service.part.service.activeGroup().id) catch self.tabs_task.post();
     }
     fn onVisibleEditorsChanged(_: void, self: *Extensions) !void {
         self.syncActiveDocument() catch {};
         self.models_task.post();
-        self.tabs_task.post();
     }
     fn onGroupChanged(_: *GroupPane, self: *Extensions) !void {
         self.syncActiveDocument() catch {};
         self.models_task.post();
         self.tabs_task.post();
     }
-    fn onGroupModelChanged(event: GroupModelChangeEvent, self: *Extensions) !void {
-        switch (event) {
-            .EDITOR_OPEN, .EDITOR_CLOSE => {
-                self.models_task.post();
-                self.tabs_task.post();
-            },
-            .EDITOR_MOVE, .EDITOR_ACTIVE, .EDITOR_DIRTY, .EDITOR_LABEL, .EDITOR_PIN, .EDITOR_STICKY, .EDITOR_TRANSIENT => self.tabs_task.post(),
+    fn onGroupModelChanged(change: EditorsChangeEvent, self: *Extensions) !void {
+        switch (change.event) {
+            .EDITOR_OPEN, .EDITOR_CLOSE => self.models_task.post(),
+            else => {},
+        }
+        // The event carries an owned-model input even before its native pane
+        // mounts; send the actual tab operation now instead of rescanning the
+        // mounted tab list at the next frame.
+        if (self.tabs_task.at != null) return;
+        self.patchTabModel(change) catch self.tabs_task.post();
+    }
+
+    fn patchTabModel(self: *Extensions, change: EditorsChangeEvent) !void {
+        const actor = if (self.editor_tabs_actor) |*actor| actor else return;
+        const group = self.editor_service.part.service.getGroup(change.group_id) orelse return error.UnknownTabGroup;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        switch (change.event) {
+            .EDITOR_OPEN => |event| try actor.open(group.id, event.editor_index, try tabSpec(a, group, event.editor)),
+            .EDITOR_CLOSE => |event| try actor.close(group.id, event.editor_index),
+            .EDITOR_MOVE => |event| try actor.move(group.id, event.old_editor_index, event.editor_index, try tabId(a, group.id, event.editor)),
+            .EDITOR_ACTIVE, .EDITOR_DIRTY, .EDITOR_LABEL, .EDITOR_PIN, .EDITOR_STICKY => |event| try actor.update(group.id, try tabSpec(a, group, event.editor)),
+            .GROUP_ACTIVE => if (group == self.editor_service.part.service.activeGroup()) try actor.activateGroup(group.id),
             else => {},
         }
     }
+
+    fn onInputResourcesChanged(input: *EditorInput, self: *Extensions) !void {
+        if (self.tabs_task.at != null) return;
+        const actor = if (self.editor_tabs_actor) |*actor| actor else return;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        for (self.editor_service.part.group_views.items) |pane| {
+            const index = pane.group.model.indexOf(.{ .input = input }) orelse continue;
+            if (pane.group.model.getEditorByIndex(index) != input) continue;
+            actor.update(pane.group.id, try tabSpec(scratch.allocator(), pane.group, input)) catch self.tabs_task.post();
+        }
+    }
+
     fn updateTabs(context: *anyopaque, _: i64, _: bool) bool {
         const self: *Extensions = @ptrCast(@alignCast(context));
         self.syncTabs() catch {};
@@ -1089,39 +1127,62 @@ pub const Extensions = struct {
         self.needs_render = true;
     }
 
-    /// Mirrors upstream EditorResourceAccessor.getCanonicalUri with BOTH for
-    /// composite diffs. The group's ID also distinguishes identical inputs in
-    /// different groups, and virtual resource queries are never dropped.
-    fn tabId(arena: Allocator, pane: *GroupPane, tab: *Tab) ![]const u8 {
-        const resource = if (tab.diff) |diff| try std.fmt.allocPrint(arena, "{s}-{s}", .{
-            try std_uri.encodedResource(arena, diff.modified_input.resolve().model.uri()),
-            try std_uri.encodedResource(arena, diff.original_input.resolve().model.uri()),
-        }) else if (tab.multi_diff) |multi| multi.input.source_uri else if (tab.markdown_panel != null or tab.terminal_input != null) tab.input.resource orelse "undefined-undefined" else try std_uri.encodedResource(arena, tab.editor.model.uri());
-        return std.fmt.allocPrint(arena, "{d}~{s}-{s}-{s} ", .{ pane.group.id, tab.input.editor_id orelse "undefined", tab.input.type_id, resource });
+    fn textInputUri(input: *EditorInput) ?std.Uri {
+        if (std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID)) {
+            const file: *FileEditorInput = @ptrCast(@alignCast(input.impl orelse return null));
+            return file.editor.model.uri();
+        }
+        if (std.mem.eql(u8, input.type_id, TextResourceEditorInput.ID)) {
+            const resource: *TextResourceEditorInput = @ptrCast(@alignCast(input.impl orelse return null));
+            return resource.resolve().model.uri();
+        }
+        return null;
     }
 
-    fn tabInput(arena: Allocator, tab: *Tab) !editor_tabs.TabInputSpec {
-        if (tab.diff) |diff| return .{ .text_diff = .{
-            .original = diff.original_input.resolve().model.uri(),
-            .modified = diff.modified_input.resolve().model.uri(),
+    /// Mirrors upstream EditorResourceAccessor.getCanonicalUri with BOTH for
+    /// composite diffs. The group ID distinguishes identical inputs in
+    /// different groups, and virtual resource queries are never dropped.
+    fn tabId(arena: Allocator, group_id: u32, input: *EditorInput) ![]const u8 {
+        const resource = if (diff_input_mod.is(input)) |diff| try std.fmt.allocPrint(arena, "{s}-{s}", .{
+            if (textInputUri(diff.modified)) |uri| try std_uri.encodedResource(arena, uri) else "undefined",
+            if (textInputUri(diff.original)) |uri| try std_uri.encodedResource(arena, uri) else "undefined",
+        }) else if (textInputUri(input)) |uri| try std_uri.encodedResource(arena, uri) else input.resource orelse "undefined-undefined";
+        return std.fmt.allocPrint(arena, "{d}~{s}-{s}-{s} ", .{ group_id, input.editor_id orelse "undefined", input.type_id, resource });
+    }
+
+    fn tabInput(arena: Allocator, input: *EditorInput) !editor_tabs.TabInputSpec {
+        if (diff_input_mod.is(input)) |diff| return .{ .text_diff = .{
+            .original = textInputUri(diff.original) orelse return .unknown,
+            .modified = textInputUri(diff.modified) orelse return .unknown,
         } };
-        if (tab.multi_diff) |multi| {
+        if (MultiDiffEditorInput.is(input)) |multi| {
             var pairs: std.ArrayList(editor_tabs.TextDiffSpec) = .empty;
-            // Upstream describes the input's declared resources, not the
-            // mounted/filtered/sorted view models. Added/deleted resources
-            // have no TextDiffInputDto when either URI is absent.
-            for (multi.input.resources() orelse &.{}) |resource| {
+            // Input declarations, not resolved/visible/sorted view models.
+            for (multi.resources() orelse &.{}) |resource| {
                 const original = resource.originalUri orelse continue;
                 const modified = resource.modifiedUri orelse continue;
                 try pairs.append(arena, .{ .original = original, .modified = modified });
             }
             return .{ .multi_diff = pairs.items };
         }
-        if (tab.terminal_input != null) return .terminal;
-        if (tab.image_input != null) return .{ .custom = .{ .uri = tab.editor.model.uri(), .view_type = tab.input.editor_id orelse "" } };
-        if (tab.markdown_panel != null) return .{ .webview = tab.input.editor_id orelse "" };
-        if (tab.file_input != null or tab.text_resource_input != null) return .{ .text = tab.editor.model.uri() };
+        if (textInputUri(input)) |uri| return .{ .text = uri };
+        if (std.mem.eql(u8, input.type_id, @import("../../contrib/terminal/browser/terminalEditorInput.zig").TerminalEditorInput.ID)) return .terminal;
+        if (std.mem.eql(u8, input.type_id, @import("../../contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInput.ID)) return .{ .custom = .{ .uri = .{ .scheme = "file", .path = .{ .raw = input.resource orelse return .unknown } }, .view_type = input.editor_id orelse "" } };
+        if (std.mem.eql(u8, input.type_id, "workbench.editors.webviewInput")) return .{ .webview = input.editor_id orelse "" };
         return .unknown;
+    }
+
+    fn tabSpec(arena: Allocator, group: *EditorGroup, input: *EditorInput) !editor_tabs.TabSpec {
+        return .{
+            .id = try tabId(arena, group.id, input),
+            .label = input.getName(),
+            .editor_id = input.editor_id,
+            .input = try tabInput(arena, input),
+            .is_active = group.model.activeEditor() == input,
+            .is_dirty = input.isDirty(),
+            .is_pinned = group.model.isSticky(.{ .editor = input }),
+            .is_preview = !group.model.isPinned(.{ .editor = input }),
+        };
     }
 
     fn syncTabs(self: *Extensions) !void {
@@ -1134,19 +1195,7 @@ pub const Extensions = struct {
         for (panes, 1..) |pane, column| {
             const inputs = try pane.group.model.getEditors(arena, .SEQUENTIAL, false);
             var tabs: std.ArrayList(editor_tabs.TabSpec) = .empty;
-            for (inputs) |input| {
-                const tab = pane.tabForInput(input) orelse continue;
-                try tabs.append(arena, .{
-                    .id = try tabId(arena, pane, tab),
-                    .label = input.getName(),
-                    .editor_id = input.editor_id,
-                    .input = try tabInput(arena, tab),
-                    .is_active = pane.group.model.activeEditor() == input,
-                    .is_dirty = input.isDirty(),
-                    .is_pinned = pane.group.model.isSticky(.{ .editor = input }),
-                    .is_preview = !pane.group.model.isPinned(.{ .editor = input }),
-                });
-            }
+            for (inputs) |input| try tabs.append(arena, try tabSpec(arena, pane.group, input));
             try specs.append(arena, .{ .id = pane.group.id, .view_column = column, .is_active = part.activeView() == pane, .tabs = tabs.items });
         }
         if (self.editor_tabs_actor) |*actor| try actor.sync(arena, specs.items);
@@ -2214,7 +2263,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try workbench.openPath(second_buffer[0..second_length]);
             const second = workbench.activeTab().?;
             try std.testing.expect(extension_host.active.?.tab == second);
-            try std.testing.expect(extension_host.tabs_task.at != null);
+            try std.testing.expect(extension_host.tabs_task.at == null);
             try second.editor.setCursorPosition(Position.init(2, 1));
             try std.testing.expect(extension_host.selection_task.at != null);
             second.editor.emitCurrentViewState();
@@ -2358,6 +2407,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const tabs = groups[0].object.get("tabs").?.array.items;
             try std.testing.expectEqual(@as(usize, 2), tabs.len);
             const comparison = tabs[1].object;
+            const open_events = state.object.get("tabEvents").?.array.items;
+            try std.testing.expect(for (open_events) |event| {
+                if (event.object.get("opened").?.array.items.len > 0) break true;
+            } else false);
             try std.testing.expect(comparison.get("active").?.bool);
             try std.testing.expect(!comparison.get("pinned").?.bool);
             const diffs = comparison.get("diffs").?.array.items;
@@ -2393,6 +2446,9 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp());
             const closed = try extensions.host.requestSync(arena, command_id, "$executeContributedCommand", command_args, null, 5000);
             try std.testing.expectEqual(@as(usize, 1), closed.object.get("documents").?.array.items.len);
+            try std.testing.expect(for (closed.object.get("tabEvents").?.array.items) |event| {
+                if (event.object.get("closed").?.array.items.len > 0) break true;
+            } else false);
         }
 
         test "Extensions: real TypeScript extension drives the language features" {
