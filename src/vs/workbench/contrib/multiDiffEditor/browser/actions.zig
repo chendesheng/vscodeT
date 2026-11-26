@@ -14,6 +14,8 @@ const storage = @import("../../../../platform/storage/common/storage.zig");
 const MultiDiffWidget = @import("../../../../editor/browser/widget/multiDiffEditor/multiDiffEditorWidget.zig").MultiDiffEditorWidget(View);
 
 const active: Expr = .{ .Equals = .{ .key = "activeEditor", .value = .{ .string = multi_common.MULTI_DIFF_EDITOR_ID } } };
+const in_multi: Expr = .{ .Defined = "inMultiDiffEditor" };
+const debug_when: Expr = .{ .Or = @constCast(&[_]*const Expr{ &active, &in_multi }) };
 const collapsed: Expr = .{ .Defined = "multiDiffEditorAllCollapsed" };
 const not_collapsed: Expr = .{ .Not = "multiDiffEditorAllCollapsed" };
 const can_collapse: Expr = .{ .And = @constCast(&[_]*const Expr{ &active, &not_collapsed }) };
@@ -71,6 +73,13 @@ fn activeWidget(accessor: ServicesAccessor) !?*MultiDiffWidget {
     return @ptrCast(@alignCast(pane.getControl() orelse return null));
 }
 
+fn openLayoutDebug(_: *anyopaque, accessor: ServicesAccessor) !void {
+    const widget = (try activeWidget(accessor)) orelse return;
+    const input = try @import("multiDiffEditorLayoutDebug.zig").createMultiDiffEditorLayoutDebugModel(MultiDiffWidget, widget);
+    defer input.destroy();
+    const service = try accessor.get(editor_service.editor_service_id);
+    try service.openTextResource(input, .side);
+}
 fn next(_: *anyopaque, accessor: ServicesAccessor) !void {
     if (try activeWidget(accessor)) |widget| try widget.goToNextChange();
 }
@@ -94,6 +103,12 @@ fn goToFileWithArgument(_: *anyopaque, accessor: ServicesAccessor, argument: arg
 }
 
 pub const editor_actions = [_]actions.Action2{
+    .{
+        .command = .{ .id = "multiDiffEditor.openLayoutDebug", .title = "Open Multi Diff Editor Layout Debug State", .category = "Developer", .precondition = &debug_when },
+        .f1 = true,
+        .context = @constCast(&{}),
+        .run_fn = openLayoutDebug,
+    },
     .{
         .command = .{ .id = "multiDiffEditor.goToFile", .title = "Open File", .icon = "go-to-file", .precondition = &active },
         .menus = &.{.{ .id = actions.menu_ids.MultiDiffEditorFileToolbar, .group = "navigation", .order = 22, .when = &active }},

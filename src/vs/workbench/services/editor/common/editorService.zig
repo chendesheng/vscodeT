@@ -39,6 +39,7 @@ pub const IEditorService = struct {
     active_editor_pane_fn: *const fn (*anyopaque) ?editor.IVisibleEditorPane,
     active_editor_fn: *const fn (*anyopaque) ?*EditorInput,
     open_editor_fn: *const fn (*anyopaque, []const u8, OpenOptions) anyerror!void,
+    open_text_resource_fn: ?*const fn (*anyopaque, *@import("../../../common/editor/textResourceEditorInput.zig").TextResourceEditorInput, EditorTarget) anyerror!void = null,
     open_multi_diff_source_fn: ?*const fn (*anyopaque, []const u8, []const u8) anyerror!void = null,
     open_multi_diff_resources_fn: ?*const fn (*anyopaque, editor.IResourceMultiDiffEditorInput) anyerror!void = null,
     request_open_editor: *const fn (*anyopaque, []const u8, OpenOptions, EditorTarget) anyerror!void,
@@ -50,6 +51,11 @@ pub const IEditorService = struct {
 
     pub fn openEditor(self: IEditorService, resource: []const u8, options: OpenOptions) !void {
         try self.open_editor_fn(self.context, resource, options);
+    }
+
+    pub fn openTextResource(self: IEditorService, input: *@import("../../../common/editor/textResourceEditorInput.zig").TextResourceEditorInput, target: EditorTarget) !void {
+        const open = self.open_text_resource_fn orelse return error.EditorOpeningUnavailable;
+        try open(self.context, input, target);
     }
 
     pub fn openMultiDiffSource(self: IEditorService, source_uri: []const u8, label: []const u8) !void {

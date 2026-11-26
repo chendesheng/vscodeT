@@ -330,6 +330,20 @@ pub const EditorService = struct {
                     try opening.openPathWithOptions(resource, options);
                 }
             }.open,
+            .open_text_resource_fn = struct {
+                fn open(context: *anyopaque, input: *text_diff_editor_mod.TextResourceEditorInput, target: EditorTarget) !void {
+                    const service: *EditorService = @ptrCast(@alignCast(context));
+                    const opening = service.opening orelse return error.EditorOpeningUnavailable;
+                    if (target == .side) {
+                        opening.group_actions.transfer.layout(opening.group_actions.transfer.copy.context);
+                        const source = opening.part.activeView() orelse return error.GroupPaneMissing;
+                        const direction = opening.group_actions.preferredSideBySideDirection();
+                        const destination = try opening.part.findGroup(.{ .direction = direction }, source, false) orelse try opening.group_actions.newEmptyGroup(direction);
+                        destination.focus();
+                    }
+                    try opening.openTextResourceInput(input);
+                }
+            }.open,
             .open_multi_diff_source_fn = struct {
                 fn open(context: *anyopaque, source_uri: []const u8, label: []const u8) !void {
                     const service: *EditorService = @ptrCast(@alignCast(context));

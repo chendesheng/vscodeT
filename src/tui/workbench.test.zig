@@ -11367,3 +11367,56 @@ test "Workbench: serialize and restore multiple diff file list preferences befor
     try std.testing.expect(pane.fileListVisible());
     try std.testing.expect(pane.fileListFocused());
 }
+
+test "Workbench: serialize and restore multiple diff layout debug log follows the source until disposal" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "changed.txt", .data = "new text\nsecond line\n" });
+    const path = try tmp.dir.realPathFileAlloc(io, "changed.txt", a);
+    defer a.free(path);
+    var uri = try @import("../vs/base/common/uri.zig").URI.file(a, path);
+    defer uri.deinit();
+    const encoded = try uri.toStringEncoded(a);
+    defer a.free(encoded);
+    const window = try TestWindow.init(a, io, &.{}, 120, 25);
+    defer window.deinit();
+    const wb = window.workbench;
+    wb.ensureConfigurationReady();
+    try wb.editor_api.openMultiDiffResources(.{ .multiDiffSource = try std.Uri.parse("multi-diff-editor:layout-debug"), .resources = &.{.{ .modified = try std.Uri.parse(encoded) }} });
+    const source_group = wb.activePane().?;
+    const multi = wb.activeTab().?.multi_diff orelse return error.TestExpectedMultiDiffTab;
+    for (0..6000) |_| {
+        if (!multi.widget.getViewModel().?.isLoading) break;
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+    const vm = multi.widget.getViewModel().?;
+    try std.testing.expectEqual(@as(usize, 1), vm.items.len);
+    try wb.commands.execute("multiDiffEditor.openLayoutDebug");
+    const debug_group = wb.activePane().?;
+    try std.testing.expect(debug_group != source_group);
+    const log = wb.activeTab().?.text_resource_input orelse return error.TestExpectedLayoutDebugInput;
+    try std.testing.expectEqualStrings("inmemory", log.document.model.uri().scheme);
+    try std.testing.expect(wb.activeTab().?.editor.isReadOnly());
+    const initial = try std.json.parseFromSlice(std.json.Value, a, try log.document.model.borrowLineContent(1), .{});
+    defer initial.deinit();
+    const state = initial.value.object.get("set").?.object;
+    try std.testing.expect(state.contains("scrollDimensions"));
+    try std.testing.expect(state.contains("layout"));
+    try std.testing.expectEqual(@as(usize, 1), state.get("items").?.array.items.len);
+    try std.testing.expectEqualStrings("changed.txt", state.get("items").?.array.items[0].object.get("label").?.string);
+    const before = log.document.model.getLineCount();
+    try vm.items[0].setCollapsed(true);
+    try std.testing.expect(log.document.model.getLineCount() > before);
+    var contents = try log.document.model.getValue(null, false);
+    defer contents.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, contents.items, "\"patch\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, contents.items, "/items/0/collapsed") != null);
+    source_group.focus();
+    try wb.commands.execute("workbench.action.closeActiveEditor");
+    try std.testing.expect(debug_group.activeTab().?.text_resource_input == log);
+    debug_group.focus();
+    try wb.commands.execute("workbench.action.closeActiveEditor");
+}

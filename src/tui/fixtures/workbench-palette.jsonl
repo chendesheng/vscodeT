@@ -157,6 +157,7 @@
 ["workbench.action.editor.nextChange","Go to Next Change","","",true,true,true,false,false]
 ["closeQuickDiff","Close Quick Diff","","",false,false,false,false,false]
 ["toggleQuickDiffWidgetFocus","Toggle Quick Diff Widget Focus","","",false,false,false,false,false]
+["multiDiffEditor.openLayoutDebug","Open Multi Diff Editor Layout Debug State","Developer","",true,false,true,false,false]
 ["multiDiffEditor.goToFile","Open File","","",false,false,true,false,false]
 ["multiDiffEditor.goToNextChange","Go to Next Change","","",true,false,true,false,false]
 ["multiDiffEditor.goToPreviousChange","Go to Previous Change","","",true,false,true,false,false]
