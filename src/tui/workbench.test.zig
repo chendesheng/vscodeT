@@ -8396,12 +8396,15 @@ test "Workbench: git scm integration, shared working files and read-only revisio
         // selector. Selecting another baseline replaces only the original.
         const Quick = @import("../vs/workbench/contrib/scm/common/quickDiff.zig");
         const Alternate = struct {
+            const resource = "test-quickdiff:/alternate";
             fn original(_: *anyopaque, a: std.mem.Allocator, _: std.Uri) !?Quick.Original {
-                const content = try a.dupe(u8, "one\nalt\nthree\n");
-                errdefer a.free(content);
-                return .{ .content = content, .ref_label = try a.dupe(u8, "Alternate") };
+                const uri = try a.dupe(u8, resource);
+                errdefer a.free(uri);
+                return .{ .content = &.{}, .resource_uri = uri, .ref_label = try a.dupe(u8, "Alternate") };
             }
         };
+        var alternate_reference = try workbench.text_model_resolver.createResolvedModelReference(try std.Uri.parse(Alternate.resource), "alternate.txt", "one\nalt\nthree\n", true);
+        defer alternate_reference.dispose();
         var alternate: Quick.QuickDiffProvider = .{ .context = @constCast(&{}), .id = "alternate", .label = "Alternate", .get_original_fn = Alternate.original };
         const service = workbench.scm.quick_diff_service.?;
         _ = try service.addQuickDiffProvider(&alternate);
@@ -8425,6 +8428,7 @@ test "Workbench: git scm integration, shared working files and read-only revisio
         };
         picker.accept();
         try std.testing.expectEqualStrings("alternate", multi.provider_id);
+        try std.testing.expectEqual(alternate_reference.object.textEditorModel, multi.embedded.?.widget.original_editor.model);
         try std.testing.expectEqual(tab.editor.document, multi.embedded.?.widget.modified_editor.document);
         try renderFrame(workbench, &peek_frame.writer);
         try workbench.commands.execute("closeQuickDiff");

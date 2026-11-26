@@ -610,14 +610,21 @@ const TestModel = test_support.TestModel;
 const Lifecycle = @import("../../../../base/common/lifecycle.zig");
 const IDisposable = Lifecycle.IDisposable;
 
+const TestResolver = @import("../../../services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService;
+const TestQueue = @import("../../../../base/common/windowDispatch.zig").Queue;
+const TestWorker = @import("../../../../editor/browser/services/editorWorkerService.zig").EditorWorkerService;
+const TestReference = @import("../../../../editor/common/services/resolverService.zig").ModelReference;
 const TestProvider = struct {
     allocator: Allocator,
     base: quick_diff.QuickDiffProvider,
-    content: ?[]u8,
+    uri: ?[]u8,
+    reference: ?TestReference,
 
-    fn init(self: *TestProvider, allocator: Allocator, id: []const u8, kind: quick_diff.QuickDiffProviderKind, content: ?[]const u8) !void {
+    fn init(self: *TestProvider, allocator: Allocator, resolver: *TestResolver, id: []const u8, kind: quick_diff.QuickDiffProviderKind, content: ?[]const u8) !void {
         self.allocator = allocator;
-        self.content = if (content) |value| try allocator.dupe(u8, value) else null;
+        self.uri = if (content != null) try std.fmt.allocPrint(allocator, "test-quickdiff:/{s}", .{id}) else null;
+        errdefer if (self.uri) |uri| allocator.free(uri);
+        self.reference = if (self.uri) |uri| try resolver.createResolvedModelReference(try std.Uri.parse(uri), "original.zig", content.?, true) else null;
         self.base = .{
             .context = self,
             .id = id,
@@ -628,17 +635,16 @@ const TestProvider = struct {
     }
 
     fn deinit(self: *TestProvider) void {
-        if (self.content) |content| self.allocator.free(content);
+        if (self.reference) |*reference| reference.dispose();
+        if (self.uri) |uri| self.allocator.free(uri);
     }
 
     fn getOriginal(context: *anyopaque, allocator: Allocator, resource: std.Uri) anyerror!?quick_diff.Original {
         _ = resource;
         const self: *TestProvider = @ptrCast(@alignCast(context));
-        const content = self.content orelse return null;
-        return .{
-            .content = try allocator.dupe(u8, content),
-            .ref_label = try allocator.dupe(u8, "HEAD"),
-        };
+        const uri = try allocator.dupe(u8, self.uri orelse return null);
+        errdefer allocator.free(uri);
+        return .{ .content = &.{}, .resource_uri = uri, .ref_label = try allocator.dupe(u8, "HEAD") };
     }
 };
 
@@ -650,15 +656,33 @@ const Harness = struct {
     decorator: QuickDiffDecorator,
     provider: TestProvider,
     disposable: IDisposable,
+    queue: TestQueue,
+    resolver: TestResolver,
+    worker: TestWorker,
 
     fn init(self: *Harness, text: []const u8, original: []const u8) !void {
         self.allocator = testing.allocator;
+        self.queue = .{ .io = testing.io };
+        self.resolver = TestResolver.init(self.allocator, testing.io, &self.queue);
+        self.worker = TestWorker.init();
         self.service = quick_diff_service_mod.QuickDiffService.init(self.allocator, null);
         self.model = try TestModel.init(self.allocator, text, "zig");
         self.quick_model = QuickDiffModel.init(self.allocator, self.model.model, "/repo/file.zig", &self.service, .{});
-        try self.provider.init(self.allocator, "git.primary", .primary, original);
+        self.quick_model.resolver = self.resolver.interface();
+        try self.provider.init(self.allocator, &self.resolver, "git.primary", .primary, original);
         self.disposable = try self.service.addQuickDiffProvider(&self.provider.base);
-        try self.quick_model.recompute();
+        const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp();
+        self.quick_model.triggerDiff(now);
+        _ = self.quick_model.runScheduledDiff(&self.worker, now + 200);
+        for (0..20) |_| {
+            if (self.quick_model.resolving == null) break;
+            _ = self.queue.dispatch(now + 201);
+        }
+        try testing.expect(self.quick_model.resolving == null);
+        if (self.quick_model.pending != null) {
+            self.worker.waitForReply();
+            try testing.expect(self.worker.dispatchReplies());
+        }
         self.decorator = QuickDiffDecorator.init(
             self.allocator,
             self.model.model,
@@ -673,10 +697,12 @@ const Harness = struct {
     fn deinit(self: *Harness) void {
         self.decorator.deinit();
         self.disposable.dispose();
-        self.provider.deinit();
         self.quick_model.deinit();
+        self.worker.deinit();
+        self.provider.deinit();
         self.model.deinit();
         self.service.deinit();
+        self.resolver.deinit();
     }
 
     fn decorations(self: *Harness) ![]model_mod.ModelDecoration {

@@ -9,6 +9,10 @@ const quick_diff_service = @import("../../common/quickDiffService.zig");
 const TestModel = @import("../../../../../editor/test/common/port/testSupport.zig").TestModel;
 
 const EditorWorkerService = @import("../../../../../editor/browser/services/editorWorkerService.zig").EditorWorkerService;
+const Queue = @import("../../../../../base/common/windowDispatch.zig").Queue;
+const Resolver = @import("../../../../services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService;
+const ModelReference = @import("../../../../../editor/common/services/resolverService.zig").ModelReference;
+const time = @import("../../../../../base/common/timeCompat.zig");
 const QuickDiffModel = model_mod.QuickDiffModel;
 const QuickDiffModelOptions = model_mod.QuickDiffModelOptions;
 const QuickDiffProvider = quick_diff.QuickDiffProvider;
@@ -22,9 +26,15 @@ const Harness = struct {
     disposables: std.array_list.Managed(@import("../../../../../base/common/lifecycle.zig").IDisposable),
     model: TestModel,
     quick_model: QuickDiffModel,
+    queue: Queue,
+    resolver: Resolver,
+    worker: EditorWorkerService,
 
     fn init(self: *Harness, text: []const u8, language: []const u8) !void {
         self.allocator = std.testing.allocator;
+        self.queue = .{ .io = std.testing.io };
+        self.resolver = Resolver.init(self.allocator, std.testing.io, &self.queue);
+        self.worker = EditorWorkerService.init();
         self.service = quick_diff_service.QuickDiffService.init(self.allocator, null);
         self.providers = std.array_list.Managed(*ModelProvider).init(self.allocator);
         self.disposables = std.array_list.Managed(@import("../../../../../base/common/lifecycle.zig").IDisposable).init(self.allocator);
@@ -36,43 +46,67 @@ const Harness = struct {
             &self.service,
             .{},
         );
+        self.quick_model.resolver = self.resolver.interface();
     }
 
     fn deinit(self: *Harness) void {
         self.quick_model.deinit();
+        self.worker.deinit();
         self.model.deinit();
+        for (self.disposables.items) |disposable| disposable.dispose();
+        self.disposables.deinit();
         for (self.providers.items) |provider| {
             provider.deinit();
             self.allocator.destroy(provider);
         }
         self.providers.deinit();
-        for (self.disposables.items) |disposable| disposable.dispose();
-        self.disposables.deinit();
         self.service.deinit();
+        self.resolver.deinit();
     }
 
     fn addProvider(self: *Harness, id: []const u8, kind: QuickDiffProviderKind, content: ?[]const u8) !*ModelProvider {
         const provider = try self.allocator.create(ModelProvider);
         errdefer self.allocator.destroy(provider);
-        try provider.init(self.allocator, id, kind, content);
+        try provider.init(self.allocator, &self.resolver, id, kind, content);
+        errdefer provider.deinit();
         try self.providers.append(provider);
         try self.disposables.append(try self.service.addQuickDiffProvider(&provider.base));
         return provider;
     }
 
     fn recompute(self: *Harness) !void {
-        try self.quick_model.recompute();
+        self.quick_model.triggerDiff(time.milliTimestamp());
+        _ = self.quick_model.runScheduledDiff(&self.worker, self.quick_model.due_at.?);
+        try self.resolveOriginals();
+        if (self.quick_model.pending != null) {
+            self.worker.waitForReply();
+            try std.testing.expect(self.worker.dispatchReplies());
+        }
+        try std.testing.expect(self.quick_model.pending == null);
+    }
+
+    fn resolveOriginals(self: *Harness) !void {
+        // The fixture's original models are already published. The resolver
+        // still delivers references asynchronously on the real window queue.
+        for (0..20) |_| {
+            if (self.quick_model.resolving == null) break;
+            _ = self.queue.dispatch(time.milliTimestamp() + 1);
+        }
+        try std.testing.expect(self.quick_model.resolving == null);
     }
 };
 
 const ModelProvider = struct {
     allocator: Allocator,
     base: QuickDiffProvider,
-    content: ?[]u8,
+    uri: ?[]u8,
+    reference: ?ModelReference,
 
-    fn init(self: *ModelProvider, allocator: Allocator, id: []const u8, kind: QuickDiffProviderKind, content: ?[]const u8) !void {
+    fn init(self: *ModelProvider, allocator: Allocator, resolver: *Resolver, id: []const u8, kind: QuickDiffProviderKind, content: ?[]const u8) !void {
         self.allocator = allocator;
-        self.content = if (content) |value| try allocator.dupe(u8, value) else null;
+        self.uri = if (content != null) try std.fmt.allocPrint(allocator, "test-quickdiff:/{s}", .{id}) else null;
+        errdefer if (self.uri) |uri| allocator.free(uri);
+        self.reference = if (self.uri) |uri| try resolver.createResolvedModelReference(try std.Uri.parse(uri), "original.zig", content.?, true) else null;
         self.base = .{
             .context = self,
             .id = id,
@@ -83,17 +117,16 @@ const ModelProvider = struct {
     }
 
     fn deinit(self: *ModelProvider) void {
-        if (self.content) |content| self.allocator.free(content);
+        if (self.reference) |*reference| reference.dispose();
+        if (self.uri) |uri| self.allocator.free(uri);
     }
 
     fn getOriginal(context: *anyopaque, allocator: Allocator, resource: std.Uri) anyerror!?quick_diff.Original {
         _ = resource;
         const self: *ModelProvider = @ptrCast(@alignCast(context));
-        const content = self.content orelse return null;
-        return .{
-            .content = try allocator.dupe(u8, content),
-            .ref_label = try allocator.dupe(u8, "HEAD"),
-        };
+        const uri = try allocator.dupe(u8, self.uri orelse return null);
+        errdefer allocator.free(uri);
+        return .{ .content = &.{}, .resource_uri = uri, .ref_label = try allocator.dupe(u8, "HEAD") };
     }
 };
 
@@ -195,6 +228,7 @@ test "quickDiffModel publishes the captured version before running a queued diff
     try std.testing.expect(!harness.quick_model.runScheduledDiff(&worker, 1100));
     try std.testing.expect(harness.quick_model.pending == null);
     try std.testing.expect(!harness.quick_model.runScheduledDiff(&worker, 1200));
+    try harness.resolveOriginals();
     try std.testing.expect(harness.quick_model.pending != null);
     const first_thread = worker.thread.?.getHandle();
     const first_version = harness.model.model.getVersionId();
@@ -207,6 +241,7 @@ test "quickDiffModel publishes the captured version before running a queued diff
     try std.testing.expect(!harness.quick_model.runScheduledDiff(&worker, 1449));
     try std.testing.expect(harness.quick_model.pending == null);
     try std.testing.expect(!harness.quick_model.runScheduledDiff(&worker, 1450));
+    try harness.resolveOriginals();
     try std.testing.expect(harness.quick_model.pending != null);
     try std.testing.expectEqual(first_thread, worker.thread.?.getHandle());
     worker.waitForReply();
@@ -221,7 +256,8 @@ test "quickDiffModel publishes an empty result without starting the editor worke
     defer harness.deinit();
     var worker = EditorWorkerService.init();
     defer worker.deinit();
-    try std.testing.expect(harness.quick_model.runScheduledDiff(&worker, 200));
+    _ = harness.quick_model.runScheduledDiff(&worker, 200);
+    try harness.resolveOriginals();
     try std.testing.expect(worker.thread == null);
     try std.testing.expect(harness.quick_model.pending == null);
     try std.testing.expectEqual(harness.model.model.getVersionId(), harness.quick_model.changes_version_id);
@@ -241,8 +277,10 @@ test "quickDiffModel detaches the reply for a closed file while the shared worke
         defer closing.deinit();
         _ = try closing.addProvider("git.primary", .primary, "b");
         try std.testing.expect(!closing.quick_model.runScheduledDiff(&worker, 200));
+        try closing.resolveOriginals();
         const thread = worker.thread.?.getHandle();
         try std.testing.expect(!open.quick_model.runScheduledDiff(&worker, 200));
+        try open.resolveOriginals();
         try std.testing.expectEqual(thread, worker.thread.?.getHandle());
     }
 
@@ -252,7 +290,7 @@ test "quickDiffModel detaches the reply for a closed file while the shared worke
         _ = worker.dispatchReplies();
     }
     try std.testing.expectEqual(@as(usize, 1), open.quick_model.changes.items.len);
-    worker.checkStopIdleWorker(200 + 5 * 60 * 1000 + 1);
+    worker.checkStopIdleWorker(worker.last_used + 5 * 60 * 1000 + 1);
     try std.testing.expect(worker.thread == null);
 }
 
@@ -302,9 +340,6 @@ test "quickDiffModel: results and navigation" {
 
 test "quickDiffModel: URI references are shared, updated by model events, and released on provider removal" {
     const a = std.testing.allocator;
-    const Queue = @import("../../../../../base/common/windowDispatch.zig").Queue;
-    const Resolver = @import("../../../../services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService;
-    const time = @import("../../../../../base/common/timeCompat.zig");
     var queue: Queue = .{ .io = std.testing.io };
     var resolver = Resolver.init(a, std.testing.io, &queue);
     defer resolver.deinit();
@@ -395,8 +430,6 @@ test "quickDiffModel: URI references are shared, updated by model events, and re
 
 test "QuickDiffModelService: canonical resource and options share model lifetime independently of callers" {
     const a = std.testing.allocator;
-    const Queue = @import("../../../../../base/common/windowDispatch.zig").Queue;
-    const Resolver = @import("../../../../services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService;
     const Emitter = @import("../../../../../base/common/event.zig").Emitter;
     var queue: Queue = .{ .io = std.testing.io };
     var resolver = Resolver.init(a, std.testing.io, &queue);
@@ -430,7 +463,6 @@ test "QuickDiffModelService: canonical resource and options share model lifetime
     try std.testing.expectEqual(@as(usize, 2), models.references.count());
     different.dispose();
     try std.testing.expectEqual(@as(usize, 1), resources.listenerCount());
-    const time = @import("../../../../../base/common/timeCompat.zig");
     second.object.due_at = null;
     second.object.scheduler.schedule(null);
     _ = try doc.replaceGeneratedContents("new content");
