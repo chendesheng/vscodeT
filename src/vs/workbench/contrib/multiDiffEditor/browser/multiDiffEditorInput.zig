@@ -139,7 +139,19 @@ pub const MultiDiffEditorInput = struct {
         const value = source orelse return null;
         return .{ .uri = value.uri, .textModel = if (value.input) |input| input.resolve() else null };
     }
-    fn createEntry(self: *MultiDiffEditorInput, value: ResolvedItem) !Entry {
+    fn itemKey(allocator: Allocator, original: ?model.DiffItemSource, modified: ?model.DiffItemSource) ![]u8 {
+        const resource: source_mod.MultiDiffEditorItem = .{
+            .originalUri = if (original) |value| value.uri else null,
+            .modifiedUri = if (modified) |value| value.uri else null,
+        };
+        return resource.getKey(allocator);
+    }
+    fn sameDocument(a: ?model.DiffItemSource, b: ?model.DiffItemSource) bool {
+        const previous = a orelse return b == null;
+        const next = b orelse return false;
+        return previous.textModel == next.textModel;
+    }
+    fn createEntry(self: *MultiDiffEditorInput, value: ResolvedItem, existing: ?*model.IDocumentDiffItem) !Entry {
         const a = sideInput(value.original);
         errdefer if (a) |input| input.destroy();
         const b = sideInput(value.modified);
@@ -147,13 +159,15 @@ pub const MultiDiffEditorInput = struct {
         var options = value.options;
         options.original_editable = if (a) |input| !input.interface().isReadonly() else false;
         options.read_only = if (b) |input| input.interface().isReadonly() else true;
-        const item = try model.IDocumentDiffItem.create(self.allocator, diffSource(value.original), diffSource(value.modified), options);
+        const item = if (existing) |previous| previous.retain() else try model.IDocumentDiffItem.create(self.allocator, diffSource(value.original), diffSource(value.modified), options);
         errdefer item.release();
         const go_to = if (value.go_to_file_uri) |uri| try std_uri.resourceKey(self.allocator, uri) else null;
         errdefer if (go_to) |key| self.allocator.free(key);
         const original_dirty = if (a) |input| try input.interface().on_did_change_dirty.listenDisposable(self, onSideDirty) else null;
         errdefer if (original_dirty) |subscription| subscription.dispose();
         const modified_dirty = if (b) |input| try input.interface().on_did_change_dirty.listenDisposable(self, onSideDirty) else null;
+        errdefer if (modified_dirty) |subscription| subscription.dispose();
+        if (existing != null) try item.updateOptions(options);
         return .{ .item = item, .original = a, .modified = b, .go_to_file_key = go_to, .original_dirty = original_dirty, .modified_dirty = modified_dirty };
     }
     fn releaseEntries(self: *MultiDiffEditorInput, entries: []Entry) void {
@@ -170,8 +184,30 @@ pub const MultiDiffEditorInput = struct {
         };
         const documents = try self.allocator.alloc(*model.IDocumentDiffItem, values.len);
         errdefer if (!adopted) self.allocator.free(documents);
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        var cache: std.StringHashMap(std.ArrayList(*model.IDocumentDiffItem)) = .init(a);
+        for (self.entries) |previous| {
+            const key = try itemKey(a, previous.item.original, previous.item.modified);
+            const bucket = try cache.getOrPut(key);
+            if (!bucket.found_existing) bucket.value_ptr.* = .empty;
+            try bucket.value_ptr.append(a, previous.item);
+        }
         for (values, entries, documents) |value, *entry, *document| {
-            entry.* = try self.createEntry(value);
+            var existing: ?*model.IDocumentDiffItem = null;
+            const original = diffSource(value.original);
+            const modified = diffSource(value.modified);
+            if (cache.getPtr(try itemKey(a, original, modified))) |bucket| {
+                for (bucket.items, 0..) |previous, index| {
+                    if (sameDocument(previous.original, original) and sameDocument(previous.modified, modified)) {
+                        existing = previous;
+                        _ = bucket.orderedRemove(index);
+                        break;
+                    }
+                }
+            }
+            entry.* = try self.createEntry(value, existing);
             count += 1;
             document.* = entry.item;
         }

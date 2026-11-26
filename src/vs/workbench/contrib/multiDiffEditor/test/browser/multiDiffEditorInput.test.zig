@@ -67,3 +67,22 @@ test "MultiDiffEditorInput: input identity is the source URI and resource-only e
     try testing.expect(vm.items[0].isBinary());
     try testing.expect(vm.items[0].documentDiffItem.original == null);
 }
+
+test "MultiDiffEditorInput: live resource reorder preserves the document and view model identities" {
+    const a = testing.allocator;
+    const input = try input_mod.MultiDiffEditorInput.create(a, "scm-multi-diff-source:?group", null, false);
+    defer input.destroy();
+    const first: input_mod.ResolvedItem = .{ .modified = .{ .uri = .{ .scheme = "file", .path = .{ .raw = "/first.png" } } } };
+    const second: input_mod.ResolvedItem = .{ .original = .{ .uri = .{ .scheme = "file", .path = .{ .raw = "/second.png" } } } };
+    try input.setResolvedItems(&.{ first, second });
+    const first_item = input.entries[0].item;
+    const second_item = input.entries[1].item;
+    var reordered = first;
+    reordered.options.render_side_by_side = false;
+    try input.setResolvedItems(&.{ second, reordered });
+    try testing.expectEqual(second_item, input.entries[0].item);
+    try testing.expectEqual(first_item, input.entries[1].item);
+    try testing.expect(!first_item.options.render_side_by_side);
+    try input.setResolvedItems(&.{reordered});
+    try testing.expectEqual(first_item, input.entries[0].item);
+}
