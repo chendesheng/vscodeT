@@ -530,3 +530,211 @@ test "WordHighlighterContribution: move next and previous over sorted occurrence
     harness.contribution.moveBack();
     try testing.expectEqual(Position.init(1, 11), harness.editor.modelCursorPosition());
 }
+
+const EditorService = @import("../../../../browser/services/codeEditorService.zig").ICodeEditorService;
+const Features = @import("../../../../common/services/languageFeaturesService.zig").LanguageFeaturesService;
+const EditorDocument = @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").EditorDocument;
+
+const EditorRegistry = struct {
+    editors: std.ArrayList(*Editor) = .empty,
+    focused: ?*Editor = null,
+    session: highlighter.WordHighlighterSession = .init(std.testing.allocator),
+
+    fn interface(self: *EditorRegistry) EditorService {
+        return .{ .context = self, .focused = getFocused, .active = getFocused, .list_code_editors = list, .add_code_editor = add, .remove_code_editor = remove };
+    }
+
+    fn getFocused(context: *anyopaque) ?*Editor {
+        const self: *EditorRegistry = @ptrCast(@alignCast(context));
+        return self.focused;
+    }
+
+    fn list(context: *anyopaque) []const *Editor {
+        const self: *EditorRegistry = @ptrCast(@alignCast(context));
+        return self.editors.items;
+    }
+
+    fn add(context: *anyopaque, editor: *Editor) !void {
+        const self: *EditorRegistry = @ptrCast(@alignCast(context));
+        try self.editors.append(std.testing.allocator, editor);
+    }
+
+    fn remove(context: *anyopaque, editor: *Editor) void {
+        const self: *EditorRegistry = @ptrCast(@alignCast(context));
+        if (self.focused == editor) self.focused = null;
+        const index = std.mem.indexOfScalar(*Editor, self.editors.items, editor) orelse return;
+        _ = self.editors.orderedRemove(index);
+    }
+
+    fn attach(self: *EditorRegistry, editor: *Editor) !void {
+        self.session.editors = self.interface();
+        try editor.attachCodeEditorService(self.interface(), &self.session);
+    }
+
+    fn deinit(self: *EditorRegistry) void {
+        std.debug.assert(self.editors.items.len == 0);
+        self.editors.deinit(std.testing.allocator);
+        self.session.deinit();
+    }
+};
+
+fn countModelHighlights(model: *TextModel) !usize {
+    const decorations = try model.getAllDecorations(3, false);
+    defer model.getAllocator().free(decorations);
+    var count: usize = 0;
+    for (decorations) |decoration| {
+        const class = decoration.options.className orelse continue;
+        if (std.mem.startsWith(u8, class, "wordHighlight")) count += 1;
+    }
+    return count;
+}
+
+test "WordHighlighterContribution: retains model decorations only while another instantiated highlighter shares the resource" {
+    const a = std.testing.allocator;
+    defer wordCharacterClassifier.freeWordClassifierCache();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    for ([_]bool{ false, true }) |second_has_highlighter| {
+        var registry: EditorRegistry = .{};
+        defer registry.deinit();
+        var capture = Capture.init(a);
+        defer capture.deinit();
+        var second_capture = Capture.init(a);
+        defer second_capture.deinit();
+        second_capture.focused = false;
+        const editor = try Editor.createFromText(a, io, "word word word", "shared.txt", 80, 6);
+        defer {
+            editor.deinit();
+            a.destroy(editor);
+        }
+        try registry.attach(editor);
+        registry.focused = editor;
+        const document = editor.document;
+        document.retain();
+        defer document.release();
+        const shared = try Editor.createViewFromEditor(editor, 80, 6);
+        defer {
+            shared.deinit();
+            a.destroy(shared);
+        }
+        const contribution = try WordHighlighterContribution.getOrCreate(editor, capture.host(), .{});
+        const other = if (second_has_highlighter) try WordHighlighterContribution.getOrCreate(shared, second_capture.host(), .{}) else null;
+        contribution.trigger();
+        try std.testing.expectEqual(3, try countModelHighlights(document.model));
+        if (other) |other_contribution| try std.testing.expect(other_contribution.saveViewState());
+        try editor.setModel(null);
+        try std.testing.expectEqual(@as(usize, if (second_has_highlighter) 3 else 0), try countModelHighlights(document.model));
+        if (other) |other_contribution| try std.testing.expect(other_contribution.saveViewState());
+        try shared.setModel(null);
+        try std.testing.expectEqual(0, try countModelHighlights(document.model));
+    }
+}
+
+test "WordHighlighterContribution: single and multiple model providers run against registered editors and live mode changes" {
+    const a = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    defer wordCharacterClassifier.freeWordClassifierCache();
+    var registry: EditorRegistry = .{};
+    defer registry.deinit();
+    var features = Features.init(a);
+    defer features.deinit();
+    const textual = try @import("../../browser/textualHighlightProvider.zig").TextualMultiDocumentHighlightFeature.create(a, features.interface());
+    defer textual.dispose();
+    var left_capture = Capture.init(a);
+    defer left_capture.deinit();
+    var right_capture = Capture.init(a);
+    defer right_capture.deinit();
+    right_capture.focused = false;
+    const left = try Editor.createFromText(a, io, "word word word", "original.txt", 80, 6);
+    defer {
+        left.deinit();
+        a.destroy(left);
+    }
+    const right = try Editor.createFromText(a, io, "word unrelated word", "modified.txt", 80, 6);
+    defer {
+        right.deinit();
+        a.destroy(right);
+    }
+    try registry.attach(left);
+    try registry.attach(right);
+    left.attachLanguageServices(&features, null, null);
+    right.attachLanguageServices(&features, null, null);
+    registry.focused = left;
+    const source = try WordHighlighterContribution.getOrCreate(left, left_capture.host(), .{});
+    const recipient = try WordHighlighterContribution.getOrCreate(right, right_capture.host(), .{});
+    var calls: std.ArrayList([]const u8) = .empty;
+    defer calls.deinit(a);
+    var semantic: HighlightProvider = .{ .name = "semantic", .calls = &calls, .answer = &.{ first_highlight, second_highlight } };
+    const registration = try features.document_highlight_provider.register(.{ .language = "plaintext" }, semantic.interface(false));
+    defer registration.dispose();
+    source.trigger();
+    try std.testing.expectEqual(2, try countModelHighlights(left.model));
+    try std.testing.expectEqual(editorBrowser.DecorationKind.word_highlight, source.word_highlighter.?.decorations.items[0].kind);
+    try std.testing.expectEqual(editorBrowser.DecorationKind.word_highlight_strong, source.word_highlighter.?.decorations.items[1].kind);
+    try std.testing.expectEqual(0, try countModelHighlights(right.model));
+    source.applyConfiguration(.{ .occurrences_highlight = .multi_file });
+    try std.testing.expect(source.onTick(source.word_highlighter.?.pending_deadline_ms.?));
+    try std.testing.expectEqual(3, try countModelHighlights(left.model));
+    try std.testing.expectEqual(2, try countModelHighlights(right.model));
+    try std.testing.expect(recipient.saveViewState());
+    source.applyConfiguration(.{ .occurrences_highlight = .single_file });
+    try std.testing.expectEqual(3, try countModelHighlights(left.model));
+    try std.testing.expectEqual(0, try countModelHighlights(right.model));
+    source.applyConfiguration(.{ .occurrences_highlight = .off });
+    try std.testing.expectEqual(0, try countModelHighlights(left.model));
+    source.trigger();
+    try std.testing.expectEqual(1, calls.items.len);
+}
+
+test "WordHighlighterContribution: cancels in-flight merged results on setting and model changes" {
+    const a = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    defer wordCharacterClassifier.freeWordClassifierCache();
+    var registry: EditorRegistry = .{};
+    defer registry.deinit();
+    var features = Features.init(a);
+    defer features.deinit();
+    var capture = Capture.init(a);
+    defer capture.deinit();
+    const editor = try Editor.createFromText(a, io, "word word word", "initial.txt", 80, 6);
+    defer {
+        editor.deinit();
+        a.destroy(editor);
+    }
+    try registry.attach(editor);
+    registry.focused = editor;
+    editor.attachLanguageServices(&features, null, null);
+    var calls: std.ArrayList([]const u8) = .empty;
+    defer calls.deinit(a);
+    var fast: HighlightProvider = .{ .name = "fast", .calls = &calls, .answer = &.{ first_highlight, second_highlight } };
+    var slow: HighlightProvider = .{ .name = "slow", .calls = &calls };
+    const lower = try features.document_highlight_provider.register(.{ .language = "*" }, slow.interface(true));
+    defer lower.dispose();
+    const higher = try features.document_highlight_provider.register(.{ .language = "plaintext" }, fast.interface(false));
+    defer higher.dispose();
+    const contribution = try WordHighlighterContribution.getOrCreate(editor, capture.host(), .{ .merge_providers = true });
+    contribution.trigger();
+    try std.testing.expect(slow.callback != null);
+    contribution.applyConfiguration(.{});
+    try std.testing.expect(slow.canceled);
+    slow.resolve(&.{second_highlight});
+    contribution.moveNext();
+    try std.testing.expectEqual(Position.init(1, 1), editor.modelCursorPosition());
+    contribution.applyConfiguration(.{ .merge_providers = true });
+    contribution.trigger();
+    try std.testing.expect(slow.callback != null);
+    slow.canceled = false;
+    const old = editor.document;
+    old.retain();
+    defer old.release();
+    const replacement = try EditorDocument.createFromText(a, io, "replacement.txt", "word word word", null);
+    defer replacement.release();
+    try editor.setModel(replacement);
+    try std.testing.expect(slow.canceled);
+    try std.testing.expectEqual(0, try countModelHighlights(old.model));
+    slow.resolve(&.{.{ .range = Range.init(1, 11, 1, 15) }});
+    contribution.applyConfiguration(.{});
+    contribution.trigger();
+    contribution.moveNext();
+    try std.testing.expectEqual(Position.init(1, 6), editor.modelCursorPosition());
+    try std.testing.expectEqual(2, try countModelHighlights(replacement.model));
+}

@@ -276,6 +276,7 @@ pub const TerminalWorkbench = struct {
     host_api: @import("../vs/workbench/services/host/browser/host.zig").IHostService,
     storage_api: storage_mod.IStorageService,
     code_editors: CodeEditorService,
+    word_highlight_session: @import("../vs/editor/contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterSession,
     window_views: ViewsService,
     views_api: views_service.IViewsService,
     code_editor_api: code_editor_service.ICodeEditorService,
@@ -887,6 +888,7 @@ pub const TerminalWorkbench = struct {
                     fn configure(context: *anyopaque, editor: *Editor) void {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
                         host.ensureConfiguration() catch {};
+                        editor.attachCodeEditorService(host.code_editor_api, &host.word_highlight_session) catch {};
                         host.configured_languages.applyToEditor(editor);
                         if (host.language_features) |features| editor.attachLanguageServices(features, host.marker_service, host.marker_decorations);
                     }
@@ -1242,8 +1244,10 @@ pub const TerminalWorkbench = struct {
         _ = try self.services.set(views_service.views_service_id, &self.views_api);
         self.editor_groups_api = self.part.interface();
         _ = try self.services.set(editor_groups.editor_groups_service_id, &self.editor_groups_api);
-        self.code_editors = .{ .part = self.part };
+        self.code_editors = .init(self.allocator, self.part);
         self.code_editor_api = self.code_editors.interface();
+        self.word_highlight_session = .init(self.allocator);
+        self.word_highlight_session.editors = self.code_editor_api;
         _ = try self.services.set(code_editor_service.code_editor_service_id, &self.code_editor_api);
         self.editors = .{ .part = self.part, .opening = &self.editor_opening };
         self.editor_api = self.editors.interface();
@@ -1846,6 +1850,8 @@ pub const TerminalWorkbench = struct {
         self.part.deinit();
         self.tab_focus.deinit();
         self.text_model_resolver.deinit();
+        self.word_highlight_session.deinit();
+        self.code_editors.deinit();
         self.resource_file_service.deinit();
         self.window_events.deinitWindowEvents();
         if (self.layout.main_container) |main| main.document.destroy(main);

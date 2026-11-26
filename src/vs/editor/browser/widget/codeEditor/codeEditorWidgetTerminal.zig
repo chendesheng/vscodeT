@@ -848,6 +848,8 @@ pub const Editor = struct {
     /// class names and colors.
     search_highlight_sink: ?editorBrowser.DecorationSink = null,
     language_features: ?*LanguageFeaturesService = null,
+    code_editor_service: ?@import("../../services/codeEditorService.zig").ICodeEditorService = null,
+    word_highlight_session: ?*@import("../../../contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterSession = null,
     marker_service: ?*MarkerService = null,
     marker_decorations: ?*MarkerDecorationsService = null,
     /// One marker-decoration registration per editor view; repeated language
@@ -1212,6 +1214,13 @@ pub const Editor = struct {
         editor.gutter_line_numbers_min_chars = source.gutter_line_numbers_min_chars;
         editor.gutter_folding = source.gutter_folding;
         editor.line_decorations_width = source.line_decorations_width;
+        if (source.code_editor_service) |service| {
+            editor.attachCodeEditorService(service, source.word_highlight_session) catch |err| {
+                editor.deinit();
+                source.allocator.destroy(editor);
+                return err;
+            };
+        }
         if (source.language_features) |features| {
             editor.attachLanguageServices(features, source.marker_service, source.marker_decorations);
         }
@@ -1622,6 +1631,18 @@ pub const Editor = struct {
 
     /// Attaches the workbench's shared language services. Idempotent so both
     /// pre-existing and newly opened tabs can be wired.
+    pub fn attachCodeEditorService(self: *Editor, service: @import("../../services/codeEditorService.zig").ICodeEditorService, session: ?*@import("../../../contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterSession) !void {
+        if (self.code_editor_service) |previous| {
+            if (previous.context != service.context) {
+                try service.addCodeEditor(self);
+                previous.removeCodeEditor(self);
+            }
+        } else try service.addCodeEditor(self);
+        self.code_editor_service = service;
+        self.word_highlight_session = session;
+        if (self.getInstantiatedContribution(@import("../../../contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution)) |contribution| contribution.setSession(session);
+    }
+
     pub fn attachLanguageServices(
         self: *Editor,
         features: ?*LanguageFeaturesService,
@@ -1912,6 +1933,7 @@ pub const Editor = struct {
     }
 
     pub fn deinit(self: *Editor) void {
+        if (self.code_editor_service) |service| service.removeCodeEditor(self);
         self.on_will_dispose.fire({}) catch {};
         self.contributions.deinit(self.allocator);
         self.detachModel();

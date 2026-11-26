@@ -1,6 +1,7 @@
 // Port of getActiveCodeEditor in src/vs/workbench/services/editor/browser/codeEditorService.ts
 // and the focus lookup in src/vs/editor/browser/services/abstractCodeEditorService.ts.
 // Terminal group views expose the mounted code editors and their focus state.
+const std = @import("std");
 const service = @import("../../../../editor/browser/services/codeEditorService.zig");
 const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const Tab = @import("../../../browser/parts/editor/editorPane.zig").Tab;
@@ -9,9 +10,39 @@ const EditorPart = @import("../../../browser/parts/editor/editorPart.zig").Edito
 
 pub const CodeEditorService = struct {
     part: *EditorPart,
+    allocator: std.mem.Allocator,
+    editors: std.ArrayList(*Editor) = .empty,
+
+    pub fn init(allocator: std.mem.Allocator, part: *EditorPart) CodeEditorService {
+        return .{ .allocator = allocator, .part = part };
+    }
+
+    pub fn deinit(self: *CodeEditorService) void {
+        self.editors.deinit(self.allocator);
+    }
 
     pub fn interface(self: *CodeEditorService) service.ICodeEditorService {
-        return .{ .context = self, .focused = focusedEditor, .active = activeEditor, .focused_diff = focusedDiffEditor };
+        return .{ .context = self, .focused = focusedEditor, .active = activeEditor, .focused_diff = focusedDiffEditor, .add_code_editor = addCodeEditor, .remove_code_editor = removeCodeEditor, .list_code_editors = listCodeEditors };
+    }
+
+    fn addCodeEditor(context: *anyopaque, editor: *Editor) !void {
+        const self: *CodeEditorService = @ptrCast(@alignCast(context));
+        for (self.editors.items) |existing| if (existing == editor) return;
+        try self.editors.append(self.allocator, editor);
+    }
+
+    fn removeCodeEditor(context: *anyopaque, editor: *Editor) void {
+        const self: *CodeEditorService = @ptrCast(@alignCast(context));
+        for (self.editors.items, 0..) |existing, index| {
+            if (existing != editor) continue;
+            _ = self.editors.orderedRemove(index);
+            return;
+        }
+    }
+
+    fn listCodeEditors(context: *anyopaque) []const *Editor {
+        const self: *CodeEditorService = @ptrCast(@alignCast(context));
+        return self.editors.items;
     }
 
     fn hasTextControl(tab: *const Tab) bool {

@@ -1,26 +1,9 @@
-// Port of the portable subset of
-// `src/vs/editor/contrib/wordHighlighter/browser/wordHighlighter.ts`.
-//
-// Upstream is a language-feature contribution with a provider registry,
-// multi-model/notebook/diff support, context keys, accessible announcements and
-// view-state persistence. The TUI has one editor and one model and no language
-// providers, so this port keeps the observable controller behavior for the
-// textual provider:
-//
-//  * listen to explicit cursor/selection, content and focus events;
-//  * ignore multi-line selections and selections that do not fit inside one
-//    word (the word under the selection start);
-//  * wait 50 ms after an explicit cursor move (upstream `runDelayer(50)`) and
-//    `editor.occurrencesHighlightDelay` before computing;
-//  * highlight every whole-word textual occurrence with
-//    `wordHighlightText`, keeping existing highlights while the cursor is on
-//    one of their ranges;
-//  * stop on content change, on text-focus loss and when disabled;
-//  * keep the highlight ranges sorted for the next/previous navigation actions.
-//
-// TUI-specific: F7/Shift-F7 cannot be decoded, so `handleKey` binds Alt-N /
-// Alt-Shift-N to the ported `moveNext`/`moveBack` actions. This is documented
-// in `README.md`.
+// Port of `src/vs/editor/contrib/wordHighlighter/browser/wordHighlighter.ts`.
+// The native window owns the upstream shared query and decorations lifetime
+// explicitly; registered code editors and cancellable provider callbacks drive
+// it, rather than a process-global singleton. Model decoration owner 3 is the
+// terminal equivalent of the shared URI decoration ID map. Terminal navigation
+// additionally supports Alt-N / Alt-Shift-N (see README.md).
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
@@ -367,6 +350,108 @@ pub const WordHighlighterHost = struct {
     request_frame: *const fn (context: *anyopaque) void,
 };
 
+/// Window-scoped counterpart of WordHighlighter.query and storedDecorationIDs.
+/// The code-editor registry owns membership, including both reusable diff panes.
+pub const WordHighlighterSession = struct {
+    allocator: Allocator,
+    editors: ?@import("../../../browser/services/codeEditorService.zig").ICodeEditorService = null,
+    query: ?struct { source: *WordHighlighter, position: Position } = null,
+
+    pub fn init(allocator: Allocator) WordHighlighterSession {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *WordHighlighterSession) void {
+        self.query = null;
+    }
+
+    fn list(self: *const WordHighlighterSession) []const *Editor {
+        return if (self.editors) |service| service.listCodeEditors() else &.{};
+    }
+
+    fn get(editor: *Editor) ?*WordHighlighter {
+        const contribution = editor.getInstantiatedContribution(WordHighlighterContribution) orelse return null;
+        return contribution.word_highlighter;
+    }
+
+    fn begin(self: *WordHighlighterSession, source: *WordHighlighter, position: Position, preserved: ?*TextModel) void {
+        _ = self.clearAll(preserved);
+        self.query = .{ .source = source, .position = position };
+    }
+
+    fn clearAll(self: *WordHighlighterSession, preserved: ?*TextModel) bool {
+        self.query = null;
+        var changed = false;
+        for (self.list()) |editor| {
+            const highlighter = get(editor) orelse continue;
+            highlighter.cancelRequest();
+            if (highlighter.model == preserved) continue;
+            changed = highlighter.clearDecorations() or changed;
+        }
+        return changed;
+    }
+
+    fn otherModels(self: *const WordHighlighterSession, source: *WordHighlighter, allocator: Allocator) ![]*TextModel {
+        const is_notebook = std.mem.eql(u8, source.model.uri().scheme, "vscode-notebook-cell");
+        if (!is_notebook and source.settings.occurrences_highlight != .multi_file) return allocator.alloc(*TextModel, 0);
+        var models: std.ArrayList(*TextModel) = .empty;
+        errdefer models.deinit(allocator);
+        for (self.list()) |editor| {
+            const model = editor.getModel() orelse continue;
+            if (model == source.model) continue;
+            if (is_notebook and !std.mem.eql(u8, model.uri().scheme, "vscode-notebook-cell")) continue;
+            if (std.mem.indexOfScalar(*TextModel, models.items, model) != null) continue;
+            try models.append(allocator, model);
+        }
+        return models.toOwnedSlice(allocator);
+    }
+
+    fn render(self: *WordHighlighterSession, source: *WordHighlighter, result: *const OccurrenceResult) bool {
+        if (self.query == null or self.query.?.source != source) return false;
+        var changed = false;
+        var source_rendered = false;
+        for (self.list()) |editor| {
+            const highlighter = get(editor) orelse continue;
+            if (highlighter == source) source_rendered = true;
+            if (result.get(highlighter.model.uri())) |values| changed = highlighter.applyHighlights(values) or changed;
+        }
+        if (!source_rendered) if (result.get(source.model.uri())) |values| {
+            changed = source.applyHighlights(values) or changed;
+        };
+        return changed;
+    }
+
+    fn detach(self: *WordHighlighterSession, highlighter: *WordHighlighter) void {
+        highlighter.cancelRequest();
+        var remaining: ?*WordHighlighter = null;
+        for (self.list()) |editor| {
+            const other = get(editor) orelse continue;
+            if (other != highlighter and other.model == highlighter.model) {
+                remaining = other;
+                break;
+            }
+        }
+        if (self.query) |query| {
+            // A pending multi-provider request can include this model. Cancel
+            // before its last editor releases the model reference.
+            if (query.source == highlighter or remaining == null) query.source.cancelRequest();
+            if (query.source == highlighter) {
+                if (remaining) |replacement| {
+                    self.query = .{ .source = replacement, .position = query.position };
+                } else self.query = null;
+            }
+        }
+        if (remaining == null) {
+            _ = highlighter.clearDecorations();
+        } else {
+            // Model-owned decorations stay present until the last highlighter
+            // of this resource detaches, while this editor loses its ranges.
+            highlighter.ranges.clearRetainingCapacity();
+            highlighter.decorations.clearRetainingCapacity();
+        }
+    }
+};
+
 pub const WordHighlighter = struct {
     allocator: Allocator,
     editor: *Editor,
@@ -379,6 +464,13 @@ pub const WordHighlighter = struct {
     /// Decoration values handed to the view.
     decorations: ArrayList(editorBrowser.Decoration),
 
+    session: ?*WordHighlighterSession = null,
+    pending_request: ?*OccurrenceRequest = null,
+    pending_documents: std.ArrayList(*@import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").EditorDocument) = .empty,
+    pending_result: ?*OccurrenceResult = null,
+    minimum_render_time: i64 = 0,
+    computing_now: ?i64 = null,
+    last_render_changed: bool = false,
     pending_deadline_ms: ?i64 = null,
     task: @import("../../../../base/common/windowDispatch.zig").Task = .{},
     pending_position: Position = Position.init(1, 1),
@@ -406,6 +498,7 @@ pub const WordHighlighter = struct {
             .ranges = ArrayList(Range).init(allocator),
             .decorations = ArrayList(editorBrowser.Decoration).init(allocator),
             .text_focused = host.has_text_focus(host.context),
+            .session = editor.word_highlight_session,
         };
         errdefer self.ranges.deinit();
         errdefer self.decorations.deinit();
@@ -438,7 +531,8 @@ pub const WordHighlighter = struct {
         self.editor.removeViewEventHandler(&self.handler);
         self.model.removeDidChangeContentListener(self.content_listener);
         self.editor.on_did_change_cursor_position.unlisten(self.cursor_listener);
-        _ = self.stopAll();
+        if (self.session) |session| session.detach(self) else _ = self.stopAll();
+        self.pending_documents.deinit(self.allocator);
         self.ranges.deinit();
         self.decorations.deinit();
         self.allocator.destroy(self);
@@ -449,11 +543,12 @@ pub const WordHighlighter = struct {
     }
 
     fn onModelContentChanged(_: ModelContentChange, self: *WordHighlighter) !void {
-        _ = self.stopAll();
+        if (!std.mem.eql(u8, self.model.uri().scheme, "output")) _ = self.stopAll();
     }
 
     fn onCursorPositionChanged(event: ICursorPositionChangedEvent, self: *WordHighlighter) !void {
         if (self.ignore_position_change_event) return;
+        if (self.settings.occurrences_highlight == .off) return;
         if (event.reason != .Explicit and !std.mem.eql(u8, event.source, "api")) {
             _ = self.stopAll();
             return;
@@ -464,62 +559,81 @@ pub const WordHighlighter = struct {
     fn onFocusChanged(context: *anyopaque, event: *const view_events.ViewFocusChangedEvent) bool {
         const self: *WordHighlighter = @ptrCast(@alignCast(context));
         self.text_focused = event.isFocused;
-        if (!event.isFocused) return self.stopAll();
-        if (self.pending_deadline_ms == null) self.run(timeNow());
+        if (!event.isFocused) {
+            if (self.session) |session| {
+                const active = if (session.editors) |service| service.getFocusedCodeEditor() else null;
+                if (active) |editor| {
+                    if (editor.getModel()) |model| {
+                        if (!std.mem.eql(u8, model.uri().scheme, "vscode-notebook-cell") or std.mem.eql(u8, self.model.uri().scheme, "vscode-notebook-cell")) return false;
+                    }
+                }
+            }
+            return self.stopAll();
+        }
+        if (self.pending_deadline_ms == null and self.pending_request == null) self.run(timeNow());
         return false;
     }
 
-    /// The portable single-model subset of upstream _run.
-    fn run(self: *WordHighlighter, now_ms: i64) void {
-        if (self.settings.occurrences_highlight == .off or !self.text_focused or !self.host.has_text_focus(self.host.context)) {
-            _ = self.stopAll();
-            return;
-        }
-
+    fn validPosition(self: *WordHighlighter) ?Position {
         const selection = self.editor.modelSelection();
-        if (selection.startLineNumber != selection.endLineNumber) {
-            _ = self.stopAll();
-            return;
-        }
+        if (selection.startLineNumber != selection.endLineNumber) return null;
         const position = Position.init(selection.startLineNumber, selection.startColumn);
-        var word = self.model.getWordAtPosition(position) orelse {
+        var word = self.model.getWordAtPosition(position) orelse return null;
+        defer word.deinit();
+        if (word.startColumn > selection.startColumn or word.endColumn < selection.endColumn) return null;
+        return position;
+    }
+
+    fn run(self: *WordHighlighter, now_ms: i64) void {
+        if (self.settings.occurrences_highlight == .off) return;
+        if (!self.text_focused or !self.host.has_text_focus(self.host.context)) return;
+        const position = self.validPosition() orelse {
             _ = self.stopAll();
             return;
         };
-        defer word.deinit();
-        if (word.startColumn > selection.startColumn or word.endColumn < selection.endColumn) {
-            _ = self.stopAll();
-            return;
-        }
         if (self.containsPosition(position)) return;
-
-        _ = self.clearDecorations();
-        const delay = @max(self.settings.run_delay_ms, self.settings.delay_ms);
-        self.pending_position = position;
-        self.setDeadline(now_ms + @as(i64, @intCast(delay)));
+        self.scheduleQuery(position, now_ms, self.settings.delay_ms, self.settings.run_delay_ms, null);
     }
 
-    /// Fires the delayed computation. Returns true when decorations changed.
+    fn scheduleQuery(self: *WordHighlighter, position: Position, now_ms: i64, render_delay: u64, run_delay: u64, preserved: ?*TextModel) void {
+        self.cancelRequest();
+        if (self.session) |session| {
+            session.begin(self, position, preserved);
+        } else if (preserved == null) _ = self.clearDecorations();
+        self.pending_position = position;
+        self.minimum_render_time = now_ms + @as(i64, @intCast(render_delay));
+        self.setDeadline(now_ms + @as(i64, @intCast(run_delay)));
+    }
+
+    /// Fires either the run delayer or the independently timed render callback.
     pub fn onTick(self: *WordHighlighter, now_ms: i64) bool {
         const deadline = self.pending_deadline_ms orelse return false;
         if (now_ms < deadline) return false;
         self.setDeadline(null);
-        if (!self.text_focused or !self.host.has_text_focus(self.host.context)) return self.stopAll();
-        return self.computeAt(self.pending_position);
+        if (self.pending_result) |result| {
+            self.pending_result = null;
+            defer result.dispose();
+            return self.renderResult(result);
+        }
+        return self.computeAt(self.pending_position, now_ms);
     }
 
-    /// Upstream `trigger()`: immediate rendering, no delay.
+    /// Upstream trigger: start the provider immediately without a render delay.
     pub fn trigger(self: *WordHighlighter) void {
-        self.setDeadline(null);
-        const selection = self.editor.modelSelection();
-        _ = self.computeAt(selection.getPosition());
+        if (self.settings.occurrences_highlight == .off) return;
+        const position = self.validPosition() orelse {
+            _ = self.stopAll();
+            return;
+        };
+        const now = timeNow();
+        self.scheduleQuery(position, now, 0, 0, null);
+        _ = self.onTick(now);
     }
 
-    /// Upstream `restore(delay)`.
     pub fn restore(self: *WordHighlighter, delay_ms: u64) void {
         if (self.settings.occurrences_highlight == .off) return;
-        self.setDeadline(@as(i64, @intCast(@max(self.settings.run_delay_ms, delay_ms))) + timeNow());
-        self.pending_position = self.editor.modelSelection().getPosition();
+        const position = self.validPosition() orelse return;
+        self.scheduleQuery(position, timeNow(), delay_ms, self.settings.run_delay_ms, null);
     }
 
     pub fn stopHighlighting(self: *WordHighlighter) void {
@@ -559,16 +673,76 @@ pub const WordHighlighter = struct {
         return false;
     }
 
-    fn computeAt(self: *WordHighlighter, position: Position) bool {
-        _ = self.clearDecorations();
+    fn computeAt(self: *WordHighlighter, position: Position, now_ms: i64) bool {
+        self.computing_now = now_ms;
+        defer self.computing_now = null;
+        self.last_render_changed = false;
+        const others = if (self.session) |session| session.otherModels(self, self.allocator) catch return false else &.{};
+        defer if (self.session != null) self.allocator.free(others);
+        if (self.editor.language_features) |features| {
+            // Native pointers do not keep a model alive as JS references do.
+            // Retain the other real documents until provider completion or
+            // cancellation, including registered editors without a highlighter.
+            if (self.session) |session| {
+                for (session.list()) |editor| {
+                    const model = editor.getModel() orelse continue;
+                    if (std.mem.indexOfScalar(*TextModel, others, model) == null) continue;
+                    if (std.mem.indexOfScalar(@TypeOf(editor.document), self.pending_documents.items, editor.document) != null) continue;
+                    self.pending_documents.append(self.allocator, editor.document) catch {
+                        self.releasePendingDocuments();
+                        return false;
+                    };
+                    editor.document.retain();
+                }
+            }
+            defer if (self.pending_request == null) self.releasePendingDocuments();
+            const listener: OccurrenceListener = .{ .context = self, .complete = occurrenceReady, .on_error = occurrenceError };
+            self.pending_request = if (others.len == 0)
+                getOccurrencesAtPosition(self.allocator, &features.document_highlight_provider, self.model, position, .None, self.settings.merge_providers, listener) catch return false
+            else
+                getOccurrencesAcrossMultipleModels(self.allocator, &features.multi_document_highlight_provider, self.model, position, .None, others, listener) catch return false;
+        } else {
+            // Standalone editor hosts use the same textual provider without a
+            // workspace language-feature service.
+            const result = OccurrenceResult.create(self.allocator) catch return false;
+            const a = result.arena.allocator();
+            const entries = TextualDocumentHighlightProvider.provideMultiDocumentHighlights(a, self.model, position, others) catch {
+                result.dispose();
+                return false;
+            };
+            for (entries) |entry| result.put(entry.uri, entry.highlights) catch {};
+            occurrenceReady(self, result);
+        }
+        return self.last_render_changed;
+    }
 
-        const highlights = TextualDocumentHighlightProvider.provideDocumentHighlights(
-            self.allocator,
-            self.model,
-            position,
-        ) catch return true;
-        defer self.allocator.free(highlights);
+    fn occurrenceError(_: *anyopaque, err: anyerror) void {
+        std.log.scoped(.word_highlighter).warn("Occurrence provider failed: {s}", .{@errorName(err)});
+    }
 
+    fn occurrenceReady(context: *anyopaque, result: *OccurrenceResult) void {
+        const self: *WordHighlighter = @ptrCast(@alignCast(context));
+        self.pending_request = null;
+        self.releasePendingDocuments();
+        if ((self.computing_now orelse timeNow()) < self.minimum_render_time) {
+            self.pending_result = result;
+            self.setDeadline(self.minimum_render_time);
+        } else {
+            defer result.dispose();
+            self.last_render_changed = self.renderResult(result);
+        }
+    }
+
+    fn renderResult(self: *WordHighlighter, result: *const OccurrenceResult) bool {
+        if (self.session) |session| return session.render(self, result);
+        if (result.get(self.model.uri())) |values| return self.applyHighlights(values);
+        return false;
+    }
+
+    fn applyHighlights(self: *WordHighlighter, highlights: []const DocumentHighlight) bool {
+        const had_decorations = self.decorations.items.len != 0;
+        self.ranges.clearRetainingCapacity();
+        self.decorations.clearRetainingCapacity();
         var failed = false;
         for (highlights) |highlight| {
             self.ranges.append(highlight.range) catch {
@@ -590,11 +764,11 @@ pub const WordHighlighter = struct {
             std.mem.sort(Range, self.ranges.items, {}, lessThanRange);
         }
 
-        if (self.decorations.items.len > 0) {
+        if (had_decorations or self.decorations.items.len > 0) {
             self.host.set_decorations(self.host.decoration_context orelse self.host.context, self.decorations.items);
         }
         self.host.request_frame(self.host.context);
-        return true;
+        return had_decorations or self.decorations.items.len > 0;
     }
 
     fn lessThanRange(_: void, a: Range, b: Range) bool {
@@ -610,9 +784,28 @@ pub const WordHighlighter = struct {
         return true;
     }
 
-    fn stopAll(self: *WordHighlighter) bool {
+    fn releasePendingDocuments(self: *WordHighlighter) void {
+        for (self.pending_documents.items) |document| document.release();
+        self.pending_documents.clearRetainingCapacity();
+    }
+
+    fn cancelRequest(self: *WordHighlighter) void {
         self.setDeadline(null);
-        return self.clearDecorations();
+        if (self.pending_request) |request| {
+            self.pending_request = null;
+            request.cancel();
+        }
+        self.releasePendingDocuments();
+        if (self.pending_result) |result| {
+            self.pending_result = null;
+            result.dispose();
+        }
+    }
+
+    fn stopAll(self: *WordHighlighter) bool {
+        self.cancelRequest();
+        const changed = if (self.session) |session| session.clearAll(null) else false;
+        return self.clearDecorations() or changed;
     }
 
     fn move(self: *WordHighlighter, delta: isize) bool {
@@ -638,7 +831,7 @@ pub const WordHighlighter = struct {
     }
 };
 
-/// Port of `WordHighlighterContribution`, reduced to the single-model TUI.
+/// Port of `WordHighlighterContribution`: widget lifetime, model-bound controller.
 pub const WordHighlighterContribution = struct {
     pub const ID = "editor.contrib.wordHighlighter";
     allocator: Allocator,
@@ -716,8 +909,9 @@ pub const WordHighlighterContribution = struct {
     }
 
     fn disposeWordHighlighter(self: *WordHighlighterContribution) void {
-        if (self.word_highlighter) |highlighter| highlighter.deinit();
+        const highlighter = self.word_highlighter orelse return;
         self.word_highlighter = null;
+        highlighter.deinit();
     }
 
     fn onWillChangeModel(_: ModelChange, self: *WordHighlighterContribution) !void {
@@ -739,7 +933,8 @@ pub const WordHighlighterContribution = struct {
     pub fn unbindHost(self: *WordHighlighterContribution) void {
         if (self.word_highlighter) |highlighter| {
             highlighter.text_focused = false;
-            highlighter.stopHighlighting();
+            highlighter.cancelRequest();
+            if (highlighter.session == null) _ = highlighter.clearDecorations();
         }
         self.host = null;
     }
@@ -749,14 +944,37 @@ pub const WordHighlighterContribution = struct {
         if (self.word_highlighter) |highlighter| highlighter.attachWindow(window);
     }
 
+    pub fn setSession(self: *WordHighlighterContribution, session: ?*WordHighlighterSession) void {
+        const highlighter = self.word_highlighter orelse return;
+        if (highlighter.session == session) return;
+        if (highlighter.session) |old| old.detach(highlighter);
+        highlighter.session = session;
+        if (highlighter.text_focused) highlighter.run(WordHighlighter.timeNow());
+    }
+
     pub fn applyConfiguration(self: *WordHighlighterContribution, settings: WordHighlighterSettings) void {
         const previous = self.settings;
         self.settings = settings;
         const highlighter = self.word_highlighter orelse return;
         highlighter.settings = settings;
-        if (previous.occurrences_highlight != settings.occurrences_highlight or previous.merge_providers != settings.merge_providers) {
+        if (previous.merge_providers != settings.merge_providers) {
             _ = highlighter.stopAll();
             if (settings.occurrences_highlight != .off) highlighter.run(WordHighlighter.timeNow());
+        } else if (previous.occurrences_highlight != settings.occurrences_highlight) {
+            switch (settings.occurrences_highlight) {
+                .off => _ = highlighter.stopAll(),
+                .single_file => if (highlighter.session) |session| {
+                    if (session.query) |query| {
+                        _ = session.clearAll(query.source.model);
+                        session.query = query;
+                    }
+                },
+                .multi_file => if (highlighter.session) |session| {
+                    if (session.query) |query| {
+                        if (query.source == highlighter) highlighter.scheduleQuery(query.position, WordHighlighter.timeNow(), settings.delay_ms, settings.run_delay_ms, highlighter.model);
+                    }
+                } else highlighter.run(WordHighlighter.timeNow()),
+            }
         }
     }
 
