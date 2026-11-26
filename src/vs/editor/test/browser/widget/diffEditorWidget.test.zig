@@ -368,6 +368,46 @@ pub fn Tests(comptime View: type) type {
             try std.testing.expect(found);
         }
 
+        test "diffEditorWidget: whitespace transaction delivers layout before zone notification" {
+            const widget = try DiffEditorWidget.create(View.init, testing.allocator, Io.Threaded.global_single_threaded.io(), "a.txt", "b.txt", "a\nb\nc", "a\nB\nc", "Original", "Modified", 80, 3, .{});
+            defer widget.destroy();
+            const editor = widget.modified_editor;
+            const Accessor = @import("../../../common/viewModel.zig").IWhitespaceChangeAccessor;
+            const ViewEventHandler = @import("../../../common/viewEventHandler.zig").ViewEventHandler;
+            const Events = @import("../../../common/viewEvents.zig");
+            const Observer = struct {
+                editor: *@import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor,
+                events: usize = 0,
+                height: f64 = 0,
+                fn onZones(context: *anyopaque, _: *const Events.ViewZonesChangedEvent) bool {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    self.events += 1;
+                    self.height = self.editor.viewLayout().getScrollHeight();
+                    return true;
+                }
+            };
+            var observer = Observer{ .editor = editor };
+            var handler = ViewEventHandler.init(&observer, .{ .onZonesChanged = Observer.onZones });
+            editor.addViewEventHandler(&handler);
+            defer editor.removeViewEventHandler(&handler);
+            var id: []const u8 = undefined;
+            const initial_height = editor.viewLayout().getScrollHeight();
+            try editor.changeWhitespace(&id, struct {
+                fn run(out: *[]const u8, accessor: Accessor) anyerror!void {
+                    out.* = try accessor.insert(1, 0, 4, 0);
+                }
+            }.run);
+            try testing.expectEqual(@as(usize, 1), observer.events);
+            try testing.expectEqual(initial_height + 4, observer.height);
+            try editor.changeWhitespace(id, struct {
+                fn run(zone_id: []const u8, accessor: Accessor) anyerror!void {
+                    try accessor.remove(zone_id);
+                }
+            }.run);
+            try testing.expectEqual(@as(usize, 2), observer.events);
+            try testing.expectEqual(initial_height, observer.height);
+        }
+
         test "diffEditorWidget: upstream UnchangedRegion fromDiffs scenarios" {
             const allocator = testing.allocator;
             const R = @import("../../../common/core/ranges/lineRange.zig").LineRange;

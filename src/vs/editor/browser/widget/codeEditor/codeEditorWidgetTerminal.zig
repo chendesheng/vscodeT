@@ -2221,6 +2221,19 @@ pub const Editor = struct {
         self.view_event_dispatcher.emitSingleViewEvent(event);
     }
 
+    /// Terminal implementation of ViewModel.changeWhitespace. Consumers see
+    /// the updated layout before the matching view and outgoing zone events.
+    pub fn changeWhitespace(
+        self: *Editor,
+        context: anytype,
+        comptime callback: fn (@TypeOf(context), @import("../../../common/viewModel.zig").IWhitespaceChangeAccessor) anyerror!void,
+    ) !void {
+        if (try self.view_layout.changeWhitespace(context, callback)) {
+            self.emitViewEvent(.{ .ViewZonesChanged = .{} });
+            self.view_event_dispatcher.emitOutgoingEvent(.{ .ViewZonesChanged = .{} });
+        }
+    }
+
     fn onViewLayoutScroll(event: scrollable_mod.ScrollEvent, editor: *Editor) anyerror!void {
         editor.emitViewEvent(.{ .ViewScrollChanged = view_events.ViewScrollChangedEvent.init(event) });
         for (editor.scroll_listeners.items) |listener| listener.callback(listener.context);

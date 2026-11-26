@@ -161,6 +161,36 @@ pub const ViewLayout = struct {
         return self.lines_layout.getLinesViewportData(allocator, top, top + dimensions.height);
     }
 
+    /// Upstream whitespace transaction. Commit layout changes before notifying
+    /// the view model, including the new scroll dimensions.
+    pub fn changeWhitespace(
+        self: *ViewLayout,
+        context: anytype,
+        comptime callback: fn (@TypeOf(context), view_model.IWhitespaceChangeAccessor) anyerror!void,
+    ) !bool {
+        const had_change = self.lines_layout.changeWhitespace(context, callback) catch |err| {
+            // A fallible Zig callback may leave successfully queued changes.
+            self.onHeightMaybeChanged();
+            return err;
+        };
+        if (had_change) self.onHeightMaybeChanged();
+        return had_change;
+    }
+
+    pub fn getWhitespaceAtVerticalOffset(self: *ViewLayout, vertical_offset: f64) !?view_model.IViewWhitespaceViewportData {
+        return self.lines_layout.getWhitespaceAtVerticalOffset(vertical_offset);
+    }
+
+    pub fn getWhitespaceViewportData(self: *ViewLayout, allocator: Allocator) ![]view_model.IViewWhitespaceViewportData {
+        const viewport = self.getCurrentViewport();
+        const top: f64 = @floatFromInt(viewport.top);
+        return self.lines_layout.getWhitespaceViewportData(allocator, top, top + @as(f64, @floatFromInt(viewport.height)));
+    }
+
+    pub fn getWhitespaces(self: *const ViewLayout, allocator: Allocator) ![]view_model.IEditorWhitespace {
+        return self.lines_layout.getWhitespaces(allocator);
+    }
+
     pub fn getVerticalOffsetForLineNumber(self: *ViewLayout, line_number: usize, include_view_zones: bool) f64 {
         return self.lines_layout.getVerticalOffsetForLineNumber(line_number, include_view_zones) catch @floatFromInt(line_number -| 1);
     }
@@ -288,4 +318,44 @@ test "view layout: smooth scrolling is immediate in the terminal" {
     layout.setScrollPositionSmooth(.{ .scrollTop = 40 });
     try testing.expectEqual(@as(f64, 40), layout.getCurrentScrollTop());
     try testing.expect(!layout.hasPendingScrollAnimation());
+}
+
+test "view layout: whitespace transactions update scroll dimensions and viewport data" {
+    const allocator = testing.allocator;
+    var layout = try ViewLayout.init(allocator, 10, 80, 4);
+    defer layout.deinit();
+    var id: []const u8 = undefined;
+    const Accessor = view_model.IWhitespaceChangeAccessor;
+    try testing.expect(try layout.changeWhitespace(&id, struct {
+        fn run(out: *[]const u8, accessor: Accessor) anyerror!void {
+            out.* = try accessor.insert(2, 0, 5, 0);
+        }
+    }.run));
+    try testing.expectEqual(@as(f64, 15), layout.getScrollHeight());
+    try testing.expectEqual(@as(f64, 7), layout.getVerticalOffsetForLineNumber(3, false));
+    const zone = (try layout.getWhitespaceAtVerticalOffset(4)).?;
+    try testing.expectEqualStrings(id, zone.id);
+    try testing.expectEqual(@as(f64, 2), zone.verticalOffset);
+    layout.setScrollPositionNow(.{ .scrollTop = 4 });
+    const visible = try layout.getWhitespaceViewportData(allocator);
+    defer allocator.free(visible);
+    try testing.expectEqual(@as(usize, 1), visible.len);
+    try testing.expectEqualStrings(id, visible[0].id);
+    try testing.expect(try layout.changeWhitespace(id, struct {
+        fn run(zone_id: []const u8, accessor: Accessor) anyerror!void {
+            try accessor.changeOne(zone_id, 3, 2);
+        }
+    }.run));
+    try testing.expectEqual(@as(f64, 12), layout.getScrollHeight());
+    layout.setScrollPositionNow(.{ .scrollTop = 11 });
+    try testing.expect(try layout.changeWhitespace(id, struct {
+        fn run(zone_id: []const u8, accessor: Accessor) anyerror!void {
+            try accessor.remove(zone_id);
+        }
+    }.run));
+    try testing.expectEqual(@as(f64, 10), layout.getScrollHeight());
+    try testing.expectEqual(@as(f64, 6), layout.getCurrentScrollTop());
+    try testing.expect(!try layout.changeWhitespace({}, struct {
+        fn run(_: void, _: Accessor) anyerror!void {}
+    }.run));
 }
