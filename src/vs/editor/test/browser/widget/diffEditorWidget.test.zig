@@ -1005,7 +1005,7 @@ pub fn Tests(comptime View: type) type {
             );
             defer widget.destroy();
 
-            try testing.expectEqual(@as(usize, 1), widget.view_model.unchanged_regions.len);
+            try testing.expectEqual(@as(usize, 1), widget.view_model.unchangedRegions().len);
             try testing.expect(!widget.original_editor.isModelLineVisible(8));
             try testing.expect(widget.original_editor.isModelLineVisible(4));
             try testing.expect(widget.nextChange());
@@ -1023,7 +1023,7 @@ pub fn Tests(comptime View: type) type {
             const modified = "A\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\nZ";
             const widget = try DiffEditorWidget.create(View.init, allocator, io, "a.txt", "b.txt", original, modified, "Original", "Modified", 80, 30, .{ .hide_unchanged_regions = true });
             defer widget.destroy();
-            const region = &widget.view_model.unchanged_regions[0];
+            const region = &widget.view_model.unchangedRegions()[0];
             const initial = region.getHiddenModifiedRange().length();
             try testing.expect(initial > 0);
             try widget.modified_view.paint();
@@ -1226,6 +1226,41 @@ pub fn Tests(comptime View: type) type {
             try testing.expectEqual(@as(usize, 5), count);
         }
 
+        test "diffEditorWidget: unchanged regions stay model-tracked when hidden controls are disabled" {
+            const allocator = testing.allocator;
+            const original = "a\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\nz";
+            const modified = "A\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\nZ";
+            const widget = try DiffEditorWidget.create(View.init, allocator, testing.io, "a.txt", "b.txt", original, modified, "Original", "Modified", 80, 8, .{});
+            defer widget.destroy();
+            try testing.expectEqual(@as(usize, 1), widget.view_model.tracked_regions.len);
+            try testing.expectEqual(@as(usize, 1), widget.view_model.original_region_ids.len);
+            try testing.expectEqual(@as(usize, 0), widget.view_model.unchangedRegions().len);
+            try testing.expect(widget.modified_editor.isModelLineVisible(8));
+            var options = widget.options;
+            options.hide_unchanged_regions = true;
+            _ = try widget.updateOptions(options);
+            try testing.expectEqual(@as(usize, 1), widget.view_model.unchangedRegions().len);
+            const region = &widget.view_model.unchangedRegions()[0];
+            const start = region.getHiddenModifiedRange().startLineNumber;
+            region.showMoreAbove(2);
+            try widget.view_model.notifyUnchangedRegions();
+            try testing.expect(widget.modified_editor.isModelLineVisible(start));
+            var state = try widget.view_model.serializeState(allocator);
+            defer state.deinit(allocator);
+            try widget.collapseAllUnchangedRegions();
+            try testing.expect(!widget.modified_editor.isModelLineVisible(start));
+            try widget.view_model.restoreSerializedState(state);
+            try testing.expect(widget.modified_editor.isModelLineVisible(start));
+            options.hide_unchanged_regions = false;
+            _ = try widget.updateOptions(options);
+            try testing.expectEqual(@as(usize, 1), widget.view_model.tracked_regions.len);
+            try testing.expectEqual(@as(usize, 0), widget.view_model.unchangedRegions().len);
+            try testing.expect(widget.modified_editor.isModelLineVisible(8));
+            options.hide_unchanged_regions = true;
+            _ = try widget.updateOptions(options);
+            try testing.expect(!widget.modified_editor.isModelLineVisible(start));
+        }
+
         test "diffEditorWidget: inline mode hides unchanged regions" {
             const allocator = std.testing.allocator;
             const io = std.Io.Threaded.global_single_threaded.io();
@@ -1247,7 +1282,7 @@ pub fn Tests(comptime View: type) type {
             );
             defer widget.destroy();
 
-            try testing.expectEqual(@as(usize, 1), widget.view_model.unchanged_regions.len);
+            try testing.expectEqual(@as(usize, 1), widget.view_model.unchangedRegions().len);
             try testing.expect(!widget.modified_editor.isModelLineVisible(8));
             try testing.expect(widget.modified_editor.isModelLineVisible(4));
         }
@@ -1261,6 +1296,54 @@ pub fn Tests(comptime View: type) type {
                 if (findDisclosure(current)) |found| return found;
             }
             return null;
+        }
+
+        test "diffEditorWidget: bottom unchanged reveal anchors the following line" {
+            const allocator = testing.allocator;
+            var original: std.ArrayList(u8) = .empty;
+            defer original.deinit(allocator);
+            var modified: std.ArrayList(u8) = .empty;
+            defer modified.deinit(allocator);
+            try original.appendSlice(allocator, "old\n");
+            try modified.appendSlice(allocator, "new\n");
+            for (0..40) |index| {
+                var line: [48]u8 = undefined;
+                const content = try std.fmt.bufPrint(&line, "unchanged line {d}\n", .{index});
+                try original.appendSlice(allocator, content);
+                try modified.appendSlice(allocator, content);
+            }
+            try original.appendSlice(allocator, "old end");
+            try modified.appendSlice(allocator, "new end");
+            const widget = try DiffEditorWidget.create(View.init, allocator, testing.io, "a.txt", "b.txt", original.items, modified.items, "Original", "Modified", 120, 6, .{ .hide_unchanged_regions = true, .hide_unchanged_regions_reveal_line_count = 2 });
+            defer widget.destroy();
+            const editor = widget.modified_editor;
+            _ = editor.setScrollTop(2);
+            const region = &widget.view_model.unchangedRegions()[0];
+            const anchor_line = region.modifiedUnchangedRange().endLineNumberExclusive;
+            const before_view_line = editor.viewPositionOfModelPosition(.{ .lineNumber = anchor_line, .column = 1 }).lineNumber;
+            const before_row = editor.visibleRowOfViewLine(before_view_line).?;
+            const before_scroll = editor.scrollTop();
+            var frame = try ui.Frame.init(allocator, 120, 6);
+            defer frame.deinit();
+            try widget.paint(&frame, 0, 0, 120, 6);
+            const column_start = widget.paneWidths().modifiedLeft();
+            const Hit = struct { row: usize, col: usize };
+            const hit: Hit = blk: {
+                for (0..6) |row| for (column_start..120 - widget.paneWidths().overview) |col| {
+                    if (frame.next.cluster[frame.next.index(col, row)] == '↓') break :blk .{ .row = row, .col = col };
+                };
+                return error.DisclosureMissing;
+            };
+            var event: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = hit.col, .y = hit.row };
+            _ = try widget.dispatchMouse(&event);
+            try testing.expect(widget.hide_unchanged.drag != null);
+            event.kind = .up;
+            try testing.expect(try widget.dispatchMouse(&event));
+            try testing.expectEqual(@as(usize, 2), widget.view_model.unchangedRegions()[0].visible_line_count_bottom);
+            try testing.expectEqual(before_scroll + 2, editor.scrollTop());
+            const after_view_line = editor.viewPositionOfModelPosition(.{ .lineNumber = anchor_line, .column = 1 }).lineNumber;
+            try testing.expectEqual(before_row, editor.visibleRowOfViewLine(after_view_line).?);
+            try testing.expectEqual(editor.scrollTop(), widget.original_editor.scrollTop());
         }
 
         test "diffEditorWidget: compact disclosures expand and collapse with a persistent keyboard target" {
@@ -1292,7 +1375,7 @@ pub fn Tests(comptime View: type) type {
                 defer widget.destroy();
                 _ = widget.modified_editor.setScrollTop(0);
                 try widget.modified_view.paint();
-                const region = &widget.view_model.unchanged_regions[0];
+                const region = &widget.view_model.unchangedRegions()[0];
                 const toggle = findDisclosure(widget.modified_view.zone_content_root.?) orelse return error.DisclosureMissing;
                 const initially_hidden = region.getHiddenModifiedRange().length();
                 try testing.expect(initially_hidden > 0);

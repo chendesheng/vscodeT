@@ -809,7 +809,6 @@ pub fn DiffEditorWidget(comptime View: type) type {
             std.mem.swap([]u8, &self.original_path, &self.modified_path);
             self.view_model.swapModels();
             const diff_state = if (self.view_model.state) |*state_value| state_value else unreachable;
-            for (self.view_model.unchanged_regions) |*region| std.mem.swap(usize, &region.original_line_number, &region.modified_line_number);
             for (diff_state.mappings) |*mapping| flipMapping(&mapping.line_range_mapping);
             for (diff_state.moved_texts) |*moved| {
                 moved.lineRangeMapping = moved.lineRangeMapping.flip();
@@ -1290,12 +1289,12 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         pub fn collapseAllUnchangedRegions(self: *Self) !void {
-            for (self.view_model.unchanged_regions) |*region| region.collapseAll();
+            for (self.view_model.unchangedRegions()) |*region| region.collapseAll();
             try self.view_model.notifyUnchangedRegions();
         }
 
         pub fn showAllUnchangedRegions(self: *Self) !void {
-            for (self.view_model.unchanged_regions) |*region| region.showAll();
+            for (self.view_model.unchangedRegions()) |*region| region.showAll();
             try self.view_model.notifyUnchangedRegions();
         }
 

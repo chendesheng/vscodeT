@@ -3,6 +3,7 @@
 // to the same model-anchored view zones as the upstream overlay widgets.
 const std = @import("std");
 const ui = @import("ui");
+const css = @import("../style_css.zig");
 const vm = @import("../diffEditorViewModel.zig");
 const Options = @import("../diffEditorOptions.zig").Options;
 const Alignment = @import("../components/diffEditorViewZones/diffEditorViewZones.zig").DiffEditorViewZones;
@@ -63,7 +64,7 @@ pub const HideUnchangedRegionsFeature = struct {
         id: ?[]const u8 = null,
 
         fn region(self: *Binding) *vm.UnchangedRegion {
-            return &self.pane.owner.model.unchanged_regions[self.index];
+            return &self.pane.owner.model.unchangedRegions()[self.index];
         }
 
         fn build(context: ?*anyopaque, doc: *ui.Document, info: browser.IViewZone.RenderInfo) anyerror!*ui.Node {
@@ -81,20 +82,48 @@ pub const HideUnchangedRegionsFeature = struct {
             return node;
         }
 
+        fn appendLabel(node: *ui.Node, label: []const u8) !*ui.Node {
+            const child = try node.document.createElement(.span);
+            errdefer node.document.destroy(child);
+            try child.setTextContent(label);
+            _ = try node.appendChild(child);
+            return child;
+        }
+
+        fn appendControl(self: *Binding, node: *ui.Node, top: bool) !void {
+            const button = try appendLabel(node, if (top) "↑" else "↓");
+            try button.addClass(if (top) css.Class.top else css.Class.bottom);
+            try button.setAttribute("aria-label", if (top) "Click or drag to show more above" else "Click or drag to show more below");
+            try button.addEventListener(.{ .context = self, .mouse_down = if (top) onTop else onBottom });
+        }
+
         fn update(context: ?*anyopaque, node: *ui.Node, _: browser.IViewZone.RenderInfo) anyerror!void {
             const self: *Binding = @ptrCast(@alignCast(context.?));
             const r = self.region();
             const count = r.getHiddenModifiedRange().length();
-            const compact = self.pane.owner.options.variant == .compact;
+            const options = self.pane.owner.options;
+            const compact = options.variant == .compact;
+            const compact_mode = !compact and options.compact_mode;
             var buffer: [128]u8 = undefined;
             const label = if (compact)
                 if (count == 0)
                     try std.fmt.bufPrint(&buffer, "▾ Collapse {d} unchanged lines", .{r.line_count})
                 else
                     try std.fmt.bufPrint(&buffer, "▸ Show {d} unchanged lines", .{count})
+            else if (compact_mode)
+                try std.fmt.bufPrint(&buffer, "{d} hidden lines", .{count})
             else
-                try std.fmt.bufPrint(&buffer, "↑  {d} hidden lines  ·  Show all  ↓", .{count});
-            try node.setTextContent(label);
+                try std.fmt.bufPrint(&buffer, "{d} hidden lines  ·  Show all", .{count});
+            try node.addClass(css.Class.diff_hidden_lines);
+            if (compact_mode) try node.addClass(css.Class.diff_hidden_lines_compact) else node.removeClass(css.Class.diff_hidden_lines_compact);
+            node.asElement().focusable = !compact_mode;
+            node.asElement().tab_index = if (compact_mode) -1 else 0;
+            if (compact_mode) node.removeAttribute("role") else try node.setAttribute("role", "button");
+            node.document.destroyChildren(node);
+            if (!compact_mode) try self.appendControl(node, true);
+            const center = try appendLabel(node, label);
+            try center.addClass(css.Class.center);
+            if (!compact_mode) try self.appendControl(node, false);
             try node.setAttribute("aria-label", label);
             try node.setAttribute("aria-expanded", if (count == 0) "true" else "false");
         }
@@ -105,29 +134,32 @@ pub const HideUnchangedRegionsFeature = struct {
             self.pane.owner.model.notifyUnchangedRegions() catch |err| self.pane.editor.setMessage("unchanged regions: {s}", .{@errorName(err)});
         }
 
+        fn beginDrag(self: *Binding, event: *ui.MouseEvent, top: bool) void {
+            if (event.button != .left) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const r = self.region();
+            r.is_dragged = if (top) .top else .bottom;
+            self.pane.owner.drag = .{ .binding = self, .top = top, .initial_count = if (top) r.visible_line_count_top else r.visible_line_count_bottom };
+        }
+
+        fn onTop(context: ?*anyopaque, event: *ui.MouseEvent) void {
+            const self: *Binding = @ptrCast(@alignCast(context.?));
+            self.beginDrag(event, true);
+        }
+
+        fn onBottom(context: ?*anyopaque, event: *ui.MouseEvent) void {
+            const self: *Binding = @ptrCast(@alignCast(context.?));
+            self.beginDrag(event, false);
+        }
+
         fn onMouse(context: ?*anyopaque, event: *ui.MouseEvent) void {
             if (event.button != .left) return;
             const self: *Binding = @ptrCast(@alignCast(context.?));
+            if (self.pane.owner.options.variant != .compact and self.pane.owner.options.compact_mode) return;
             if (event.current_target) |target| _ = target.focus();
             event.preventDefault();
             event.stopPropagation();
-            if (self.pane.owner.options.variant != .compact and !self.pane.owner.options.compact_mode) {
-                const target = event.current_target.?;
-                const x: f64 = @floatFromInt(event.x);
-                const left = target.asElement().rect.x;
-                const count = self.region().getHiddenModifiedRange().length();
-                // One-cell arrows flank the default disclosure label.
-                var buffer: [128]u8 = undefined;
-                const text = std.fmt.bufPrint(&buffer, "   {d} hidden lines     Show all  ", .{count}) catch return;
-                const right = left + @as(f64, @floatFromInt(text.len));
-                if (x < left + 2 or x >= right) {
-                    const top = x < left + 2;
-                    const r = self.region();
-                    r.is_dragged = if (top) .top else .bottom;
-                    self.pane.owner.drag = .{ .binding = self, .top = top, .initial_count = if (top) r.visible_line_count_top else r.visible_line_count_bottom };
-                    return;
-                }
-            }
             self.toggle();
         }
 
@@ -141,6 +173,7 @@ pub const HideUnchangedRegionsFeature = struct {
             event.preventDefault();
             event.stopPropagation();
             const self: *Binding = @ptrCast(@alignCast(context.?));
+            if (self.pane.owner.options.variant != .compact and self.pane.owner.options.compact_mode) return;
             self.toggle();
         }
     };
@@ -153,24 +186,70 @@ pub const HideUnchangedRegionsFeature = struct {
         };
     }
 
+    /// CollapsedCodeOverlayWidget._runWithLowerScrollAnchor: bottom-edge
+    /// reveal keeps the first line below the unchanged region stationary.
+    /// Layout offsets are cells; the content-height fallback covers EOF.
+    const LowerScrollAnchor = struct {
+        editor: *Editor,
+        line: usize,
+        scroll_top: usize,
+        top: f64,
+
+        fn capture(binding: *Binding) LowerScrollAnchor {
+            const r = binding.region();
+            const range = if (binding.pane.original) r.originalUnchangedRange() else r.modifiedUnchangedRange();
+            const editor = binding.pane.editor;
+            return .{ .editor = editor, .line = range.endLineNumberExclusive, .scroll_top = editor.scrollTop(), .top = topForLine(editor, range.endLineNumberExclusive) };
+        }
+
+        fn topForLine(editor: *Editor, line: usize) f64 {
+            if (line > editor.model.getLineCount()) return editor.viewLayout().lines_layout.getLinesTotalHeight() catch editor.viewLayout().getScrollHeight();
+            const pos = editor.viewPositionOfModelPosition(.{ .lineNumber = line, .column = 1 });
+            return editor.viewLayout().getVerticalOffsetForLineNumber(pos.lineNumber, false);
+        }
+
+        fn restore(self: LowerScrollAnchor) void {
+            const delta = topForLine(self.editor, self.line) - self.top;
+            _ = self.editor.setScrollTop(@intFromFloat(@max(0, @as(f64, @floatFromInt(self.scroll_top)) + delta)));
+        }
+    };
+
     pub fn dispatchDrag(self: *HideUnchangedRegionsFeature, event: *ui.MouseEvent) bool {
         const drag = if (self.drag) |*value| value else return false;
         const start = drag.start_y orelse return false;
         const r = drag.binding.region();
+        var anchor: ?LowerScrollAnchor = null;
         if (event.kind == .move) {
             const delta = @as(i64, @intCast(event.y)) - @as(i64, @intCast(start));
             if (delta != 0) drag.moved = true;
             const initial: i64 = @intCast(drag.initial_count);
             const value: usize = @intCast(@max(0, initial + if (drag.top) delta else -delta));
-            if (drag.top) r.setState(value, r.visible_line_count_bottom) else r.setState(r.visible_line_count_top, value);
+            if (drag.top) {
+                const next = @min(value, r.getMaxVisibleLineCountTop());
+                if (next == r.visible_line_count_top) return true;
+                r.setState(next, r.visible_line_count_bottom);
+            } else {
+                const next = @min(value, r.getMaxVisibleLineCountBottom());
+                if (next == r.visible_line_count_bottom) return true;
+                anchor = LowerScrollAnchor.capture(drag.binding);
+                r.setState(r.visible_line_count_top, next);
+            }
         } else if (event.kind == .up) {
             if (!drag.moved) {
-                if (drag.top) r.showMoreAbove(self.options.hide_unchanged_regions_reveal_line_count) else r.showMoreBelow(self.options.hide_unchanged_regions_reveal_line_count);
+                if (self.options.variant == .compact and r.getHiddenModifiedRange().isEmpty()) {
+                    r.collapseAll();
+                } else if (drag.top) {
+                    r.showMoreAbove(self.options.hide_unchanged_regions_reveal_line_count);
+                } else {
+                    anchor = LowerScrollAnchor.capture(drag.binding);
+                    r.showMoreBelow(self.options.hide_unchanged_regions_reveal_line_count);
+                }
             }
             r.is_dragged = null;
             self.drag = null;
         } else return true;
         self.model.notifyUnchangedRegions() catch |err| self.modified.editor.setMessage("unchanged regions: {s}", .{@errorName(err)});
+        if (anchor) |value| value.restore();
         return true;
     }
 
@@ -195,6 +274,7 @@ pub const HideUnchangedRegionsFeature = struct {
     pub fn deinit(self: *HideUnchangedRegionsFeature) void {
         if (!self.initialized) return;
         self.initialized = false;
+        self.drag = null;
         if (self.subscription) |id| self.model.on_did_change_unchanged_regions.unlisten(id);
         self.alignment.beginBatch();
         defer self.alignment.endBatch();
@@ -211,7 +291,11 @@ pub const HideUnchangedRegionsFeature = struct {
     pub fn updateOptions(self: *HideUnchangedRegionsFeature, options: Options) !void {
         const changed = self.options.variant != options.variant or self.options.compact_mode != options.compact_mode;
         self.options = options;
-        if (changed) try self.apply();
+        if (changed) {
+            if (self.drag) |drag| drag.binding.region().is_dragged = null;
+            self.drag = null;
+            try self.apply();
+        }
     }
 
     fn removeZones(pane: *Pane, accessor: browser.IViewZoneChangeAccessor) anyerror!void {
@@ -221,8 +305,21 @@ pub const HideUnchangedRegionsFeature = struct {
         }
     }
 
-    fn onModelChanged(_: void, self: *HideUnchangedRegionsFeature) anyerror!void {
-        try self.apply();
+    fn onModelChanged(change: vm.UnchangedRegionsChange, self: *HideUnchangedRegionsFeature) anyerror!void {
+        if (change == .replaced) {
+            // The upstream derivedDisposable owns each region's gesture
+            // listeners. A new collection disposes the old bindings even
+            // when it contains the same number of ranges.
+            self.drag = null;
+            self.alignment.beginBatch();
+            defer self.alignment.endBatch();
+            for ([_]*Pane{ &self.original, &self.modified }) |pane| {
+                try pane.zones.changeViewZones(pane, removeZones);
+                self.allocator.free(pane.bindings);
+                pane.bindings = &.{};
+            }
+            try self.apply();
+        } else try self.apply();
     }
 
     fn onCursorStateChanged(context: *anyopaque, event: *const events.ViewCursorStateChangedEvent) bool {
@@ -239,7 +336,7 @@ pub const HideUnchangedRegionsFeature = struct {
     }
 
     fn regionCount(self: *HideUnchangedRegionsFeature) usize {
-        const regions = self.model.unchanged_regions;
+        const regions = self.model.unchangedRegions();
         if (regions.len == 1 and regions[0].modified_line_number == 1 and regions[0].line_count == self.modified.editor.model.getLineCount()) return 0;
         return regions.len;
     }
@@ -261,7 +358,7 @@ pub const HideUnchangedRegionsFeature = struct {
             }
             var hidden: std.ArrayList(Range) = .empty;
             defer hidden.deinit(self.allocator);
-            for (self.model.unchanged_regions[0..count]) |r| {
+            for (self.model.unchangedRegions()[0..count]) |r| {
                 const range = if (pane.original) r.getHiddenOriginalRange() else r.getHiddenModifiedRange();
                 if (range.toInclusiveRange()) |inclusive| try hidden.append(self.allocator, inclusive);
             }

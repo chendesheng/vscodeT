@@ -144,6 +144,7 @@ Rules:
   | `scm.css` | `0x00b0` | commit input and split action button, Graph labels and badges |
   | Workbench `style.css` | `0x00c0` | main container, platform and modal-dialog visibility classes |
   | Workbench `part.css` | `0x00d0` | part containers, main window part names and position classes |
+  | Diff editor `style.css` | `0x00e0` | unchanged-region row, drag controls, center label, compact placeholder and breadcrumbs |
 
 - The editor registers every sheet once in `View.init` through
   `editorCss.register(document)`. `Document.clear()` preserves them.

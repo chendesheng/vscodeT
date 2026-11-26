@@ -60,6 +60,7 @@ pub const DiffState = struct {
 };
 
 pub const RevealPreference = enum { from_closer_side, from_top, from_bottom };
+pub const UnchangedRegionsChange = enum { replaced, visibility };
 
 /// Port of UnchangedRegion in diffEditorViewModel.ts. The line ranges are
 /// in the two real model coordinate systems, not the aligned display rows.
@@ -204,11 +205,12 @@ pub const DiffEditorViewModel = struct {
     provider: doc_diff.LineDiffProvider,
     state: ?DiffState = null,
     on_did_change: Emitter(void),
-    unchanged_regions: []UnchangedRegion = &.{},
+    tracked_regions: []UnchangedRegion = &.{},
+    hide_unchanged_regions: bool = false,
     original_region_ids: []u64 = &.{},
     modified_region_ids: []u64 = &.{},
     region_track_options: model_mod.ModelDecorationOptions = model_mod.ModelDecorationOptions.init("unchanged", .AlwaysGrowsWhenTypingAtEdges),
-    on_did_change_unchanged_regions: Emitter(void),
+    on_did_change_unchanged_regions: Emitter(UnchangedRegionsChange),
     on_did_change_active_move: Emitter(void),
     moved_text_to_compare: ?usize = null,
     active_moved_text_from_cursor: ?usize = null,
@@ -235,7 +237,7 @@ pub const DiffEditorViewModel = struct {
             .options = options,
             .provider = doc_diff.LineDiffProvider.init(options.diff_algorithm),
             .on_did_change = Emitter(void).init(allocator),
-            .on_did_change_unchanged_regions = Emitter(void).init(allocator),
+            .on_did_change_unchanged_regions = Emitter(UnchangedRegionsChange).init(allocator),
             .on_did_change_active_move = Emitter(void).init(allocator),
         };
     }
@@ -249,7 +251,7 @@ pub const DiffEditorViewModel = struct {
         self.on_did_change_unchanged_regions.deinit();
         self.on_did_change_active_move.deinit();
         self.clearRegionDecorations();
-        self.allocator.free(self.unchanged_regions);
+        self.allocator.free(self.tracked_regions);
         self.* = undefined;
     }
 
@@ -345,6 +347,7 @@ pub const DiffEditorViewModel = struct {
         std.mem.swap(*doc_diff.TextModel, &self.model.original, &self.model.modified);
         std.mem.swap(?usize, &self.original_content_listener, &self.modified_content_listener);
         std.mem.swap([]u64, &self.original_region_ids, &self.modified_region_ids);
+        for (self.tracked_regions) |*region| std.mem.swap(usize, &region.original_line_number, &region.modified_line_number);
     }
 
     pub fn compute(self: *DiffEditorViewModel) !void {
@@ -416,17 +419,25 @@ pub const DiffEditorViewModel = struct {
         self.on_did_change_active_move.fire({}) catch {};
     }
 
+    pub fn unchangedRegions(self: *DiffEditorViewModel) []UnchangedRegion {
+        return if (self.hide_unchanged_regions) self.tracked_regions else &.{};
+    }
+
     pub fn initializeUnchangedRegions(self: *DiffEditorViewModel, enabled: bool, minimum: usize, context: usize) !void {
         const state = self.stateRef() orelse return;
         const changes = try self.allocator.alloc(range_mapping.LineRangeMapping, state.mappings.len);
         defer self.allocator.free(changes);
         for (state.mappings, changes) |mapping, *change| change.* = mapping.line_range_mapping.toLineRangeMapping();
-        const regions = if (enabled)
-            try UnchangedRegion.fromDiffs(self.allocator, changes, self.model.original.getLineCount(), self.model.modified.getLineCount(), minimum, context)
-        else
-            try self.allocator.alloc(UnchangedRegion, 0);
-        errdefer self.allocator.free(regions);
-        const visible = if (self.unchanged_regions.len > 0) try self.previousVisibleRegions() else null;
+        // The upstream model tracks regions even while the option is off;
+        // only its public unchangedRegions projection becomes empty.
+        const was_enabled = self.hide_unchanged_regions;
+        if (was_enabled and !enabled) {
+            for (self.tracked_regions) |*region| region.collapseAll();
+        }
+        self.hide_unchanged_regions = enabled;
+        const regions = try UnchangedRegion.fromDiffs(self.allocator, changes, self.model.original.getLineCount(), self.model.modified.getLineCount(), minimum, context);
+        defer self.allocator.free(regions);
+        const visible = if (self.tracked_regions.len > 0) try self.previousVisibleRegions() else null;
         defer if (visible) |ranges| self.allocator.free(ranges);
         var restored: std.ArrayList(UnchangedRegion) = .empty;
         defer restored.deinit(self.allocator);
@@ -443,19 +454,21 @@ pub const DiffEditorViewModel = struct {
             } else try restored.append(self.allocator, region.*);
         }
         const new_regions = try restored.toOwnedSlice(self.allocator);
-        errdefer self.allocator.free(new_regions);
-        try self.trackRegions(new_regions);
-        self.allocator.free(regions);
-        self.allocator.free(self.unchanged_regions);
-        self.unchanged_regions = new_regions;
-        self.on_did_change_unchanged_regions.fire({}) catch {};
+        self.trackRegions(new_regions) catch |err| {
+            self.allocator.free(new_regions);
+            return err;
+        };
+        self.allocator.free(self.tracked_regions);
+        self.tracked_regions = new_regions;
+        _ = try self.collapseTouchingUnchangedRanges();
+        if (enabled or was_enabled) try self.on_did_change_unchanged_regions.fire(.replaced);
     }
 
     fn previousVisibleRegions(self: *DiffEditorViewModel) ![]range_mapping.LineRangeMapping {
         var hidden: std.ArrayList(range_mapping.LineRangeMapping) = .empty;
         defer hidden.deinit(self.allocator);
         var previous: ?UnchangedRegion = null;
-        for (self.unchanged_regions, 0..) |old, index| {
+        for (self.tracked_regions, 0..) |old, index| {
             if (index >= self.original_region_ids.len or index >= self.modified_region_ids.len) continue;
             const original = LineRange.fromRangeInclusive(self.model.original.getDecorationRange(self.original_region_ids[index]) orelse continue);
             const modified = LineRange.fromRangeInclusive(self.model.modified.getDecorationRange(self.modified_region_ids[index]) orelse continue);
@@ -503,16 +516,87 @@ pub const DiffEditorViewModel = struct {
     }
 
     pub fn ensureLineVisible(self: *DiffEditorViewModel, original: bool, line: usize) bool {
-        for (self.unchanged_regions) |*region| {
+        return self.ensureLineVisibleWithPreference(original, line, .from_closer_side);
+    }
+
+    pub fn ensureLineVisibleWithPreference(self: *DiffEditorViewModel, original: bool, line: usize, preference: RevealPreference) bool {
+        if (self.stateRef()) |state| if (state.mappings.len == 0) return false;
+        for (self.tracked_regions) |*region| {
             const old = region.*;
-            if (original) region.showOriginalLine(line, .from_closer_side) else region.showModifiedLine(line, .from_closer_side);
+            if (original) region.showOriginalLine(line, preference) else region.showModifiedLine(line, preference);
             if (old.visible_line_count_top != region.visible_line_count_top or old.visible_line_count_bottom != region.visible_line_count_bottom) return true;
         }
         return false;
     }
 
+    /// Merge adjacent hidden ranges using their model-tracked coordinates.
+    /// A disclosure drag retains its own region until the gesture ends.
+    fn collapseTouchingUnchangedRanges(self: *DiffEditorViewModel) !bool {
+        if (self.tracked_regions.len < 2) return false;
+        for (self.tracked_regions) |region| if (region.is_dragged != null) return false;
+        var updated: std.ArrayList(UnchangedRegion) = .empty;
+        defer updated.deinit(self.allocator);
+        var changed = false;
+        for (self.tracked_regions, 0..) |old, index| {
+            if (index >= self.original_region_ids.len or index >= self.modified_region_ids.len) continue;
+            const original = LineRange.fromRangeInclusive(self.model.original.getDecorationRange(self.original_region_ids[index]) orelse continue);
+            const modified = LineRange.fromRangeInclusive(self.model.modified.getDecorationRange(self.modified_region_ids[index]) orelse continue);
+            var region: UnchangedRegion = .{ .original_line_number = original.startLineNumber, .modified_line_number = modified.startLineNumber, .line_count = original.length() };
+            region.setState(old.visible_line_count_top, old.visible_line_count_bottom);
+            if (updated.items.len > 0) {
+                const before = &updated.items[updated.items.len - 1];
+                if (before.getHiddenModifiedRange().endLineNumberExclusive == region.getHiddenModifiedRange().startLineNumber) {
+                    before.line_count += region.line_count;
+                    before.setState(before.visible_line_count_top, region.visible_line_count_bottom);
+                    changed = true;
+                    continue;
+                }
+            }
+            try updated.append(self.allocator, region);
+        }
+        if (!changed) return false;
+        const replacement = try updated.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(replacement);
+        try self.trackRegions(replacement);
+        self.allocator.free(self.tracked_regions);
+        self.tracked_regions = replacement;
+        return true;
+    }
+
     pub fn notifyUnchangedRegions(self: *DiffEditorViewModel) !void {
-        try self.on_did_change_unchanged_regions.fire({});
+        const replaced = try self.collapseTouchingUnchangedRanges();
+        if (self.hide_unchanged_regions) try self.on_did_change_unchanged_regions.fire(if (replaced) .replaced else .visibility);
+    }
+
+    pub const SerializedState = struct {
+        collapsedRegions: ?[]CollapsedRegion = null,
+        pub const CollapsedRegion = struct { range: [2]usize };
+
+        pub fn deinit(self: *SerializedState, allocator: Allocator) void {
+            if (self.collapsedRegions) |regions| allocator.free(regions);
+            self.collapsedRegions = null;
+        }
+    };
+
+    pub fn serializeState(self: *const DiffEditorViewModel, allocator: Allocator) !SerializedState {
+        const regions = try allocator.alloc(SerializedState.CollapsedRegion, self.tracked_regions.len);
+        for (self.tracked_regions, regions) |region, *entry| entry.* = .{ .range = region.getHiddenModifiedRange().serialize() };
+        return .{ .collapsedRegions = regions };
+    }
+
+    pub fn restoreSerializedState(self: *DiffEditorViewModel, serialized: SerializedState) !void {
+        const ranges = serialized.collapsedRegions orelse return;
+        for (self.tracked_regions) |*region| {
+            for (ranges) |entry| {
+                if (entry.range[0] > entry.range[1]) continue;
+                const range = LineRange.deserialize(entry.range);
+                if (region.modifiedUnchangedRange().intersect(range) != null) {
+                    region.setHiddenModifiedRange(range);
+                    break;
+                }
+            }
+        }
+        try self.notifyUnchangedRegions();
     }
 
     pub fn stateRef(self: *const DiffEditorViewModel) ?*const DiffState {
@@ -704,4 +788,29 @@ test "diffEditorViewModel: max column inner ranges are widened to the next line"
     // The widened range starts at the following line when it covered the whole
     // line up to its max column.
     try std.testing.expect(inner[0].originalRange.endColumn >= 1);
+}
+
+test "diffEditorViewModel: adjacent tracked hidden ranges merge after drag finishes" {
+    const allocator = std.testing.allocator;
+    const TestModel = @import("../../../test/common/port/testSupport.zig").TestModel;
+    var original = try TestModel.init(allocator, "a\nb\nc\nd\ne", "nullLanguage");
+    defer original.deinit();
+    var modified = try TestModel.init(allocator, "a\nb\nc\nd\ne", "nullLanguage");
+    defer modified.deinit();
+    var model = DiffEditorViewModel.init(allocator, original.model, modified.model, .{});
+    defer model.deinit();
+    model.hide_unchanged_regions = true;
+    model.tracked_regions = try allocator.dupe(UnchangedRegion, &.{
+        .{ .original_line_number = 1, .modified_line_number = 1, .line_count = 2, .is_dragged = .top },
+        .{ .original_line_number = 3, .modified_line_number = 3, .line_count = 3 },
+    });
+    try model.trackRegions(model.tracked_regions);
+    try model.notifyUnchangedRegions();
+    try std.testing.expectEqual(@as(usize, 2), model.unchangedRegions().len);
+    model.tracked_regions[0].is_dragged = null;
+    try model.notifyUnchangedRegions();
+    try std.testing.expectEqual(@as(usize, 1), model.unchangedRegions().len);
+    try std.testing.expectEqual(LineRange.ofLength(1, 5), model.unchangedRegions()[0].getHiddenModifiedRange());
+    try std.testing.expectEqual(@as(usize, 1), model.original_region_ids.len);
+    try std.testing.expectEqual(@as(usize, 1), model.modified_region_ids.len);
 }
