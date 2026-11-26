@@ -19,6 +19,7 @@ pub const HoverProviderResult = struct {
     provider: HoverProvider,
     hover: Hover,
     ordinal: usize,
+    registration_time: ?u64 = null,
 };
 
 pub const HoverResultListener = struct {
@@ -62,7 +63,7 @@ const HoverRequest = struct {
             if (result catch null) |hover| {
                 if (isValid(hover)) {
                     self.dispatching = true;
-                    self.listener.emit(self.listener.context, .{ .provider = slot.provider, .hover = hover, .ordinal = slot.ordinal });
+                    self.listener.emit(self.listener.context, .{ .provider = slot.provider, .hover = hover, .ordinal = slot.ordinal, .registration_time = slot.registration_time });
                     self.dispatching = false;
                 }
             }

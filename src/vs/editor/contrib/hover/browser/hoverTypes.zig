@@ -197,6 +197,14 @@ pub const IRenderedHoverPart = struct {
     ) anyerror!usize,
     /// Plain text equivalent for the accessible view.
     accessible_content: []const u8 = "",
+    can_increase_verbosity: bool = false,
+    can_decrease_verbosity: bool = false,
+};
+
+pub const HoverVerbosityAction = @import("../../../common/languages.zig").HoverVerbosityAction;
+pub const HoverVerbosityListener = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, IHoverPart, IHoverPart, bool) void,
 };
 
 /// Port of `IEditorHoverParticipant`, with the terminal rendering contract.
@@ -230,6 +238,8 @@ pub const IEditorHoverParticipant = struct {
         hover_parts: []const IHoverPart,
     ) anyerror![]const IRenderedHoverPart = null,
     get_accessible_content: ?*const fn (context: *anyopaque, hover_part: *const IHoverPart) []const u8 = null,
+    supports_verbosity: ?*const fn (*anyopaque, IHoverPart, HoverVerbosityAction) bool = null,
+    update_verbosity: ?*const fn (*anyopaque, IHoverPart, HoverVerbosityAction, bool, HoverVerbosityListener) anyerror!void = null,
     handle_resize: ?*const fn (context: *anyopaque) void = null,
     handle_hide: ?*const fn (context: *anyopaque) void = null,
     handle_contents_changed: ?*const fn (context: *anyopaque) void = null,

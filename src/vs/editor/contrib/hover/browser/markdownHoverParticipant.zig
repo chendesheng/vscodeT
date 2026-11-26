@@ -7,7 +7,6 @@
 //
 // Not ported, because the corresponding infrastructure does not exist in the
 // TUI (documented in `README.md` and `docs/terminal-ui.md`):
-//  * hover verbosity actions (they need the command/keybinding services),
 //  * the accessible view and screen-reader announcements,
 //  * images from markdown (no image protocol in the cell renderer).
 const std = @import("std");
@@ -23,7 +22,9 @@ const languages = @import("../../../common/languages.zig");
 const IMarkdownString = languages.IMarkdownString;
 const Hover = languages.Hover;
 const HoverProvider = languages.HoverProvider;
-const CancellationToken = @import("../../../../base/common/cancellation.zig").CancellationToken;
+const cancellation = @import("../../../../base/common/cancellation.zig");
+const CancellationToken = cancellation.CancellationToken;
+const Disposable = cancellation.IDisposable;
 
 const hoverTypes = @import("./hoverTypes.zig");
 const HoverAnchor = hoverTypes.HoverAnchor;
@@ -48,11 +49,19 @@ const long_tokenization_warning = "Tokenization is skipped for long lines for pe
 const rule_color = ui.Color{ .r = 90, .g = 90, .b = 90 };
 
 /// Port of `MarkdownHover`. The `IHoverPart`'s `data` points at this value.
+const HoverSource = struct {
+    provider: HoverProvider,
+    hover: Hover,
+    position: @import("../../../common/core/position.zig").Position,
+    registration_time: ?u64 = null,
+};
+
 const MarkdownHover = struct {
     range: Range,
     contents: []const IMarkdownString,
     ordinal: usize,
     is_before_content: bool,
+    source: ?HoverSource = null,
 };
 
 pub const MarkdownHoverParticipant = struct {
@@ -74,6 +83,7 @@ pub const MarkdownHoverParticipant = struct {
     rendered: []const IRenderedHoverPart = &.{},
     async_sink: ?@import("hoverOperation.zig").AsyncResultSink(IHoverPart) = null,
     async_anchor: Range = Range.init(1, 1, 1, 1),
+    ongoing_verbosity: std.ArrayList(*VerbosityRequest) = .empty,
 
     pub fn init(allocator: Allocator, model: *TextModel, providers: []const HoverProvider) MarkdownHoverParticipant {
         return initWithRegistry(allocator, model, providers, null);
@@ -95,6 +105,8 @@ pub const MarkdownHoverParticipant = struct {
     }
 
     pub fn deinit(self: *MarkdownHoverParticipant) void {
+        self.cancelVerbosity();
+        self.ongoing_verbosity.deinit(self.allocator);
         self.parts_arena.deinit();
         self.rendered_arena.deinit();
     }
@@ -110,6 +122,8 @@ pub const MarkdownHoverParticipant = struct {
             .render_hover_parts = renderHoverParts,
             .get_accessible_content = getAccessibleContent,
             .handle_hide = handleHide,
+            .supports_verbosity = supportsVerbosity,
+            .update_verbosity = updateVerbosity,
         };
     }
 
@@ -215,7 +229,7 @@ pub const MarkdownHoverParticipant = struct {
         const self: *MarkdownHoverParticipant = @ptrCast(@alignCast(context));
         const sink = self.async_sink orelse return;
         if (isEmptyHover(item.hover)) return;
-        const part = self.createMarkdownHoverFromHover(self.parts_arena.allocator(), item.hover.range orelse self.async_anchor, item.hover, false, item.ordinal) catch return;
+        const part = self.createMarkdownHoverFromHover(self.parts_arena.allocator(), item.hover.range orelse self.async_anchor, item, self.async_anchor.getStartPosition(), false) catch return;
         sink.emit(sink.context, &.{part});
     }
 
@@ -272,9 +286,9 @@ pub const MarkdownHoverParticipant = struct {
             try result.append(try self.createMarkdownHoverFromHover(
                 self.parts_arena.allocator(),
                 range,
-                item.hover,
+                item,
+                position,
                 false,
-                item.ordinal,
             ));
         }
         return try result.toOwnedSlice();
@@ -312,10 +326,11 @@ pub const MarkdownHoverParticipant = struct {
         self: *MarkdownHoverParticipant,
         allocator: Allocator,
         range: Range,
-        hover: Hover,
+        item: getHover.HoverProviderResult,
+        position: @import("../../../common/core/position.zig").Position,
         is_before_content: bool,
-        ordinal: usize,
     ) !IHoverPart {
+        const hover = item.hover;
         const markdown_hover = try allocator.create(MarkdownHover);
         const markdown_strings = try allocator.alloc(IMarkdownString, hover.contents.len);
         for (hover.contents, 0..) |content, index| {
@@ -329,9 +344,11 @@ pub const MarkdownHoverParticipant = struct {
         markdown_hover.* = .{
             .range = range,
             .contents = markdown_strings,
-            .ordinal = ordinal,
+            .ordinal = item.ordinal,
             .is_before_content = is_before_content,
+            .source = .{ .provider = item.provider, .hover = hover, .position = position, .registration_time = item.registration_time },
         };
+        markdown_hover.source.?.hover.contents = markdown_strings;
         return .{
             .owner = self,
             .range = range,
@@ -357,6 +374,19 @@ pub const MarkdownHoverParticipant = struct {
     ) ![]const IRenderedHoverPart {
         const self: *MarkdownHoverParticipant = @ptrCast(@alignCast(context));
         _ = render_context;
+        // A newly adopted or computed result disposes obsolete per-part
+        // verbosity work, but keeps a request for a part that survived filtering.
+        var request_index = self.ongoing_verbosity.items.len;
+        while (request_index > 0) {
+            request_index -= 1;
+            const request = self.ongoing_verbosity.items[request_index];
+            var retained = false;
+            for (hover_parts) |part| if (part.data == request.old_part.data and part.owner == request.old_part.owner) {
+                retained = true;
+                break;
+            };
+            if (!retained) request.cancel();
+        }
         _ = self.rendered_arena.reset(.retain_capacity);
         const allocator = self.rendered_arena.allocator();
 
@@ -391,14 +421,136 @@ pub const MarkdownHoverParticipant = struct {
                 .height = heightRenderedMarkdown,
                 .build = buildRenderedMarkdown,
                 .accessible_content = state.accessible,
+                .can_increase_verbosity = supportsVerbosity(self, part, .Increase),
+                .can_decrease_verbosity = supportsVerbosity(self, part, .Decrease),
             });
         }
         self.rendered = try rendered.toOwnedSlice();
         return self.rendered;
     }
 
+    fn sourceIsRegistered(self: *MarkdownHoverParticipant, source: HoverSource) bool {
+        if (source.registration_time) |identity| return if (self.registry) |registry| registry.hasRegistration(identity) else false;
+        return true;
+    }
+
+    fn supportsVerbosity(context: *anyopaque, part: IHoverPart, action: hoverTypes.HoverVerbosityAction) bool {
+        const self: *MarkdownHoverParticipant = @ptrCast(@alignCast(context));
+        const payload: *const MarkdownHover = @ptrCast(@alignCast(part.data orelse return false));
+        const source = payload.source orelse return false;
+        if (!self.sourceIsRegistered(source)) return false;
+        return switch (action) {
+            .Increase => source.hover.can_increase_verbosity orelse false,
+            .Decrease => source.hover.can_decrease_verbosity orelse false,
+        };
+    }
+
+    const VerbosityRequest = struct {
+        owner: *MarkdownHoverParticipant,
+        arena: std.heap.ArenaAllocator,
+        source: HoverSource,
+        old_part: IHoverPart,
+        delta: i32,
+        token: cancellation.CancellationTokenSource,
+        listener: hoverTypes.HoverVerbosityListener,
+        focus: bool,
+        pending: ?Disposable = null,
+        starting: bool = true,
+        completed: bool = false,
+        canceled: bool = false,
+
+        fn ready(context: *anyopaque, result: anyerror!?Hover) void {
+            const self: *VerbosityRequest = @ptrCast(@alignCast(context));
+            if (self.completed or self.canceled) return;
+            self.completed = true;
+            self.pending = null;
+            self.unlink();
+            if (result catch null) |hover| {
+                const payload: *const MarkdownHover = @ptrCast(@alignCast(self.old_part.data.?));
+                if (self.owner.createMarkdownHoverFromHover(self.owner.parts_arena.allocator(), payload.range, .{ .provider = self.source.provider, .hover = hover, .ordinal = payload.ordinal, .registration_time = self.source.registration_time }, self.source.position, payload.is_before_content)) |updated| {
+                    self.listener.complete(self.listener.context, self.old_part, updated, self.focus);
+                } else |_| {}
+            }
+            if (!self.starting) self.dispose();
+        }
+
+        fn start(self: *VerbosityRequest) void {
+            const source = self.source;
+            const ctx: languages.HoverContext = .{ .verbosity_request = .{ .verbosity_delta = self.delta, .previous_hover = source.hover } };
+            const token = self.token.token() catch {
+                self.dispose();
+                return;
+            };
+            if (source.provider.request_hover) |request| {
+                const pending = request(source.provider.context, self.arena.allocator(), self.owner.model, source.position, token, &ctx, .{ .context = self, .complete = ready }) catch |err| blk: {
+                    ready(self, err);
+                    break :blk null;
+                };
+                if (self.canceled) {
+                    if (pending) |handle| handle.dispose();
+                } else if (!self.completed) {
+                    self.pending = pending;
+                    if (pending == null) ready(self, null);
+                }
+            } else ready(self, source.provider.provide_hover(source.provider.context, self.owner.model, source.position, token, &ctx));
+            self.starting = false;
+            if (self.completed or self.canceled) self.dispose();
+        }
+
+        fn cancel(self: *VerbosityRequest) void {
+            self.canceled = true;
+            self.unlink();
+            self.token.cancel();
+            if (self.pending) |pending| pending.dispose();
+            self.pending = null;
+            if (!self.starting) self.dispose();
+        }
+
+        fn unlink(self: *VerbosityRequest) void {
+            const owner = self.owner;
+            for (owner.ongoing_verbosity.items, 0..) |candidate, index| {
+                if (candidate != self) continue;
+                _ = owner.ongoing_verbosity.swapRemove(index);
+                break;
+            }
+        }
+
+        fn dispose(self: *VerbosityRequest) void {
+            self.unlink();
+            self.token.deinit();
+            self.arena.deinit();
+            self.owner.allocator.destroy(self);
+        }
+    };
+
+    fn updateVerbosity(context: *anyopaque, part: IHoverPart, action: hoverTypes.HoverVerbosityAction, focus: bool, listener: hoverTypes.HoverVerbosityListener) !void {
+        const self: *MarkdownHoverParticipant = @ptrCast(@alignCast(context));
+        if (!supportsVerbosity(context, part, action)) return;
+        const payload: *const MarkdownHover = @ptrCast(@alignCast(part.data.?));
+        const source = payload.source.?;
+        var delta: i32 = if (action == .Increase) 1 else -1;
+        for (self.ongoing_verbosity.items) |request| {
+            if (request.source.provider.context != source.provider.context) continue;
+            delta += request.delta;
+            request.cancel();
+            break;
+        }
+        const request = try self.allocator.create(VerbosityRequest);
+        errdefer self.allocator.destroy(request);
+        var token = try cancellation.CancellationTokenSource.init(self.allocator);
+        errdefer token.deinit();
+        request.* = .{ .owner = self, .source = source, .old_part = part, .delta = delta, .token = token, .arena = .init(self.allocator), .focus = focus, .listener = listener };
+        try self.ongoing_verbosity.append(self.allocator, request);
+        request.start();
+    }
+
+    fn cancelVerbosity(self: *MarkdownHoverParticipant) void {
+        while (self.ongoing_verbosity.items.len > 0) self.ongoing_verbosity.items[self.ongoing_verbosity.items.len - 1].cancel();
+    }
+
     fn handleHide(context: *anyopaque) void {
         const self: *MarkdownHoverParticipant = @ptrCast(@alignCast(context));
+        self.cancelVerbosity();
         _ = self.parts_arena.reset(.retain_capacity);
         _ = self.rendered_arena.reset(.retain_capacity);
         self.rendered = &.{};
