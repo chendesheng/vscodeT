@@ -171,15 +171,16 @@ pub const Execution = struct {
         try self.values.ensureTotalCapacity(a, result.lenses.items.len);
         self.slots = try a.alloc(ResolveSlot, result.lenses.items.len);
         self.starting = true;
-        var budget = self.resolve_count;
+        const resolve_all = self.resolve_count == null;
+        var budget = self.resolve_count orelse 0;
         for (result.lenses.items, self.slots) |item, *slot| {
             slot.* = .{ .owner = self, .original = item.symbol, .done = true };
-            if (budget == null or item.symbol.command != null) {
+            if (resolve_all or item.symbol.command != null) {
                 self.values.appendAssumeCapacity(item.symbol);
                 continue;
             }
-            const can_resolve = budget.? > 0;
-            budget.? -|= 1;
+            const can_resolve = budget > 0;
+            budget -|= 1;
             if (!can_resolve or (item.provider.resolve_code_lens == null and item.provider.request_resolve_code_lens == null)) continue;
             slot.done = false;
             self.remaining += 1;

@@ -144,13 +144,13 @@ test "CodeLens: execute provider returns commands first and resolves only the re
     defer text.deinit();
     const Resolver = struct {
         calls: usize = 0,
-        fn provide(_: *anyopaque, _: std.mem.Allocator, _: *TextModel, _: CancellationToken) !?languages.CodeLensList {
-            return .{ .lenses = &.{
+        fn provide(_: *anyopaque, arena: std.mem.Allocator, _: *TextModel, _: CancellationToken) !?languages.CodeLensList {
+            return .{ .lenses = try arena.dupe(languages.CodeLens, &.{
                 .{ .range = Range.init(1, 1, 1, 1) },
                 lens(2, 1, "already resolved"),
                 .{ .range = Range.init(3, 1, 3, 1) },
                 .{ .range = Range.init(4, 1, 4, 1) },
-            } };
+            }) };
         }
         fn resolve(context: *anyopaque, _: std.mem.Allocator, _: *TextModel, symbol: languages.CodeLens, _: CancellationToken) !?languages.CodeLens {
             const self: *@This() = @ptrCast(@alignCast(context));
