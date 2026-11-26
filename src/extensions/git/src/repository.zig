@@ -441,20 +441,25 @@ pub const Repository = struct {
     /// The Git resource's status determines its original and modified
     /// resources. Conflict resources open the file instead of a snapshot diff.
     pub fn diffRefsForResource(self: *Repository, resource: *const GitScmResource) ?struct { left: git_mod.DiffRef, right: git_mod.DiffRef } {
+        _ = self;
         return switch (resource.kind) {
             .merge => null,
             .untracked => .{ .left = .empty, .right = .working },
             .index => .{ .left = .head, .right = .index },
-            .working => blk: {
-                // A partially staged file compares index -> working;
-                // otherwise the original is HEAD.
-                for (self.repository.stateRef().index_changes) |change| {
-                    if (std.mem.eql(u8, change.path, resource.relative_path))
-                        break :blk .{ .left = .index, .right = .working };
-                }
-                break :blk .{ .left = .head, .right = .working };
-            },
+            // The working-tree modified resource has the stable Git URI
+            // with ref "~" (the index when staged, otherwise HEAD). The
+            // index contains HEAD's blob when the file is not staged, so it
+            // is also the correct initial content for that same resource.
+            .working => .{ .left = if (resource.status == 'M') .index else .head, .right = .working },
         };
+    }
+
+    pub fn stage(self: *Repository, path: []const u8, contents: []const u8, encoding: @import("../../../vs/workbench/services/textfile/common/encoding.zig").Encoding) !void {
+        const codec = @import("../../../vs/workbench/services/textfile/common/encoding.zig");
+        const relative = self.relativePath(path) orelse return error.OutsideRepository;
+        const bytes = try codec.encode(self.allocator, contents, encoding);
+        defer self.allocator.free(bytes);
+        try (self.git orelse return error.NoGit).stage(self.root, relative, bytes);
     }
 
     pub fn count(self: *const Repository) usize {

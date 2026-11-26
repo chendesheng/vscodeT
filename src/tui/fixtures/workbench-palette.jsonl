@@ -144,6 +144,8 @@
 ["workbench.scm.action.setSortKey.status","Sort Changes by Status","Source Control","",true,false,false,true,true]
 ["git.openChange","Open Change","Source Control","",true,false,false,true,true]
 ["git.openFile","Open File","Source Control","",true,false,false,true,true]
+["git.diff.stageHunk","Stage Block","Git","",true,false,true,false,false]
+["git.diff.stageSelection","Stage Selection","Git","",true,false,true,false,false]
 ["workbench.action.compareEditor.openSide","Open Active Diff Side","","",true,false,false,true,true]
 ["workbench.action.compareEditor.nextChange","Go to Next Change","","",true,false,false,true,true]
 ["workbench.action.compareEditor.previousChange","Go to Previous Change","","",true,false,false,true,true]

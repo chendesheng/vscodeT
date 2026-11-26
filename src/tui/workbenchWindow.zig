@@ -1514,6 +1514,7 @@ pub const TerminalWorkbench = struct {
             .git_refresh = &self.git_commands.refreshActions(),
             .git_remote = &self.git_commands.remoteActions(),
             .git_open = &self.git_commands.openActions(),
+            .git_diff = &self.git_commands.diffActions(),
             .markdown = &self.markdown_previews.actionDescriptors(),
         });
         try self.builtin_host.registerPortActions();
@@ -2681,6 +2682,7 @@ pub const TerminalWorkbench = struct {
         const provider = (try self.git_model.openRepository(root, .{
             .io = self.io,
             .configuration = self.configuration,
+            .context_keys = if (self.context_keys) |keys| keys.interface() else null,
             .window = &self.window_events,
             .host_service = self.host_api,
             .host = .{ .context = self, .open_change = providerOpenChange, .refresh = scmRefresh },

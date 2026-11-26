@@ -299,6 +299,15 @@ const QuickPick = @import("../../../vs/platform/quickinput/browser/quickInput.zi
 const QuickPickItem = @import("../../../vs/platform/quickinput/common/quickInput.zig").QuickPickItem;
 const Model = @import("model.zig").Model;
 
+const HunkContext = @import("../../../vs/editor/browser/widget/diffEditor/features/gutterFeature.zig").DiffEditorSelectionHunkToolbarContext;
+const CommandArgument = @import("../../../vs/platform/commands/common/commands.zig").CommandArgument;
+const Expr = @import("../../../vs/platform/contextkey/common/contextkey.zig").Expr;
+const stageable_diff = Expr{ .Regex = .{ .key = "diffEditorOriginalUri", .source = "^git:.*%22ref%22%3A%22~%22%7D$", .flags = "" } };
+const git_enabled = Expr{ .Defined = "config.git.enabled" };
+const git_available = Expr{ .Not = "git.missing" };
+const git_repository_open = Expr{ .NotEquals = .{ .key = "gitOpenRepositoryCount", .value = .{ .string = "0" } } };
+const stageable_diff_palette = Expr{ .And = @constCast(&[_]*const Expr{ &git_enabled, &git_available, &git_repository_open, &stageable_diff }) };
+
 pub const CommandContribution = struct {
     allocator: Allocator,
     model: *Model,
@@ -474,6 +483,51 @@ pub const CommandContribution = struct {
     pub fn openRefDiff(self: *CommandContribution, path: []const u8, original_path: ?[]const u8, left: ?[]const u8, right: []const u8, left_label: []const u8, right_label: []const u8) !void {
         const source = try self.model.revisionSnapshotSource(self.snapshot_io, path, original_path, left, right);
         try self.host.open_snapshot(self.host.context, path, source, left_label, right_label);
+    }
+
+    fn diffStageHunkOrSelection(context: *anyopaque, _: ServicesAccessor, argument: CommandArgument) !void {
+        const self: *CommandContribution = @ptrCast(@alignCast(context));
+        const changes = argument.as(HunkContext) orelse return error.InvalidArgument;
+        if (!std.mem.eql(u8, changes.modifiedUri.scheme, "file")) return;
+        const provider = self.model.repository orelse return error.NoRepository;
+        var temporary = std.heap.ArenaAllocator.init(self.allocator);
+        defer temporary.deinit();
+        const path = try changes.modifiedUri.path.toRawMaybeAlloc(temporary.allocator());
+        const encoding = @import("../../../vs/workbench/services/textfile/common/encoding.zig").Encoding;
+        try provider.stage(path, changes.originalWithModifiedChanges, std.meta.stringToEnum(encoding, changes.modifiedEncoding) orelse return error.InvalidEncoding);
+        self.host.refresh_resources(self.host.context);
+        // Resolve ref "~" again and refresh the same open diff input. A
+        // live modified document is retained by the editor service.
+        try self.openDiff(path, .index, .working);
+    }
+
+    fn diffStageHunkAtCursor(_: *anyopaque, accessor: ServicesAccessor) !void {
+        const service = @import("../../../vs/editor/browser/services/codeEditorService.zig");
+        const diff = (try accessor.get(service.code_editor_service_id)).getFocusedDiffEditor() orelse return;
+        try diff.runGutterHunk("git.diff.stageHunk");
+    }
+
+    fn diffStageWithoutContext(_: *anyopaque, _: ServicesAccessor) !void {}
+
+    pub fn diffActions(self: *CommandContribution) [2]platform_actions.Action2 {
+        return .{
+            .{
+                .command = .{ .id = "git.diff.stageHunk", .title = "Stage Block", .category = "Git", .icon = "plus", .precondition = &stageable_diff_palette },
+                .f1 = true,
+                .menus = &.{.{ .id = platform_actions.menu_ids.DiffEditorHunkToolbar, .group = "primary", .order = 10, .when = &stageable_diff, .omit_precondition = true }},
+                .context = self,
+                .run_fn = diffStageHunkAtCursor,
+                .run_with_argument_fn = diffStageHunkOrSelection,
+            },
+            .{
+                .command = .{ .id = "git.diff.stageSelection", .title = "Stage Selection", .category = "Git", .icon = "plus", .precondition = &stageable_diff_palette },
+                .f1 = true,
+                .menus = &.{.{ .id = platform_actions.menu_ids.DiffEditorSelectionToolbar, .group = "primary", .order = 10, .when = &stageable_diff, .omit_precondition = true }},
+                .context = self,
+                .run_fn = diffStageWithoutContext,
+                .run_with_argument_fn = diffStageHunkOrSelection,
+            },
+        };
     }
 
     pub fn runRemoteAction(self: *CommandContribution, action: git_mod.Git.RemoteAction, remote: ?[]const u8) !void {

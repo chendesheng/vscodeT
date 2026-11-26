@@ -60,6 +60,7 @@ pub const ActionContributions = struct {
     git_refresh: []const Action2,
     git_remote: []const Action2,
     git_open: []const Action2,
+    git_diff: []const Action2,
     markdown: []const Action2,
 };
 
@@ -117,6 +118,7 @@ pub fn registerActions(commands: *CommandRegistry, instantiation: *Instantiation
     for (contributions.git_remote) |action| try commands.registerAction(instantiation, action);
     for (scm_contribution.view_actions) |action| try commands.registerAction(instantiation, action);
     for (contributions.git_open) |action| try commands.registerAction(instantiation, action);
+    for (contributions.git_diff) |action| try commands.registerAction(instantiation, action);
     for (@import("browser/parts/editor/diffEditorCommands.zig").diff_actions) |action| try commands.registerAction(instantiation, action);
     for (@import("../editor/browser/widget/diffEditor/commands.zig").diff_actions) |action| try commands.registerAction(instantiation, action);
     try @import("browser/parts/editor/editor.contribution.zig").registerDiffEditorTitle(&commands.menus);

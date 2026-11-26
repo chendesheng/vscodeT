@@ -111,6 +111,8 @@ pub const Model = struct {
     git_service: ?*GitService = null,
     repository: ?*Repository = null,
     git_root: ?[]u8 = null,
+    repository_count_key: ?@import("../../../vs/platform/contextkey/common/contextkey.zig").IContextKey = null,
+    git_missing_key: ?@import("../../../vs/platform/contextkey/common/contextkey.zig").IContextKey = null,
 
     pub fn init(allocator: Allocator) Model {
         return .{ .allocator = allocator };
@@ -119,6 +121,7 @@ pub const Model = struct {
     pub const OpenOptions = struct {
         io: std.Io,
         configuration: ?*ConfigurationService = null,
+        context_keys: ?@import("../../../vs/platform/contextkey/common/contextkey.zig").IContextKeyService = null,
         window: *WindowQueue,
         host_service: ?@import("../../../vs/workbench/services/host/browser/host.zig").IHostService = null,
         host: repository_mod.Host,
@@ -128,6 +131,10 @@ pub const Model = struct {
 
     pub fn openRepository(self: *Model, repo_path: []const u8, open_options: OpenOptions) !?*Repository {
         if (self.git != null) return self.repository;
+        if (open_options.context_keys) |keys| {
+            if (self.repository_count_key == null) self.repository_count_key = try keys.createKey("gitOpenRepositoryCount", .{ .string = "0" });
+            if (self.git_missing_key == null) self.git_missing_key = try keys.createKey("git.missing", .{ .boolean = false });
+        }
         if (open_options.configuration) |configuration| {
             if (!configuration.getBool("git.enabled", true)) return null;
         }
@@ -158,8 +165,14 @@ pub const Model = struct {
         const cli = Git.init(self.allocator, options) catch return null;
         self.git = cli;
         errdefer self.deinit();
-        if (cli.isDisabled()) return null;
-        const opened = (cli.openRepository(repo_path) catch null) orelse return null;
+        if (cli.isDisabled()) {
+            if (self.git_missing_key) |key| key.set(.{ .boolean = true });
+            return null;
+        }
+        const opened = (cli.openRepository(repo_path) catch null) orelse {
+            if (cli.isDisabled()) if (self.git_missing_key) |key| key.set(.{ .boolean = true });
+            return null;
+        };
         const concrete = cli.repositoryForRoot(opened.root_path) orelse return null;
 
         const service = try self.allocator.create(GitService);
@@ -177,6 +190,7 @@ pub const Model = struct {
         self.repository = provider;
         if (open_options.host_service) |host| try provider.attachHostService(host);
         try provider.setConfiguration(open_options.configuration);
+        if (self.repository_count_key) |key| key.set(.{ .string = "1" });
         return provider;
     }
 
@@ -291,6 +305,8 @@ pub const Model = struct {
     /// Reset makes the single-workspace extension reusable after a workspace
     /// or git.enabled change.
     pub fn deinit(self: *Model) void {
+        if (self.repository_count_key) |key| key.reset();
+        if (self.git_missing_key) |key| key.reset();
         if (self.repository) |provider| provider.destroy();
         if (self.git_service) |service| {
             service.deinit();

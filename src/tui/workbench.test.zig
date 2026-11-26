@@ -8096,6 +8096,94 @@ test "Workbench: closing the active tab detaches the outline editor handler" {
     try std.testing.expectEqual(workbench.activeTab().?.editor, view.editor.?);
 }
 
+test "Workbench: git scm integration stages selected inner changes through the diff gutter" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+    if (!try runGitTest(allocator, root, &.{"init"})) return error.SkipZigTest;
+    _ = try runGitTest(allocator, root, &.{ "config", "core.autocrlf", "false" });
+    _ = try runGitTest(allocator, root, &.{ "config", "user.name", "Test User" });
+    _ = try runGitTest(allocator, root, &.{ "config", "user.email", "test@example.com" });
+    const original = "alpha\nabc old def stale\nunchanged1\nunchanged2\nunchanged3\nlast old\n";
+    const modified = "alpha\nabc new def fresh\nunchanged1\nunchanged2\nunchanged3\nlast NEW\n";
+    const partial = "alpha\nabc new def stale\nunchanged1\nunchanged2\nunchanged3\nlast old\n";
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = original });
+    if (!try runGitTest(allocator, root, &.{ "add", "a.txt" })) return error.SkipZigTest;
+    if (!try runGitTest(allocator, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "initial" })) return error.SkipZigTest;
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = modified });
+    const path = try std.fs.path.join(allocator, &.{ root, "a.txt" });
+    defer allocator.free(path);
+    const window = try TestWindow.init(allocator, io, &.{path}, 100, 24);
+    defer window.deinit();
+    const workbench = window.workbench;
+    const settings = try std.fs.path.join(allocator, &.{ root, ".git", "test-settings.json" });
+    defer allocator.free(settings);
+    try workbench.setUserSettingsPaths(&.{settings});
+    try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
+    try workbench.initGit();
+    const provider = workbench.git_model.repository.?;
+    const resource = provider.groups[2].resources.items[0];
+    try workbench.scm.changes.?.host.open_change(workbench.scm.changes.?.host.context, &resource.iface);
+    try pumpDiffForTests(workbench);
+    const tab = workbench.activeTab().?;
+    const widget = tab.diff.?.widget;
+    try std.testing.expect(widget.gutter_toolbar.hasActions());
+    try std.testing.expect(widget.paneWidths().toolbar > 0);
+    try std.testing.expect(std.mem.endsWith(u8, widget.gutter_toolbar.original_uri, "%22ref%22%3A%22~%22%7D"));
+    try workbench.setUserConfigurationValue("diffEditor.renderGutterMenu", .{ .bool = false });
+    try std.testing.expectEqual(@as(usize, 0), widget.paneWidths().toolbar);
+    try workbench.setUserConfigurationValue("diffEditor.renderGutterMenu", .{ .bool = true });
+    try std.testing.expect(widget.paneWidths().toolbar > 0);
+    const selected = @import("../vs/editor/common/core/range.zig").Range.init(2, 5, 2, 8);
+    try widget.modified_editor.setSelection(selected);
+    try std.testing.expect(widget.gutter_toolbar.selected_mapping != null);
+    var frame: std.Io.Writer.Allocating = .init(allocator);
+    defer frame.deinit();
+    try renderFrame(workbench, &frame.writer);
+    const col = widget.paneWidths().toolbarLeft(widget.sideBySide());
+    const row = for (0..widget.height) |row| {
+        if (try widget.pointerAt(col, row) == .pointer) break row;
+    } else return error.TestExpectedDiffToolbar;
+    var click: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = col, .y = row };
+    try std.testing.expect(try tab.handleDiffMouse(&click));
+    click.kind = .up;
+    try std.testing.expect(try tab.handleDiffMouse(&click));
+    try pumpDiffForTests(workbench);
+    try std.testing.expectEqual(tab, workbench.activeTab().?);
+    const cli = provider.git.?;
+    const staged = (try cli.readRef(root, "a.txt", .index)).?;
+    defer allocator.free(staged);
+    try std.testing.expectEqualStrings(partial, staged);
+    const working = (try cli.readRef(root, "a.txt", .working)).?;
+    defer allocator.free(working);
+    try std.testing.expectEqualStrings(modified, working);
+    try std.testing.expectEqualStrings("abc new def stale", try widget.originalModel().borrowLineContent(2));
+    try std.testing.expectEqualStrings("abc new def fresh", try widget.modifiedModel().borrowLineContent(2));
+
+    // The selected toolbar disappears when the cursor collapses. Stage the
+    // separate last hunk using the hunk toolbar, without staging 'fresh'.
+    try widget.modified_editor.setCursorPosition(.{ .lineNumber = 6, .column = 1 });
+    try std.testing.expect(widget.gutter_toolbar.selected_mapping == null);
+    const gutter = @import("../vs/editor/browser/widget/diffEditor/features/gutterFeature.zig");
+    const hunk = widget.state().?.mappings[widget.gutter_toolbar.current_diff.?].line_range_mapping;
+    const bounds = gutter.hunkBounds(hunk, widget.original_editor, widget.modified_editor);
+    const last_row = bounds.startLineNumber - widget.modified_editor.scrollTop();
+    click = .{ .kind = .down, .button = .left, .x = widget.paneWidths().toolbarLeft(widget.sideBySide()), .y = last_row };
+    try std.testing.expect(try tab.handleDiffMouse(&click));
+    click.kind = .up;
+    try std.testing.expect(try tab.handleDiffMouse(&click));
+    try pumpDiffForTests(workbench);
+    const staged_hunk = (try cli.readRef(root, "a.txt", .index)).?;
+    defer allocator.free(staged_hunk);
+    try std.testing.expectEqualStrings("alpha\nabc new def stale\nunchanged1\nunchanged2\nunchanged3\nlast NEW\n", staged_hunk);
+    try std.testing.expectEqual(@as(usize, 1), widget.changeCount());
+}
+
 test "Workbench: git scm integration, shared working files and read-only revision snapshots" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -8368,7 +8456,7 @@ test "Workbench: git scm integration, shared working files and read-only revisio
     defer diff_frame.deinit();
     workbench.focusEditor();
     try renderFrame(workbench, &diff_frame.writer);
-    try std.testing.expect(std.mem.indexOf(u8, diff_frame.written(), "HEAD") != null);
+    try std.testing.expect(std.mem.indexOf(u8, diff_frame.written(), "Index") != null);
     try std.testing.expect(std.mem.indexOf(u8, diff_frame.written(), "Working Tree") != null);
     try std.testing.expect(cursorCell(workbench) != null);
 
