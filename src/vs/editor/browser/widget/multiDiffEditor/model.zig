@@ -112,6 +112,16 @@ pub const MultiDiffEditorModel = struct {
         defer self.releaseDocuments(previous);
         try self.on_did_change_documents.fire({});
     }
+    /// Takes ownership of the allocation, retaining each document. Publication
+    /// itself cannot fail before the new list has been installed.
+    pub fn setOwnedDocuments(self: *MultiDiffEditorModel, items: []*IDocumentDiffItem) !void {
+        for (items) |item| _ = item.retain();
+        const previous = self.documents;
+        self.documents = .{ .items = items };
+        defer self.releaseDocuments(previous);
+        try self.on_did_change_documents.fire({});
+    }
+
     fn releaseDocuments(self: *MultiDiffEditorModel, documents_value: Documents) void {
         if (documents_value == .items) {
             for (documents_value.items) |item| item.release();

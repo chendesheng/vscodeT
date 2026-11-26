@@ -678,6 +678,7 @@ comptime {
     _ = @import("./vs/editor/test/browser/widget/compressedVirtualizedScrollLayout.test.zig");
     _ = @import("./vs/editor/test/browser/widget/virtualizedItemManager.test.zig");
     _ = @import("./vs/editor/test/browser/widget/multiDiffEditorWidget.test.zig");
+    _ = @import("./vs/workbench/contrib/multiDiffEditor/test/browser/multiDiffEditorInput.test.zig");
     _ = @import("./vs/editor/test/browser/widget/multiDiffEditorWidget.test.zig").Tests(@import("./tui/editorView.zig").View);
     _ = @import("./vs/editor/browser/viewParts/linesDecorations/linesDecorations.zig");
     _ = @import("./vs/editor/browser/viewParts/marginDecorations/marginDecorations.zig");
