@@ -207,6 +207,41 @@ pub const DiffEditorDecorations = struct {
         self.modified_ids = new_modified;
     }
 
+    /// The real-model decoration path. Alignment whitespace belongs to
+    /// DiffEditorViewZones, never to either text model.
+    pub fn updateReal(self: *DiffEditorDecorations, state: *const DiffState, show_moves: bool) !void {
+        var original_decorations = std.array_list.Managed(ModelDeltaDecoration).init(self.allocator);
+        defer original_decorations.deinit();
+        var modified_decorations = std.array_list.Managed(ModelDeltaDecoration).init(self.allocator);
+        defer modified_decorations.deinit();
+        for (state.mappings) |mapping| {
+            const change = mapping.line_range_mapping;
+            if (change.original.toInclusiveRange()) |range| try original_decorations.append(.{ .range = range, .options = &self.line_delete });
+            if (change.modified.toInclusiveRange()) |range| try modified_decorations.append(.{ .range = range, .options = &self.line_insert });
+            if (change.original.isEmpty() or change.modified.isEmpty()) continue;
+            for (change.inner_changes orelse &.{}) |inner| {
+                if (change.original.contains(inner.originalRange.startLineNumber)) {
+                    const option = if (inner.originalRange.isEmpty() and self.config.show_empty_decorations) &self.char_delete_empty else &self.char_delete;
+                    try original_decorations.append(.{ .range = inner.originalRange, .options = option });
+                }
+                if (change.modified.contains(inner.modifiedRange.startLineNumber)) {
+                    const option = if (inner.modifiedRange.isEmpty() and self.config.show_empty_decorations) &self.char_insert_empty else &self.char_insert;
+                    try modified_decorations.append(.{ .range = inner.modifiedRange, .options = option });
+                }
+            }
+        }
+        if (show_moves) for (state.moved_texts) |moved| {
+            if (moved.lineRangeMapping.original.toInclusiveRange()) |range| try original_decorations.append(.{ .range = range, .options = &self.moved_original });
+            if (moved.lineRangeMapping.modified.toInclusiveRange()) |range| try modified_decorations.append(.{ .range = range, .options = &self.moved_modified });
+        };
+        const new_original = try self.applyTo(self.original_model, self.original_owner, self.original_ids, original_decorations.items);
+        self.allocator.free(self.original_ids);
+        self.original_ids = new_original;
+        const new_modified = try self.applyTo(self.modified_model, self.modified_owner, self.modified_ids, modified_decorations.items);
+        self.allocator.free(self.modified_ids);
+        self.modified_ids = new_modified;
+    }
+
     fn applyTo(
         self: *DiffEditorDecorations,
         model: *TextModel,

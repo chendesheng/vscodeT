@@ -11,7 +11,7 @@ const widget_mod = @import("../../../browser/widget/diffEditor/diffEditorWidget.
 pub fn Tests(comptime View: type) type {
     return struct {
         const DiffEditorWidget = widget_mod.DiffEditorWidget(View);
-        test "diffEditorWidget: aligned display rows and equal pane line counts" {
+        test "diffEditorWidget: real snapshot models align through view zones" {
             const allocator = testing.allocator;
             const io = Io.Threaded.global_single_threaded.io();
             const widget = try DiffEditorWidget.create(
@@ -31,16 +31,21 @@ pub fn Tests(comptime View: type) type {
             defer widget.destroy();
 
             try testing.expectEqual(@as(usize, 1), widget.changeCount());
-            try testing.expectEqual(widget.lineCount(), widget.original_editor.viewLineCount());
-            try testing.expectEqual(widget.lineCount(), widget.modified_editor.viewLineCount());
+            try testing.expectEqual(@as(usize, 3), widget.originalModel().getLineCount());
+            try testing.expectEqual(@as(usize, 4), widget.modifiedModel().getLineCount());
             try testing.expectEqual(@as(?usize, 2), widget.original_editor.displayLineNumber(2));
-            try testing.expectEqual(@as(?usize, null), widget.original_editor.displayLineNumber(3));
+            try testing.expectEqual(@as(?usize, 3), widget.original_editor.displayLineNumber(3));
             try testing.expectEqual(@as(?usize, 1), widget.original_editor.displayLineNumber(1));
+            const whitespace = try widget.original_editor.viewLayout().getWhitespaces(allocator);
+            defer allocator.free(whitespace);
+            try testing.expectEqual(@as(usize, 1), whitespace.len);
+            try testing.expectEqual(@as(f64, 1), whitespace[0].height);
+            try testing.expectEqual(widget.original_editor.viewLayout().getVerticalOffsetForLineNumber(3, false), widget.modified_editor.viewLayout().getVerticalOffsetForLineNumber(4, false));
             try testing.expect(widget.original_editor.isReadOnly());
             try testing.expect(widget.modified_editor.isReadOnly());
         }
 
-        test "diffEditorWidget: filler decorations are grouped and indicators exclude fillers" {
+        test "diffEditorWidget: a leading insertion uses one filler zone and no fake model decorations" {
             const widget = try DiffEditorWidget.create(
                 View.init,
                 testing.allocator,
@@ -56,11 +61,19 @@ pub fn Tests(comptime View: type) type {
                 .{},
             );
             defer widget.destroy();
-            try testing.expectEqual(@as(usize, 1), widget.decorations.originalDecorationCount());
+            try testing.expectEqual(@as(usize, 0), widget.decorations.originalDecorationCount());
+            try testing.expectEqual(@as(usize, 1), widget.originalModel().getLineCount());
             const original = try widget.originalModel().getAllDecorations(1000, false);
             defer testing.allocator.free(original);
-            try testing.expectEqualStrings("diff-filler", original[0].options.className.?);
-            try testing.expect(original[0].options.linesDecorationsClassName == null);
+            try testing.expectEqual(@as(usize, 0), original.len);
+            const whitespace = try widget.original_editor.viewLayout().getWhitespaces(testing.allocator);
+            defer testing.allocator.free(whitespace);
+            try testing.expectEqual(@as(usize, 1), whitespace.len);
+            try testing.expectEqual(@as(usize, 0), whitespace[0].afterLineNumber);
+            try testing.expectEqual(@as(f64, 4), whitespace[0].height);
+            try widget.original_view.paint();
+            const fill = widget.original_view.grid();
+            try testing.expectEqual(ui.cell.packColor(.{ .r = 40, .g = 42, .b = 44 }), fill.bg[fill.index(widget.original_editor.gutterWidth(), 0)]);
             const modified = try widget.modifiedModel().getAllDecorations(1001, false);
             defer testing.allocator.free(modified);
             var found = false;
@@ -72,6 +85,59 @@ pub fn Tests(comptime View: type) type {
                 }
             }
             try testing.expect(found);
+        }
+
+        test "diffEditorWidget: wrapped and foreign-zone heights align real model rows reactively" {
+            const allocator = testing.allocator;
+            const prefix = "01234567890123456789012345678901\n";
+            const suffix = "\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten";
+            const widget = try DiffEditorWidget.create(View.init, allocator, Io.Threaded.global_single_threaded.io(), "a.txt", "b.txt", prefix ++ "old" ++ suffix, prefix ++ "new" ++ suffix, "Original", "Modified", 100, 5, .{ .diff_word_wrap = .on });
+            defer widget.destroy();
+            const original = widget.original_editor;
+            const modified = widget.modified_editor;
+            const Offset = struct {
+                fn at(editor: *@import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor, line: usize) f64 {
+                    return editor.viewLayout().getVerticalOffsetForLineNumber(editor.viewPositionOfModelPosition(.{ .lineNumber = line, .column = 1 }).lineNumber, false);
+                }
+            };
+            widget.sash_layout.ratio = 0.25;
+            widget.layout(100, 5);
+            try testing.expect(original.viewLineCount() > modified.viewLineCount());
+            try testing.expectEqual(Offset.at(original, 2), Offset.at(modified, 2));
+            const wrapped_zones = try modified.viewLayout().getWhitespaces(allocator);
+            defer allocator.free(wrapped_zones);
+            try testing.expectEqual(@as(usize, 1), wrapped_zones.len);
+            widget.sash_layout.resetSash();
+            widget.layout(100, 5);
+            try testing.expectEqual(@as(usize, 1), original.view_lines.getModelLineViewLineCount(1));
+            try testing.expectEqual(@as(usize, 1), modified.view_lines.getModelLineViewLineCount(1));
+            const reset = try modified.viewLayout().getWhitespaces(allocator);
+            defer allocator.free(reset);
+            try testing.expectEqual(@as(usize, 0), reset.len);
+            const Accessor = @import("../../../common/viewModel.zig").IWhitespaceChangeAccessor;
+            var foreign: []const u8 = undefined;
+            try original.changeWhitespace(&foreign, struct {
+                fn add(id: *[]const u8, accessor: Accessor) anyerror!void {
+                    id.* = try accessor.insert(1, 0, 2, 0);
+                }
+            }.add);
+            try testing.expectEqual(Offset.at(original, 2), Offset.at(modified, 2));
+            const aligned = try modified.viewLayout().getWhitespaces(allocator);
+            defer allocator.free(aligned);
+            try testing.expectEqual(@as(usize, 1), aligned.len);
+            try testing.expectEqual(@as(f64, 2), aligned[0].height);
+            try testing.expect(original.setScrollTop(3));
+            // No render or input event is needed to synchronize the other pane.
+            try testing.expectEqual(original.scrollTop(), modified.scrollTop());
+            try original.changeWhitespace(foreign, struct {
+                fn remove(id: []const u8, accessor: Accessor) anyerror!void {
+                    try accessor.remove(id);
+                }
+            }.remove);
+            const removed = try modified.viewLayout().getWhitespaces(allocator);
+            defer allocator.free(removed);
+            try testing.expectEqual(@as(usize, 0), removed.len);
+            try testing.expectEqual(Offset.at(original, 2), Offset.at(modified, 2));
         }
 
         test "diffEditorWidget: navigation wraps and swap keeps both panes" {

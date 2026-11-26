@@ -57,6 +57,61 @@ pub fn mappingIndexAtRow(mappings: []const @import("../components/diffEditorView
     return null;
 }
 
+const Editor = @import("../../codeEditor/codeEditorWidgetTerminal.zig").Editor;
+
+fn rangeRows(editor: *Editor, range: LineRange) ?LineRange {
+    if (range.isEmpty()) return null;
+    const start = editor.viewPositionOfModelPosition(.{ .lineNumber = range.startLineNumber, .column = 1 }).lineNumber;
+    const last = range.endLineNumberExclusive - 1;
+    const end = editor.viewPositionOfModelPosition(.{ .lineNumber = last, .column = editor.model.getLineMaxColumn(last) }).lineNumber;
+    const layout = editor.viewLayout();
+    return LineRange.init(@intFromFloat(layout.getVerticalOffsetForLineNumber(start, false)), @intFromFloat(layout.getVerticalOffsetAfterLineNumber(end, false)));
+}
+
+/// Hunk bounds on the common vertical axis, including the longer side's
+/// text and the shorter side's alignment zone. Coordinates are zero-based
+/// layout offsets, not model or view line numbers.
+pub fn hunkBounds(mapping: view_model.DetailedLineRangeMapping, original: *Editor, modified: *Editor) LineRange {
+    const left = rangeRows(original, mapping.original);
+    const right = rangeRows(modified, mapping.modified);
+    if (left) |l| {
+        if (right) |r| return LineRange.init(@min(l.startLineNumber, r.startLineNumber), @max(l.endLineNumberExclusive, r.endLineNumberExclusive));
+        return l;
+    }
+    return right orelse LineRange.init(0, 0);
+}
+
+pub fn mappingIndexAtVerticalOffset(mappings: []const view_model.DiffMapping, original: *Editor, modified: *Editor, offset: usize) ?usize {
+    var low: usize = 0;
+    var high = mappings.len;
+    while (low < high) {
+        const mid = low + (high - low) / 2;
+        const bounds = hunkBounds(mappings[mid].line_range_mapping, original, modified);
+        if (offset < bounds.startLineNumber) {
+            high = mid;
+        } else if (offset >= bounds.endLineNumberExclusive) {
+            low = mid + 1;
+        } else return mid;
+    }
+    return null;
+}
+
+pub fn mappingIndexAtModelLine(mappings: []const view_model.DiffMapping, original: bool, line: usize) ?usize {
+    var low: usize = 0;
+    var high = mappings.len;
+    while (low < high) {
+        const mid = low + (high - low) / 2;
+        const mapping = mappings[mid].line_range_mapping;
+        const range = if (original) mapping.original else mapping.modified;
+        if (line < range.startLineNumber) {
+            high = mid;
+        } else if (line >= range.endLineNumberExclusive) {
+            low = mid + 1;
+        } else return mid;
+    }
+    return null;
+}
+
 test "gutterFeature: markers for insert, delete and modify" {
     const add = view_model.DetailedLineRangeMapping{
         .original = LineRange.ofLength(2, 0),

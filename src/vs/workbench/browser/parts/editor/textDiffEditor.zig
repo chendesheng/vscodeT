@@ -330,14 +330,13 @@ pub fn DiffView(comptime View: type) type {
             widget.layout(width, height);
             const position = previous.modified_editor.modelCursorPosition();
             widget.modified_editor.setCursorPosition(widget.modified_editor.model.validatePosition(position)) catch {};
-            _ = widget.modified_editor.setTopViewLine(previous.modified_editor.topViewLine());
-            _ = widget.original_editor.setTopViewLine(previous.original_editor.topViewLine());
+            _ = widget.modified_editor.setScrollTop(previous.modified_editor.scrollTop());
+            _ = widget.original_editor.setScrollTop(previous.original_editor.scrollTop());
             if (previous.current_change) |index| {
                 widget.current_change = if (index < widget.changeCount()) index else null;
             }
             widget.setFocus(previous.focused);
-            widget.original_view.setThemeColors(self.theme_colors);
-            widget.modified_view.setThemeColors(self.theme_colors);
+            widget.setThemeColors(self.theme_colors);
             self.widget = widget;
             // EditorPane.onDidChangeControl precedes disposal, so consumers
             // can unlisten from the old code editor while it is still alive.
@@ -376,8 +375,7 @@ pub fn DiffView(comptime View: type) type {
 
         pub fn setThemeColors(self: *Self, palette: ?*const @import("../../themeColors.zig").ThemeColors) void {
             self.theme_colors = palette;
-            self.widget.original_view.setThemeColors(palette);
-            self.widget.modified_view.setThemeColors(palette);
+            self.widget.setThemeColors(palette);
         }
 
         pub fn paint(self: *Self, frame: *ui.Frame, x: usize, y: usize, w: usize, h: usize) !void {

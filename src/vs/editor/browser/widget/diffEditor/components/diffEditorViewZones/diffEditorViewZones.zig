@@ -1,14 +1,8 @@
-// Terminal replacement for the view-zone alignment subset of
-// `src/vs/editor/browser/widget/diffEditor/components/diffEditorViewZones/diffEditorViewZones.ts`.
-//
-// Upstream inserts view zones and filler lines through the editor's view-zone
-// API so both panes render equal-height rows. The terminal editor has no view
-// zones, so this module pre-aligns both sides into display line arrays: each
-// mapping becomes an unchanged segment followed by a changed block of height
-// `max(originalLen, modifiedLen)`; the shorter side is padded with blank filler
-// rows at the block end. Top-of-file insert/delete blocks pad at the start so
-// the changed real lines stay at the top of the file exactly like upstream's
-// leading filler lines. Display rows are 1-based; `null` entries are fillers.
+// Port of `src/vs/editor/browser/widget/diffEditor/components/diffEditorViewZones/diffEditorViewZones.ts`.
+// Terminal adaptation: alignment heights are in cells, with a solid theme
+// background substituting for the CSS diagonal-fill image. The side-by-side
+// editor uses the real model/view-zone pipeline. The old display-row helpers
+// below remain only for the transitional inline/decorations tests.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
@@ -54,7 +48,7 @@ pub fn getAdditionalLineHeights(allocator: Allocator, editor: *Editor, ignored_z
     defer allocator.free(whitespaces);
     for (whitespaces) |whitespace| {
         if (ignored.contains(whitespace.id) or whitespace.height <= 0) continue;
-        const model_line = if (whitespace.afterLineNumber == 0) 0 else editor.modelLineNumber(whitespace.afterLineNumber);
+        const model_line = if (whitespace.afterLineNumber == 0) 0 else editor.modelLineNumber(@min(whitespace.afterLineNumber, editor.viewLineCount()));
         try result.append(allocator, .{ .line_number = model_line, .height = @intFromFloat(whitespace.height) });
     }
     std.mem.sort(AdditionalLineHeightInfo, result.items, {}, struct {
@@ -203,6 +197,222 @@ pub fn computeRangeAlignmentFromHeights(allocator: Allocator, original_model: *T
     try builder.handleAlignmentsOutsideOfDiffs(std.math.maxInt(usize), std.math.maxInt(usize));
     return builder.result.toOwnedSlice(allocator);
 }
+
+const ui = @import("ui");
+const ZoneView = @import("../../../../viewParts/viewZones/viewZones.zig");
+const ViewEventHandler = @import("../../../../../common/viewEventHandler.zig").ViewEventHandler;
+const events = @import("../../../../../common/viewEvents.zig");
+
+/// Owns the alignment zones installed into the two real code editors. The
+/// upstream observable derivation is driven by the corresponding view events;
+/// own zone ids are excluded so an alignment transaction cannot feed back
+/// into the next alignment calculation.
+pub const DiffEditorViewZones = struct {
+    allocator: Allocator,
+    original: Pane,
+    modified: Pane,
+    mappings: []const diff_model.DiffMapping,
+    enabled: bool = false,
+    updating: bool = false,
+    syncing_scroll: bool = false,
+    batch_depth: usize = 0,
+    filler_color: ui.Color = .{ .r = 40, .g = 42, .b = 44 },
+
+    const ZoneSpec = struct { after_line_number: usize, height: usize };
+    const ZoneRecord = struct { spec: ZoneSpec, id: []const u8 };
+
+    const Pane = struct {
+        owner: *DiffEditorViewZones,
+        editor: *Editor,
+        view_zones: *ZoneView.ViewZones,
+        handler: ViewEventHandler = .{},
+        records: std.ArrayList(ZoneRecord) = .empty,
+    };
+
+    pub fn init(self: *DiffEditorViewZones, allocator: Allocator, original: *Editor, original_zones: *ZoneView.ViewZones, modified: *Editor, modified_zones: *ZoneView.ViewZones, mappings: []const diff_model.DiffMapping) void {
+        self.* = .{
+            .allocator = allocator,
+            .original = .{ .owner = self, .editor = original, .view_zones = original_zones },
+            .modified = .{ .owner = self, .editor = modified, .view_zones = modified_zones },
+            .mappings = mappings,
+        };
+        for ([_]*Pane{ &self.original, &self.modified }) |pane| {
+            pane.handler = ViewEventHandler.init(pane, .{
+                .onLineMappingChanged = onLineMappingChanged,
+                .onZonesChanged = onZonesChanged,
+                .onScrollChanged = onScrollChanged,
+            });
+            pane.editor.addViewEventHandler(&pane.handler);
+        }
+    }
+
+    pub fn deinit(self: *DiffEditorViewZones) void {
+        self.original.editor.removeViewEventHandler(&self.original.handler);
+        self.modified.editor.removeViewEventHandler(&self.modified.handler);
+        self.updating = true;
+        self.apply(&self.original, &.{}, false) catch {};
+        self.apply(&self.modified, &.{}, false) catch {};
+        self.original.records.deinit(self.allocator);
+        self.modified.records.deinit(self.allocator);
+    }
+
+    pub fn beginBatch(self: *DiffEditorViewZones) void {
+        self.batch_depth += 1;
+    }
+
+    pub fn endBatch(self: *DiffEditorViewZones) void {
+        std.debug.assert(self.batch_depth > 0);
+        self.batch_depth -= 1;
+        if (self.batch_depth == 0) self.updateAfterEvent();
+    }
+
+    pub fn setEnabled(self: *DiffEditorViewZones, enabled: bool) void {
+        if (self.enabled == enabled) return;
+        self.enabled = enabled;
+        self.updateAfterEvent();
+    }
+
+    pub fn setFillerColor(self: *DiffEditorViewZones, color: ui.Color) void {
+        if (std.meta.eql(self.filler_color, color)) return;
+        self.filler_color = color;
+        self.updating = true;
+        defer self.updating = false;
+        self.relayout(&self.original) catch {};
+        self.relayout(&self.modified) catch {};
+    }
+
+    fn updateAfterEvent(self: *DiffEditorViewZones) void {
+        if (self.updating or self.batch_depth > 0) return;
+        self.recompute() catch |err| self.modified.editor.setMessage("diff view zones: {s}", .{@errorName(err)});
+    }
+
+    fn onLineMappingChanged(context: *anyopaque, _: *const events.ViewLineMappingChangedEvent) bool {
+        const pane: *Pane = @ptrCast(@alignCast(context));
+        pane.owner.updateAfterEvent();
+        return false;
+    }
+
+    fn onZonesChanged(context: *anyopaque, _: *const events.ViewZonesChangedEvent) bool {
+        const pane: *Pane = @ptrCast(@alignCast(context));
+        pane.owner.updateAfterEvent();
+        return false;
+    }
+
+    fn onScrollChanged(context: *anyopaque, event: *const events.ViewScrollChangedEvent) bool {
+        const pane: *Pane = @ptrCast(@alignCast(context));
+        const self = pane.owner;
+        if (!self.enabled or self.updating or self.syncing_scroll or self.batch_depth > 0 or !event.scrollTopChanged) return false;
+        self.syncing_scroll = true;
+        defer self.syncing_scroll = false;
+        const other = if (pane == &self.original) &self.modified else &self.original;
+        _ = other.editor.setScrollTop(pane.editor.scrollTop());
+        return false;
+    }
+
+    pub fn recompute(self: *DiffEditorViewZones) !void {
+        if (self.updating or self.batch_depth > 0) return;
+        self.updating = true;
+        defer self.updating = false;
+        var original_specs: std.ArrayList(ZoneSpec) = .empty;
+        defer original_specs.deinit(self.allocator);
+        var modified_specs: std.ArrayList(ZoneSpec) = .empty;
+        defer modified_specs.deinit(self.allocator);
+        if (self.enabled) {
+            const original_ignored = try self.ids(&self.original);
+            defer self.allocator.free(original_ignored);
+            const modified_ignored = try self.ids(&self.modified);
+            defer self.allocator.free(modified_ignored);
+            const alignments = try computeRangeAlignment(self.allocator, self.original.editor, self.modified.editor, self.mappings, original_ignored, modified_ignored, true);
+            defer self.allocator.free(alignments);
+            for (alignments) |alignment| {
+                if (alignment.original_height < alignment.modified_height) {
+                    try original_specs.append(self.allocator, .{
+                        .after_line_number = alignment.original_range.endLineNumberExclusive - 1,
+                        .height = alignment.modified_height - alignment.original_height,
+                    });
+                } else if (alignment.original_height > alignment.modified_height) {
+                    try modified_specs.append(self.allocator, .{
+                        .after_line_number = alignment.modified_range.endLineNumberExclusive - 1,
+                        .height = alignment.original_height - alignment.modified_height,
+                    });
+                }
+            }
+        }
+        try self.apply(&self.original, original_specs.items, false);
+        try self.apply(&self.modified, modified_specs.items, false);
+    }
+
+    fn ids(self: *DiffEditorViewZones, pane: *const Pane) ![][]const u8 {
+        const result = try self.allocator.alloc([]const u8, pane.records.items.len);
+        for (pane.records.items, result) |record, *id| id.* = record.id;
+        return result;
+    }
+
+    fn delegate(self: *DiffEditorViewZones, spec: ZoneSpec) ZoneView.IViewZone {
+        return .{
+            .after_line_number = spec.after_line_number,
+            .height_in_lines = spec.height,
+            .show_in_hidden_areas = true,
+            .suppress_mouse_down = true,
+            .context = self,
+            .build = buildFiller,
+        };
+    }
+
+    fn buildFiller(context: ?*anyopaque, doc: *ui.Document, _: ZoneView.IViewZone.RenderInfo) anyerror!*ui.Node {
+        const self: *DiffEditorViewZones = @ptrCast(@alignCast(context.?));
+        const node = try doc.createElement(.div);
+        node.setStyle(.{ .width = .{ .percent = 100 }, .height = .{ .percent = 100 }, .background = self.filler_color });
+        return node;
+    }
+
+    fn apply(self: *DiffEditorViewZones, pane: *Pane, desired: []const ZoneSpec, relayout_only: bool) !void {
+        if (relayout_only) {
+            const Transaction = struct {
+                owner: *DiffEditorViewZones,
+                pane: *Pane,
+                fn run(tx: @This(), accessor: ZoneView.IViewZoneChangeAccessor) anyerror!void {
+                    for (tx.pane.records.items) |record| try accessor.layoutZone(record.id, tx.owner.delegate(record.spec));
+                }
+            };
+            try pane.view_zones.changeViewZones(Transaction{ .owner = self, .pane = pane }, Transaction.run);
+            return;
+        }
+        // Retain a matching zone list, including its nodes and opaque IDs.
+        // When the derived list changes, replace it in one transaction.
+        if (pane.records.items.len == desired.len) {
+            var equal = true;
+            for (pane.records.items, desired) |record, spec| {
+                if (!std.meta.eql(record.spec, spec)) {
+                    equal = false;
+                    break;
+                }
+            }
+            if (equal) return;
+        }
+        try pane.records.ensureTotalCapacity(self.allocator, desired.len);
+        const Transaction = struct {
+            owner: *DiffEditorViewZones,
+            pane: *Pane,
+            desired: []const ZoneSpec,
+            fn run(tx: @This(), accessor: ZoneView.IViewZoneChangeAccessor) anyerror!void {
+                while (tx.pane.records.items.len > 0) {
+                    try accessor.removeZone(tx.pane.records.items[tx.pane.records.items.len - 1].id);
+                    _ = tx.pane.records.pop();
+                }
+                for (tx.desired) |spec| {
+                    const id = try accessor.addZone(tx.owner.delegate(spec));
+                    tx.pane.records.appendAssumeCapacity(.{ .id = id, .spec = spec });
+                }
+            }
+        };
+        try pane.view_zones.changeViewZones(Transaction{ .owner = self, .pane = pane, .desired = desired }, Transaction.run);
+    }
+
+    fn relayout(self: *DiffEditorViewZones, pane: *Pane) !void {
+        try self.apply(pane, &.{}, true);
+    }
+};
 
 /// One changed block in display coordinates. `original`/`modified` are
 /// exclusive line ranges over the aligned display rows and include fillers.

@@ -1,24 +1,14 @@
 // Port of the terminal orchestration of
 // `src/vs/editor/browser/widget/diffEditor/diffEditorWidget.ts`.
 //
-// Terminal adaptation: upstream composes DOM editor panes, view zones, a split
-// view, decorations and an overview ruler in the browser. The terminal widget
-// owns two read-only snapshot editors/views over the **aligned display texts**
-// produced by `diffEditorViewZones.zig`, paints both grids plus a one-cell
-// center gutter, and maps navigation commands to aligned display rows. Mouse
-// resizing replaces the split-view sash; keys dispatch through the focused
-// snapshot editor using the shared terminal editor input adapter.
-//
-// Inline mode (`renderSideBySide: false`) interleaves unchanged, deleted and
-// inserted lines in one modified snapshot editor with whole-line, inner
-// character decorations plus an inline line-number map. It
-// also supports hide-unchanged folding over the interleaved rows. Not ported
-// in this milestone: the accessible
-// diff viewer and editing either side. The combined overview ruler reserves
-// one terminal cell per lane. Moved-block detection is wired through
-// `state.moved_texts` into `movedOriginal`/`movedModified` block decorations.
-// Hide-unchanged regions are applied as collapsed user-defined folding ranges
-// over both aligned display texts, keeping context around each change.
+// Terminal adaptation: the two editors own their real snapshot text in
+// side-by-side mode. The shared ViewZones part aligns the changes and
+// wrapped/foreign-zone heights, and the gutter uses vertical-layout offsets.
+// The combined overview ruler reserves one terminal cell per lane.
+// Inline deleted code is still projected into the modified model until the
+// deleted-code zone renderer is ported; that remaining migration is tracked
+// in docs/diff-view-audit.md. The accessible viewer and editing either side
+// are also open. Hide-unchanged still projects its ranges onto folding.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -211,7 +201,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         modified_lines: [][]u8,
 
         view_model: DiffEditorViewModel,
-        aligned: AlignedRows,
+        zones: view_zones.DiffEditorViewZones = undefined,
         decorations: *DiffEditorDecorations,
         overview: overview_feature.OverviewRulerFeature = undefined,
 
@@ -226,8 +216,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         sash: sash_mod.DiffEditorSash = .{},
         focused: Side = .modified,
         current_change: ?usize = null,
-        /// Set when either pane is scrolled; the other is aligned on the next
-        /// paint.
+        /// Keep the focused vertical position through a pane layout change.
         sync_top_line: bool = true,
         message: ?[]u8 = null,
         is_pasting: bool = false,
@@ -301,18 +290,6 @@ pub fn DiffEditorWidget(comptime View: type) type {
             if (computed) |result| try diff_model.applyComputedDiff(result) else try diff_model.compute();
             const diff_state = diff_model.stateRef() orelse return error.DiffUnavailable;
 
-            const changes = try allocator.alloc(view_model.DetailedLineRangeMapping, diff_state.mappings.len);
-            defer allocator.free(changes);
-            for (diff_state.mappings, 0..) |mapping, index| changes[index] = mapping.line_range_mapping;
-            const aligned = try view_zones.computeAlignedRows(
-                allocator,
-                original_views.len,
-                modified_views.len,
-                changes,
-            );
-            var aligned_mut = aligned;
-            errdefer aligned_mut.deinit();
-
             const is_inline = !normalized_options.renderSideBySide(width);
             var inline_display = InlineDisplay{};
             if (is_inline) {
@@ -325,13 +302,13 @@ pub fn DiffEditorWidget(comptime View: type) type {
             }
             errdefer inline_display.deinit(allocator);
 
-            const original_display = try buildDisplayText(allocator, aligned.original, original_views);
+            const original_display = try allocator.dupe(u8, original_text);
             errdefer allocator.free(original_display);
             const modified_display = if (is_inline) blk: {
                 const text = inline_display.text;
                 inline_display.text = &.{};
                 break :blk text;
-            } else try buildDisplayText(allocator, aligned.modified, modified_views);
+            } else try allocator.dupe(u8, modified_text);
             errdefer allocator.free(modified_display);
 
             const original_editor = try Editor.createFromTextWithOptions(
@@ -370,8 +347,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             modified_editor.setReadOnly(true);
             original_editor.setStatusRow(false);
             modified_editor.setStatusRow(false);
-            original_editor.setLineNumberMap(aligned.original);
-            modified_editor.setLineNumberMap(if (is_inline) inline_display.line_numbers else aligned.modified);
+            if (is_inline) modified_editor.setLineNumberMap(inline_display.line_numbers);
             original_editor.setLineDecorationsWidth(if (normalized_options.render_indicators) 1 else 0);
             modified_editor.setLineDecorationsWidth(if (normalized_options.render_indicators) 1 else 0);
             original_view.setStatusBarVisible(false) catch {};
@@ -381,7 +357,9 @@ pub fn DiffEditorWidget(comptime View: type) type {
                     allocator,
                     original_editor,
                     modified_editor,
-                    &aligned,
+                    diff_state,
+                    original_lines.len,
+                    modified_lines.len,
                     normalized_options.hide_unchanged_regions_context_line_count,
                     normalized_options.hide_unchanged_regions_minimum_line_count,
                 );
@@ -407,7 +385,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 },
             );
             errdefer decorations.deinit();
-            if (!is_inline) try decorations.update(&aligned, diff_state);
+            if (!is_inline) try decorations.updateReal(diff_state, normalized_options.show_moves);
 
             self.* = .{
                 .allocator = allocator,
@@ -430,7 +408,6 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .original_lines = original_lines,
                 .modified_lines = modified_lines,
                 .view_model = diff_model,
-                .aligned = aligned,
                 .decorations = decorations,
                 .original_text = original_display,
                 .modified_text = modified_display,
@@ -445,6 +422,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             }
 
             self.overview.init(allocator, original_editor, modified_editor);
+            self.zones.init(allocator, original_editor, original_view.viewZones(), modified_editor, modified_view.viewZones(), self.state().?.mappings);
             // Keep the line views alive for layout changes and recomputation.
             self.layout(width, height);
             self.selectInitialChange();
@@ -453,10 +431,10 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         pub fn destroy(self: *Self) void {
             const allocator = self.allocator;
+            self.zones.deinit();
             self.overview.deinit(self.original_editor, self.modified_editor);
             self.decorations.deinit();
             allocator.destroy(self.decorations);
-            self.aligned.deinit();
             allocator.free(self.view_model.original_lines);
             allocator.free(self.view_model.modified_lines);
             self.view_model.deinit();
@@ -498,9 +476,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
             return !self.inline_mode;
         }
 
-        // Until the editor supports diff view zones, change the generated
-        // projection in place so the CodeEditorWidget and its View retain
-        // their identity across width-based layout changes.
+        // The temporary inline projection keeps the control identity across
+        // width changes; side-by-side restores the actual modified snapshot.
         fn setInlineMode(self: *Self, inline_mode: bool) !void {
             const diff_state = self.state() orelse return;
             const allocator = self.allocator;
@@ -512,9 +489,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 self.view_model.modified_lines,
                 diff_state.mappings,
             );
-            const text = if (inline_mode) inline_display.text else try buildDisplayText(
+            const text = if (inline_mode) inline_display.text else try joinLines(
                 allocator,
-                self.aligned.modified,
                 self.view_model.modified_lines,
             );
             var text_owned = !inline_mode;
@@ -523,6 +499,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             const cursor = self.modified_editor.modelCursorPosition().lineNumber;
             const real_line = self.modified_editor.displayLineNumber(self.modified_editor.viewCursorPosition().lineNumber);
             const current = self.current_change;
+            self.zones.setEnabled(false);
             self.decorations.detach();
             if (self.inline_ids.len > 0) {
                 const ids = try self.modified_editor.model.deltaDecorations(self.inline_ids, &.{}, 2002);
@@ -554,31 +531,34 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.inline_modified_rows = inline_display.modified_rows;
             inline_display = .{};
             self.inline_mode = inline_mode;
-            self.modified_editor.setLineNumberMap(if (inline_mode) self.inline_line_numbers else self.aligned.modified);
+            self.modified_editor.setLineNumberMap(if (inline_mode) self.inline_line_numbers else null);
             if (inline_mode) {
                 self.setFocus(.modified);
                 self.original_view.detach();
                 try self.applyInlineDecorations();
                 if (self.options.hide_unchanged_regions) try self.applyInlineHideUnchanged();
             } else {
-                try self.decorations.update(&self.aligned, diff_state);
+                try self.decorations.updateReal(diff_state, self.options.show_moves);
                 if (self.options.hide_unchanged_regions) try applyHideUnchangedRegions(
                     allocator,
                     self.original_editor,
                     self.modified_editor,
-                    &self.aligned,
+                    diff_state,
+                    self.original_lines.len,
+                    self.modified_lines.len,
                     self.options.hide_unchanged_regions_context_line_count,
                     self.options.hide_unchanged_regions_minimum_line_count,
                 );
             }
             const row = if (current) |index| self.changeStart(index) else if (real_line) |line| blk: {
                 if (inline_mode and line <= self.inline_modified_rows.len) break :blk self.inline_modified_rows[line - 1] orelse cursor;
-                break :blk self.aligned.displayRowForModified(line) orelse cursor;
+                break :blk line;
             } else cursor;
             try self.modified_editor.setCursorPosition(.{ .lineNumber = @min(row, self.modified_editor.model.getLineCount()), .column = 1 });
         }
 
         pub fn layout(self: *Self, width: usize, height: usize) void {
+            self.zones.beginBatch();
             const inline_mode = !self.options.renderSideBySide(width);
             if (self.inline_mode != inline_mode) {
                 self.setInlineMode(inline_mode) catch |err| {
@@ -591,6 +571,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
             const widths = self.paneWidths();
             self.original_editor.setViewport(widths.original, self.height);
             self.modified_editor.setViewport(widths.modified, self.height);
+            self.zones.setEnabled(self.sideBySide());
+            self.zones.endBatch();
             self.original_view.invalidate();
             self.modified_view.invalidate();
             self.overview.invalidate();
@@ -612,18 +594,11 @@ pub fn DiffEditorWidget(comptime View: type) type {
             return result;
         }
 
-        /// Syncs the two panes to the same top display row.
+        /// Synchronize the two editors on the common vertical layout axis.
         pub fn syncTopLines(self: *Self) void {
-            const top = self.focusedEditor().topViewLine();
-            const other = if (self.focused == .original) self.modified_editor else self.original_editor;
-            if (other.topViewLine() != top) {
-                _ = other.setTopViewLine(top);
-                other.ensureCursorVisible();
-            }
-            const focused_view = self.focusedView();
-            const other_view = if (self.focused == .original) self.modified_view else self.original_view;
-            other_view.invalidate();
-            _ = focused_view;
+            self.syncScrollFromPane(self.focused);
+            self.original_view.invalidate();
+            self.modified_view.invalidate();
         }
 
         pub fn focusedEditor(self: *Self) *Editor {
@@ -700,7 +675,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         fn changeStart(self: *Self, index: usize) usize {
-            return if (self.inline_mode) self.inline_change_starts[index] else self.aligned.mappings[index].modified.startLineNumber;
+            return if (self.inline_mode) self.inline_change_starts[index] else self.state().?.mappings[index].line_range_mapping.modified.startLineNumber;
         }
 
         fn revealChange(self: *Self, index: usize) void {
@@ -710,11 +685,16 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .lineNumber = @min(row, self.modified_editor.model.getLineCount()),
                 .column = 1,
             }) catch {};
-            const view_row = self.modified_editor.viewCursorPosition().lineNumber;
-            const top = @max(view_row -| (self.height / 2), 1);
-            _ = self.modified_editor.setTopViewLine(top);
+            const top = if (self.inline_mode) blk: {
+                const view_row = self.modified_editor.viewCursorPosition().lineNumber;
+                break :blk @as(usize, @intFromFloat(self.modified_editor.viewLayout().getVerticalOffsetForLineNumber(view_row, false))) -| (self.height / 2);
+            } else blk: {
+                const bounds = gutter_feature.hunkBounds(self.state().?.mappings[index].line_range_mapping, self.original_editor, self.modified_editor);
+                break :blk bounds.startLineNumber -| (self.height / 2);
+            };
+            _ = self.modified_editor.setScrollTop(top);
             if (!self.inline_mode) {
-                _ = self.original_editor.setTopViewLine(top);
+                _ = self.original_editor.setScrollTop(top);
                 self.original_view.invalidate();
             }
             self.modified_view.invalidate();
@@ -727,6 +707,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         fn swapSidesInternal(self: *Self) !void {
             const was_inline = self.inline_mode;
             if (was_inline) try self.setInlineMode(false);
+            self.zones.deinit();
             self.decorations.detach();
 
             std.mem.swap(*Editor, &self.original_editor, &self.modified_editor);
@@ -736,26 +717,31 @@ pub fn DiffEditorWidget(comptime View: type) type {
             std.mem.swap([]u8, &self.original_text, &self.modified_text);
             std.mem.swap([][]u8, &self.original_lines, &self.modified_lines);
             std.mem.swap([]const []const u8, &self.view_model.original_lines, &self.view_model.modified_lines);
-            std.mem.swap([]?usize, &self.aligned.original, &self.aligned.modified);
-            std.mem.swap([]?usize, &self.aligned.original_to_display, &self.aligned.modified_to_display);
-
-            const diff_state = if (self.view_model.state) |*state_value| state_value else return;
-            for (diff_state.mappings, self.aligned.mappings) |*mapping, *aligned_mapping| {
-                flipMapping(&mapping.line_range_mapping);
-                std.mem.swap(LineRange, &aligned_mapping.original, &aligned_mapping.modified);
-                aligned_mapping.source = mapping.line_range_mapping;
-            }
+            const diff_state = if (self.view_model.state) |*state_value| state_value else unreachable;
+            for (diff_state.mappings) |*mapping| flipMapping(&mapping.line_range_mapping);
             for (diff_state.moved_texts) |*moved| {
                 moved.lineRangeMapping = moved.lineRangeMapping.flip();
                 for (@constCast(moved.changes)) |*change| flipMapping(change);
             }
             self.decorations.original_model = self.original_editor.model;
             self.decorations.modified_model = self.modified_editor.model;
-            try self.decorations.update(&self.aligned, diff_state);
+            self.zones.init(self.allocator, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), diff_state.mappings);
+            self.applyZoneTheme(self.modified_view.themeColors());
+            try self.decorations.updateReal(diff_state, self.options.show_moves);
             self.focused = .modified;
             if (was_inline) try self.setInlineMode(true);
             self.layout(self.width, self.height);
             if (self.current_change) |index| self.revealChange(index);
+        }
+
+        fn applyZoneTheme(self: *Self, palette: ?*const @import("../../../../workbench/browser/themeColors.zig").ThemeColors) void {
+            self.zones.setFillerColor(if (palette) |colors| colors.color("diffEditor.diagonalFill", .{ 40, 42, 44 }) else .{ .r = 40, .g = 42, .b = 44 });
+        }
+
+        pub fn setThemeColors(self: *Self, palette: ?*const @import("../../../../workbench/browser/themeColors.zig").ThemeColors) void {
+            self.original_view.setThemeColors(palette);
+            self.modified_view.setThemeColors(palette);
+            self.applyZoneTheme(palette);
         }
 
         pub fn mount(self: *Self, surface: *ui.Surface, container: *ui.Node, x: usize, y: usize) !void {
@@ -795,11 +781,11 @@ pub fn DiffEditorWidget(comptime View: type) type {
             }
             if (widths.overview > 0) {
                 try self.overview.prepareRender(
-                    self.aligned.mappings,
+                    self.state().?.mappings,
                     if (self.inline_mode) self.modified_editor else self.original_editor,
                     self.modified_editor,
-                    if (self.inline_mode) self.inline_original_rows else self.aligned.original_to_display,
-                    if (self.inline_mode) self.inline_modified_rows else self.aligned.modified_to_display,
+                    if (self.inline_mode) self.inline_original_rows else null,
+                    if (self.inline_mode) self.inline_modified_rows else null,
                     h,
                 );
                 const palette = self.modified_view.themeColors();
@@ -832,23 +818,20 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .fg = ui.cell.packColor(if (palette) |colors| colors.foreground else .{ .r = 220, .g = 220, .b = 220 }),
                 .bg = ui.cell.packColor(if (palette) |colors| colors.color("editor.lineHighlightBackground", .{ 60, 60, 64 }) else .{ .r = 60, .g = 60, .b = 64 }),
             };
-            const mappings = self.aligned.mappings;
-            const cursor_row = self.focusedEditor().modelCursorPosition().lineNumber;
-            const current_mapping = gutter_feature.mappingIndexAtRow(mappings, cursor_row);
+            const mappings = self.state().?.mappings;
+            const cursor_line = self.focusedEditor().modelCursorPosition().lineNumber;
+            const current_mapping = gutter_feature.mappingIndexAtModelLine(mappings, self.focused == .original, cursor_line) orelse self.current_change;
+            const scroll_top = self.modified_editor.scrollTop();
             var row: usize = 0;
             while (row < height) : (row += 1) {
-                const view_row = self.modified_editor.topViewLine() + row;
+                const offset = scroll_top + row;
                 var glyph: u21 = '│';
                 var style = normal;
-                if (view_row <= self.modified_editor.viewLineCount()) {
-                    const display_row = self.modified_editor.modelLineNumber(view_row);
-                    if (gutter_feature.mappingIndexAtRow(mappings, display_row)) |index| {
-                        const mapping = mappings[index];
-                        if (current_mapping == index) style = current;
-                        if (display_row == mapping.modified.startLineNumber and self.modified_editor.outputLineIndex(view_row) == 0) {
-                            glyph = gutter_feature.markerForMapping(mapping.source);
-                        }
-                    }
+                if (gutter_feature.mappingIndexAtVerticalOffset(mappings, self.original_editor, self.modified_editor, offset)) |index| {
+                    const mapping = mappings[index].line_range_mapping;
+                    if (current_mapping == index) style = current;
+                    const bounds = gutter_feature.hunkBounds(mapping, self.original_editor, self.modified_editor);
+                    if (offset == bounds.startLineNumber) glyph = gutter_feature.markerForMapping(mapping);
                 }
                 frame.next.putCodepoint(x, y + row, glyph, 1, style);
             }
@@ -921,8 +904,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
         fn syncScrollFromPane(self: *Self, side: Side) void {
             const source = if (side == .original) self.original_editor else self.modified_editor;
             const other = if (side == .original) self.modified_editor else self.original_editor;
-            const top = source.topViewLine();
-            if (other.topViewLine() != top) _ = other.setTopViewLine(top);
+            const top = source.scrollTop();
+            if (other.scrollTop() != top) _ = other.setScrollTop(top);
         }
 
         pub fn originalModel(self: *Self) *@import("../../../common/model/textModel.zig").TextModel {
@@ -934,7 +917,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         fn applyInlineHideUnchanged(self: *Self) !void {
-            const regions = try unchangedRegions(self.allocator, &self.aligned, self.options.hide_unchanged_regions_context_line_count, self.options.hide_unchanged_regions_minimum_line_count);
+            const regions = try unchangedRegions(self.allocator, self.state().?, self.original_lines.len, self.modified_lines.len, self.options.hide_unchanged_regions_context_line_count, self.options.hide_unchanged_regions_minimum_line_count);
             defer self.allocator.free(regions);
             var ranges = std.array_list.Managed(LineRange).init(self.allocator);
             defer ranges.deinit();
@@ -1035,47 +1018,36 @@ pub fn applyHideUnchangedRegions(
     allocator: Allocator,
     original_editor: *Editor,
     modified_editor: *Editor,
-    aligned: *const AlignedRows,
+    state: *const DiffState,
+    original_count: usize,
+    modified_count: usize,
     context_line_count: usize,
     minimum_line_count: usize,
 ) !void {
-    var ranges = std.array_list.Managed(LineRange).init(allocator);
-    defer ranges.deinit();
-
-    const regions = try unchangedRegions(allocator, aligned, context_line_count, minimum_line_count);
+    const regions = try unchangedRegions(allocator, state, original_count, modified_count, context_line_count, minimum_line_count);
     defer allocator.free(regions);
+    const FoldRange = @import("../../../contrib/folding/browser/foldingRanges.zig").FoldRange;
+    var original_folds: std.ArrayList(FoldRange) = .empty;
+    defer original_folds.deinit(allocator);
+    var modified_folds: std.ArrayList(FoldRange) = .empty;
+    defer modified_folds.deinit(allocator);
     for (regions) |region| {
-        const hidden = region.getHiddenOriginalRange();
-        if (hidden.isEmpty()) continue;
-        const start = aligned.displayRowForOriginal(hidden.startLineNumber) orelse continue;
-        const end = aligned.displayRowForOriginal(hidden.endLineNumberExclusive - 1) orelse continue;
-        try ranges.append(.init(start, end + 1));
+        const original_range = region.getHiddenOriginalRange();
+        const modified_range = region.getHiddenModifiedRange();
+        if (original_range.isEmpty() or modified_range.isEmpty()) continue;
+        try original_folds.append(allocator, .{ .startLineNumber = original_range.startLineNumber, .endLineNumber = original_range.endLineNumberExclusive - 1, .isCollapsed = true, .source = .user_defined });
+        try modified_folds.append(allocator, .{ .startLineNumber = modified_range.startLineNumber, .endLineNumber = modified_range.endLineNumberExclusive - 1, .isCollapsed = true, .source = .user_defined });
     }
-    if (ranges.items.len == 0) return;
-
-    const fold_ranges = try allocator.alloc(
-        @import("../../../contrib/folding/browser/foldingRanges.zig").FoldRange,
-        ranges.items.len,
-    );
-    defer allocator.free(fold_ranges);
-    for (ranges.items, 0..) |range, index| {
-        fold_ranges[index] = .{
-            .startLineNumber = range.startLineNumber,
-            .endLineNumber = range.endLineNumberExclusive - 1,
-            .isCollapsed = true,
-            .source = .user_defined,
-        };
-    }
-    try original_editor.addFoldingRanges(fold_ranges);
-    try modified_editor.addFoldingRanges(fold_ranges);
+    try original_editor.addFoldingRanges(original_folds.items);
+    try modified_editor.addFoldingRanges(modified_folds.items);
 }
 
-fn unchangedRegions(allocator: Allocator, aligned: *const AlignedRows, context_line_count: usize, minimum_line_count: usize) ![]diff_view_model.UnchangedRegion {
+fn unchangedRegions(allocator: Allocator, state: *const DiffState, original_count: usize, modified_count: usize, context_line_count: usize, minimum_line_count: usize) ![]diff_view_model.UnchangedRegion {
     const LineRangeMapping = @import("../../../common/diff/rangeMapping.zig").LineRangeMapping;
-    const changes = try allocator.alloc(LineRangeMapping, aligned.mappings.len);
+    const changes = try allocator.alloc(LineRangeMapping, state.mappings.len);
     defer allocator.free(changes);
-    for (aligned.mappings, changes) |mapping, *change| change.* = mapping.source.toLineRangeMapping();
-    return diff_view_model.UnchangedRegion.fromDiffs(allocator, changes, aligned.original_to_display.len, aligned.modified_to_display.len, minimum_line_count, context_line_count);
+    for (state.mappings, changes) |mapping, *change| change.* = mapping.line_range_mapping.toLineRangeMapping();
+    return diff_view_model.UnchangedRegion.fromDiffs(allocator, changes, original_count, modified_count, minimum_line_count, context_line_count);
 }
 
 fn splitOwnedLines(allocator: Allocator, text: []const u8) ![][]u8 {
@@ -1093,16 +1065,12 @@ fn freeLines(allocator: Allocator, lines: [][]u8) void {
     if (lines.len > 0) allocator.free(lines);
 }
 
-fn buildDisplayText(allocator: Allocator, display_rows: []const ?usize, real_lines: []const []const u8) ![]u8 {
+fn joinLines(allocator: Allocator, lines: []const []const u8) ![]u8 {
     var out = std.array_list.Managed(u8).init(allocator);
     errdefer out.deinit();
-    for (display_rows, 0..) |row, index| {
+    for (lines, 0..) |line, index| {
         if (index != 0) try out.append('\n');
-        if (row) |line_number| {
-            if (line_number >= 1 and line_number <= real_lines.len) {
-                try out.appendSlice(real_lines[line_number - 1]);
-            }
-        }
+        try out.appendSlice(line);
     }
     return out.toOwnedSlice();
 }

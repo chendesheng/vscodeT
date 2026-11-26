@@ -108,24 +108,32 @@ pub const OverviewRulerFeature = struct {
         self.handler.forceShouldRender();
     }
 
-    fn appendZone(zones: *std.ArrayList(ruler.Decoration), allocator: Allocator, editor: *Editor, rows: []const ?usize, range: LineRange, color: [3]u8) !void {
-        if (range.isEmpty() or range.startLineNumber == 0 or range.endLineNumberExclusive - 1 > rows.len) return;
-        const first = rows[range.startLineNumber - 1] orelse return;
-        const last = rows[range.endLineNumberExclusive - 2] orelse return;
+    fn appendZone(zones: *std.ArrayList(ruler.Decoration), allocator: Allocator, editor: *Editor, rows: ?[]const ?usize, range: LineRange, color: [3]u8) !void {
+        if (range.isEmpty() or range.startLineNumber == 0) return;
+        const first = if (rows) |map| blk: {
+            if (range.endLineNumberExclusive - 1 > map.len) return;
+            break :blk map[range.startLineNumber - 1] orelse return;
+        } else range.startLineNumber;
+        const last = if (rows) |map| map[range.endLineNumberExclusive - 2] orelse return else range.endLineNumberExclusive - 1;
         const start = editor.viewPositionOfModelPosition(.{ .lineNumber = first, .column = 1 }).lineNumber;
         const end = editor.viewPositionOfModelPosition(.{ .lineNumber = last, .column = editor.model.getLineMaxColumn(last) }).lineNumber;
-        try zones.append(allocator, .{ .start_line_number = start, .end_line_number = end, .color = color, .lane = .full });
+        const layout = editor.viewLayout();
+        // Ruler settings use one cell per unit, so absolute whitespace-aware
+        // offsets become the one-based marker coordinates.
+        const top: usize = @intFromFloat(layout.getVerticalOffsetForLineNumber(start, false));
+        const bottom: usize = @intFromFloat(layout.getVerticalOffsetAfterLineNumber(end, false));
+        try zones.append(allocator, .{ .start_line_number = top + 1, .end_line_number = @max(top + 1, bottom), .color = color, .lane = .full });
     }
 
-    pub fn prepareRender(self: *OverviewRulerFeature, mappings: []const view_zones.AlignedMapping, original: *Editor, modified: *Editor, original_rows: []const ?usize, modified_rows: []const ?usize, height: usize) !void {
+    pub fn prepareRender(self: *OverviewRulerFeature, mappings: []const view_model.DiffMapping, original: *Editor, modified: *Editor, original_rows: ?[]const ?usize, modified_rows: ?[]const ?usize, height: usize) !void {
         if (!self.handler.shouldRender() and self.height == height) return;
         var original_zones: std.ArrayList(ruler.Decoration) = .empty;
         defer original_zones.deinit(self.allocator);
         var modified_zones: std.ArrayList(ruler.Decoration) = .empty;
         defer modified_zones.deinit(self.allocator);
         for (mappings) |mapping| {
-            try appendZone(&original_zones, self.allocator, original, original_rows, mapping.source.original, removed_foreground);
-            try appendZone(&modified_zones, self.allocator, modified, modified_rows, mapping.source.modified, inserted_foreground);
+            try appendZone(&original_zones, self.allocator, original, original_rows, mapping.line_range_mapping.original, removed_foreground);
+            try appendZone(&modified_zones, self.allocator, modified, modified_rows, mapping.line_range_mapping.modified, inserted_foreground);
         }
         const left = try ruler.render(self.allocator, original_zones.items, &.{}, .{ .canvas_height = height, .outer_height = original.scrollHeight(), .hide_cursor = true });
         errdefer self.allocator.free(left);
