@@ -629,6 +629,11 @@ pub const Editor = struct {
     on_did_change_dirty: Emitter(void),
     on_did_layout_change: Emitter(void),
     on_did_change_code_lens_provider: Emitter(bool),
+    on_did_mouse_event: Emitter(editorBrowser.EditorMouseEvent),
+    on_did_key_down: Emitter(*input.KeyEvent),
+    on_did_change_quick_diff_context: Emitter(void),
+    quick_diff_decoration_count: usize = 0,
+    dirty_diff_visible: bool = false,
     has_code_lens_provider: bool = false,
     screen_width: usize,
     screen_height: usize,
@@ -957,6 +962,9 @@ pub const Editor = struct {
             .on_did_change_dirty = Emitter(void).init(allocator),
             .on_did_layout_change = Emitter(void).init(allocator),
             .on_did_change_code_lens_provider = Emitter(bool).init(allocator),
+            .on_did_mouse_event = Emitter(editorBrowser.EditorMouseEvent).init(allocator),
+            .on_did_key_down = Emitter(*input.KeyEvent).init(allocator),
+            .on_did_change_quick_diff_context = Emitter(void).init(allocator),
             .screen_width = @max(width, 1),
             .screen_height = @max(height, 1),
             .status_row = true,
@@ -1816,6 +1824,9 @@ pub const Editor = struct {
         self.on_did_change_dirty.deinit();
         self.on_did_layout_change.deinit();
         self.on_did_change_code_lens_provider.deinit();
+        self.on_did_mouse_event.deinit();
+        self.on_did_key_down.deinit();
+        self.on_did_change_quick_diff_context.deinit();
         for (self.last_content_changes.items) |change| self.allocator.free(change.text);
         self.last_content_changes.deinit();
 
@@ -2189,6 +2200,18 @@ pub const Editor = struct {
     pub fn unregisterContribution(self: *Editor, comptime Contribution: type, value: *Contribution) void {
         const registered = self.getContribution(Contribution) orelse return;
         if (registered == value) _ = self.contributions.remove(Contribution.ID);
+    }
+
+    pub fn setQuickDiffDecorationCount(self: *Editor, count: usize) void {
+        if (self.quick_diff_decoration_count == count) return;
+        self.quick_diff_decoration_count = count;
+        self.on_did_change_quick_diff_context.fire({}) catch {};
+    }
+
+    pub fn setDirtyDiffVisible(self: *Editor, visible: bool) void {
+        if (self.dirty_diff_visible == visible) return;
+        self.dirty_diff_visible = visible;
+        self.on_did_change_quick_diff_context.fire({}) catch {};
     }
 
     pub fn setHasCodeLensProvider(self: *Editor, has_provider: bool) void {

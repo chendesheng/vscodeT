@@ -153,6 +153,8 @@ pub const IViewZone = struct {
     /// Terminal-only windowing for large zone content: preserve the full
     /// whitespace height while asking the delegate to build visible rows.
     clip_to_viewport: bool = false,
+    /// ZoneWidget overlays span the entire editor, including the margin.
+    full_editor_width: bool = false,
     context: ?*anyopaque = null,
     build: ?Build = null,
     build_margin: ?Build = null,
@@ -392,6 +394,10 @@ pub const MouseTarget = struct {
     type: MouseTargetType = .unknown,
     detail: ?MouseTargetDetail = null,
 };
+
+/// The CodeEditorWidget mouse event carries both the resolved editor target
+/// and the native event; contributions may prevent the editor's default action.
+pub const EditorMouseEvent = struct { target: MouseTarget, event: *ui.MouseEvent };
 
 /// A highlighted model range handed to a decoration sink. The sink
 /// materializes it as a `TextModel` decoration with the corresponding class

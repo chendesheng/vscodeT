@@ -704,7 +704,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.revert_buttons.setEnabled(self.options.render_margin_revert_icon and self.sideBySide() and !self.options.read_only and !self.options.render_gutter_menu) catch {};
             self.moved_blocks.recomputeGeometry() catch {};
             diff_editor_editors.applyWordWrap(self.original_editor, self.modified_editor, self.options.diff_word_wrap, self.sideBySide());
-            diff_editor_editors.applySubEditorOptions(self.original_view, self.modified_view, self.sideBySide(), self.options.hide_unchanged_regions, self.options.diff_code_lens);
+            diff_editor_editors.applySubEditorOptions(self.original_view, self.modified_view, self.sideBySide(), self.options.hide_unchanged_regions or self.options.sticky_scroll_enabled == false, self.options.diff_code_lens);
             const widths = self.paneWidths();
             self.original_editor.setViewport(widths.original, self.height);
             self.modified_editor.setViewport(widths.modified, self.height);

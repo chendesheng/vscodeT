@@ -941,6 +941,10 @@ pub const View = struct {
     /// handle the key.
     pub fn dispatchKey(self: *View, event: *ui.KeyEvent) bool {
         self.ensureRendered() catch return false;
+        if (self.editor.on_did_key_down.hasListeners()) {
+            self.editor.on_did_key_down.fire(event) catch {};
+            if (event.default_prevented or event.propagation_stopped) return true;
+        }
         if (self.focusedElement() == null) return false;
         const doc = self.renderSurface().document();
         doc.dispatchEvent(event);
@@ -952,6 +956,11 @@ pub const View = struct {
     /// scrolls the viewport. Returns true when the caret or selection changed.
     pub fn dispatchMouse(self: *View, event: *ui.MouseEvent) !bool {
         try self.ensureRendered();
+        if (self.editor.on_did_mouse_event.hasListeners()) {
+            const target = try self.mouseTargetAt(event.x, event.y);
+            try self.editor.on_did_mouse_event.fire(.{ .target = target, .event = event });
+            if (event.default_prevented or event.propagation_stopped) return true;
+        }
         const glyph_line = if (event.y >= self.top_inset_rows and event.x < self.editor.gutterGlyphWidth()) self.editor.viewLineAtViewportRow(event.y - self.top_inset_rows) else null;
         if (try self.terminal_view_host.dispatchGlyphMarginMouse(glyph_line, event.x, event)) return true;
         const surface = self.renderSurface();
@@ -1511,6 +1520,16 @@ pub const View = struct {
     pub fn applySubEditorOptionOverrides(self: *View, glyph_margin: ?bool, sticky_scroll: ?bool, code_lens: ?bool) void {
         var changed: terminal_editor_config.ChangeSet = undefined;
         if (!self.terminal_view_host.setSubEditorOptionOverrides(glyph_margin, sticky_scroll, code_lens, &changed)) return;
+        const source = editor_options.ConfigurationChangedEvent.init(&changed);
+        self.editor.emitViewEvent(.{ .ViewConfigurationChanged = view_events.ViewConfigurationChangedEvent.init(source) });
+        for (self.configuration_listeners.items) |listener| listener.notify(listener.context, source);
+        self.document_ready = false;
+        self.invalidate();
+    }
+
+    pub fn inheritEmbeddedOptions(self: *View, parent: *const TerminalViewHost) void {
+        var changed: terminal_editor_config.ChangeSet = undefined;
+        self.terminal_view_host.inheritEmbeddedOptions(parent, &changed);
         const source = editor_options.ConfigurationChangedEvent.init(&changed);
         self.editor.emitViewEvent(.{ .ViewConfigurationChanged = view_events.ViewConfigurationChangedEvent.init(source) });
         for (self.configuration_listeners.items) |listener| listener.notify(listener.context, source);

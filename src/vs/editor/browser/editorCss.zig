@@ -22,6 +22,8 @@ pub const search_view = @import("../../workbench/contrib/search/browser/media/se
 pub const search_editor = @import("../../workbench/contrib/searchEditor/browser/media/searchEditor_css.zig");
 pub const scm = @import("../../workbench/contrib/scm/browser/media/scm_css.zig");
 pub const codelens = @import("../contrib/codelens/browser/codelensWidget_css.zig");
+pub const zone_widget = @import("../contrib/zoneWidget/browser/zoneWidget_css.zig");
+pub const peek_view = @import("../contrib/peekView/browser/media/peekViewWidget_css.zig");
 pub const diff_editor = @import("widget/diffEditor/style_css.zig");
 pub const code_editor = @import("widget/codeEditor/editor_css.zig");
 
@@ -42,6 +44,8 @@ pub fn register(doc: *ui.Document) !void {
     _ = try doc.registerSheet(code_editor.sheet);
     _ = try doc.registerSheet(diff_editor.sheet);
     _ = try doc.registerSheet(codelens.sheet);
+    _ = try doc.registerSheet(zone_widget.sheet);
+    _ = try doc.registerSheet(peek_view.sheet);
 }
 
 pub fn registerWorkbench(doc: *ui.Document) !void {
@@ -93,6 +97,10 @@ test "editor css: sheets register into disjoint class ranges" {
     const disclosure = doc.classStyle(@backingInt(diff_editor.Class.diff_hidden_lines)).?;
     try std.testing.expectEqual(ui.Display.flex, disclosure.display.?);
     try std.testing.expectEqual(ui.Pointer.pointer, doc.classStyle(@backingInt(diff_editor.Class.bottom)).?.pointer.?);
+
+    try std.testing.expectEqual(ui.Position.absolute, doc.classStyle(@backingInt(zone_widget.Class.zone_widget)).?.position.?);
+    try std.testing.expectEqual(ui.Display.flex, doc.classStyle(@backingInt(peek_view.Class.head)).?.display.?);
+    try std.testing.expect(codelens.base < zone_widget.base and zone_widget.base < peek_view.base);
 
     // Ranges are disjoint.
     try std.testing.expect(block_decorations_css.base < view_lines_css.base);

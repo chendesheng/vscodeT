@@ -307,7 +307,9 @@ pub const ViewZones = struct {
         const viewport_height = if (self.editor) |editor| editor.textHeight() else 0;
         var values = self.zones.valueIterator();
         while (values.next()) |zone| {
-            try renderNode(doc, host, content_root, &zone.content, zone, zone.delegate.build, zone.delegate.update, zone.delegate.on_before_node_removed, gutter, text_width, scroll_left, viewport_height);
+            const left = if (zone.delegate.full_editor_width) 0 else gutter;
+            const width = text_width + if (zone.delegate.full_editor_width) gutter else 0;
+            try renderNode(doc, host, content_root, &zone.content, zone, zone.delegate.build, zone.delegate.update, zone.delegate.on_before_node_removed, left, width, scroll_left, viewport_height);
             try renderNode(doc, host, margin_root, &zone.margin, zone, zone.delegate.build_margin, zone.delegate.update_margin, null, 0, gutter, 0, viewport_height);
             zone.dirty = false;
         }

@@ -361,6 +361,36 @@ pub const TerminalViewHost = struct {
         return std.mem.indexOfScalar(bool, changed, true) != null;
     }
 
+    /// EmbeddedDiffEditorWidget inherits the parent's code-editor options,
+    /// then applies its own diff/peek overrides. Geometry and read-only state
+    /// belong to the child and are not copied from the parent.
+    pub fn inheritEmbeddedOptions(self: *TerminalViewHost, parent: *const TerminalViewHost, changed: *terminal_editor_config.ChangeSet) void {
+        const layout_info = self.options.layout_info;
+        const wrapping_info = self.options.wrapping_info;
+        self.options = parent.options;
+        self.options.layout_info = layout_info;
+        self.options.wrapping_info = wrapping_info;
+        self.options.set(.readOnly, self.editor.isReadOnly());
+        self.options.set(.folding, false);
+        self.options.set(.fixedOverflowWidgets, true);
+        self.options.set(.scrollBeyondLastLine, false);
+        self.options.set(.allowVariableFonts, false);
+        self.options.set(.allowVariableFontsInAccessibilityMode, false);
+        var minimap = self.options.get(.minimap);
+        minimap.enabled = false;
+        self.options.set(.minimap, minimap);
+        self.configured_glyph_margin = parent.configured_glyph_margin;
+        self.configured_sticky_scroll = parent.configured_sticky_scroll;
+        self.configured_code_lens = parent.configured_code_lens;
+        self.sticky_scroll_override = false;
+        self.applySubEditorOptionValues();
+        self.syncGutterOptions();
+        self.editor.setWordWrapOptions(self.options.get(.wordWrap), self.options.get(.wordWrapColumn), self.options.get(.wrappingIndent), self.options.get(.wordWrapIndicator));
+        self.glyph_margin_dirty = true;
+        self.line_decorations_dirty = true;
+        @memset(changed[0..], true);
+    }
+
     fn applySubEditorOptionValues(self: *TerminalViewHost) void {
         self.options.set(.glyphMargin, self.glyph_margin_override orelse self.configured_glyph_margin);
         var sticky = self.configured_sticky_scroll;
