@@ -529,9 +529,9 @@ pub const TerminalWorkbench = struct {
         self.text_model_resolver = .init(allocator, self.async_io, &self.window_events);
         errdefer self.text_model_resolver.deinit();
         self.text_model_api = self.text_model_resolver.interface();
-        self.git_file_provider = .init(&self.git_model, self.async_io);
-        try self.git_file_provider.register(self.text_model_api);
+        self.git_file_provider = .init(allocator, &self.git_model, self.async_io);
         errdefer self.git_file_provider.deinit();
+        try self.git_file_provider.register(self.text_model_api);
         self.user_keybindings = try user_keybindings_mod.UserKeybindingsLoader.create(allocator, io, self.async_io, &self.window_events);
         errdefer self.user_keybindings.destroy();
         _ = try self.user_keybindings.on_did_change.listen(self, onUserKeybindingsChanged);
@@ -1759,8 +1759,8 @@ pub const TerminalWorkbench = struct {
             self.editor_status = null;
         }
         self.git_commands.deinit();
-        self.git_file_provider.deinit();
         self.deinitGit();
+        self.git_file_provider.deinit();
         self.search_window.destroy();
         if (self.sidebar) |sidebar| sidebar.deinit();
         self.sidebar = null;
@@ -2853,6 +2853,7 @@ pub const TerminalWorkbench = struct {
     // --- begin git / source control
 
     fn deinitGit(self: *TerminalWorkbench) void {
+        self.git_file_provider.detachRepository();
         self.scm.detachProvider();
         self.git_model.deinit();
     }
@@ -2874,6 +2875,7 @@ pub const TerminalWorkbench = struct {
             .on_disabled_context = self,
         })) orelse return;
         errdefer self.deinitGit();
+        try self.git_file_provider.attachRepository(provider, &self.window_events, self.host_api);
         const quick_providers = provider.quickDiffProviders();
         try self.scm.attachProvider(provider.interface(), &quick_providers, .{
             .editors = .{ .part = self.part },

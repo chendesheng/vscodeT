@@ -23,7 +23,7 @@ pub const TextModelResolverService = struct {
     io: std.Io,
     window: *dispatch.Queue,
     collection: ResourceModelCollection,
-    providers: std.ArrayList(ProviderEntry) = .empty,
+    providers: std.ArrayList(*ProviderEntry) = .empty,
     next_provider_id: usize = 0,
     worker: ?*worker_mod.EditorWorkerService = null,
     pending: std.StringHashMapUnmanaged(*PendingReference) = .empty,
@@ -31,13 +31,31 @@ pub const TextModelResolverService = struct {
     next_request_id: u64 = 0,
     delivering: ?*PendingReference = null,
 
-    const ProviderEntry = struct { id: usize, scheme: []u8, provider: resolver.ITextModelContentProvider };
+    const ProviderEntry = struct {
+        service: *TextModelResolverService,
+        id: usize,
+        scheme: []u8,
+        provider: resolver.ITextModelContentProvider,
+        listener: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
+
+        fn changed(change: resolver.ContentChange, self: *ProviderEntry) !void {
+            try self.service.onProviderContentChanged(self.scheme, change);
+        }
+        fn destroy(self: *ProviderEntry) void {
+            if (self.listener) |listener| listener.dispose();
+            const a = self.service.allocator;
+            a.free(self.scheme);
+            a.destroy(self);
+        }
+    };
 
     pub fn init(allocator: Allocator, io: std.Io, window: *dispatch.Queue) TextModelResolverService {
         return .{ .allocator = allocator, .io = io, .window = window, .collection = ResourceModelCollection.init(allocator, window) };
     }
 
     pub fn deinit(self: *TextModelResolverService) void {
+        for (self.providers.items) |entry| entry.destroy();
+        self.providers.deinit(self.allocator);
         var delivery = self.delivering;
         while (delivery) |pending| {
             pending.service = null;
@@ -60,16 +78,19 @@ pub const TextModelResolverService = struct {
             self.worker = null;
         }
         self.collection.deinit();
-        for (self.providers.items) |entry| self.allocator.free(entry.scheme);
-        self.providers.deinit(self.allocator);
     }
 
     pub fn registerTextModelContentProvider(self: *TextModelResolverService, scheme: []const u8, provider: resolver.ITextModelContentProvider) !resolver.ContentProviderRegistration {
+        const entry = try self.allocator.create(ProviderEntry);
+        errdefer self.allocator.destroy(entry);
         const owned = try self.allocator.dupe(u8, scheme);
         errdefer self.allocator.free(owned);
         const id = self.next_provider_id;
         self.next_provider_id += 1;
-        try self.providers.append(self.allocator, .{ .id = id, .scheme = owned, .provider = provider });
+        entry.* = .{ .service = self, .id = id, .scheme = owned, .provider = provider };
+        if (provider.on_did_change_content) |event| entry.listener = try event.listenDisposable(entry, ProviderEntry.changed);
+        errdefer if (entry.listener) |listener| listener.dispose();
+        try self.providers.append(self.allocator, entry);
         return .{ .context = self, .id = id, .remove = unregisterProvider };
     }
 
@@ -78,8 +99,50 @@ pub const TextModelResolverService = struct {
         for (self.providers.items, 0..) |entry, index| {
             if (entry.id != id) continue;
             _ = self.providers.orderedRemove(index);
-            self.allocator.free(entry.scheme);
+            entry.destroy();
             return;
+        }
+    }
+
+    fn onProviderContentChanged(self: *TextModelResolverService, scheme: []const u8, change: resolver.ContentChange) !void {
+        switch (change) {
+            .resources => |uris| for (uris) |uri| {
+                if (std.mem.eql(u8, uri.scheme, scheme)) try self.queueProviderRefresh(uri);
+            },
+            .all => {
+                // Only live resources, copied before provider callbacks can
+                // reenter registration. This is an event, not a model scan
+                // from rendering or the native host loop.
+                var scratch = std.heap.ArenaAllocator.init(self.allocator);
+                defer scratch.deinit();
+                const a = scratch.allocator();
+                var resources: std.ArrayList(std.Uri) = .empty;
+                var iterator = self.collection.entries.valueIterator();
+                while (iterator.next()) |value| {
+                    const uri = value.*.document.model.uri();
+                    if (std.mem.eql(u8, uri.scheme, scheme)) try resources.append(a, try std.Uri.parse(try uri_util.encodedResource(a, uri)));
+                }
+                for (resources.items) |uri| try self.queueProviderRefresh(uri);
+            },
+        }
+    }
+
+    fn queueProviderRefresh(self: *TextModelResolverService, uri: std.Uri) !void {
+        const key = try uri_util.resourceKey(self.allocator, uri);
+        defer self.allocator.free(key);
+        if (!self.collection.entries.contains(key)) return;
+        if (self.pending.get(key)) |pending| {
+            // This event arrived after the immutable provider capture; make
+            // one more read after its completion so the new content is not lost.
+            if (pending.source != null) pending.provider_refresh_after = true;
+        }
+        _ = try self.refreshModelReference(uri, .{ .context = self, .complete = providerRefreshCompleted });
+    }
+
+    fn providerRefreshCompleted(_: *anyopaque, result: resolver.ModelReferenceResult) void {
+        if (result == .resolved) {
+            var reference = result.resolved;
+            reference.dispose();
         }
     }
 
@@ -204,6 +267,7 @@ pub const TextModelResolverService = struct {
         worker_submitted: bool = false,
         canceled: std.atomic.Value(bool) = .init(false),
         reload: bool = false,
+        provider_refresh_after: bool = false,
         previous_delivery: ?*PendingReference = null,
         delivery: dispatch.Task = .{},
         message: worker_mod.Request = .{ .compute = compute, .reply = reply },
@@ -304,6 +368,9 @@ pub const TextModelResolverService = struct {
             var owner = self.existing;
             self.existing = null;
             defer if (owner) |*reference| reference.dispose();
+            defer if (self.provider_refresh_after) {
+                if (self.service) |current| current.queueProviderRefresh(self.uri) catch {};
+            };
             if ((owner == null or self.reload) and self.failure == null) {
                 if (self.result) |value| {
                     if (value.failure) |err| {

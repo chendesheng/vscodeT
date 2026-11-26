@@ -58,9 +58,14 @@ pub const TextContentRequest = struct {
     };
 };
 
+/// File-system providers emit exact changed URIs, or invalidate the currently
+/// loaded models in their scheme after a repository-wide native change.
+pub const ContentChange = union(enum) { all, resources: []const std.Uri };
+
 pub const ITextModelContentProvider = struct {
     context: *anyopaque,
     capture: *const fn (*anyopaque, std.Uri) anyerror!?TextContentRequest,
+    on_did_change_content: ?*Emitter(ContentChange) = null,
 };
 
 pub const ContentProviderRegistration = struct {

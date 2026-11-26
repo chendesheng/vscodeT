@@ -149,13 +149,15 @@ test "TextModelResolverService: model registered by an editor input shares its U
 }
 
 const content = @import("../../../../../editor/common/services/resolverService.zig");
+const ChangeEmitter = @import("../../../../../base/common/event.zig").Emitter(content.ContentChange);
 const TestProvider = struct {
     text: []const u8,
     calls: usize = 0,
     decline: bool = false,
+    changes: ?*ChangeEmitter = null,
 
     fn interface(self: *TestProvider) content.ITextModelContentProvider {
-        return .{ .context = self, .capture = capture };
+        return .{ .context = self, .capture = capture, .on_did_change_content = self.changes };
     }
     fn capture(context: *anyopaque, resource: std.Uri) !?content.TextContentRequest {
         const self: *TestProvider = @ptrCast(@alignCast(context));
@@ -382,4 +384,70 @@ test "TextModelResolverService: a fully abandoned acquisition does not publish a
     flush(&queue);
     try std.testing.expect(!canceled.completed);
     try std.testing.expect((try service.acquireExisting(uri)) == null);
+}
+
+test "TextModelResolverService: provider content events refresh only affected retained URI models" {
+    const a = std.testing.allocator;
+    var queue: dispatch.Queue = .{ .io = std.testing.io };
+    var changes = ChangeEmitter.init(a);
+    defer changes.deinit();
+    var service = resolver.TextModelResolverService.init(a, std.testing.io, &queue);
+    defer service.deinit();
+    var provider: TestProvider = .{ .text = "new", .changes = &changes };
+    const registration = try service.registerTextModelContentProvider("test", provider.interface());
+    defer registration.dispose();
+    const first_uri = try std.Uri.parse("test:/first");
+    const second_uri = try std.Uri.parse("test:/second");
+    var first = try service.createResolvedModelReference(first_uri, "/first", "old first", true);
+    defer first.dispose();
+    var second = try service.createResolvedModelReference(second_uri, "/second", "old second", true);
+    defer second.dispose();
+    const first_model = first.object.textEditorModel;
+    const second_model = second.object.textEditorModel;
+    try changes.fire(.{ .resources = &.{first_uri} });
+    try std.testing.expectEqual(@as(usize, 1), provider.calls);
+    try std.testing.expectEqualStrings("old first", try first_model.borrowLineContent(1));
+    service.worker.?.waitForReply();
+    flush(&queue);
+    try std.testing.expectEqualStrings("new", try first_model.borrowLineContent(1));
+    try std.testing.expectEqualStrings("old second", try second_model.borrowLineContent(1));
+    try std.testing.expect(!resolver.TextModelResolverService.documentOf(first).isDirty());
+    provider.text = "both";
+    try changes.fire(.all);
+    try std.testing.expectEqual(@as(usize, 3), provider.calls);
+    while (service.pending.count() != 0) {
+        service.worker.?.waitForReply();
+        flush(&queue);
+    }
+    try std.testing.expectEqualStrings("both", try first_model.borrowLineContent(1));
+    try std.testing.expectEqualStrings("both", try second_model.borrowLineContent(1));
+    registration.dispose();
+    try changes.fire(.all);
+    try std.testing.expectEqual(@as(usize, 3), provider.calls);
+}
+
+test "TextModelResolverService: provider content event during an immutable capture retains the newer revision" {
+    const a = std.testing.allocator;
+    var queue: dispatch.Queue = .{ .io = std.testing.io };
+    var changes = ChangeEmitter.init(a);
+    defer changes.deinit();
+    var service = resolver.TextModelResolverService.init(a, std.testing.io, &queue);
+    defer service.deinit();
+    var provider: TestProvider = .{ .text = "first refresh", .changes = &changes };
+    const registration = try service.registerTextModelContentProvider("test", provider.interface());
+    defer registration.dispose();
+    const uri = try std.Uri.parse("test:/resource");
+    var reference = try service.createResolvedModelReference(uri, "/resource", "old", true);
+    defer reference.dispose();
+    const model = reference.object.textEditorModel;
+    try changes.fire(.all);
+    provider.text = "second refresh";
+    try changes.fire(.all);
+    try std.testing.expectEqual(@as(usize, 1), provider.calls);
+    while (service.pending.count() != 0) {
+        service.worker.?.waitForReply();
+        flush(&queue);
+    }
+    try std.testing.expectEqual(@as(usize, 2), provider.calls);
+    try std.testing.expectEqualStrings("second refresh", try model.borrowLineContent(1));
 }

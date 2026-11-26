@@ -7,14 +7,63 @@ const std = @import("std");
 const Model = @import("model.zig").Model;
 const SnapshotSource = @import("../../../vs/editor/browser/widget/diffEditor/diffProviderFactoryService.zig").SnapshotSource;
 const resolver = @import("../../../vs/editor/common/services/resolverService.zig");
+const Repository = @import("repository.zig").Repository;
+const dispatch = @import("../../../vs/base/common/windowDispatch.zig");
+const event = @import("../../../vs/base/common/event.zig");
+const IHostService = @import("../../../vs/workbench/services/host/browser/host.zig").IHostService;
+const time = @import("../../../vs/base/common/timeCompat.zig");
 
 pub const GitFileSystemProvider = struct {
     model: *Model,
     io: std.Io,
     registration: ?resolver.ContentProviderRegistration = null,
+    on_did_change: event.Emitter(resolver.ContentChange),
+    repository_listener: ?event.SignalSubscription = null,
+    focus_listener: ?event.SignalSubscription = null,
+    change_deadline: dispatch.Task = .{},
+    focused: bool = true,
+    waiting_for_focus: bool = false,
 
-    pub fn init(model: *Model, io: std.Io) GitFileSystemProvider {
-        return .{ .model = model, .io = io };
+    pub fn init(allocator: std.mem.Allocator, model: *Model, io: std.Io) GitFileSystemProvider {
+        return .{ .model = model, .io = io, .on_did_change = .init(allocator) };
+    }
+
+    pub fn attachRepository(self: *GitFileSystemProvider, repository: *Repository, window: *dispatch.Queue, host: IHostService) !void {
+        self.detachRepository();
+        self.change_deadline = .{ .queue = window, .context = self, .run = fireChanges };
+        self.focused = host.hasFocus();
+        self.repository_listener = try repository.on_change.listenDisposable(self, onRepositoryChanged);
+        errdefer self.detachRepository();
+        self.focus_listener = try host.on_did_change_focus.listenDisposable(self, onFocusChanged);
+    }
+
+    pub fn detachRepository(self: *GitFileSystemProvider) void {
+        if (self.repository_listener) |listener| listener.dispose();
+        if (self.focus_listener) |listener| listener.dispose();
+        self.repository_listener = null;
+        self.focus_listener = null;
+        self.change_deadline.schedule(null);
+        self.waiting_for_focus = false;
+    }
+
+    fn onRepositoryChanged(_: void, self: *GitFileSystemProvider) !void {
+        self.change_deadline.schedule(time.milliTimestamp() + 1100);
+    }
+
+    fn onFocusChanged(focused: bool, self: *GitFileSystemProvider) !void {
+        self.focused = focused;
+        if (focused and self.waiting_for_focus) self.change_deadline.post();
+    }
+
+    fn fireChanges(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *GitFileSystemProvider = @ptrCast(@alignCast(context));
+        if (!self.focused) {
+            self.waiting_for_focus = true;
+            return false;
+        }
+        self.waiting_for_focus = false;
+        self.on_did_change.fire(.all) catch {};
+        return true;
     }
 
     pub fn register(self: *GitFileSystemProvider, service: resolver.ITextModelService) !void {
@@ -22,12 +71,14 @@ pub const GitFileSystemProvider = struct {
     }
 
     pub fn deinit(self: *GitFileSystemProvider) void {
+        self.detachRepository();
         if (self.registration) |registration| registration.dispose();
         self.registration = null;
+        self.on_did_change.deinit();
     }
 
     pub fn interface(self: *GitFileSystemProvider) resolver.ITextModelContentProvider {
-        return .{ .context = self, .capture = capture };
+        return .{ .context = self, .capture = capture, .on_did_change_content = &self.on_did_change };
     }
 
     fn capture(context: *anyopaque, resource: std.Uri) !?resolver.TextContentRequest {

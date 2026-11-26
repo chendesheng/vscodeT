@@ -113,7 +113,7 @@ const PendingResources = struct {
             for ([_]*ResolvedResourceSide{ &item.original, &item.modified }) |side| {
                 const uri = side.uri orelse continue;
                 self.remaining += 1;
-                side.request = service.refreshModelReference(uri, .{ .context = side, .complete = ResolvedResourceSide.complete }) catch |err| blk: {
+                side.request = service.createModelReference(uri, .{ .context = side, .complete = ResolvedResourceSide.complete }) catch |err| blk: {
                     side.result = .{ .failure = err };
                     self.remaining -= 1;
                     break :blk null;

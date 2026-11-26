@@ -11627,4 +11627,32 @@ test "Workbench: git scm integration resolves a Git revision and an outside work
     try std.testing.expectEqualStrings("revision", try vm.items[0].original.model.borrowLineContent(1));
     try std.testing.expectEqual(working, vm.items[0].modified);
     try std.testing.expectEqualStrings("unsaved outside", try vm.items[0].modified.model.borrowLineContent(1));
+
+    // A Git file-system provider change is independent of the explicit
+    // multi-diff source. Its debounce and focus barrier both precede any
+    // model mutation, and the existing model receives the new contents.
+    const original = vm.items[0].original;
+    try wb.host_service.setFocus(false);
+    try repo.dir.writeFile(io, .{ .sub_path = "tracked.txt", .data = "new revision\n" });
+    try std.testing.expect(try runGitTest(a, root, &.{ "add", "tracked.txt" }));
+    try std.testing.expect(try runGitTest(a, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "second" }));
+    wb.refreshGitStatus();
+    const deadline = wb.git_file_provider.change_deadline.at orelse return error.MissingProviderDeadline;
+    try std.testing.expectEqualStrings("revision", try original.model.borrowLineContent(1));
+    for (0..1000) |_| {
+        if (wb.git_file_provider.change_deadline.at == null) break;
+        _ = wb.window_events.dispatch(deadline);
+    }
+    try std.testing.expect(wb.git_file_provider.waiting_for_focus);
+    try std.testing.expectEqualStrings("revision", try original.model.borrowLineContent(1));
+    try wb.host_service.setFocus(true);
+    for (0..6000) |_| {
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        if (std.mem.eql(u8, "new revision", try original.model.borrowLineContent(1))) break;
+        std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+    try std.testing.expectEqual(original, vm.items[0].original);
+    try std.testing.expectEqualStrings("new revision", try original.model.borrowLineContent(1));
+    try std.testing.expect(!original.isDirty());
+    try std.testing.expectEqualStrings("unsaved outside", try working.model.borrowLineContent(1));
 }
