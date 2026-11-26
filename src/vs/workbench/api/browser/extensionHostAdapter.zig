@@ -18,6 +18,7 @@ const protocol = @import("../common/extHost.protocol.zig");
 const time_compat = @import("../../../base/common/timeCompat.zig");
 const std_uri = @import("../../../base/common/stdUri.zig");
 const Editor = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const EditorDocument = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").EditorDocument;
 const LastContentChange = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").LastContentChange;
 const ChangeListener = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").ChangeListener;
 const TextEdit = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").TextEdit;
@@ -71,6 +72,7 @@ const EntryAccessor = statusbar_part.EntryAccessor;
 const ActiveDocument = struct {
     tab: *Tab,
     dispose_listener: usize,
+    editor_dispose_listener: usize,
     language_listener: usize,
     editor: *Editor,
     uri: []u8,
@@ -929,6 +931,11 @@ pub const Extensions = struct {
         // are still alive at this point in the pane's disposal lifecycle.
         self.removeActiveDocument() catch {};
     }
+    fn onActiveEditorWillDispose(_: void, self: *Extensions) !void {
+        // A virtualized item can unmount while its input and text documents
+        // remain open. Detach from the old code editor before it is released.
+        self.removeActiveDocument() catch {};
+    }
     fn onActiveLanguageChanged(event: ModelLanguageChangedEvent, self: *Extensions) !void {
         const active = if (self.active) |*value| value else return;
         const language = try self.allocator.dupe(u8, event.newLanguage);
@@ -967,21 +974,37 @@ pub const Extensions = struct {
         return true;
     }
 
+    fn activeCodeEditorForTab(tab: *Tab) ?*Editor {
+        if (tab.isImage() or tab.terminalInstance() != null) return null;
+        if (tab.diff) |diff| return diff.widget.focusedEditor();
+        if (tab.multi_diff) |multi| {
+            const control = multi.widget.activeControl() orelse return null;
+            return control.focusedEditor();
+        }
+        return tab.editor;
+    }
+
     fn syncDocumentModels(self: *Extensions) !void {
-        var editors: std.ArrayList(*Editor) = .empty;
-        defer editors.deinit(self.allocator);
+        var documents: std.ArrayList(*EditorDocument) = .empty;
+        defer documents.deinit(self.allocator);
         if (self.editor_service.activeEditorPane()) |tab| {
-            if (!tab.isImage() and tab.terminalInstance() == null) try editors.append(self.allocator, if (tab.diff) |diff| diff.widget.focusedEditor() else tab.editor);
+            if (activeCodeEditorForTab(tab)) |editor| try documents.append(self.allocator, editor.document);
         }
         for (self.editor_service.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
                 if (tab.isImage() or tab.terminalInstance() != null) continue;
-                if (tab.diff) |diff| {
-                    try editors.appendSlice(self.allocator, &.{ diff.widget.original_editor, diff.widget.modified_editor });
-                } else try editors.append(self.allocator, tab.editor);
+                if (tab.multi_diff) |multi| {
+                    for (multi.input.entries) |entry| {
+                        for ([_]?@import("../../../editor/browser/widget/multiDiffEditor/model.zig").DiffItemSource{ entry.item.original, entry.item.modified }) |source| {
+                            if (source) |side| if (side.textModel) |document| try documents.append(self.allocator, document);
+                        }
+                    }
+                } else if (tab.diff) |diff| {
+                    try documents.appendSlice(self.allocator, &.{ diff.widget.original_editor.document, diff.widget.modified_editor.document });
+                } else try documents.append(self.allocator, tab.editor.document);
             }
         }
-        try self.models.synchronize(editors.items);
+        try self.models.synchronizeDocuments(documents.items);
     }
 
     fn syncActiveDocument(self: *Extensions) !void {
@@ -990,12 +1013,11 @@ pub const Extensions = struct {
             try self.syncDocumentModels();
             return;
         };
-        if (tab.isImage() or tab.terminalInstance() != null) {
+        const editor = activeCodeEditorForTab(tab) orelse {
             if (self.active != null) try self.removeActiveDocument();
             try self.syncDocumentModels();
             return;
-        }
-        const editor = if (tab.diff) |diff| diff.widget.focusedEditor() else tab.editor;
+        };
         if (self.active) |active| {
             if (active.tab == tab and active.editor == editor) return;
             try self.removeActiveDocument();
@@ -1024,11 +1046,13 @@ pub const Extensions = struct {
         }, selections);
         const dispose_listener = try tab.listenWillDispose(self, onActiveTabWillDispose);
         errdefer tab.unlistenWillDispose(dispose_listener);
+        const editor_dispose_listener = try editor.on_will_dispose.listen(self, onActiveEditorWillDispose);
+        errdefer editor.on_will_dispose.unlisten(editor_dispose_listener);
         const language_listener = try editor.model.listenDidChangeLanguage(self, onActiveLanguageChanged);
         errdefer editor.model.removeDidChangeLanguageListener(language_listener);
         try notifyModelMirror(self, .documents_and_editors, "$acceptDocumentsAndEditorsDelta", &.{.{ .json = delta }});
         editor.addViewEventHandler(&self.active_selection_handler);
-        self.active = .{ .tab = tab, .dispose_listener = dispose_listener, .language_listener = language_listener, .editor = editor, .uri = uri, .language_id = language };
+        self.active = .{ .tab = tab, .dispose_listener = dispose_listener, .editor_dispose_listener = editor_dispose_listener, .language_listener = language_listener, .editor = editor, .uri = uri, .language_id = language };
         self.setScrollListener(editor);
         self.captureSelections(editor);
         self.activation_tracker.activateLanguage(self.host, editor.languageId());
@@ -1064,6 +1088,7 @@ pub const Extensions = struct {
         self.selection_task.schedule(null);
         self.visible_ranges_task.schedule(null);
         active.tab.unlistenWillDispose(active.dispose_listener);
+        active.editor.on_will_dispose.unlisten(active.editor_dispose_listener);
         active.editor.removeViewEventHandler(&self.active_selection_handler);
         active.editor.model.removeDidChangeLanguageListener(active.language_listener);
         self.setScrollListener(null);

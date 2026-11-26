@@ -40,6 +40,7 @@ pub fn MultiDiffEditor(comptime View: type) type {
         preferences: ?*common.Preferences = null,
         preferences_listener: ?event.SignalSubscription = null,
         widget_listener: ?event.SignalSubscription = null,
+        active_control_listener: ?event.SignalSubscription = null,
         composite_listener: ?event.SignalSubscription = null,
         resolving_listener: ?event.SignalSubscription = null,
         pending_reveal: ?PendingReveal = null,
@@ -72,6 +73,7 @@ pub fn MultiDiffEditor(comptime View: type) type {
             const vm = try input.getViewModel(io, window, worker);
             if (composite) |value| try value.setViewModel(vm, preserve_focus) else try widget.setViewModel(vm, .{ .preserveFocus = preserve_focus });
             self.widget_listener = try widget.on_did_change_layout.listenDisposable(self, onChanged);
+            self.active_control_listener = try widget.on_did_change_active_control.listenDisposable(self, onChanged);
             self.resolving_listener = try input.on_did_change_resolving_documents.listenDisposable(self, onChanged);
             if (composite) |value| self.composite_listener = try value.changed.listenDisposable(self, onChanged);
             if (preferences) |prefs| self.preferences_listener = try prefs.changed.listenDisposable(self, onPreferences);
@@ -133,6 +135,8 @@ pub fn MultiDiffEditor(comptime View: type) type {
         pub fn detachServices(self: *Self) void {
             if (self.preferences_listener) |listener| listener.dispose();
             if (self.widget_listener) |listener| listener.dispose();
+            if (self.active_control_listener) |listener| listener.dispose();
+            self.active_control_listener = null;
             if (self.composite_listener) |listener| listener.dispose();
             if (self.resolving_listener) |listener| listener.dispose();
             self.resolving_listener = null;

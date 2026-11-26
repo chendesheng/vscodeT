@@ -212,6 +212,8 @@ pub const Tab = struct {
     diff: ?*DiffView = null,
     multi_diff: ?*MultiDiffPane = null,
     multi_diff_listener: ?usize = null,
+    multi_diff_resources_listener: ?usize = null,
+    multi_diff_documents_listener: ?usize = null,
     control_change_service: ?*groups.EditorGroupsService = null,
     markdown_preview: ?*MarkdownPreview = null,
     window: ?*@import("../../../../base/common/windowDispatch.zig").Queue = null,
@@ -458,11 +460,24 @@ pub const Tab = struct {
         errdefer view.deinit();
         self.* = .{ .allocator = allocator, .editor = editor, .view = view, .file_input = null, .input = pane.input.interface(), .multi_diff = pane };
         self.multi_diff_listener = try pane.changed.listen(self, onMultiDiffChanged);
+        errdefer pane.changed.unlisten(self.multi_diff_listener.?);
+        self.multi_diff_resources_listener = try pane.input.on_did_change_resources.listen(self, onMultiDiffChanged);
+        errdefer pane.input.on_did_change_resources.unlisten(self.multi_diff_resources_listener.?);
+        self.multi_diff_documents_listener = try pane.input.document_set.on_did_change_documents.listen(self, onMultiDiffChanged);
         return self;
     }
 
     fn onMultiDiffChanged(_: void, self: *Tab) !void {
         if (self.control_change_service) |service| try service.on_did_visible_editors_change.fire({});
+    }
+
+    fn detachMultiDiffListeners(self: *Tab, pane: *MultiDiffPane) void {
+        if (self.multi_diff_listener) |id| pane.changed.unlisten(id);
+        if (self.multi_diff_resources_listener) |id| pane.input.on_did_change_resources.unlisten(id);
+        if (self.multi_diff_documents_listener) |id| pane.input.document_set.on_did_change_documents.unlisten(id);
+        self.multi_diff_listener = null;
+        self.multi_diff_resources_listener = null;
+        self.multi_diff_documents_listener = null;
     }
 
     pub fn activeDiffWidget(self: *Tab) ?*DiffWidget {
@@ -545,9 +560,8 @@ pub const Tab = struct {
     /// pane was first mounted. Release them before window service teardown.
     pub fn detachMultiDiffControls(self: *Tab) void {
         const multi = self.multi_diff orelse return;
+        self.detachMultiDiffListeners(multi);
         multi.input.detachSource();
-        if (self.multi_diff_listener) |id| multi.changed.unlisten(id);
-        self.multi_diff_listener = null;
         multi.detachServices();
         multi.widget.setViewModel(null, .{}) catch {};
     }
@@ -1238,8 +1252,7 @@ pub const Tab = struct {
         }
         self.view.deinit();
         if (self.multi_diff) |multi| {
-            if (self.multi_diff_listener) |id| multi.changed.unlisten(id);
-            self.multi_diff_listener = null;
+            self.detachMultiDiffListeners(multi);
             multi.destroy();
             self.editor.deinit();
             self.allocator.destroy(self.editor);

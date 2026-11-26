@@ -152,6 +152,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
         pending_dimensions: ?scroll_mod.ScrollDimensions = null,
         last_error: ?anyerror = null,
         on_did_change_layout: Emitter(void),
+        on_did_change_active_control: Emitter(void),
 
         pub fn create(allocator: Allocator, io: std.Io, queue: *dispatch.Queue, host: Host, variant: variants.MultiDiffEditorVariant) !*Self {
             const self = try allocator.create(Self);
@@ -169,9 +170,11 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
                 .manager = undefined,
                 .padding = .{ .change = .init(allocator) },
                 .on_did_change_layout = .init(allocator),
+                .on_did_change_active_control = .init(allocator),
             };
             errdefer self.padding.change.deinit();
             errdefer self.on_did_change_layout.deinit();
+            errdefer self.on_did_change_active_control.deinit();
             self.manager = try Manager.create(allocator, .{
                 .context = self,
                 .get_id = getItemId,
@@ -180,6 +183,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
                 .on_unbound_change = getUnboundChange,
                 .create_template = createTemplate,
                 .on_will_unbind = onWillUnbind,
+                .on_did_change_control = onBindingControlChanged,
                 .on_unexpected_error = onUnexpectedError,
             }, scroll_view);
             errdefer self.manager.destroy();
@@ -198,6 +202,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
             self.scroll_view.destroy();
             self.padding.change.deinit();
             self.on_did_change_layout.deinit();
+            self.on_did_change_active_control.deinit();
             self.clearPendingRestorationState();
             self.allocator.destroy(self);
         }
@@ -265,7 +270,12 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
         }
         fn onActiveChanged(_: void, self: *Self) !void {
             for (self.manager.items) |managed| if (managed.binding()) |binding| try binding.template.updateHeader(binding.item);
+            try self.on_did_change_active_control.fire({});
             try self.on_did_change_layout.fire({});
+        }
+        fn onBindingControlChanged(context: *anyopaque, item: *model.DocumentDiffItemViewModel) !void {
+            const self: *Self = @ptrCast(@alignCast(context));
+            if (self.model) |value| if (value.activeDiffItem == item) try self.on_did_change_active_control.fire({});
         }
         fn updateItems(self: *Self) !void {
             const items = if (self.model) |value| value.items else &.{};

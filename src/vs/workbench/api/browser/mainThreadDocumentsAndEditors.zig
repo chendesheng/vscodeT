@@ -382,23 +382,30 @@ pub const ModelCollection = struct {
         return null;
     }
 
-    /// `editors` is the model set delivered by the editor-group lifecycle;
-    /// the active editor is first when two controls resolve the same URI.
+    /// The model set is independent of mounted code-editor controls.
+    /// The active document is first when two controls resolve the same URI.
     pub fn synchronize(self: *ModelCollection, editors: []const *Editor) !void {
+        var documents: std.ArrayList(*EditorDocument) = .empty;
+        defer documents.deinit(self.allocator);
+        for (editors) |editor| try documents.append(self.allocator, editor.document);
+        try self.synchronizeDocuments(documents.items);
+    }
+
+    pub fn synchronizeDocuments(self: *ModelCollection, documents: []const *EditorDocument) !void {
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const a = scratch.allocator();
-        var wanted = std.StringHashMap(*Editor).init(a);
-        for (editors) |editor| {
-            const key = try std_uri.resourceKey(a, editor.model.uri());
+        var wanted = std.StringHashMap(*EditorDocument).init(a);
+        for (documents) |document| {
+            const key = try std_uri.resourceKey(a, document.model.uri());
             const entry = try wanted.getOrPut(key);
-            if (!entry.found_existing) entry.value_ptr.* = editor;
+            if (!entry.found_existing) entry.value_ptr.* = document;
         }
         var index: usize = 0;
         while (index < self.documents.items.len) {
             const mirrored = self.documents.items[index];
-            const editor = wanted.get(mirrored.key);
-            if (editor == null or editor.?.document != mirrored.document) {
+            const document = wanted.get(mirrored.key);
+            if (document == null or document.? != mirrored.document) {
                 try self.remove(index);
             } else {
                 _ = wanted.remove(mirrored.key);
@@ -406,19 +413,19 @@ pub const ModelCollection = struct {
             }
         }
         // Preserve the caller's model ordering in addedDocuments.
-        for (editors) |editor| {
-            const key = try std_uri.resourceKey(a, editor.model.uri());
+        for (documents) |document| {
+            const key = try std_uri.resourceKey(a, document.model.uri());
             if (wanted.fetchRemove(key)) |entry| try self.add(entry.value, key);
         }
     }
 
-    fn add(self: *ModelCollection, editor: *Editor, key: []const u8) !void {
-        const mirrored = try MirroredDocument.create(self, editor, key);
+    fn add(self: *ModelCollection, document: *EditorDocument, key: []const u8) !void {
+        const mirrored = try MirroredDocument.create(self, document, key);
         errdefer mirrored.deinit();
         try self.documents.ensureUnusedCapacity(self.allocator, 1);
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
-        const delta = try addedModelDelta(scratch.allocator(), editor.model, editor.languageId(), editor.document.isDirty());
+        const delta = try addedModelDelta(scratch.allocator(), document.model, document.model.getLanguageId(), document.isDirty());
         try self.host.notify(self.host.context, .documents_and_editors, "$acceptDocumentsAndEditorsDelta", &.{.{ .json = delta }});
         self.documents.appendAssumeCapacity(mirrored);
     }
@@ -446,19 +453,19 @@ const MirroredDocument = struct {
     dirty_listener: bool = false,
     save_listener: bool = false,
 
-    fn create(owner: *ModelCollection, editor: *Editor, key: []const u8) !*MirroredDocument {
+    fn create(owner: *ModelCollection, document: *EditorDocument, key: []const u8) !*MirroredDocument {
         const a = owner.allocator;
         const self = try a.create(MirroredDocument);
         const owned = a.dupe(u8, key) catch |err| {
             a.destroy(self);
             return err;
         };
-        self.* = .{ .owner = owner, .document = editor.document, .copy = editor_terminal.workingCopyInterface(editor), .key = owned, .lines = .init(a), .eol = editor.model.getEOL() };
+        self.* = .{ .owner = owner, .document = document, .copy = document.interface(), .key = owned, .lines = .init(a), .eol = document.model.getEOL() };
         self.document.retain();
         errdefer self.deinit();
-        self.lines = try captureLines(a, editor.model);
-        self.content_listener = try editor.model.onDidChangeContentWithContextId(self, onContent);
-        self.language_listener = try editor.model.listenDidChangeLanguage(self, onLanguage);
+        self.lines = try captureLines(a, document.model);
+        self.content_listener = try document.model.onDidChangeContentWithContextId(self, onContent);
+        self.language_listener = try document.model.listenDidChangeLanguage(self, onLanguage);
         self.copy.add_dirty_listener(self.copy.context, .{ .context = self, .callback = onDirty });
         self.dirty_listener = true;
         self.copy.add_save_listener(self.copy.context, .{ .context = self, .callback = onSave });
@@ -673,4 +680,45 @@ test "documentsAndEditors: diff model resources survive editor focus changes and
     try std.testing.expect(models.modelForResource(key) == null);
     try models.synchronize(&.{});
     try std.testing.expectEqual(@as(usize, 2), host.removed);
+}
+
+test "documentsAndEditors: mirrors unmounted resource documents without synthetic editor views" {
+    const a = std.testing.allocator;
+    const Host = struct {
+        added: usize = 0,
+        removed: usize = 0,
+        edits: usize = 0,
+        fn notify(context: *anyopaque, actor: ModelCollection.Actor, method: []const u8, args: []const rpc.Arg) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (actor == .documents_and_editors) {
+                const delta = args[0].json.object;
+                if (delta.get("addedDocuments")) |docs| {
+                    try std.testing.expectEqualStrings("git", docs.array.items[0].object.get("uri").?.object.get("scheme").?.string);
+                    self.added += 1;
+                }
+                if (delta.get("removedDocuments") != null) self.removed += 1;
+            } else if (std.mem.eql(u8, method, "$acceptModelChanged")) self.edits += 1;
+        }
+    };
+    var host: Host = .{};
+    var collection = ModelCollection.init(a, .{ .context = &host, .notify = Host.notify });
+    defer collection.deinit();
+    const first = try EditorDocument.createFromText(a, std.testing.io, "/repo/a.txt", "before", try std.Uri.parse("git:/repo/a.txt?HEAD"));
+    defer first.release();
+    const other = try EditorDocument.createFromText(a, std.testing.io, "/repo/b.txt", "other", try std.Uri.parse("git:/repo/b.txt?HEAD"));
+    defer other.release();
+    try std.testing.expectEqual(@as(usize, 0), first.editors.items.len);
+    try std.testing.expectEqual(@as(usize, 0), other.editors.items.len);
+    try collection.synchronizeDocuments(&.{ first, other });
+    try std.testing.expectEqual(@as(usize, 2), host.added);
+    const key = try std_uri.resourceKey(a, other.model.uri());
+    defer a.free(key);
+    try std.testing.expectEqual(other.model, collection.modelForResource(key).?);
+    try other.appendGeneratedContents(" changed");
+    try std.testing.expectEqual(@as(usize, 1), host.edits);
+    try collection.synchronizeDocuments(&.{ other, first, other });
+    try std.testing.expectEqual(@as(usize, 2), host.added);
+    try collection.synchronizeDocuments(&.{first});
+    try std.testing.expectEqual(@as(usize, 1), host.removed);
+    try std.testing.expect(collection.modelForResource(key) == null);
 }

@@ -55,6 +55,7 @@ pub const MultiDiffEditorInput = struct {
     last_resolution_failure: ?anyerror = null,
     isResolvingDocuments: bool = false,
     on_did_change_resolving_documents: @import("../../../../base/common/event.zig").Emitter(void),
+    on_did_change_resources: @import("../../../../base/common/event.zig").Emitter(void),
     initial_resources_arena: ?std.heap.ArenaAllocator = null,
     initial_resources: ?[]const source_mod.MultiDiffEditorItem = null,
 
@@ -114,9 +115,20 @@ pub const MultiDiffEditorInput = struct {
             try self.document_set.setContextKeys(keys);
         }
         const binding = self.source_binding orelse return;
+        try self.on_did_change_resources.fire({});
         try self.setResolvingDocuments(true);
         errdefer self.setResolvingDocuments(false) catch {};
         try binding.resolve_resources(binding.context, source.resources(source.context));
+    }
+
+    /// Upstream input.resources includes declared URI pairs even when text
+    /// resolution fails or a resource is binary; its lifetime belongs to
+    /// the resolved source, independently of the document/view models.
+    pub fn resources(self: *const MultiDiffEditorInput) ?[]const source_mod.MultiDiffEditorItem {
+        if (self.resolved_source) |source| {
+            if (source.isReady() and source.failure() == null) return source.resources(source.context);
+        }
+        return self.initial_resources;
     }
 
     pub fn setResolvingDocuments(self: *MultiDiffEditorInput, resolving: bool) !void {
@@ -189,6 +201,7 @@ pub const MultiDiffEditorInput = struct {
             .is_transient = transient,
             .document_set = .init(allocator),
             .on_did_change_resolving_documents = .init(allocator),
+            .on_did_change_resources = .init(allocator),
         };
         self.base.impl = self;
         self.base.resource = self.source_uri;
@@ -212,7 +225,7 @@ pub const MultiDiffEditorInput = struct {
     }
 
     pub fn resolveSource(self: *MultiDiffEditorInput, resolver: source_mod.IMultiDiffSourceResolverService) !source_mod.IResolvedMultiDiffSource {
-        if (self.initial_resources) |resources| return source_mod.StaticResolvedMultiDiffSource.create(self.allocator, resources);
+        if (self.initial_resources) |initial| return source_mod.StaticResolvedMultiDiffSource.create(self.allocator, initial);
         return (try resolver.resolve(try std.Uri.parse(self.source_uri))) orelse try source_mod.StaticResolvedMultiDiffSource.create(self.allocator, &.{});
     }
 
@@ -230,6 +243,7 @@ pub const MultiDiffEditorInput = struct {
         if (self.vm) |value| value.destroy();
         self.document_set.deinit();
         self.on_did_change_resolving_documents.deinit();
+        self.on_did_change_resources.deinit();
         self.releaseEntries(self.entries);
         self.base.deinit();
         self.allocator.free(self.source_uri);

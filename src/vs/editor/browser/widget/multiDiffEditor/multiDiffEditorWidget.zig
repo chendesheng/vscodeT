@@ -28,29 +28,39 @@ pub fn MultiDiffEditorWidget(comptime View: type) type {
         impl: *Impl,
         allocator: std.mem.Allocator,
         on_did_change_layout: Emitter(void),
+        on_did_change_active_control: Emitter(void),
         on_will_dispose: Emitter(void),
         layout_listener: ?usize = null,
+        active_control_listener: ?usize = null,
 
         pub fn create(allocator: std.mem.Allocator, io: std.Io, queue: *dispatch.Queue, host: Host, variant: MultiDiffEditorVariant) !*Self {
             const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
-            self.* = .{ .allocator = allocator, .impl = try Impl.create(allocator, io, queue, host, variant), .on_did_change_layout = .init(allocator), .on_will_dispose = .init(allocator) };
+            self.* = .{ .allocator = allocator, .impl = try Impl.create(allocator, io, queue, host, variant), .on_did_change_layout = .init(allocator), .on_did_change_active_control = .init(allocator), .on_will_dispose = .init(allocator) };
             errdefer self.impl.destroy();
             errdefer self.on_did_change_layout.deinit();
+            errdefer self.on_did_change_active_control.deinit();
             errdefer self.on_will_dispose.deinit();
             self.layout_listener = try self.impl.on_did_change_layout.listen(self, onLayoutChanged);
+            errdefer self.impl.on_did_change_layout.unlisten(self.layout_listener.?);
+            self.active_control_listener = try self.impl.on_did_change_active_control.listen(self, onActiveControlChanged);
             return self;
         }
         pub fn destroy(self: *Self) void {
             self.on_will_dispose.fire({}) catch {};
             self.on_will_dispose.deinit();
             if (self.layout_listener) |id| self.impl.on_did_change_layout.unlisten(id);
+            if (self.active_control_listener) |id| self.impl.on_did_change_active_control.unlisten(id);
             self.impl.destroy();
             self.on_did_change_layout.deinit();
+            self.on_did_change_active_control.deinit();
             self.allocator.destroy(self);
         }
         fn onLayoutChanged(_: void, self: *Self) !void {
             try self.on_did_change_layout.fire({});
+        }
+        fn onActiveControlChanged(_: void, self: *Self) !void {
+            try self.on_did_change_active_control.fire({});
         }
         pub fn createViewModel(self: *Self, source: model.IMultiDiffEditorModel, worker: ?view_model.WorkerServices) !*MultiDiffEditorViewModel {
             return MultiDiffEditorViewModel.create(self.allocator, self.impl.io, source, self.impl.queue, worker);
@@ -79,10 +89,13 @@ pub fn MultiDiffEditorWidget(comptime View: type) type {
             const height = old.scroll_view.height;
             const padding = old.padding.height;
             if (self.layout_listener) |id| old.on_did_change_layout.unlisten(id);
+            if (self.active_control_listener) |id| old.on_did_change_active_control.unlisten(id);
             self.layout_listener = null;
+            self.active_control_listener = null;
             old.destroy();
             self.impl = replacement;
             self.layout_listener = try replacement.on_did_change_layout.listen(self, onLayoutChanged);
+            self.active_control_listener = try replacement.on_did_change_active_control.listen(self, onActiveControlChanged);
             try replacement.layout(width, height);
             try replacement.setPaddingBottom(padding);
             try replacement.setViewModel(source, true, state);

@@ -129,6 +129,7 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
             options_listener: ?usize = null,
             original_size_listener: ?usize = null,
             modified_size_listener: ?usize = null,
+            editor_focus_listener: ?SignalSubscription = null,
             toolbar_menu: ?*menu_mod.Menu = null,
             toolbar_listener: ?SignalSubscription = null,
             item_context_listener: ?SignalSubscription = null,
@@ -188,6 +189,9 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
                     const modified_overflow: usize = @intFromFloat(@max(0, modified.getContentWidth() - modified.viewport_width));
                     self.measured_max_scroll = @max(original_overflow, modified_overflow);
                 }
+            }
+            fn onFocusedSideChanged(_: @import("../diffEditor/diffEditorWidget.zig").Side, self: *Binding) !void {
+                try self.context.notifyControlChanged();
             }
             fn onContentSizeChanged(_: ContentSizeChangedEvent, self: *Binding) !void {
                 if (!self.setting_data) self.vertical_update.post();
@@ -462,6 +466,7 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
                 self.vertical_update.schedule(null);
                 self.clearHighlight();
                 self.unmountToolbar();
+                if (self.editor_focus_listener) |listener| listener.dispose();
                 if (self.options_listener) |id| self.item.on_did_change_options.unlisten(id);
                 if (self.editor) |editor| {
                     if (self.original_size_listener) |id| editor.original_editor.viewLayout().onDidContentSizeChange().unlisten(id);
@@ -700,6 +705,7 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
                 if (item.lastTemplateData.selections) |selections| try editor.modified_editor.setSelections(selections);
                 binding.original_size_listener = try editor.original_editor.viewLayout().onDidContentSizeChange().listen(binding, Binding.onContentSizeChanged);
                 binding.modified_size_listener = try editor.modified_editor.viewLayout().onDidContentSizeChange().listen(binding, Binding.onContentSizeChanged);
+                binding.editor_focus_listener = try editor.on_did_change_focused_side.listenDisposable(binding, Binding.onFocusedSideChanged);
                 binding.observeHeight();
                 binding.flushHeight();
             }

@@ -12,12 +12,16 @@ pub const IVirtualizedItemBindingContext = struct {
     render_context: ?scroll.ICompressedVirtualizedScrollItemContext,
     context: *anyopaque,
     on_did_change: *const fn (*anyopaque) anyerror!void,
+    on_did_change_control: ?*const fn (*anyopaque) anyerror!void = null,
 
     pub fn runWithScrollAnchor(self: @This(), offset: scroll.ItemOffset, update: scroll.Update) !void {
         try (self.render_context orelse return error.MissingRenderContext).runWithScrollAnchor(offset, update);
     }
     pub fn notifyChanged(self: @This()) !void {
         try self.on_did_change(self.context);
+    }
+    pub fn notifyControlChanged(self: @This()) !void {
+        if (self.on_did_change_control) |notify| try notify(self.context);
     }
 };
 
@@ -66,6 +70,7 @@ pub fn VirtualizedItemManager(comptime Item: type, comptime Binding: type, compt
             on_unbound_change: *const fn (*anyopaque, *Item) *Emitter(void),
             create_template: *const fn (*anyopaque, []const u8) anyerror!*Template,
             on_did_bind: ?*const fn (*anyopaque, *Binding) anyerror!void = null,
+            on_did_change_control: ?*const fn (*anyopaque, *Item) anyerror!void = null,
             on_will_unbind: ?*const fn (*anyopaque, *Binding) void = null,
             on_unexpected_error: ?*const fn (*anyopaque, anyerror) void = null,
         };
@@ -136,6 +141,10 @@ pub fn VirtualizedItemManager(comptime Item: type, comptime Binding: type, compt
                 }
                 try self.change.fire({});
             }
+            fn notifyControlChanged(context: *anyopaque) !void {
+                const self: *@This() = @ptrCast(@alignCast(context));
+                if (!self.clearing) if (self.manager.delegate.on_did_change_control) |notify| try notify(self.manager.delegate.context, self.item);
+            }
             pub fn render(self: *@This(), range: OffsetRange, offset: usize, width: usize, viewport: OffsetRange, render_context: ?scroll.ICompressedVirtualizedScrollItemContext) void {
                 self.last_render = .{ .range = range, .offset = offset, .width = width, .viewport = viewport, .context = render_context };
                 self.is_hidden = false;
@@ -156,6 +165,7 @@ pub fn VirtualizedItemManager(comptime Item: type, comptime Binding: type, compt
                         .render_context = args.context,
                         .context = self,
                         .on_did_change = notifyBindingChanged,
+                        .on_did_change_control = notifyControlChanged,
                     });
                     errdefer reference.template.virtualized_template.unbind(bound) catch {};
                     if (self.manager.delegate.on_did_bind) |callback| try callback(self.manager.delegate.context, bound);

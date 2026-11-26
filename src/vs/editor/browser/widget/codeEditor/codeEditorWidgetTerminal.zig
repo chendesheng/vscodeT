@@ -479,6 +479,23 @@ pub const EditorDocument = struct {
         return init(allocator, io, path, text, null, null, resource);
     }
 
+    pub fn interface(self: *EditorDocument) IWorkingCopy {
+        return .{
+            .context = self,
+            .resource = wcResource,
+            .type_id = wcTypeId,
+            .name = wcName,
+            .is_dirty = wcIsDirty,
+            .is_modified = wcIsModified,
+            .add_dirty_listener = wcAddDirty,
+            .remove_dirty_listener = wcRemoveDirty,
+            .add_content_listener = wcAddContent,
+            .remove_content_listener = wcRemoveContent,
+            .add_save_listener = wcAddSave,
+            .remove_save_listener = wcRemoveSave,
+        };
+    }
+
     pub fn retain(self: *EditorDocument) void {
         self.refs += 1;
     }
@@ -662,6 +679,7 @@ pub const Editor = struct {
     scroll_listeners: std.array_list.Managed(ChangeListener),
     working_copy_save_listeners: std.array_list.Managed(ChangeListener),
     on_did_change_dirty: Emitter(void),
+    on_will_dispose: Emitter(void),
     on_did_layout_change: Emitter(void),
     on_did_change_code_lens_provider: Emitter(bool),
     on_did_mouse_event: Emitter(editorBrowser.EditorMouseEvent),
@@ -999,6 +1017,7 @@ pub const Editor = struct {
             .scroll_listeners = std.array_list.Managed(ChangeListener).init(allocator),
             .working_copy_save_listeners = std.array_list.Managed(ChangeListener).init(allocator),
             .on_did_change_dirty = Emitter(void).init(allocator),
+            .on_will_dispose = Emitter(void).init(allocator),
             .on_did_layout_change = Emitter(void).init(allocator),
             .on_did_change_code_lens_provider = Emitter(bool).init(allocator),
             .on_did_mouse_event = Emitter(editorBrowser.EditorMouseEvent).init(allocator),
@@ -1803,6 +1822,8 @@ pub const Editor = struct {
     }
 
     pub fn deinit(self: *Editor) void {
+        self.on_will_dispose.fire({}) catch {};
+        self.on_will_dispose.deinit();
         self.folding_task.schedule(null);
         self.in_place_replace_task.schedule(null);
         if (self.document.editors.items.len == 1) self.detachJsonLanguage();
@@ -6896,20 +6917,7 @@ fn wcRemoveSave(context: *anyopaque, listener: WorkingCopyListener) void {
 }
 
 pub fn workingCopyInterface(editor: *Editor) IWorkingCopy {
-    return .{
-        .context = editor.document,
-        .resource = wcResource,
-        .type_id = wcTypeId,
-        .name = wcName,
-        .is_dirty = wcIsDirty,
-        .is_modified = wcIsModified,
-        .add_dirty_listener = wcAddDirty,
-        .remove_dirty_listener = wcRemoveDirty,
-        .add_content_listener = wcAddContent,
-        .remove_content_listener = wcRemoveContent,
-        .add_save_listener = wcAddSave,
-        .remove_save_listener = wcRemoveSave,
-    };
+    return editor.document.interface();
 }
 
 test "Editor: working copy reference survives closing one of its shared views" {
