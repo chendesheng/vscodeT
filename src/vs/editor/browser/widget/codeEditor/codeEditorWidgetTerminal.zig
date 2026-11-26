@@ -1007,6 +1007,7 @@ pub const Editor = struct {
         errdefer editor.on_did_change_read_only.deinit();
         editor.converter = CoordinatesConverter.init(&editor.view_lines);
         _ = try editor.view_layout.onDidScroll().listen(editor, onViewLayoutScroll);
+        _ = try editor.view_layout.onDidContentSizeChange().listen(editor, onContentSizeChanged);
         if (editor.character_pair) |*pair_support| {
             editor.cursor_config.auto_closing_pairs = pair_support.getAutoClosingPairs();
             editor.cursor_config.auto_close_before_quotes = pair_support.getAutoCloseBeforeSet(true);
@@ -2420,6 +2421,10 @@ pub const Editor = struct {
             self.emitViewEvent(.{ .ViewZonesChanged = .{} });
             self.view_event_dispatcher.emitOutgoingEvent(.{ .ViewZonesChanged = .{} });
         }
+    }
+
+    fn onContentSizeChanged(event: @import("../../../common/viewModelEventDispatcher.zig").ContentSizeChangedEvent, editor: *Editor) anyerror!void {
+        editor.view_event_dispatcher.emitOutgoingEvent(.{ .ContentSizeChanged = event });
     }
 
     fn onViewLayoutScroll(event: scrollable_mod.ScrollEvent, editor: *Editor) anyerror!void {

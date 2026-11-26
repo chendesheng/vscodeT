@@ -13,6 +13,7 @@ const lines_layout_mod = @import("./linesLayout.zig");
 const view_model = @import("../viewModel.zig");
 const scrollable_mod = @import("../../../base/common/scrollable.zig");
 const event = @import("../../../base/common/event.zig");
+const ContentSizeChangedEvent = @import("../viewModelEventDispatcher.zig").ContentSizeChangedEvent;
 
 const LinesLayout = lines_layout_mod.LinesLayout;
 const LinesViewportData = lines_layout_mod.LinesViewportData;
@@ -32,6 +33,9 @@ pub const ViewLayout = struct {
     viewport_width: f64 = 0,
     viewport_height: f64 = 0,
     max_line_width: f64 = 0,
+    content_width: f64 = 0,
+    content_height: f64 = 0,
+    on_did_content_size_change: event.Emitter(ContentSizeChangedEvent),
 
     pub fn init(allocator: Allocator, line_count: usize, width: usize, height: usize) !ViewLayout {
         var lines_layout = try LinesLayout.init(allocator, @max(line_count, 1), 1, 0, 0, &.{});
@@ -44,6 +48,7 @@ pub const ViewLayout = struct {
             .allocator = allocator,
             .lines_layout = lines_layout,
             .scrollable = scrollable,
+            .on_did_content_size_change = .init(allocator),
             .viewport_width = @floatFromInt(@max(width, 1)),
             .viewport_height = @floatFromInt(@max(height, 1)),
         };
@@ -52,6 +57,7 @@ pub const ViewLayout = struct {
     }
 
     pub fn deinit(self: *ViewLayout) void {
+        self.on_did_content_size_change.deinit();
         self.scrollable.deinit();
         self.lines_layout.deinit();
     }
@@ -76,12 +82,17 @@ pub const ViewLayout = struct {
 
     fn applyDimensions(self: *ViewLayout, use_raw_scroll_positions: bool) void {
         const content_height = self.lines_layout.getLinesTotalHeight() catch @as(f64, @floatFromInt(self.lines_layout.getLineCount()));
+        const content_width = @max(self.max_line_width, self.lines_layout.getWhitespaceMinWidth());
+        const change = ContentSizeChangedEvent.init(self.content_width, self.content_height, content_width, content_height);
+        self.content_width = content_width;
+        self.content_height = content_height;
         self.scrollable.setScrollDimensions(.{
             .width = self.viewport_width,
             .height = self.viewport_height,
-            .scrollWidth = @max(self.viewport_width, self.max_line_width, self.lines_layout.getWhitespaceMinWidth()),
+            .scrollWidth = @max(self.viewport_width, content_width),
             .scrollHeight = @max(self.viewport_height, content_height),
         }, use_raw_scroll_positions);
+        if (!change.isNoOp()) self.on_did_content_size_change.fire(change) catch {};
     }
 
     pub fn setMaxLineWidth(self: *ViewLayout, max_line_width: f64) void {
@@ -134,6 +145,18 @@ pub const ViewLayout = struct {
         const dimensions = self.scrollable.getScrollDimensions();
         const position = self.scrollable.getCurrentScrollPosition();
         return Viewport.init(position.scrollTop, position.scrollLeft, dimensions.width, dimensions.height);
+    }
+
+    pub fn getContentWidth(self: *const ViewLayout) f64 {
+        return self.content_width;
+    }
+
+    pub fn getContentHeight(self: *const ViewLayout) f64 {
+        return self.content_height;
+    }
+
+    pub fn onDidContentSizeChange(self: *ViewLayout) *event.Emitter(ContentSizeChangedEvent) {
+        return &self.on_did_content_size_change;
     }
 
     pub fn getScrollWidth(self: *const ViewLayout) f64 {
@@ -358,4 +381,27 @@ test "view layout: whitespace transactions update scroll dimensions and viewport
     try testing.expect(!try layout.changeWhitespace({}, struct {
         fn run(_: void, _: Accessor) anyerror!void {}
     }.run));
+}
+
+test "view layout: content size event is independent of viewport-clamped scroll dimensions" {
+    var layout = try ViewLayout.init(testing.allocator, 4, 80, 20);
+    defer layout.deinit();
+    const Observer = struct {
+        last: ?ContentSizeChangedEvent = null,
+        fn onChanged(change: ContentSizeChangedEvent, self: *@This()) !void {
+            self.last = change;
+        }
+    };
+    var observer: Observer = .{};
+    _ = try layout.onDidContentSizeChange().listen(&observer, Observer.onChanged);
+    try testing.expectEqual(@as(f64, 4), layout.getContentHeight());
+    try testing.expectEqual(@as(f64, 20), layout.getScrollHeight());
+    layout.onLinesInserted(5, 6);
+    try testing.expectEqual(@as(f64, 6), layout.getContentHeight());
+    try testing.expectEqual(@as(f64, 20), layout.getScrollHeight());
+    try testing.expectEqual(ContentSizeChangedEvent.init(0, 4, 0, 6), observer.last.?);
+    layout.setMaxLineWidth(12);
+    try testing.expectEqual(ContentSizeChangedEvent.init(0, 6, 12, 6), observer.last.?);
+    try testing.expectEqual(@as(f64, 12), layout.getContentWidth());
+    try testing.expectEqual(@as(f64, 80), layout.getScrollWidth());
 }
