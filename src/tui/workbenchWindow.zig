@@ -787,6 +787,12 @@ pub const TerminalWorkbench = struct {
                         try host.openSnapshotDiff(path, source, left, right);
                     }
                 }.open,
+                .open_multi_snapshot = struct {
+                    fn open(context: *anyopaque, source_uri: []const u8, label: []const u8, batch: @import("../vs/workbench/contrib/multiDiffEditor/browser/multiDiffSourceResolverService.zig").SnapshotBatch) !void {
+                        const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                        try host.editor_opening.requestOpenMultiSnapshotDiff(if (host.configuration) |configuration| configuration.interface() else null, source_uri, label, batch);
+                    }
+                }.open,
                 .refresh = struct {
                     fn refresh(context: *anyopaque) void {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
@@ -857,6 +863,36 @@ pub const TerminalWorkbench = struct {
                         }
                     }
                 }.configure,
+                .configure_diff_widget = struct {
+                    fn configure(context: *anyopaque, widget: *@import("../vs/workbench/browser/parts/editor/editorPane.zig").DiffWidget) !void {
+                        const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                        host.editor_configuration.applyToDiffWidget(widget);
+                        try host.instantiation.invokeFunction(@import("../vs/workbench/workbench.common.main.zig").attachDiffWidgetContributions, .{widget});
+                        widget.attachActionServices(host.clipboard_api, host.context_menu_api);
+                        try widget.attachGutterServices(&host.menu_service, host.core.context_keys.getContext(), host.context_menu_api);
+                        if (host.language_features) |features| if (host.outline_creator) |creator| {
+                            const factory = try @import("../vs/editor/contrib/diffEditorBreadcrumbs/browser/contribution.zig").Factory.create(host.allocator, features.interface(), creator.models);
+                            try widget.attachBreadcrumbs(factory);
+                        };
+                    }
+                }.configure,
+                .dispose_diff_widget = struct {
+                    fn dispose(context: *anyopaque, widget: *@import("../vs/workbench/browser/parts/editor/editorPane.zig").DiffWidget) void {
+                        const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                        if (host.context_keys != null) {
+                            host.workbench_context.detachEditor(widget.original_editor);
+                            host.workbench_context.detachEditor(widget.modified_editor);
+                        }
+                        if (host.editor_status) |status| {
+                            status.detachDisposedEditor(widget.original_editor);
+                            status.detachDisposedEditor(widget.modified_editor);
+                        }
+                        if (host.outline_view) |view| {
+                            view.detachDisposedEditor(widget.original_editor);
+                            view.detachDisposedEditor(widget.modified_editor);
+                        }
+                    }
+                }.dispose,
                 .register_working_copy = struct {
                     fn register(context: *anyopaque, tab: *Tab) void {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
@@ -1628,6 +1664,7 @@ pub const TerminalWorkbench = struct {
         self.part.disposeTitleMenus();
         // The diff breadcrumb contribution borrows the shared outline service.
         for (self.part.group_views.items) |pane| for (pane.tabs.items) |tab| {
+            tab.detachMultiDiffControls();
             tab.detachDiffBreadcrumbs();
             tab.detachCodeLensServices();
             if (tab.diff) |diff| diff.widget.detachContributions();
@@ -2021,7 +2058,7 @@ pub const TerminalWorkbench = struct {
     }
 
     fn registerWorkingCopy(self: *TerminalWorkbench, tab: *Tab) void {
-        for (0..2) |index| {
+        for (0..tab.workingCopyCount()) |index| {
             const editor = tab.workingCopyAt(index) orelse continue;
             editor.undo_redo.setNotificationService(self.notification_api);
             if (!self.working_copy_service.hasResource(editor.path)) {
@@ -2032,7 +2069,7 @@ pub const TerminalWorkbench = struct {
     }
 
     fn unregisterWorkingCopy(self: *TerminalWorkbench, tab: *Tab) void {
-        for (0..2) |index| {
+        for (0..tab.workingCopyCount()) |index| {
             const editor = tab.workingCopyAt(index) orelse continue;
             _ = self.working_copy_service.releaseWorkingCopy(tui_editor_mod.workingCopyInterface(editor));
         }
@@ -2779,6 +2816,7 @@ pub const TerminalWorkbench = struct {
             .history_host = .{
                 .context = self,
                 .open_change = historyOpenChange,
+                .open_changes = historyOpenChanges,
                 .status = scmViewStatus,
                 .focus_editor = scmFocusEditor,
             },
@@ -2939,6 +2977,12 @@ pub const TerminalWorkbench = struct {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
         const revision = if (self.scm.history) |view| view.itemRevision(item.*) else item.id;
         try (try self.git_commands.commands()).openHistoryChange(item, change, revision);
+    }
+
+    fn historyOpenChanges(context: *anyopaque, item: *const scm_common_history.ISCMHistoryItem, changes: []const scm_common_history.ISCMHistoryItemChange) !void {
+        const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
+        const revision = if (self.scm.history) |view| view.itemRevision(item.*) else item.id;
+        try self.git_commands.openHistoryChanges(item, changes, revision);
     }
 
     const ShowTabs = layout_service_mod.EditorTabsMode;
@@ -3137,7 +3181,7 @@ pub const TerminalWorkbench = struct {
     /// the key reaches that widget through the normal view dispatch.
     pub fn notifyEditorKeyDown(self: *TerminalWorkbench, event: *ui.KeyEvent) bool {
         const tab = self.activeTab() orelse return false;
-        if (tab.isDiff() or tab.isImage()) return false;
+        if (tab.isDiff() or tab.isMultiDiff() or tab.isImage()) return false;
         tab.ensureControllers() catch return false;
         const controllers = tab.controllers orelse return false;
         _ = controllers.hover.onKeyDown(event);
@@ -4155,7 +4199,7 @@ fn outlinePaneBodyVisible(context: *anyopaque, visible: bool) void {
 fn outlineActiveEditor(context: *anyopaque) ?OutlineEditor {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     const tab = self.activeTab() orelse return null;
-    if (tab.isImage() or tab.isDiff() or tab.markdown_panel != null or tab.terminal_input != null) return null;
+    if (tab.isImage() or tab.isDiff() or tab.isMultiDiff() or tab.markdown_panel != null or tab.terminal_input != null) return null;
     return .{
         .context = @ptrCast(tab),
         .control = tab.editor,
@@ -4201,7 +4245,7 @@ fn breadcrumbFocusEditor(context: *anyopaque) void {
 fn navigationActiveEditor(context: *anyopaque) ?*Editor {
     const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
     const tab = host.activeTab() orelse return null;
-    return if (tab.isDiff()) null else tab.editor;
+    return if (tab.isDiff() or tab.isMultiDiff()) null else tab.editor;
 }
 
 fn hasActiveEditor(context: *anyopaque) bool {
@@ -4213,7 +4257,7 @@ fn lookupCommandBinding(self: *TerminalWorkbench, arena: Allocator, id: []const 
     const global = try self.ensureGlobalService();
     return try global.service.lookupKeybinding(arena, id, false) orelse try (try self.ensureTabService()).service.lookupKeybinding(arena, id, false) orelse blk: {
         const tab = self.activeTab() orelse return null;
-        if (tab.isDiff()) return null;
+        if (tab.isDiff() or tab.isMultiDiff()) return null;
         break :blk try tab.editor.lookupShortcut(id) orelse return null;
     };
 }

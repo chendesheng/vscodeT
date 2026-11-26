@@ -28,7 +28,11 @@ const diff_editor_contributions = [_]@import("../editor/browser/editorExtensions
 };
 
 pub fn attachDiffEditorContributions(accessor: @import("../platform/instantiation/common/instantiation.zig").ServicesAccessor, tab: *@import("browser/parts/editor/editorPane.zig").Tab) !void {
-    if (tab.diff) |diff| try diff.widget.attachContributions(&diff_editor_contributions, accessor);
+    if (tab.diff) |diff| try attachDiffWidgetContributions(accessor, diff.widget);
+}
+
+pub fn attachDiffWidgetContributions(accessor: @import("../platform/instantiation/common/instantiation.zig").ServicesAccessor, widget: *@import("browser/parts/editor/editorPane.zig").DiffWidget) !void {
+    try widget.attachContributions(&diff_editor_contributions, accessor);
 }
 
 pub fn registerViewContainers(registry: *@import("common/views.zig").ViewContainersRegistry) !void {

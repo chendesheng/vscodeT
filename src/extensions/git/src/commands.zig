@@ -8,6 +8,8 @@ const Allocator = std.mem.Allocator;
 const repository_mod = @import("repository.zig");
 const git_mod = @import("git.zig");
 const SnapshotSource = @import("../../../vs/editor/browser/widget/diffEditor/diffProviderFactoryService.zig").SnapshotSource;
+const multi_diff_source = @import("../../../vs/workbench/contrib/multiDiffEditor/browser/multiDiffSourceResolverService.zig");
+const history_source = @import("../../../vs/workbench/contrib/multiDiffEditor/browser/scmMultiDiffSourceResolver.zig").ScmHistoryItemResolver;
 const IConfigurationService = @import("../../../vs/platform/configuration/common/configuration.zig").IConfigurationService;
 const IEditorService = @import("../../../vs/workbench/services/editor/common/editorService.zig").IEditorService;
 
@@ -337,6 +339,7 @@ pub const CommandContribution = struct {
         has_diff: *const fn (*anyopaque, []const u8, []const u8, []const u8) bool,
         // Consumes the virtual source even when opening fails.
         open_snapshot: *const fn (*anyopaque, []const u8, SnapshotSource, []const u8, []const u8) anyerror!void,
+        open_multi_snapshot: ?*const fn (*anyopaque, []const u8, []const u8, multi_diff_source.SnapshotBatch) anyerror!void = null,
         refresh: *const fn (*anyopaque) void,
         commit_input: *const fn (*anyopaque) void,
         selected_resource: *const fn (*anyopaque) ?*scm.ISCMResource,
@@ -484,6 +487,41 @@ pub const CommandContribution = struct {
         defer if (working) |text| self.allocator.free(text);
         const source = try self.model.snapshotSource(self.snapshot_io, path, working, left, right, self.host.has_diff(self.host.context, path, left_label, right_label));
         try self.host.open_snapshot(self.host.context, path, source, left_label, right_label);
+    }
+
+    /// Capture every resource from the Graph's selected history item. The
+    /// workbench source resolver reads these immutable snapshots on its worker.
+    pub fn openHistoryChanges(self: *CommandContribution, item: *const history.ISCMHistoryItem, changes: []const history.ISCMHistoryItemChange, revision: []const u8) !void {
+        const open = self.host.open_multi_snapshot orelse return error.MultiDiffUnavailable;
+        const repository = self.model.repository orelse return error.NoRepository;
+        const parent = if (item.parent_ids.len != 0) item.parent_ids[0] else null;
+        const display = if (std.mem.eql(u8, revision, item.id)) item.display_id orelse item.id else revision[0..@min(revision.len, 7)];
+        const source_uri = try history_source.getMultiDiffSourceUri(self.allocator, repository.root, .{
+            .repositoryId = repository.id,
+            .historyItemId = revision,
+            .historyItemParentId = parent,
+            .historyItemDisplayId = display,
+        });
+        defer self.allocator.free(source_uri);
+        const label = try std.fmt.allocPrint(self.allocator, "{s} - {s}", .{ display, item.subject });
+        defer self.allocator.free(label);
+        const items = try self.allocator.alloc(multi_diff_source.SnapshotItem, changes.len);
+        var count: usize = 0;
+        var owned = true;
+        defer if (owned) {
+            for (items[0..count]) |entry| entry.source.destroy(entry.source.context);
+            self.allocator.free(items);
+        };
+        for (changes, items) |change, *entry| {
+            entry.* = .{
+                .source = try self.model.revisionSnapshotSource(self.snapshot_io, change.path, change.original_path, parent, revision),
+                .original_exists = parent != null and change.status != 'A',
+                .modified_exists = change.status != 'D',
+            };
+            count += 1;
+        }
+        owned = false;
+        try open(self.host.context, source_uri, label, .{ .allocator = self.allocator, .items = items });
     }
 
     pub fn openRefDiff(self: *CommandContribution, path: []const u8, original_path: ?[]const u8, left: ?[]const u8, right: []const u8, left_label: []const u8, right_label: []const u8) !void {

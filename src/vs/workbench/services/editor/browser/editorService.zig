@@ -13,6 +13,8 @@ const Tab = editor_pane.Tab;
 const GroupView = @import("../../../browser/parts/editor/editorGroupView.zig").EditorGroupView(*Tab);
 const EditorPart = @import("../../../browser/parts/editor/editorPart.zig").EditorPart(GroupView);
 const text_diff_editor_mod = @import("../../../browser/parts/editor/textDiffEditor.zig");
+const multi_diff_input = @import("../../../contrib/multiDiffEditor/browser/multiDiffEditorInput.zig");
+const multi_source = @import("../../../contrib/multiDiffEditor/browser/multiDiffSourceResolverService.zig");
 const IConfigurationService = @import("../../../../platform/configuration/common/configuration.zig").IConfigurationService;
 const EditorInput = @import("../../../common/editor/editorInput.zig").EditorInput;
 const IEditorService = @import("../common/editorService.zig").IEditorService;
@@ -56,10 +58,19 @@ pub const EditorService = struct {
         if (self.findOpenFileInput(io, path)) |input| return input;
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
-                const diff = tab.diff orelse continue;
-                for ([_]text_diff_editor_mod.SideInput{ diff.original_input, diff.modified_input }) |side| {
-                    const input = side.fileInput() orelse continue;
-                    if (text_files.samePath(self.part.allocator, io, input.editor.path, path)) return input;
+                if (tab.multi_diff) |multi| {
+                    for (multi.input.entries) |entry| {
+                        for ([_]?text_diff_editor_mod.SideInput{ entry.original, entry.modified }) |maybe_side| {
+                            const side = maybe_side orelse continue;
+                            const input = side.fileInput() orelse continue;
+                            if (text_files.samePath(self.part.allocator, io, input.editor.path, path)) return input;
+                        }
+                    }
+                } else if (tab.diff) |diff| {
+                    for ([_]text_diff_editor_mod.SideInput{ diff.original_input, diff.modified_input }) |side| {
+                        const input = side.fileInput() orelse continue;
+                        if (text_files.samePath(self.part.allocator, io, input.editor.path, path)) return input;
+                    }
                 }
             }
         }
@@ -431,6 +442,8 @@ pub const EditorOpening = struct {
         context: *anyopaque,
         configure_editor: *const fn (*anyopaque, *Editor) void,
         configure_tab: *const fn (*anyopaque, *Tab) void,
+        configure_diff_widget: ?*const fn (*anyopaque, *editor_pane.DiffWidget) anyerror!void = null,
+        dispose_diff_widget: ?*const fn (*anyopaque, *editor_pane.DiffWidget) void = null,
         register_working_copy: *const fn (*anyopaque, *Tab) void,
         discard_tab: *const fn (*anyopaque, *Tab) void,
         focus_editor: *const fn (*anyopaque) void,
@@ -449,6 +462,14 @@ pub const EditorOpening = struct {
         group: GroupIdentifier,
     } = null,
     diff_progress: WindowTask = .{},
+    pending_multi_diff: ?struct {
+        request: *multi_source.SnapshotBatchRequest,
+        source_uri: []u8,
+        label: []u8,
+        group: GroupIdentifier,
+        configuration: ?IConfigurationService,
+    } = null,
+    multi_diff_progress: WindowTask = .{},
     reload_jobs: std.array_list.Managed(*TextFileRead),
 
     pub fn cancel(self: *EditorOpening) void {
@@ -492,6 +513,224 @@ pub const EditorOpening = struct {
         model.attachWorker(try self.ensureDiffWorker(), &self.diff_cache, self.window_events);
     }
 
+    pub fn findMultiDiffTab(self: *EditorOpening, source_uri: []const u8) ?struct { pane: *GroupView, tab: *Tab } {
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                const multi = tab.multi_diff orelse continue;
+                if (std.mem.eql(u8, multi.input.source_uri, source_uri)) return .{ .pane = pane, .tab = tab };
+            }
+        }
+        return null;
+    }
+
+    /// Opens the registered composite input through the normal group model.
+    /// The input retains its document references for the pane's lifetime.
+    pub fn openMultiDiffInput(self: *EditorOpening, input: *multi_diff_input.MultiDiffEditorInput, target: ?GroupIdentifier, preserve_focus: bool) !void {
+        if (self.findMultiDiffTab(input.source_uri)) |existing| {
+            try existing.pane.activateTab(existing.tab);
+            self.part.service.activateGroup(existing.pane.group);
+            if (!preserve_focus) {
+                existing.tab.focusEditor();
+                self.host.focus_editor(self.host.context);
+            }
+            return;
+        }
+        const group = if (target) |id| self.part.service.getGroup(id) orelse return error.GroupPaneMissing else self.part.service.activeGroup();
+        const pane = self.part.viewForGroup(group) orelse return error.GroupPaneMissing;
+        const dims = pane.contentDimensions();
+        const multi = try editor_pane.MultiDiffPane.create(self.allocator, self.io, input, self.window_events, .{
+            .context = self,
+            .view_factory = self.view_factory,
+            .configure_diff = configureMultiDiffWidget,
+            .dispose_diff = disposeMultiDiffWidget,
+            .open_file = openMultiDiffFile,
+            .open_binary_diff = openMultiDiffBinary,
+        }, .{ .worker = try self.ensureDiffWorker(), .cache = &self.diff_cache }, dims.width, dims.height, preserve_focus);
+        var owned = true;
+        errdefer if (owned) multi.destroy();
+        const tab = try Tab.initMultiDiff(self.view_factory, self.allocator, self.io, multi);
+        owned = false;
+        var tab_owned = true;
+        errdefer if (tab_owned) tab.deinit();
+        try pane.tabs.ensureUnusedCapacity(1);
+        var added_model = false;
+        errdefer if (added_model) {
+            _ = pane.group.model.closeEditor(tab.input, .UNKNOWN, true) catch {};
+            pane.syncActivePane();
+        };
+        const opened = try self.part.service.openEditor(tab.input, group, .{ .open = .{ .pinned = true, .active = true } });
+        if (!opened.result.is_new) {
+            tab.deinit();
+            tab_owned = false;
+            if (pane.tabForInput(opened.result.editor)) |existing| try pane.activateTab(existing);
+            return;
+        }
+        added_model = true;
+        try pane.addTab(tab);
+        tab_owned = false;
+        added_model = false;
+        self.host.configure_tab(self.host.context, tab);
+        self.host.register_working_copy(self.host.context, tab);
+        tab.layoutCells(dims.width, dims.height);
+        if (!preserve_focus) {
+            tab.focusEditor();
+            self.host.focus_editor(self.host.context);
+        }
+        self.host.request_frame(self.host.context);
+    }
+
+    fn configureMultiDiffWidget(context: *anyopaque, widget: *editor_pane.DiffWidget) !void {
+        const self: *EditorOpening = @ptrCast(@alignCast(context));
+        self.host.configure_editor(self.host.context, widget.original_editor);
+        self.host.configure_editor(self.host.context, widget.modified_editor);
+        if (self.host.configure_diff_widget) |configure| try configure(self.host.context, widget);
+    }
+
+    fn disposeMultiDiffWidget(context: *anyopaque, widget: *editor_pane.DiffWidget) void {
+        const self: *EditorOpening = @ptrCast(@alignCast(context));
+        if (self.host.dispose_diff_widget) |dispose| dispose(self.host.context, widget);
+    }
+
+    fn openMultiDiffFile(context: *anyopaque, uri: std.Uri) !void {
+        const self: *EditorOpening = @ptrCast(@alignCast(context));
+        const std_uri = @import("../../../../base/common/stdUri.zig");
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        if (std.mem.eql(u8, uri.scheme, "file")) return self.openPathWithOptions(try std_uri.fsPath(uri, arena.allocator()), .{});
+        const key = try std_uri.resourceKey(arena.allocator(), uri);
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.multi_diff) |multi| for (multi.input.entries) |entry| {
+                    for ([_]?text_diff_editor_mod.SideInput{ entry.original, entry.modified }) |side| {
+                        if (side) |source| {
+                            if (source == .resource and std.mem.eql(u8, source.resource.key, key)) return self.openTextResourceInput(source.resource);
+                        }
+                    }
+                };
+            }
+        }
+        return error.DiffResourceUnavailable;
+    }
+
+    fn openMultiDiffBinary(context: *anyopaque, original: std.Uri, modified: std.Uri) !void {
+        const self: *EditorOpening = @ptrCast(@alignCast(context));
+        if (std.mem.eql(u8, modified.scheme, "file")) return openMultiDiffFile(context, modified);
+        if (std.mem.eql(u8, original.scheme, "file")) return openMultiDiffFile(context, original);
+        self.setStatusHint("No binary comparison editor for this resource", .{});
+    }
+
+    /// Resolve the whole multi-file source on the native worker. No child
+    /// diff is computed from snapshot strings here; the item model owns that
+    /// computation after the real editor documents have been resolved.
+    pub fn requestOpenMultiSnapshotDiff(self: *EditorOpening, configuration: ?IConfigurationService, source_uri: []const u8, label: []const u8, batch: multi_source.SnapshotBatch) !void {
+        var owned = true;
+        defer if (owned) batch.deinit();
+        self.cancelPendingOpen();
+        self.cancelPendingDiff();
+        if (self.findMultiDiffTab(source_uri)) |existing| {
+            try existing.pane.activateTab(existing.tab);
+            self.part.service.activateGroup(existing.pane.group);
+            existing.tab.focusEditor();
+            self.host.focus_editor(self.host.context);
+            return;
+        }
+        const worker = try self.ensureDiffWorker();
+        const source_copy = try self.allocator.dupe(u8, source_uri);
+        errdefer self.allocator.free(source_copy);
+        const label_copy = try self.allocator.dupe(u8, label);
+        errdefer self.allocator.free(label_copy);
+        const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp();
+        owned = false;
+        const request = try multi_source.SnapshotBatchRequest.submit(self.allocator, worker, batch, .{ .context = self, .run = multiDiffResolved }, now);
+        self.pending_multi_diff = .{ .request = request, .source_uri = source_copy, .label = label_copy, .group = self.part.service.activeGroup().id, .configuration = configuration };
+        self.multi_diff_progress = .{ .queue = self.window_events, .context = self, .run = showMultiDiffProgress };
+        self.multi_diff_progress.schedule(now + 1000);
+    }
+    fn showMultiDiffProgress(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *EditorOpening = @ptrCast(@alignCast(context));
+        if (self.pending_multi_diff == null) return false;
+        self.setStatusHint("Resolving changed files...", .{});
+        return true;
+    }
+    fn cancelPendingMultiDiff(self: *EditorOpening) void {
+        const pending = self.pending_multi_diff orelse return;
+        self.pending_multi_diff = null;
+        pending.request.cancel();
+        self.multi_diff_progress.schedule(null);
+        self.allocator.free(pending.source_uri);
+        self.allocator.free(pending.label);
+    }
+    fn multiDiffResolved(context: *anyopaque, request: *multi_source.SnapshotBatchRequest) bool {
+        const self: *EditorOpening = @ptrCast(@alignCast(context));
+        const pending = self.pending_multi_diff orelse return false;
+        if (pending.request != request) return false;
+        self.pending_multi_diff = null;
+        self.multi_diff_progress.schedule(null);
+        defer {
+            self.allocator.free(pending.source_uri);
+            self.allocator.free(pending.label);
+        }
+        if (self.part.service.getGroup(pending.group) == null) return false;
+        if (request.failure) |failure| {
+            self.setStatusHint("Open changes failed: {s}", .{@errorName(failure)});
+            return true;
+        }
+        self.openResolvedMultiDiff(pending.configuration, pending.source_uri, pending.label, pending.group, request.result) catch |err| {
+            self.setStatusHint("Open changes failed: {s}", .{@errorName(err)});
+            return true;
+        };
+        self.clearStatusHint();
+        return true;
+    }
+    fn resolveMultiDiffSide(self: *EditorOpening, resource: diff_provider.SnapshotSource.Resource, text: []const u8, binary: bool, label: []const u8) !multi_diff_input.ResolvedSide {
+        if (binary) return .{ .uri = resource.uri };
+        if (resource.is_working_file) {
+            if (self.findOpenInput(resource.path)) |file| return .{ .uri = resource.uri, .input = .{ .file = file.retain() } };
+            const editor = try Editor.createFromTextWithOptions(self.allocator, self.io, text, resource.path, 80, 20, .{ .reserve_scrollbar = true });
+            errdefer {
+                editor.deinit();
+                self.allocator.destroy(editor);
+            }
+            self.host.configure_editor(self.host.context, editor);
+            const input = try FileEditorInput.init(self.allocator, editor);
+            return .{ .uri = resource.uri, .input = .{ .file = input } };
+        }
+        const input = try text_diff_editor_mod.TextResourceEditorInput.init(self.allocator, self.io, resource.path, label, text, resource.uri);
+        return .{ .uri = resource.uri, .input = .{ .resource = input } };
+    }
+    fn releaseMultiDiffResolvedSide(side: ?multi_diff_input.ResolvedSide) void {
+        if (side) |value| if (value.input) |input| input.destroy();
+    }
+    fn openResolvedMultiDiff(self: *EditorOpening, configuration: ?IConfigurationService, source_uri: []const u8, label: []const u8, group: GroupIdentifier, snapshots: []const multi_source.ResolvedSnapshot) !void {
+        const input = try multi_diff_input.MultiDiffEditorInput.create(self.allocator, source_uri, label, false);
+        defer input.destroy();
+        var items: std.ArrayList(multi_diff_input.ResolvedItem) = .empty;
+        defer {
+            for (items.items) |item| {
+                releaseMultiDiffResolvedSide(item.original);
+                releaseMultiDiffResolvedSide(item.modified);
+            }
+            items.deinit(self.allocator);
+        }
+        for (snapshots) |snapshot| {
+            const texts = snapshot.texts orelse continue;
+            const a = if (snapshot.original_exists) texts.original_resource else null;
+            const b = if (snapshot.modified_exists) texts.modified_resource else null;
+            if (a == null and b == null) continue;
+            const binary = (a != null and !texts.original_available) or (b != null and !texts.modified_available);
+            const original = if (a) |resource| try self.resolveMultiDiffSide(resource, texts.original, binary, "Original") else null;
+            errdefer releaseMultiDiffResolvedSide(original);
+            const modified = if (b) |resource| try self.resolveMultiDiffSide(resource, texts.modified, binary, "Modified") else null;
+            errdefer releaseMultiDiffResolvedSide(modified);
+            const resource = b orelse a.?;
+            const language = if (modified) |side| if (side.input) |value| value.resolve().model.getLanguageId() else null else null;
+            const options = text_diff_editor_mod.computeConfigurationForResource(configuration, .{ .resource = resource.path, .override_identifier = language });
+            try items.append(self.allocator, .{ .original = original, .modified = modified, .go_to_file_uri = resource.uri, .options = options });
+        }
+        try input.setResolvedItems(items.items);
+        try self.openMultiDiffInput(input, group, false);
+    }
+
     /// Consumes the provider's virtual document source on all outcomes.
     pub fn requestOpenSnapshotDiff(self: *EditorOpening, configuration: ?IConfigurationService, path: []const u8, source: diff_provider.SnapshotSource, left: []const u8, right: []const u8) !void {
         var source_owned = true;
@@ -531,6 +770,7 @@ pub const EditorOpening = struct {
     }
 
     fn cancelPendingDiff(self: *EditorOpening) void {
+        self.cancelPendingMultiDiff();
         const pending = self.pending_diff orelse return;
         self.pending_diff = null;
         pending.request.cancel();
