@@ -80,6 +80,7 @@ const ActiveDocument = struct {
     tab: *Tab,
     dispose_listener: usize,
     editor_dispose_listener: usize,
+    editor_model_listener: usize,
     language_listener: usize,
     editor: *Editor,
     uri: []u8,
@@ -1143,6 +1144,12 @@ pub const Extensions = struct {
         // remain open. Detach from the old code editor before it is released.
         self.removeActiveDocument() catch {};
     }
+    fn onActiveEditorWillChangeModel(_: @import("../../../editor/common/editorCommon.zig").IModelChangedEvent, self: *Extensions) !void {
+        // Dispose subscriptions to the outgoing model before the reusable
+        // code editor's ViewModel and model reference are detached.
+        self.removeActiveDocument() catch {};
+        self.models_task.post();
+    }
     fn onActiveLanguageChanged(event: ModelLanguageChangedEvent, self: *Extensions) !void {
         const active = if (self.active) |*value| value else return;
         const language = try self.allocator.dupe(u8, event.newLanguage);
@@ -1177,18 +1184,18 @@ pub const Extensions = struct {
     fn updateModels(context: *anyopaque, _: i64, _: bool) bool {
         const self: *Extensions = @ptrCast(@alignCast(context));
         self.syncActiveDocument() catch {};
+        self.syncActiveDocument() catch {};
         self.syncDocumentModels() catch {};
         return true;
     }
 
     fn activeCodeEditorForTab(tab: *Tab) ?*Editor {
         if (tab.isImage() or tab.terminalInstance() != null) return null;
-        if (tab.diff) |diff| return diff.widget.focusedEditor();
-        if (tab.multi_diff) |multi| {
+        const editor = if (tab.diff) |diff| diff.widget.focusedEditor() else if (tab.multi_diff) |multi| blk: {
             const control = multi.widget.activeControl() orelse return null;
-            return control.focusedEditor();
-        }
-        return tab.editor;
+            break :blk control.focusedEditor();
+        } else tab.editor;
+        return if (editor.hasModel()) editor else null;
     }
 
     fn syncDocumentModels(self: *Extensions) !void {
@@ -1255,11 +1262,13 @@ pub const Extensions = struct {
         errdefer tab.unlistenWillDispose(dispose_listener);
         const editor_dispose_listener = try editor.on_will_dispose.listen(self, onActiveEditorWillDispose);
         errdefer editor.on_will_dispose.unlisten(editor_dispose_listener);
+        const editor_model_listener = try editor.on_will_change_model.listen(self, onActiveEditorWillChangeModel);
+        errdefer editor.on_will_change_model.unlisten(editor_model_listener);
         const language_listener = try editor.model.listenDidChangeLanguage(self, onActiveLanguageChanged);
         errdefer editor.model.removeDidChangeLanguageListener(language_listener);
         try notifyModelMirror(self, .documents_and_editors, "$acceptDocumentsAndEditorsDelta", &.{.{ .json = delta }});
         editor.addViewEventHandler(&self.active_selection_handler);
-        self.active = .{ .tab = tab, .dispose_listener = dispose_listener, .editor_dispose_listener = editor_dispose_listener, .language_listener = language_listener, .editor = editor, .uri = uri, .language_id = language };
+        self.active = .{ .tab = tab, .dispose_listener = dispose_listener, .editor_dispose_listener = editor_dispose_listener, .editor_model_listener = editor_model_listener, .language_listener = language_listener, .editor = editor, .uri = uri, .language_id = language };
         self.setScrollListener(editor);
         self.captureSelections(editor);
         self.activation_tracker.activateLanguage(self.host, editor.languageId());
@@ -1347,6 +1356,7 @@ pub const Extensions = struct {
         self.visible_ranges_task.schedule(null);
         active.tab.unlistenWillDispose(active.dispose_listener);
         active.editor.on_will_dispose.unlisten(active.editor_dispose_listener);
+        active.editor.on_will_change_model.unlisten(active.editor_model_listener);
         active.editor.removeViewEventHandler(&self.active_selection_handler);
         active.editor.model.removeDidChangeLanguageListener(active.language_listener);
         self.setScrollListener(null);

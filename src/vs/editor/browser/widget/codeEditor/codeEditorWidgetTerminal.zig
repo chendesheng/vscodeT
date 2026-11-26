@@ -641,7 +641,13 @@ pub const ICodeEditorViewState = struct {
 pub const Editor = struct {
     allocator: Allocator,
     io: Io,
+    /// The widget survives a null-model transition. Direct model/view-model
+    /// members below are valid only while hasModel() is true, corresponding
+    /// to upstream's non-null _modelData/IActiveCodeEditor contract.
+    model_attached: bool = false,
     document: *EditorDocument,
+    on_will_change_model: Emitter(editor_common.IModelChangedEvent),
+    on_did_change_model: Emitter(editor_common.IModelChangedEvent),
     /// Path of the shared document. Borrowed from `document`; it lives as long
     /// as this view.
     path: []const u8,
@@ -943,175 +949,215 @@ pub const Editor = struct {
         return createView(allocator, document, width, height, options);
     }
 
-    /// Creates one editor view over an existing document. The view owns its
-    /// wrapping model, cursors, folding and scroll state; the model, undo
-    /// stack and language services stay on `document`.
-    fn createView(allocator: Allocator, document: *EditorDocument, width: usize, height: usize, options: CreateOptions) !*Editor {
+    /// Widget lifetime is independent of the attached model, as in
+    /// CodeEditorWidget. Terminal View instances are model-bound and must
+    /// detach on onWillChangeModel before a new View is created.
+    pub fn createDetached(allocator: Allocator, io: Io, width: usize, height: usize, options: CreateOptions) !*Editor {
         const editor = try allocator.create(Editor);
         errdefer allocator.destroy(editor);
-
-        const model = document.model;
-        const language_service = document.language_service;
-        const language_config_service = document.language_config_service;
-        const language_id = model.getLanguageId();
-        const resolved = model.getOptions();
-        const initial_number_width = @max(digitsFor(model.getLineCount()), 5);
-        const initial_fold_width: usize = 1;
-        const gutter = initial_number_width + initial_fold_width;
-        const initial_scrollbar = if (options.reserve_scrollbar)
-            overviewRulerWidthFor(width, gutter)
-        else
-            0;
-        const text_width = @max(1, width -| gutter -| initial_scrollbar);
-
-        var view_lines = try ProjectedViewModelLines.init(
-            allocator,
-            model,
-            text_width,
-            resolved.tabSize,
-            .Same,
-            .normal,
-        );
-        errdefer view_lines.deinit();
-
-        var word_separators = try WordCharacterClassifier.init(allocator, DefaultWordSeparators);
-        errdefer word_separators.deinit();
-
-        var character_pair: ?CharacterPairSupport = null;
-        if (language_service.getLanguageConfiguration(language_id)) |config| {
-            character_pair = try CharacterPairSupport.init(config);
-        }
-
-        // Materialize the prefix sum before the view lines are moved into the
-        // editor. Calling `getViewLineCount` inside the struct literal would
-        // mutate the moved-from local and leak its refreshed buffers.
-        const initial_view_line_count = view_lines.getViewLineCount();
-
-        const cursor_config = CursorConfiguration{
-            .tabSize = resolved.tabSize,
-            .indentSize = resolved.indentSize,
-            .insertSpaces = resolved.insertSpaces,
-            .pageSize = @max(1, height - 1),
-            .languageConfigurationService = language_config_service.interface(),
-        };
-
-        editor.* = Editor{
+        const word_separators = try WordCharacterClassifier.init(allocator, DefaultWordSeparators);
+        editor.* = .{
             .allocator = allocator,
-            .io = document.io,
-            .document = document,
-            .path = document.path,
-            .model = model,
-            .undo_redo = document.undo_redo,
-            .codec = document.codec,
-            .language_service = language_service,
-            .view_lines = view_lines,
-            .view_event_dispatcher = ViewModelEventDispatcher.init(allocator),
-            .on_did_change_cursor_position = Emitter(ICursorPositionChangedEvent).init(allocator),
-            .on_did_change_cursor_selection = Emitter(ICursorSelectionChangedEvent).init(allocator),
-            .on_will_type = Emitter([]const u8).init(allocator),
-            .on_did_type = Emitter([]const u8).init(allocator),
+            .io = io,
+            .document = undefined,
+            .path = undefined,
+            .model = undefined,
+            .undo_redo = undefined,
+            .codec = undefined,
+            .language_service = undefined,
+            .language_config_service = undefined,
+            .view_lines = undefined,
+            .view_event_dispatcher = undefined,
             .converter = undefined,
-            .cursor_config = cursor_config,
+            .cursor_config = .{ .tabSize = 4, .indentSize = 4, .insertSpaces = true, .pageSize = @max(height -| 1, 1) },
             .cursor_context = null,
             .cursors = null,
-            .model_adapter = TextModelCursorSimpleModel.init(allocator, model),
+            .model_adapter = undefined,
             .word_separators = word_separators,
-            .bracket_matching = BracketMatchingController.init(allocator, model),
+            .bracket_matching = undefined,
             .folding = undefined,
             .folding_dirty = false,
             .folding_delay_ms = folding_debounce_min_ms,
-            .smart_select = smart_select.SmartSelectController.init(allocator, &.{}, .{}),
-            .language_config_service = language_config_service,
-            .character_pair = character_pair,
+            .smart_select = undefined,
+            .character_pair = null,
             .multicursor_session = null,
-            .after_edit = .{ .model = model },
-            .dirty_state = document.isDirty(),
-            .working_copy_dirty_listeners = std.array_list.Managed(ChangeListener).init(allocator),
-            .working_copy_content_listeners = std.array_list.Managed(ChangeListener).init(allocator),
-            .scroll_listeners = std.array_list.Managed(ChangeListener).init(allocator),
-            .working_copy_save_listeners = std.array_list.Managed(ChangeListener).init(allocator),
-            .on_did_change_dirty = Emitter(void).init(allocator),
-            .on_will_dispose = Emitter(void).init(allocator),
-            .on_did_layout_change = Emitter(void).init(allocator),
-            .on_did_change_code_lens_provider = Emitter(bool).init(allocator),
-            .on_did_mouse_event = Emitter(editorBrowser.EditorMouseEvent).init(allocator),
-            .on_did_key_down = Emitter(*input.KeyEvent).init(allocator),
-            .on_did_change_quick_diff_context = Emitter(void).init(allocator),
+            .after_edit = undefined,
+            .dirty_state = false,
+            .working_copy_dirty_listeners = .init(allocator),
+            .working_copy_content_listeners = .init(allocator),
+            .scroll_listeners = .init(allocator),
+            .working_copy_save_listeners = .init(allocator),
+            .on_will_change_model = .init(allocator),
+            .on_did_change_model = .init(allocator),
+            .on_did_change_dirty = .init(allocator),
+            .on_will_dispose = .init(allocator),
+            .on_did_layout_change = .init(allocator),
+            .on_did_change_code_lens_provider = .init(allocator),
+            .on_did_mouse_event = .init(allocator),
+            .on_did_key_down = .init(allocator),
+            .on_did_change_quick_diff_context = .init(allocator),
             .screen_width = @max(width, 1),
             .screen_height = @max(height, 1),
             .status_row = true,
-            .gutter_width = gutter,
-            .gutter_number_width = initial_number_width,
-            .gutter_fold_width = initial_fold_width,
-            .gutter_glyph_width = 0,
+            .gutter_width = 6,
+            .gutter_number_width = 5,
+            .gutter_fold_width = 1,
             .line_decorations_width = 0,
             .line_number_map = null,
             .read_only = false,
             .on_did_change_read_only = .init(allocator),
-            .scrollbar_width = initial_scrollbar,
-            .view_layout = try ViewLayout.init(allocator, initial_view_line_count, text_width, @max(height -| 1, 1)),
+            .scrollbar_width = if (options.reserve_scrollbar) overviewRulerWidthFor(width, 6) else 0,
+            .view_layout = undefined,
+            .on_did_change_cursor_position = .init(allocator),
+            .on_did_change_cursor_selection = .init(allocator),
+            .on_will_type = .init(allocator),
+            .on_did_type = .init(allocator),
             .status = undefined,
             .status_len = 0,
             .prev_edit_operation_type = .Other,
             .pending_selection = undefined,
             .pending_selection_count = 0,
             .undo_group_depth = 0,
-            .last_content_changes = std.array_list.Managed(LastContentChange).init(allocator),
+            .last_content_changes = .init(allocator),
             .tokens_need_refresh = false,
             .tokenized_viewport_start = 0,
             .tokenized_viewport_end = 0,
             .tokenized_viewport_version = 0,
             .decoration_generation = 0,
-            .keybindings = null,
             .shortcut_commands = CommandRegistry.init(allocator),
-            .find_context = null,
-            .find_start_fn = null,
         };
-        errdefer editor.view_event_dispatcher.deinit();
-        errdefer editor.on_did_change_cursor_position.deinit();
-        errdefer editor.on_did_change_cursor_selection.deinit();
-        errdefer editor.on_will_type.deinit();
-        errdefer editor.on_did_type.deinit();
-        errdefer editor.on_did_change_read_only.deinit();
-        editor.converter = CoordinatesConverter.init(&editor.view_lines);
-        _ = try editor.view_layout.onDidScroll().listen(editor, onViewLayoutScroll);
-        _ = try editor.view_layout.onDidContentSizeChange().listen(editor, onContentSizeChanged);
-        if (editor.character_pair) |*pair_support| {
-            editor.cursor_config.auto_closing_pairs = pair_support.getAutoClosingPairs();
-            editor.cursor_config.auto_close_before_quotes = pair_support.getAutoCloseBeforeSet(true);
-            editor.cursor_config.auto_close_before_brackets = pair_support.getAutoCloseBeforeSet(false);
-        }
+        return editor;
+    }
 
+    /// Creates one editor view over an existing, owned document. All editor
+    /// construction paths use the same model attach procedure.
+    fn createView(allocator: Allocator, document: *EditorDocument, width: usize, height: usize, options: CreateOptions) !*Editor {
+        const editor = try createDetached(allocator, document.io, width, height, options);
+        errdefer {
+            editor.deinit();
+            allocator.destroy(editor);
+        }
+        try editor.attachModel(document);
+        return editor;
+    }
+
+    pub fn hasModel(self: *const Editor) bool {
+        return self.model_attached;
+    }
+
+    pub fn getModel(self: *const Editor) ?*TextModel {
+        return if (self.hasModel()) self.model else null;
+    }
+
+    /// CodeEditorWidget.setModel: the widget and its event subscribers are
+    /// retained; only the view-model, cursors and model registrations change.
+    pub fn setModel(self: *Editor, document: ?*EditorDocument) !void {
+        const old_document = if (self.hasModel()) self.document else null;
+        if (old_document == document) return;
+        // Retain both event URIs across detaching even the last editor view.
+        if (old_document) |old| old.retain();
+        defer if (old_document) |old| old.release();
+        if (document) |new| new.retain();
+        errdefer if (document) |new| new.release();
+        var change: editor_common.IModelChangedEvent = .{
+            .oldModelUrl = if (old_document) |old| old.model.uri() else null,
+            .newModelUrl = if (document) |new| new.model.uri() else null,
+        };
+        self.on_will_change_model.fire(change) catch {};
+        self.detachModel();
+        if (document) |new| self.attachModel(new) catch |err| {
+            change.newModelUrl = null;
+            self.on_did_change_model.fire(change) catch {};
+            return err;
+        };
+        self.on_did_change_model.fire(change) catch {};
+    }
+
+    /// Takes over the reference to document only after successful attachment.
+    fn attachModel(self: *Editor, document: *EditorDocument) !void {
+        std.debug.assert(!self.hasModel());
+        const allocator = self.allocator;
+        const model = document.model;
+        const language_id = model.getLanguageId();
+        const resolved = model.getOptions();
+        self.document = document;
+        self.path = document.path;
+        self.model = model;
+        self.undo_redo = document.undo_redo;
+        self.codec = document.codec;
+        self.language_service = document.language_service;
+        self.language_config_service = document.language_config_service;
+        self.dirty_state = document.isDirty();
+        self.gutter_number_width = if (self.gutter_line_numbers) @max(digitsFor(model.getLineCount()), self.gutter_line_numbers_min_chars) else 0;
+        self.gutter_fold_width = if (self.gutter_folding) 1 else 0;
+        self.gutter_width = self.gutter_number_width + self.gutter_fold_width + self.line_decorations_width;
+        self.scrollbar_width = @min(self.scrollbar_width, self.screen_width -| self.gutter_width -| 1);
+        const text_width = self.textAreaWidth();
+        self.view_lines = try ProjectedViewModelLines.init(allocator, model, self.effectiveWrappingColumn(text_width), resolved.tabSize, self.wrapping_indent, .normal);
+        errdefer self.view_lines.deinit();
+        self.view_event_dispatcher = .init(allocator);
+        errdefer self.view_event_dispatcher.deinit();
+        self.converter = CoordinatesConverter.init(&self.view_lines);
+        self.model_adapter = TextModelCursorSimpleModel.init(allocator, model);
+        errdefer self.model_adapter.deinit();
+        self.bracket_matching = BracketMatchingController.init(allocator, model);
+        errdefer self.bracket_matching.deinit();
+        self.smart_select = smart_select.SmartSelectController.init(allocator, &.{}, .{});
+        errdefer self.smart_select.deinit();
+        self.after_edit = .{ .model = model };
+        self.cursor_config.tabSize = resolved.tabSize;
+        self.cursor_config.indentSize = resolved.indentSize;
+        self.cursor_config.insertSpaces = resolved.insertSpaces;
+        self.cursor_config.pageSize = self.textHeight();
+        self.cursor_config.languageConfigurationService = self.language_config_service.interface();
+        const default_config: CursorConfiguration = .{ .tabSize = 4, .indentSize = 4, .insertSpaces = true, .pageSize = 1 };
+        self.cursor_config.auto_closing_pairs = &.{};
+        self.cursor_config.auto_close_before_quotes = default_config.auto_close_before_quotes;
+        self.cursor_config.auto_close_before_brackets = default_config.auto_close_before_brackets;
+        self.character_pair = if (self.language_service.getLanguageConfiguration(language_id)) |config| try CharacterPairSupport.init(config) else null;
+        if (self.character_pair) |*pair_support| {
+            self.cursor_config.auto_closing_pairs = pair_support.getAutoClosingPairs();
+            self.cursor_config.auto_close_before_quotes = pair_support.getAutoCloseBeforeSet(true);
+            self.cursor_config.auto_close_before_brackets = pair_support.getAutoCloseBeforeSet(false);
+        }
+        self.view_layout = try ViewLayout.init(allocator, self.view_lines.getViewLineCount(), text_width, self.textHeight());
+        errdefer self.view_layout.deinit();
+        _ = try self.view_layout.onDidScroll().listen(self, onViewLayoutScroll);
+        _ = try self.view_layout.onDidContentSizeChange().listen(self, onContentSizeChanged);
         const context = try allocator.create(CursorContext);
         errdefer allocator.destroy(context);
-        context.* = CursorContext.init(
-            model,
-            editor.view_lines.interface(),
-            editor.converter.interface(),
-            &editor.cursor_config,
-        );
-        editor.cursor_context = context;
-
-        editor.cursors = try CursorCollection.init(allocator, context);
-        errdefer if (editor.cursors) |*cursors| cursors.deinit();
-        editor.refreshAutoIndent();
-
-        const folding_controller = try folding.Controller.init(allocator, model, &editor.view_lines);
-        errdefer folding_controller.deinit();
-        editor.folding = folding_controller;
-        try editor.refreshFoldingRules();
-        editor.triggerFoldingUpdate(time_compat.milliTimestamp());
-
-        editor.content_listener_id = try model.onDidChangeContentWithContextId(editor, contentChangedCallback);
-        editor.decorations_listener_id = try model.onDidChangeDecorationsWithContextId(editor, decorationChangedCallback);
-        editor.injected_text_listener_id = try model.listenDidChangeInjectedText(editor, injectedTextChangedCallback);
-        editor.attached_view = try model.onBeforeAttached();
-        try document.addEditor(editor);
-        // Establish the initial model selection before any contribution or
-        // view attaches; attaching a view is not a public cursor move.
-        editor.emitCursorStateChangedForce(.NotSet);
-
-        return editor;
+        context.* = CursorContext.init(model, self.view_lines.interface(), self.converter.interface(), &self.cursor_config);
+        self.cursor_context = context;
+        errdefer self.cursor_context = null;
+        self.cursors = try CursorCollection.init(allocator, context);
+        errdefer {
+            self.cursors.?.deinit();
+            self.cursors = null;
+        }
+        self.refreshAutoIndent();
+        self.folding = try folding.Controller.init(allocator, model, &self.view_lines);
+        errdefer self.folding.deinit();
+        try self.refreshFoldingRules();
+        self.content_listener_id = try model.onDidChangeContentWithContextId(self, contentChangedCallback);
+        errdefer model.removeDidChangeContentListener(self.content_listener_id);
+        self.decorations_listener_id = try model.onDidChangeDecorationsWithContextId(self, decorationChangedCallback);
+        errdefer model.removeDidChangeDecorationsListener(self.decorations_listener_id);
+        self.injected_text_listener_id = try model.listenDidChangeInjectedText(self, injectedTextChangedCallback);
+        errdefer model.removeDidChangeInjectedTextListener(self.injected_text_listener_id);
+        self.attached_view = try model.onBeforeAttached();
+        errdefer if (self.attached_view) |view| {
+            model.onBeforeDetached(view) catch {};
+            allocator.destroy(view);
+            self.attached_view = null;
+        };
+        try document.addEditor(self);
+        self.model_attached = true;
+        if (self.folding_task.queue) |window| model.tokenization().tokens.attachWindow(window);
+        self.triggerFoldingUpdate(time_compat.milliTimestamp());
+        self.attachLanguageServices(self.language_features, self.marker_service, self.marker_decorations);
+        self.attachJsonLanguage() catch {};
+        // Establish the initial selection for the new view-model.
+        self.emitCursorStateChangedForce(.NotSet);
     }
 
     /// Creates a second editor view over `source`'s document, matching
@@ -1557,6 +1603,7 @@ pub const Editor = struct {
         self.language_features = features;
         self.marker_service = marker_service;
         self.marker_decorations = marker_decorations;
+        if (!self.hasModel()) return;
         if (marker_decorations) |service| {
             if (!self.marker_model_registered) {
                 service.registerModel(self.model) catch {};
@@ -1837,7 +1884,34 @@ pub const Editor = struct {
 
     pub fn deinit(self: *Editor) void {
         self.on_will_dispose.fire({}) catch {};
+        self.detachModel();
         self.on_will_dispose.deinit();
+        self.on_will_change_model.deinit();
+        self.on_did_change_model.deinit();
+        self.word_separators.deinit();
+        self.on_did_change_cursor_position.deinit();
+        self.on_did_change_cursor_selection.deinit();
+        self.on_will_type.deinit();
+        self.on_did_type.deinit();
+        self.on_did_change_read_only.deinit();
+        self.contributions.deinit(self.allocator);
+        self.working_copy_dirty_listeners.deinit();
+        self.working_copy_content_listeners.deinit();
+        self.scroll_listeners.deinit();
+        self.working_copy_save_listeners.deinit();
+        if (self.keybindings) |service| service.deinit();
+        self.shortcut_commands.deinit();
+        self.on_did_change_dirty.deinit();
+        self.on_did_layout_change.deinit();
+        self.on_did_change_code_lens_provider.deinit();
+        self.on_did_mouse_event.deinit();
+        self.on_did_key_down.deinit();
+        self.on_did_change_quick_diff_context.deinit();
+        self.last_content_changes.deinit();
+    }
+
+    fn detachModel(self: *Editor) void {
+        if (!self.hasModel()) return;
         self.folding_task.schedule(null);
         self.in_place_replace_task.schedule(null);
         if (self.document.editors.items.len == 1) self.detachJsonLanguage();
@@ -1847,6 +1921,7 @@ pub const Editor = struct {
         self.model.removeDidChangeDecorationsListener(self.decorations_listener_id);
         self.model.removeDidChangeInjectedTextListener(self.injected_text_listener_id);
         if (self.json_completion_registration) |registration| registration.dispose();
+        self.json_completion_registration = null;
         if (self.marker_decorations) |service| {
             if (self.marker_model_registered) {
                 service.unregisterModel(self.model);
@@ -1865,23 +1940,22 @@ pub const Editor = struct {
                 }
             }
         }
+        self.stopTrackingCursorSelections();
         self.folding.deinit();
         if (self.cursors) |*cursors| cursors.deinit();
+        self.cursors = null;
         if (self.cursor_context) |context| self.allocator.destroy(context);
+        self.cursor_context = null;
         self.model_adapter.deinit();
         self.bracket_matching.deinit();
         self.smart_select.deinit();
 
         if (self.multicursor_session) |*session| session.deinit();
-        self.word_separators.deinit();
+        self.multicursor_session = null;
         if (self.cursor_event_view_selections.len > 0) self.allocator.free(self.cursor_event_view_selections);
         if (self.cursor_event_model_selections.len > 0) self.allocator.free(self.cursor_event_model_selections);
-        self.on_did_change_cursor_position.deinit();
-        self.on_did_change_cursor_selection.deinit();
-        self.on_will_type.deinit();
-        self.on_did_type.deinit();
-        self.on_did_change_read_only.deinit();
-        self.contributions.deinit(self.allocator);
+        self.cursor_event_view_selections = &.{};
+        self.cursor_event_model_selections = &.{};
         self.view_event_dispatcher.deinit();
         self.view_layout.deinit();
         self.view_lines.deinit();
@@ -1890,23 +1964,47 @@ pub const Editor = struct {
             self.allocator.destroy(view);
             self.attached_view = null;
         }
-        self.working_copy_dirty_listeners.deinit();
-        self.working_copy_content_listeners.deinit();
-        self.scroll_listeners.deinit();
-        self.working_copy_save_listeners.deinit();
-        if (self.keybindings) |service| service.deinit();
-        self.shortcut_commands.deinit();
-        self.on_did_change_dirty.deinit();
-        self.on_did_layout_change.deinit();
-        self.on_did_change_code_lens_provider.deinit();
-        self.on_did_mouse_event.deinit();
-        self.on_did_key_down.deinit();
-        self.on_did_change_quick_diff_context.deinit();
         for (self.last_content_changes.items) |change| self.allocator.free(change.text);
-        self.last_content_changes.deinit();
-
+        self.last_content_changes.clearRetainingCapacity();
         self.document.removeEditor(self);
+        self.model_attached = false;
         self.document.release();
+        self.document = undefined;
+        self.path = undefined;
+        self.model = undefined;
+        self.undo_redo = undefined;
+        self.codec = undefined;
+        self.language_service = undefined;
+        self.language_config_service = undefined;
+        self.cursor_config.languageConfigurationService = null;
+        self.character_pair = null;
+        self.cursor_config.auto_closing_pairs = &.{};
+        self.folding_dirty = false;
+        self.folding_delay_ms = folding_debounce_min_ms;
+        self.line_number_map = null;
+        self.gutter_glyph_width = 0;
+        self.top_inset_rows = 0;
+        self.status_len = 0;
+        self.dirty_state = false;
+        self.cursor_event_model_version = 0;
+        self.cursor_event_source = null;
+        self.cursor_event_reason = null;
+        self.cursor_selection_source = .USER;
+        self.prev_edit_operation_type = .Other;
+        self.pending_selection_count = 0;
+        self.undo_group_depth = 0;
+        self.tokens_need_refresh = false;
+        self.tokenized_viewport_start = 0;
+        self.tokenized_viewport_end = 0;
+        self.tokenized_viewport_version = 0;
+        self.decoration_generation = 0;
+        self.focused_embedded = null;
+        self.find_context = null;
+        self.find_start_fn = null;
+        self.search_highlight_sink = null;
+        self.has_code_lens_provider = false;
+        self.quick_diff_decoration_count = 0;
+        self.dirty_diff_visible = false;
     }
 
     fn contentChangedCallback(event: InternalModelContentChangeEvent, editor: *Editor) anyerror!void {
@@ -2085,6 +2183,7 @@ pub const Editor = struct {
     pub fn setStatusRow(self: *Editor, visible: bool) void {
         if (self.status_row == visible) return;
         self.status_row = visible;
+        if (!self.hasModel()) return;
         self.refreshLayout() catch {};
         self.ensureCursorVisible();
     }
@@ -2197,6 +2296,7 @@ pub const Editor = struct {
         self.gutter_line_numbers = line_numbers;
         self.gutter_line_numbers_min_chars = min_chars;
         self.gutter_folding = effective_folding;
+        if (!self.hasModel()) return;
         self.refreshLayout() catch {};
         self.ensureCursorVisible();
     }
@@ -2221,6 +2321,7 @@ pub const Editor = struct {
         const clamped = @min(width, 3);
         if (clamped == self.line_decorations_width) return;
         self.line_decorations_width = clamped;
+        if (!self.hasModel()) return;
         self.refreshLayout() catch {};
         self.ensureCursorVisible();
     }
@@ -2440,7 +2541,7 @@ pub const Editor = struct {
         self.in_place_replace_task.schedule(null);
         self.in_place_replace_task = .{ .queue = window, .context = self, .run = onInPlaceReplaceDeadline };
         if (self.folding_dirty) self.triggerFoldingUpdate(time_compat.milliTimestamp());
-        self.model.tokenization().tokens.attachWindow(window);
+        if (self.hasModel()) self.model.tokenization().tokens.attachWindow(window);
     }
 
     /// Content and language changes reset the folding model update deadline.
@@ -3080,8 +3181,10 @@ pub const Editor = struct {
         const changed = self.screen_width != @max(width, 1) or self.screen_height != @max(height, 1);
         self.screen_width = @max(width, 1);
         self.screen_height = @max(height, 1);
-        self.refreshLayout() catch |err| self.setMessage("layout error: {s}", .{@errorName(err)});
-        self.ensureCursorVisible();
+        if (self.hasModel()) {
+            self.refreshLayout() catch |err| self.setMessage("layout error: {s}", .{@errorName(err)});
+            self.ensureCursorVisible();
+        }
         if (changed) self.on_did_layout_change.fire({}) catch {};
     }
 
@@ -3093,6 +3196,7 @@ pub const Editor = struct {
         const clamped = @min(width, available -| 1);
         if (clamped == self.scrollbar_width) return;
         self.scrollbar_width = clamped;
+        if (!self.hasModel()) return;
         self.refreshLayout() catch |err| self.setMessage("layout error: {s}", .{@errorName(err)});
         self.ensureCursorVisible();
     }
@@ -3119,6 +3223,7 @@ pub const Editor = struct {
         self.wrap_column = column;
         self.wrapping_indent = indent;
         self.word_wrap_indicator = indicator;
+        if (!self.hasModel()) return;
         self.refreshLayout() catch |err| self.setMessage("layout error: {s}", .{@errorName(err)});
         if (self.wrap_mode != .off) _ = self.setScrollLeft(0);
         self.ensureCursorVisible();

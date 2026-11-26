@@ -8,6 +8,13 @@ const TextModel = @import("./model/textModel.zig").TextModel;
 
 const Position = @import("./core/position.zig").Position;
 
+/// CodeEditorWidget.setModel lifecycle event. Both URIs are valid for
+/// the duration of the synchronous notification.
+pub const IModelChangedEvent = struct {
+    oldModelUrl: ?std.Uri,
+    newModelUrl: ?std.Uri,
+};
+
 /// Serializable cursor and view state from editorCommon.ts. Positions remain
 /// model coordinates, so restoring works across wrapping and view-zone changes.
 pub const ICursorState = struct {
