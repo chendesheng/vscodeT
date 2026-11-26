@@ -65,6 +65,8 @@ pub const GitScmResource = struct {
         allocator.free(self.relative_path);
         if (self.original_path) |path| allocator.free(path);
         allocator.free(self.absolute_path);
+        if (self.iface.multi_diff_original_uri) |value| allocator.free(value);
+        if (self.iface.multi_diff_modified_uri) |value| allocator.free(value);
         if (self.decorations.tooltip) |tooltip| allocator.free(tooltip);
         allocator.destroy(self);
     }
@@ -200,6 +202,7 @@ pub const Repository = struct {
                 .provider = &self.base,
                 .label = group_labels[index],
                 .hide_when_empty = hide_when_empty[index],
+                .multi_diff_editor_enable_view_changes = index != 0,
                 .resources_fn = groupResources,
                 .on_did_change_resources = &self.groups[index].resources_changed,
                 .on_did_change = &self.groups[index].changed,
@@ -551,6 +554,29 @@ pub const Repository = struct {
         const tooltip = try self.allocator.dupe(u8, info.tooltip);
         errdefer self.allocator.free(tooltip);
 
+        const uris = @import("uri.zig");
+        const previous_absolute = if (original) |path| try std.fs.path.join(self.allocator, &.{ self.root, path }) else null;
+        defer if (previous_absolute) |value| self.allocator.free(value);
+        const original_uri = switch (kind) {
+            .merge, .untracked => null,
+            .index => switch (status) {
+                'A', 'C' => null,
+                else => try uris.gitUriString(self.allocator, previous_absolute orelse absolute, "HEAD"),
+            },
+            .working => switch (status) {
+                'A', '?' => null,
+                'M' => try uris.gitUriString(self.allocator, absolute, "~"),
+                else => try uris.gitUriString(self.allocator, previous_absolute orelse absolute, "HEAD"),
+            },
+        };
+        errdefer if (original_uri) |value| self.allocator.free(value);
+        const modified_uri = if (status == 'D' or kind == .merge) null else switch (kind) {
+            .index => try uris.gitUriString(self.allocator, absolute, ""),
+            .working, .untracked => try uris.fileUriString(self.allocator, absolute),
+            .merge => unreachable,
+        };
+        errdefer if (modified_uri) |value| self.allocator.free(value);
+
         const group = &self.groups[group_index];
         resource.* = .{
             .provider = self,
@@ -580,6 +606,8 @@ pub const Repository = struct {
                 },
                 .context_value = null,
                 .command = null,
+                .multi_diff_original_uri = original_uri,
+                .multi_diff_modified_uri = modified_uri,
                 .open_fn = openResource,
             },
         };

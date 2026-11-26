@@ -25,6 +25,20 @@ pub fn toGitUriWithOptions(allocator: std.mem.Allocator, path: []const u8, ref: 
     };
 }
 
+/// Encoded resource identity retained by SCM history and resource groups.
+pub fn gitUriString(allocator: std.mem.Allocator, path: []const u8, ref: []const u8) ![]u8 {
+    const uri = try toGitUri(allocator, path, ref);
+    defer allocator.free(uri.path.raw);
+    defer allocator.free(uri.query.?.raw);
+    return std.fmt.allocPrint(allocator, "{f}", .{uri});
+}
+
+pub fn fileUriString(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    var file = try URI.file(allocator, path);
+    defer file.deinit();
+    return file.toStringEncoded(allocator);
+}
+
 test "git URI preserves path and ref in its query" {
     const allocator = std.testing.allocator;
     const uri = try toGitUri(allocator, "/repo/a #b.zig", "HEAD");

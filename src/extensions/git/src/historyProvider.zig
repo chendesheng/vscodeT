@@ -535,9 +535,24 @@ pub const GitHistoryProvider = struct {
             errdefer allocator.free(path);
             const original = if (diff.change.original_path) |value| try allocator.dupe(u8, value) else null;
             errdefer if (original) |value| allocator.free(value);
+            const uris = @import("uri.zig");
+            const modified_path = try std.fs.path.join(allocator, &.{ self.repository.root_path, path });
+            defer allocator.free(modified_path);
+            const original_path = try std.fs.path.join(allocator, &.{ self.repository.root_path, if (diff.change.status == 'R') original orelse path else path });
+            defer allocator.free(original_path);
+            // The root commit has only added resources; no empty-tree URI is needed.
+            const original_uri = if (diff.change.status != 'A' and history_item_parent_id != null)
+                try uris.gitUriString(allocator, original_path, history_item_parent_id.?)
+            else
+                null;
+            errdefer if (original_uri) |value| allocator.free(value);
+            const modified_uri = if (diff.change.status != 'D') try uris.gitUriString(allocator, modified_path, history_item_id) else null;
+            errdefer if (modified_uri) |value| allocator.free(value);
             try changes.append(.{
                 .path = path,
                 .original_path = original,
+                .original_uri = original_uri,
+                .modified_uri = modified_uri,
                 .status = diff.change.status,
                 .insertions = diff.insertions,
                 .deletions = diff.deletions,

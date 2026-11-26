@@ -61,8 +61,9 @@ pub const ISCMResource = struct {
     decorations: ISCMResourceDecorations = .{},
     context_value: ?[]const u8 = null,
     command: ?Command = null,
-    multi_diff_original_path: ?[]const u8 = null,
-    multi_diff_modified_path: ?[]const u8 = null,
+    /// Encoded resource URIs (including virtual Git snapshots).
+    multi_diff_original_uri: ?[]const u8 = null,
+    multi_diff_modified_uri: ?[]const u8 = null,
     open_fn: ?*const fn (context: *anyopaque, preserve_focus: bool) anyerror!void = null,
 
     pub fn open(self: ISCMResource, preserve_focus: bool) !void {

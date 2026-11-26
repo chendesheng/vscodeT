@@ -221,6 +221,8 @@ pub const ISCMHistoryItemViewModel = struct {
 pub const ISCMHistoryItemChange = struct {
     path: []const u8,
     original_path: ?[]const u8 = null,
+    original_uri: ?[]const u8 = null,
+    modified_uri: ?[]const u8 = null,
     status: u8 = 0,
     insertions: usize = 0,
     deletions: usize = 0,
@@ -229,9 +231,15 @@ pub const ISCMHistoryItemChange = struct {
         const path = try allocator.dupe(u8, self.path);
         errdefer allocator.free(path);
         const original_path = if (self.original_path) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (original_path) |value| allocator.free(value);
+        const original_uri = if (self.original_uri) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (original_uri) |value| allocator.free(value);
+        const modified_uri = if (self.modified_uri) |value| try allocator.dupe(u8, value) else null;
         return .{
             .path = path,
             .original_path = original_path,
+            .original_uri = original_uri,
+            .modified_uri = modified_uri,
             .status = self.status,
             .insertions = self.insertions,
             .deletions = self.deletions,
@@ -241,6 +249,8 @@ pub const ISCMHistoryItemChange = struct {
     pub fn deinit(self: *ISCMHistoryItemChange, allocator: Allocator) void {
         allocator.free(self.path);
         if (self.original_path) |value| allocator.free(value);
+        if (self.original_uri) |value| allocator.free(value);
+        if (self.modified_uri) |value| allocator.free(value);
         self.* = undefined;
     }
 };
