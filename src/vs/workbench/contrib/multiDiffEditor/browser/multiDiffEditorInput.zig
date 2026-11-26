@@ -268,7 +268,7 @@ pub const MultiDiffEditorInput = struct {
         options.read_only = if (b) |input| input.interface().isReadonly() else true;
         const item = if (existing) |previous| previous.retain() else try model.IDocumentDiffItem.create(self.allocator, diffSource(value.original), diffSource(value.modified), options);
         errdefer item.release();
-        const go_to = if (value.go_to_file_uri) |uri| try std.fmt.allocPrint(self.allocator, "{f}", .{uri}) else null;
+        const go_to = if (value.go_to_file_uri) |uri| try std_uri.encodedResource(self.allocator, uri) else null;
         errdefer if (go_to) |key| self.allocator.free(key);
         const title = if (value.go_to_file_title) |name| try self.allocator.dupe(u8, name) else null;
         errdefer if (title) |name| self.allocator.free(name);
@@ -417,7 +417,7 @@ pub const MultiDiffEditorSerializer = struct {
         return !input.is_transient;
     }
     fn encodeUri(allocator: Allocator, uri: ?std.Uri) !?[]const u8 {
-        return if (uri) |value| try std.fmt.allocPrint(allocator, "{f}", .{value}) else null;
+        return if (uri) |value| try std_uri.encodedResource(allocator, value) else null;
     }
     fn serialize(context: *anyopaque, base: *EditorInput, allocator: Allocator) !?[]const u8 {
         if (!canSerialize(context, base)) return null;

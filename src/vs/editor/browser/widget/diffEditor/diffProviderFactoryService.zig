@@ -23,6 +23,7 @@ pub const SnapshotSource = struct {
         /// The provider resolved a real available file, not an absent or
         /// unsupported snapshot side. Only these may become working copies.
         is_working_file: bool = false,
+        encoding: ?@import("../../../../workbench/services/textfile/common/encoding.zig").Encoding = null,
     };
 
     pub const Texts = struct {

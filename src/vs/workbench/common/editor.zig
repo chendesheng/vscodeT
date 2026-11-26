@@ -11,6 +11,20 @@ const std = @import("std");
 const Position = @import("../../editor/common/core/position.zig").Position;
 const Selection = @import("../../editor/common/core/selection.zig").Selection;
 
+/// Port of IResourceMultiDiffEditorInput. The source is optional for
+/// caller-supplied resource pairs; the concrete input owns a generated URI.
+pub const IMultiDiffEditorResource = struct {
+    original: ?std.Uri = null,
+    modified: ?std.Uri = null,
+    goToFileResource: ?std.Uri = null,
+};
+pub const IResourceMultiDiffEditorInput = struct {
+    multiDiffSource: ?std.Uri = null,
+    label: ?[]const u8 = null,
+    resources: ?[]const IMultiDiffEditorResource = null,
+    isTransient: bool = false,
+};
+
 pub const GroupIdentifier = u32;
 
 /// Mirrors upstream `EditorInputCapabilities`. Upstream uses a const enum with

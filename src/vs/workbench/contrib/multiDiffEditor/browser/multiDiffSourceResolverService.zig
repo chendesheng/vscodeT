@@ -170,15 +170,55 @@ pub const ResourceSnapshotProvider = struct {
             allocator.free(items);
         }
         for (resources, items) |resource, *item| {
-            const snapshot = try self.capture(self.context, resource);
+            const snapshot = self.capture(self.context, resource) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => try UnavailableSnapshotRequest.capture(resource),
+            };
             errdefer snapshot.destroy(snapshot.context);
-            const uri = if (resource.goToFileUri) |value| try std.fmt.allocPrint(allocator, "{f}", .{value}) else null;
+            const uri = if (resource.goToFileUri) |value| try std_uri.encodedResource(allocator, value) else null;
             errdefer if (uri) |value| allocator.free(value);
             const title = if (resource.goToFileEditorTitle) |value| try allocator.dupe(u8, value) else null;
             item.* = .{ .source = snapshot, .original_exists = resource.originalUri != null, .modified_exists = resource.modifiedUri != null, .go_to_file_uri = uri, .go_to_file_title = title };
             count += 1;
         }
         return .{ .allocator = allocator, .items = items };
+    }
+};
+
+/// Keep the resource identity when a provider cannot provide a text model,
+/// just as MultiDiffEditorInput retains a binary/unresolved DiffItemSource.
+const UnavailableSnapshotRequest = struct {
+    arena: std.heap.ArenaAllocator,
+    item: MultiDiffEditorItem,
+    fn capture(item: MultiDiffEditorItem) !SnapshotSource {
+        const self = try std.heap.page_allocator.create(UnavailableSnapshotRequest);
+        errdefer std.heap.page_allocator.destroy(self);
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        errdefer arena.deinit();
+        const copy = try StaticResolvedMultiDiffSource.cloneItems(arena.allocator(), &.{item});
+        self.* = .{ .arena = arena, .item = copy[0] };
+        return .{ .context = self, .read = read, .destroy = destroy };
+    }
+    fn resource(a: Allocator, value: ?std.Uri) !?SnapshotSource.Resource {
+        const uri = value orelse return null;
+        const owned = try std.Uri.parse(try std_uri.encodedResource(a, uri));
+        return .{ .uri = owned, .path = try std_uri.fsPath(owned, a) };
+    }
+    fn read(context: *anyopaque, a: Allocator) !SnapshotSource.Texts {
+        const self: *UnavailableSnapshotRequest = @ptrCast(@alignCast(context));
+        return .{
+            .original = "",
+            .modified = "",
+            .original_resource = try resource(a, self.item.originalUri),
+            .modified_resource = try resource(a, self.item.modifiedUri),
+            .original_available = false,
+            .modified_available = false,
+        };
+    }
+    fn destroy(context: *anyopaque) void {
+        const self: *UnavailableSnapshotRequest = @ptrCast(@alignCast(context));
+        self.arena.deinit();
+        std.heap.page_allocator.destroy(self);
     }
 };
 
@@ -263,7 +303,7 @@ pub const StaticResolvedMultiDiffSource = struct {
     }
     fn cloneUri(arena: Allocator, value: ?std.Uri) !?std.Uri {
         const uri = value orelse return null;
-        return try std.Uri.parse(try std.fmt.allocPrint(arena, "{f}", .{uri}));
+        return try std.Uri.parse(try std_uri.encodedResource(arena, uri));
     }
     pub fn create(allocator: Allocator, items: []const MultiDiffEditorItem) !IResolvedMultiDiffSource {
         const self = try allocator.create(StaticResolvedMultiDiffSource);

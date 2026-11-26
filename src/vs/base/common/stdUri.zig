@@ -67,6 +67,36 @@ pub fn fragment(uri: std.Uri, arena: Allocator) ![]const u8 {
     return "";
 }
 
+/// Serializes a model URI without mistaking a native drive path for the
+/// authority component. File models use native paths, while serialized URIs
+/// use slash-separated absolute paths and percent-encoded components.
+pub fn encodedResource(allocator: Allocator, uri: std.Uri) ![]u8 {
+    if (!std.mem.eql(u8, uri.scheme, "file")) return std.fmt.allocPrint(allocator, "{f}", .{uri});
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    const a = scratch.allocator();
+    const raw = try path(uri, a);
+    var normalized: std.ArrayList(u8) = .empty;
+    var host = try authority(uri, a);
+    if (raw.len >= 2 and raw[0] == '\\' and raw[1] == '\\' and host.len == 0) {
+        const rest = raw[2..];
+        const separator = std.mem.indexOfAny(u8, rest, "/\\") orelse rest.len;
+        host = rest[0..separator];
+        for (rest[separator..]) |byte| try normalized.append(a, if (byte == '\\') '/' else byte);
+    } else {
+        if (raw.len == 0 or raw[0] != '/') try normalized.append(a, '/');
+        for (raw) |byte| try normalized.append(a, if (raw.len > 0 and raw[0] != '/' and byte == '\\') '/' else byte);
+    }
+    const canonical: std.Uri = .{
+        .scheme = uri.scheme,
+        .host = .{ .raw = host },
+        .path = .{ .raw = normalized.items },
+        .query = if (uri.query != null) .{ .raw = try query(uri, a) } else null,
+        .fragment = if (uri.fragment != null) .{ .raw = try fragment(uri, a) } else null,
+    };
+    return std.fmt.allocPrint(allocator, "{f}", .{canonical});
+}
+
 /// Canonical identity key used by the marker service and selector caching.
 /// `file:///a/b`, `git:foo/bar`, and authority-qualified schemes are kept
 /// distinct, matching upstream `URI.toString()` identity.
@@ -217,4 +247,16 @@ test "std.Uri bridge: file fsPath maps URI and native spellings to the native pa
 
     const unc = try std.Uri.parse("file://server/share/a.zig");
     try std.testing.expectEqualStrings("\\\\server\\share\\a.zig", try fsPath(unc, allocator));
+}
+
+test "stdUri: encoded model resource normalizes a native drive without losing reserved characters" {
+    const a = std.testing.allocator;
+    const uri: std.Uri = .{ .scheme = "file", .path = .{ .raw = "C:\\repo\\a #b.txt" } };
+    const encoded = try encodedResource(a, uri);
+    defer a.free(encoded);
+    const parsed = try std.Uri.parse(encoded);
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    try std.testing.expectEqualStrings("/C:/repo/a #b.txt", try path(parsed, arena.allocator()));
+    try std.testing.expectEqualStrings("", try authority(parsed, arena.allocator()));
 }

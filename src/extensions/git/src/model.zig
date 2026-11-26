@@ -318,7 +318,7 @@ pub const Model = struct {
         } else return error.UnsupportedDiffResourceScheme;
         const relative = extpath.relativeToRoot(path, root) orelse return error.OutsideRepository;
         return .{
-            .encoded_uri = try std.fmt.allocPrint(allocator, "{f}", .{uri}),
+            .encoded_uri = try std_uri.encodedResource(allocator, uri),
             .path = path,
             .relative = relative,
             .ref = ref,

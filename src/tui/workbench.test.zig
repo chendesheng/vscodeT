@@ -11110,3 +11110,80 @@ test "Workbench: serialize and restore multiple diff resources after the SCM pro
     defer allocator.free(selections);
     try std.testing.expectEqualSlices(Selection, &.{desired_selection}, selections);
 }
+
+test "Workbench: serialize and restore multiple explicit file resources without an SCM provider" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "left.txt", .data = "left content\n" });
+    const left = try tmp.dir.realPathFileAlloc(io, "left.txt", a);
+    defer a.free(left);
+    const utf16 = try encoding_mod.encode(a, "right content\n", .utf16le_with_bom);
+    defer a.free(utf16);
+    try tmp.dir.writeFile(io, .{ .sub_path = "right.txt", .data = utf16 });
+    const right = try tmp.dir.realPathFileAlloc(io, "right.txt", a);
+    defer a.free(right);
+    try tmp.dir.writeFile(io, .{ .sub_path = "binary.bin", .data = "\x00\x01\x02" });
+    const binary = try tmp.dir.realPathFileAlloc(io, "binary.bin", a);
+    defer a.free(binary);
+    const window = try TestWindow.init(a, io, &.{left}, 120, 25);
+    defer window.deinit();
+    const wb = window.workbench;
+    const left_tab = wb.activeTab().?;
+    try left_tab.editor.setCursorPosition(.init(1, 1));
+    try left_tab.editor.insertText("unsaved ");
+    const old_document = left_tab.editor.document;
+    const source_uri = try std.Uri.parse("multi-diff-editor:explicit-files");
+    const left_uri = old_document.model.uri();
+    const URI = @import("../vs/base/common/uri.zig").URI;
+    var right_file = try URI.file(a, right);
+    defer right_file.deinit();
+    var binary_file = try URI.file(a, binary);
+    defer binary_file.deinit();
+    const right_encoded = try right_file.toStringEncoded(a);
+    defer a.free(right_encoded);
+    const binary_encoded = try binary_file.toStringEncoded(a);
+    defer a.free(binary_encoded);
+    const right_uri = try std.Uri.parse(right_encoded);
+    const binary_uri = try std.Uri.parse(binary_encoded);
+    try wb.editor_api.openMultiDiffResources(.{
+        .multiDiffSource = source_uri,
+        .label = "Explicit files",
+        .resources = &.{
+            .{ .original = left_uri, .modified = right_uri, .goToFileResource = left_uri },
+            .{ .modified = binary_uri },
+            .{ .modified = try std.Uri.parse("unavailable:///virtual.txt") },
+        },
+    });
+    for (0..6000) |_| {
+        if (wb.activeTab()) |tab| if (tab.multi_diff) |multi| {
+            if (!multi.widget.getViewModel().?.isLoading) break;
+        };
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+    const tab = wb.activeTab() orelse return error.TestExpectedMultiDiffTab;
+    const multi = tab.multi_diff orelse return error.TestExpectedMultiDiffTab;
+    const vm = multi.widget.getViewModel().?;
+    try std.testing.expectEqual(@as(usize, 3), vm.items.len);
+    try std.testing.expectEqualStrings("Explicit files (3 files)", multi.input.base.getName());
+    try std.testing.expectEqual(old_document, vm.items[0].original);
+    try std.testing.expectEqualStrings("unsaved left content", try vm.items[0].original.model.borrowLineContent(1));
+    try std.testing.expectEqualStrings("right content", try vm.items[0].modified.model.borrowLineContent(1));
+    try std.testing.expectEqual(encoding_mod.Encoding.utf16le_with_bom, vm.items[0].modified.encoding);
+    try std.testing.expect(vm.items[1].isBinary() and vm.items[2].isBinary());
+    try std.testing.expectEqual(@as(usize, 3), multi.input.initial_resources.?.len);
+    try wb.editor_api.openMultiDiffResources(.{ .multiDiffSource = source_uri, .resources = &.{} });
+    try std.testing.expectEqual(tab, wb.activeTab().?);
+    try std.testing.expectEqual(@as(usize, 3), multi.input.entries.len);
+    const control = multi.widget.activeControl() orelse return error.TestExpectedMultiDiffControl;
+    const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
+    const range = Selection.init(1, 2, 1, 5);
+    try control.modified_editor.setSelections(&.{range});
+    try wb.commands.execute("multiDiffEditor.goToFile");
+    try std.testing.expectEqual(left_tab, wb.activeTab().?);
+    const selections = try left_tab.editor.getSelections();
+    defer a.free(selections);
+    try std.testing.expectEqualSlices(Selection, &.{range}, selections);
+}
