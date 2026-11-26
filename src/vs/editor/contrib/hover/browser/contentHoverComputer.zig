@@ -1,9 +1,8 @@
 // Port of `src/vs/editor/contrib/hover/browser/contentHoverComputer.ts`.
 //
-// Terminal adaptation: computations are synchronous callbacks. The computer
-// owns a scratch arena for the parts of the current computation; the wrapper
-// copies the part values before the next computation starts, so participant
-// payloads only need to live until then.
+// The computer merges independently completing participant streams in
+// resolution order. The native request owns detachable callbacks and a scratch
+// arena through cancellation; the wrapper copies part values immediately.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
@@ -17,6 +16,8 @@ const HoverAnchorType = hoverTypes.HoverAnchorType;
 const HoverStartSource = hoverTypes.HoverStartSource;
 const IEditorHoverParticipant = hoverTypes.IEditorHoverParticipant;
 const IHoverPart = hoverTypes.IHoverPart;
+const Sink = @import("hoverOperation.zig").AsyncResultSink(IHoverPart);
+const Disposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
 
 pub const ContentHoverComputerOptions = struct {
     should_focus: bool = false,
@@ -84,6 +85,87 @@ pub const ContentHoverComputer = struct {
             try result.append(decoration);
         }
         return try result.toOwnedSlice();
+    }
+
+    const AsyncComputation = struct {
+        options: ContentHoverComputerOptions,
+        decorations: []const ModelDecoration,
+        token: CancellationToken,
+        sink: Sink,
+        slots: []Slot,
+        remaining: usize,
+        starting: bool = true,
+        canceled: bool = false,
+
+        const Slot = struct {
+            owner: *AsyncComputation,
+            participant: IEditorHoverParticipant,
+            pending: ?Disposable = null,
+            done: bool = false,
+
+            fn emit(context: *anyopaque, values: []const IHoverPart) void {
+                const self: *Slot = @ptrCast(@alignCast(context));
+                if (self.done or self.owner.canceled) return;
+                self.owner.sink.emit(self.owner.sink.context, values);
+            }
+
+            fn complete(context: *anyopaque) void {
+                const self: *Slot = @ptrCast(@alignCast(context));
+                const owner = self.owner;
+                if (self.done or owner.canceled) return;
+                self.done = true;
+                self.pending = null;
+                owner.remaining -= 1;
+                if (!owner.starting and owner.remaining == 0) owner.sink.complete(owner.sink.context);
+            }
+        };
+
+        fn start(self: *AsyncComputation) ?Disposable {
+            for (self.slots) |*slot| {
+                const participant = slot.participant;
+                if (participant.request_async) |request| {
+                    const pending = request(participant.context, &self.options.anchor, self.decorations, self.options.source, self.token, .{ .context = slot, .emit = Slot.emit, .complete = Slot.complete }) catch null;
+                    if (!slot.done) {
+                        slot.pending = pending;
+                        if (pending == null) Slot.complete(slot);
+                    }
+                } else {
+                    if (participant.compute_async) |compute| Slot.emit(slot, compute(participant.context, &self.options.anchor, self.decorations, self.options.source, self.token));
+                    Slot.complete(slot);
+                }
+            }
+            self.starting = false;
+            if (self.remaining == 0) {
+                self.sink.complete(self.sink.context);
+                return null;
+            }
+            return Disposable.from(AsyncComputation, self, cancel);
+        }
+
+        fn cancel(self: *AsyncComputation) void {
+            self.canceled = true;
+            for (self.slots) |*slot| {
+                if (slot.pending) |pending| pending.dispose();
+                slot.pending = null;
+            }
+        }
+    };
+
+    pub fn requestAsync(self: *ContentHoverComputer, options: ContentHoverComputerOptions, token: CancellationToken, sink: Sink) !?Disposable {
+        const a = self.scratch.allocator();
+        const request = try a.create(AsyncComputation);
+        var count: usize = 0;
+        for (self.participants) |participant| if (participant.request_async != null or participant.compute_async != null) {
+            count += 1;
+        };
+        request.* = .{ .options = options, .decorations = try self.getLineDecorations(&options.anchor), .token = token, .sink = sink, .slots = try a.alloc(AsyncComputation.Slot, count), .remaining = count };
+        var index: usize = 0;
+        for (self.participants) |participant| {
+            if (participant.request_async == null and participant.compute_async == null) continue;
+            request.slots[index] = .{ .owner = request, .participant = participant };
+            index += 1;
+        }
+        return request.start();
     }
 
     /// Upstream `computeAsync`: merges the async results of all participants.

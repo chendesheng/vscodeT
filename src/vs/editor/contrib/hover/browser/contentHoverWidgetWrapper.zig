@@ -94,7 +94,7 @@ pub const ContentHoverWidgetWrapper = struct {
             allocator,
             .{
                 .context = self,
-                .compute_async = computeAsyncOperation,
+                .request_async = requestAsyncOperation,
                 .compute_sync = computeSyncOperation,
             },
             operation_timer,
@@ -145,13 +145,9 @@ pub const ContentHoverWidgetWrapper = struct {
         return left.hover_ordinal < right.hover_ordinal;
     }
 
-    fn computeAsyncOperation(
-        context: *anyopaque,
-        options: *const ContentHoverComputerOptions,
-        token: CancellationToken,
-    ) anyerror![]const IHoverPart {
+    fn requestAsyncOperation(context: *anyopaque, options: *const ContentHoverComputerOptions, token: CancellationToken, sink: hoverOperation.AsyncResultSink(IHoverPart)) !?@import("../../../../base/common/lifecycle.zig").IDisposable {
         const self: *ContentHoverWidgetWrapper = @ptrCast(@alignCast(context));
-        return self.computer.computeAsync(options.*, token);
+        return self.computer.requestAsync(options.*, token, sink);
     }
 
     fn computeSyncOperation(context: *anyopaque, options: *const ContentHoverComputerOptions) anyerror![]const IHoverPart {
@@ -165,20 +161,35 @@ pub const ContentHoverWidgetWrapper = struct {
     }
 
     fn withResult(self: *ContentHoverWidgetWrapper, result: HoverResult(ContentHoverComputerOptions, IHoverPart)) void {
+        var parts = result.value;
+        var loaded: ?[]IHoverPart = null;
+        defer if (loaded) |owned| self.allocator.free(owned);
+        if (result.has_loading_message) {
+            for (self.participants) |participant| {
+                const create = participant.create_loading_message orelse continue;
+                const message = create(participant.context, &result.options.anchor) orelse continue;
+                const messages = self.allocator.alloc(IHoverPart, parts.len + 1) catch break;
+                @memcpy(messages[0..parts.len], parts);
+                messages[parts.len] = message;
+                loaded = messages;
+                parts = messages;
+                break;
+            }
+        }
         const previous_visible_complete = self.current_result != null and
             self.current_result.?.is_complete and
             self.widget.isVisible();
         var applied = false;
         if (!previous_visible_complete) {
-            self.setCurrentResult(result.value, result.is_complete, result.options);
+            self.setCurrentResult(parts, result.is_complete, result.options);
             applied = true;
         }
         if (!result.is_complete) return;
-        if (result.value.len == 0 and result.options.insist_on_keeping_hover_visible) return;
+        if (parts.len == 0 and result.options.insist_on_keeping_hover_visible) return;
         // Upstream compares the result by identity; a result that was already
         // applied above must not be rendered twice (that would reset scroll and
         // focus on every frame of a single-timer result).
-        if (!applied) self.setCurrentResult(result.value, result.is_complete, result.options);
+        if (!applied) self.setCurrentResult(parts, result.is_complete, result.options);
     }
 
     fn setCurrentResult(
@@ -189,7 +200,14 @@ pub const ContentHoverWidgetWrapper = struct {
     ) void {
         self.clearCurrentResult();
         if (parts.len == 0) {
-            self.hideHover();
+            // An empty incomplete result is not cancellation: keep the
+            // computation and participant payloads until the async stream ends.
+            if (is_complete) {
+                self.hideHover();
+            } else {
+                self.widget.hide();
+                self.host.set_hover_decoration(self.host.context, null);
+            }
             return;
         }
         const result = ContentHoverResult.init(self.allocator, parts, is_complete, options) catch {

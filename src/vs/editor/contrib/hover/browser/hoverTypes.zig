@@ -212,8 +212,10 @@ pub const IEditorHoverParticipant = struct {
         line_decorations: []const ModelDecoration,
         source: HoverStartSource,
     ) []const IHoverPart = null,
-    /// Terminal adaptation: async computation is a synchronous callback that
-    /// returns its results, matching the rest of this port.
+    /// Promise/async-iterable continuation for participant results. The
+    /// disposable detaches emissions and completion when the hover is hidden.
+    request_async: ?*const fn (*anyopaque, *const HoverAnchor, []const ModelDecoration, HoverStartSource, CancellationToken, @import("hoverOperation.zig").AsyncResultSink(IHoverPart)) anyerror!?@import("../../../../base/common/lifecycle.zig").IDisposable = null,
+    /// Immediate completion for a participant that does not require I/O.
     compute_async: ?*const fn (
         context: *anyopaque,
         anchor: *const HoverAnchor,

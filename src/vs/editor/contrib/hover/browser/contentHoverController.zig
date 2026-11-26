@@ -147,6 +147,7 @@ pub const ContentHoverController = struct {
     scroll_handler: @import("../../../common/viewEventHandler.zig").ViewEventHandler = .{},
     scroll_handler_attached: bool = false,
     operation_timer: DeadlineTimer = .{},
+    loading_timer: DeadlineTimer = .{},
     react_timer: DeadlineTimer = .{},
     last_mouse_event: ?EditorMouseEvent = null,
     is_mouse_down: bool = false,
@@ -178,6 +179,7 @@ pub const ContentHoverController = struct {
             settings.sticky,
             self.operation_timer.interface(),
         );
+        self.wrapper.operation.setLoadingTimer(self.loading_timer.interface());
         self.updateSettings(settings);
         return self;
     }
@@ -262,12 +264,14 @@ pub const ContentHoverController = struct {
         self.cancelScheduler();
         self.wrapper.detachModel();
         self.operation_timer.cancel();
+        self.loading_timer.cancel();
         self.is_mouse_down = false;
         self.should_keep_open_on_editor_mouse_move_or_leave = false;
     }
 
     pub fn attachWindow(self: *ContentHoverController, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
         self.operation_timer.attachWindow(window);
+        self.loading_timer.attachWindow(window);
         self.react_timer.attachWindow(window);
     }
 
@@ -489,6 +493,7 @@ pub const ContentHoverController = struct {
         var changed = false;
         changed = self.react_timer.tick(now_ms) or changed;
         changed = self.operation_timer.tick(now_ms) or changed;
+        changed = self.loading_timer.tick(now_ms) or changed;
         return changed;
     }
 

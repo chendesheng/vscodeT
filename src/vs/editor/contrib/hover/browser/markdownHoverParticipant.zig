@@ -3,8 +3,7 @@
 // Terminal adaptation: hover contents are parsed by the pinned `markdown-zig`
 // CommonMark + GFM package and rendered to `ui` nodes by
 // `markdownTerminalRenderer.zig` instead of the DOM markdown renderer. Providers
-// are called through the existing `getHover.zig` aggregation; async hover
-// computation is synchronous in this port.
+// stream their results through the cancellable `getHover.zig` aggregation.
 //
 // Not ported, because the corresponding infrastructure does not exist in the
 // TUI (documented in `README.md` and `docs/terminal-ui.md`):
@@ -73,6 +72,8 @@ pub const MarkdownHoverParticipant = struct {
     /// Parsed markdown of the currently rendered hover.
     rendered_arena: std.heap.ArenaAllocator,
     rendered: []const IRenderedHoverPart = &.{},
+    async_sink: ?@import("hoverOperation.zig").AsyncResultSink(IHoverPart) = null,
+    async_anchor: Range = Range.init(1, 1, 1, 1),
 
     pub fn init(allocator: Allocator, model: *TextModel, providers: []const HoverProvider) MarkdownHoverParticipant {
         return initWithRegistry(allocator, model, providers, null);
@@ -104,10 +105,17 @@ pub const MarkdownHoverParticipant = struct {
             .hover_ordinal = self.hover_ordinal,
             .compute_sync = computeSync,
             .compute_async = computeAsync,
+            .request_async = requestAsync,
+            .create_loading_message = createLoadingMessage,
             .render_hover_parts = renderHoverParts,
             .get_accessible_content = getAccessibleContent,
             .handle_hide = handleHide,
         };
+    }
+
+    fn createLoadingMessage(context: *anyopaque, anchor: *const HoverAnchor) ?IHoverPart {
+        const self: *MarkdownHoverParticipant = @ptrCast(@alignCast(context));
+        return self.createMarkdownHover(self.parts_arena.allocator(), anchor.getRange(), &.{"Loading..."}, false, 2000) catch null;
     }
 
     fn computeSync(
@@ -189,6 +197,33 @@ pub const MarkdownHoverParticipant = struct {
         }
 
         return try result.toOwnedSlice();
+    }
+
+    fn requestAsync(context: *anyopaque, anchor: *const HoverAnchor, _: []const ModelDecoration, _: HoverStartSource, token: CancellationToken, sink: @import("hoverOperation.zig").AsyncResultSink(IHoverPart)) !?@import("../../../../base/common/lifecycle.zig").IDisposable {
+        const self: *MarkdownHoverParticipant = @ptrCast(@alignCast(context));
+        if (anchor.getType() != .range) {
+            sink.complete(sink.context);
+            return null;
+        }
+        self.async_sink = sink;
+        self.async_anchor = anchor.getRange();
+        const source: getHover.ProviderSource = if (self.registry) |registry| .{ .registry = registry } else .{ .providers = self.providers };
+        return getHover.requestHoverProviderResults(self.allocator, source, self.model, self.async_anchor.getStartPosition(), token, null, false, .{ .context = self, .emit = onProviderResult, .complete = onProvidersComplete });
+    }
+
+    fn onProviderResult(context: *anyopaque, item: getHover.HoverProviderResult) void {
+        const self: *MarkdownHoverParticipant = @ptrCast(@alignCast(context));
+        const sink = self.async_sink orelse return;
+        if (isEmptyHover(item.hover)) return;
+        const part = self.createMarkdownHoverFromHover(self.parts_arena.allocator(), item.hover.range orelse self.async_anchor, item.hover, false, item.ordinal) catch return;
+        sink.emit(sink.context, &.{part});
+    }
+
+    fn onProvidersComplete(context: *anyopaque) void {
+        const self: *MarkdownHoverParticipant = @ptrCast(@alignCast(context));
+        const sink = self.async_sink orelse return;
+        self.async_sink = null;
+        sink.complete(sink.context);
     }
 
     fn computeAsync(
