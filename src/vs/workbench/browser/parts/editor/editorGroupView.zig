@@ -678,6 +678,7 @@ pub fn EditorGroupView(comptime View: type) type {
 
         pub fn addTab(self: *Self, tab: View) !void {
             try self.tabs.append(tab);
+            if (@hasDecl(@typeInfo(View).pointer.child, "setControlChangeService")) tab.setControlChangeService(self.group.service);
             if (@hasDecl(@typeInfo(View).pointer.child, "attachWindow")) if (self.window) |window| tab.attachWindow(window);
             if (self.group.model.isActive(.{ .input = tab.editorInput() })) {
                 self.setActivePane(tab);
@@ -688,6 +689,7 @@ pub fn EditorGroupView(comptime View: type) type {
         pub fn removeTab(self: *Self, tab: View) ?View {
             const index = self.indexOfTab(tab) orelse return null;
             if (self.panes.activePane() == tab) self.setActivePane(null);
+            if (@hasDecl(@typeInfo(View).pointer.child, "setControlChangeService")) tab.setControlChangeService(null);
             return self.tabs.orderedRemove(index);
         }
 

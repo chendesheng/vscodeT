@@ -110,6 +110,7 @@ pub const Tab = struct {
     input: *EditorInput,
     controllers: ?*Controllers = null,
     diff: ?*DiffView = null,
+    control_change_service: ?*groups.EditorGroupsService = null,
     markdown_preview: ?*MarkdownPreview = null,
     window: ?*@import("../../../../base/common/windowDispatch.zig").Queue = null,
     // Dynamic previews are singleton webview inputs. In-place previews keep
@@ -309,6 +310,7 @@ pub const Tab = struct {
             .input = diff.input(),
             .diff = diff,
         };
+        diff.on_control_changed = .{ .context = self, .run = onDiffControlChanged };
         return self;
     }
 
@@ -390,16 +392,31 @@ pub const Tab = struct {
         return self.image_preview;
     }
 
+    pub fn setControlChangeService(self: *Tab, service: ?*groups.EditorGroupsService) void {
+        self.control_change_service = service;
+    }
+
+    fn onDiffControlChanged(context: *anyopaque) void {
+        const self: *Tab = @ptrCast(@alignCast(context));
+        self.syncDiffViews();
+    }
+
     /// Refreshes the cached modified editor/view after a `DiffView` replaced
     /// its widget (a `Refresh Diff` or a re-open of the same ref pair).
     pub fn syncDiffViews(self: *Tab) void {
         const diff = self.diff orelse return;
+        const changed = self.editor != diff.widget.modified_editor;
+        if (changed and self.selection_handler_added) self.editor.removeViewEventHandler(&self.selection_handler);
         self.editor = diff.widget.modified_editor;
         self.view = diff.widget.modified_view;
+        if (changed and self.selection_handler_added) self.editor.addViewEventHandler(&self.selection_handler);
         if (self.window) |window| {
             self.editor.attachWindow(window);
             diff.widget.original_editor.attachWindow(window);
         }
+        if (changed) if (self.control_change_service) |service| {
+            service.on_did_visible_editors_change.fire({}) catch {};
+        };
     }
 
     /// Mounts the visible editor instance inside its group. The terminal

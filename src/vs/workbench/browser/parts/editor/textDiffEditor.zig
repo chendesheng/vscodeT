@@ -173,6 +173,7 @@ pub fn DiffView(comptime View: type) type {
         model: DiffEditorModel,
         widget: *DiffEditorWidget,
         theme_colors: ?*const @import("../../themeColors.zig").ThemeColors = null,
+        on_control_changed: ?struct { context: *anyopaque, run: *const fn (*anyopaque) void } = null,
         original_input: *SnapshotEditorInput,
         modified_input: *SnapshotEditorInput,
         diff_input: *diff_editor_input.DiffEditorInput,
@@ -335,6 +336,9 @@ pub fn DiffView(comptime View: type) type {
             widget.original_view.setThemeColors(self.theme_colors);
             widget.modified_view.setThemeColors(self.theme_colors);
             self.widget = widget;
+            // EditorPane.onDidChangeControl precedes disposal, so consumers
+            // can unlisten from the old code editor while it is still alive.
+            if (self.on_control_changed) |listener| listener.run(listener.context);
             previous.destroy();
         }
 
