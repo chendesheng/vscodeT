@@ -80,3 +80,34 @@ test "gutterFeature: markers for insert, delete and modify" {
     try std.testing.expectEqual(@as(u21, '~'), gutterGlyph(modify, 2));
     try std.testing.expectEqual(@as(u21, '│'), gutterGlyph(modify, 3));
 }
+
+test "gutterFeature: benchmark 1k and 10k aligned hunks" {
+    const AlignedMapping = @import("../components/diffEditorViewZones.zig").AlignedMapping;
+    const time = @import("../../../../../base/common/timeCompat.zig");
+    const allocator = std.testing.allocator;
+    for ([_]usize{ 1000, 10000 }) |count| {
+        const mappings = try allocator.alloc(AlignedMapping, count);
+        defer allocator.free(mappings);
+        for (mappings, 0..) |*mapping, index| {
+            const range = LineRange.ofLength(index * 2 + 1, 1);
+            mapping.* = .{ .original = range, .modified = range, .source = .{
+                .original = range,
+                .modified = range,
+                .inner_changes = null,
+            } };
+        }
+        const start = time.milliTimestamp();
+        var sum: usize = 0;
+        // Sample visible viewport rows across 1,000 distinct scroll offsets.
+        for (0..1000) |frame| {
+            const top = (frame * 31) % (count * 2);
+            for (0..40) |offset| {
+                const row = (top + offset) % (count * 2) + 1;
+                const index = mappingIndexAtRow(mappings, row);
+                try std.testing.expectEqual(if (row % 2 == 1) @as(?usize, (row - 1) / 2) else null, index);
+                sum += index orelse 0;
+            }
+        }
+        std.debug.print("[bench] diff gutter: {d} hunks, 40000 lookups, {d} ms, checksum {d}\n", .{ count, time.milliTimestamp() - start, sum });
+    }
+}
