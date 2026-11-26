@@ -37,6 +37,9 @@ pub const CodeLensContribution = struct {
     colors: widget_mod.Colors = .{},
     handler: Handler = .{},
     handler_attached: bool = false,
+    view_bound: bool = true,
+    will_change_listener: ?usize = null,
+    did_change_listener: ?usize = null,
     contribution_registered: bool = false,
     pending_picker: ?struct { service: quick_input.IQuickInputService, line: usize } = null,
     active_picker: ?*PickSession = null,
@@ -118,6 +121,18 @@ pub const CodeLensContribution = struct {
     };
 
     pub fn create(allocator: Allocator, editor: *Editor, view_host: *ViewHost, zones: *ViewZones, features: features_mod.ILanguageFeaturesService, cache: *CodeLensCache, commands: widget_mod.CommandHost, window: *dispatch.Queue) !*CodeLensContribution {
+        return createInternal(allocator, editor, view_host, zones, features, cache, commands, window, false);
+    }
+
+    pub fn getOrCreate(editor: *Editor, view_host: *ViewHost, zones: *ViewZones, features: features_mod.ILanguageFeaturesService, cache: *CodeLensCache, commands: widget_mod.CommandHost, window: *dispatch.Queue) !*CodeLensContribution {
+        if (editor.getContribution(CodeLensContribution)) |self| {
+            try self.bindView(view_host, zones);
+            return self;
+        }
+        return createInternal(editor.allocator, editor, view_host, zones, features, cache, commands, window, true);
+    }
+
+    fn createInternal(allocator: Allocator, editor: *Editor, view_host: *ViewHost, zones: *ViewZones, features: features_mod.ILanguageFeaturesService, cache: *CodeLensCache, commands: widget_mod.CommandHost, window: *dispatch.Queue, owned: bool) !*CodeLensContribution {
         const self = try allocator.create(CodeLensContribution);
         self.* = .{ .allocator = allocator, .editor = editor, .view_host = view_host, .zones = zones, .features = features, .cache = cache, .commands = commands, .debounce = debounce_mod.LanguageFeatureDebounceService.init(allocator, false) };
         errdefer self.dispose();
@@ -127,29 +142,77 @@ pub const CodeLensContribution = struct {
         self.fetch_task = .{ .queue = window, .context = self, .run = onFetchDeadline };
         self.resolve_task = .{ .queue = window, .context = self, .run = onResolveDeadline };
         self.handler = Handler.init(self, .{ .onConfigurationChanged = onConfiguration, .onScrollChanged = onScroll, .onFocusChanged = onFocus, .onLineMappingChanged = onLineMapping });
-        editor.addViewEventHandler(&self.handler);
-        self.handler_attached = true;
         self.registry_listener = try features.code_lens_provider.on_did_change.listen(self, onProvidersChanged);
-        self.content_listener = try editor.model.onDidChangeContentWithContextId(self, onContent);
-        self.language_listener = try editor.model.listenDidChangeLanguage(self, onLanguage);
         self.layout_listener = try editor.on_did_layout_change.listen(self, onLayout);
-        try editor.registerContribution(CodeLensContribution, self);
-        self.contribution_registered = true;
-        try self.onModelChange();
+        self.will_change_listener = try editor.on_will_change_model.listen(self, onWillChangeModel);
+        self.did_change_listener = try editor.on_did_change_model.listen(self, onDidChangeModel);
+        try self.attachModel();
+        if (owned) {
+            try editor.registerOwnedContribution(CodeLensContribution, self, dispose);
+        } else {
+            try editor.registerContribution(CodeLensContribution, self);
+            self.contribution_registered = true;
+        }
         return self;
     }
 
-    pub fn dispose(self: *CodeLensContribution) void {
+    fn attachModel(self: *CodeLensContribution) !void {
+        if (!self.view_bound or !self.editor.hasModel()) return;
+        if (!self.handler_attached) {
+            self.editor.addViewEventHandler(&self.handler);
+            self.handler_attached = true;
+        }
+        if (self.content_listener == null) self.content_listener = try self.editor.model.onDidChangeContentWithContextId(self, onContent);
+        if (self.language_listener == null) self.language_listener = try self.editor.model.listenDidChangeLanguage(self, onLanguage);
+        try self.onModelChange();
+    }
+
+    fn detachModel(self: *CodeLensContribution) void {
         if (self.active_picker) |picker| picker.owner = null;
         self.active_picker = null;
-        if (self.contribution_registered) self.editor.unregisterContribution(CodeLensContribution, self);
         self.editor.setHasCodeLensProvider(false);
         if (self.handler_attached) self.editor.removeViewEventHandler(&self.handler);
-        if (self.registry_listener) |id| self.features.code_lens_provider.on_did_change.unlisten(id);
+        self.handler_attached = false;
         if (self.content_listener) |id| self.editor.model.removeDidChangeContentListener(id);
+        self.content_listener = null;
         if (self.language_listener) |id| self.editor.model.removeDidChangeLanguageListener(id);
-        if (self.layout_listener) |id| self.editor.on_did_layout_change.unlisten(id);
+        self.language_listener = null;
         self.localDispose();
+    }
+
+    fn onWillChangeModel(_: @import("../../../common/editorCommon.zig").IModelChangedEvent, self: *CodeLensContribution) !void {
+        self.detachModel();
+    }
+
+    fn onDidChangeModel(_: @import("../../../common/editorCommon.zig").IModelChangedEvent, self: *CodeLensContribution) !void {
+        try self.attachModel();
+    }
+
+    fn bindView(self: *CodeLensContribution, view_host: *ViewHost, zones: *ViewZones) !void {
+        if (self.view_bound) {
+            if (self.view_host == view_host and self.zones == zones) return;
+            self.unbindView();
+        }
+        self.view_host = view_host;
+        self.zones = zones;
+        self.view_bound = true;
+        errdefer self.unbindView();
+        try self.attachModel();
+    }
+
+    pub fn unbindView(self: *CodeLensContribution) void {
+        if (!self.view_bound) return;
+        self.detachModel();
+        self.view_bound = false;
+    }
+
+    pub fn dispose(self: *CodeLensContribution) void {
+        if (self.contribution_registered) self.editor.unregisterContribution(CodeLensContribution, self);
+        if (self.registry_listener) |id| self.features.code_lens_provider.on_did_change.unlisten(id);
+        if (self.layout_listener) |id| self.editor.on_did_layout_change.unlisten(id);
+        if (self.will_change_listener) |id| self.editor.on_will_change_model.unlisten(id);
+        if (self.did_change_listener) |id| self.editor.on_did_change_model.unlisten(id);
+        self.detachModel();
         self.provider_listeners.deinit(self.allocator);
         self.widgets.deinit(self.allocator);
         self.old_models.deinit(self.allocator);
@@ -171,9 +234,12 @@ pub const CodeLensContribution = struct {
         self.providers = &.{};
         self.allocator.free(self.provider_hashes);
         self.provider_hashes = &.{};
-        const anchor = scroll.capture(self.editor);
-        self.zones.changeViewZones(self, removeWidgets) catch {};
-        anchor.restore(self.editor);
+        if (self.widgets.items.len != 0) {
+            std.debug.assert(self.view_bound and self.editor.hasModel());
+            const anchor = scroll.capture(self.editor);
+            self.zones.changeViewZones(self, removeWidgets) catch {};
+            anchor.restore(self.editor);
+        }
         if (self.model) |model| model.dispose();
         self.model = null;
         self.clearOldModels();
@@ -190,10 +256,11 @@ pub const CodeLensContribution = struct {
     }
 
     fn onModelChange(self: *CodeLensContribution) !void {
+        if (!self.view_bound or !self.editor.hasModel()) return;
         self.localDispose();
         const has_provider = self.features.code_lens_provider.has(self.editor.model);
         self.editor.setHasCodeLensProvider(has_provider);
-        if (!self.view_host.options.get(.codeLens) or !has_provider) return;
+        if (!self.view_host.options.get(.codeLens) or self.editor.model.isTooLargeForTokenization() or !has_provider) return;
         self.enabled = true;
         self.providers = try self.features.code_lens_provider.ordered(self.allocator, self.editor.model, false);
         self.provider_hashes = try self.allocator.alloc(u32, self.providers.len);

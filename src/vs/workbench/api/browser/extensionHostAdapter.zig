@@ -2762,7 +2762,33 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                 .{ .json = .{ .integer = 0 } },
             }, null, 5000);
             try std.testing.expectEqualStrings(":old-2", value.array.items[0].object.get("title").?.string);
+            // Virtualized templates retain their editor contributions, not just
+            // the native editor pointers. In-flight old model requests detach
+            // before the same contribution is mounted on the last item.
+            const first_control = multi.widget.impl.bindingFor(vm.items[0]).?.editor.?;
+            const Lens = @import("../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution;
+            const Find = @import("../../../editor/contrib/find/browser/findController.zig").FindController;
+            const Word = @import("../../../editor/contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
+            const Sticky = @import("../../../editor/contrib/stickyScroll/browser/stickyScrollController.zig").StickyScrollController;
+            const first_lens = first_control.modified_editor.getContribution(Lens).?;
+            const first_find = first_control.modified_editor.getContribution(Find).?;
+            const first_word = first_control.modified_editor.getContribution(Word).?;
+            const first_sticky = first_control.modified_editor.getContribution(Sticky).?;
+            // A focused item intentionally remains alive outside the viewport.
+            // Blur the composite before forcing viewport eviction.
+            try multi.widget.setFocused(false);
+            try multi.widget.impl.setScrollState(@intCast(multi.widget.impl.scroll_view.layout.scrollHeight), null);
+            try std.testing.expect(multi.widget.impl.bindingFor(vm.items[0]) == null);
+            const recycled = multi.widget.impl.bindingFor(last).?.editor.?;
+            try std.testing.expectEqual(first_control, recycled);
+            try std.testing.expectEqual(first_lens, recycled.modified_editor.getContribution(Lens).?);
+            try std.testing.expectEqual(first_find, recycled.modified_editor.getContribution(Find).?);
+            try std.testing.expectEqual(first_word, recycled.modified_editor.getContribution(Word).?);
+            try std.testing.expectEqual(first_sticky, recycled.modified_editor.getContribution(Sticky).?);
+            try std.testing.expectEqual(last.modified.model, first_lens.editor.model);
+            try std.testing.expectEqual(recycled.modified_view.terminal_view_host, first_lens.view_host);
             try multi.widget.reveal(.{ .original = resources[2].original, .modified = resources[2].modified }, null);
+            try multi.widget.setFocused(true);
             const control = multi.widget.activeControl() orelse return error.TestExpectedMultiDiffControl;
             control.setFocus(.original);
             try std.testing.expectEqual(control.original_editor, extensions.active.?.editor);

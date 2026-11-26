@@ -1430,8 +1430,8 @@ pub const Controllers = struct {
 
         self.view = view;
         self.sticky_host = view.stickyScrollHost();
-        self.sticky = try StickyScrollController.init(allocator, editor, self.sticky_host.interface());
-        errdefer self.sticky.deinit();
+        self.sticky = try StickyScrollController.getOrCreate(editor, self.sticky_host.interface());
+        errdefer self.sticky.unbindHost();
         self.sticky_host.attach(self.sticky);
 
         self.hover_sink = .{ .model = editor.model, .owner = 4 };
@@ -1513,8 +1513,6 @@ pub const Controllers = struct {
         self.find.applyConfiguration(view.terminal_view_host.options.get(.find));
         try view.addConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
         errdefer view.removeConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
-        try editor.registerContribution(StickyScrollController, self.sticky);
-        errdefer editor.unregisterContribution(StickyScrollController, self.sticky);
         try editor.registerContribution(ContentHoverController, self.hover);
         return self;
     }
@@ -1589,13 +1587,12 @@ pub const Controllers = struct {
         self.editor.setFindController(null, null);
         self.find.widget().layout_context = null;
         self.find.widget().on_layout = null;
-        self.editor.unregisterContribution(StickyScrollController, self.sticky);
+        self.sticky.unbindHost();
         self.word_highlighter.unbindHost();
         self.editor.unregisterContribution(ContentHoverController, self.hover);
         // The sink context points at this controller; detach before it dies.
         self.editor.setSearchHighlightSink(null);
         self.view.removeConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
-        self.sticky.deinit();
         if (self.hover_registration) |registration| registration.dispose();
         self.suggest.deinit();
         self.hover.deinit();
@@ -1671,18 +1668,18 @@ pub const MultiDiffBindingServices = struct {
         const Lens = @import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution;
         if (self.original_lens == null) {
             const view = self.widget.original_view;
-            self.original_lens = Lens.create(self.allocator, self.widget.original_editor, view.terminal_view_host, view.viewZones(), host.features.interface(), cache, commands, host.window) catch null;
+            self.original_lens = Lens.getOrCreate(self.widget.original_editor, view.terminal_view_host, view.viewZones(), host.features.interface(), cache, commands, host.window) catch null;
         }
         if (self.modified_lens == null) {
             const view = self.widget.modified_view;
-            self.modified_lens = Lens.create(self.allocator, self.widget.modified_editor, view.terminal_view_host, view.viewZones(), host.features.interface(), cache, commands, host.window) catch null;
+            self.modified_lens = Lens.getOrCreate(self.widget.modified_editor, view.terminal_view_host, view.viewZones(), host.features.interface(), cache, commands, host.window) catch null;
         }
         setTheme(context, self.widget.modified_view.themeColors());
     }
     fn dispose(context: *anyopaque) void {
         const self: *MultiDiffBindingServices = @ptrCast(@alignCast(context));
-        if (self.original_lens) |lens| lens.dispose();
-        if (self.modified_lens) |lens| lens.dispose();
+        if (self.original_lens) |lens| lens.unbindView();
+        if (self.modified_lens) |lens| lens.unbindView();
         self.original.deinit();
         self.modified.deinit();
         self.allocator.destroy(self);

@@ -253,6 +253,51 @@ pub fn Tests(comptime ViewType: type) type {
             try testing.expectEqualSlices(usize, expected, state.start_line_numbers);
         }
 
+        test "View: Sticky Scroll contribution, provider and widget survive pooled editor model replacement" {
+            const a = testing.allocator;
+            const Document = @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").EditorDocument;
+            const first = try Document.createFromText(a, testing.io, "first.txt", indented_text, null);
+            defer first.release();
+            const next = try Document.createFromText(a, testing.io, "next.txt", "single line", null);
+            defer next.release();
+            const editor = try Editor.createViewFromDocument(first, 80, 8, .{});
+            defer {
+                editor.deinit();
+                a.destroy(editor);
+            }
+            var retained: *StickyScrollController = undefined;
+            var provider_identity: *@import("../../browser/stickyScrollProvider.zig").StickyLineCandidateProvider = undefined;
+            {
+                const view = try View.init(a, editor);
+                defer view.deinit();
+                var host = view.stickyScrollHost();
+                retained = try StickyScrollController.getOrCreate(editor, host.interface());
+                defer retained.unbindHost();
+                host.attach(retained);
+                provider_identity = retained.getStickyScrollCandidateProvider();
+                provider_identity.default_model = .indentation_model;
+                try provider_identity.update();
+                try testing.expect(provider_identity.getVersionId() != null);
+            }
+            try editor.setModel(null);
+            try testing.expectEqual(retained, editor.getContribution(StickyScrollController).?);
+            try testing.expect(provider_identity.getVersionId() == null);
+            try testing.expect(retained.getStickyScrollWidgetState() == null);
+            try editor.setModel(next);
+            const view = try View.init(a, editor);
+            defer view.deinit();
+            var host = view.stickyScrollHost();
+            const rebound = try StickyScrollController.getOrCreate(editor, host.interface());
+            defer rebound.unbindHost();
+            host.attach(rebound);
+            try testing.expectEqual(retained, rebound);
+            try testing.expectEqual(retained.widget, rebound.widget);
+            try testing.expectEqual(provider_identity, rebound.getStickyScrollCandidateProvider());
+            try provider_identity.update();
+            try testing.expectEqual(next.model.getVersionId(), provider_identity.getVersionId().?);
+            try testing.expectEqual(@as(usize, 0), rebound.getStickyScrollWidgetHeight());
+        }
+
         test "Testing the function getCandidateStickyLinesIntersecting" {
             const allocator = testing.allocator;
             var plain_features = LanguageFeaturesService.init(allocator);

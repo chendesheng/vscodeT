@@ -68,9 +68,15 @@ pub const StickyLineCandidateProvider = struct {
         };
     }
 
-    pub fn dispose(self: *StickyLineCandidateProvider) void {
+    pub fn reset(self: *StickyLineCandidateProvider) void {
         if (self.pending) |request| request.cancel();
+        self.pending = null;
         self.clearModel();
+        self.version = 0;
+    }
+
+    pub fn dispose(self: *StickyLineCandidateProvider) void {
+        self.reset();
         self.on_did_change.deinit();
     }
 
@@ -117,7 +123,7 @@ pub const StickyLineCandidateProvider = struct {
     pub fn update(self: *StickyLineCandidateProvider) !void {
         if (self.pending) |request| request.cancel();
         self.pending = null;
-        if (self.editor.model.isTooLargeForTokenization()) {
+        if (!self.editor.hasModel() or self.editor.model.isTooLargeForTokenization()) {
             self.clearModel();
             try self.on_did_change.fire({});
             return;
@@ -142,7 +148,7 @@ pub const StickyLineCandidateProvider = struct {
         const self: *StickyLineCandidateProvider = @ptrCast(@alignCast(context));
         self.pending = null;
         defer outline.deinit();
-        if (self.version != self.editor.model.getVersionId()) return;
+        if (!self.editor.hasModel() or self.version != self.editor.model.getVersionId()) return;
         const preferred = if (self.model) |previous| previous.outline_provider_id else null;
         const next = (self.model_provider.fromOutline(outline, preferred) catch null) orelse
             (self.model_provider.modelFromIndentation(self.editor.model) catch null);

@@ -68,6 +68,10 @@ pub const StickyScrollController = struct {
     show_end_for_line: ?usize = null,
     symbol_features: ?*@import("../../../common/services/languageFeaturesService.zig").LanguageFeaturesService = null,
     document_symbol_listener: ?usize = null,
+    host_bound: bool = true,
+    view_handler_attached: bool = false,
+    will_change_listener: usize = undefined,
+    did_change_listener: usize = undefined,
 
     pub fn init(allocator: Allocator, editor: *Editor, host: StickyHost) !*StickyScrollController {
         const self = try allocator.create(StickyScrollController);
@@ -95,19 +99,84 @@ pub const StickyScrollController = struct {
         errdefer provider.dispose();
 
         self.handler = ViewEventHandler.init(self, callbacks());
-        editor.addViewEventHandler(&self.handler);
-
-        if (editor.language_features) |features| {
-            self.symbol_features = features;
-            self.document_symbol_listener = features.document_symbol_provider.on_did_change.listen(
-                self,
-                onDocumentSymbolsChanged,
-            ) catch null;
-        }
-
+        self.will_change_listener = try editor.on_will_change_model.listen(self, onWillChangeModel);
+        errdefer editor.on_will_change_model.unlisten(self.will_change_listener);
+        self.did_change_listener = try editor.on_did_change_model.listen(self, onDidChangeModel);
+        errdefer editor.on_did_change_model.unlisten(self.did_change_listener);
         _ = provider.on_did_change.listen(self, onProviderChanged) catch {};
-        self.readConfiguration() catch {};
+        self.attachModel();
         return self;
+    }
+
+    pub fn getOrCreate(editor: *Editor, host: StickyHost) !*StickyScrollController {
+        if (editor.getContribution(StickyScrollController)) |self| {
+            self.bindHost(host);
+            return self;
+        }
+        const self = try init(editor.allocator, editor, host);
+        errdefer self.deinit();
+        try editor.registerOwnedContribution(StickyScrollController, self, deinit);
+        return self;
+    }
+
+    fn bindSymbolFeatures(self: *StickyScrollController) void {
+        if (self.symbol_features == self.editor.language_features) return;
+        if (self.document_symbol_listener) |id| {
+            if (self.symbol_features) |features| features.document_symbol_provider.on_did_change.unlisten(id);
+        }
+        self.document_symbol_listener = null;
+        self.symbol_features = self.editor.language_features;
+        if (self.symbol_features) |features| self.document_symbol_listener = features.document_symbol_provider.on_did_change.listen(self, onDocumentSymbolsChanged) catch null;
+    }
+
+    fn attachModel(self: *StickyScrollController) void {
+        if (!self.host_bound or !self.editor.hasModel()) return;
+        if (!self.view_handler_attached) {
+            self.editor.addViewEventHandler(&self.handler);
+            self.view_handler_attached = true;
+        }
+        self.bindSymbolFeatures();
+        self.readConfiguration() catch {};
+    }
+
+    fn removeViewHandler(self: *StickyScrollController) void {
+        if (!self.view_handler_attached) return;
+        self.editor.removeViewEventHandler(&self.handler);
+        self.view_handler_attached = false;
+    }
+
+    fn detachModel(self: *StickyScrollController) void {
+        self.removeViewHandler();
+        self.scheduler.cancel();
+        self.provider.reset();
+        self.clearState();
+        self.folding_model = null;
+    }
+
+    fn onWillChangeModel(_: @import("../../../common/editorCommon.zig").IModelChangedEvent, self: *StickyScrollController) !void {
+        self.detachModel();
+    }
+
+    fn onDidChangeModel(_: @import("../../../common/editorCommon.zig").IModelChangedEvent, self: *StickyScrollController) !void {
+        self.attachModel();
+    }
+
+    pub fn bindHost(self: *StickyScrollController, host: StickyHost) void {
+        self.host = host;
+        self.widget.host = host;
+        self.host_bound = true;
+        self.attachModel();
+        if (self.editor.hasModel()) self.refreshState();
+    }
+
+    pub fn unbindHost(self: *StickyScrollController) void {
+        self.removeViewHandler();
+        self.scheduler.cancel();
+        self.host_bound = false;
+        self.widget.focused = false;
+        self.widget.focused_index = -1;
+        self.widget.root_node = null;
+        self.widget.focus_node_value = null;
     }
 
     pub fn attachWindow(self: *StickyScrollController, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
@@ -115,20 +184,14 @@ pub const StickyScrollController = struct {
     }
 
     pub fn deinit(self: *StickyScrollController) void {
-        self.editor.removeViewEventHandler(&self.handler);
+        self.editor.on_will_change_model.unlisten(self.will_change_listener);
+        self.editor.on_did_change_model.unlisten(self.did_change_listener);
+        self.detachModel();
         if (self.document_symbol_listener) |id| {
-            if (self.symbol_features) |features| {
-                features.document_symbol_provider.on_did_change.unlisten(id);
-            }
+            if (self.symbol_features) |features| features.document_symbol_provider.on_did_change.unlisten(id);
         }
-        self.scheduler.cancel();
         self.provider.dispose();
         self.allocator.destroy(self.provider);
-        if (self.state) |state| {
-            state.deinit();
-            self.allocator.destroy(state);
-            self.state = null;
-        }
         self.widget.deinit();
         self.allocator.destroy(self);
     }
@@ -222,7 +285,7 @@ pub const StickyScrollController = struct {
     }
 
     pub fn focus(self: *StickyScrollController) void {
-        if (self.widget.lineNumberCount() == 0) return;
+        if (!self.host_bound or self.widget.lineNumberCount() == 0) return;
         self.widget.focus();
     }
 
@@ -241,11 +304,13 @@ pub const StickyScrollController = struct {
     }
 
     pub fn selectEditor(self: *StickyScrollController) void {
+        if (!self.host_bound) return;
         self.widget.clearFocus();
         self.host.focus_editor(self.host.context);
     }
 
     pub fn goToFocused(self: *StickyScrollController) void {
+        if (!self.host_bound) return;
         const index = self.widget.focused_index;
         if (index < 0) return;
         const line = self.widget.getLineNumberAt(@intCast(index)) orelse return;
@@ -256,6 +321,7 @@ pub const StickyScrollController = struct {
 
     /// Port of `_readConfiguration`.
     pub fn readConfiguration(self: *StickyScrollController) !void {
+        if (!self.host_bound or !self.editor.hasModel()) return;
         const options = self.host.options(self.host.context);
         self.provider.default_model = options.default_model;
         const effective_enabled = self.editor.sticky_scroll_override orelse self.runtime_enabled_override orelse options.enabled;
@@ -286,12 +352,12 @@ pub const StickyScrollController = struct {
     }
 
     pub fn onTick(self: *StickyScrollController, now_ms: i64) bool {
-        if (!self.enabled) return false;
+        if (!self.host_bound or !self.enabled or !self.editor.hasModel()) return false;
         return self.scheduler.poll(now_ms);
     }
 
     fn scheduleUpdate(self: *StickyScrollController) void {
-        if (!self.enabled) return;
+        if (!self.host_bound or !self.enabled or !self.editor.hasModel()) return;
         self.scheduler.schedule(time_compat.milliTimestamp(), null);
     }
 
@@ -300,6 +366,7 @@ pub const StickyScrollController = struct {
     }
 
     fn updateNow(self: *StickyScrollController) !void {
+        if (!self.host_bound or !self.editor.hasModel()) return;
         self.provider.update() catch {
             self.clearState();
             return;
@@ -309,6 +376,7 @@ pub const StickyScrollController = struct {
 
     /// Port of `_renderStickyScroll`'s version gate and state update.
     pub fn refreshState(self: *StickyScrollController) void {
+        if (!self.host_bound or !self.editor.hasModel()) return;
         if (!self.enabled) {
             self.clearState();
             return;
@@ -356,11 +424,11 @@ pub const StickyScrollController = struct {
             self.allocator.destroy(state);
         }
         self.state = null;
-        self.host.request_frame(self.host.context);
+        if (self.host_bound) self.host.request_frame(self.host.context);
     }
 
     pub fn setShowEndForLine(self: *StickyScrollController, index: ?usize) void {
-        if (self.show_end_for_line == index) return;
+        if (!self.host_bound or self.show_end_for_line == index) return;
         self.show_end_for_line = index;
         if (self.state) |state| {
             state.show_end_for_line = index;
@@ -371,6 +439,7 @@ pub const StickyScrollController = struct {
 
     /// Port of `findScrollWidgetState` with one-cell line geometry.
     pub fn findScrollWidgetState(self: *StickyScrollController) !StickyScrollWidgetState {
+        if (!self.host_bound or !self.editor.hasModel()) return StickyScrollWidgetState.init(self.allocator, &.{}, &.{}, 0, null);
         const options = self.host.options(self.host.context);
         const max_by_option: usize = blk: {
             const value = @as(i64, @intFromFloat(@round(options.max_line_count)));
