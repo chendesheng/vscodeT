@@ -2176,8 +2176,8 @@ pub const View = struct {
             const end_view_line = @min(total, top + text_height -| 1);
             var view_line = top;
             while (view_line <= end_view_line) : (view_line += 1) {
-                if (lineBackground(self.terminal_view_host.decorationsForLine(view_line))) |rgb| {
-                    line_backgrounds[view_line - top] = color(rgb);
+                if (lineBackground(self.terminal_view_host.decorationsForLine(view_line), self.theme_colors)) |background| {
+                    line_backgrounds[view_line - top] = background;
                 }
             }
         }
@@ -2722,17 +2722,17 @@ fn colorForToken(foreground: u9) ?[3]u8 {
 /// Maps a whole-line decoration class list to a terminal row background.
 /// Later classes win, matching the ascending zIndex/class sort of the ported
 /// `DecorationsOverlay`.
-fn lineBackground(decorations: []const @import("../vs/editor/browser/viewParts/decorations/decorations.zig").LineDecoration) ?[3]u8 {
-    var result: ?[3]u8 = null;
+fn lineBackground(decorations: []const @import("../vs/editor/browser/viewParts/decorations/decorations.zig").LineDecoration, palette: ?*const theme_colors_mod.ThemeColors) ?ui.Color {
+    var result: ?ui.Color = null;
     for (decorations) |decoration| {
         var iterator = std.mem.tokenizeScalar(u8, decoration.class_name, ' ');
         while (iterator.next()) |class_name| {
             if (std.mem.eql(u8, class_name, "line-insert")) {
-                result = diff_insert_line_background;
+                result = themedColor(palette, "diffEditor.insertedLineBackground", diff_insert_line_background);
             } else if (std.mem.eql(u8, class_name, "line-delete")) {
-                result = diff_delete_line_background;
+                result = themedColor(palette, "diffEditor.removedLineBackground", diff_delete_line_background);
             } else if (std.mem.eql(u8, class_name, "diff-filler")) {
-                result = diff_filler_background;
+                result = themedColor(palette, "diffEditor.diagonalFill", diff_filler_background);
             }
         }
     }
@@ -5903,6 +5903,22 @@ test "View: diff line backgrounds and filler rows composite over the dark theme"
     );
     // The third row keeps the plain editor background (no value).
     try std.testing.expectEqual(@as(u32, 0), grid.bg[grid.index(gutter, 2)]);
+    const color_utils = @import("../vs/platform/theme/common/colorUtils.zig");
+    const color_theme = @import("../vs/workbench/services/themes/common/colorThemeData.zig");
+    var registry = color_utils.ColorRegistry.init(allocator);
+    defer registry.deinit();
+    const theme = try color_theme.ColorThemeData.createUnloadedTheme(allocator, &registry, "diff-custom", &.{
+        .{ "editor.background", "#ffffff" },
+        .{ "diffEditor.insertedLineBackground", "#123456" },
+        .{ "diffEditor.diagonalFill", "#abcdef" },
+    });
+    defer theme.deinit();
+    const palette = theme_colors_mod.ThemeColors.init(theme);
+    view.setThemeColors(&palette);
+    try view.renderAnsi(&out.writer);
+    const themed_grid = view.surface.grid();
+    try std.testing.expectEqual(ui.cell.packColor(color(.{ 0x12, 0x34, 0x56 })), themed_grid.bg[themed_grid.index(gutter, 0)]);
+    try std.testing.expectEqual(ui.cell.packColor(color(.{ 0xab, 0xcd, 0xef })), themed_grid.bg[themed_grid.index(gutter, 1)]);
 }
 
 test "View: char-insert and char-delete inline classes paint cell backgrounds" {

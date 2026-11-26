@@ -138,8 +138,12 @@ pub const TextEditorConfiguration = struct {
     }
 
     pub fn applyToTab(self: *TextEditorConfiguration, tab: *Tab) void {
-        if (tab.isDiff()) {
+        if (tab.diff) |diff| {
             if (self.zen_hide_line_numbers) applyLineNumbers(tab, .Off);
+            if (self.theme.*) |palette| {
+                diff.widget.original_view.setThemeColors(palette);
+                diff.widget.modified_view.setThemeColors(palette);
+            }
             return;
         }
         const settings = self.reader();
