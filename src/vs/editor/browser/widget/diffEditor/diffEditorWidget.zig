@@ -689,21 +689,41 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         pub fn swapSides(self: *Self) void {
-            if (self.inline_mode) return;
-            const original_editor = self.original_editor;
-            const original_view = self.original_view;
-            self.original_editor = self.modified_editor;
-            self.original_view = self.modified_view;
-            self.modified_editor = original_editor;
-            self.modified_view = original_view;
-            const label = self.original_label;
-            self.original_label = self.modified_label;
-            self.modified_label = label;
-            const path = self.original_path;
-            self.original_path = self.modified_path;
-            self.modified_path = path;
-            self.original_view.refresh() catch {};
-            self.modified_view.refresh() catch {};
+            self.swapSidesInternal() catch |err| self.modified_editor.setMessage("swap diff failed: {s}", .{@errorName(err)});
+        }
+
+        fn swapSidesInternal(self: *Self) !void {
+            const was_inline = self.inline_mode;
+            if (was_inline) try self.setInlineMode(false);
+            self.decorations.detach();
+
+            std.mem.swap(*Editor, &self.original_editor, &self.modified_editor);
+            std.mem.swap(*View, &self.original_view, &self.modified_view);
+            std.mem.swap([]u8, &self.original_label, &self.modified_label);
+            std.mem.swap([]u8, &self.original_path, &self.modified_path);
+            std.mem.swap([]u8, &self.original_text, &self.modified_text);
+            std.mem.swap([][]u8, &self.original_lines, &self.modified_lines);
+            std.mem.swap([]const []const u8, &self.view_model.original_lines, &self.view_model.modified_lines);
+            std.mem.swap([]?usize, &self.aligned.original, &self.aligned.modified);
+            std.mem.swap([]?usize, &self.aligned.original_to_display, &self.aligned.modified_to_display);
+
+            const diff_state = if (self.view_model.state) |*state_value| state_value else return;
+            for (diff_state.mappings, self.aligned.mappings) |*mapping, *aligned_mapping| {
+                flipMapping(&mapping.line_range_mapping);
+                std.mem.swap(LineRange, &aligned_mapping.original, &aligned_mapping.modified);
+                aligned_mapping.source = mapping.line_range_mapping;
+            }
+            for (diff_state.moved_texts) |*moved| {
+                moved.lineRangeMapping = moved.lineRangeMapping.flip();
+                for (@constCast(moved.changes)) |*change| flipMapping(change);
+            }
+            self.decorations.original_model = self.original_editor.model;
+            self.decorations.modified_model = self.modified_editor.model;
+            try self.decorations.update(&self.aligned, diff_state);
+            self.focused = .modified;
+            if (was_inline) try self.setInlineMode(true);
+            self.layout(self.width, self.height);
+            if (self.current_change) |index| self.revealChange(index);
         }
 
         pub fn mount(self: *Self, surface: *ui.Surface, container: *ui.Node, x: usize, y: usize) !void {
@@ -1002,6 +1022,15 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.inline_ids = try self.modified_editor.model.deltaDecorations(&.{}, decorations.items, 2002);
         }
     };
+}
+
+fn flipMapping(mapping: *view_model.DetailedLineRangeMapping) void {
+    std.mem.swap(LineRange, &mapping.original, &mapping.modified);
+    if (mapping.inner_changes) |inner| {
+        for (@constCast(inner)) |*change| {
+            std.mem.swap(Range, &change.originalRange, &change.modifiedRange);
+        }
+    }
 }
 
 fn clampRatio(ratio: f64) f64 {

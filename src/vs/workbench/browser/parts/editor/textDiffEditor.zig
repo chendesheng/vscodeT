@@ -173,6 +173,7 @@ pub fn DiffView(comptime View: type) type {
         io: Io,
         model: DiffEditorModel,
         widget: *DiffEditorWidget,
+        theme_colors: ?*const @import("../../themeColors.zig").ThemeColors = null,
         original_input: *SnapshotEditorInput,
         modified_input: *SnapshotEditorInput,
         diff_input: *diff_editor_input.DiffEditorInput,
@@ -220,13 +221,13 @@ pub fn DiffView(comptime View: type) type {
 
             const original_key = try std.fmt.allocPrint(
                 allocator,
-                "{s}::{s}::original",
+                "{s}::{s}",
                 .{ model.original_path, model.original_label },
             );
             defer allocator.free(original_key);
             const modified_key = try std.fmt.allocPrint(
                 allocator,
-                "{s}::{s}::modified",
+                "{s}::{s}",
                 .{ model.modified_path, model.modified_label },
             );
             defer allocator.free(modified_key);
@@ -300,8 +301,27 @@ pub fn DiffView(comptime View: type) type {
                 height,
                 options,
             );
-            self.widget.destroy();
+            const previous = self.widget;
+            widget.split_ratio = previous.split_ratio;
+            widget.layout(width, height);
+            const position = previous.modified_editor.modelCursorPosition();
+            widget.modified_editor.setCursorPosition(widget.modified_editor.model.validatePosition(position)) catch {};
+            _ = widget.modified_editor.setTopViewLine(previous.modified_editor.topViewLine());
+            _ = widget.original_editor.setTopViewLine(previous.original_editor.topViewLine());
+            if (previous.current_change) |index| {
+                widget.current_change = if (index < widget.changeCount()) index else null;
+            }
+            widget.setFocus(previous.focused);
+            widget.original_view.setThemeColors(self.theme_colors);
+            widget.modified_view.setThemeColors(self.theme_colors);
             self.widget = widget;
+            previous.destroy();
+        }
+
+        pub fn setThemeColors(self: *Self, palette: ?*const @import("../../themeColors.zig").ThemeColors) void {
+            self.theme_colors = palette;
+            self.widget.original_view.setThemeColors(palette);
+            self.widget.modified_view.setThemeColors(palette);
         }
 
         pub fn paint(self: *Self, frame: *ui.Frame, x: usize, y: usize, w: usize, h: usize) !void {
@@ -338,7 +358,21 @@ pub fn DiffView(comptime View: type) type {
         }
 
         pub fn swapSides(self: *Self) void {
+            const title = std.fmt.allocPrint(self.allocator, "{s} ({s} ↔ {s})", .{
+                std.fs.path.basename(self.model.original_path),
+                self.model.modified_label,
+                self.model.original_label,
+            }) catch return;
             self.widget.swapSides();
+            std.mem.swap([]const u8, &self.model.original_path, &self.model.modified_path);
+            std.mem.swap([]const u8, &self.model.original_label, &self.model.modified_label);
+            std.mem.swap(*SnapshotEditorInput, &self.original_input, &self.modified_input);
+            self.diff_input.original = &self.original_input.base;
+            self.diff_input.modified = &self.modified_input.base;
+            self.diff_input.base.name = title;
+            if (self.diff_input.owned_name) |old| self.allocator.free(old);
+            self.diff_input.owned_name = title;
+            self.diff_input.base.fireLabel() catch {};
         }
 
         pub fn input(self: *Self) *editor_input.EditorInput {

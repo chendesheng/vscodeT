@@ -352,6 +352,12 @@ pub const Tab = struct {
         );
     }
 
+    pub fn setThemeColors(self: *Tab, palette: ?*const @import("../../themeColors.zig").ThemeColors) void {
+        if (self.diff) |diff| {
+            diff.setThemeColors(palette);
+        } else self.view.setThemeColors(palette);
+    }
+
     pub fn refresh(self: *Tab) !void {
         if (self.markdown_preview != null) return;
         if (self.terminal_input != null) return;
@@ -390,6 +396,10 @@ pub const Tab = struct {
         const diff = self.diff orelse return;
         self.editor = diff.widget.modified_editor;
         self.view = diff.widget.modified_view;
+        if (self.window) |window| {
+            self.editor.attachWindow(window);
+            diff.widget.original_editor.attachWindow(window);
+        }
     }
 
     /// Mounts the visible editor instance inside its group. The terminal
@@ -492,7 +502,10 @@ pub const Tab = struct {
     }
 
     pub fn swapDiffSides(self: *Tab) void {
-        if (self.diff) |diff| diff.swapSides();
+        if (self.diff) |diff| {
+            diff.swapSides();
+            self.syncDiffViews();
+        }
     }
 
     pub fn handleDiffMouse(self: *Tab, event: *ui.MouseEvent) !bool {

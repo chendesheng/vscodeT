@@ -3537,10 +3537,7 @@ pub const TerminalWorkbench = struct {
         self.quick_access.setThemeColors(palette);
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
-                if (tab.diff) |diff| {
-                    diff.widget.original_view.setThemeColors(palette);
-                    diff.widget.modified_view.setThemeColors(palette);
-                } else tab.view.setThemeColors(palette);
+                tab.setThemeColors(palette);
                 if (tab.controllers) |controllers| controllers.setThemeColors(palette);
                 if (tab.markdown_preview) |preview| preview.setThemeColors(palette);
                 if (tab.image_preview) |image_pane| image_pane.setThemeColors(palette);
