@@ -1253,22 +1253,30 @@ console API for raw mode, sizing and input polling.
   non-repository leaves the editor untouched. Diff tabs are read-only: save,
   revert, reload and external-change handling are inert, they are not working
   copies, history entries or session-serialized, and closing them returns to
-  the untouched file tab. Terminal limitations: no quick-diff peek, multi-diff editor,
-  accessible diff viewer, or editing either side; moved blocks are surfaced as
-  block decorations, hide-unchanged regions collapse as folding ranges, and
-  `renderSideBySide: false` uses an interleaved inline view with inner-character
-  and moved-block decorations and inline hide-unchanged folding. Both panes
-  accept ordinary read-only editor navigation/selection commands, and the
-  focused pane's scrolling is synchronized. The default 900px side-by-side
+  the untouched file tab. Remaining portable gaps include quick-diff peek,
+  multi-diff editor, accessible diff viewer, and editing either side. Moved
+  blocks are surfaced as model decorations in side-by-side mode only.
+  Hide-unchanged uses the upstream unchanged-region range model, projected
+  onto folding ranges until disclosure view zones are available.
+  `renderSideBySide: false` uses interleaved inline changes and inner-character
+  decorations. Both panes share editor input dispatch and own independent
+  find, hover and other editor contribution controllers. Scrolling the focused
+  pane synchronizes the other pane. The default 900px side-by-side
   breakpoint maps to 53 terminal cells using the workbench width scale;
   narrower views switch to inline mode without hiding deleted text.
   Diff line indicators and margin classes follow `renderIndicators`; line
   and character backgrounds use the active theme. Refresh preserves the split,
   cursor and scroll state. Git snapshot resolution and diff computation run on
   the editor worker; identical content/options reuse a bounded result cache.
-  Remaining port gaps include actual alignment view zones, the combined
-  two-lane overview ruler, disclosure widgets for unchanged regions, moved-block
-  connectors, full sub-editor contributions, and additional diff commands.
+  The combined two-lane overview ruler uses two terminal cells and a draggable
+  viewport slider; the split sash supports double-click reset. `diffEditor.wordWrap`
+  overrides the configured editor wrap mode, with the hidden original always
+  unwrapped. The editor renderer supports layout whitespace, including scroll
+  and hit-testing; diff-specific zone delegates and alignment are still
+  missing (including wrapped-row alignment), as are disclosure widgets for
+  unchanged regions, moved-block connectors, additional diff commands, and
+  contribution behavior on real rather
+  than materialized snapshot models.
   See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
   Only one repository per workspace folder is shown.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and

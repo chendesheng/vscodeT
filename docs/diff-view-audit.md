@@ -32,27 +32,30 @@ fixed together with the presentation work.
 
 The following changes are implemented in separate commits. This is not full
 upstream parity, and the historical findings below remain useful as a baseline.
+The second implementation pass established shared view-zone geometry, but
+retaining real snapshot models and mounting the diff-specific zone content
+remain necessary to remove the pre-aligned text representation.
 
 | Plan item | Current implementation |
 |---|---|
 | 1 — worker and snapshot reads | Initial SCM and history diff opens/refreshes resolve owned Git virtual snapshot sources and compute diffs on the native editor worker. A one-second progress deadline, detached stale replies, and a 10-entry content/computation-options cache are implemented. Direct test construction and live diff-option recomputation are still synchronous; cancellation detaches the reply rather than interrupting a running algorithm. |
 | 2 — double rendering | Diff tab refresh invalidates both views; rendering is deferred to the frame. |
 | 3–4 — gutter and moved coordinates | Binary search on sorted aligned hunk ranges; pure deletion and post-filler paint regressions; moved ranges are converted to display rows. The 1k/10k benchmark measures 40,000 lookups across 1,000 viewport offsets (about 3–4 ms in the local Debug run; this is not end-to-end rendering). |
-| 5 — hidden coordinates | Convert view rows to model rows for line numbers/gutter, use model positions for navigation. Generic folding remains a substitution, not the upstream region feature. |
-| 6 — narrow fallback | Automatic interleaved inline layout across width transitions; respects the inline fallback setting and projects the configurable breakpoint to cells. True inline view zones are still absent. |
-| 7 — key routing | Shared editor key dispatch and scroll synchronization restored; full contribution controllers remain open. |
+| 5 — hidden coordinates | Convert view rows to model rows for line numbers/gutter, use model positions for navigation. The upstream region range model now feeds the generic folding substitution; disclosure UI and independent view-zone state remain open. |
+| 6 — narrow fallback | Automatic interleaved inline layout across width transitions; respects the inline fallback setting and projects the configurable breakpoint to cells. True inline view zones are still absent; the shared layout and renderer now support blank whitespace regions. |
+| 7 — key routing | Shared editor key dispatch and scroll synchronization restored. Independent contribution controllers attach to both views; focus and mouse/key routing use the active inner editor. Contributions still operate on projected snapshot text. |
 | 8 — indicators | Margin classes and indicator glyphs are ported. Contiguous filler blocks share one decoration; the real view-zone representation and empty-range markers remain open. |
 | 9 — theme/settings | Both panes receive theme updates; line and filler colors resolve theme IDs. Editor and diff settings are reapplied on configuration events; diff-specific option changes still regenerate snapshots synchronously. |
-| 10 — gutter/sash | Current hunk follows the cursor; split ratio validation and disabled-sash behavior corrected. Gutter theme colors are resolved; toolbar and sash reset remain open. |
-| 11–13 — features | Unchanged-region disclosure widgets, combined overview ruler, moved connectors and hover/compare remain open. |
+| 10 — gutter/sash | Current hunk follows the cursor; split ratio validation and disabled-sash behavior corrected. Gutter theme colors are resolved; the sash has its own drag/reset lifecycle. Toolbar remains open. |
+| 11–13 — features | Combined two-lane overview ruler and viewport slider are wired. The upstream `UnchangedRegion` range/reveal model is ported and used by the folding projection; disclosure widgets, moved connectors and hover/compare remain open. |
 | 14 — commands and swap | Swap reverses mappings, decorations, snapshot identity and title, including inline layout. Upstream command IDs for focus side, toggle inline, explicit view modes, and ignore whitespace are registered. Other commands and editor-title actions remain open. |
-| 15–17 — larger parity | Inline view zones, accessible viewer and full sub-editor contributions remain open. |
-| 18 — state | Refresh preserves split, cursor and scroll and reapplies theme; session serialization, code lens, and explicit diff word wrap remain open. |
-| 19 — tests | New focused regressions cover input/scroll, narrow transitions, gutter paint, filler grouping, hidden coordinates, theme and swap/refresh. The worker/cancellation/cache tests and SCM integration are in `test-view`. Complete upstream widget scenarios and end-to-end performance measurements remain open. |
+| 15–17 — larger parity | `ViewLayout` whitespace transactions update scroll dimensions and notify listeners before render. View lines, margin, cursor, widgets, scrollbar and mouse targets use zone-aware vertical offsets. The delegate/node owner, real inline/alignment diff zones, accessible viewer and remaining contributions over real models are open. |
+| 18 — state | Refresh preserves split, cursor and scroll and reapplies theme; explicit diff word wrap is applied to both sides with the hidden original forced off. Session serialization, code lens and unequal wrapped-row alignment remain open. |
+| 19 — tests | New focused regressions cover input/scroll, narrow transitions, gutter paint, filler grouping, hidden coordinates, theme and swap/refresh. The worker/cancellation/cache tests and SCM integration are in `test-view`. New coverage includes ruler cells/slider, sash reset, independent find, all four upstream unchanged-region range scenarios, whitespace event ordering, and zone-row paint, hit testing and scrolling. Complete upstream widget scenarios and end-to-end performance measurements remain open. |
 
 Local verification after this pass: `zig build`, `zig build check-workbench`,
-`zig build test-view --summary all` (384/384) and
-`zig build test --summary all` (3,422 passed, 20 skipped; 48/48 build steps)
+`zig build test-view --summary all` (390/390) and
+`zig build test --summary all` (3,430 passed, 20 skipped; 48/48 build steps)
 succeeded. The full suite was run outside the filesystem sandbox because the
 native watcher tests cannot receive events within it. Formatting and Git
 whitespace checks passed. No end-to-end large-file terminal latency or

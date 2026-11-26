@@ -2030,16 +2030,22 @@ Terminal substitutions and their reasons:
   (1-based display row -> real line, `null` for filler rows). The margin renders
   a blank number for fillers, and the status-bar selection reports the display
   line, matching upstream's view-model line numbers.
-- **Aligned snapshot rows instead of view zones.** The terminal editor has no
-  view-zone API, so `diffEditorViewZones.zig` pre-aligns both sides into display
-  line arrays. Changed blocks have height `max(originalLen, modifiedLen)`, the
+- **Aligned snapshot rows instead of diff-specific view zones.** The terminal
+  view layout now accepts whitespace transactions and emits zone-change
+  events. View lines, margins, cursor, widgets, scrollbar and mouse targets
+  use the actual vertical offsets; whitespace can occupy rows without model
+  content. A view-zone delegate/node owner and the migration of diff alignment
+  itself are still missing. `diffEditorViewZones.zig` pre-aligns both sides into
+  display line arrays. Changed blocks have height `max(originalLen, modifiedLen)`, the
   shorter side is padded with blank filler rows (leading fillers for top-of-file
   insert/delete), and both panes have equal line counts, so they scroll in
-  lockstep. The two snapshot editors are read-only; editing a side in place is
-  out of scope.
-- **Per-side overview ruler.** The upstream combined two-lane ruler needs two
-  graphics lanes; each snapshot pane uses its own decorated overview-ruler
-  entries through the existing terminal scrollbar part.
+  lockstep. The two snapshot editors are read-only; support for editable diff
+  models is a remaining portable gap.
+- **Combined overview ruler and sash.** The upstream ruler's original and
+  modified lanes occupy one terminal cell each; markers use the existing
+  overview renderer's half-cell projection and the viewport slider uses
+  scrollbar geometry and mouse events. The sash uses whole-cell geometry and
+  two stationary primary clicks to reset to the configured ratio.
 - **Decoration generation events.** Quick-diff/diff decorations change without
   a content edit. `TerminalViewHost.renderRange` dispatches
   `ViewDecorationsChanged` when `Editor.decorationGeneration()` changes, so the
@@ -2052,10 +2058,13 @@ The aligned snapshot substitution still materializes rows rather than
 using view zones. Contiguous filler ranges now share a decoration, and the
 gutter looks up aligned mappings with binary search. Both panes support
 read-only keyboard commands and synchronize scrolling; narrow layouts switch to
-interleaved inline text. Hidden unchanged regions currently use folding and
-moved blocks use model decorations. The actual disclosure widgets, moved-block
-connectors, accessible viewer, combined overview ruler, diff-tab session
-restore, and full sub-editor contributions remain unported. Git snapshot
+interleaved inline text. Hidden unchanged regions now use the upstream range
+model but still project onto folding; moved blocks use side-by-side model
+decorations. Both pane controllers are attached and disposed with their editor
+views. The actual disclosure widgets, moved-block connectors, accessible viewer,
+diff-tab session restore, and contributions over real snapshot models remain
+unported. Explicit diff wrapping is applied, but unequal wrapped rows still
+require alignment view zones. Git snapshot
 resolution and the initial diff computation now run in the editor worker;
 the window receives completion events and obsolete replies are detached.
 
