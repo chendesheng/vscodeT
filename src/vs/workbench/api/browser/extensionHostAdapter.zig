@@ -161,6 +161,7 @@ pub const Extensions = struct {
     documents_actor: ?MainThreadDocuments = null,
     text_editors_actor: ?MainThreadTextEditors = null,
     editor_tabs_actor: ?MainThreadEditorTabs = null,
+    pending_tab_closes: std.ArrayList(*TabCloseRequest) = .empty,
     window_actor: ?MainThreadWindow = null,
     extension_service_actor: ?MainThreadExtensionService = null,
     /// The selections the extension host already knows about. Upstream's
@@ -287,8 +288,7 @@ pub const Extensions = struct {
             .context = self,
             .notify = editorTabsNotifyHost,
             .move_tab = editorTabsMoveHost,
-            .close_tab = editorTabsCloseTabHost,
-            .close_group = editorTabsCloseGroupHost,
+            .close = editorTabsCloseHost,
         });
         self.window_actor = .{ .host = .{ .context = self, .open_uri = windowOpenUriHost } };
         self.extension_service_actor = .{ .host = .{
@@ -352,6 +352,11 @@ pub const Extensions = struct {
         if (self.commands_actor) |*actor| actor.deinit();
         if (self.configuration_actor) |*actor| actor.deinit();
         if (self.editor_tabs_actor) |*actor| actor.deinit();
+        for (self.pending_tab_closes.items) |request| {
+            request.extensions = null;
+            request.channel = null;
+        }
+        self.pending_tab_closes.deinit(self.allocator);
         self.activation_tracker.deinit();
         self.last_selections.deinit();
         self.host.deinit();
@@ -674,38 +679,148 @@ pub const Extensions = struct {
         return null;
     }
 
-    fn editorTabsCloseTabHost(context: *anyopaque, tab_id: []const u8) anyerror!bool {
+    fn editorTabsCloseHost(context: *anyopaque, kind: editor_tabs.CloseKind, ids: []const std.json.Value, preserve_focus: bool) anyerror!rpc.HandlerReply {
         const self: *Extensions = @ptrCast(@alignCast(context));
-        const target = (try self.findTabById(tab_id)) orelse return false;
-        const opening = self.editor_service.opening orelse return false;
-        try opening.group_actions.closeEditor(target.pane, target.tab);
-        self.needs_render = true;
-        // A dirty editor's asynchronous confirmation may still be pending;
-        // do not report success before the group actually closes the tab.
-        return (try self.findTabById(tab_id)) == null;
+        return TabCloseRequest.create(self, kind, ids, preserve_focus);
     }
 
-    fn editorTabsCloseGroupHost(context: *anyopaque, group_id: i64) anyerror!bool {
-        const self: *Extensions = @ptrCast(@alignCast(context));
-        const id = std.math.cast(u32, group_id) orelse return false;
-        const opening = self.editor_service.opening orelse return false;
-        const part = self.editor_service.part;
-        while (part.service.getGroup(id)) |group| {
-            const pane = part.viewForGroup(group) orelse return false;
-            const old_count = pane.tabs.items.len;
-            if (old_count == 0) {
-                _ = part.collapseView(pane);
-                self.needs_render = true;
-                return true;
+    /// Upstream groups all close targets by editor group and awaits each
+    /// group's confirmation. The native dialog callback is the continuation
+    /// of that promise; the RPC request stays pending until it settles.
+    const TabCloseRequest = struct {
+        allocator: Allocator,
+        extensions: ?*Extensions,
+        arena: std.heap.ArenaAllocator,
+        kind: editor_tabs.CloseKind,
+        batches: std.ArrayList(Batch) = .empty,
+        next: usize = 0,
+        all_closed: bool = true,
+        preserve_focus: bool,
+        original_group: u32,
+        channel: ?*rpc.RpcProtocol = null,
+        request_id: u32 = 0,
+
+        const Batch = struct { group_id: u32, tabs: std.ArrayList([]const u8) = .empty };
+
+        fn create(extensions: *Extensions, kind: editor_tabs.CloseKind, ids: []const std.json.Value, preserve_focus: bool) !rpc.HandlerReply {
+            const allocator = extensions.allocator;
+            const self = try allocator.create(TabCloseRequest);
+            errdefer allocator.destroy(self);
+            self.* = .{ .allocator = allocator, .extensions = extensions, .arena = .init(allocator), .kind = kind, .preserve_focus = preserve_focus, .original_group = extensions.editor_service.part.service.activeGroup().id };
+            errdefer self.arena.deinit();
+            const a = self.arena.allocator();
+            for (ids) |id| {
+                const group_id = switch (kind) {
+                    .tabs => blk: {
+                        if (id != .string) continue;
+                        const located = (try extensions.findTabById(id.string)) orelse continue;
+                        break :blk located.pane.group.id;
+                    },
+                    .groups => if (id == .integer) std.math.cast(u32, id.integer) orelse continue else continue,
+                };
+                const batch = blk: {
+                    for (self.batches.items) |*batch| if (batch.group_id == group_id) break :blk batch;
+                    try self.batches.append(a, .{ .group_id = group_id });
+                    break :blk &self.batches.items[self.batches.items.len - 1];
+                };
+                if (kind == .tabs) {
+                    for (batch.tabs.items) |existing| {
+                        if (std.mem.eql(u8, existing, id.string)) break;
+                    } else try batch.tabs.append(a, try a.dupe(u8, id.string));
+                }
             }
-            try opening.group_actions.closeEditor(pane, pane.tabs.items[0]);
-            self.needs_render = true;
-            const current = part.service.getGroup(id) orelse return true;
-            const remaining = part.viewForGroup(current) orelse return false;
-            if (remaining.tabs.items.len >= old_count) return false;
+            try extensions.pending_tab_closes.append(allocator, self);
+            return .{ .deferred = .{ .context = self, .start = start } };
         }
-        return true;
-    }
+
+        fn start(context: *anyopaque, channel: *rpc.RpcProtocol, request_id: u32) void {
+            const self: *TabCloseRequest = @ptrCast(@alignCast(context));
+            self.channel = channel;
+            self.request_id = request_id;
+            self.advance();
+        }
+
+        fn restoreFocus(self: *TabCloseRequest, extensions: *Extensions) void {
+            if (!self.preserve_focus) return;
+            const part = extensions.editor_service.part;
+            if (part.service.getGroup(self.original_group)) |group| part.service.activateGroup(group);
+        }
+
+        fn advance(self: *TabCloseRequest) void {
+            const extensions = self.extensions orelse return self.finish();
+            const opening = extensions.editor_service.opening orelse {
+                self.all_closed = false;
+                return self.finish();
+            };
+            const part = extensions.editor_service.part;
+            const group_actions = opening.group_actions;
+            while (self.next < self.batches.items.len) {
+                const batch = self.batches.items[self.next];
+                self.next += 1;
+                const group = part.service.getGroup(batch.group_id) orelse continue;
+                const pane = part.viewForGroup(group) orelse continue;
+                var tabs: std.ArrayList(*Tab) = .empty;
+                const a = self.arena.allocator();
+                switch (self.kind) {
+                    .groups => tabs.appendSlice(a, pane.tabs.items) catch {
+                        self.all_closed = false;
+                        continue;
+                    },
+                    .tabs => for (batch.tabs.items) |id| {
+                        const located = extensions.findTabById(id) catch {
+                            self.all_closed = false;
+                            continue;
+                        } orelse continue;
+                        if (located.pane == pane) tabs.append(a, located.tab) catch {
+                            self.all_closed = false;
+                            continue;
+                        };
+                    },
+                }
+                pane.closeEditorsWithOptions(tabs.items, group_actions.dialog_service.*, group_actions.close_host, .{
+                    .preserve_focus = self.preserve_focus,
+                    .completion = .{ .context = self, .complete = groupClosed },
+                }) catch {
+                    self.all_closed = false;
+                    continue;
+                };
+                // Synchronous clean closes may already have finished and
+                // destroyed this request. Dirty closes resume in groupClosed.
+                return;
+            }
+            self.finish();
+        }
+
+        fn groupClosed(context: *anyopaque, success: bool) void {
+            const self: *TabCloseRequest = @ptrCast(@alignCast(context));
+            self.all_closed = self.all_closed and success;
+            const extensions = self.extensions orelse return self.finish();
+            if (self.kind == .groups and success) {
+                const group_id = self.batches.items[self.next - 1].group_id;
+                const part = extensions.editor_service.part;
+                if (part.service.getGroup(group_id)) |group| {
+                    if (part.viewForGroup(group)) |pane| {
+                        if (group.model.count() == 0) {
+                            if (extensions.editor_service.opening) |opening| part.collapseGroup(pane, opening.group_actions.transfer);
+                        }
+                    }
+                }
+            }
+            self.restoreFocus(extensions);
+            extensions.needs_render = true;
+            self.advance();
+        }
+
+        fn finish(self: *TabCloseRequest) void {
+            if (self.extensions) |extensions| {
+                self.restoreFocus(extensions);
+                if (std.mem.indexOfScalar(*TabCloseRequest, extensions.pending_tab_closes.items, self)) |index| _ = extensions.pending_tab_closes.swapRemove(index);
+            }
+            if (self.channel) |channel| channel.sendReply(self.request_id, .{ .json = .{ .bool = self.all_closed } });
+            self.arena.deinit();
+            self.allocator.destroy(self);
+        }
+    };
 
     fn documentsOpenHost(context: *anyopaque, uri: std.json.Value, options: std.json.Value, arena: Allocator) anyerror!std.json.Value {
         _ = options;
@@ -2509,6 +2624,44 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(for (closed.object.get("tabEvents").?.array.items) |event| {
                 if (event.object.get("closed").?.array.items.len > 0) break true;
             } else false);
+            // The extension's close promise must remain pending during the
+            // normal dirty confirmation and report cancellation truthfully.
+            const bootstrap_tab = wb.activeTab().?;
+            try bootstrap_tab.editor.insertText("dirty");
+            const CloseResult = struct {
+                resolved: bool = false,
+                closed: bool = false,
+                fn complete(context: *anyopaque, reply: rpc.Reply) void {
+                    const result: *@This() = @ptrCast(@alignCast(context));
+                    result.resolved = true;
+                    result.closed = reply == .json and reply.json == .bool and reply.json.bool;
+                }
+            };
+            for ([_]usize{ 2, 1 }) |choice| {
+                var result: CloseResult = .{};
+                _ = try extensions.host.call(command_id, "$executeContributedCommand", &.{
+                    .{ .json = .{ .string = "fixture.closeNamedTab" } },
+                    .{ .json = .{ .string = "bootstrap.json" } },
+                }, null, .{ .context = &result, .callback = CloseResult.complete });
+                const confirm_deadline = time_compat.milliTimestamp() + 5000;
+                while (!wb.dialog_service.hasDialog() and !result.resolved and time_compat.milliTimestamp() < confirm_deadline) {
+                    _ = extensions.pump();
+                    time_compat.sleepMillis(5);
+                }
+                try std.testing.expect(wb.dialog_service.hasDialog());
+                try std.testing.expect(!result.resolved);
+                try std.testing.expectEqual(bootstrap_tab, wb.activeTab().?);
+                wb.dialog_service.model.close(choice);
+                const reply_deadline = time_compat.milliTimestamp() + 5000;
+                while (!result.resolved and time_compat.milliTimestamp() < reply_deadline) {
+                    _ = extensions.pump();
+                    time_compat.sleepMillis(5);
+                }
+                try std.testing.expect(result.resolved);
+                try std.testing.expectEqual(choice == 1, result.closed);
+                if (choice == 2) try std.testing.expectEqual(bootstrap_tab, wb.activeTab().?);
+            }
+            try std.testing.expect(wb.activeTab() == null);
         }
 
         test "Extensions: real TypeScript extension drives the language features" {

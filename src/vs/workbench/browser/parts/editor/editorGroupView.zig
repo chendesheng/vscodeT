@@ -571,18 +571,39 @@ pub fn EditorGroupView(comptime View: type) type {
         }
 
         /// Upstream closeEditors: confirm the entire set before closing any
-        /// editor, then close inactive editors before the active editor. The
-        /// dialog continuation stands in for the awaited confirmation chain.
+        /// editor, then close inactive editors before the active editor.
+        pub const CloseEditorsOptions = struct {
+            preserve_focus: bool = false,
+            completion: ?struct { context: *anyopaque, complete: *const fn (*anyopaque, bool) void } = null,
+        };
+
         pub fn closeEditors(self: *Self, tabs_to_close: []const View, dialog_service: dialogs.IDialogService, host: CloseHost) !void {
-            if (tabs_to_close.len == 0 or dialog_service.hasDialog()) return;
+            try self.closeEditorsWithOptions(tabs_to_close, dialog_service, host, .{});
+        }
+
+        /// Completion is called exactly once after a started operation, also
+        /// when a confirmation is canceled or disposed. Allocation errors
+        /// before starting the operation are returned to the caller.
+        pub fn closeEditorsWithOptions(self: *Self, tabs_to_close: []const View, dialog_service: dialogs.IDialogService, host: CloseHost, options: CloseEditorsOptions) !void {
+            if (tabs_to_close.len == 0 or dialog_service.hasDialog()) {
+                if (options.completion) |completion| completion.complete(completion.context, tabs_to_close.len == 0);
+                return;
+            }
+            for (tabs_to_close) |tab| if (tab.editorInput().hasCapability(@import("../../../common/editor.zig").EditorInputCapabilities.CannotClose)) {
+                if (options.completion) |completion| completion.complete(completion.context, false);
+                return;
+            };
             const tabs = try self.allocator.dupe(View, tabs_to_close);
             const state = self.allocator.create(CloseEditorsOperation) catch |err| {
                 self.allocator.free(tabs);
                 return err;
             };
-            state.* = .{ .allocator = self.allocator, .pane = self, .tabs = tabs, .dialog_service = dialog_service, .host = host };
+            state.* = .{ .allocator = self.allocator, .pane = self, .tabs = tabs, .dialog_service = dialog_service, .host = host, .options = options };
             defer state.release();
-            try state.confirmNext();
+            state.confirmNext() catch |err| {
+                host.report_error(host.context, err);
+                state.finish(false);
+            };
         }
 
         const CloseEditorsOperation = struct {
@@ -591,12 +612,20 @@ pub fn EditorGroupView(comptime View: type) type {
             tabs: []View,
             dialog_service: dialogs.IDialogService,
             host: CloseHost,
+            options: CloseEditorsOptions,
             next: usize = 0,
             refs: usize = 1,
+
+            fn finish(self: *CloseEditorsOperation, success: bool) void {
+                const completion = self.options.completion orelse return;
+                self.options.completion = null;
+                completion.complete(completion.context, success);
+            }
 
             fn release(self: *CloseEditorsOperation) void {
                 self.refs -= 1;
                 if (self.refs != 0) return;
+                self.finish(false);
                 self.allocator.free(self.tabs);
                 self.allocator.destroy(self);
             }
@@ -624,6 +653,7 @@ pub fn EditorGroupView(comptime View: type) type {
                     return;
                 }
                 try self.doCloseEditors();
+                self.finish(true);
             }
 
             fn complete(ptr: *anyopaque, result: dialogs.ConfirmResult) void {
@@ -633,10 +663,17 @@ pub fn EditorGroupView(comptime View: type) type {
                 if (host.is_alive(host.context, self.pane, tab)) {
                     if (self.pane.doHandleCloseConfirmation(tab, result)) {
                         host.focus_editor(host.context, tab);
+                        self.finish(false);
                         return;
                     }
-                } else if (result == .CANCEL) return;
-                self.confirmNext() catch |err| host.report_error(host.context, err);
+                } else if (result == .CANCEL) {
+                    self.finish(false);
+                    return;
+                }
+                self.confirmNext() catch |err| {
+                    host.report_error(host.context, err);
+                    self.finish(false);
+                };
             }
 
             fn dispose(ptr: *anyopaque) void {
@@ -656,7 +693,7 @@ pub fn EditorGroupView(comptime View: type) type {
                     try host.close_tab(host.context, self.pane, tab);
                 }
                 if (active) |tab| if (host.is_alive(host.context, self.pane, tab)) try host.close_tab(host.context, self.pane, tab);
-                host.focus_editor(host.context, null);
+                if (!self.options.preserve_focus) host.focus_editor(host.context, null);
             }
         };
 

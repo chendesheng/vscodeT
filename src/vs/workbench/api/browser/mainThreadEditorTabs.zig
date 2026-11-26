@@ -109,12 +109,13 @@ pub fn tabModel(arena: Allocator, groups: []const GroupSpec) !std.json.Value {
     return .{ .array = array };
 }
 
+pub const CloseKind = enum { tabs, groups };
+
 pub const Host = struct {
     context: *anyopaque,
     notify: *const fn (context: *anyopaque, method: []const u8, model: std.json.Value) anyerror!void,
     move_tab: *const fn (context: *anyopaque, tab_id: []const u8, index: i64, column: i64, preserve_focus: bool) anyerror!void,
-    close_tab: *const fn (context: *anyopaque, tab_id: []const u8) anyerror!bool,
-    close_group: *const fn (context: *anyopaque, group_id: i64) anyerror!bool,
+    close: *const fn (context: *anyopaque, kind: CloseKind, ids: []const std.json.Value, preserve_focus: bool) anyerror!rpc.HandlerReply,
 };
 
 const StoredTab = struct {
@@ -263,23 +264,11 @@ pub const MainThreadEditorTabs = struct {
             }
             return .empty;
         }
-        if (std.mem.eql(u8, method, "$closeTab")) {
-            var all_closed = true;
-            if (args.len > 0 and args[0] == .json and args[0].json == .array) {
-                for (args[0].json.array.items) |value| {
-                    if (value == .string and !(self.host.close_tab(self.host.context, value.string) catch false)) all_closed = false;
-                }
-            }
-            return .{ .json = .{ .bool = all_closed } };
-        }
-        if (std.mem.eql(u8, method, "$closeGroup")) {
-            var all_closed = true;
-            if (args.len > 0 and args[0] == .json and args[0].json == .array) {
-                for (args[0].json.array.items) |value| {
-                    if (value == .integer and !(self.host.close_group(self.host.context, value.integer) catch false)) all_closed = false;
-                }
-            }
-            return .{ .json = .{ .bool = all_closed } };
+        const close_kind: ?CloseKind = if (std.mem.eql(u8, method, "$closeTab")) .tabs else if (std.mem.eql(u8, method, "$closeGroup")) .groups else null;
+        if (close_kind) |kind| {
+            if (args.len == 0 or args[0] != .json or args[0].json != .array) return error.InvalidArguments;
+            const preserve_focus = args.len > 1 and args[1] == .json and args[1].json == .bool and args[1].json.bool;
+            return self.host.close(self.host.context, kind, args[0].json.array.items, preserve_focus);
         }
         if (methodKind(method) == .request) {
             return .{ .err = .{ .name = "Unsupported", .message = method } };
@@ -327,19 +316,15 @@ test "MainThreadEditorTabs: sends the initial model and incremental tab operatio
             is_group_update = std.mem.eql(u8, method, "$acceptTabGroupUpdate");
         }
         fn move(_: *anyopaque, _: []const u8, _: i64, _: i64, _: bool) anyerror!void {}
-        fn close(_: *anyopaque, _: []const u8) anyerror!bool {
-            return true;
-        }
-        fn closeGroup(_: *anyopaque, _: i64) anyerror!bool {
-            return true;
+        fn close(_: *anyopaque, _: CloseKind, _: []const std.json.Value, _: bool) anyerror!rpc.HandlerReply {
+            return .{ .json = .{ .bool = true } };
         }
     };
     var actor = MainThreadEditorTabs.init(allocator, .{
         .context = undefined,
         .notify = Fake.notify,
         .move_tab = Fake.move,
-        .close_tab = Fake.close,
-        .close_group = Fake.closeGroup,
+        .close = Fake.close,
     });
     defer actor.deinit();
     var arena = std.heap.ArenaAllocator.init(allocator);
