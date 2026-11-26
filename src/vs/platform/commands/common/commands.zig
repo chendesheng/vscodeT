@@ -10,13 +10,36 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+/// A synchronously borrowed command argument, corresponding to the upstream
+/// variadic JS command arguments. The terminal passes a typed object without
+/// JSON serialization; handlers validate its type before reading it.
+pub const CommandArgument = struct {
+    type_name: []const u8,
+    value: *const anyopaque,
+
+    pub fn from(comptime T: type, value: *const T) CommandArgument {
+        return .{ .type_name = @typeName(T), .value = value };
+    }
+
+    pub fn as(self: CommandArgument, comptime T: type) ?*const T {
+        if (!std.mem.eql(u8, self.type_name, @typeName(T))) return null;
+        return @ptrCast(@alignCast(self.value));
+    }
+};
+
 pub const Command = struct {
     id: []const u8,
     context: *anyopaque,
     run: *const fn (context: *anyopaque) anyerror!void,
+    run_with_argument: ?*const fn (context: *anyopaque, argument: CommandArgument) anyerror!void = null,
 
     pub fn execute(self: Command) !void {
         return self.run(self.context);
+    }
+
+    pub fn executeWithArgument(self: Command, argument: CommandArgument) !void {
+        if (self.run_with_argument) |handler| return handler(self.context, argument);
+        return self.execute();
     }
 };
 
@@ -69,6 +92,11 @@ pub const CommandRegistry = struct {
         try command.execute();
         return true;
     }
+    pub fn executeWithArgument(self: *const CommandRegistry, id: []const u8, argument: CommandArgument) !bool {
+        const command = self.get(id) orelse return false;
+        try command.executeWithArgument(argument);
+        return true;
+    }
 };
 
 test "commands: register, replace and execute" {
@@ -95,4 +123,24 @@ test "commands: register, replace and execute" {
     try std.testing.expectEqual(@as(usize, 2), state.hits);
 
     try std.testing.expect(!try registry.execute("test.missing"));
+}
+
+test "commands: forwards borrowed typed argument to registered handler" {
+    const State = struct {
+        result: u32 = 0,
+        fn run(_: *anyopaque) !void {}
+        fn runWithArgument(context: *anyopaque, argument: CommandArgument) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.result = (argument.as(u32) orelse return error.InvalidArgument).*;
+        }
+    };
+    var state: State = .{};
+    var registry = CommandRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    try registry.register(.{ .id = "test.context", .context = &state, .run = State.run, .run_with_argument = State.runWithArgument });
+    const value: u32 = 42;
+    try std.testing.expect(try registry.executeWithArgument("test.context", .from(u32, &value)));
+    try std.testing.expectEqual(value, state.result);
+    const wrong: u8 = 1;
+    try std.testing.expectError(error.InvalidArgument, registry.executeWithArgument("test.context", .from(u8, &wrong)));
 }

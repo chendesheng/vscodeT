@@ -161,6 +161,15 @@ pub const MenuItemAction = struct {
         _ = try registry.execute(self.item.id);
     }
 
+    pub fn runWithArgument(self: *const MenuItemAction, argument: commands.CommandArgument) !void {
+        const registry = self.command_registry orelse return;
+        if (self.options.should_forward_args) {
+            _ = try registry.executeWithArgument(self.item.id, argument);
+        } else {
+            _ = try registry.execute(self.item.id);
+        }
+    }
+
     pub fn toggleHidden(self: *MenuItemAction) void {
         self.hide_state.updateHidden(self.menu, self.item.id, !self.hide_state.isHidden(self.menu, self.item.id));
     }
@@ -2303,4 +2312,42 @@ test "menu navigation group sorts by explicit order" {
     const ids = try actionIds(allocator, menu.getActions()[0]);
     defer allocator.free(ids);
     try std.testing.expectEqualSlices([]const u8, &.{ "a", "b", "c" }, ids);
+}
+
+test "menu forwards typed command argument only when requested" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var command_registry = commands.CommandRegistry.init(allocator);
+    defer command_registry.deinit();
+    var service = MenuService.init(allocator, &registry, &command_registry);
+    defer service.deinit();
+    const menu_id = MenuId{ .id = "test.typed.context" };
+    const State = struct {
+        value: u32 = 0,
+        fn run(ptr: *anyopaque) !void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.value = 1;
+        }
+        fn runWithArgument(ptr: *anyopaque, argument: commands.CommandArgument) !void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.value = (argument.as(u32) orelse return error.InvalidArgument).*;
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+    var state: State = .{};
+    try command_registry.register(.{ .id = "test.action", .context = &state, .run = State.run, .run_with_argument = State.runWithArgument });
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "test.action", .title = "Action" } });
+    const context: contextkey.IContext = .{ .context = &state, .get_value = State.getValue };
+    const argument: u32 = 42;
+    var normal = try service.getMenuActions(allocator, menu_id, context);
+    defer normal.deinit();
+    try MenuItemAction.from(normal.groups[0].actions[0]).?.runWithArgument(.from(u32, &argument));
+    try std.testing.expectEqual(@as(u32, 1), state.value);
+    var forwarding = try service.getMenuActionsWithOptions(allocator, menu_id, context, .{ .should_forward_args = true });
+    defer forwarding.deinit();
+    try MenuItemAction.from(forwarding.groups[0].actions[0]).?.runWithArgument(.from(u32, &argument));
+    try std.testing.expectEqual(argument, state.value);
 }

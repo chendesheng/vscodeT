@@ -578,6 +578,7 @@ pub const MenuRegistration = struct {
 };
 
 pub const ActionRun = *const fn (context: *anyopaque, accessor: ServicesAccessor) anyerror!void;
+pub const ActionRunWithArgument = *const fn (context: *anyopaque, accessor: ServicesAccessor, argument: commands.CommandArgument) anyerror!void;
 
 pub const Action2 = struct {
     command: ICommandAction,
@@ -586,6 +587,7 @@ pub const Action2 = struct {
     keybindings: []const keybindings_registry.IKeybindingRule = &.{},
     context: *anyopaque,
     run_fn: ActionRun,
+    run_with_argument_fn: ?ActionRunWithArgument = null,
 };
 
 pub const ActionRegistration = struct {
@@ -595,6 +597,7 @@ pub const ActionRegistration = struct {
     id: []const u8,
     context: *anyopaque,
     run_fn: ActionRun,
+    run_with_argument_fn: ?ActionRunWithArgument = null,
     menus: std.ArrayList(MenuRegistry.Registration) = .empty,
     palette_item: ?MenuRegistry.Registration = null,
     keybindings: std.ArrayList(keybindings_registry.Registration) = .empty,
@@ -607,6 +610,15 @@ pub const ActionRegistration = struct {
 
     fn invokeAction(accessor: ServicesAccessor, self: *ActionRegistration) !void {
         try self.run_fn(self.context, accessor);
+    }
+
+    fn runWithArgument(context: *anyopaque, argument: commands.CommandArgument) !void {
+        const self: *ActionRegistration = @ptrCast(@alignCast(context));
+        try self.instantiation.invokeFunction(invokeActionWithArgument, .{ self, argument });
+    }
+
+    fn invokeActionWithArgument(accessor: ServicesAccessor, self: *ActionRegistration, argument: commands.CommandArgument) !void {
+        if (self.run_with_argument_fn) |handler| try handler(self.context, accessor, argument) else try self.run_fn(self.context, accessor);
     }
 
     pub fn dispose(self: *ActionRegistration) void {
@@ -638,12 +650,13 @@ pub fn registerAction2(registries: ActionRegistries, action2: Action2) !*ActionR
         .id = command.id,
         .context = action2.context,
         .run_fn = action2.run_fn,
+        .run_with_argument_fn = action2.run_with_argument_fn,
         .exprs = contextkey.ContextKeyExpr.init(allocator),
     };
     errdefer registration.dispose();
     try registration.menus.ensureTotalCapacity(allocator, action2.menus.len + @as(usize, if (action2.f1) 1 else 0));
     try registration.keybindings.ensureTotalCapacity(allocator, action2.keybindings.len);
-    try registries.commands.register(.{ .id = command.id, .context = registration, .run = ActionRegistration.run });
+    try registries.commands.register(.{ .id = command.id, .context = registration, .run = ActionRegistration.run, .run_with_argument = ActionRegistration.runWithArgument });
     for (action2.menus) |menu| {
         var menu_command = command;
         if (menu.omit_precondition) menu_command.precondition = null;

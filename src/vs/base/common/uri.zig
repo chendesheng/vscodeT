@@ -170,6 +170,21 @@ pub const URI = struct {
         return makeComponents(allocator, components, strict);
     }
 
+    /// Model resources use std.Uri. Convert their components at the shared
+    /// URI boundary before applying VS Code's query/path encoding rules.
+    pub fn fromStd(allocator: Allocator, uri: std.Uri) !URI {
+        var temporary = std.heap.ArenaAllocator.init(allocator);
+        defer temporary.deinit();
+        const arena = temporary.allocator();
+        return from(allocator, .{
+            .scheme = uri.scheme,
+            .authority = try std.fmt.allocPrint(arena, "{f}", .{uri.fmt(.{ .authority = true, .authentication = true })}),
+            .path = try uri.path.toRawMaybeAlloc(arena),
+            .query = if (uri.query) |query| try query.toRawMaybeAlloc(arena) else "",
+            .fragment = if (uri.fragment) |fragment| try fragment.toRawMaybeAlloc(arena) else "",
+        }, true);
+    }
+
     pub fn revive(allocator: Allocator, components: Components) !URI {
         return makeComponents(allocator, components, false);
     }
@@ -606,4 +621,17 @@ test "URI authority round-trips through withChanges and encoding" {
     const local_text = try local.toString(allocator);
     defer allocator.free(local_text);
     try std.testing.expectEqualStrings("file:///share/a b.txt", local_text);
+}
+
+test "URI fromStd encodes virtual-resource query like VS Code" {
+    const allocator = std.testing.allocator;
+    var uri = try URI.fromStd(allocator, .{
+        .scheme = "git",
+        .path = .{ .raw = "/repo/a #b.zig" },
+        .query = .{ .raw = "{\"path\":\"/repo/a #b.zig\",\"ref\":\"~\"}" },
+    });
+    defer uri.deinit();
+    const encoded = try uri.toStringEncoded(allocator);
+    defer allocator.free(encoded);
+    try std.testing.expectEqualStrings("git:/repo/a%20%23b.zig?%7B%22path%22%3A%22%2Frepo%2Fa%20%23b.zig%22%2C%22ref%22%3A%22~%22%7D", encoded);
 }
