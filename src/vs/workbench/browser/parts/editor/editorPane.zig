@@ -418,6 +418,7 @@ pub const Tab = struct {
             .input = diff.input(),
             .diff = diff,
         };
+        _ = try diff.widget.on_did_change_focused_side.listen(self, onDiffFocusedSideChanged);
         diff.on_control_changed = .{ .context = self, .run = onDiffControlChanged };
         return self;
     }
@@ -585,6 +586,10 @@ pub const Tab = struct {
 
     pub fn setControlChangeService(self: *Tab, service: ?*groups.EditorGroupsService) void {
         self.control_change_service = service;
+    }
+
+    fn onDiffFocusedSideChanged(_: @import("../../../../editor/browser/widget/diffEditor/diffEditorWidget.zig").Side, self: *Tab) !void {
+        if (self.control_change_service) |service| try service.on_did_visible_editors_change.fire({});
     }
 
     fn onDiffControlChanged(context: *anyopaque) void {

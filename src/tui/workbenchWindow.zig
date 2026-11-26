@@ -3434,7 +3434,10 @@ pub const TerminalWorkbench = struct {
     /// terminal keeps one shared OutlinePane, so it must let go of the editor
     /// while the editor is still alive.
     fn detachTabViewHandlers(self: *TerminalWorkbench, tab: *Tab) void {
-        if (self.context_keys != null) self.workbench_context.detachEditor(tab.editor);
+        if (self.context_keys != null) {
+            self.workbench_context.detachEditor(tab.editor);
+            if (tab.diff) |diff| self.workbench_context.detachEditor(diff.widget.original_editor);
+        }
         if (self.outline_view) |view| view.detachDisposedEditor(tab.editor);
     }
 
@@ -3472,8 +3475,8 @@ pub const TerminalWorkbench = struct {
         const active = self.activeTab();
         const terminal_editor = if (active) |tab| tab.terminal_input != null else false;
         const markdown_preview = if (active) |tab| tab.markdown_preview != null else false;
-        const text_editor = if (active) |tab| (tab.file_input != null or tab.text_resource_input != null) and !markdown_preview else false;
         const target = self.code_editor_api.getFocusedCodeEditor() orelse self.code_editor_api.getActiveCodeEditor();
+        const text_editor = target != null;
         const geometry_value = self.geometry();
         const visible_diff = blk: {
             for (self.part.group_views.items) |pane| {
@@ -3482,14 +3485,14 @@ pub const TerminalWorkbench = struct {
             break :blk false;
         };
         self.workbench_context.updateWindowContext(.{
-            .active_editor = if (active) |tab| if (!tab.isDiff()) tab.editor else null else null,
+            .active_editor = target,
             .active_diff = if (active) |tab| tab.isDiff() else false,
             .diff_original_uri = if (active) |tab| if (tab.diff) |diff| diff.widget.gutter_toolbar.original_uri else "" else "",
             .diff_modified_uri = if (active) |tab| if (tab.diff) |diff| diff.widget.gutter_toolbar.modified_uri else "" else "",
             .visible_diff = visible_diff,
             .comparing_moved_code = if (active) |tab| if (tab.diff) |diff| diff.widget.view_model.moved_text_to_compare != null else false else false,
             .language_visible = text_editor,
-            .language_id = if (text_editor) active.?.editor.languageId() else "",
+            .language_id = if (target) |editor| editor.languageId() else "",
             .custom_editor_id = if (markdown_preview and active.?.file_input != null) "vscode.markdown.preview.editor" else "",
             .editor_focused = self.focus == .editor,
             .editor_text_focused = self.focus == .editor and !terminal_editor and !markdown_preview and !self.isDialogOpen() and !self.quick_access.isOpen() and !(if (active) |tab| if (tab.diff) |diff| diff.widget.accessible_viewer.visible() else false else false),
@@ -3505,7 +3508,7 @@ pub const TerminalWorkbench = struct {
             .files_picker_open = self.quick_access.isOpen() and !self.quick_access.isPickOpen(),
             .resource_scheme = if (terminal_editor) "vscode-terminal" else if (target) |editor| editor.model.uri().scheme else "file",
             .editor_read_only = if (target) |editor| editor.isReadOnly() else false,
-            .legacy_editor_read_only = if (active) |tab| tab.editor.read_only else false,
+            .legacy_editor_read_only = if (target) |editor| editor.isReadOnly() else false,
         });
     }
 
