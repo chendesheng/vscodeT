@@ -27,6 +27,10 @@ const debounce_mod = @import("../../../common/services/languageFeatureDebounce.z
 
 pub const CodeLensContribution = struct {
     pub const ID = "editor.contrib.codeLens";
+
+    pub fn registerFactory(editor: *Editor, context: *anyopaque, instantiate: *const fn (*anyopaque) anyerror!void) !void {
+        try editor.registerContributionFactory(.{ .id = ID, .instantiation = .after_first_render, .context = context, .instantiate = instantiate });
+    }
     allocator: Allocator,
     editor: *Editor,
     view_host: *ViewHost,

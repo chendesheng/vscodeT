@@ -27,6 +27,10 @@ pub const SuggestControllerHost = struct {
 
 pub const SuggestController = struct {
     pub const ID = "editor.contrib.suggestController";
+
+    pub fn registerFactory(editor: *Editor, context: *anyopaque, instantiate: *const fn (*anyopaque) anyerror!void) !void {
+        try editor.registerContributionFactory(.{ .id = ID, .instantiation = .before_first_interaction, .context = context, .instantiate = instantiate });
+    }
     allocator: Allocator,
     editor: *Editor,
     model: SuggestModel,

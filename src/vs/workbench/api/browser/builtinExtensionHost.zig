@@ -251,8 +251,9 @@ fn tabDispatchEditorKey(context: *anyopaque, event: *const key_input.KeyInputEve
 fn tabCancelEditorSuggestions(context: *anyopaque) void {
     const tab: *Tab = @ptrCast(@alignCast(context));
     const controllers = tab.controllers orelse return;
-    controllers.suggest.cancelSnippetSession();
-    controllers.suggest.cancel();
+    const suggest = controllers.suggest orelse return;
+    suggest.cancelSnippetSession();
+    suggest.cancel();
 }
 
 fn editorGetSelections(context: *anyopaque, allocator: Allocator) anyerror![]Selection {

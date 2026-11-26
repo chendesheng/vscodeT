@@ -346,7 +346,8 @@ test "Workbench: sticky scroll paints scope headers" {
     const tab = workbench.activeTab().?;
     try tab.ensureControllers();
     if (tab.controllers) |controllers| {
-        _ = controllers.sticky.onTick(std.math.maxInt(i64));
+        const sticky = controllers.editor.getContribution(@import("../vs/editor/contrib/stickyScroll/browser/stickyScrollController.zig").StickyScrollController).?;
+        _ = sticky.onTick(std.math.maxInt(i64));
     }
     _ = tab.editor.setTopViewLine(5);
 
@@ -728,7 +729,7 @@ test "Workbench: split copy shares rendered edits after changing focus" {
     try renderFrame(workbench, &out.writer);
     // Let sticky scroll complete its initial update before changing focus.
     const inactive = right.activeTab().?;
-    _ = inactive.controllers.?.sticky.onTick(std.math.maxInt(i64));
+    _ = inactive.editor.getContribution(@import("../vs/editor/contrib/stickyScroll/browser/stickyScrollController.zig").StickyScrollController).?.onTick(std.math.maxInt(i64));
     _ = try workbench.commands.execute("workbench.action.focusLeftGroup");
     try std.testing.expectEqual(left, workbench.activePane().?);
     try renderFrame(workbench, &out.writer);
@@ -4839,7 +4840,7 @@ test "Workbench: LSP navigation, references and symbol picker" {
     try std.testing.expectEqual(@as(usize, 0), workbench.references_view.history.entries.items.len);
 
     try std.testing.expect(try workbench.showHover());
-    try std.testing.expect(tab.controllers.?.hover.isVisible());
+    try std.testing.expect(tab.controllers.?.hover.?.isVisible());
 }
 
 test "Workbench: LSP no-result message keeps the word" {
@@ -5720,8 +5721,8 @@ test "Workbench: content widgets show diagnostics in a rounded hover" {
     try tab.editor.setCursorPosition(Position.init(2, 2));
     try std.testing.expect(try workbench.showHover());
     const controllers = tab.controllers orelse return error.TestUnexpectedResult;
-    try std.testing.expect(controllers.hover.isVisible());
-    const content = controllers.hover.widget().getWidgetContent() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(controllers.hover.?.isVisible());
+    const content = controllers.hover.?.widget().getWidgetContent() orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, content, "Error: boom") != null);
 
     try renderFrame(workbench, &out.writer);
@@ -9847,7 +9848,7 @@ test "Workbench: context keys follow language read-only and search focus events 
     try std.testing.expect(keys.getContextKeyValue("listFocus").boolean);
 }
 
-test "Editor actions resolve the same mounted contribution through getContribution" {
+test "Editor: actions resolve the same mounted contribution through getContribution" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
@@ -9861,11 +9862,22 @@ test "Editor actions resolve the same mounted contribution through getContributi
     const Find = @import("../vs/editor/contrib/find/browser/findController.zig").FindController;
     const Sticky = @import("../vs/editor/contrib/stickyScroll/browser/stickyScrollController.zig").StickyScrollController;
     const Words = @import("../vs/editor/contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
-    try std.testing.expectEqual(tab.controllers.?.find, tab.editor.getContribution(Find).?);
-    try std.testing.expectEqual(tab.controllers.?.sticky, tab.editor.getContribution(Sticky).?);
-    try std.testing.expectEqual(tab.controllers.?.word_highlighter, tab.editor.getContribution(Words).?);
     const Hover = @import("../vs/editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
-    try std.testing.expectEqual(tab.controllers.?.hover, tab.editor.getContribution(Hover).?);
+    const Suggest = @import("../vs/editor/contrib/suggest/browser/suggestController.zig").SuggestController;
+    try std.testing.expectEqual(tab.controllers.?.find, tab.editor.getContribution(Find).?);
+    try std.testing.expect(tab.editor.getInstantiatedContribution(Sticky) == null);
+    try std.testing.expect(tab.editor.getInstantiatedContribution(Hover) == null);
+    try std.testing.expect(tab.editor.getInstantiatedContribution(Suggest) == null);
+    const sticky = tab.editor.getContribution(Sticky).?;
+    try std.testing.expectEqual(sticky, tab.controllers.?.sticky.?);
+    try std.testing.expectEqual(tab.controllers.?.word_highlighter, tab.editor.getContribution(Words).?);
+    const hover = tab.editor.getContribution(Hover).?;
+    try std.testing.expectEqual(hover, tab.controllers.?.hover.?);
+    try std.testing.expect(tab.editor.getInstantiatedContribution(Suggest) == null);
+    var key: ui.KeyEvent = .{ .key = .right };
+    var pasting = false;
+    _ = try tab.handleEditorKey(&key, &pasting, time_compat.milliTimestamp(), null);
+    try std.testing.expectEqual(tab.controllers.?.suggest.?, tab.editor.getInstantiatedContribution(Suggest).?);
     try wb.commands.execute("actions.find");
     try std.testing.expect(tab.controllers.?.find.state.is_revealed);
 }
@@ -10255,6 +10267,9 @@ test "Diff editor commands: CodeLens action uses the active provider context and
     try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "old", "new", "Original", "Modified");
     const tab = wb.activeTab().?;
     const widget = tab.diff.?.widget;
+    const Lens = @import("../vs/editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution;
+    try std.testing.expect(widget.original_editor.getInstantiatedContribution(Lens) == null);
+    try std.testing.expect(widget.modified_editor.getInstantiatedContribution(Lens) == null);
     var options = widget.options;
     options.diff_code_lens = true;
     _ = try widget.updateOptions(options);
@@ -10265,7 +10280,9 @@ test "Diff editor commands: CodeLens action uses the active provider context and
     var registered = true;
     defer if (registered) registration.dispose();
     for (0..24) |_| _ = wb.window_events.dispatch(std.math.maxInt(i64));
-    try std.testing.expect(tab.code_lens.?.enabled);
+    try std.testing.expect(tab.controllers.?.code_lens.?.enabled);
+    try std.testing.expect(widget.original_editor.getInstantiatedContribution(Lens) != null);
+    try std.testing.expect(widget.modified_editor.getInstantiatedContribution(Lens) == tab.controllers.?.code_lens.?);
     try std.testing.expect(tab.editor.has_code_lens_provider);
     const source = wb.commands.source();
     const picks = try source.get_picks(source.context, a);

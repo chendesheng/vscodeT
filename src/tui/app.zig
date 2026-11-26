@@ -864,7 +864,7 @@ pub fn main(init: std.process.Init) !void {
                     }
                     if (!workbench.is_pasting and workbench.focus == .editor and !event.mods.ctrl and !event.mods.alt) {
                         if (extension_host) |ext| {
-                            const suggest_open = if (current.controllers) |c| c.suggest.isOpen() or c.suggest.hasSnippetSession() else false;
+                            const suggest_open = if (current.controllers) |c| if (c.suggest) |suggest| suggest.isOpen() or suggest.hasSnippetSession() else false else false;
                             if (!suggest_open and current.view.ghost_text.isVisible()) {
                                 switch (event.key) {
                                     .tab => if (try ext.inline_completions.accept()) {
@@ -1710,7 +1710,7 @@ test "app: vim motions reach the hover before the extension key handler" {
     const tab = workbench.activeTab().?;
     try tab.editor.setCursorPosition(Position.init(1, 7));
     try std.testing.expect(try workbench.showHover());
-    try std.testing.expect(tab.controllers.?.hover.isVisible());
+    try std.testing.expect(tab.controllers.?.hover.?.isVisible());
 
     const FakeHost = struct {
         calls: usize = 0,
@@ -1731,17 +1731,17 @@ test "app: vim motions reach the hover before the extension key handler" {
     // receives the key and moves the cursor.
     try std.testing.expect(dispatchExtensionKey(workbench, &host, &motion));
     try std.testing.expectEqual(@as(usize, 1), host.calls);
-    try std.testing.expect(!tab.controllers.?.hover.isVisible());
+    try std.testing.expect(!tab.controllers.?.hover.?.isVisible());
 
     // A focused hover owns the keyboard: the extension handler is skipped and
     // the normal view dispatch gives the key to the hover box.
     try std.testing.expect(try workbench.showHover());
     try std.testing.expect(try workbench.showHover());
-    try std.testing.expect(tab.controllers.?.hover.isFocused());
+    try std.testing.expect(tab.controllers.?.hover.?.isFocused());
     host.calls = 0;
     try std.testing.expect(!dispatchExtensionKey(workbench, &host, &motion));
     try std.testing.expectEqual(@as(usize, 0), host.calls);
-    try std.testing.expect(tab.controllers.?.hover.isVisible());
+    try std.testing.expect(tab.controllers.?.hover.?.isVisible());
 }
 
 test "app: hover renders a GFM table and task list" {

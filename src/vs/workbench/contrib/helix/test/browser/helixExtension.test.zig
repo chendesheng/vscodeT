@@ -112,7 +112,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqual(@as(usize, 2), tab.editor.modelCursorPosition().column);
 
             try std.testing.expect(host.dispatchKey(&.{ .key = .{ .char = 'a' } }));
-            const suggest = tab.controllers.?.suggest;
+            const suggest = tab.controllers.?.suggest.?;
             try std.testing.expect(suggest.model.hasPendingTrigger());
             try std.testing.expect(try suggest.onTick(time_compat.milliTimestamp() + 1000));
             try std.testing.expect(suggest.isOpen());

@@ -3428,7 +3428,8 @@ pub const TerminalWorkbench = struct {
         if (tab.isDiff() or tab.isMultiDiff() or tab.isImage()) return false;
         tab.ensureControllers() catch return false;
         const controllers = tab.controllers orelse return false;
-        _ = controllers.hover.onKeyDown(event);
+        controllers.editor.onBeforeInteractionEvent();
+        if (controllers.hover) |hover| _ = hover.onKeyDown(event);
         return !tab.view.hasEditorFocus();
     }
 

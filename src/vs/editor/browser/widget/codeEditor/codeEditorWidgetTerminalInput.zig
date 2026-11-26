@@ -32,6 +32,7 @@ pub fn isCtrlChar(event: input.KeyEvent, wanted: u21) bool {
 /// Dispatch one decoded editor event. The legacy bool result is always false;
 /// host-level actions have already been handled by the caller.
 pub fn dispatch(editor: *Editor, event: input.KeyEvent, is_pasting: *bool) bool {
+    editor.onBeforeInteractionEvent();
     if (!isCtrlQ(event)) editor.clearMessage();
 
     if (is_pasting.*) {
@@ -159,19 +160,22 @@ pub fn dispatch(editor: *Editor, event: input.KeyEvent, is_pasting: *bool) bool 
 /// The result is false: host quit is handled before this editor dispatch.
 pub fn handleKeyEvent(
     view: IEditorKeyTarget,
-    hover: *ContentHoverController,
+    initial_hover: ?*ContentHoverController,
     word_highlighter: *WordHighlighterContribution,
-    suggest: ?*SuggestController,
+    initial_suggest: ?*SuggestController,
     editor: *Editor,
     event: *input.KeyEvent,
     is_pasting: *bool,
     now_ms: i64,
     fallback: ?input.KeyEvent,
 ) !bool {
+    editor.onBeforeInteractionEvent();
+    const hover = initial_hover orelse editor.getInstantiatedContribution(ContentHoverController);
+    const suggest = initial_suggest orelse editor.getInstantiatedContribution(SuggestController);
     if (suggest) |controller| {
         if (try controller.handleKey(event, now_ms)) return false;
     }
-    if (hover.onKeyDown(event)) return false;
+    if (hover) |controller| if (controller.onKeyDown(event)) return false;
     if (suggest) |controller| {
         if (controller.hasSnippetSession()) {
             switch (event.key) {
@@ -192,11 +196,14 @@ pub fn handleKeyEvent(
 
 pub fn handleMouseEvent(
     view: anytype,
-    hover: *ContentHoverController,
-    suggest: ?*SuggestController,
+    initial_hover: ?*ContentHoverController,
+    initial_suggest: ?*SuggestController,
     editor: *Editor,
     event: *input.MouseEvent,
 ) !bool {
+    editor.onBeforeInteractionEvent();
+    const hover = initial_hover orelse editor.getInstantiatedContribution(ContentHoverController);
+    const suggest = initial_suggest orelse editor.getInstantiatedContribution(SuggestController);
     if (event.kind != .move) {
         editor.clearMessage();
     }
@@ -214,19 +221,19 @@ pub fn handleMouseEvent(
         .mods = event.mods,
         .button = event.button,
     };
-    switch (event.kind) {
-        .down => hover.onMouseDown(hover_event),
-        .up => hover.onMouseUp(),
+    if (hover) |controller| switch (event.kind) {
+        .down => controller.onMouseDown(hover_event),
+        .up => controller.onMouseUp(),
         .move => switch (target.type) {
             // The gutter and overlay widgets are inside the editor area in
             // VS Code, so they produce a mouse move (with no anchor) and the
             // sticky hover gets its grace period. The status row is outside
             // the editor, so it is a mouse leave.
-            .content_text, .content_empty, .content_widget, .gutter_line_numbers, .gutter_glyph_margin, .gutter_line_decorations, .gutter_view_zone, .content_view_zone, .scrollbar, .overview_ruler, .overlay_widget => hover.onMouseMove(hover_event),
-            .status, .unknown, .textarea, .outside_editor => hover.onEditorMouseLeave(hover_event),
+            .content_text, .content_empty, .content_widget, .gutter_line_numbers, .gutter_glyph_margin, .gutter_line_decorations, .gutter_view_zone, .content_view_zone, .scrollbar, .overview_ruler, .overlay_widget => controller.onMouseMove(hover_event),
+            .status, .unknown, .textarea, .outside_editor => controller.onEditorMouseLeave(hover_event),
         },
         .wheel, .click => {},
-    }
+    };
 
     if (event.kind == .down and target.type != .content_widget) {
         if (suggest) |controller| controller.cancel();

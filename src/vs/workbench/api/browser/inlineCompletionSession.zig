@@ -142,8 +142,10 @@ pub const Session = struct {
         if (tab.editor.cursorCount() != 1 or !tab.editor.modelSelection().isEmpty()) return false;
         if (tab.controllers) |controllers| {
             if (self.suggest_listener == null) {
-                self.suggest_widget = controllers.suggest.widget;
-                self.suggest_listener = controllers.suggest.widget.on_did_show.listen(self, onSuggestShown) catch null;
+                if (controllers.editor.getContribution(@import("../../../editor/contrib/suggest/browser/suggestController.zig").SuggestController)) |suggest| {
+                    self.suggest_widget = suggest.widget;
+                    self.suggest_listener = suggest.widget.on_did_show.listen(self, onSuggestShown) catch null;
+                }
             }
         }
         self.version = tab.editor.model.getVersionId();
@@ -157,7 +159,7 @@ pub const Session = struct {
         if (self.actor == null or self.actor.?.inline_providers.entries.items.len == 0) return false;
         if (!self.configuration.getBool("editor.inlineSuggest.enabled", true)) return false;
         if (tab.controllers) |controllers| {
-            if (controllers.suggest.isOpen() or controllers.suggest.hasSnippetSession()) return false;
+            if (controllers.suggest) |suggest| if (suggest.isOpen() or suggest.hasSnippetSession()) return false;
         }
         return true;
     }

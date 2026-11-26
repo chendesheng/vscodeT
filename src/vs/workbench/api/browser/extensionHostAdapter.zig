@@ -2379,7 +2379,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(workbench.outline_view.?.focused);
             workbench.focusEditor();
             try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.showHover"));
-            try std.testing.expect(workbench.activeTab().?.controllers.?.hover.isVisible());
+            try std.testing.expect(workbench.activeTab().?.controllers.?.hover.?.isVisible());
             const tab = workbench.activeTab().?;
             try tab.editor.setCursorPosition(Position.init(1, model.getLineMaxColumn(1)));
             try tab.editor.insertText("é");
@@ -3167,8 +3167,8 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try tab.editor.setCursorPosition(Position.init(marker_line, marker_column));
             try std.testing.expect(try workbench.showHover());
             const controllers = tab.controllers orelse return error.TestUnexpectedResult;
-            try std.testing.expect(controllers.hover.isVisible());
-            const content = controllers.hover.widget().getWidgetContent() orelse return error.TestUnexpectedResult;
+            try std.testing.expect(controllers.hover.?.isVisible());
+            const content = controllers.hover.?.widget().getWidgetContent() orelse return error.TestUnexpectedResult;
             try std.testing.expect(std.mem.indexOf(u8, content, "Error:") != null);
         }
 

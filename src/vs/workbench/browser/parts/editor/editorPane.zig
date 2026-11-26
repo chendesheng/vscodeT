@@ -207,8 +207,7 @@ pub const Tab = struct {
     input: *EditorInput,
     controllers: ?*Controllers = null,
     original_controllers: ?*Controllers = null,
-    code_lens: ?*@import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution = null,
-    original_code_lens: ?*@import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution = null,
+    code_lens_services: ?CodeLensServices = null,
     diff: ?*DiffView = null,
     multi_diff: ?*MultiDiffPane = null,
     multi_diff_listener: ?usize = null,
@@ -526,23 +525,17 @@ pub const Tab = struct {
 
     pub fn attachCodeLensServices(self: *Tab, features: *LanguageFeaturesService, cache: *@import("../../../../editor/contrib/codelens/browser/codeLensCache.zig").CodeLensCache, commands: @import("../../../../editor/contrib/codelens/browser/codelensWidget.zig").CommandHost, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
         if (self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
-        const Contribution = @import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution;
-        if (self.code_lens == null) {
-            self.code_lens = Contribution.create(self.allocator, self.editor, self.view.terminal_view_host, self.view.viewZones(), features.interface(), cache, commands, window) catch null;
-            if (self.code_lens) |lens| lens.setColors(codeLensColors(self.view.themeColors()));
-        }
-        if (self.diff) |diff| if (self.original_code_lens == null) {
-            const view = diff.widget.original_view;
-            self.original_code_lens = Contribution.create(self.allocator, diff.widget.original_editor, view.terminal_view_host, view.viewZones(), features.interface(), cache, commands, window) catch null;
-            if (self.original_code_lens) |lens| lens.setColors(codeLensColors(view.themeColors()));
-        };
+        const services: CodeLensServices = .{ .features = features, .cache = cache, .commands = commands, .window = window };
+        self.code_lens_services = services;
+        self.ensureControllers() catch return;
+        if (self.controllers) |controllers| controllers.attachCodeLensServices(services) catch {};
+        if (self.original_controllers) |controllers| controllers.attachCodeLensServices(services) catch {};
     }
 
     pub fn detachCodeLensServices(self: *Tab) void {
-        if (self.code_lens) |lens| lens.dispose();
-        if (self.original_code_lens) |lens| lens.dispose();
-        self.code_lens = null;
-        self.original_code_lens = null;
+        if (self.controllers) |controllers| controllers.detachCodeLensServices();
+        if (self.original_controllers) |controllers| controllers.detachCodeLensServices();
+        self.code_lens_services = null;
     }
 
     pub fn attachDiffBreadcrumbs(self: *Tab, features: *LanguageFeaturesService, models: *@import("../../../../editor/contrib/documentSymbols/browser/outlineModel.zig").OutlineModelService) void {
@@ -590,6 +583,7 @@ pub const Tab = struct {
         try controllers.attachWidgets();
         if (self.diff != null) controllers.attachDiffFindZone();
         if (self.window) |window| controllers.attachWindow(window);
+        if (self.code_lens_services) |services| try controllers.attachCodeLensServices(services);
         return controllers;
     }
 
@@ -617,8 +611,6 @@ pub const Tab = struct {
         } else self.view.setThemeColors(palette);
         if (self.controllers) |controllers| controllers.setThemeColors(palette);
         if (self.original_controllers) |controllers| controllers.setThemeColors(palette);
-        if (self.code_lens) |lens| lens.setColors(codeLensColors(palette));
-        if (self.original_code_lens) |lens| lens.setColors(codeLensColors(palette));
     }
 
     pub fn refresh(self: *Tab) !void {
@@ -712,7 +704,6 @@ pub const Tab = struct {
         if (changed) {
             if (self.editor == diff.widget.original_editor) {
                 std.mem.swap(?*Controllers, &self.controllers, &self.original_controllers);
-                std.mem.swap(@TypeOf(self.code_lens), &self.code_lens, &self.original_code_lens);
             } else {
                 if (self.controllers) |controllers| controllers.deinit();
                 if (self.original_controllers) |controllers| controllers.deinit();
@@ -875,7 +866,7 @@ pub const Tab = struct {
         const controllers = (if (side == .original) self.original_controllers else self.controllers) orelse return view.dispatchMouse(event);
         if (event.kind == .move) {
             const other = if (side == .original) self.controllers else self.original_controllers;
-            if (other) |inactive| inactive.hover.hideContentHover();
+            if (other) |inactive| if (inactive.hover) |hover| hover.hideContentHover();
         }
         return editor_input_dispatch.handleMouseEvent(view, controllers.hover, controllers.suggest, controllers.editor, event);
     }
@@ -886,14 +877,14 @@ pub const Tab = struct {
     }
 
     pub fn hideEditorHovers(self: *Tab) void {
-        if (self.controllers) |controllers| controllers.hover.hideContentHover();
-        if (self.original_controllers) |controllers| controllers.hover.hideContentHover();
+        if (self.controllers) |controllers| if (controllers.hover) |hover| hover.hideContentHover();
+        if (self.original_controllers) |controllers| if (controllers.hover) |hover| hover.hideContentHover();
     }
 
     pub fn cancelEditorPopups(self: *Tab) void {
         self.hideEditorHovers();
-        if (self.controllers) |controllers| controllers.suggest.cancel();
-        if (self.original_controllers) |controllers| controllers.suggest.cancel();
+        if (self.controllers) |controllers| if (controllers.suggest) |suggest| suggest.cancel();
+        if (self.original_controllers) |controllers| if (controllers.suggest) |suggest| suggest.cancel();
     }
 
     pub fn focusTabEdge(self: *Tab, direction: ui.dom.FocusDirection) void {
@@ -1321,6 +1312,14 @@ fn SuggestControllerHostForView(view: *View) @import("../../../../editor/contrib
     };
 }
 
+const CodeLensContribution = @import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution;
+const CodeLensServices = struct {
+    features: *LanguageFeaturesService,
+    cache: *@import("../../../../editor/contrib/codelens/browser/codeLensCache.zig").CodeLensCache,
+    commands: @import("../../../../editor/contrib/codelens/browser/codelensWidget.zig").CommandHost,
+    window: *@import("../../../../base/common/windowDispatch.zig").Queue,
+};
+
 /// The per-tab editor contributions. Mirrors the construction order in the
 /// single-editor app so the find/hover/word/suggest behavior is identical.
 pub const Controllers = struct {
@@ -1333,19 +1332,23 @@ pub const Controllers = struct {
     find: *FindController,
     view: *View,
     sticky_host: StickyScrollHost,
-    sticky: *StickyScrollController,
+    sticky: ?*StickyScrollController,
     hover_provider: TuiHoverProvider,
     hover_providers: [1]languages.HoverProvider,
     hover_participant: MarkdownHoverParticipant,
     marker_hover_participant: MarkerHoverParticipant,
     participants: [2]hoverTypes.IEditorHoverParticipant,
-    hover: *ContentHoverController,
+    hover: ?*ContentHoverController,
     word_highlighter: *WordHighlighterContribution,
     word_provider: WordBasedCompletionProvider,
     completion_providers: [2]completion.CompletionItemProvider,
     completion_count: usize = 1,
     hover_registration: ?IDisposable = null,
-    suggest: *SuggestController,
+    suggest: ?*SuggestController,
+    code_lens: ?*CodeLensContribution,
+    code_lens_services: ?CodeLensServices,
+    language_features: ?*LanguageFeaturesService,
+    window: ?*@import("../../../../base/common/windowDispatch.zig").Queue,
     widgets_attached: bool = false,
     diff_find_zone: bool = false,
     diff_find_handler: ViewEventHandler = .{},
@@ -1389,8 +1392,8 @@ pub const Controllers = struct {
                 .selection_background = selection_background,
                 .selection_foreground = selection_foreground,
             });
-            self.suggest.setTheme(suggest_theme);
-            self.hover.setTheme(.{
+            if (self.suggest) |suggest| suggest.setTheme(suggest_theme);
+            if (self.hover) |hover| hover.setTheme(.{
                 .background = colors.color("editorHoverWidget.background", .{ 37, 37, 38 }),
                 .foreground = colors.color("editorHoverWidget.foreground", .{ 204, 204, 204 }),
                 .border = colors.color("editorHoverWidget.border", .{ 69, 69, 69 }),
@@ -1401,7 +1404,8 @@ pub const Controllers = struct {
         } else {
             self.find.setTheme(.{});
         }
-        self.hover_participant.setCodeBackground(code_background);
+        if (self.hover != null) self.hover_participant.setCodeBackground(code_background);
+        if (self.code_lens) |lens| lens.setColors(Tab.codeLensColors(palette));
     }
 
     pub fn init(allocator: Allocator, editor: *Editor, view: *View) !*Controllers {
@@ -1410,6 +1414,13 @@ pub const Controllers = struct {
 
         self.allocator = allocator;
         self.editor = editor;
+        self.sticky = null;
+        self.hover = null;
+        self.suggest = null;
+        self.code_lens = null;
+        self.code_lens_services = null;
+        self.language_features = editor.language_features;
+        self.window = null;
         self.hover_registration = null;
         self.widgets_attached = false;
         self.diff_find_zone = false;
@@ -1433,12 +1444,53 @@ pub const Controllers = struct {
 
         self.view = view;
         self.sticky_host = view.stickyScrollHost();
-        self.sticky = try StickyScrollController.getOrCreate(editor, self.sticky_host.interface());
-        errdefer self.sticky.unbindHost();
-        self.sticky_host.attach(self.sticky);
-
         self.hover_sink = .{ .model = editor.model, .owner = 4 };
         self.word_sink = .{ .model = editor.model, .owner = 3 };
+
+        self.word_highlighter = try WordHighlighterContribution.getOrCreate(editor, .{
+            .context = view,
+            .decoration_context = self.word_sink.context(),
+            .has_text_focus = viewHasWordTextFocus,
+            .set_decorations = ModelDecorationSink.set,
+            .request_frame = viewRequestFrame,
+        }, .{});
+        errdefer self.word_highlighter.unbindHost();
+
+        errdefer self.detachDeferredContributions();
+        if (editor.getInstantiatedContribution(StickyScrollController) != null) {
+            try createSticky(self);
+        } else try @import("../../../../editor/contrib/stickyScroll/browser/stickyScrollContribution.zig").register(editor, self, createSticky);
+        if (editor.getInstantiatedContribution(ContentHoverController) != null) {
+            try createHover(self);
+        } else try @import("../../../../editor/contrib/hover/browser/hoverContribution.zig").register(editor, self, createHover);
+        if (editor.getInstantiatedContribution(SuggestController) != null) {
+            try createSuggest(self);
+        } else try SuggestController.registerFactory(editor, self, createSuggest);
+
+        self.setThemeColors(view.themeColors());
+        self.find.applyConfiguration(view.terminal_view_host.options.get(.find));
+        try view.addConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
+        errdefer view.removeConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
+        return self;
+    }
+
+    fn createSticky(context: *anyopaque) !void {
+        const self: *Controllers = @ptrCast(@alignCast(context));
+        if (self.sticky != null) return;
+        const sticky = try StickyScrollController.getOrCreate(self.editor, self.sticky_host.interface());
+        errdefer sticky.unbindHost();
+        self.sticky_host.attach(sticky);
+        if (self.window) |window| sticky.attachWindow(window);
+        if (self.widgets_attached) try self.view.addOverlayWidget(sticky.widget.interface());
+        self.sticky = sticky;
+    }
+
+    fn createHover(context: *anyopaque) !void {
+        const self: *Controllers = @ptrCast(@alignCast(context));
+        if (self.hover != null) return;
+        const allocator = self.allocator;
+        const editor = self.editor;
+        const view = self.view;
 
         self.hover_provider = TuiHoverProvider.init(allocator);
         self.hover_provider.json_document = &editor.document.json;
@@ -1446,9 +1498,13 @@ pub const Controllers = struct {
         errdefer self.hover_provider.deinit();
         self.hover_providers = .{self.hover_provider.interface()};
 
-        const features = editor.language_features;
+        const features = self.language_features;
         if (features) |service| {
             self.hover_registration = service.hover_provider.register(.{ .language = "*" }, self.hover_provider.interface()) catch null;
+        }
+        errdefer {
+            if (self.hover_registration) |registration| registration.dispose();
+            self.hover_registration = null;
         }
         self.hover_participant = if (features) |service|
             MarkdownHoverParticipant.initWithRegistry(allocator, editor.model, &self.hover_providers, &service.hover_provider)
@@ -1466,7 +1522,7 @@ pub const Controllers = struct {
             self.hover_participant.interface(),
         };
 
-        self.hover = try ContentHoverController.getOrCreate(editor, &self.participants, .{}, .{
+        const hover = try ContentHoverController.getOrCreate(editor, &self.participants, .{}, .{
             .context = view,
             .decoration_context = self.hover_sink.context(),
             .text_height = viewTextHeight,
@@ -1479,16 +1535,19 @@ pub const Controllers = struct {
                 .model_column_at_view_line_start = viewModelColumnAtViewLineStart,
             },
         });
-        errdefer self.hover.unbindModel();
+        errdefer hover.unbindModel();
+        if (self.window) |window| hover.attachWindow(window);
+        if (self.widgets_attached) try view.addContentWidget(hover.widget().contentWidget());
+        self.hover = hover;
+        self.setThemeColors(view.themeColors());
+    }
 
-        self.word_highlighter = try WordHighlighterContribution.getOrCreate(editor, .{
-            .context = view,
-            .decoration_context = self.word_sink.context(),
-            .has_text_focus = viewHasWordTextFocus,
-            .set_decorations = ModelDecorationSink.set,
-            .request_frame = viewRequestFrame,
-        }, .{});
-        errdefer self.word_highlighter.unbindHost();
+    fn createSuggest(context: *anyopaque) !void {
+        const self: *Controllers = @ptrCast(@alignCast(context));
+        if (self.suggest != null) return;
+        const editor = self.editor;
+        const view = self.view;
+        const features = self.language_features;
 
         self.word_provider = WordBasedCompletionProvider.init();
         self.completion_providers[0] = self.word_provider.interface();
@@ -1503,31 +1562,55 @@ pub const Controllers = struct {
         }
 
         const suggest_host = SuggestControllerHostForView(view);
-        self.suggest = try SuggestController.getOrCreate(editor, if (features != null) &.{} else self.completion_providers[0..self.completion_count], suggest_host, if (features) |service| &service.completion_provider else null);
-        errdefer self.suggest.unbindHost();
-
-        // Suggest controllers only exist after the block above; applying the
-        // theme earlier dereferenced an unset widget.
+        const suggest = try SuggestController.getOrCreate(editor, if (features != null) &.{} else self.completion_providers[0..self.completion_count], suggest_host, if (features) |service| &service.completion_provider else null);
+        errdefer suggest.unbindHost();
+        if (self.window) |window| suggest.attachWindow(window);
+        if (self.widgets_attached) try view.addContentWidget(suggest.widgetInterface());
+        self.suggest = suggest;
         self.setThemeColors(view.themeColors());
+    }
 
-        self.find.applyConfiguration(view.terminal_view_host.options.get(.find));
-        try view.addConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
-        errdefer view.removeConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
-        return self;
+    pub fn attachCodeLensServices(self: *Controllers, services: CodeLensServices) !void {
+        if (self.code_lens_services != null) return;
+        self.code_lens_services = services;
+        errdefer self.code_lens_services = null;
+        if (self.editor.getInstantiatedContribution(CodeLensContribution) != null) {
+            try createCodeLens(self);
+        } else try CodeLensContribution.registerFactory(self.editor, self, createCodeLens);
+    }
+
+    fn createCodeLens(context: *anyopaque) !void {
+        const self: *Controllers = @ptrCast(@alignCast(context));
+        if (self.code_lens != null) return;
+        const services = self.code_lens_services orelse return error.CodeLensServicesUnavailable;
+        const view = self.view;
+        const lens = try CodeLensContribution.getOrCreate(self.editor, view.terminal_view_host, view.viewZones(), services.features.interface(), services.cache, services.commands, services.window);
+        lens.setColors(Tab.codeLensColors(view.themeColors()));
+        self.code_lens = lens;
+    }
+
+    pub fn detachCodeLensServices(self: *Controllers) void {
+        self.editor.unregisterContributionFactory(CodeLensContribution, self);
+        if (self.code_lens) |lens| lens.unbindView();
+        self.code_lens = null;
+        self.code_lens_services = null;
     }
 
     pub fn attachWidgets(self: *Controllers) !void {
-        const sticky = self.sticky.widget.interface();
         const find = self.find.widget().interface();
-        const hover = self.hover.widget().contentWidget();
-        const suggest = self.suggest.widgetInterface();
-        try self.view.addOverlayWidget(sticky);
-        errdefer self.view.removeOverlayWidget(sticky.get_id(sticky.context)) catch {};
+        if (self.sticky) |controller| try self.view.addOverlayWidget(controller.widget.interface());
+        errdefer if (self.sticky) |controller| {
+            const widget = controller.widget.interface();
+            self.view.removeOverlayWidget(widget.get_id(widget.context)) catch {};
+        };
         try self.view.addOverlayWidget(find);
         errdefer self.view.removeOverlayWidget(find.get_id(find.context)) catch {};
-        try self.view.addContentWidget(hover);
-        errdefer self.view.removeContentWidget(hover.get_id(hover.context)) catch {};
-        try self.view.addContentWidget(suggest);
+        if (self.hover) |controller| try self.view.addContentWidget(controller.widget().contentWidget());
+        errdefer if (self.hover) |controller| {
+            const widget = controller.widget().contentWidget();
+            self.view.removeContentWidget(widget.get_id(widget.context)) catch {};
+        };
+        if (self.suggest) |controller| try self.view.addContentWidget(controller.widgetInterface());
         self.widgets_attached = true;
     }
 
@@ -1553,50 +1636,77 @@ pub const Controllers = struct {
     }
 
     pub fn attachLanguageRegistry(self: *Controllers, features: *LanguageFeaturesService) void {
-        self.hover_participant.registry = &features.hover_provider;
-        self.marker_hover_participant.marker_decorations = self.view.editor.marker_decorations;
-        self.suggest.model.registry = &features.completion_provider;
-        if (self.hover_registration == null) {
-            self.hover_registration = features.hover_provider.register(
-                .{ .language = "*" },
-                self.hover_provider.interface(),
-            ) catch null;
+        self.language_features = features;
+        if (self.hover != null) {
+            self.hover_participant.registry = &features.hover_provider;
+            self.marker_hover_participant.marker_decorations = self.view.editor.marker_decorations;
+            if (self.hover_registration == null) {
+                self.hover_registration = features.hover_provider.register(.{ .language = "*" }, self.hover_provider.interface()) catch null;
+            }
         }
+        if (self.suggest) |suggest| suggest.model.registry = &features.completion_provider;
     }
 
     fn attachWindow(self: *Controllers, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+        self.window = window;
         self.find.attachWindow(window);
-        self.hover.attachWindow(window);
         self.word_highlighter.attachWindow(window);
-        self.sticky.attachWindow(window);
-        self.suggest.attachWindow(window);
+        if (self.hover) |hover| hover.attachWindow(window);
+        if (self.sticky) |sticky| sticky.attachWindow(window);
+        if (self.suggest) |suggest| suggest.attachWindow(window);
+        self.editor.attachContributionWindow(window);
     }
+
+    fn detachDeferredContributions(self: *Controllers) void {
+        self.editor.unregisterContributionFactory(StickyScrollController, self);
+        self.editor.unregisterContributionFactory(ContentHoverController, self);
+        self.editor.unregisterContributionFactory(SuggestController, self);
+        if (self.sticky) |sticky| {
+            if (self.widgets_attached) {
+                const widget = sticky.widget.interface();
+                self.view.removeOverlayWidget(widget.get_id(widget.context)) catch {};
+            }
+            sticky.unbindHost();
+            self.sticky = null;
+        }
+        if (self.hover) |hover| {
+            if (self.widgets_attached) {
+                const widget = hover.widget().contentWidget();
+                self.view.removeContentWidget(widget.get_id(widget.context)) catch {};
+            }
+            hover.unbindModel();
+            if (self.hover_registration) |registration| registration.dispose();
+            self.hover_registration = null;
+            self.marker_hover_participant.deinit();
+            self.hover_participant.deinit();
+            self.hover_provider.deinit();
+            self.hover = null;
+        }
+        if (self.suggest) |suggest| {
+            if (self.widgets_attached) {
+                const widget = suggest.widgetInterface();
+                self.view.removeContentWidget(widget.get_id(widget.context)) catch {};
+            }
+            suggest.unbindHost();
+            self.suggest = null;
+        }
+    }
+
     pub fn deinit(self: *Controllers) void {
+        self.detachCodeLensServices();
         if (self.diff_find_zone) self.editor.removeViewEventHandler(&self.diff_find_handler);
         if (self.widgets_attached) {
-            const sticky = self.sticky.widget.interface();
             const find = self.find.widget().interface();
-            const hover = self.hover.widget().contentWidget();
-            const suggest = self.suggest.widgetInterface();
-            self.view.removeOverlayWidget(sticky.get_id(sticky.context)) catch {};
             self.view.removeOverlayWidget(find.get_id(find.context)) catch {};
-            self.view.removeContentWidget(hover.get_id(hover.context)) catch {};
-            self.view.removeContentWidget(suggest.get_id(suggest.context)) catch {};
         }
         self.editor.setFindController(null, null);
         self.find.widget().layout_context = null;
         self.find.widget().on_layout = null;
-        self.sticky.unbindHost();
+        self.detachDeferredContributions();
         self.word_highlighter.unbindHost();
-        self.hover.unbindModel();
         // The sink context points at this controller; detach before it dies.
         self.editor.setSearchHighlightSink(null);
         self.view.removeConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
-        if (self.hover_registration) |registration| registration.dispose();
-        self.suggest.unbindHost();
-        self.marker_hover_participant.deinit();
-        self.hover_participant.deinit();
-        self.hover_provider.deinit();
         self.allocator.destroy(self);
     }
 };
@@ -1608,8 +1718,6 @@ pub const MultiDiffBindingServices = struct {
     widget: *DiffWidget,
     original: *Controllers,
     modified: *Controllers,
-    original_lens: ?*@import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution = null,
-    modified_lens: ?*@import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution = null,
 
     pub fn create(allocator: Allocator, widget: *DiffWidget, window: *@import("../../../../base/common/windowDispatch.zig").Queue) !DiffWidget.NativeInputServices {
         const self = try allocator.create(MultiDiffBindingServices);
@@ -1647,15 +1755,13 @@ pub const MultiDiffBindingServices = struct {
         const self: *MultiDiffBindingServices = @ptrCast(@alignCast(context));
         const controllers = if (side == .original) self.original else self.modified;
         const other = if (side == .original) self.modified else self.original;
-        if (event.kind == .move) other.hover.hideContentHover();
+        if (event.kind == .move) if (other.hover) |hover| hover.hideContentHover();
         return editor_input_dispatch.handleMouseEvent(view, controllers.hover, controllers.suggest, controllers.editor, event);
     }
     fn setTheme(context: *anyopaque, palette: ?*const theme_colors_mod.ThemeColors) void {
         const self: *MultiDiffBindingServices = @ptrCast(@alignCast(context));
         self.original.setThemeColors(palette);
         self.modified.setThemeColors(palette);
-        if (self.original_lens) |lens| lens.setColors(Tab.codeLensColors(palette));
-        if (self.modified_lens) |lens| lens.setColors(Tab.codeLensColors(palette));
     }
     fn attachLanguage(context: *anyopaque, host: DiffWidget.NativeInputServices.LanguageHost) void {
         const self: *MultiDiffBindingServices = @ptrCast(@alignCast(context));
@@ -1663,21 +1769,12 @@ pub const MultiDiffBindingServices = struct {
         self.modified.attachLanguageRegistry(host.features);
         const cache = host.cache orelse return;
         const commands = host.commands orelse return;
-        const Lens = @import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution;
-        if (self.original_lens == null) {
-            const view = self.widget.original_view;
-            self.original_lens = Lens.getOrCreate(self.widget.original_editor, view.terminal_view_host, view.viewZones(), host.features.interface(), cache, commands, host.window) catch null;
-        }
-        if (self.modified_lens == null) {
-            const view = self.widget.modified_view;
-            self.modified_lens = Lens.getOrCreate(self.widget.modified_editor, view.terminal_view_host, view.viewZones(), host.features.interface(), cache, commands, host.window) catch null;
-        }
-        setTheme(context, self.widget.modified_view.themeColors());
+        const services: CodeLensServices = .{ .features = host.features, .cache = cache, .commands = commands, .window = host.window };
+        self.original.attachCodeLensServices(services) catch {};
+        self.modified.attachCodeLensServices(services) catch {};
     }
     fn dispose(context: *anyopaque) void {
         const self: *MultiDiffBindingServices = @ptrCast(@alignCast(context));
-        if (self.original_lens) |lens| lens.unbindView();
-        if (self.modified_lens) |lens| lens.unbindView();
         self.original.deinit();
         self.modified.deinit();
         self.allocator.destroy(self);
@@ -1687,7 +1784,7 @@ pub const MultiDiffBindingServices = struct {
 fn onConfigurationChanged(context: *anyopaque, event: @import("../../../../editor/common/config/editorOptions.zig").ConfigurationChangedEvent) void {
     const self: *Controllers = @ptrCast(@alignCast(context));
     if (event.hasChanged(.find)) self.find.applyConfiguration(self.view.terminal_view_host.options.get(.find));
-    self.sticky.onConfigurationChanged();
+    if (self.sticky) |sticky| sticky.onConfigurationChanged();
 }
 
 fn viewTextHeight(context: *anyopaque) usize {

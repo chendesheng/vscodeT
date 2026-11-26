@@ -2407,6 +2407,27 @@ pub const Editor = struct {
         return self.contributions.get(Contribution);
     }
 
+    pub fn getInstantiatedContribution(self: *const Editor, comptime Contribution: type) ?*Contribution {
+        return self.contributions.getInstantiated(Contribution);
+    }
+
+    pub fn registerContributionFactory(self: *Editor, description: @import("../../editorExtensions.zig").IEditorContributionDescription) !void {
+        try self.contributions.registerFactory(self.allocator, description);
+    }
+
+    pub fn unregisterContributionFactory(self: *Editor, comptime Contribution: type, context: *anyopaque) void {
+        self.contributions.unregisterFactory(Contribution.ID, context);
+    }
+
+    pub fn attachContributionWindow(self: *Editor, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+        self.contributions.attachWindow(window);
+        self.contributions.onAfterModelAttached();
+    }
+
+    pub fn onBeforeInteractionEvent(self: *Editor) void {
+        self.contributions.onBeforeInteractionEvent();
+    }
+
     pub fn unregisterContribution(self: *Editor, comptime Contribution: type, value: *Contribution) void {
         self.contributions.unregister(Contribution, value);
     }
