@@ -1451,11 +1451,14 @@ Library constraints:
   to cells. The actual extension-host API and execution command use this
   provider path; native model references stay alive until the request finishes.
 - The hover contribution is the second end-to-end widget consumer: the
-  controller schedules a delayed computation with two deadline timers (the TUI
-  event loop polls with the nearest deadline and calls `onTick`), the wrapper
-  picks range anchors, `contentHoverRendered.zig` builds participant rows and
-  the `hoverHighlight` decoration, and `contentHoverWidget.zig` renders the
-  bordered, scrollable box as a content widget. Markdown is parsed by the
+  controller schedules the upstream delayed computation and loading row on
+  the window deadline queue. Provider replies stream partial results and
+  cancellation detaches obsolete requests. The wrapper picks range anchors,
+  `contentHoverRendered.zig` builds participant rows and the `hoverHighlight`
+  decoration, and `contentHoverWidget.zig` mounts the shared base HoverWidget
+  as a content widget. Glyph/line-number hover uses the same clipped content,
+  scrollbar and themed stylesheet; its lane-aware target is a shared overlay
+  widget. The real original and modified editors own independent contributions. Markdown is parsed by the
   pinned `taggon/markdown-zig` CommonMark + GFM package (commit `85bcc67`,
   MIT) and rendered to styled cells by `hoverMarkdownRenderer.zig`; there is
   no HTML/CSS engine, so links show their URL in dim text, hover images show

@@ -2065,11 +2065,14 @@ Editor contributions:
   same `CompletionItemProvider` interface.
 - `src/vs/editor/contrib/hover` ports the content-hover contribution end to
   end: anchors and result filtering, the delayed hover operation
-  (`hoverOperation.zig`, with injected deadline timers), the widget wrapper and
+  (`hoverOperation.zig`, with dispatcher deadlines), the widget wrapper and
   controller (sticky grace period, hide on scroll/mouse leave/edit, modifier
   modes), the terminal content widget (bordered, sized and clamped to the text
   area, line scrolling with wheel/arrows/PageUp/PageDown/Home/End, click to
-  focus, Escape to close), and the markdown participant. Hover contents are
+  focus, Escape to close), and the markdown participant. Asynchronous providers
+  stream partial results and a delayed loading row; superseded requests detach.
+  Glyph/line-number hovers use the same base hover widget, lane-aware model
+  decorations and timing. Both diff panes have independent hover controllers. Hover contents are
   parsed by the pinned `taggon/markdown-zig` CommonMark + GFM parser (commit
   `85bcc67`, MIT) and rendered to styled cells by
   `markdownTerminalRenderer.zig`; tables, nested/task lists, setext and indented code, autolinks and reference
@@ -2080,15 +2083,12 @@ Editor contributions:
   the same `LineDecoration.filter`/`extractWrapped` path as find and bracket
   highlights (`hoverHighlight`). The app registers a TUI-local provider
   (`src/vs/editor/contrib/hover/browser/terminalHoverProvider.zig`) that reports the word, language and token type,
-  because VS Code gets hover contents from language extensions. Not ported,
-  each because the corresponding infrastructure has no terminal counterpart:
-  glyph/color-picker/inlay-hint hover participants (no glyph margin, color
-  picker or inlay hints), marker related-information links and quick-fix /
-  "View Problem" status-bar actions (no code-action controller), hover
-  verbosity actions (no command/keybinding service), the copy button (no
-  clipboard plumbing), accessible hover views (no screen-reader/accessible-view
-  service), horizontal scrolling, and participant-supplied status-bar actions
-  (the bar renders labels but no participant adds one). Keyboard `gh` opens the
+  alongside JSON-language and contributed extension-host providers. The public
+  hover execution commands run against either real resource. Remaining portable
+  gaps include color-picker/inlay-hint participants, diagnostic related-information
+  and quick-fix/View Problem actions, hover verbosity controls, clipboard copy,
+  accessible hover view integration and participant-supplied status-bar actions.
+  Horizontal scrolling is replaced by terminal line wrapping. Keyboard `gh` opens the
   hover through `editor.action.showHover`. Hover over the empty area *after* a
   line needs sub-cell horizontal distances, so only a zero-cell distance (the
   first cell past the text) anchors a hover. Mouse leave is inferred from
@@ -2116,9 +2116,10 @@ Editor contributions:
   `wordHighlightStrong` ranges follow the model-decoration renderer and
   overview ruler. The public `vscode.executeDocumentHighlights` command and
   extension-host provider bridge use the same request path. Terminal navigation
-  additionally uses `Alt-N`/`Alt-Shift-N` (F7 is used for diff navigation).
-  Notebook-cell UI, native accessible announcements, the action context key,
-  and minimap decorations remain unported. Colors are composited from the
+  additionally uses `Alt-N`/`Alt-Shift-N`. F7/Shift-F7 use the upstream
+  `hasWordHighlights` and editor-text-focus context; otherwise diff navigation
+  follows the accessible diff viewer binding. Notebook-cell UI, browser-style
+  screen-reader announcements, and minimap decorations remain unported. Colors are composited from the
   `editor.wordHighlightBackground`/`wordHighlightStrongBackground` theme IDs
   because cells have no alpha.
 - `src/vs/editor/contrib/bracketMatching` ports the controller logic: jump to

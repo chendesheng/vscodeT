@@ -304,9 +304,31 @@ passed 499/499 after the Find zone work.
 The full suite through the provider actors and registry cleanup passed
 3,673/3,697 (24 skipped; 48/48 build steps). The subsequent actual Node suite
 passed 21/21, including semantic read/write highlights on both distinct diff
-models and the public command. The action context key, accessible navigation
-announcement, and separate glyph/line-number hover contribution remain to be
-completed; notebook UI and the minimap are separate unported surfaces.
+models and the public command. The `hasWordHighlights` context and upstream
+F7/Shift-F7 text-focus navigation are now wired; terminal-native screen-reader
+announcements, notebook UI and the minimap remain separate native surface gaps.
+
+### Hover lifecycle and provider checkpoint (2026-11-27)
+
+* Both real editors own independent content and glyph/line-number hover
+  contributions. The shared hover operation starts asynchronous requests at
+  half the configured delay, emits partial results at the full delay, shows
+  the loading participant after three delays and cancels obsolete work.
+  Glyph hover uses model/lane targets, the glyph-margin decoration messages,
+  the shared base HoverWidget and overlay geometry. Native motion and pointer
+  leave on pane boundaries cancel before another render. The two editor
+  widgets use the same base scrolling container and themed CSS classes.
+* Actual Node and JSON-language providers use detached cancellation callbacks.
+  Public `vscode.executeHoverProvider` and the recursive variant resolve the
+  target model and collect valid results in resolution order, including UTF-16
+  DTO ranges. The same command path works for either real diff resource.
+
+The full suite through the asynchronous provider implementation passed
+3,682/3,707 (25 skipped; 48/48 build steps). The subsequent focused view suite
+passed 500/500, including themed glyph hover painting, and the actual Node
+suite passed 22/22, including partial/loading results, pane-crossing
+cancellation and public hover execution. Hover verbosity actions and the
+remaining context/action and accessible-view integration are still in progress.
 
 ### Native performance measurements (2026-11-27)
 
