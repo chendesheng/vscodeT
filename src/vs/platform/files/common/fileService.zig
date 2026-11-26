@@ -587,7 +587,14 @@ pub const ProviderFileService = struct {
         if (found.provider.capture_read_uri != null) {
             const request = (try self.captureRead(try std.Uri.parse(resource))) orelse return error.ProviderUnavailable;
             defer request.destroy(request.context);
-            const bytes = try request.read(request.context, allocator);
+            const result = request.read(request.context, allocator);
+            if (request.complete) |publish| publish(request.context) catch |err| {
+                if (result) |bytes| {
+                    allocator.free(bytes);
+                    return err;
+                } else |_| {}
+            };
+            const bytes = try result;
             if (position == 0) return .{ .bytes = bytes };
             defer allocator.free(bytes);
             return .{ .bytes = try allocator.dupe(u8, bytes[@min(position, bytes.len)..]) };

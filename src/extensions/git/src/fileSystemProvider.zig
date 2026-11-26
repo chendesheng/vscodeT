@@ -7,6 +7,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Model = @import("model.zig").Model;
 const GitResourceRead = @import("model.zig").GitResourceRead;
+const RepositoryOpenRequest = @import("model.zig").RepositoryOpenRequest;
 const files = @import("../../../vs/platform/files/common/files.zig");
 const IDisposable = @import("../../../vs/base/common/lifecycle.zig").IDisposable;
 const Repository = @import("repository.zig").Repository;
@@ -25,6 +26,7 @@ pub const GitFileSystemProvider = struct {
     cache: std.StringHashMapUnmanaged(CacheRow) = .empty,
     open_documents: ?OpenDocuments = null,
     repository_discovery: ?RepositoryDiscovery = null,
+    pending_discoveries: std.ArrayList(*DiscoveringRead) = .empty,
     mtime: i64,
     repository_bindings: std.ArrayList(*RepositoryBinding) = .empty,
     changed_roots: std.AutoHashMapUnmanaged(*Repository, void) = .empty,
@@ -60,6 +62,8 @@ pub const GitFileSystemProvider = struct {
     pub const RepositoryDiscovery = struct {
         context: *anyopaque,
         open: *const fn (*anyopaque, []const u8) anyerror!void,
+        capture: *const fn (*anyopaque, []const u8) anyerror!?*RepositoryOpenRequest,
+        publish: *const fn (*anyopaque, *RepositoryOpenRequest) anyerror!void,
     };
 
     /// Empty windows (and upstream agent sessions) may open a Git repository
@@ -123,6 +127,8 @@ pub const GitFileSystemProvider = struct {
     }
 
     pub fn detachRepository(self: *GitFileSystemProvider) void {
+        for (self.pending_discoveries.items) |request| request.owner = null;
+        self.pending_discoveries.clearRetainingCapacity();
         for (self.repository_bindings.items) |binding| binding.dispose();
         self.repository_bindings.clearRetainingCapacity();
         self.changed_roots.clearRetainingCapacity();
@@ -142,6 +148,7 @@ pub const GitFileSystemProvider = struct {
         self.cache.deinit(self.allocator);
         self.repository_bindings.deinit(self.allocator);
         self.changed_roots.deinit(self.allocator);
+        self.pending_discoveries.deinit(self.allocator);
     }
 
     fn clearCache(self: *GitFileSystemProvider) void {
@@ -282,12 +289,73 @@ pub const GitFileSystemProvider = struct {
 
     fn capture(context: *anyopaque, resource: std.Uri) !files.FileReadRequest {
         const self: *GitFileSystemProvider = @ptrCast(@alignCast(context));
-        try self.getOrOpenRepository(resource);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const params = try @import("uri.zig").fromGitUri(arena.allocator(), resource);
+        const repository = if (params.submoduleOf) |parent| self.model.repositoryForRoot(parent) else self.model.getRepository(params.path);
+        if (repository == null) if (self.repository_discovery) |discovery| {
+            if (try discovery.capture(discovery.context, params.submoduleOf orelse params.path)) |request| {
+                return DiscoveringRead.create(self, request, resource, params.path);
+            }
+        };
         const request = try self.model.captureGitResource(self.io, resource);
         errdefer request.destroy();
         try self.remember(resource, request.path);
         return .{ .context = request, .read = read, .destroy = destroy, .display_path = request.path };
     }
+
+    /// Before Git status exists, discovery and the actual read share one
+    /// immutable worker request. Only the completion attaches SCM services.
+    const DiscoveringRead = struct {
+        owner: ?*GitFileSystemProvider,
+        arena: std.heap.ArenaAllocator,
+        request: *RepositoryOpenRequest,
+        uri: []const u8,
+        path: []const u8,
+
+        fn create(owner: *GitFileSystemProvider, request: *RepositoryOpenRequest, resource: std.Uri, path: []const u8) !files.FileReadRequest {
+            errdefer request.destroy();
+            const self = try std.heap.page_allocator.create(DiscoveringRead);
+            errdefer std.heap.page_allocator.destroy(self);
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            errdefer arena.deinit();
+            const a = arena.allocator();
+            self.* = .{ .owner = owner, .arena = undefined, .request = request, .uri = try uri_util.encodedResource(a, resource), .path = try a.dupe(u8, path) };
+            self.arena = arena;
+            try owner.pending_discoveries.append(owner.allocator, self);
+            return .{ .context = self, .read = DiscoveringRead.read, .complete = DiscoveringRead.complete, .destroy = DiscoveringRead.destroy, .display_path = self.path };
+        }
+
+        fn read(context: *anyopaque, allocator: Allocator) ![]u8 {
+            const self: *DiscoveringRead = @ptrCast(@alignCast(context));
+            try self.request.discover();
+            const captured = try self.request.captureResource(try std.Uri.parse(self.uri));
+            defer captured.destroy();
+            return captured.read(allocator);
+        }
+
+        fn complete(context: *anyopaque) !void {
+            const self: *DiscoveringRead = @ptrCast(@alignCast(context));
+            const owner = self.owner orelse return;
+            const discovery = owner.repository_discovery orelse return;
+            try discovery.publish(discovery.context, self.request);
+            if (self.request.result != null) try owner.remember(try std.Uri.parse(self.uri), self.path);
+        }
+
+        fn destroy(context: *anyopaque) void {
+            const self: *DiscoveringRead = @ptrCast(@alignCast(context));
+            if (self.owner) |owner| {
+                for (owner.pending_discoveries.items, 0..) |pending, index| {
+                    if (pending != self) continue;
+                    _ = owner.pending_discoveries.swapRemove(index);
+                    break;
+                }
+            }
+            self.request.destroy();
+            self.arena.deinit();
+            std.heap.page_allocator.destroy(self);
+        }
+    };
 
     fn read(context: *anyopaque, allocator: Allocator) ![]u8 {
         const request: *GitResourceRead = @ptrCast(@alignCast(context));
@@ -321,7 +389,14 @@ pub const GitFileSystemProvider = struct {
         defer self.allocator.free(encoded);
         const request = capture(context, std.Uri.parse(encoded) catch return error.FileNotFound) catch |err| return mapError(err);
         defer request.destroy(request.context);
-        return request.read(request.context, self.allocator) catch |err| return mapError(err);
+        const result = request.read(request.context, self.allocator);
+        if (request.complete) |publish| publish(request.context) catch |err| {
+            if (result) |bytes| {
+                self.allocator.free(bytes);
+                return mapError(err);
+            } else |_| {}
+        };
+        return result catch |err| return mapError(err);
     }
 
     fn mapError(err: anyerror) files.FileSystemProviderError {

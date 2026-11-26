@@ -47,6 +47,7 @@ pub const TextContentRequest = struct {
     context: *anyopaque,
     read: *const fn (*anyopaque, std.mem.Allocator) anyerror!Result,
     destroy: *const fn (*anyopaque) void,
+    complete: ?*const fn (*anyopaque) anyerror!void = null,
 
     pub const Result = struct {
         uri: std.Uri,

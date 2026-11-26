@@ -12045,11 +12045,43 @@ test "Workbench: git scm integration discovers Git URI repositories in empty win
         if (!empty_window) {
             try wb.setWorkspaceFolders(&roots);
             try wb.initGit();
-        } else try std.testing.expectEqual(@as(usize, 0), wb.git_model.repositories().len);
+        } else {
+            try std.testing.expectEqual(@as(usize, 0), wb.git_model.repositories().len);
+            const Probe = struct {
+                calls: usize = 0,
+                fn complete(context: *anyopaque, result: @import("../vs/editor/common/services/resolverService.zig").ModelReferenceResult) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    self.calls += 1;
+                    if (result == .resolved) {
+                        var reference = result.resolved;
+                        reference.dispose();
+                    }
+                }
+            };
+            var probe: Probe = .{};
+            const canceled = try wb.text_model_api.createModelReference(uris[0], .{ .context = &probe, .complete = Probe.complete });
+            try std.testing.expectEqual(@as(usize, 0), wb.git_model.repositories().len);
+            try std.testing.expectEqual(@as(usize, 1), wb.git_file_provider.pending_discoveries.items.len);
+            canceled.cancel();
+            for (0..5000) |_| {
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                if (wb.git_file_provider.pending_discoveries.items.len == 0) break;
+                std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+            }
+            try std.testing.expectEqual(@as(usize, 0), probe.calls);
+            try std.testing.expectEqual(@as(usize, 0), wb.git_file_provider.pending_discoveries.items.len);
+            try std.testing.expectEqual(@as(usize, 0), wb.git_model.repositories().len);
+        }
         // Both the stat and read paths use the model's get-or-open lifecycle.
         const first_stat = try wb.file_service_api.stat(uris[0]);
         try std.testing.expectEqual(@as(u64, "first base\n".len), first_stat.size);
         try wb.editor_api.requestOpenResourceUri(uris[1], "Second revision");
+        if (empty_window) {
+            // Capture does not discover or publish a repository on the UI
+            // thread. The worker completion registers the SCM sources.
+            try std.testing.expectEqual(@as(usize, 1), wb.git_model.repositories().len);
+            try std.testing.expectEqual(@as(usize, 1), wb.git_file_provider.pending_discoveries.items.len);
+        }
         for (0..5000) |_| {
             _ = wb.window_events.dispatch(time_compat.milliTimestamp());
             if (wb.editor_opening.pending_resource_open == null) break;

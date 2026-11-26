@@ -147,6 +147,55 @@ const SnapshotRead = struct {
     }
 };
 
+/// A Git repository open is two phases: discover and read the initial
+/// status on a worker, then publish the concrete repository and services
+/// on the window. All process arguments are immutable captured values.
+pub const RepositoryOpenRequest = struct {
+    arena: std.heap.ArenaAllocator,
+    io: std.Io,
+    exe: []const u8,
+    timeout: std.Io.Timeout,
+    max_file_size: usize,
+    path: []const u8,
+    result: ?struct { root: []const u8, state: git.GitRepositoryState } = null,
+    disabled_reason: ?[]const u8 = null,
+
+    fn create(cli: *const Git, path: []const u8) !*RepositoryOpenRequest {
+        const self = try std.heap.page_allocator.create(RepositoryOpenRequest);
+        errdefer std.heap.page_allocator.destroy(self);
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        self.* = .{ .arena = undefined, .io = cli.io, .exe = try a.dupe(u8, cli.exe), .timeout = cli.timeout, .max_file_size = cli.max_file_size, .path = try a.dupe(u8, path) };
+        self.arena = arena;
+        return self;
+    }
+
+    pub fn discover(self: *RepositoryOpenRequest) !void {
+        const a = self.arena.allocator();
+        const reader = try Git.init(a, .{ .git_path = self.exe, .io = self.io });
+        defer reader.deinit();
+        defer if (reader.isDisabled()) {
+            self.disabled_reason = a.dupe(u8, reader.disabledReason() orelse "git unavailable") catch null;
+        };
+        reader.timeout = self.timeout;
+        reader.max_file_size = self.max_file_size;
+        const root = try reader.discover(self.path) orelse return error.NoRepository;
+        const state = try reader.status(root);
+        self.result = .{ .root = root, .state = state };
+    }
+
+    pub fn captureResource(self: *RepositoryOpenRequest, uri: std.Uri) !*GitResourceRead {
+        const result = self.result orelse return error.NoRepository;
+        return GitResourceRead.create(self.io, self.exe, self.timeout, self.max_file_size, result.root, &result.state, uri);
+    }
+
+    pub fn destroy(self: *RepositoryOpenRequest) void {
+        self.arena.deinit();
+        std.heap.page_allocator.destroy(self);
+    }
+};
+
 /// Immutable read/stat request for a registered Git filesystem resource.
 pub const GitResourceRead = struct {
     arena: std.heap.ArenaAllocator,
@@ -159,6 +208,31 @@ pub const GitResourceRead = struct {
     relative: []const u8,
     ref: []const u8,
     submodule: bool,
+
+    fn create(io: std.Io, exe: []const u8, timeout: std.Io.Timeout, max_file_size: usize, root: []const u8, state: *const git.GitRepositoryState, uri: std.Uri) !*GitResourceRead {
+        const request = try std.heap.page_allocator.create(GitResourceRead);
+        errdefer std.heap.page_allocator.destroy(request);
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        const git_uri = @import("uri.zig");
+        const params = try git_uri.fromGitUri(a, uri);
+        const relative = extpath.relativeToRoot(params.path, root) orelse return error.OutsideRepository;
+        var ref: []const u8 = params.ref;
+        if (git_uri.normalizeIndexStage(ref)) |stage| ref = try a.dupe(u8, &stage);
+        if (std.mem.eql(u8, ref, "~")) {
+            ref = "HEAD";
+            for (state.index_changes) |change| {
+                if (std.mem.eql(u8, change.path, relative)) {
+                    ref = "";
+                    break;
+                }
+            }
+        }
+        request.* = .{ .arena = undefined, .io = io, .exe = try a.dupe(u8, exe), .timeout = timeout, .max_file_size = max_file_size, .root = try a.dupe(u8, root), .path = params.path, .relative = relative, .ref = ref, .submodule = params.submoduleOf != null };
+        request.arena = arena;
+        return request;
+    }
 
     pub fn read(self: *const GitResourceRead, allocator: Allocator) ![]u8 {
         const reader = try Git.init(allocator, .{ .git_path = self.exe, .io = self.io });
@@ -278,8 +352,7 @@ pub const Model = struct {
         notifications: ?INotificationService = null,
     };
 
-    pub fn openRepository(self: *Model, repo_path: []const u8, open_options: OpenOptions) !?*Repository {
-        if (self.repositoryForRoot(repo_path)) |provider| return provider;
+    fn ensureGit(self: *Model, open_options: OpenOptions) !?*Git {
         if (open_options.context_keys) |keys| {
             if (self.repository_count_key == null) self.repository_count_key = try keys.createKey("gitOpenRepositoryCount", .{ .string = "0" });
             if (self.git_missing_key == null) self.git_missing_key = try keys.createKey("git.missing", .{ .boolean = false });
@@ -320,12 +393,40 @@ pub const Model = struct {
             if (self.git_missing_key) |key| key.set(.{ .boolean = true });
             return null;
         }
+        return cli;
+    }
+
+    pub fn openRepository(self: *Model, repo_path: []const u8, open_options: OpenOptions) !?*Repository {
+        if (self.repositoryForRoot(repo_path)) |provider| return provider;
+        const cli = (try self.ensureGit(open_options)) orelse return null;
         const opened = (cli.openRepository(repo_path) catch null) orelse {
             if (cli.isDisabled()) if (self.git_missing_key) |key| key.set(.{ .boolean = true });
             return null;
         };
-        if (self.repositoryForRoot(opened.root_path)) |provider| return provider;
-        const concrete = cli.repositoryForRoot(opened.root_path) orelse return null;
+        return self.publishOpenedRepository(cli, opened.root_path, open_options);
+    }
+
+    pub fn captureRepositoryOpen(self: *Model, path: []const u8, open_options: OpenOptions) !?*RepositoryOpenRequest {
+        const cli = (try self.ensureGit(open_options)) orelse return null;
+        return try RepositoryOpenRequest.create(cli, path);
+    }
+
+    pub fn publishRepositoryOpen(self: *Model, request: *RepositoryOpenRequest, options: OpenOptions) !?*Repository {
+        const cli = self.git orelse return null;
+        if (request.disabled_reason) |reason| {
+            cli.markUnavailable(reason);
+            if (self.git_missing_key) |key| key.set(.{ .boolean = true });
+            return null;
+        }
+        const result = request.result orelse return null;
+        if (self.repositoryForRoot(result.root)) |provider| return provider;
+        _ = try cli.adoptRepository(result.root, result.state);
+        return self.publishOpenedRepository(cli, result.root, options);
+    }
+
+    fn publishOpenedRepository(self: *Model, cli: *Git, root: []const u8, open_options: OpenOptions) !?*Repository {
+        if (self.repositoryForRoot(root)) |provider| return provider;
+        const concrete = cli.repositoryForRoot(root) orelse return null;
         if (self.git_service == null) {
             const service = try self.allocator.create(GitService);
             errdefer self.allocator.destroy(service);
@@ -339,7 +440,7 @@ pub const Model = struct {
             self.git_delegate = delegate;
         }
 
-        const provider = try Repository.create(self.allocator, cli, concrete, opened.root_path, open_options.host);
+        const provider = try Repository.create(self.allocator, cli, concrete, root, open_options.host);
         errdefer provider.destroy();
         provider.attachWindow(open_options.window);
         if (open_options.host_service) |host| try provider.attachHostService(host);
@@ -513,41 +614,11 @@ pub const Model = struct {
     pub fn captureGitResource(self: *Model, io: std.Io, uri: std.Uri) !*GitResourceRead {
         if (!std.mem.eql(u8, uri.scheme, "git")) return error.UnsupportedDiffResourceScheme;
         const cli = self.git orelse return error.NoGit;
-        const request = try std.heap.page_allocator.create(GitResourceRead);
-        errdefer std.heap.page_allocator.destroy(request);
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        errdefer arena.deinit();
-        const a = arena.allocator();
-        const git_uri = @import("uri.zig");
-        const params = try git_uri.fromGitUri(a, uri);
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const params = try @import("uri.zig").fromGitUri(scratch.allocator(), uri);
         const repository = (if (params.submoduleOf) |parent| self.repositoryForRoot(parent) else self.getRepository(params.path)) orelse return error.NoRepository;
-        const root = repository.root;
-        const relative = extpath.relativeToRoot(params.path, root) orelse return error.OutsideRepository;
-        var ref: []const u8 = params.ref;
-        if (git_uri.normalizeIndexStage(ref)) |stage| ref = try a.dupe(u8, &stage);
-        if (std.mem.eql(u8, ref, "~")) {
-            ref = "HEAD";
-            for (repository.repository.stateRef().index_changes) |change| {
-                if (std.mem.eql(u8, change.path, relative)) {
-                    ref = "";
-                    break;
-                }
-            }
-        }
-        request.* = .{
-            .arena = undefined,
-            .io = io,
-            .exe = try a.dupe(u8, cli.exe),
-            .timeout = cli.timeout,
-            .max_file_size = cli.max_file_size,
-            .root = try a.dupe(u8, root),
-            .path = params.path,
-            .relative = relative,
-            .ref = ref,
-            .submodule = params.submoduleOf != null,
-        };
-        request.arena = arena;
-        return request;
+        return GitResourceRead.create(io, cli.exe, cli.timeout, cli.max_file_size, repository.root, repository.repository.stateRef(), uri);
     }
 
     pub fn resolveDiffTexts(self: *Model, path: []const u8, working: ?[]const u8, left: git.DiffRef, right: git.DiffRef) !git.ResolvedDiffTexts {

@@ -324,6 +324,14 @@ pub const Git = struct {
         if (self.on_disabled) |callback| callback(self.on_disabled_context, reason);
     }
 
+    /// Worker discovery cannot call the live disabled notification. Apply
+    /// its result using stable reason strings on the owning window instead.
+    pub fn markUnavailable(self: *Git, reason: []const u8) void {
+        if (std.mem.eql(u8, reason, "git executable not found")) return self.disable("git executable not found");
+        if (std.mem.eql(u8, reason, "git executable is not accessible")) return self.disable("git executable is not accessible");
+        self.disable("git unavailable");
+    }
+
     fn reportNoRepository(self: *Git) void {
         if (self.no_repo_reported) return;
         self.no_repo_reported = true;
@@ -800,12 +808,18 @@ pub const Git = struct {
         };
         defer state.deinit(self.allocator);
 
+        return try self.adoptRepository(root, state);
+    }
+
+    /// Publish a repository whose root and initial status were already
+    /// resolved on a worker. The delegate and repository interfaces belong
+    /// to this live Git instance; no second process runs on the window.
+    pub fn adoptRepository(self: *Git, root: []const u8, state: GitRepositoryState) !IGitRepository {
+        if (self.findRepository(root)) |existing| return existing.interface();
         const repository = try git_browser.GitRepository.create(self.allocator, root, state, &self.delegate_interface);
         errdefer repository.destroy();
-
         try self.repo_list.append(repository);
         errdefer _ = self.repo_list.pop();
-
         try self.repository_interfaces.append(repository.interface());
         return repository.interface();
     }

@@ -543,7 +543,7 @@ pub const TerminalWorkbench = struct {
         self.model_service_api = self.text_model_resolver.modelService();
         self.git_file_provider = .init(allocator, &self.git_model, self.async_io);
         errdefer self.git_file_provider.deinit();
-        self.git_file_provider.setRepositoryDiscovery(.{ .context = self, .open = discoverGitResourceRepository });
+        self.git_file_provider.setRepositoryDiscovery(.{ .context = self, .open = discoverGitResourceRepository, .capture = captureGitResourceRepository, .publish = publishGitResourceRepository });
         try self.git_file_provider.register(self.file_service_api, .{
             .context = &self.text_model_resolver,
             .is_open = struct {
@@ -2958,13 +2958,24 @@ pub const TerminalWorkbench = struct {
         try self.openGitRepository(path);
     }
 
+    fn captureGitResourceRepository(context: *anyopaque, path: []const u8) !?*@import("../extensions/git/src/model.zig").RepositoryOpenRequest {
+        const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
+        if (self.workspaceFolderPath() != null) return null;
+        return self.git_model.captureRepositoryOpen(path, self.gitOpenOptions());
+    }
+
+    fn publishGitResourceRepository(context: *anyopaque, request: *@import("../extensions/git/src/model.zig").RepositoryOpenRequest) !void {
+        const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
+        if (try self.git_model.publishRepositoryOpen(request, self.gitOpenOptions())) |provider| try self.registerOpenedGitRepository(provider);
+    }
+
     fn scanGitRepository(context: *anyopaque, root: []const u8) !void {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
         try self.openGitRepository(root);
     }
 
-    fn openGitRepository(self: *TerminalWorkbench, root: []const u8) !void {
-        const provider = (try self.git_model.openRepository(root, .{
+    fn gitOpenOptions(self: *TerminalWorkbench) @import("../extensions/git/src/model.zig").Model.OpenOptions {
+        return .{
             .io = self.io,
             .configuration = self.configuration,
             .context_keys = if (self.context_keys) |keys| keys.interface() else null,
@@ -2975,7 +2986,15 @@ pub const TerminalWorkbench = struct {
             .on_disabled_context = self,
             .scan_repository = scanGitRepository,
             .notifications = self.notification_api,
-        })) orelse return;
+        };
+    }
+
+    fn openGitRepository(self: *TerminalWorkbench, root: []const u8) !void {
+        const provider = (try self.git_model.openRepository(root, self.gitOpenOptions())) orelse return;
+        try self.registerOpenedGitRepository(provider);
+    }
+
+    fn registerOpenedGitRepository(self: *TerminalWorkbench, provider: *@import("../extensions/git/src/repository.zig").Repository) !void {
         const scm_api = try self.scm.ensureService();
         if (scm_api.getRepository(provider.id) != null) return;
         const first = self.scm.repository == null;

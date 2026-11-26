@@ -588,6 +588,14 @@ pub const TextModelResolverService = struct {
             defer if (self.service) |current| {
                 current.delivering = self.previous_delivery;
             };
+            // A provider may have discovered native state during its read.
+            // Publish on this dispatcher, never on its worker or for a
+            // canceled acquisition. The model creation below observes it.
+            if (self.source) |source| if (source.complete) |publish| {
+                publish(source.context) catch |err| {
+                    if (self.failure == null) self.failure = err;
+                };
+            };
             // Keep the creator's reference during all deliveries; reentrant
             // acquisitions cannot observe an orphaned model.
             var owner = self.existing;
@@ -1004,7 +1012,7 @@ const ProviderContentRequest = struct {
             .path = try a.dupe(u8, source.display_path orelse try uri_util.fsPath(uri, a)),
         };
         self.arena = arena;
-        return .{ .context = self, .read = read, .destroy = destroy };
+        return .{ .context = self, .read = read, .destroy = destroy, .complete = complete };
     }
 
     fn read(context: *anyopaque, a: Allocator) !resolver.TextContentRequest.Result {
@@ -1021,6 +1029,11 @@ const ProviderContentRequest = struct {
         defer a.free(bytes);
         try decodeFileContents(a, &result, bytes, false);
         return result;
+    }
+
+    fn complete(context: *anyopaque) !void {
+        const self: *ProviderContentRequest = @ptrCast(@alignCast(context));
+        if (self.source.complete) |publish| try publish(self.source.context);
     }
 
     fn destroy(context: *anyopaque) void {

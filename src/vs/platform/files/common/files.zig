@@ -467,6 +467,9 @@ pub const FileReadRequest = struct {
     context: *anyopaque,
     read: *const fn (*anyopaque, Allocator) anyerror![]u8,
     destroy: *const fn (*anyopaque) void,
+    /// Optional window-thread publication of worker-discovered provider
+    /// state. A canceled request is destroyed without publishing it.
+    complete: ?*const fn (*anyopaque) anyerror!void = null,
     /// Native document display path, when distinct from the resource URI.
     display_path: ?[]const u8 = null,
 };
