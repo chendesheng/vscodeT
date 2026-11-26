@@ -22,6 +22,7 @@ pub const LanguageFeaturesService = struct {
     type_definition_provider: registry.LanguageFeatureRegistry(languages.TypeDefinitionProvider),
     reference_provider: registry.LanguageFeatureRegistry(languages.ReferenceProvider),
     document_symbol_provider: registry.LanguageFeatureRegistry(languages.DocumentSymbolProvider),
+    code_lens_provider: registry.LanguageFeatureRegistry(languages.CodeLensProvider),
     code_action_provider: registry.LanguageFeatureRegistry(languages.CodeActionProvider),
     document_formatting_edit_provider: registry.LanguageFeatureRegistry(languages.DocumentFormattingEditProvider),
     document_range_formatting_edit_provider: registry.LanguageFeatureRegistry(languages.DocumentRangeFormattingEditProvider),
@@ -38,6 +39,7 @@ pub const LanguageFeaturesService = struct {
             .type_definition_provider = registry.LanguageFeatureRegistry(languages.TypeDefinitionProvider).init(allocator),
             .reference_provider = registry.LanguageFeatureRegistry(languages.ReferenceProvider).init(allocator),
             .document_symbol_provider = registry.LanguageFeatureRegistry(languages.DocumentSymbolProvider).init(allocator),
+            .code_lens_provider = registry.LanguageFeatureRegistry(languages.CodeLensProvider).init(allocator),
             .code_action_provider = registry.LanguageFeatureRegistry(languages.CodeActionProvider).init(allocator),
             .document_formatting_edit_provider = registry.LanguageFeatureRegistry(languages.DocumentFormattingEditProvider).init(allocator),
             .document_range_formatting_edit_provider = registry.LanguageFeatureRegistry(languages.DocumentRangeFormattingEditProvider).init(allocator),
@@ -54,6 +56,7 @@ pub const LanguageFeaturesService = struct {
         self.type_definition_provider.deinit();
         self.reference_provider.deinit();
         self.document_symbol_provider.deinit();
+        self.code_lens_provider.deinit();
         self.code_action_provider.deinit();
         self.document_formatting_edit_provider.deinit();
         self.document_range_formatting_edit_provider.deinit();
@@ -70,6 +73,7 @@ pub const LanguageFeaturesService = struct {
             .type_definition_provider = &self.type_definition_provider,
             .reference_provider = &self.reference_provider,
             .document_symbol_provider = &self.document_symbol_provider,
+            .code_lens_provider = &self.code_lens_provider,
             .code_action_provider = &self.code_action_provider,
             .document_formatting_edit_provider = &self.document_formatting_edit_provider,
             .document_range_formatting_edit_provider = &self.document_range_formatting_edit_provider,

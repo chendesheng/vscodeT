@@ -647,6 +647,38 @@ pub const Command = struct {
     arguments: ?std.json.Value = null,
 };
 
+/// CodeLens and CodeLensList from languages.ts. Provider data is opaque to
+/// the editor, allowing the extension-host adapter to retain its cache ID.
+pub const CodeLens = struct {
+    range: Range,
+    command: ?Command = null,
+    provider_data: ?std.json.Value = null,
+};
+
+pub const CodeLensList = struct {
+    lenses: []const CodeLens = &.{},
+    disposable: ?@import("../../base/common/lifecycle.zig").IDisposable = null,
+};
+
+pub const CodeLensCallback = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, ?CodeLensList) void,
+};
+
+pub const CodeLensResolveCallback = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, ?CodeLens) void,
+};
+
+pub const CodeLensProvider = struct {
+    context: *anyopaque,
+    on_did_change: ?*@import("../../base/common/event.zig").Emitter(void) = null,
+    provide_code_lenses: *const fn (*anyopaque, Allocator, *TextModel, CancellationToken) anyerror!?CodeLensList,
+    request_code_lenses: ?*const fn (*anyopaque, Allocator, *TextModel, CodeLensCallback) anyerror!?@import("../../base/common/lifecycle.zig").IDisposable = null,
+    resolve_code_lens: ?*const fn (*anyopaque, Allocator, *TextModel, CodeLens, CancellationToken) anyerror!?CodeLens = null,
+    request_resolve_code_lens: ?*const fn (*anyopaque, Allocator, *TextModel, CodeLens, CodeLensResolveCallback) anyerror!?@import("../../base/common/lifecycle.zig").IDisposable = null,
+};
+
 /// Port of the code-action subset. Workspace edits are kept as the raw
 /// `IWorkspaceEditDto` JSON until a bulk-edit service is ported; the TUI has no
 /// code-action surface yet.

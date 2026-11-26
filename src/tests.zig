@@ -769,6 +769,7 @@ comptime {
     _ = @import("./vs/editor/contrib/documentSymbols/browser/outlineModel.zig");
     _ = @import("./vs/editor/contrib/documentSymbols/test/browser/outlineModel.test.zig");
     _ = @import("./vs/editor/contrib/diffEditorBreadcrumbs/test/browser/contribution.test.zig");
+    _ = @import("./vs/editor/contrib/codelens/test/browser/codelens.test.zig");
     _ = @import("./vs/editor/contrib/gotoSymbol/browser/goToSymbol.zig");
     _ = @import("./vs/editor/contrib/gotoSymbol/browser/referencesModel.zig");
     _ = @import("./vs/editor/contrib/gotoSymbol/browser/goToCommands.zig");

@@ -94,6 +94,22 @@ pub const IStorageService = struct {
     context: *anyopaque,
     flush_fn: *const fn (*anyopaque, WillSaveStateReason) anyerror!void,
     on_will_save_state: *Emitter(IWillSaveStateEvent),
+    get_fn: ?*const fn (*anyopaque, []const u8, StorageScope, ?[]const u8) ?[]const u8 = null,
+    store_fn: ?*const fn (*anyopaque, []const u8, StorageValue, StorageScope, StorageTarget) anyerror!void = null,
+    remove_fn: ?*const fn (*anyopaque, []const u8, StorageScope) void = null,
+
+    pub fn get(self: IStorageService, key: []const u8, scope: StorageScope, fallback: ?[]const u8) ?[]const u8 {
+        if (self.get_fn) |read| return read(self.context, key, scope, fallback);
+        return fallback;
+    }
+
+    pub fn store(self: IStorageService, key: []const u8, value: StorageValue, scope: StorageScope, target: StorageTarget) !void {
+        if (self.store_fn) |write| try write(self.context, key, value, scope, target);
+    }
+
+    pub fn remove(self: IStorageService, key: []const u8, scope: StorageScope) void {
+        if (self.remove_fn) |erase| erase(self.context, key, scope);
+    }
 
     pub fn flush(self: IStorageService, reason: WillSaveStateReason) !void {
         try self.flush_fn(self.context, reason);
@@ -349,6 +365,24 @@ pub const InMemoryStorageService = struct {
                 }
             }.flush,
             .on_will_save_state = &self.onWillSaveState,
+            .get_fn = struct {
+                fn get(context: *anyopaque, key: []const u8, scope: StorageScope, fallback: ?[]const u8) ?[]const u8 {
+                    const service: *InMemoryStorageService = @ptrCast(@alignCast(context));
+                    return service.get(key, scope, fallback);
+                }
+            }.get,
+            .store_fn = struct {
+                fn store(context: *anyopaque, key: []const u8, value: StorageValue, scope: StorageScope, target: StorageTarget) !void {
+                    const service: *InMemoryStorageService = @ptrCast(@alignCast(context));
+                    try service.store(key, value, scope, target);
+                }
+            }.store,
+            .remove_fn = struct {
+                fn remove(context: *anyopaque, key: []const u8, scope: StorageScope) void {
+                    const service: *InMemoryStorageService = @ptrCast(@alignCast(context));
+                    service.remove(key, scope);
+                }
+            }.remove,
         };
     }
 

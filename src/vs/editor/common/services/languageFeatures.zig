@@ -5,7 +5,7 @@
 // the registries and returns this pointer bag through `interface()`.
 //
 // Deferred registries from upstream (rename, semantic tokens, inlay hints,
-// code lens, links, colors, folding, selection ranges, signature help,
+// links, colors, folding, selection ranges, signature help,
 // call/type hierarchy, inline completions, paste/drop edits and the remaining
 // language-feature registries) are not present.
 
@@ -22,6 +22,7 @@ pub const ILanguageFeaturesService = struct {
     type_definition_provider: *registry.LanguageFeatureRegistry(languages.TypeDefinitionProvider),
     reference_provider: *registry.LanguageFeatureRegistry(languages.ReferenceProvider),
     document_symbol_provider: *registry.LanguageFeatureRegistry(languages.DocumentSymbolProvider),
+    code_lens_provider: *registry.LanguageFeatureRegistry(languages.CodeLensProvider),
     code_action_provider: *registry.LanguageFeatureRegistry(languages.CodeActionProvider),
     document_formatting_edit_provider: *registry.LanguageFeatureRegistry(languages.DocumentFormattingEditProvider),
     document_range_formatting_edit_provider: *registry.LanguageFeatureRegistry(languages.DocumentRangeFormattingEditProvider),
