@@ -2104,18 +2104,23 @@ Editor contributions:
   are supported; quotes, comments, multi-character opening pairs, and the
   surrounding-selection path are not ported yet.
 - `src/vs/editor/contrib/wordHighlighter` ports the word-occurrence
-  contribution for the single-model TUI: cursor/selection tracking, the 50 ms
-  run delay and `occurrencesHighlightDelay`, the textual whole-word provider,
-  `wordHighlight`/`wordHighlightText`/`wordHighlightStrong` ranges painted
-  through the same line-decoration path as the other highlights, and the
-  next/previous navigation actions (bound to `Alt-N`/`Alt-Shift-N` because the
-  terminal decoder has no F7). The ranges also contribute markers to the
-  overview-ruler column. Language-feature providers, multi-file/notebook/diff
-  highlighting, the accessible announcement, context keys and minimap
-  decorations are not ported; the TUI always uses the textual provider. The
-  `wordHighlighter` colors are composited from
-  `editor.wordHighlightBackground`/`wordHighlightStrongBackground` because cells
-  have no alpha.
+  contribution, including registered single- and multi-document providers,
+  the 50 ms run delay and independent `occurrencesHighlightDelay` rendering
+  delay, and resource/language-scoped `occurrencesHighlight` and
+  `occurrencesHighlightFromAllProviders`. Ordered first-answer and merged
+  asynchronous requests preserve provider priority, cancellation and textual
+  fallback; the merge excludes the textual provider when semantic providers
+  match. Both real diff sides and other registered editors participate in
+  multi-file highlighting. Shared-model decorations remain until the last
+  highlighter detaches. The `wordHighlight`/`wordHighlightText`/
+  `wordHighlightStrong` ranges follow the model-decoration renderer and
+  overview ruler. The public `vscode.executeDocumentHighlights` command and
+  extension-host provider bridge use the same request path. Terminal navigation
+  additionally uses `Alt-N`/`Alt-Shift-N` (F7 is used for diff navigation).
+  Notebook-cell UI, native accessible announcements, the action context key,
+  and minimap decorations remain unported. Colors are composited from the
+  `editor.wordHighlightBackground`/`wordHighlightStrongBackground` theme IDs
+  because cells have no alpha.
 - `src/vs/editor/contrib/bracketMatching` ports the controller logic: jump to
   bracket, select to bracket, remove brackets, and the cached bracket-match
   data used for visual highlighting. The TUI turns that data into model

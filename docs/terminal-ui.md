@@ -1437,17 +1437,19 @@ Library constraints:
   decorations are not ported. The minimap metadata produced by the marker
   decorator is ignored.
 
-- Word-occurrence highlighting is the third decoration consumer:
-  `src/vs/editor/contrib/wordHighlighter` tracks the caret/selection, waits
-  `max(50 ms, editor.occurrencesHighlightDelay)`, asks the textual provider for
-  whole-word matches, and sends `wordHighlightText`/`wordHighlight`/
-  `wordHighlightStrong` ranges to `View.setWordHighlights`. The view stores
-  them as `TextModel` decorations with the corresponding class names and
-  paints them through the same `LineDecoration.filter`/`extractWrapped` path
-  as find, bracket and hover highlights, using the dark-theme colors
-  composited to cells. The controller replaces the upstream cursor/content/focus listeners
-  with `onEditorChanged`/`onTick`, which the app calls after each input batch
-  and from the nearest-deadline poll timeout.
+- Word-occurrence highlighting is a model-decoration consumer. The editor
+  contribution reacts to caret, content, configuration and focus events, runs
+  the provider query after the upstream 50 ms deadline, and independently
+  enforces the configured minimum render delay. The registered single- and
+  multi-document providers support ordered first-answer selection, concurrent
+  semantic merging and textual fallback; provider results and cancellation
+  travel through the window dispatcher. The window-scoped query uses the
+  code-editor registry, including both real diff sides. The contribution owns
+  the `TextModel` decorations and shared-model lifetime. `wordHighlightText`,
+  `wordHighlight` and `wordHighlightStrong` use the same line-decoration and
+  overview-ruler renderer as other highlights, with theme colors composited
+  to cells. The actual extension-host API and execution command use this
+  provider path; native model references stay alive until the request finishes.
 - The hover contribution is the second end-to-end widget consumer: the
   controller schedules a delayed computation with two deadline timers (the TUI
   event loop polls with the nearest deadline and calls `onTick`), the wrapper
@@ -2189,9 +2191,10 @@ screen reader detection and native ARIA traversal are not available.
   contribution tests cover the upstream `contentHover.test.ts` placement cases,
   markdown/decoration participants, rendering the box and highlight, focus with
   Escape, and wheel scrolling of long hover content without moving the
-  editor viewport. Word-highlighter tests cover the textual provider, the
-  delayed run, keeping/updating occurrences, stopping on edits, multi-line
-  selections and focus loss, and next/previous navigation. Scrollbar tests
+  editor viewport. Word-highlighter tests cover the textual provider, ordered
+  and merged semantic providers, cancellation, multiple models, shared-model
+  decoration lifetime, the delayed run, keeping/updating occurrences, stopping
+  on edits, multi-line selections and focus loss, and next/previous navigation. Scrollbar tests
   cover the reserved column, marker colors and rows, half-row marker edges and
   quadrant glyphs, single-line half-cell markers, the thumb covering a marker
   row, cursor markers, the no-thumb short-document case, half-cell thumb

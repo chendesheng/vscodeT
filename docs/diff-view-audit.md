@@ -280,9 +280,33 @@ Tab Focus in both directions without changing the model.
 The full suite through the shared scheduler passed 3,660 editor/workbench
 tests and 311 UI tests (24 skipped; 48/48 build steps). The actual Node suite
 passed 20/20 after native contribution scheduling, and the focused view suite
-passed 499/499 after the Find zone work. The continued parity work includes
-provider-backed and multi-model word highlighting and remaining integration
-verification.
+passed 499/499 after the Find zone work.
+
+### Provider-backed word highlighting checkpoint (2026-11-27)
+
+* The real code-editor service registry includes both single-diff sides and
+  pooled multi-diff editors. Fresh, refreshed and restored single-diff panes
+  share the same editor/language-service binding. The window-scoped query
+  coordinates registered editor contributions and retains model references
+  while asynchronous providers execute. Model-owned decorations persist until
+  the last highlighter of the resource detaches. The resource/language options
+  drive the independently timed query/render operations, including switching
+  between single- and multi-file modes and canceling in-flight merged results.
+* The provider contracts implement upstream ordered single-answer, concurrent
+  deduplicated semantic merge, textual fallback, and selector-filtered
+  multi-document results. The extension-host actors send real resource URIs
+  and UTF-16 positions, merge repeated multi-document DTO entries, and
+  detach canceled RPCs. The registered `_executeDocumentHighlights` command
+  resolves models by URI and reads the resource/language merge option; the
+  public `vscode.executeDocumentHighlights` call is exercised by the actual
+  Node extension host.
+
+The full suite through the provider actors and registry cleanup passed
+3,673/3,697 (24 skipped; 48/48 build steps). The subsequent actual Node suite
+passed 21/21, including semantic read/write highlights on both distinct diff
+models and the public command. The action context key, accessible navigation
+announcement, and separate glyph/line-number hover contribution remain to be
+completed; notebook UI and the minimap are separate unported surfaces.
 
 ### Native performance measurements (2026-11-27)
 
