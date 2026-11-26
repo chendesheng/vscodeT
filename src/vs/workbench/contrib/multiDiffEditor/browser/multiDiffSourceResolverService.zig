@@ -34,7 +34,23 @@ pub const IResolvedMultiDiffSource = struct {
     on_did_change_resources: *Emitter(void),
     label: ?*const fn (*anyopaque) []const u8 = null,
     on_did_change_label: ?*Emitter(void) = null,
+    /// A pending source is returned immediately; completion is delivered by
+    /// on_did_change_resources even for an empty initial resource set.
+    is_ready: ?*const fn (*anyopaque) bool = null,
+    get_failure: ?*const fn (*anyopaque) ?anyerror = null,
+    get_context_keys: ?*const fn (*anyopaque) ContextKeys = null,
     dispose: *const fn (*anyopaque) void,
+
+    pub const ContextKeys = struct {
+        scmResourceGroup: ?[]const u8 = null,
+        scmProvider: ?[]const u8 = null,
+    };
+    pub fn isReady(self: IResolvedMultiDiffSource) bool {
+        return if (self.is_ready) |ready| ready(self.context) else true;
+    }
+    pub fn failure(self: IResolvedMultiDiffSource) ?anyerror {
+        return if (self.get_failure) |get| get(self.context) else null;
+    }
 };
 
 pub const IMultiDiffSourceResolver = struct {

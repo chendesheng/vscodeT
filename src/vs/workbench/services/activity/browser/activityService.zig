@@ -13,6 +13,7 @@ const Emitter = @import("../../../../base/common/event.zig").Emitter;
 
 pub const Badge = struct {
     description: []const u8,
+    is_progress: bool = false,
 };
 
 pub const Activity = struct {
