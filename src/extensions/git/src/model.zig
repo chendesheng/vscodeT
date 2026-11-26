@@ -36,7 +36,16 @@ const SnapshotRead = struct {
     source: union(enum) {
         refs: struct { working: ?[]const u8, left: git.DiffRef, right: git.DiffRef, has_diff: bool },
         revisions: struct { left: ?[]const u8, right: []const u8 },
+        resources: struct { original: ?ResourceSpec, modified: ?ResourceSpec },
     },
+
+    const ResourceSpec = struct {
+        encoded_uri: []const u8,
+        path: []const u8,
+        relative: []const u8,
+        ref: ?[]const u8,
+        working: ?[]const u8,
+    };
 
     fn destroy(context: *anyopaque) void {
         const self: *SnapshotRead = @ptrCast(@alignCast(context));
@@ -62,6 +71,17 @@ const SnapshotRead = struct {
         };
     }
 
+    fn readResource(self: *SnapshotRead, reader: *Git, allocator: Allocator, spec: ?ResourceSpec) !struct { resource: ?SnapshotSource.Resource, text: ?[]const u8 } {
+        const entry = spec orelse return .{ .resource = null, .text = null };
+        const text = if (entry.ref) |ref|
+            if (ref.len == 0) try reader.readRef(self.root, entry.relative, .index) else try reader.readRefAt(allocator, self.root, entry.relative, ref)
+        else if (entry.working) |working| try allocator.dupe(u8, working) else try reader.readRef(self.root, entry.relative, .working);
+        return .{
+            .resource = .{ .path = try allocator.dupe(u8, entry.path), .uri = try std.Uri.parse(try allocator.dupe(u8, entry.encoded_uri)), .is_working_file = entry.ref == null and text != null },
+            .text = text,
+        };
+    }
+
     fn read(context: *anyopaque, allocator: Allocator) !SnapshotSource.Texts {
         const self: *SnapshotRead = @ptrCast(@alignCast(context));
         const reader = try Git.init(allocator, .{ .git_path = self.exe, .io = self.io });
@@ -83,6 +103,18 @@ const SnapshotRead = struct {
                     .modified_resource = try self.resource(allocator, self.modified_path, resourceRef(refs.right, false), refs.right == .working and text.modified_available),
                     .original_available = text.original_available,
                     .modified_available = text.modified_available,
+                };
+            },
+            .resources => |refs| {
+                const original = try self.readResource(reader, allocator, refs.original);
+                const modified = try self.readResource(reader, allocator, refs.modified);
+                return .{
+                    .original = original.text orelse "",
+                    .modified = modified.text orelse "",
+                    .original_available = original.text != null,
+                    .modified_available = modified.text != null,
+                    .original_resource = original.resource,
+                    .modified_resource = modified.resource,
                 };
             },
             .revisions => |refs| {
@@ -255,6 +287,54 @@ pub const Model = struct {
         request.source = .{ .revisions = .{
             .left = if (left) |revision| try allocator.dupe(u8, revision) else null,
             .right = try allocator.dupe(u8, right),
+        } };
+        return request.interface();
+    }
+
+    fn captureResource(self: *Model, allocator: Allocator, uri: std.Uri, working: ?[]const u8) !SnapshotRead.ResourceSpec {
+        const std_uri = @import("../../../vs/base/common/stdUri.zig");
+        const root = self.git_root orelse return error.NoRepository;
+        var path: []const u8 = undefined;
+        var ref: ?[]const u8 = null;
+        if (std.mem.eql(u8, uri.scheme, "git")) {
+            const query = try std_uri.query(uri, allocator);
+            const parsed = try std.json.parseFromSlice(struct { path: []const u8, ref: []const u8 }, allocator, query, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+            path = parsed.value.path;
+            ref = parsed.value.ref;
+            // Upstream sanitizeRef chooses the index for staged paths.
+            if (std.mem.eql(u8, ref.?, "~")) {
+                const relative = extpath.relativeToRoot(path, root) orelse return error.OutsideRepository;
+                ref = "HEAD";
+                const repository = self.repository orelse return error.NoRepository;
+                for (repository.repository.stateRef().index_changes) |change| {
+                    if (std.mem.eql(u8, change.path, relative)) {
+                        ref = "";
+                        break;
+                    }
+                }
+            }
+        } else if (std.mem.eql(u8, uri.scheme, "file")) {
+            path = try allocator.dupe(u8, try std_uri.fsPath(uri, allocator));
+        } else return error.UnsupportedDiffResourceScheme;
+        const relative = extpath.relativeToRoot(path, root) orelse return error.OutsideRepository;
+        return .{
+            .encoded_uri = try std.fmt.allocPrint(allocator, "{f}", .{uri}),
+            .path = path,
+            .relative = relative,
+            .ref = ref,
+            .working = if (ref == null) if (working) |text| try allocator.dupe(u8, text) else null else null,
+        };
+    }
+
+    /// Capture the exact independently resolved URI pair from the SCM source.
+    /// The worker reads Git and file resources without the provider or editor.
+    pub fn resourceSnapshotSource(self: *Model, io: std.Io, original: ?std.Uri, modified: ?std.Uri, original_working: ?[]const u8, modified_working: ?[]const u8) !SnapshotSource {
+        const request = try self.captureSnapshot(io, "", "", "");
+        errdefer SnapshotRead.destroy(request);
+        const a = request.arena.allocator();
+        request.source = .{ .resources = .{
+            .original = if (original) |uri| try self.captureResource(a, uri, original_working) else null,
+            .modified = if (modified) |uri| try self.captureResource(a, uri, modified_working) else null,
         } };
         return request.interface();
     }

@@ -136,18 +136,57 @@ pub const SnapshotItem = struct {
     source: SnapshotSource,
     original_exists: bool = true,
     modified_exists: bool = true,
+    go_to_file_uri: ?[]const u8 = null,
+    go_to_file_title: ?[]const u8 = null,
 };
 pub const SnapshotBatch = struct {
     allocator: Allocator,
     items: []SnapshotItem,
     pub fn deinit(self: SnapshotBatch) void {
-        for (self.items) |item| item.source.destroy(item.source.context);
+        for (self.items) |item| {
+            item.source.destroy(item.source.context);
+            if (item.go_to_file_uri) |value| self.allocator.free(value);
+            if (item.go_to_file_title) |value| self.allocator.free(value);
+        }
         self.allocator.free(self.items);
     }
 };
+/// Native adapter for the text resource resolver. It captures provider-owned
+/// read requests on the dispatch thread, independent of the source metadata
+/// service and the diff computation.
+pub const ResourceSnapshotProvider = struct {
+    context: *anyopaque,
+    capture: *const fn (*anyopaque, MultiDiffEditorItem) anyerror!SnapshotSource,
+
+    pub fn captureBatch(self: ResourceSnapshotProvider, allocator: Allocator, resources: []const MultiDiffEditorItem) !SnapshotBatch {
+        const items = try allocator.alloc(SnapshotItem, resources.len);
+        var count: usize = 0;
+        errdefer {
+            for (items[0..count]) |item| {
+                item.source.destroy(item.source.context);
+                if (item.go_to_file_uri) |value| allocator.free(value);
+                if (item.go_to_file_title) |value| allocator.free(value);
+            }
+            allocator.free(items);
+        }
+        for (resources, items) |resource, *item| {
+            const snapshot = try self.capture(self.context, resource);
+            errdefer snapshot.destroy(snapshot.context);
+            const uri = if (resource.goToFileUri) |value| try std.fmt.allocPrint(allocator, "{f}", .{value}) else null;
+            errdefer if (uri) |value| allocator.free(value);
+            const title = if (resource.goToFileEditorTitle) |value| try allocator.dupe(u8, value) else null;
+            item.* = .{ .source = snapshot, .original_exists = resource.originalUri != null, .modified_exists = resource.modifiedUri != null, .go_to_file_uri = uri, .go_to_file_title = title };
+            count += 1;
+        }
+        return .{ .allocator = allocator, .items = items };
+    }
+};
+
 pub const ResolvedSnapshot = struct {
     original_exists: bool,
     modified_exists: bool,
+    go_to_file_uri: ?[]const u8 = null,
+    go_to_file_title: ?[]const u8 = null,
     texts: ?SnapshotSource.Texts = null,
     failure: ?anyerror = null,
 };
@@ -183,7 +222,7 @@ pub const SnapshotBatchRequest = struct {
         };
         self.result = result;
         for (self.batch.items, result) |item, *entry| {
-            entry.* = .{ .original_exists = item.original_exists, .modified_exists = item.modified_exists };
+            entry.* = .{ .original_exists = item.original_exists, .modified_exists = item.modified_exists, .go_to_file_uri = item.go_to_file_uri, .go_to_file_title = item.go_to_file_title };
             entry.texts = item.source.read(item.source.context, self.arena.allocator()) catch |err| blk: {
                 entry.failure = err;
                 break :blk null;
