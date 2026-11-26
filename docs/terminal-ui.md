@@ -2072,7 +2072,13 @@ compact disclosure keeps its keyboard target across expand/collapse. The
 terminal collapses browser disclosure geometry to a single cell row.
 Moved blocks use side-by-side model decorations, connector tracks and
 Compare controls. Both pane controllers attach and dispose with their editor
-views. True-inline word changes inject deleted
+views. The CodeLens contribution uses one model-anchored terminal row per
+lens line, shared ViewZones, and retained clickable command labels instead of
+DOM links and a reduced browser font size. Visible commands resolve through
+the language-feature registry; the command picker uses the active code
+editor context. Both pane resources are mirrored independently to Node
+extensions, and switching focus changes the active editor without closing
+its document. True-inline word changes inject deleted
 text into view projections, preserving model coordinates and painting removed
 text with strikethrough. Browser
 three-pixel empty-range borders become one marker cell. The accessible review

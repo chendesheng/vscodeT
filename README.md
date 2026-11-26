@@ -597,9 +597,10 @@ grammar and indentation behavior. The extension host receives the extension's
 `js/ts.format.enabled` resolve like VS Code. Position-bearing RPCs (diagnostics,
 completion/hover ranges, formatting edits, document changes and selections) are
 converted between the host's UTF-16 code units and the editor's UTF-8 byte
-columns. Semantic tokens, inlay hints, code lens, links, colors, call
-hierarchy and inline completions are registered by the extension but have no
-terminal renderer; navigation and reference results open in the terminal
+columns. CodeLens providers are mirrored with their real document URIs; the editor
+mounts and resolves visible lens commands in model-anchored rows. Semantic
+tokens, inlay hints, links, colors and call hierarchy remain without terminal
+renderers; navigation and reference results open in the terminal
 quick pick, while code actions still have no TUI command surface. Configuration writes are accepted in memory and are not
 persisted.
 
@@ -1296,7 +1297,11 @@ console API for raw mode, sizing and input polling.
   rewriting the working file; legacy margin revert buttons are available when
   the gutter menu is disabled. Inline deleted-code controls copy original text,
   reveal original line numbers, support selection, and apply undoable revert.
-  Remaining gaps include code lens.
+  `diffEditor.codeLens` enables CodeLens rows in both panes (off by default);
+  the normal editor contribution owns their model, viewport resolution,
+  command picker and clickable commands. Both real side documents are kept
+  in the extension-host model set regardless of which pane has focus.
+  Multi-file diff and quick-diff peek remain unported.
   See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
   Only one repository per workspace folder is shown.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and
