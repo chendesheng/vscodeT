@@ -105,6 +105,65 @@ pub fn computeConfiguration(configuration_service: ?@import("../../../../platfor
 }
 
 pub const TextResourceEditorInput = @import("../../../common/editor/textResourceEditorInput.zig").TextResourceEditorInput;
+const FileEditorInput = @import("../../../contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
+const EditorDocument = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").EditorDocument;
+
+pub const SideInput = union(enum) {
+    resource: *TextResourceEditorInput,
+    file: *FileEditorInput,
+
+    pub fn interface(self: SideInput) *editor_input.EditorInput {
+        return switch (self) {
+            .resource => |input| input.interface(),
+            .file => |input| input.interface(),
+        };
+    }
+
+    pub fn resolve(self: SideInput) *EditorDocument {
+        return switch (self) {
+            .resource => |input| input.resolve(),
+            .file => |input| input.editor.document,
+        };
+    }
+
+    pub fn destroy(self: SideInput) void {
+        switch (self) {
+            .resource => |input| input.destroy(),
+            .file => |input| input.deinit(),
+        }
+    }
+
+    pub fn fileInput(self: SideInput) ?*FileEditorInput {
+        return switch (self) {
+            .resource => null,
+            .file => |input| input,
+        };
+    }
+};
+
+pub const SideSource = struct {
+    resource: ?std.Uri = null,
+    file: ?*FileEditorInput = null,
+
+    fn resolve(self: SideSource, allocator: Allocator, io: Io, path: []const u8, label: []const u8, text: []const u8) !SideInput {
+        if (self.file) |input| return .{ .file = input.retain() };
+        const absolute = try text_files.absolutePath(allocator, io, path);
+        defer allocator.free(absolute);
+        return .{ .resource = try TextResourceEditorInput.init(allocator, io, path, label, text, self.resource orelse snapshotResource(absolute, label)) };
+    }
+};
+
+pub const ResolvedSources = struct {
+    original: SideSource = .{},
+    modified: SideSource = .{},
+};
+
+fn inputOptions(options: Options, original: SideInput, modified: SideInput) Options {
+    var result = options;
+    result.original_editable = !original.interface().isReadonly();
+    result.read_only = modified.interface().isReadonly();
+    return result;
+}
 
 /// A generic snapshot comparison without an extension-provided resource
 /// uses the label as a virtual URI query. SCM provides its actual ref URI.
@@ -132,8 +191,8 @@ pub fn DiffView(comptime View: type) type {
         widget: *DiffEditorWidget,
         theme_colors: ?*const @import("../../themeColors.zig").ThemeColors = null,
         on_control_changed: ?struct { context: *anyopaque, run: *const fn (*anyopaque) void } = null,
-        original_input: *TextResourceEditorInput,
-        modified_input: *TextResourceEditorInput,
+        original_input: SideInput,
+        modified_input: SideInput,
         diff_input: *diff_editor_input.DiffEditorInput,
 
         pub fn create(
@@ -162,6 +221,22 @@ pub fn DiffView(comptime View: type) type {
             options: Options,
             computed: ?IDocumentDiff,
         ) !*Self {
+            return createWithSources(factory, allocator, io, model, original_text, modified_text, width, height, options, .{}, computed);
+        }
+
+        pub fn createWithSources(
+            factory: *const fn (Allocator, *Editor) anyerror!*View,
+            allocator: Allocator,
+            io: Io,
+            model: DiffEditorModel,
+            original_text: []const u8,
+            modified_text: []const u8,
+            width: usize,
+            height: usize,
+            options: Options,
+            sources: ResolvedSources,
+            computed: ?IDocumentDiff,
+        ) !*Self {
             const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
 
@@ -176,14 +251,13 @@ pub fn DiffView(comptime View: type) type {
             const modified_label = try allocator.dupe(u8, model.modified_label);
             errdefer allocator.free(modified_label);
 
-            const original_absolute = try text_files.absolutePath(allocator, io, model.original_path);
-            defer allocator.free(original_absolute);
-            const modified_absolute = try text_files.absolutePath(allocator, io, model.modified_path);
-            defer allocator.free(modified_absolute);
-            const original_input = try TextResourceEditorInput.init(allocator, io, original_path, original_label, original_text, snapshotResource(original_absolute, original_label));
+            const original_input = try sources.original.resolve(allocator, io, original_path, original_label, original_text);
             errdefer original_input.destroy();
-            const modified_input = try TextResourceEditorInput.init(allocator, io, modified_path, modified_label, modified_text, snapshotResource(modified_absolute, modified_label));
+            const modified_input = try sources.modified.resolve(allocator, io, modified_path, modified_label, modified_text);
             errdefer modified_input.destroy();
+            const valid_computed = if (computed != null and
+                snapshotLinesEqual(allocator, original_input.resolve().model, original_text) and
+                snapshotLinesEqual(allocator, modified_input.resolve().model, modified_text)) computed else null;
             const widget = try DiffEditorWidget.createWithModelSources(
                 factory,
                 allocator,
@@ -196,9 +270,9 @@ pub fn DiffView(comptime View: type) type {
                 model.modified_label,
                 width,
                 height,
-                snapshotOptions(options),
+                inputOptions(options, original_input, modified_input),
                 .{ .original = original_input.resolve(), .modified = modified_input.resolve() },
-                computed,
+                valid_computed,
             );
             errdefer widget.destroy();
 
@@ -213,8 +287,8 @@ pub fn DiffView(comptime View: type) type {
                 allocator,
                 title,
                 null,
-                &original_input.base,
-                &modified_input.base,
+                original_input.interface(),
+                modified_input.interface(),
             );
             errdefer diff_input.destroy();
 
@@ -256,18 +330,20 @@ pub fn DiffView(comptime View: type) type {
         }
 
         pub fn replaceWithDiff(self: *Self, original_text: []const u8, modified_text: []const u8, width: usize, height: usize, options: Options, computed: ?IDocumentDiff) !void {
-            if (!snapshotLinesEqual(self.allocator, self.widget.originalModel(), original_text)) {
+            if (self.original_input == .resource and !snapshotLinesEqual(self.allocator, self.widget.originalModel(), original_text)) {
                 try self.widget.original_editor.replaceGeneratedContents(original_text, false);
             }
-            if (!snapshotLinesEqual(self.allocator, self.widget.modifiedModel(), modified_text)) {
+            if (self.modified_input == .resource and !snapshotLinesEqual(self.allocator, self.widget.modifiedModel(), modified_text)) {
                 try self.widget.modified_editor.replaceGeneratedContents(modified_text, false);
             }
-            _ = try self.widget.updateOptionsWithDiff(snapshotOptions(options), computed);
+            const result_matches = snapshotLinesEqual(self.allocator, self.widget.originalModel(), original_text) and snapshotLinesEqual(self.allocator, self.widget.modifiedModel(), modified_text);
+            _ = try self.widget.updateOptionsWithDiff(inputOptions(options, self.original_input, self.modified_input), if (result_matches) computed else null);
+            if (!result_matches) self.widget.view_model.requestRecompute(0);
             self.widget.layout(width, height);
         }
 
         pub fn matchesSnapshot(self: *Self, original: []const u8, modified: []const u8, options: Options) bool {
-            return std.meta.eql(self.widget.options, snapshotOptions(options).normalize()) and
+            return std.meta.eql(self.widget.options, inputOptions(options, self.original_input, self.modified_input).normalize()) and
                 snapshotLinesEqual(self.allocator, self.widget.originalModel(), original) and
                 snapshotLinesEqual(self.allocator, self.widget.modifiedModel(), modified);
         }
@@ -288,7 +364,7 @@ pub fn DiffView(comptime View: type) type {
         /// Configuration changes update the existing diff model and views.
         /// Presentation-only changes do not re-run the diff provider.
         pub fn updateOptions(self: *Self, options: Options) !bool {
-            return self.widget.updateOptions(snapshotOptions(options));
+            return self.widget.updateOptions(inputOptions(options, self.original_input, self.modified_input));
         }
 
         pub fn setThemeColors(self: *Self, palette: ?*const @import("../../themeColors.zig").ThemeColors) void {
@@ -338,8 +414,9 @@ pub fn DiffView(comptime View: type) type {
             self.widget.swapSides();
             std.mem.swap([]const u8, &self.model.original_path, &self.model.modified_path);
             std.mem.swap([]const u8, &self.model.original_label, &self.model.modified_label);
-            std.mem.swap(*TextResourceEditorInput, &self.original_input, &self.modified_input);
+            std.mem.swap(SideInput, &self.original_input, &self.modified_input);
             self.diff_input.setSides(self.original_input.interface(), self.modified_input.interface()) catch {};
+            _ = self.updateOptions(self.widget.options) catch false;
 
             self.diff_input.base.name = title;
             if (self.diff_input.owned_name) |old| self.allocator.free(old);

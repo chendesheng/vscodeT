@@ -26,6 +26,33 @@ pub fn Tests(comptime View: type) type {
             try testing.expect((try original.base.save(0)) != null);
         }
 
+        test "DiffView: shares a file input and forwards its dirty state without replacing it on refresh" {
+            const Editor = @import("../../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+            const FileInput = @import("../../../../contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
+            const allocator = testing.allocator;
+            const source = try Editor.createFromText(allocator, testing.io, "modified\nend", "/repo/a.zig", 80, 8);
+            const file = try FileInput.init(allocator, source);
+            defer file.deinit();
+            const view = try DiffView.createWithSources(View.init, allocator, testing.io, .{ .original_path = "/repo/a.zig", .modified_path = "/repo/a.zig", .original_label = "HEAD", .modified_label = "Working Tree" }, "original\nend", "modified\nend", 80, 8, .{}, .{ .modified = .{ .file = file } }, null);
+            defer view.destroy();
+            try testing.expectEqual(source.model, view.widget.modifiedModel());
+            try testing.expect(!view.widget.modified_editor.isReadOnly());
+            try testing.expect(!view.input().isReadonly());
+            try testing.expectEqual(file.interface(), view.diff_input.modified);
+            try view.widget.revert(view.widget.state().?.mappings[0].line_range_mapping);
+            try testing.expect(view.input().isDirty());
+            try testing.expectEqualStrings("original", try source.model.borrowLineContent(1));
+            try view.replace("first\nend", "stale disk content\nend", 80, 8, .{});
+            try testing.expectEqual(source.model, view.widget.modifiedModel());
+            try testing.expectEqualStrings("original", try source.model.borrowLineContent(1));
+            try testing.expect(view.input().isDirty());
+            view.swapSides();
+            try testing.expect(view.widget.modified_editor.isReadOnly());
+            try testing.expect(!view.widget.original_editor.isReadOnly());
+            try testing.expect(view.input().isReadonly());
+            try testing.expect(!view.input().isDirty());
+        }
+
         test "DiffView: opens a diff tab input with distinct snapshot keys" {
             const allocator = testing.allocator;
             const io = Io.Threaded.global_single_threaded.io();
@@ -58,7 +85,7 @@ pub fn Tests(comptime View: type) type {
             const old_modified = view.widget.modifiedModel();
             try testing.expectEqual(old_original, view.original_input.resolve().model);
             try testing.expectEqual(old_modified, view.modified_input.resolve().model);
-            try testing.expect(!std.mem.eql(u8, view.original_input.key, view.modified_input.key));
+            try testing.expect(!std.mem.eql(u8, view.original_input.interface().resource.?, view.modified_input.interface().resource.?));
             view.widget.sash_layout.ratio = 0.7;
             try view.replace("a\nb\nc", "a\nB", 80, 10, .{});
             try testing.expectEqual(@as(usize, 1), view.widget.changeCount());
