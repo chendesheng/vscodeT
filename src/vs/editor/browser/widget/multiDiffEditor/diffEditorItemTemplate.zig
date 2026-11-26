@@ -31,6 +31,7 @@ const command_mod = @import("../../../../platform/commands/common/commands.zig")
 const IAction = @import("../../../../base/common/actions.zig").IAction;
 const SignalSubscription = @import("../../../../base/common/event.zig").SignalSubscription;
 const diff_vm = @import("../diffEditor/diffEditorViewModel.zig");
+const hide_regions = @import("../diffEditor/features/hideUnchangedRegionsFeature.zig");
 
 const symbol_highlight_options = blk: {
     var options = model_types.ModelDecorationOptions.init("symbol-navigate-action-highlight", .NeverGrowsWhenTypingAtEdges);
@@ -207,6 +208,47 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
             }
             fn onOptionsChanged(_: void, self: *Binding) !void {
                 try self.updateOptions();
+            }
+            const EditorAnchor = struct {
+                binding: *Binding,
+                original: bool,
+                line: usize,
+                update: hide_regions.ScrollAnchorUpdate,
+
+                fn getItemOffset(context: *anyopaque) usize {
+                    const self: *EditorAnchor = @ptrCast(@alignCast(context));
+                    const binding = self.binding;
+                    const widget = binding.editor orelse return binding.template.config.outerHeight();
+                    const editor = if (self.original) widget.original_editor else widget.modified_editor;
+                    const top = if (self.line > editor.model.getLineCount())
+                        editor.viewLayout().getContentHeight()
+                    else blk: {
+                        const pos = editor.viewPositionOfModelPosition(.{ .lineNumber = self.line, .column = 1 });
+                        break :blk editor.viewLayout().getVerticalOffsetForLineNumber(pos.lineNumber, false);
+                    };
+                    return binding.template.config.outerHeight() + @as(usize, @intFromFloat(@max(0, top)));
+                }
+                fn apply(context: *anyopaque) !void {
+                    const self: *EditorAnchor = @ptrCast(@alignCast(context));
+                    try self.update.run(self.update.context);
+                    // The outer scroll transaction must see the new content
+                    // height before it maps the semantic line anchor.
+                    self.binding.observeHeight();
+                    self.binding.flushHeight();
+                    try self.binding.context.notifyChanged();
+                }
+            };
+            fn runWithEditorAnchor(self: *Binding, original: bool, line: usize, update: hide_regions.ScrollAnchorUpdate) !void {
+                var anchor: EditorAnchor = .{ .binding = self, .original = original, .line = line, .update = update };
+                try self.context.runWithScrollAnchor(.{ .context = &anchor, .get = EditorAnchor.getItemOffset }, .{ .context = &anchor, .run = EditorAnchor.apply });
+            }
+            fn runWithOriginalEditorScrollAnchor(context: *anyopaque, line: usize, update: hide_regions.ScrollAnchorUpdate) !void {
+                const self: *Binding = @ptrCast(@alignCast(context));
+                try self.runWithEditorAnchor(true, line, update);
+            }
+            fn runWithModifiedEditorScrollAnchor(context: *anyopaque, line: usize, update: hide_regions.ScrollAnchorUpdate) !void {
+                const self: *Binding = @ptrCast(@alignCast(context));
+                try self.runWithEditorAnchor(false, line, update);
             }
             fn toolbarContext(self: *Binding) contextkey.IContext {
                 return .{ .context = self, .get_value = toolbarContextValue };
@@ -652,6 +694,7 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
                 }, null);
                 const editor = binding.editor.?;
                 editor.attachWindow(self.queue);
+                editor.setScrollAnchors(.{ .context = binding, .run = Binding.runWithOriginalEditorScrollAnchor }, .{ .context = binding, .run = Binding.runWithModifiedEditorScrollAnchor });
                 editor.setThemeColors(self.config.theme);
                 if (self.host.configure_diff) |configure| try configure(self.host.context, editor);
                 if (item.lastTemplateData.selections) |selections| try editor.modified_editor.setSelections(selections);

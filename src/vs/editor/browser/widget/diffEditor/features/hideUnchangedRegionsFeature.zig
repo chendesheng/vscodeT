@@ -53,6 +53,15 @@ pub const BreadcrumbsSourceFactory = struct {
     }
 };
 
+/// Optional outer-scroll owner supplied by a virtualized diff item.
+pub const ScrollAnchorUpdate = struct {
+    context: *anyopaque,
+    run: *const fn (*anyopaque) anyerror!void,
+};
+pub const EditorScrollAnchor = struct {
+    context: *anyopaque,
+    run: *const fn (*anyopaque, usize, ScrollAnchorUpdate) anyerror!void,
+};
 pub const HideUnchangedRegionsFeature = struct {
     allocator: std.mem.Allocator,
     model: *vm.DiffEditorViewModel,
@@ -66,6 +75,8 @@ pub const HideUnchangedRegionsFeature = struct {
     drag: ?Drag = null,
     breadcrumbs_source: ?IDiffEditorBreadcrumbsSource = null,
     side_by_side: bool = true,
+    original_scroll_anchor: ?EditorScrollAnchor = null,
+    modified_scroll_anchor: ?EditorScrollAnchor = null,
 
     unchanged_decoration: model_mod.ModelDecorationOptions = blk: {
         var options = model_mod.ModelDecorationOptions.init("unchanged lines", .AlwaysGrowsWhenTypingAtEdges);
@@ -306,7 +317,7 @@ pub const HideUnchangedRegionsFeature = struct {
         }
 
         fn topForLine(editor: *Editor, line: usize) f64 {
-            if (line > editor.model.getLineCount()) return editor.viewLayout().lines_layout.getLinesTotalHeight() catch editor.viewLayout().getScrollHeight();
+            if (line > editor.model.getLineCount()) return editor.viewLayout().getContentHeight();
             const pos = editor.viewPositionOfModelPosition(.{ .lineNumber = line, .column = 1 });
             return editor.viewLayout().getVerticalOffsetForLineNumber(pos.lineNumber, false);
         }
@@ -317,11 +328,59 @@ pub const HideUnchangedRegionsFeature = struct {
         }
     };
 
+    const DragUpdate = struct {
+        owner: *HideUnchangedRegionsFeature,
+        binding: *Binding,
+        operation: union(enum) {
+            none,
+            set_counts: struct { top: usize, bottom: usize },
+            collapse_all,
+            show_above,
+            show_below,
+        },
+        release_drag: bool = false,
+
+        fn apply(context: *anyopaque) !void {
+            const self: *DragUpdate = @ptrCast(@alignCast(context));
+            const r = self.binding.region();
+            if (self.release_drag) {
+                r.is_dragged = null;
+                self.owner.drag = null;
+            }
+            switch (self.operation) {
+                .none => {},
+                .set_counts => |counts| r.setState(counts.top, counts.bottom),
+                .collapse_all => r.collapseAll(),
+                .show_above => r.showMoreAbove(self.owner.options.hide_unchanged_regions_reveal_line_count),
+                .show_below => r.showMoreBelow(self.owner.options.hide_unchanged_regions_reveal_line_count),
+            }
+            try self.owner.model.notifyUnchangedRegions();
+        }
+    };
+
+    pub fn setScrollAnchors(self: *HideUnchangedRegionsFeature, original: ?EditorScrollAnchor, modified: ?EditorScrollAnchor) void {
+        self.original_scroll_anchor = original;
+        self.modified_scroll_anchor = modified;
+    }
+
+    fn runWithLowerScrollAnchor(self: *HideUnchangedRegionsFeature, binding: *Binding, update: ScrollAnchorUpdate) !void {
+        const r = binding.region();
+        const range = if (binding.pane.original) r.originalUnchangedRange() else r.modifiedUnchangedRange();
+        if (if (binding.pane.original) self.original_scroll_anchor else self.modified_scroll_anchor) |anchor| {
+            try anchor.run(anchor.context, range.endLineNumberExclusive, update);
+            return;
+        }
+        const local = LowerScrollAnchor.capture(binding);
+        try update.run(update.context);
+        local.restore();
+    }
+
     pub fn dispatchDrag(self: *HideUnchangedRegionsFeature, event: *ui.MouseEvent) bool {
         const drag = if (self.drag) |*value| value else return false;
         const start = drag.start_y orelse return false;
         const r = drag.binding.region();
-        var anchor: ?LowerScrollAnchor = null;
+        var change: DragUpdate = .{ .owner = self, .binding = drag.binding, .operation = .none };
+        var anchored = false;
         if (event.kind == .move) {
             const delta = @as(i64, @intCast(event.y)) - @as(i64, @intCast(start));
             if (delta != 0) drag.moved = true;
@@ -330,29 +389,29 @@ pub const HideUnchangedRegionsFeature = struct {
             if (drag.top) {
                 const next = @min(value, r.getMaxVisibleLineCountTop());
                 if (next == r.visible_line_count_top) return true;
-                r.setState(next, r.visible_line_count_bottom);
+                change.operation = .{ .set_counts = .{ .top = next, .bottom = r.visible_line_count_bottom } };
             } else {
                 const next = @min(value, r.getMaxVisibleLineCountBottom());
                 if (next == r.visible_line_count_bottom) return true;
-                anchor = LowerScrollAnchor.capture(drag.binding);
-                r.setState(r.visible_line_count_top, next);
+                change.operation = .{ .set_counts = .{ .top = r.visible_line_count_top, .bottom = next } };
+                anchored = true;
             }
         } else if (event.kind == .up) {
+            change.release_drag = true;
             if (!drag.moved) {
                 if (self.options.variant == .compact and r.getHiddenModifiedRange().isEmpty()) {
-                    r.collapseAll();
+                    change.operation = .collapse_all;
                 } else if (drag.top) {
-                    r.showMoreAbove(self.options.hide_unchanged_regions_reveal_line_count);
+                    change.operation = .show_above;
                 } else {
-                    anchor = LowerScrollAnchor.capture(drag.binding);
-                    r.showMoreBelow(self.options.hide_unchanged_regions_reveal_line_count);
+                    change.operation = .show_below;
+                    anchored = true;
                 }
             }
-            r.is_dragged = null;
-            self.drag = null;
         } else return true;
-        self.model.notifyUnchangedRegions() catch |err| self.modified.editor.setMessage("unchanged regions: {s}", .{@errorName(err)});
-        if (anchor) |value| value.restore();
+        const update: ScrollAnchorUpdate = .{ .context = &change, .run = DragUpdate.apply };
+        const result = if (anchored) self.runWithLowerScrollAnchor(change.binding, update) else update.run(update.context);
+        result catch |err| self.modified.editor.setMessage("unchanged regions: {s}", .{@errorName(err)});
         return true;
     }
 

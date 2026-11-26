@@ -253,6 +253,69 @@ pub fn Tests(comptime View: type) type {
             try testing.expectEqual(@as(usize, 2), f.opened_binary);
         }
 
+        test "View: MultiDiffEditorWidget anchors the outer viewport during bottom unchanged-region reveal" {
+            const a = testing.allocator;
+            var original: std.ArrayList(u8) = .empty;
+            defer original.deinit(a);
+            var modified: std.ArrayList(u8) = .empty;
+            defer modified.deinit(a);
+            try original.appendSlice(a, "old\n");
+            try modified.appendSlice(a, "new\n");
+            for (0..40) |index| {
+                var buffer: [48]u8 = undefined;
+                const line = try std.fmt.bufPrint(&buffer, "unchanged line {d}\n", .{index});
+                try original.appendSlice(a, line);
+                try modified.appendSlice(a, line);
+            }
+            try original.appendSlice(a, "old end");
+            try modified.appendSlice(a, "new end");
+            const first = try textItem("/first.txt", original.items, modified.items);
+            defer first.release();
+            var options = first.options;
+            options.hide_unchanged_regions_reveal_line_count = 2;
+            try first.updateOptions(options);
+            const second = try textItem("/second.txt", original.items, modified.items);
+            defer second.release();
+            var f: Fixture = .{};
+            try f.init(&.{ first, second }, .noCardsNonCompact, 120, 9);
+            defer f.deinit();
+            try f.widget.setRenderSideBySide(true);
+            try f.scroll(2);
+            const binding = f.widget.impl.bindingFor(f.vm.items[0]) orelse return error.BindingMissing;
+            const editor = binding.editor.?;
+            const region = &f.vm.items[0].diffEditorViewModel.unchangedRegions()[0];
+            const line = region.modifiedUnchangedRange().endLineNumberExclusive;
+            const top_before = f.widget.impl.scroll_view.layout.scrollTop;
+            const outer_before = f.widget.impl.scroll_view.layout.contentViewport.start;
+            const view_line_before = editor.modified_editor.viewPositionOfModelPosition(.{ .lineNumber = line, .column = 1 }).lineNumber;
+            const line_top_before: isize = @intFromFloat(editor.modified_editor.viewLayout().getVerticalOffsetForLineNumber(view_line_before, false));
+            var frame = try ui.Frame.init(a, 120, 9);
+            defer frame.deinit();
+            frame.begin();
+            try f.widget.paint(&frame, 0, 0, 120, 9);
+            const column_start = binding.template.config.variant.horizontalInsets.left + editor.paneWidths().modifiedLeft();
+            const Hit = struct { row: usize, col: usize };
+            const hit: Hit = blk: {
+                for (0..9) |row| for (column_start..120) |col| {
+                    if (frame.next.cluster[frame.next.index(col, row)] == '↓') break :blk .{ .row = row, .col = col };
+                };
+                return error.DisclosureMissing;
+            };
+            var event: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = hit.col, .y = hit.row };
+            _ = try f.widget.dispatchMouse(&event);
+            try testing.expect(editor.hide_unchanged.drag != null);
+            event.kind = .up;
+            try testing.expect(try f.widget.dispatchMouse(&event));
+            try testing.expectEqual(@as(usize, 2), region.visible_line_count_bottom);
+            const layout = &f.widget.impl.scroll_view.layout;
+            try testing.expectEqual(top_before + 2, layout.scrollTop);
+            const edit = f.widget.impl.scroll_view.last_geometry_edit orelse return error.AnchorMissing;
+            try testing.expectEqual(.item, edit.anchorKind);
+            const view_line_after = editor.modified_editor.viewPositionOfModelPosition(.{ .lineNumber = line, .column = 1 }).lineNumber;
+            const line_top_after: isize = @intFromFloat(editor.modified_editor.viewLayout().getVerticalOffsetForLineNumber(view_line_after, false));
+            try testing.expectEqual(line_top_before - outer_before, line_top_after - layout.contentViewport.start);
+        }
+
         test "View: MultiDiffEditorWidget models bottom padding as trailing scroll content" {
             const item = try textItem("/one", "abc", "xyz");
             defer item.release();

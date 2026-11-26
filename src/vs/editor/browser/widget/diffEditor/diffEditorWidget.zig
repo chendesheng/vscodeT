@@ -175,6 +175,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
         overview: overview_feature.OverviewRulerFeature = undefined,
         hide_unchanged: hide_unchanged_feature.HideUnchangedRegionsFeature = undefined,
         breadcrumbs_factory: ?hide_unchanged_feature.BreadcrumbsSourceFactory = null,
+        original_scroll_anchor: ?hide_unchanged_feature.EditorScrollAnchor = null,
+        modified_scroll_anchor: ?hide_unchanged_feature.EditorScrollAnchor = null,
         accessible_viewer: accessible_module.AccessibleDiffViewer,
         moved_blocks: moved_feature.MovedBlocksLinesFeature = undefined,
         inline_margin_menu: inline_margin.MenuController,
@@ -990,6 +992,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.decorations.modified_model = self.modified_editor.model;
             self.zones.init(self.allocator, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self.modified_view.terminal_view_host, self.modified_view.lineStyleFunction(), self.modified_view.decorationBitsFunction(), self.options.render_indicators, diff_state.mappings);
             try self.hide_unchanged.init(self.allocator, self.view_model, &self.zones, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self.options);
+            self.hide_unchanged.setScrollAnchors(self.original_scroll_anchor, self.modified_scroll_anchor);
             if (self.breadcrumbs_factory) |factory| try self.hide_unchanged.attachBreadcrumbs(factory);
             try self.revert_buttons.init(self.allocator, self.view_model, self.modified_editor, self.modified_view.terminal_view_host, .{ .context = self, .revert = revertMarginChange });
             try self.moved_blocks.init(self.allocator, self.view_model, &self.zones, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self, onMoveWidthChanged, onCompareMove);
@@ -1141,6 +1144,13 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         pub fn attachActionServices(self: *Self, clipboard: Clipboard, menu: ContextMenu) void {
             self.inline_margin_menu.attach(clipboard, menu);
+        }
+
+        /// Upstream IDiffEditorWidgetOptions scroll-anchor callbacks.
+        pub fn setScrollAnchors(self: *Self, original: ?hide_unchanged_feature.EditorScrollAnchor, modified: ?hide_unchanged_feature.EditorScrollAnchor) void {
+            self.original_scroll_anchor = original;
+            self.modified_scroll_anchor = modified;
+            self.hide_unchanged.setScrollAnchors(original, modified);
         }
 
         pub fn attachBreadcrumbs(self: *Self, factory: hide_unchanged_feature.BreadcrumbsSourceFactory) !void {
