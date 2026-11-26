@@ -69,7 +69,7 @@ pub const GlyphMarginLanesModel = struct {
         var bit = MAX_LANE * lineNumber;
         for (0..MAX_LANE) |i| {
             if ((self.persist & (@as(u8, 1) << @intCast(i))) != 0 or
-                (self.lanes[bit / 8] & (@as(u8, 1) << @intCast(bit % 8))) != 0)
+                (bit / 8 < self.lanes.len and (self.lanes[bit / 8] & (@as(u8, 1) << @intCast(bit % 8))) != 0))
             {
                 result[result_index] = @fromBackingInt(@intCast(i + 1));
                 result_index += 1;
@@ -84,7 +84,7 @@ pub const GlyphMarginLanesModel = struct {
         var bit = MAX_LANE * lineNumber;
         for (0..MAX_LANE) |i| {
             if ((self.persist & (@as(u8, 1) << @intCast(i))) != 0 or
-                (self.lanes[bit / 8] & (@as(u8, 1) << @intCast(bit % 8))) != 0)
+                (bit / 8 < self.lanes.len and (self.lanes[bit / 8] & (@as(u8, 1) << @intCast(bit % 8))) != 0))
             {
                 count += 1;
             }
@@ -163,4 +163,17 @@ test "glyph lanes: handles overlaps" {
         defer std.testing.allocator.free(lanes);
         try std.testing.expectEqualSlices(GlyphMarginLane, expected_lanes, lanes);
     }
+}
+
+test "glyph lanes: positions below the last decorated line inherit only persistent lanes" {
+    const a = std.testing.allocator;
+    var model = try GlyphMarginLanesModel.init(a, 1);
+    defer model.deinit();
+    const empty = try model.getLanesAtLine(a, 1000);
+    defer a.free(empty);
+    try std.testing.expectEqualSlices(GlyphMarginLane, &.{.Center}, empty);
+    model.push(.Left, Range.init(1, 1, 1, 1), true);
+    const persistent = try model.getLanesAtLine(a, 1000);
+    defer a.free(persistent);
+    try std.testing.expectEqualSlices(GlyphMarginLane, &.{.Left}, persistent);
 }

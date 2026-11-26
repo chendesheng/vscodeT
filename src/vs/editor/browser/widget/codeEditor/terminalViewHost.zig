@@ -279,7 +279,7 @@ pub const TerminalViewHost = struct {
             editor.converter.interface(),
         );
         self.context = ViewContext.init(&self.configuration, self.theme.interface(), self.modelInterface());
-        self.glyph_lanes = try GlyphMarginLanesModel.init(allocator, editor.model.getLineCount());
+        self.glyph_lanes = try GlyphMarginLanesModel.init(allocator, 0);
         self.view.init(allocator, &self.context);
         self.view.view_zones.attach(editor, &self.context);
         try self.view.addViewPart(&self.view.view_zones.base);
@@ -664,31 +664,56 @@ pub const TerminalViewHost = struct {
     /// a glyph decoration exists.
     pub fn prepareFrame(self: *TerminalViewHost) void {
         if (!self.glyph_margin_dirty and !self.line_decorations_dirty) return;
-        const all = self.editor.model.getAllDecorations(0, false) catch return;
-        defer self.editor.model.getAllocator().free(all);
+        const model = self.editor.model;
+        const allocator = model.getAllocator();
 
         if (self.glyph_margin_dirty) {
-            self.glyph_margin_dirty = false;
-            const line_count = self.editor.model.getLineCount();
-            self.glyph_lanes.reset(line_count) catch return;
-
-            var has_glyph = self.glyph_margin.getWidgets().len != 0;
-            for (all) |decoration| {
-                if (decoration.options.glyphMarginClassName == null) continue;
-                has_glyph = true;
+            // Upstream View._computeGlyphMarginLanes queries only authored
+            // glyph margin decorations, never bracket-colorization providers.
+            const margins = model.getAllMarginDecorations(0) catch return;
+            defer allocator.free(margins);
+            const Glyph = struct {
+                range: Range,
+                lane: @import("../../../common/model.zig").GlyphMarginLane,
+                persist: bool = false,
+                fn lessThan(_: void, a: @This(), b: @This()) bool {
+                    return @import("../../../common/core/range.zig").compareRangesUsingStarts(&a.range, &b.range) < 0;
+                }
+            };
+            var glyphs: std.ArrayList(Glyph) = .empty;
+            defer glyphs.deinit(allocator);
+            glyphs.ensureTotalCapacity(allocator, margins.len + self.glyph_margin.getWidgets().len) catch return;
+            var max_line: usize = 0;
+            for (margins) |decoration| {
                 const glyph_options = decoration.options.glyphMargin;
-                self.glyph_lanes.push(if (glyph_options) |options| options.position else .Center, self.editor.model.validateRange(decoration.range), if (glyph_options) |options| options.persistLane orelse false else false);
+                const range = model.validateRange(decoration.range);
+                max_line = @max(max_line, range.endLineNumber);
+                glyphs.appendAssumeCapacity(.{
+                    .range = range,
+                    .lane = if (glyph_options) |options| options.position else .Center,
+                    .persist = if (glyph_options) |options| options.persistLane orelse false else false,
+                });
             }
             for (self.glyph_margin.getWidgets()) |widget| {
-                self.glyph_lanes.push(widget.preference.lane, self.editor.model.validateRange(widget.preference.range), false);
+                const range = model.validateRange(widget.preference.range);
+                max_line = @max(max_line, range.endLineNumber);
+                glyphs.appendAssumeCapacity(.{ .range = range, .lane = widget.preference.lane });
             }
+            std.mem.sort(Glyph, glyphs.items, {}, Glyph.lessThan);
+            self.glyph_lanes.reset(max_line) catch return;
+            for (glyphs.items) |glyph| self.glyph_lanes.push(glyph.lane, glyph.range, glyph.persist);
+            self.glyph_margin_dirty = false;
             const enabled = self.options.get(.glyphMargin);
             const lanes = @max(self.glyph_lanes.requiredLanes(), 1);
-            const width = if ((has_glyph or self.glyph_margin_override == true) and enabled) @min(lanes, 3) else 0;
+            const width = if ((glyphs.items.len != 0 or self.glyph_margin_override == true) and enabled) @min(lanes, 3) else 0;
             self.editor.setGlyphMarginWidth(width);
         }
 
         if (self.line_decorations_dirty) {
+            // Terminal-specific cell reservation needs only the authored
+            // line margin classes; dynamic inline providers cannot add one.
+            const all = model.getAllLineDecorations(0) catch return;
+            defer allocator.free(all);
             self.line_decorations_dirty = false;
             var has_line_decoration = false;
             for (all) |decoration| {
@@ -1482,4 +1507,24 @@ test "overview ruler ignores unrelated view events and updates on ruler decorati
         if (row) |marker| if (std.meta.eql(marker.color, [3]u8{ 25, 40, 80 })) return;
     }
     return error.MissingOverviewMarker;
+}
+
+test "TerminalViewHost: margin geometry does not materialize bracket decorations" {
+    const a = std.testing.allocator;
+    const editor = try Editor.createFromText(a, std.testing.io, "const x = (1);\nconst y = (2);", "test.zig", 70, 8);
+    defer {
+        editor.deinit();
+        a.destroy(editor);
+    }
+    var options = @import("../../../common/model.zig").ModelDecorationOptions.init("insert-line", .AlwaysGrowsWhenTypingAtEdges);
+    options.linesDecorationsClassName = "insert-sign";
+    const ids = try editor.model.deltaDecorations(&.{}, &.{.{ .range = Range.init(2, 1, 2, 1), .options = &options }}, 0);
+    defer a.free(ids);
+    const host = try TerminalViewHost.init(a, editor);
+    defer host.deinit();
+    const brackets = editor.model.bracketPairs();
+    try std.testing.expect(brackets._dirty);
+    host.prepareFrame();
+    try std.testing.expect(brackets._dirty);
+    try std.testing.expectEqual(@as(usize, 1), editor.lineDecorationsWidth());
 }

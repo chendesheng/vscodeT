@@ -2027,6 +2027,21 @@ pub const TextModel = struct {
         return result.toOwnedSlice();
     }
 
+    /// Authored line-margin decorations used by the terminal's automatic
+    /// line-decoration cell reservation. Dynamic bracket/font providers only
+    /// supply inline classes and must not be materialized for gutter geometry.
+    pub fn getAllLineDecorations(self: *TextModel, ownerId: usize) ![]ModelDecoration {
+        var result = try self._decorationsTree.getAll(self, ownerId, false, false, false);
+        var count: usize = 0;
+        for (result.items) |decoration| {
+            if (decoration.options.linesDecorationsClassName == null) continue;
+            result.items[count] = decoration;
+            count += 1;
+        }
+        result.shrinkRetainingCapacity(count);
+        return result.toOwnedSlice();
+    }
+
     fn _getDecorationsInRange(self: *TextModel, filterRange: Range, filterOwnerId: usize, filterOutValidation: bool, onlyMarginDecorations: bool) !ArrayList(ModelDecoration) {
         const startOffset = self._buffer.getOffsetAt(filterRange.startLineNumber, filterRange.startColumn);
         const endOffset = self._buffer.getOffsetAt(filterRange.endLineNumber, filterRange.endColumn);
