@@ -364,6 +364,7 @@ pub const TerminalWorkbench = struct {
     editor_configuration: @import("../vs/workbench/browser/parts/editor/textEditor.zig").TextEditorConfiguration,
     configured_languages: @import("../vs/workbench/services/language/common/languageService.zig").ConfiguredLanguageAssociations,
     configuration_api: @import("../vs/platform/configuration/common/configuration.zig").IConfigurationService,
+    environment_api: @import("../vs/workbench/services/environment/common/environmentService.zig").IWorkbenchEnvironmentService,
     settings_watcher: ?*SettingsWatcher = null,
     /// Window file service shared by workspace and configuration watchers.
     file_watcher_service: ?*FileWatcherService = null,
@@ -1237,6 +1238,8 @@ pub const TerminalWorkbench = struct {
         _ = try self.services.set(@import("../vs/workbench/services/preferences/common/preferences.zig").preferences_service_id, &self.preferences_api);
         self.dialog_api = self.dialog_service.interface();
         _ = try self.services.set(dialogs.dialog_service_id, &self.dialog_api);
+        self.environment_api = .{};
+        _ = try self.services.set(@import("../vs/workbench/services/environment/common/environmentService.zig").workbench_environment_service_id, &self.environment_api);
         self.configuration_api = self.configuration_binding.interface();
         _ = try self.services.set(@import("../vs/platform/configuration/common/configuration.zig").configuration_service_id, &self.configuration_api);
         try self.accessible_view.bindServices(self.configuration_api, self.editor_api, self.clipboard_api);

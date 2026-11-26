@@ -4,6 +4,7 @@ const std = @import("std");
 const actions = @import("../../../../platform/actions/common/actions.zig");
 const ServicesAccessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
 const editor_service = @import("../../../services/editor/common/editorService.zig");
+const environment = @import("../../../services/environment/common/environmentService.zig");
 const Expr = @import("../../../../platform/contextkey/common/contextkey.zig").Expr;
 const keys = @import("../../../../base/common/keyCodes.zig");
 const bindings = @import("../../../../platform/keybinding/common/keybindingsRegistry.zig");
@@ -78,7 +79,8 @@ fn openLayoutDebug(_: *anyopaque, accessor: ServicesAccessor) !void {
     const input = try @import("multiDiffEditorLayoutDebug.zig").createMultiDiffEditorLayoutDebugModel(MultiDiffWidget, widget);
     defer input.destroy();
     const service = try accessor.get(editor_service.editor_service_id);
-    try service.openTextResource(input, .side);
+    const environment_service = try accessor.get(environment.workbench_environment_service_id);
+    try service.openTextResource(input, if (environment_service.isSessionsWindow) .auxiliary_window else .side);
 }
 fn next(_: *anyopaque, accessor: ServicesAccessor) !void {
     if (try activeWidget(accessor)) |widget| try widget.goToNextChange();

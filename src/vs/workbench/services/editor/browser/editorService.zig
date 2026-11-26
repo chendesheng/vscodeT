@@ -336,6 +336,7 @@ pub const EditorService = struct {
                 fn open(context: *anyopaque, input: *text_diff_editor_mod.TextResourceEditorInput, target: EditorTarget) !void {
                     const service: *EditorService = @ptrCast(@alignCast(context));
                     const opening = service.opening orelse return error.EditorOpeningUnavailable;
+                    if (target == .auxiliary_window) return error.AuxiliaryWindowUnavailable;
                     if (target == .side) {
                         opening.group_actions.transfer.layout(opening.group_actions.transfer.copy.context);
                         const source = opening.part.activeView() orelse return error.GroupPaneMissing;
@@ -1217,6 +1218,7 @@ pub const EditorOpening = struct {
     /// reuses an existing group when available, then opens there. An already
     /// resolved input shares its model via EditorGroupView.copyEditor.
     pub fn requestOpenEditor(self: *EditorOpening, path: []const u8, options: OpenOptions, target: EditorTarget) !void {
+        if (target == .auxiliary_window) return error.AuxiliaryWindowUnavailable;
         if (target == .side) {
             self.group_actions.transfer.layout(self.group_actions.transfer.copy.context);
             const source = self.part.activeView() orelse return;

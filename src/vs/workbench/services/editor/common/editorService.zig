@@ -10,7 +10,9 @@ const instantiation = @import("../../../../platform/instantiation/common/instant
 
 pub const editor_service_id = instantiation.ServiceIdentifier(IEditorService, "editorService");
 
-pub const EditorTarget = enum { active, side };
+// Upstream SIDE_GROUP and AUX_WINDOW_GROUP remain distinct targets. The
+// terminal adapter reports auxiliary windows as unavailable.
+pub const EditorTarget = enum { active, side, auxiliary_window };
 
 pub const OpenOptions = struct {
     /// Preview editors are replaced by the next preview in the group.
