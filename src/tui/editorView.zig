@@ -1479,6 +1479,18 @@ pub const View = struct {
         return true;
     }
 
+    /// Composite-editor overrides share the normal option event path. The
+    /// deciding policy is in the composite, not the terminal view.
+    pub fn applySubEditorOptionOverrides(self: *View, glyph_margin: ?bool, sticky_scroll: ?bool) void {
+        var changed: terminal_editor_config.ChangeSet = undefined;
+        if (!self.terminal_view_host.setSubEditorOptionOverrides(glyph_margin, sticky_scroll, &changed)) return;
+        const source = editor_options.ConfigurationChangedEvent.init(&changed);
+        self.editor.emitViewEvent(.{ .ViewConfigurationChanged = view_events.ViewConfigurationChangedEvent.init(source) });
+        for (self.configuration_listeners.items) |listener| listener.notify(listener.context, source);
+        self.document_ready = false;
+        self.invalidate();
+    }
+
     /// Port of `CodeEditorWidget.updateOptions({ lineNumbers })` for the zen
     /// mode transition. Unlike `applyEditorSettings`, this touches only the
     /// line-number option and dispatches the same

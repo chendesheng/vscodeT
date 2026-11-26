@@ -1402,6 +1402,38 @@ pub fn Tests(comptime View: type) type {
             return null;
         }
 
+        test "diffEditorWidget: inner editor options follow inline and hide-unchanged layout" {
+            const a = testing.allocator;
+            const widget = try DiffEditorWidget.create(View.init, a, testing.io, "a.txt", "b.txt", "old", "new", "Original", "Modified", 100, 8, .{ .use_inline_view_when_space_is_limited = false });
+            defer widget.destroy();
+            const original = widget.original_view.terminal_view_host;
+            const modified = widget.modified_view.terminal_view_host;
+            try testing.expect(original.options.get(.glyphMargin));
+            try testing.expectEqual(1, widget.original_editor.gutterGlyphWidth());
+            try testing.expect(original.options.get(.stickyScroll).enabled);
+            try testing.expect(modified.options.get(.stickyScroll).enabled);
+            var options = widget.options;
+            options.render_side_by_side = false;
+            _ = try widget.updateOptions(options);
+            try testing.expect(!original.options.get(.glyphMargin));
+            try testing.expectEqual(0, widget.original_editor.gutterGlyphWidth());
+            try testing.expect(!original.options.get(.stickyScroll).enabled);
+            try testing.expect(modified.options.get(.stickyScroll).enabled);
+            options.hide_unchanged_regions = true;
+            _ = try widget.updateOptions(options);
+            try testing.expect(!original.options.get(.stickyScroll).enabled);
+            try testing.expect(!modified.options.get(.stickyScroll).enabled);
+            options.render_side_by_side = true;
+            _ = try widget.updateOptions(options);
+            try testing.expect(original.options.get(.glyphMargin));
+            try testing.expectEqual(1, widget.original_editor.gutterGlyphWidth());
+            try testing.expect(!original.options.get(.stickyScroll).enabled);
+            options.hide_unchanged_regions = false;
+            _ = try widget.updateOptions(options);
+            try testing.expect(original.options.get(.stickyScroll).enabled);
+            try testing.expect(modified.options.get(.stickyScroll).enabled);
+        }
+
         test "diffEditorWidget: code editor state restores only matching folded content" {
             const a = testing.allocator;
             const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;

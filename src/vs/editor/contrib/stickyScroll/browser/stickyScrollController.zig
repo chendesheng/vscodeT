@@ -258,7 +258,7 @@ pub const StickyScrollController = struct {
     pub fn readConfiguration(self: *StickyScrollController) !void {
         const options = self.host.options(self.host.context);
         self.provider.default_model = options.default_model;
-        const effective_enabled = self.runtime_enabled_override orelse options.enabled;
+        const effective_enabled = self.editor.sticky_scroll_override orelse self.runtime_enabled_override orelse options.enabled;
         if (!effective_enabled) {
             self.enabled = false;
             self.scheduler.cancel();

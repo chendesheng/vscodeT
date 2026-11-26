@@ -188,6 +188,10 @@ pub const TerminalViewHost = struct {
     margin_decorations: margin_decorations_mod.MarginViewLineDecorationsOverlay,
     glyph_lanes: GlyphMarginLanesModel,
     glyph_margin_dirty: bool = true,
+    configured_glyph_margin: bool = false,
+    configured_sticky_scroll: editor_options.EditorStickyScrollOptions = .{},
+    glyph_margin_override: ?bool = null,
+    sticky_scroll_override: ?bool = null,
     line_decorations_dirty: bool = true,
     auto_line_decorations: bool = false,
     selections_overlay: SelectionsOverlay,
@@ -253,6 +257,8 @@ pub const TerminalViewHost = struct {
         });
         self.options.set(.wordWrap, .on);
         self.options.set(.stopRenderingLineAfter, -1);
+        self.configured_glyph_margin = self.options.get(.glyphMargin);
+        self.configured_sticky_scroll = self.options.get(.stickyScroll);
         self.syncGutterOptions();
         self.configuration = .{
             .is_simple_widget = false,
@@ -321,7 +327,16 @@ pub const TerminalViewHost = struct {
         resource: ?[]const u8,
         changed: *terminal_editor_config.ChangeSet,
     ) bool {
-        const any = terminal_editor_config.applyViewSettings(&self.options, reader, language_id, resource, changed);
+        const previous_glyph = self.options.get(.glyphMargin);
+        const previous_sticky = self.options.get(.stickyScroll);
+        self.options.set(.glyphMargin, self.configured_glyph_margin);
+        self.options.set(.stickyScroll, self.configured_sticky_scroll);
+        _ = terminal_editor_config.applyViewSettings(&self.options, reader, language_id, resource, changed);
+        self.configured_glyph_margin = self.options.get(.glyphMargin);
+        self.configured_sticky_scroll = self.options.get(.stickyScroll);
+        self.applySubEditorOptionValues();
+        changed[@backingInt(editor_options.EditorOption.glyphMargin)] = previous_glyph != self.options.get(.glyphMargin);
+        changed[@backingInt(editor_options.EditorOption.stickyScroll)] = !std.meta.eql(previous_sticky, self.options.get(.stickyScroll));
         // Cell rendering keeps its one-row metrics even when settings choose a
         // font size or line height; those options have no terminal meaning.
         self.options.set(.lineHeight, 1);
@@ -336,7 +351,35 @@ pub const TerminalViewHost = struct {
         );
         self.glyph_margin_dirty = true;
         self.line_decorations_dirty = true;
-        return any;
+        return std.mem.indexOfScalar(bool, changed, true) != null;
+    }
+
+    fn applySubEditorOptionValues(self: *TerminalViewHost) void {
+        self.options.set(.glyphMargin, self.glyph_margin_override orelse self.configured_glyph_margin);
+        var sticky = self.configured_sticky_scroll;
+        sticky.enabled = self.sticky_scroll_override orelse sticky.enabled;
+        self.options.set(.stickyScroll, sticky);
+    }
+
+    /// A composite editor can override configured sub-editor options without
+    /// replacing their underlying user settings. Report effective changes
+    /// through the ordinary configuration event, including blank glyph lanes.
+    pub fn setSubEditorOptionOverrides(self: *TerminalViewHost, glyph_margin: ?bool, sticky_scroll: ?bool, changed: *terminal_editor_config.ChangeSet) bool {
+        @memset(changed, false);
+        if (self.glyph_margin_override == glyph_margin and self.sticky_scroll_override == sticky_scroll) return false;
+        const old_glyph_override = self.glyph_margin_override;
+        const old_sticky_override = self.sticky_scroll_override;
+        const previous_glyph = self.options.get(.glyphMargin);
+        const previous_sticky = self.options.get(.stickyScroll);
+        self.glyph_margin_override = glyph_margin;
+        self.sticky_scroll_override = sticky_scroll;
+        self.editor.sticky_scroll_override = sticky_scroll;
+        self.applySubEditorOptionValues();
+        changed[@backingInt(editor_options.EditorOption.glyphMargin)] = previous_glyph != self.options.get(.glyphMargin) or old_glyph_override != glyph_margin;
+        changed[@backingInt(editor_options.EditorOption.stickyScroll)] = !std.meta.eql(previous_sticky, self.options.get(.stickyScroll)) or old_sticky_override != sticky_scroll;
+        self.glyph_margin_dirty = true;
+        self.prepareFrame();
+        return true;
     }
 
     /// Port of `CodeEditorWidget.updateOptions({ lineNumbers })`: writes the
@@ -600,7 +643,7 @@ pub const TerminalViewHost = struct {
             }
             const enabled = self.options.get(.glyphMargin);
             const lanes = @max(self.glyph_lanes.requiredLanes(), 1);
-            const width = if (has_glyph and enabled) @min(lanes, 3) else 0;
+            const width = if ((has_glyph or self.glyph_margin_override == true) and enabled) @min(lanes, 3) else 0;
             self.editor.setGlyphMarginWidth(width);
         }
 

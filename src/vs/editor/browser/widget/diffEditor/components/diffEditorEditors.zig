@@ -25,6 +25,15 @@ pub fn applyWordWrap(original: *Editor, modified: *Editor, mode: DiffWordWrap, s
     modified.setWordWrapOverride(override);
 }
 
+/// _adjustOptionsForSubEditor plus left/right overrides. Hide-unchanged
+/// suppresses sticky scroll in both editors; the original is always hidden
+/// from sticky scroll and glyphs in inline mode. The modified glyph margin
+/// otherwise follows the configured editor option.
+pub fn applySubEditorOptions(original: anytype, modified: anytype, side_by_side: bool, hide_unchanged: bool) void {
+    original.applySubEditorOptionOverrides(side_by_side, if (!side_by_side or hide_unchanged) false else null);
+    modified.applySubEditorOptionOverrides(null, if (hide_unchanged) false else null);
+}
+
 pub const PaneWidths = struct {
     original: usize,
     modified: usize,

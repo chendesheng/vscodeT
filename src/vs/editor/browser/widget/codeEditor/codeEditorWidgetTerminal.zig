@@ -655,6 +655,7 @@ pub const Editor = struct {
     gutter_line_numbers_min_chars: usize = 5,
     gutter_folding: bool = true,
     folding_override: ?bool = null,
+    sticky_scroll_override: ?bool = null,
     /// Extra gutter cells after the fold cell used by quick-diff markers.
     /// `0` hides the marker column; `1` is the terminal representation of the
     /// upstream `scm.diffDecorationsGutterWidth` gutter.

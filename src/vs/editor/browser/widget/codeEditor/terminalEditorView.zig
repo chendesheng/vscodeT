@@ -63,6 +63,7 @@ pub const IEditorView = struct {
         clearGlyphHover: *const fn (*anyopaque) void,
         setTopInset: *const fn (*anyopaque, usize) void,
         applyEditorSettings: *const fn (*anyopaque, terminal_editor_config.Reader, ?[]const u8, ?[]const u8) anyerror!bool,
+        applySubEditorOptionOverrides: *const fn (*anyopaque, ?bool, ?bool) void,
         applyLineNumbersOverride: *const fn (*anyopaque, editor_options.RenderLineNumbersType) anyerror!void,
         setThemeColors: *const fn (*anyopaque, ?*const theme_colors_mod.ThemeColors) void,
         setMarkerSelectionHighlights: *const fn (*anyopaque, []const editorBrowser.Decoration) anyerror!void,
@@ -179,6 +180,10 @@ pub const IEditorView = struct {
 
     pub fn applyEditorSettings(self: *IEditorView, reader: terminal_editor_config.Reader, language_id: ?[]const u8, resource: ?[]const u8) anyerror!bool {
         return self.vtable.applyEditorSettings(self.context, reader, language_id, resource);
+    }
+
+    pub fn applySubEditorOptionOverrides(self: *IEditorView, glyph_margin: ?bool, sticky_scroll: ?bool) void {
+        self.vtable.applySubEditorOptionOverrides(self.context, glyph_margin, sticky_scroll);
     }
 
     pub fn applyLineNumbersOverride(self: *IEditorView, render_type: editor_options.RenderLineNumbersType) anyerror!void {
@@ -338,6 +343,10 @@ pub const IEditorView = struct {
                 const view: *Native = @ptrCast(@alignCast(context));
                 return view.applyEditorSettings(reader, language_id, resource);
             }
+            fn applySubEditorOptionOverrides(context: *anyopaque, glyph_margin: ?bool, sticky_scroll: ?bool) void {
+                const view: *Native = @ptrCast(@alignCast(context));
+                view.applySubEditorOptionOverrides(glyph_margin, sticky_scroll);
+            }
             fn applyLineNumbersOverride(context: *anyopaque, render_type: editor_options.RenderLineNumbersType) anyerror!void {
                 const view: *Native = @ptrCast(@alignCast(context));
                 return view.applyLineNumbersOverride(render_type);
@@ -413,6 +422,7 @@ pub const IEditorView = struct {
                 .clearGlyphHover = @This().clearGlyphHover,
                 .setTopInset = @This().setTopInset,
                 .applyEditorSettings = @This().applyEditorSettings,
+                .applySubEditorOptionOverrides = @This().applySubEditorOptionOverrides,
                 .applyLineNumbersOverride = @This().applyLineNumbersOverride,
                 .setThemeColors = @This().setThemeColors,
                 .setMarkerSelectionHighlights = @This().setMarkerSelectionHighlights,
