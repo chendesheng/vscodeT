@@ -498,6 +498,12 @@ pub const EditorDocument = struct {
         };
     }
 
+    pub fn setEncoding(self: *EditorDocument, encoding: encoding_mod.Encoding) void {
+        if (self.encoding == encoding) return;
+        self.encoding = encoding;
+        self.on_did_change_encoding.fire({}) catch {};
+    }
+
     pub fn retain(self: *EditorDocument) void {
         self.refs += 1;
     }
@@ -2827,9 +2833,7 @@ pub const Editor = struct {
     }
 
     pub fn setEncoding(self: *Editor, encoding: encoding_mod.Encoding) void {
-        if (self.document.encoding == encoding) return;
-        self.document.encoding = encoding;
-        self.document.on_did_change_encoding.fire({}) catch {};
+        self.document.setEncoding(encoding);
     }
 
     pub fn statusTarget(self: *Editor) editor_status.IEditorStatusTarget {

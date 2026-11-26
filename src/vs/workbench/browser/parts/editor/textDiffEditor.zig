@@ -171,6 +171,7 @@ pub const SideInput = union(enum) {
 
 pub const SideSource = struct {
     resource: ?std.Uri = null,
+    encoding: ?@import("../../../services/textfile/common/encoding.zig").Encoding = null,
     file: ?*FileEditorInput = null,
     resolver: ?*TextModelResolverService = null,
 
@@ -189,9 +190,12 @@ pub const SideSource = struct {
                 reference.dispose();
                 return err;
             };
+            if (self.encoding) |encoding| TextModelResolverService.documentOf(reference).setEncoding(encoding);
             return .{ .resource = try TextResourceEditorInput.initFromReference(allocator, reference, label) };
         }
-        return .{ .resource = try TextResourceEditorInput.init(allocator, io, path, label, text, resource) };
+        const input = try TextResourceEditorInput.init(allocator, io, path, label, text, resource);
+        if (self.encoding) |encoding| input.resolve().setEncoding(encoding);
+        return .{ .resource = input };
     }
 };
 

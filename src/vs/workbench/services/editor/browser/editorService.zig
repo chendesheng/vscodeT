@@ -111,7 +111,7 @@ pub const EditorService = struct {
     fn resolveDiffSide(self: EditorService, io: std.Io, resource: ?diff_provider.SnapshotSource.Resource, text: []const u8, width: usize, height: usize, created: *?*FileEditorInput) !text_diff_editor_mod.SideSource {
         const resolver = if (self.opening) |opening| opening.text_model_resolver else null;
         const resolved = resource orelse return .{ .resolver = resolver };
-        if (!resolved.is_working_file) return .{ .resource = resolved.uri, .resolver = resolver };
+        if (!resolved.is_working_file) return .{ .resource = resolved.uri, .encoding = resolved.encoding, .resolver = resolver };
         if (self.findResolvedFileInput(io, resolved.path)) |input| return .{ .file = input, .resolver = resolver };
         const editor = if (self.opening) |opening| try opening.createResolvedFileEditor(resolved, text, width, height) else try Editor.createFromTextWithOptions(self.part.allocator, io, text, resolved.path, width, height, .{ .reserve_scrollbar = true });
         errdefer {
@@ -222,6 +222,8 @@ pub const EditorService = struct {
             if (!tab.diff.?.matchesSnapshot(original_text, modified_text, options) or !tab.diff.?.widget.view_model.is_diff_up_to_date) {
                 try tab.diff.?.replaceWithDiff(original_text, modified_text, dims.width, dims.height, options, computed);
             }
+            if (resources.original) |resource| if (!resource.is_working_file) if (resource.encoding) |encoding| tab.diff.?.original_input.resolve().setEncoding(encoding);
+            if (resources.modified) |resource| if (!resource.is_working_file) if (resource.encoding) |encoding| tab.diff.?.modified_input.resolve().setEncoding(encoding);
             if (self.opening) |opening| {
                 try opening.attachDiffModel(tab.diff.?.widget.view_model);
                 opening.host.configure_tab(opening.host.context, tab);

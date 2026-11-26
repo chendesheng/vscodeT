@@ -433,7 +433,7 @@ pub const TextModelResolverService = struct {
                                 };
                             }
                             if (owner) |reference| if (value.encoding) |name| if (std.meta.stringToEnum(encoding.Encoding, name)) |kind| {
-                                documentOf(reference).encoding = kind;
+                                documentOf(reference).setEncoding(kind);
                             };
                         }
                     } else self.failure = error.BinaryFile;
@@ -749,11 +749,10 @@ const FileContentRequest = struct {
 };
 
 fn decodeFileContents(a: Allocator, result: *resolver.TextContentRequest.Result, bytes: []const u8, working_file: bool) !void {
-    const detected = if (encoding.detectBOM(bytes)) |bom| bom.encoding else encoding.Encoding.utf8;
-    if (!encoding.isUTF16(detected) and std.mem.indexOfScalar(u8, bytes, 0) != null) return;
+    const decoded = (try encoding.decodeText(a, bytes)) orelse return;
     result.is_working_file = working_file;
-    result.encoding = @tagName(detected);
-    result.text = try encoding.decode(a, bytes, detected);
+    result.encoding = @tagName(decoded.encoding);
+    result.text = decoded.text;
 }
 
 /// Owns a captured filesystem read independently of provider registration.

@@ -708,32 +708,28 @@ pub const Git = struct {
     }
 
     fn readWorkingFile(self: *Git, root: []const u8, path: []const u8) !?[]u8 {
-        const full_path = std.fs.path.join(self.allocator, &.{ root, path }) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
+        const bytes = self.readWorkingBuffer(root, path) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => return null,
         };
-        defer self.allocator.free(full_path);
+        if (std.mem.indexOfScalar(u8, bytes, 0) != null or !std.unicode.utf8ValidateSlice(bytes)) {
+            self.allocator.free(bytes);
+            return null;
+        }
+        return bytes;
+    }
 
+    pub fn readWorkingBuffer(self: *Git, root: []const u8, path: []const u8) ![]u8 {
+        if (!isSafeRelativePath(path)) return error.FileNotFound;
+        const full_path = try std.fs.path.join(self.allocator, &.{ root, path });
+        defer self.allocator.free(full_path);
         const limit = if (self.max_file_size == std.math.maxInt(usize))
             std.Io.Limit.unlimited
         else
             std.Io.Limit.limited(self.max_file_size + 1);
-
-        const bytes = std.Io.Dir.cwd().readFileAlloc(self.io, full_path, self.allocator, limit) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return null,
-        };
-        if (bytes.len > self.max_file_size) {
-            self.allocator.free(bytes);
-            return null;
-        }
-        if (std.mem.indexOfScalar(u8, bytes, 0) != null) {
-            self.allocator.free(bytes);
-            return null;
-        }
-        if (!std.unicode.utf8ValidateSlice(bytes)) {
-            self.allocator.free(bytes);
-            return null;
-        }
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(self.io, full_path, self.allocator, limit);
+        errdefer self.allocator.free(bytes);
+        if (bytes.len > self.max_file_size) return error.FileTooLarge;
         return bytes;
     }
 

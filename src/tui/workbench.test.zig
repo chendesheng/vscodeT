@@ -11814,4 +11814,18 @@ test "Workbench: Git URI models distinguish missing and binary resources and dec
             else => unreachable,
         }
     }
+
+    // Initial single-diff opens use the same raw-byte codec, preserving both
+    // the real Git original and the editable UTF-16 file's encoding.
+    const working_path = try std.fs.path.join(scratch, &.{ root, "encoded.txt" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "encoded.txt", .data = "\xff\xfeA\x00\n\x00C\x00" });
+    try wb.openDiff(working_path, .head, .working);
+    try pumpDiffForTests(wb);
+    const tab = wb.activeTab() orelse return error.TestExpectedDiff;
+    const diff = tab.diff orelse return error.TestExpectedDiff;
+    try std.testing.expectEqual(.utf16le_with_bom, diff.widget.original_editor.getEncoding());
+    try std.testing.expectEqual(.utf16le_with_bom, diff.widget.modified_editor.getEncoding());
+    try std.testing.expectEqualStrings("B", try diff.widget.original_editor.model.borrowLineContent(2));
+    try std.testing.expectEqualStrings("C", try diff.widget.modified_editor.model.borrowLineContent(2));
+    try std.testing.expect(!diff.widget.modified_editor.isReadOnly());
 }

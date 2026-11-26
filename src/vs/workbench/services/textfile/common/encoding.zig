@@ -64,6 +64,17 @@ fn baseEncoding(encoding: Encoding) Encoding {
     };
 }
 
+pub const DecodedText = struct { text: []u8, encoding: Encoding };
+
+/// The native text-file boundary for reads that require text. A NUL without
+/// a UTF-16 BOM identifies binary data. Both disk and registered virtual
+/// providers use the same decoding policy.
+pub fn decodeText(allocator: Allocator, bytes: []const u8) !?DecodedText {
+    const detected = if (detectBOM(bytes)) |bom| bom.encoding else Encoding.utf8;
+    if (!isUTF16(detected) and std.mem.indexOfScalar(u8, bytes, 0) != null) return null;
+    return .{ .text = try decode(allocator, bytes, detected), .encoding = detected };
+}
+
 /// Decodes `bytes` to UTF-8, stripping the BOM when present.
 pub fn decode(allocator: Allocator, bytes: []const u8, encoding: Encoding) ![]u8 {
     var offset: usize = 0;

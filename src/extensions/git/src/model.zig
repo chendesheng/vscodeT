@@ -53,12 +53,49 @@ const SnapshotRead = struct {
         };
     }
 
-    fn resourceRef(ref: git.DiffRef, left: bool) []const u8 {
+    const Encoding = @import("../../../vs/workbench/services/textfile/common/encoding.zig");
+
+    const Side = struct {
+        resource: SnapshotSource.Resource,
+        text: []const u8 = "",
+        available: bool = false,
+    };
+
+    /// Decode Git and disk buffers through the same codec used by the file
+    /// service. The immutable snapshot is never published as a fake aligned
+    /// document; the real URI models own the resulting individual texts.
+    fn readSide(self: *SnapshotRead, reader: *Git, a: Allocator, relative: []const u8, uri_ref: []const u8, read_ref: ?[]const u8, working: bool, open_text: ?[]const u8) !Side {
+        if (working) if (open_text) |text| {
+            return .{ .resource = try self.resource(a, relative, uri_ref, true), .text = text, .available = true };
+        };
+        var side: Side = .{ .resource = try self.resource(a, relative, uri_ref, false) };
+        if (read_ref == null and !working) return side; // absent side
+        const bytes = (if (working)
+            reader.readWorkingBuffer(self.root, relative)
+        else
+            reader.readGitBuffer(self.root, read_ref.?, relative)) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            side.resource.failure = err;
+            return side;
+        };
+        defer reader.allocator.free(bytes);
+        const decoded = (try Encoding.decodeText(a, bytes)) orelse return side;
+        if (working) side.resource = try self.resource(a, relative, uri_ref, true);
+        side.resource.encoding = decoded.encoding;
+        side.text = decoded.text;
+        side.available = true;
+        return side;
+    }
+
+    fn readRef(self: *SnapshotRead, reader: *Git, a: Allocator, relative: []const u8, ref: git.DiffRef, working: ?[]const u8, left: bool) !Side {
         return switch (ref) {
-            .head => "HEAD",
-            .index => if (left) "~" else "",
-            .working => "wt",
-            .empty => "empty",
+            .head => self.readSide(reader, a, relative, "HEAD", "HEAD", false, null),
+            .index => self.readSide(reader, a, relative, if (left) "~" else "", "", false, null),
+            .working => self.readSide(reader, a, relative, "wt", null, true, working),
+            .empty => blk: {
+                const empty = try reader.getEmptyTree(self.root);
+                break :blk self.readSide(reader, a, relative, empty, null, false, null);
+            },
         };
     }
 
@@ -68,36 +105,32 @@ const SnapshotRead = struct {
         defer reader.deinit();
         reader.timeout = self.timeout;
         reader.max_file_size = self.max_file_size;
+        var original: Side = undefined;
+        var modified: Side = undefined;
         switch (self.source) {
             .refs => |refs| {
-                const text = try reader.resolveDiffTexts(self.root, self.modified_path, refs.working, refs.left, refs.right);
-                if (text.original.len == 0 and text.modified.len == 0 and !refs.has_diff) {
+                original = try self.readRef(reader, allocator, self.original_path, refs.left, refs.working, true);
+                modified = try self.readRef(reader, allocator, self.modified_path, refs.right, refs.working, false);
+                if (!original.available and !modified.available and !refs.has_diff) {
                     if (std.Io.Dir.cwd().access(self.io, self.path, .{})) |_| {
                         return error.DiffUnavailable;
                     } else |_| {}
                 }
-                return .{
-                    .original = text.original,
-                    .modified = text.modified,
-                    .original_resource = try self.resource(allocator, self.original_path, resourceRef(refs.left, true), refs.left == .working and text.original_available),
-                    .modified_resource = try self.resource(allocator, self.modified_path, resourceRef(refs.right, false), refs.right == .working and text.modified_available),
-                    .original_available = text.original_available,
-                    .modified_available = text.modified_available,
-                };
             },
             .revisions => |refs| {
-                const original = if (refs.left) |revision| reader.readRefAt(allocator, self.root, self.original_path, revision) catch null else null;
-                const modified = reader.readRefAt(allocator, self.root, self.modified_path, refs.right) catch null;
-                return .{
-                    .original = original orelse try allocator.dupe(u8, ""),
-                    .modified = modified orelse try allocator.dupe(u8, ""),
-                    .original_available = original != null,
-                    .modified_available = modified != null,
-                    .original_resource = try self.resource(allocator, self.original_path, refs.left orelse "empty", false),
-                    .modified_resource = try self.resource(allocator, self.modified_path, refs.right, false),
-                };
+                const left = if (refs.left) |revision| revision else try reader.getEmptyTree(self.root);
+                original = try self.readSide(reader, allocator, self.original_path, left, refs.left, false, null);
+                modified = try self.readSide(reader, allocator, self.modified_path, refs.right, refs.right, false, null);
             },
         }
+        return .{
+            .original = original.text,
+            .modified = modified.text,
+            .original_available = original.available,
+            .modified_available = modified.available,
+            .original_resource = original.resource,
+            .modified_resource = modified.resource,
+        };
     }
 
     fn interface(self: *SnapshotRead) SnapshotSource {
