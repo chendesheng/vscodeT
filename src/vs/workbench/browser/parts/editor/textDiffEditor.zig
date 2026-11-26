@@ -30,6 +30,17 @@ pub fn computeConfiguration(configuration_service: ?@import("../../../../platfor
     if (configuration_service) |configuration| {
         options.ignore_trim_whitespace = configuration.getBool("diffEditor.ignoreTrimWhitespace", true);
         options.render_side_by_side = configuration.getBool("diffEditor.renderSideBySide", true);
+        options.use_inline_view_when_space_is_limited = configuration.getBool("diffEditor.useInlineViewWhenSpaceIsLimited", true);
+        if (configuration.getValue("diffEditor.renderSideBySideInlineBreakpoint")) |value| {
+            switch (value.*) {
+                // The TUI breakpoint is measured in cells, using the same
+                // 900px -> 50 cells scale as the default terminal projection.
+                .integer => |number| if (number >= 0) {
+                    options.minimum_side_by_side_width = @intCast(@divTrunc(number, 18));
+                },
+                else => {},
+            }
+        }
         options.render_indicators = configuration.getBool("diffEditor.renderIndicators", true);
         options.render_overview_ruler = configuration.getBool("diffEditor.renderOverviewRuler", true);
         options.enable_split_view_resizing = configuration.getBool("diffEditor.enableSplitViewResizing", true);

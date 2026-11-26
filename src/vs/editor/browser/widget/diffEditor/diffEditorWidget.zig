@@ -300,7 +300,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             var aligned_mut = aligned;
             errdefer aligned_mut.deinit();
 
-            const is_inline = !normalized_options.render_side_by_side;
+            const is_inline = !normalized_options.renderSideBySide(width);
             var inline_display = InlineDisplay{};
             if (is_inline) {
                 inline_display = try buildInlineDisplay(
@@ -427,16 +427,12 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .modified_view = modified_view,
                 .split_ratio = clampRatio(options.split_view_default_ratio),
             };
-            allocator.free(original_views);
-            allocator.free(modified_views);
-
             if (is_inline) {
                 try self.applyInlineDecorations();
                 if (self.options.hide_unchanged_regions) try self.applyInlineHideUnchanged();
             }
 
-            // The borrowed line views are no longer needed by the view model, but
-            // the aligned row indices remain valid.
+            // Keep the line views alive for layout changes and recomputation.
             self.layout(width, height);
             self.selectInitialChange();
             return self;
@@ -447,6 +443,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.decorations.deinit();
             allocator.destroy(self.decorations);
             self.aligned.deinit();
+            allocator.free(self.view_model.original_lines);
+            allocator.free(self.view_model.modified_lines);
             self.view_model.deinit();
 
             self.original_view.deinit();
@@ -483,10 +481,96 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         pub fn sideBySide(self: *const Self) bool {
-            return self.options.render_side_by_side and self.width >= self.options.minimum_side_by_side_width;
+            return !self.inline_mode;
+        }
+
+        // Until the editor supports diff view zones, change the generated
+        // projection in place so the CodeEditorWidget and its View retain
+        // their identity across width-based layout changes.
+        fn setInlineMode(self: *Self, inline_mode: bool) !void {
+            const diff_state = self.state() orelse return;
+            const allocator = self.allocator;
+            var inline_display = InlineDisplay{};
+            defer inline_display.deinit(allocator);
+            if (inline_mode) inline_display = try buildInlineDisplay(
+                allocator,
+                self.view_model.original_lines,
+                self.view_model.modified_lines,
+                diff_state.mappings,
+            );
+            const text = if (inline_mode) inline_display.text else try buildDisplayText(
+                allocator,
+                self.aligned.modified,
+                self.view_model.modified_lines,
+            );
+            var text_owned = !inline_mode;
+            errdefer if (text_owned) allocator.free(text);
+
+            const cursor = self.modified_editor.modelCursorPosition().lineNumber;
+            const real_line = self.modified_editor.displayLineNumber(self.modified_editor.viewCursorPosition().lineNumber);
+            const current = self.current_change;
+            self.decorations.detach();
+            if (self.inline_ids.len > 0) {
+                const ids = try self.modified_editor.model.deltaDecorations(self.inline_ids, &.{}, 2002);
+                allocator.free(ids);
+                allocator.free(self.inline_ids);
+                self.inline_ids = &.{};
+            }
+            if (self.options.hide_unchanged_regions) {
+                const Selection = @import("../../../common/core/selection.zig").Selection;
+                const last = self.modified_editor.model.getLineCount();
+                try self.modified_editor.setSelections(&.{Selection.init(1, 1, last, self.modified_editor.model.getLineMaxColumn(last))});
+                try self.modified_editor.removeManualFoldingRanges();
+                try self.modified_editor.setHiddenAreas(&.{});
+            }
+            try self.modified_editor.replaceGeneratedContents(text, true);
+            self.modified_editor.setLineNumberMap(null);
+            allocator.free(self.modified_text);
+            self.modified_text = text;
+            text_owned = false;
+            if (self.inline_kinds.len > 0) allocator.free(self.inline_kinds);
+            if (self.inline_line_numbers.len > 0) allocator.free(self.inline_line_numbers);
+            if (self.inline_change_starts.len > 0) allocator.free(self.inline_change_starts);
+            if (self.inline_original_rows.len > 0) allocator.free(self.inline_original_rows);
+            if (self.inline_modified_rows.len > 0) allocator.free(self.inline_modified_rows);
+            self.inline_kinds = inline_display.kinds;
+            self.inline_line_numbers = inline_display.line_numbers;
+            self.inline_change_starts = inline_display.change_starts;
+            self.inline_original_rows = inline_display.original_rows;
+            self.inline_modified_rows = inline_display.modified_rows;
+            inline_display = .{};
+            self.inline_mode = inline_mode;
+            self.modified_editor.setLineNumberMap(if (inline_mode) self.inline_line_numbers else self.aligned.modified);
+            if (inline_mode) {
+                self.original_view.detach();
+                self.focused = .modified;
+                try self.applyInlineDecorations();
+                if (self.options.hide_unchanged_regions) try self.applyInlineHideUnchanged();
+            } else {
+                try self.decorations.update(&self.aligned, diff_state);
+                if (self.options.hide_unchanged_regions) try applyHideUnchangedRegions(
+                    allocator,
+                    self.original_editor,
+                    self.modified_editor,
+                    &self.aligned,
+                    self.options.hide_unchanged_regions_context_line_count,
+                    self.options.hide_unchanged_regions_minimum_line_count,
+                );
+            }
+            const row = if (current) |index| self.changeStart(index) else if (real_line) |line| blk: {
+                if (inline_mode and line <= self.inline_modified_rows.len) break :blk self.inline_modified_rows[line - 1] orelse cursor;
+                break :blk self.aligned.displayRowForModified(line) orelse cursor;
+            } else cursor;
+            try self.modified_editor.setCursorPosition(.{ .lineNumber = @min(row, self.modified_editor.model.getLineCount()), .column = 1 });
         }
 
         pub fn layout(self: *Self, width: usize, height: usize) void {
+            const inline_mode = !self.options.renderSideBySide(width);
+            if (self.inline_mode != inline_mode) {
+                self.setInlineMode(inline_mode) catch |err| {
+                    self.modified_editor.setMessage("diff layout failed: {s}", .{@errorName(err)});
+                };
+            }
             self.width = @max(width, 1);
             self.height = @max(height, 1);
             const widths = self.paneWidths();
@@ -494,7 +578,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.modified_editor.setViewport(widths.modified, self.height);
             self.original_view.invalidate();
             self.modified_view.invalidate();
-            if (self.sync_top_line) self.syncTopLines();
+            if (self.sync_top_line and self.sideBySide()) self.syncTopLines();
         }
 
         pub const PaneWidths = diff_editor_editors.PaneWidths;
@@ -504,7 +588,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 self.width,
                 self.sideBySide(),
                 self.split_ratio,
-                self.options.minimum_side_by_side_width,
+                3,
             );
         }
 
@@ -531,9 +615,9 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         pub fn setFocus(self: *Self, side: Side) void {
+            if (side == .original and !self.sideBySide()) return;
             if (self.focused == side) return;
             self.focused = side;
-            if (side == .original and !self.sideBySide()) return;
             self.focusedView().focusEditor();
         }
 
@@ -761,7 +845,6 @@ pub fn DiffEditorWidget(comptime View: type) type {
             }
             if (event.kind == .down) self.setFocus(.modified);
             const handled = try self.modified_view.dispatchMouse(event);
-            self.syncScrollFromPane(.modified);
             return handled;
         }
 

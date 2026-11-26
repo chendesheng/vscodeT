@@ -100,7 +100,7 @@ pub fn Tests(comptime View: type) type {
             try testing.expectEqual(@as(usize, 2), widget.changeCount());
         }
 
-        test "diffEditorWidget: narrow panes fall back to modified-only" {
+        test "diffEditorWidget: narrow panes keep deleted text in inline layout" {
             const allocator = testing.allocator;
             const io = Io.Threaded.global_single_threaded.io();
             const widget = try DiffEditorWidget.create(
@@ -122,6 +122,22 @@ pub fn Tests(comptime View: type) type {
             const widths = widget.paneWidths();
             try testing.expectEqual(@as(usize, 0), widths.original);
             try testing.expectEqual(@as(usize, 30), widths.modified);
+            try testing.expect(widget.inline_mode);
+            var deleted = try widget.modifiedModel().getLineContent(1);
+            defer deleted.deinit();
+            try testing.expectEqualStrings("a", deleted.items);
+            const editor = widget.modified_editor;
+            widget.layout(80, 5);
+            try testing.expect(widget.sideBySide());
+            try testing.expectEqual(editor, widget.modified_editor);
+            var modified = try widget.modifiedModel().getLineContent(1);
+            defer modified.deinit();
+            try testing.expectEqualStrings("b", modified.items);
+            widget.layout(30, 5);
+            try testing.expect(widget.inline_mode);
+            var deleted_again = try widget.modifiedModel().getLineContent(1);
+            defer deleted_again.deinit();
+            try testing.expectEqualStrings("a", deleted_again.items);
         }
 
         test "diffEditorWidget: read-only snapshot editors reject edits" {

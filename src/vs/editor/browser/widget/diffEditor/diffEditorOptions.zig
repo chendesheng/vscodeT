@@ -31,11 +31,18 @@ pub const Options = struct {
     render_overview_ruler: bool = true,
     enable_split_view_resizing: bool = true,
     split_view_default_ratio: f64 = 0.5,
-    /// Below this cell width the modified-only fallback is used.
+    /// Terminal cell projection of the upstream width breakpoint (900px).
     minimum_side_by_side_width: usize = 50,
+    use_inline_view_when_space_is_limited: bool = true,
+
     hide_unchanged_regions: bool = false,
     hide_unchanged_regions_context_line_count: usize = 3,
     hide_unchanged_regions_minimum_line_count: usize = 3,
+
+    pub fn renderSideBySide(self: Options, width: usize) bool {
+        return self.render_side_by_side and width >= 3 and
+            (!self.use_inline_view_when_space_is_limited or width >= self.minimum_side_by_side_width);
+    }
 
     pub fn fromBase(base: ValidDiffEditorBaseOptions) Options {
         return .{
