@@ -8,7 +8,7 @@ const encoding = @import("../../textfile/common/encoding.zig");
 const uri_util = @import("../../../../base/common/stdUri.zig");
 const DiskFileService = @import("../../../../platform/files/common/fileService.zig").DiskFileService;
 const files = @import("../../../../platform/files/common/files.zig");
-const event = @import("../../../../base/common/event.zig");
+const event_mod = @import("../../../../base/common/event.zig");
 
 const resolver = @import("../../../../editor/common/services/resolverService.zig");
 const EditorDocument = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").EditorDocument;
@@ -26,7 +26,7 @@ pub const TextModelResolverService = struct {
     window: *dispatch.Queue,
     collection: ResourceModelCollection,
     file_service: ?files.IFileService = null,
-    file_listener: ?event.SignalSubscription = null,
+    file_listener: ?event_mod.SignalSubscription = null,
     providers: std.ArrayList(*ProviderEntry) = .empty,
     next_provider_id: usize = 0,
     worker: ?*worker_mod.EditorWorkerService = null,
@@ -493,7 +493,7 @@ pub const TextModelResolverService = struct {
 
     pub fn canHandleResource(self: *TextModelResolverService, resource: std.Uri) bool {
         if (std.mem.eql(u8, resource.scheme, "file") or std.mem.eql(u8, resource.scheme, "untitled") or std.mem.eql(u8, resource.scheme, "inmemory")) return true;
-        for (self.providers.items) |entry| if (std.mem.eql(u8, entry.scheme, resource.scheme)) return true;
+        if (self.shouldRefresh(resource)) return true;
         const key = uri_util.resourceKey(self.allocator, resource) catch return false;
         defer self.allocator.free(key);
         return self.collection.entries.contains(key);
