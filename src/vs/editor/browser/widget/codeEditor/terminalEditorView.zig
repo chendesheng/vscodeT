@@ -66,8 +66,6 @@ pub const IEditorView = struct {
         removeOverlayWidget: *const fn (*anyopaque, []const u8) anyerror!void,
         removeContentWidget: *const fn (*anyopaque, []const u8) anyerror!void,
         mouseTargetAt: *const fn (*anyopaque, usize, usize) anyerror!editorBrowser.MouseTarget,
-        setGlyphHover: *const fn (*anyopaque, editorBrowser.MouseTarget) void,
-        clearGlyphHover: *const fn (*anyopaque) void,
         setTopInset: *const fn (*anyopaque, usize) void,
         applyEditorSettings: *const fn (*anyopaque, terminal_editor_config.Reader, ?[]const u8, ?[]const u8) anyerror!bool,
         bindTabFocus: *const fn (*anyopaque, *@import("../../config/tabFocus.zig").TabFocus) anyerror!void,
@@ -193,13 +191,6 @@ pub const IEditorView = struct {
     pub fn mouseTargetAt(self: *IEditorView, x: usize, y: usize) !editorBrowser.MouseTarget {
         return self.vtable.mouseTargetAt(self.context, x, y);
     }
-    pub fn setGlyphHover(self: *IEditorView, target: editorBrowser.MouseTarget) void {
-        self.vtable.setGlyphHover(self.context, target);
-    }
-    pub fn clearGlyphHover(self: *IEditorView) void {
-        self.vtable.clearGlyphHover(self.context);
-    }
-
     pub fn setTopInset(self: *IEditorView, rows: usize) void {
         return self.vtable.setTopInset(self.context, rows);
     }
@@ -381,14 +372,6 @@ pub const IEditorView = struct {
                 const view: *Native = @ptrCast(@alignCast(context));
                 return view.mouseTargetAt(x, y);
             }
-            fn setGlyphHover(context: *anyopaque, target: editorBrowser.MouseTarget) void {
-                const view: *Native = @ptrCast(@alignCast(context));
-                view.setGlyphHover(target);
-            }
-            fn clearGlyphHover(context: *anyopaque) void {
-                const view: *Native = @ptrCast(@alignCast(context));
-                view.clearGlyphHover();
-            }
             fn setTopInset(context: *anyopaque, rows: usize) void {
                 const view: *Native = @ptrCast(@alignCast(context));
                 return view.setTopInset(rows);
@@ -488,8 +471,6 @@ pub const IEditorView = struct {
                 .removeOverlayWidget = @This().removeOverlayWidget,
                 .removeContentWidget = @This().removeContentWidget,
                 .mouseTargetAt = @This().mouseTargetAt,
-                .setGlyphHover = @This().setGlyphHover,
-                .clearGlyphHover = @This().clearGlyphHover,
                 .setTopInset = @This().setTopInset,
                 .applyEditorSettings = @This().applyEditorSettings,
                 .bindTabFocus = @This().bindTabFocus,

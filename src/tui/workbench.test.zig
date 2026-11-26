@@ -12507,3 +12507,77 @@ test "Workbench: git scm integration discovers linked worktrees from status acco
         }
     }
 }
+
+test "Diff editor glyph hover follows real pane mouse targets, settings and boundary leave events" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(a, io, &tmp, "hover.txt", "one\ntwo\nthree\n");
+    defer a.free(path);
+    const settings = try seedFile(a, io, &tmp, "hover-settings.json", "{}");
+    defer a.free(settings);
+    const window = try TestWindow.init(a, io, &.{}, 120, 28);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.setUserSettingsPaths(&.{settings});
+    wb.ensureConfigurationReady();
+    try wb.setUserConfigurationValue("editor.hover.delay", .{ .integer = 10 });
+    try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "one\ntwo\nthree\n", "one\nchanged\nthree\n", "Original", "Modified");
+    const tab = wb.activeTab().?;
+    const diff = tab.diff.?.widget;
+    try std.testing.expect(diff.sideBySide());
+    const model = @import("../vs/editor/common/model.zig");
+    const Range = @import("../vs/editor/common/core/range.zig").Range;
+    var left = model.ModelDecorationOptions.init("left-hover", .AlwaysGrowsWhenTypingAtEdges);
+    left.glyphMarginClassName = "glyph-error";
+    left.glyphMarginHoverMessage = &.{"Original glyph hover"};
+    var right = model.ModelDecorationOptions.init("right-hover", .AlwaysGrowsWhenTypingAtEdges);
+    right.glyphMarginClassName = "glyph-error";
+    right.glyphMarginHoverMessage = &.{"Modified glyph hover"};
+    const left_ids = try diff.originalModel().deltaDecorations(&.{}, &.{.{ .range = Range.init(1, 1, 1, 1), .options = &left }}, 91);
+    defer a.free(left_ids);
+    const right_ids = try diff.modifiedModel().deltaDecorations(&.{}, &.{.{ .range = Range.init(1, 1, 1, 1), .options = &right }}, 91);
+    defer a.free(right_ids);
+    var frame: std.Io.Writer.Allocating = .init(a);
+    defer frame.deinit();
+    try renderFrame(wb, &frame.writer);
+    const GlyphHoverController = @import("../vs/editor/contrib/hover/browser/glyphHoverController.zig").GlyphHoverController;
+    try std.testing.expect(diff.original_editor.getInstantiatedContribution(GlyphHoverController) == null);
+    var mouse: ui.MouseEvent = .{ .kind = .move, .x = 0, .y = 0 };
+    _ = try tab.handleDiffMouse(&mouse);
+    const original = diff.original_editor.getInstantiatedContribution(GlyphHoverController).?;
+    try std.testing.expectEqual(@as(u64, 10), original.settings.delay);
+    const original_widget = original.widget.?;
+    try std.testing.expect(!original_widget.visible);
+    for (0..6) |_| {
+        if (original_widget.timer.pending) |pending| _ = wb.window_events.dispatch(pending.deadline_ms);
+    }
+    try std.testing.expect(original_widget.visible);
+    try renderFrame(wb, &frame.writer);
+    const rendered = try frameText(a, &wb.frame);
+    defer a.free(rendered);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Original glyph hover") != null);
+    mouse.x = diff.paneWidths().modifiedLeft();
+    _ = try tab.handleDiffMouse(&mouse);
+    try std.testing.expect(!original_widget.visible);
+    const modified = diff.modified_editor.getInstantiatedContribution(GlyphHoverController).?;
+    const modified_widget = modified.widget.?;
+    for (0..6) |_| {
+        if (modified_widget.timer.pending) |pending| _ = wb.window_events.dispatch(pending.deadline_ms);
+    }
+    try std.testing.expect(modified_widget.visible);
+    try wb.setUserConfigurationValue("editor.hover.enabled", .{ .string = "off" });
+    try std.testing.expect(!modified_widget.visible);
+    try std.testing.expectEqual(@as(@import("../vs/editor/contrib/hover/browser/hoverUtils.zig").HoverEnabled, .off), modified.settings.enabled);
+    _ = try tab.handleDiffMouse(&mouse);
+    try std.testing.expect(modified_widget.timer.pending == null);
+    try wb.setUserConfigurationValue("editor.hover.enabled", .{ .string = "on" });
+    _ = try tab.handleDiffMouse(&mouse);
+    for (0..6) |_| {
+        if (modified_widget.timer.pending) |pending| _ = wb.window_events.dispatch(pending.deadline_ms);
+    }
+    try std.testing.expect(modified_widget.visible);
+    wb.leaveEditorHover();
+    try std.testing.expect(!original_widget.visible and !modified_widget.visible);
+}

@@ -649,6 +649,17 @@ pub const TerminalViewHost = struct {
         return slot.glyph.tooltip;
     }
 
+    /// Managed glyph-widget hover text, independent of a decoration hover.
+    pub fn glyphWidgetTooltipAt(self: *TerminalViewHost, model_line: usize, lane: @import("../../../common/model.zig").GlyphMarginLane) ?[]const u8 {
+        const view_line = self.editor.viewPositionOfModelPosition(Position.init(model_line, 1)).lineNumber;
+        const lanes = self.glyph_lanes.getLanesAtLine(self.allocator, model_line) catch return null;
+        defer self.allocator.free(lanes);
+        const column = std.mem.indexOfScalar(@TypeOf(lane), lanes, lane) orelse return null;
+        if (column >= 3) return null;
+        const slot = self.glyph_margin.renderedLine(view_line).lanes[column] orelse return null;
+        return if (slot.widget != null) slot.glyph.tooltip else null;
+    }
+
     /// The ported `marginClassName` overlay.
     pub fn marginDecorations(self: *TerminalViewHost) *margin_decorations_mod.MarginViewLineDecorationsOverlay {
         return &self.margin_decorations;

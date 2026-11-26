@@ -857,7 +857,7 @@ pub const Tab = struct {
         if (self.multi_diff) |multi| return multi.dispatchMouse(event);
         const diff = self.diff orelse return false;
         try self.ensureControllers();
-        return diff.widget.dispatchMouseWith(event, .{ .context = self, .dispatch = dispatchDiffPaneMouse });
+        return diff.widget.dispatchMouseWith(event, .{ .context = self, .dispatch = dispatchDiffPaneMouse, .leave = leaveDiffPaneMouse });
     }
 
     fn dispatchDiffPaneMouse(context: *anyopaque, side: @import("../../../../editor/browser/widget/diffEditor/diffEditorWidget.zig").Side, view: *View, event: *ui.MouseEvent) !bool {
@@ -865,9 +865,14 @@ pub const Tab = struct {
         const controllers = (if (side == .original) self.original_controllers else self.controllers) orelse return view.dispatchMouse(event);
         if (event.kind == .move) {
             const other = if (side == .original) self.controllers else self.original_controllers;
-            if (other) |inactive| if (inactive.hover) |hover| hover.hideContentHover();
+            if (other) |inactive| inactive.hideHovers();
         }
         return editor_input_dispatch.handleMouseEvent(view, controllers.hover, controllers.suggest, controllers.editor, event);
+    }
+
+    fn leaveDiffPaneMouse(context: *anyopaque) void {
+        const self: *Tab = @ptrCast(@alignCast(context));
+        self.hideEditorHovers();
     }
 
     pub fn focusedControllers(self: *Tab) ?*Controllers {
@@ -876,8 +881,9 @@ pub const Tab = struct {
     }
 
     pub fn hideEditorHovers(self: *Tab) void {
-        if (self.controllers) |controllers| if (controllers.hover) |hover| hover.hideContentHover();
-        if (self.original_controllers) |controllers| if (controllers.hover) |hover| hover.hideContentHover();
+        if (self.controllers) |controllers| controllers.hideHovers();
+        if (self.original_controllers) |controllers| controllers.hideHovers();
+        if (self.multi_diff) |multi| multi.widget.impl.leaveEditorHover();
     }
 
     pub fn cancelEditorPopups(self: *Tab) void {
@@ -1337,6 +1343,7 @@ pub const Controllers = struct {
     marker_hover_participant: MarkerHoverParticipant,
     participants: [2]hoverTypes.IEditorHoverParticipant,
     hover: ?*ContentHoverController,
+    glyph_hover: ?*@import("../../../../editor/contrib/hover/browser/glyphHoverController.zig").GlyphHoverController,
     word_highlighter: *WordHighlighterContribution,
     word_provider: WordBasedCompletionProvider,
     completion_providers: [2]completion.CompletionItemProvider,
@@ -1352,6 +1359,11 @@ pub const Controllers = struct {
     /// Applies the palette-derived hover code-block background and the find
     /// bar theme. Upstream resolves these through CSS variables and the
     /// workbench theme service; the terminal layer passes the resolved cells.
+    pub fn hideHovers(self: *Controllers) void {
+        if (self.hover) |hover| hover.hideContentHover();
+        if (self.glyph_hover) |glyph| glyph.hideGlyphHover();
+    }
+
     pub fn setThemeColors(self: *Controllers, palette: ?*const theme_colors_mod.ThemeColors) void {
         var code_background: ?ui.Color = null;
         if (palette) |colors| {
@@ -1389,15 +1401,18 @@ pub const Controllers = struct {
                 .selection_foreground = selection_foreground,
             });
             if (self.suggest) |suggest| suggest.setTheme(suggest_theme);
-            if (self.hover) |hover| hover.setTheme(.{
+            const hover_theme: @import("../../../../editor/contrib/hover/browser/contentHoverWidget.zig").Theme = .{
                 .background = colors.color("editorHoverWidget.background", .{ 37, 37, 38 }),
                 .foreground = colors.color("editorHoverWidget.foreground", .{ 204, 204, 204 }),
                 .border = colors.color("editorHoverWidget.border", .{ 69, 69, 69 }),
                 .focused_border = colors.color("focusBorder", .{ 96, 130, 200 }),
                 .scrollbar = colors.color("scrollbarSlider.background", .{ 90, 90, 90 }),
                 .scrollbar_thumb = colors.color("scrollbarSlider.hoverBackground", .{ 160, 160, 160 }),
-            });
+            };
+            if (self.hover) |hover| hover.setTheme(hover_theme);
+            if (self.glyph_hover) |glyph| glyph.setTheme(hover_theme, code_background);
         } else {
+            if (self.glyph_hover) |glyph| glyph.setTheme(.{}, null);
             self.find.setTheme(.{});
         }
         if (self.hover != null) self.hover_participant.setCodeBackground(code_background);
@@ -1412,6 +1427,7 @@ pub const Controllers = struct {
         self.editor = editor;
         self.sticky = null;
         self.hover = null;
+        self.glyph_hover = null;
         self.suggest = null;
         self.code_lens = null;
         self.code_lens_services = null;
@@ -1457,6 +1473,10 @@ pub const Controllers = struct {
         if (editor.getInstantiatedContribution(ContentHoverController) != null) {
             try createHover(self);
         } else try @import("../../../../editor/contrib/hover/browser/hoverContribution.zig").register(editor, self, createHover);
+        const GlyphHoverController = @import("../../../../editor/contrib/hover/browser/glyphHoverController.zig").GlyphHoverController;
+        if (editor.getInstantiatedContribution(GlyphHoverController) != null) {
+            try createGlyphHover(self);
+        } else try @import("../../../../editor/contrib/hover/browser/hoverContribution.zig").registerGlyph(editor, self, createGlyphHover);
         if (editor.getInstantiatedContribution(SuggestController) != null) {
             try createSuggest(self);
         } else try SuggestController.registerFactory(editor, self, createSuggest);
@@ -1518,7 +1538,9 @@ pub const Controllers = struct {
             self.hover_participant.interface(),
         };
 
-        const hover = try ContentHoverController.getOrCreate(editor, &self.participants, .{}, .{
+        const settings = hoverSettings(view);
+        self.hover_participant.show_long_line_warning = settings.show_long_line_warning;
+        const hover = try ContentHoverController.getOrCreate(editor, &self.participants, settings, .{
             .context = view,
             .decoration_context = self.hover_sink.context(),
             .text_height = viewTextHeight,
@@ -1536,6 +1558,16 @@ pub const Controllers = struct {
         if (self.widgets_attached) try view.addContentWidget(hover.widget().contentWidget());
         self.hover = hover;
         self.setThemeColors(view.themeColors());
+    }
+
+    fn createGlyphHover(context: *anyopaque) !void {
+        const self: *Controllers = @ptrCast(@alignCast(context));
+        if (self.glyph_hover != null) return;
+        const GlyphHoverController = @import("../../../../editor/contrib/hover/browser/glyphHoverController.zig").GlyphHoverController;
+        const glyph = try GlyphHoverController.getOrCreate(self.editor, self.view, hoverSettings(self.view));
+        if (self.window) |window| glyph.attachWindow(window);
+        self.glyph_hover = glyph;
+        self.setThemeColors(self.view.themeColors());
     }
 
     fn createSuggest(context: *anyopaque) !void {
@@ -1627,6 +1659,7 @@ pub const Controllers = struct {
         self.find.attachWindow(window);
         self.word_highlighter.attachWindow(window);
         if (self.hover) |hover| hover.attachWindow(window);
+        if (self.glyph_hover) |glyph| glyph.attachWindow(window);
         if (self.sticky) |sticky| sticky.attachWindow(window);
         if (self.suggest) |suggest| suggest.attachWindow(window);
         self.editor.attachContributionWindow(window);
@@ -1635,6 +1668,9 @@ pub const Controllers = struct {
     fn detachDeferredContributions(self: *Controllers) void {
         self.editor.unregisterContributionFactory(StickyScrollController, self);
         self.editor.unregisterContributionFactory(ContentHoverController, self);
+        self.editor.unregisterContributionFactory(@import("../../../../editor/contrib/hover/browser/glyphHoverController.zig").GlyphHoverController, self);
+        if (self.glyph_hover) |glyph| glyph.unbindHost();
+        self.glyph_hover = null;
         self.editor.unregisterContributionFactory(SuggestController, self);
         if (self.sticky) |sticky| {
             if (self.widgets_attached) {
@@ -1712,7 +1748,7 @@ pub const MultiDiffBindingServices = struct {
         return .{
             .context = self,
             .handle_key = handleKey,
-            .mouse_target = .{ .context = self, .dispatch = handleMouse },
+            .mouse_target = .{ .context = self, .dispatch = handleMouse, .leave = leaveMouse },
             .set_theme = setTheme,
             .attach_language = attachLanguage,
             .dispose = dispose,
@@ -1728,8 +1764,13 @@ pub const MultiDiffBindingServices = struct {
         const self: *MultiDiffBindingServices = @ptrCast(@alignCast(context));
         const controllers = if (side == .original) self.original else self.modified;
         const other = if (side == .original) self.modified else self.original;
-        if (event.kind == .move) if (other.hover) |hover| hover.hideContentHover();
+        if (event.kind == .move) other.hideHovers();
         return editor_input_dispatch.handleMouseEvent(view, controllers.hover, controllers.suggest, controllers.editor, event);
+    }
+    fn leaveMouse(context: *anyopaque) void {
+        const self: *MultiDiffBindingServices = @ptrCast(@alignCast(context));
+        self.original.hideHovers();
+        self.modified.hideHovers();
     }
     fn setTheme(context: *anyopaque, palette: ?*const theme_colors_mod.ThemeColors) void {
         const self: *MultiDiffBindingServices = @ptrCast(@alignCast(context));
@@ -1758,7 +1799,33 @@ fn onConfigurationChanged(context: *anyopaque, event: @import("../../../../edito
     const self: *Controllers = @ptrCast(@alignCast(context));
     if (event.hasChanged(.find)) self.find.applyConfiguration(self.view.terminal_view_host.options.get(.find));
     if (event.hasChanged(.occurrencesHighlight) or event.hasChanged(.occurrencesHighlightDelay) or event.hasChanged(.occurrencesHighlightFromAllProviders)) self.word_highlighter.applyConfiguration(wordHighlightSettings(self.view));
+    if (event.hasChanged(.hover) or event.hasChanged(.multiCursorModifier)) {
+        const settings = hoverSettings(self.view);
+        if (self.hover) |hover| {
+            self.hover_participant.show_long_line_warning = settings.show_long_line_warning;
+            hover.updateSettings(settings);
+        }
+        if (self.glyph_hover) |glyph| glyph.applySettings(settings);
+    }
     if (self.sticky) |sticky| sticky.onConfigurationChanged();
+}
+
+fn hoverSettings(view: *View) @import("../../../../editor/contrib/hover/browser/contentHoverController.zig").HoverSettings {
+    const options = &view.terminal_view_host.options;
+    const hover = options.get(.hover);
+    return .{
+        .enabled = hover.enabled,
+        .sticky = hover.sticky,
+        .delay = @intCast(hover.delay),
+        .hiding_delay = @intCast(hover.hiding_delay),
+        .multi_cursor_modifier = switch (options.get(.multiCursorModifier)) {
+            .alt_key => .alt,
+            .ctrl_key => .ctrl,
+            .meta_key => .meta,
+        },
+        .above = hover.above,
+        .show_long_line_warning = hover.show_long_line_warning,
+    };
 }
 
 fn wordHighlightSettings(view: *View) @import("../../../../editor/contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterSettings {

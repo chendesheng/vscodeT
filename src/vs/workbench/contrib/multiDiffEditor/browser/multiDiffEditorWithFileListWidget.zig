@@ -258,6 +258,7 @@ pub fn MultiDiffEditorWithFileListWidget(comptime View: type) type {
                 }
             }
             if (self.isFileListVisible) {
+                if (input.kind == .move and input.x == self.sashX()) self.widget.impl.leaveEditorHover();
                 if (input.x == self.sashX() and input.kind == .down and input.button == .left) {
                     const now = time.milliTimestamp();
                     if (self.last_sash_click) |previous| if (now - previous <= 300) {
@@ -273,6 +274,7 @@ pub fn MultiDiffEditorWithFileListWidget(comptime View: type) type {
                     return true;
                 }
                 if (input.x >= self.listX() and input.x < self.listX() + self.current_list_width) {
+                    if (input.kind == .move) self.widget.impl.leaveEditorHover();
                     if (input.kind == .down and input.button == .left) try self.focusFileList();
                     if (self.file_list) |list| {
                         var translated = input.*;

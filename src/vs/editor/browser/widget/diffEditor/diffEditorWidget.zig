@@ -1523,13 +1523,20 @@ pub fn DiffEditorWidget(comptime View: type) type {
         pub const MouseTarget = struct {
             context: *anyopaque,
             dispatch: *const fn (*anyopaque, Side, *View, *ui.MouseEvent) anyerror!bool,
+            leave: ?*const fn (*anyopaque) void = null,
         };
+
+        pub fn leaveEditorHover(self: *Self) void {
+            if (self.native_input_services) |services| if (services.mouse_target.leave) |leave| leave(services.mouse_target.context);
+        }
 
         pub fn dispatchMouse(self: *Self, event: *ui.MouseEvent) !bool {
             return self.dispatchMouseWith(event, if (self.native_input_services) |services| services.mouse_target else null);
         }
 
         pub fn dispatchMouseWith(self: *Self, event: *ui.MouseEvent, target: ?MouseTarget) !bool {
+            var dispatched = false;
+            defer if (!dispatched and event.kind == .move) if (target) |handler| if (handler.leave) |leave| leave(handler.context);
             if (self.accessible_viewer.visible()) {
                 if (event.kind == .down and event.button == .left) {
                     if (event.y == 0 and event.x >= self.width -| 3 and self.width >= 3 and self.accessible_viewer.can_close) {
@@ -1596,6 +1603,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 if (adjusted.kind == .up and adjusted.x < view.editor.gutterGlyphWidth()) {
                     if (try self.dispatchFoldGlyph(side == .original, view, &adjusted)) return true;
                 }
+                dispatched = true;
                 const handled = if (target) |handler| try handler.dispatch(handler.context, side, view, &adjusted) else try view.dispatchMouse(&adjusted);
                 self.syncScrollFromPane(side);
                 return handled;
@@ -1644,6 +1652,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             if (event.kind == .up and adjusted.x < self.modified_editor.gutterGlyphWidth()) {
                 if (try self.dispatchFoldGlyph(false, self.modified_view, &adjusted)) return true;
             }
+            dispatched = true;
             const handled = if (target) |handler| try handler.dispatch(handler.context, .modified, self.modified_view, &adjusted) else try self.modified_view.dispatchMouse(&adjusted);
             return handled or hover_changed;
         }
@@ -1651,8 +1660,9 @@ pub fn DiffEditorWidget(comptime View: type) type {
         fn dispatchFoldGlyph(self: *Self, original: bool, view: *View, event: *ui.MouseEvent) !bool {
             const mouse = try view.mouseTargetAt(event.x, event.y);
             if (mouse.type != .gutter_glyph_margin or event.x >= 3) return false;
-            const position = mouse.position orelse return false;
-            const slot = view.terminal_view_host.glyphMargin().renderedLine(position.lineNumber).lanes[event.x] orelse return false;
+            _ = mouse.position orelse return false;
+            const view_line = view.editor.viewLineAtViewportRow(event.y) orelse return false;
+            const slot = view.terminal_view_host.glyphMargin().renderedLine(view_line).lanes[event.x] orelse return false;
             if (slot.glyph.interactive or std.mem.indexOf(u8, slot.glyph.class_name, "fold-unchanged") == null) return false;
             return self.hide_unchanged.dispatchFoldGlyph(original, event, mouse);
         }

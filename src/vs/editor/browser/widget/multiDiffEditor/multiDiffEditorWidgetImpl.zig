@@ -136,6 +136,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
         manager: *Manager,
         padding: PaddingItem,
         model: ?*model.MultiDiffEditorViewModel = null,
+        hovered_item: ?*model.DocumentDiffItemViewModel = null,
         items_listener: ?usize = null,
         active_listener: ?usize = null,
         loading_listener: ?usize = null,
@@ -207,6 +208,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
             self.allocator.destroy(self);
         }
         fn detachModel(self: *Self) void {
+            self.leaveEditorHover();
             if (self.model) |value| {
                 if (self.items_listener) |id| value.on_did_change_items.unlisten(id);
                 if (self.active_listener) |id| value.on_did_change_active_item.unlisten(id);
@@ -278,6 +280,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
             if (self.model) |value| if (value.activeDiffItem == item) try self.on_did_change_active_control.fire({});
         }
         fn updateItems(self: *Self) !void {
+            self.leaveEditorHover();
             const items = if (self.model) |value| value.items else &.{};
             self.scroll_view.beginUpdate();
             var ended = false;
@@ -805,8 +808,22 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
                 .toolbar_action => return error.MissingToolbarAnchor,
             }
         }
+        /// The terminal does not have an enclosing browser mouseleave event
+        /// for each embedded editor. Deliver it to mounted children other than
+        /// the hit control when the pointer changes native surfaces.
+        pub fn leaveEditorHover(self: *Self) void {
+            self.leaveEditorHoverExcept(null);
+        }
+
+        fn leaveEditorHoverExcept(self: *Self, next: ?*model.DocumentDiffItemViewModel) void {
+            if (self.hovered_item == next) return;
+            if (self.hovered_item) |previous| if (self.bindingFor(previous)) |binding| if (binding.editor) |editor| editor.leaveEditorHover();
+            self.hovered_item = next;
+        }
+
         pub fn dispatchMouse(self: *Self, event: *ui.MouseEvent) !bool {
             if (event.kind == .wheel) {
+                self.leaveEditorHover();
                 const pos = self.scroll_view.getScrollPosition();
                 try self.setScrollState(@as(isize, @intCast(pos.scrollTop)) + event.delta_y, @as(isize, @intCast(pos.scrollLeft)) + event.delta_x);
                 return true;
@@ -816,6 +833,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
                 if (binding.hidden) continue;
                 const header = binding.headerRange();
                 if (header.contains(row)) {
+                    if (event.kind == .move) self.leaveEditorHover();
                     const item = binding.item;
                     if (event.kind == .down) try item.setActive();
                     const header_action = try binding.dispatchHeaderMouse(event, row - header.start);
@@ -835,6 +853,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
                 if (!binding.item.collapsed and body.contains(row)) {
                     if (event.kind == .down) try self.focusItem(binding.item);
                     if (binding.editor) |editor| {
+                        if (event.kind == .move) self.leaveEditorHoverExcept(binding.item);
                         var local = event.*;
                         local.x -|= self.config.variant.horizontalInsets.left;
                         local.y = row - body.start;
@@ -843,6 +862,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
                         try self.syncInnerScroll(binding, editor.focusedEditor().scrollTop());
                         return handled;
                     }
+                    if (event.kind == .move) self.leaveEditorHover();
                     if (event.kind == .down and event.button == .left and binding.binaryActionHit(event.x, row)) {
                         try self.runItemAction(binding.item, .open_binary_diff);
                         return true;
@@ -850,6 +870,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
                     return false;
                 }
             };
+            if (event.kind == .move) self.leaveEditorHover();
             return false;
         }
         pub fn pointerAt(self: *Self, x: usize, y: usize) !ui.Pointer {

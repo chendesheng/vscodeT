@@ -171,7 +171,9 @@ pub fn handleKeyEvent(
 ) !bool {
     editor.onBeforeInteractionEvent();
     const hover = initial_hover orelse editor.getInstantiatedContribution(ContentHoverController);
+    const glyph_hover = editor.getInstantiatedContribution(@import("../../../contrib/hover/browser/glyphHoverController.zig").GlyphHoverController);
     const suggest = initial_suggest orelse editor.getInstantiatedContribution(SuggestController);
+    if (glyph_hover) |controller| controller.onKeyDown(event);
     if (suggest) |controller| {
         if (try controller.handleKey(event, now_ms)) return false;
     }
@@ -203,23 +205,28 @@ pub fn handleMouseEvent(
 ) !bool {
     editor.onBeforeInteractionEvent();
     const hover = initial_hover orelse editor.getInstantiatedContribution(ContentHoverController);
+    const glyph_hover = editor.getInstantiatedContribution(@import("../../../contrib/hover/browser/glyphHoverController.zig").GlyphHoverController);
     const suggest = initial_suggest orelse editor.getInstantiatedContribution(SuggestController);
     if (event.kind != .move) {
         editor.clearMessage();
     }
 
     const target = try view.mouseTargetAt(event.x, event.y);
-    if (event.kind == .move) {
-        view.setGlyphHover(target);
-    } else {
-        view.clearGlyphHover();
-    }
     const hover_event = hoverTypes.EditorMouseEvent{
         .target = target,
         .x = event.x,
         .y = event.y,
         .mods = event.mods,
         .button = event.button,
+    };
+    if (glyph_hover) |controller| switch (event.kind) {
+        .down => controller.onMouseDown(hover_event),
+        .up => controller.onMouseUp(),
+        .move => switch (target.type) {
+            .status, .unknown, .textarea, .outside_editor => controller.onEditorMouseLeave(hover_event),
+            else => controller.onMouseMove(hover_event),
+        },
+        .wheel, .click => {},
     };
     if (hover) |controller| switch (event.kind) {
         .down => controller.onMouseDown(hover_event),
