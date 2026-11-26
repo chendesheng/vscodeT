@@ -77,13 +77,49 @@ cases and the side-editor live-log/disposal test pass. The source resolver
 retains binary resources but reports and omits other model-resolution errors.
 Range reveal uses a timed model decoration without moving the selection.
 
-Still portable and not yet complete: the generic URI text-model provider and
-reference lifecycle (including quick diff), extension-host multi-diff document
-and Tabs API integration, rebinding existing child code/diff editor widgets
-without reconstructing them, complete upstream input/action fixture coverage,
-and end-to-end large-diff native latency measurement. Browser-only pixel
-geometry, web accessibility-tree traversal and the separate Agents window
-are not reproduced by the terminal.
+### URI model, extension-host and reusable widget checkpoint (2026-11-27)
+
+* `ITextModelService` now owns the canonical URI document reference collection,
+  deferred last-reference disposal, dirty working-model lifetime and registered
+  text-content providers. Asynchronous acquisitions of the same URI share one
+  load, returning independently owned references; canceled or failed loads
+  cannot publish obsolete models. Single and multi-file diff inputs use the
+  same resolver. Multi-diff input owns per-resource acquisition and cancellation,
+  reports failed resources and retains binary placeholders. Provider change
+  events reload existing virtual models in place; Git repository changes use a
+  1,100 ms debounce and wait for window focus, without recreating the input.
+* The extension-host bridge mirrors all real multi-diff documents independently
+  of virtualization. The typed Tabs actor exposes `TabInputTextDiff` and
+  `TabInputTextMultiDiff`, including declared resource pairs. Real editor-group
+  move/close operations, dirty-close confirmation, tab and group change events,
+  and per-resource CodeLens are covered by the Node extension-host suite
+  (19/19 before the reusable-widget change).
+* A pooled multi-diff template now owns one diff widget and two reusable code
+  editor widgets. `CodeEditorWidget.setModel` detaches model registrations,
+  cursor tracking and model-bound view-model state while preserving the widget
+  and its event subscriptions. `DiffEditorWidget.setDiffModel(null)` releases
+  the model-bound Views and features; direct model replacement retains any
+  unchanged side's View and emits a single model-change event for each changed
+  side. The viewport eviction test checks actual pointer identity across two
+  different items, retained model identities and independent restored selections.
+  Native contribution adapters still attach/detach their model-bound bindings
+  with each View; further upstream contribution lifecycle coverage is needed.
+
+The full suite through the initial reusable multi-diff checkpoint passes
+3,611/3,633 (22 skipped; 48/48 build steps). The focused view suite through
+same-model and direct replacement goes further, passing 486/486. The resolver
+fixtures cover provider-event targeting, a newer event during an immutable
+worker capture, and real Git model refresh after window focus. Final full-suite
+and end-to-end verification of later changes are still required.
+
+Still portable and not yet complete: quick-diff original-model reference
+ownership through the URI resolver and shared quick-diff model service,
+remaining native header keyboard and captured pointer interactions, remaining
+upstream action/interaction fixtures and end-to-end large-diff native latency
+measurement. The Git provider's full read-only file-system registration and
+submodule behavior are not yet ported. Browser-only pixel geometry, web
+accessibility-tree traversal and the separate Agents window are not reproduced
+by the terminal.
 
 ## 0. Re-audit update (2026-11-26)
 

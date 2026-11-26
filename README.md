@@ -1327,8 +1327,10 @@ console API for raw mode, sizing and input polling.
   The Graph comparison distinguishes added/deleted sides from binary
   resources, provides sticky file headers, collapse/expand-all and
   Alt-F5/Shift-Alt-F5 navigation across files. View mode is editor-local.
-  The current native code-editor binding API recreates child views when a
-  template is reused; model references and selections survive eviction.
+  Each pooled template retains its diff widget and two code editor widgets;
+  model-specific Views and registrations detach on eviction. A direct model
+  replacement also retains the unchanged side's View. Model references and
+  selections survive eviction.
   Live SCM group and history sources use the registered source resolver and
   preserve surviving document identities as resources change. Explicit
   file pairs resolve without Git, including unsaved working models and encoded
@@ -1339,8 +1341,12 @@ console API for raw mode, sizing and input polling.
   resource URI. Both source-backed and explicit inputs restore through the
   normal session serializer. The Developer layout-debug command opens a
   live JSONL report in a side editor, including geometry edits.
-  A shared general URI model-provider registry and extension-host tab DTO
-  integration remain portable gaps, not terminal limitations.
+  Single and multi-file diff resources share the URI model resolver, including
+  asynchronous model-reference acquisition, cancellation and live provider
+  updates. The extension host mirrors offscreen documents and sends typed
+  diff/multi-diff Tabs API events with actual group move and close operations.
+  Quick diff still uses the earlier snapshot path; see the audit for the
+  remaining portable gaps.
   See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
   Only one repository per workspace folder is shown.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and

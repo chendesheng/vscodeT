@@ -2113,10 +2113,12 @@ header uses a retained typed CSS sheet; browser box shadows are not rendered
 but the sticky-header state remains. Child editor views paint through the
 normal diff renderer into clipped viewports; the shared CellGrid copies only
 intersecting rows without changing the child's layout or scroll coordinates.
-The current native code editor construction API still recreates child view
-instances on rebind, unlike upstream's reusable editor widget. This is a
-portable architectural gap, not a terminal restriction. Graph revision
-sources resolve asynchronously and preserve URI identity, absent sides,
+Each retained template owns its diff widget and both code editor widgets.
+On unbind, the model-bound Views, cursor and feature registrations detach
+through the set-model lifecycle; on direct replacement, existing Views for
+unchanged sides remain attached. The URI model resolver owns shared model
+references and delivers asynchronous provider changes on the window dispatcher.
+Graph revision sources resolve asynchronously and preserve URI identity, absent sides,
 binary placeholders, collapse state and active item across virtualization.
 The live SCM source and explicit resource-pair inputs mount the same pane and
 restore through the editor input serializer. The optional changed-files
