@@ -286,12 +286,10 @@ pub const HideUnchangedRegionsFeature = struct {
 
     /// Upstream's editor mouse-up listener reacts only to the fold-unchanged
     /// glyph. Terminal glyphs own the left margin cell rather than icon DOM.
-    pub fn dispatchFoldGlyph(self: *HideUnchangedRegionsFeature, original: bool, event: *ui.MouseEvent, top_inset: usize) bool {
-        if (event.kind != .up or event.button == .right or self.options.variant == .compact) return false;
+    pub fn dispatchFoldGlyph(self: *HideUnchangedRegionsFeature, original: bool, event: *ui.MouseEvent, target: browser.MouseTarget) bool {
+        if (event.kind != .up or event.button == .right or self.options.variant == .compact or target.type != .gutter_glyph_margin) return false;
         const pane = if (original) &self.original else &self.modified;
-        if (event.x >= pane.editor.gutterGlyphWidth() or event.y < top_inset) return false;
-        const view_line = pane.editor.viewLineAtViewportRow(event.y - top_inset) orelse return false;
-        const line = pane.editor.modelLineNumber(view_line);
+        const line = (target.position orelse return false).lineNumber;
         for (pane.bindings) |*binding| {
             const region = binding.region();
             if (region.shouldHideControls() and line == (if (original) region.original_line_number else region.modified_line_number)) {

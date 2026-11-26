@@ -766,13 +766,17 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 const view = if (side == .original) self.original_view else self.modified_view;
                 var adjusted = event.*;
                 if (side == .modified) adjusted.x -|= widths.original + widths.gutter + widths.moves;
-                if (self.hide_unchanged.dispatchFoldGlyph(side == .original, &adjusted, view.top_inset_rows)) return true;
+                if (adjusted.kind == .up and adjusted.x < view.editor.gutterGlyphWidth()) {
+                    if (self.hide_unchanged.dispatchFoldGlyph(side == .original, &adjusted, try view.mouseTargetAt(adjusted.x, adjusted.y))) return true;
+                }
                 const handled = if (target) |handler| try handler.dispatch(handler.context, side, view, &adjusted) else try view.dispatchMouse(&adjusted);
                 self.syncScrollFromPane(side);
                 return handled;
             }
             if (event.kind == .down) self.setFocus(.modified);
-            if (self.hide_unchanged.dispatchFoldGlyph(false, event, self.modified_view.top_inset_rows)) return true;
+            if (event.kind == .up and event.x < self.modified_editor.gutterGlyphWidth()) {
+                if (self.hide_unchanged.dispatchFoldGlyph(false, event, try self.modified_view.mouseTargetAt(event.x, event.y))) return true;
+            }
             const handled = if (target) |handler| try handler.dispatch(handler.context, .modified, self.modified_view, event) else try self.modified_view.dispatchMouse(event);
             return handled;
         }
