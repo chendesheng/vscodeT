@@ -62,6 +62,7 @@ pub const FileSnapshotRequest = struct {
         defer files.deinit();
         var data = files.readFile(value.path) catch |err| {
             if (err == error.OutOfMemory) return err;
+            resource.failure = err;
             return .{ .resource = resource };
         };
         defer data.deinit(allocator);

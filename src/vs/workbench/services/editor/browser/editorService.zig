@@ -794,7 +794,7 @@ pub const EditorOpening = struct {
                 opening.setStatusHint("Open changes failed: {s}", .{@errorName(err)});
                 return true;
             };
-            opening.clearStatusHint();
+            if (self.input.last_resolution_failure) |failure| opening.setStatusHint("Some changed files could not be resolved: {s}", .{@errorName(failure)}) else opening.clearStatusHint();
             opening.host.request_frame(opening.host.context);
             return true;
         }
@@ -885,11 +885,21 @@ pub const EditorOpening = struct {
             }
             items.deinit(self.allocator);
         }
+        input.last_resolution_failure = null;
         for (snapshots) |snapshot| {
-            const texts = snapshot.texts orelse continue;
+            const texts = snapshot.texts orelse {
+                if (input.last_resolution_failure == null) input.last_resolution_failure = snapshot.failure;
+                continue;
+            };
             const a = if (snapshot.original_exists) texts.original_resource else null;
             const b = if (snapshot.modified_exists) texts.modified_resource else null;
             if (a == null and b == null) continue;
+            const original_failure = if (a) |resource| resource.failure else null;
+            const modified_failure = if (b) |resource| resource.failure else null;
+            if (if (original_failure != null) original_failure else modified_failure) |failure| {
+                if (input.last_resolution_failure == null) input.last_resolution_failure = failure;
+                continue;
+            }
             const binary = (a != null and !texts.original_available) or (b != null and !texts.modified_available);
             const original = if (a) |resource| try self.resolveMultiDiffSide(&existing_resources, resource, texts.original, binary, "Original") else null;
             errdefer releaseMultiDiffResolvedSide(original);

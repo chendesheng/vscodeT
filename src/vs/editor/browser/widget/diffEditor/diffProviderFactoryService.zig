@@ -24,6 +24,8 @@ pub const SnapshotSource = struct {
         /// unsupported snapshot side. Only these may become working copies.
         is_working_file: bool = false,
         encoding: ?@import("../../../../workbench/services/textfile/common/encoding.zig").Encoding = null,
+        /// Non-binary resolution failures are distinct from unsupported text.
+        failure: ?anyerror = null,
     };
 
     pub const Texts = struct {

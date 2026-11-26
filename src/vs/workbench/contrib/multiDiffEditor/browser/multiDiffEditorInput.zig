@@ -48,6 +48,7 @@ pub const MultiDiffEditorInput = struct {
     source_label_listener: ?SignalSubscription = null,
     resolved_label: ?[]u8 = null,
     resolved_resource_count: ?usize = null,
+    last_resolution_failure: ?anyerror = null,
     initial_resources_arena: ?std.heap.ArenaAllocator = null,
     initial_resources: ?[]const source_mod.MultiDiffEditorItem = null,
 

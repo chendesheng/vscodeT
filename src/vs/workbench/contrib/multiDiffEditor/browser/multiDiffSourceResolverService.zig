@@ -172,7 +172,7 @@ pub const ResourceSnapshotProvider = struct {
         for (resources, items) |resource, *item| {
             const snapshot = self.capture(self.context, resource) catch |err| switch (err) {
                 error.OutOfMemory => return err,
-                else => try UnavailableSnapshotRequest.capture(resource),
+                else => try UnavailableSnapshotRequest.capture(resource, err),
             };
             errdefer snapshot.destroy(snapshot.context);
             const uri = if (resource.goToFileUri) |value| try std_uri.encodedResource(allocator, value) else null;
@@ -185,32 +185,33 @@ pub const ResourceSnapshotProvider = struct {
     }
 };
 
-/// Keep the resource identity when a provider cannot provide a text model,
-/// just as MultiDiffEditorInput retains a binary/unresolved DiffItemSource.
+/// Carry the exact resource and non-binary provider error to the input.
+/// The input drops failed resolutions while still retaining binary items.
 const UnavailableSnapshotRequest = struct {
     arena: std.heap.ArenaAllocator,
     item: MultiDiffEditorItem,
-    fn capture(item: MultiDiffEditorItem) !SnapshotSource {
+    failure: anyerror,
+    fn capture(item: MultiDiffEditorItem, failure: anyerror) !SnapshotSource {
         const self = try std.heap.page_allocator.create(UnavailableSnapshotRequest);
         errdefer std.heap.page_allocator.destroy(self);
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         errdefer arena.deinit();
         const copy = try StaticResolvedMultiDiffSource.cloneItems(arena.allocator(), &.{item});
-        self.* = .{ .arena = arena, .item = copy[0] };
+        self.* = .{ .arena = arena, .item = copy[0], .failure = failure };
         return .{ .context = self, .read = read, .destroy = destroy };
     }
-    fn resource(a: Allocator, value: ?std.Uri) !?SnapshotSource.Resource {
+    fn resource(a: Allocator, value: ?std.Uri, failure: anyerror) !?SnapshotSource.Resource {
         const uri = value orelse return null;
         const owned = try std.Uri.parse(try std_uri.encodedResource(a, uri));
-        return .{ .uri = owned, .path = try std_uri.fsPath(owned, a) };
+        return .{ .uri = owned, .path = try std_uri.fsPath(owned, a), .failure = failure };
     }
     fn read(context: *anyopaque, a: Allocator) !SnapshotSource.Texts {
         const self: *UnavailableSnapshotRequest = @ptrCast(@alignCast(context));
         return .{
             .original = "",
             .modified = "",
-            .original_resource = try resource(a, self.item.originalUri),
-            .modified_resource = try resource(a, self.item.modifiedUri),
+            .original_resource = try resource(a, self.item.originalUri, self.failure),
+            .modified_resource = try resource(a, self.item.modifiedUri, self.failure),
             .original_available = false,
             .modified_available = false,
         };
