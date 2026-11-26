@@ -78,6 +78,7 @@ pub fn VirtualizedItemManager(comptime Item: type, comptime Binding: type, compt
         delegate: Delegate,
         view: *scroll.CompressedVirtualizedScrollView,
         items: []*ManagedVirtualizedItem = &.{},
+        trailing_item: ?scroll.ICompressedVirtualizedScrollItem = null,
         pools: std.ArrayList(*TemplatePool) = .empty,
 
         pub const ManagedVirtualizedItem = struct {
@@ -233,7 +234,7 @@ pub fn VirtualizedItemManager(comptime Item: type, comptime Binding: type, compt
             errdefer if (!transferred) self.allocator.free(next);
             const reused = try self.allocator.alloc(bool, items.len);
             defer self.allocator.free(reused);
-            const interfaces = try self.allocator.alloc(scroll.ICompressedVirtualizedScrollItem, items.len);
+            const interfaces = try self.allocator.alloc(scroll.ICompressedVirtualizedScrollItem, items.len + @as(usize, if (self.trailing_item != null) 1 else 0));
             defer self.allocator.free(interfaces);
             var initialized: usize = 0;
             errdefer if (!transferred) for (next[0..initialized], reused[0..initialized]) |item, was_reused| {
@@ -252,6 +253,7 @@ pub fn VirtualizedItemManager(comptime Item: type, comptime Binding: type, compt
                 initialized += 1;
                 interfaces[i] = next[i].interface();
             }
+            if (self.trailing_item) |padding| interfaces[items.len] = padding;
             self.view.beginUpdate();
             self.view.setItems(interfaces) catch |err| {
                 self.view.endUpdate() catch {};

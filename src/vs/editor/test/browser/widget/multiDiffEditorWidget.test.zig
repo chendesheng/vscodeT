@@ -91,3 +91,277 @@ test "MultiDiffEditorWidget: binary sources and option updates are distinct from
     try testing.expect(item.diffEditorViewModel.is_diff_up_to_date);
     try testing.expect(item.options.hide_unchanged_regions);
 }
+
+const ui = @import("ui");
+const widget_mod = @import("../../../browser/widget/multiDiffEditor/multiDiffEditorWidget.zig");
+const variant_mod = @import("../../../browser/widget/multiDiffEditor/multiDiffEditorOptions.zig");
+
+test "MultiDiffEditorWidget: uses closed variant configurations" {
+    try testing.expectEqualSlices(variant_mod.MultiDiffEditorVariant, &.{ .cards, .noCards, .noCardsNonCompact }, &variant_mod.multiDiffEditorVariants);
+    const cards = variant_mod.getMultiDiffEditorVariantConfiguration(.cards);
+    const compact = variant_mod.getMultiDiffEditorVariantConfiguration(.noCards);
+    const standard = variant_mod.getMultiDiffEditorVariantConfiguration(.noCardsNonCompact);
+    try testing.expectEqual(.compact, cards.diffEditorVariant.?);
+    try testing.expectEqualStrings("multiDiffEditor-card", cards.classNames[1]);
+    try testing.expectEqual(@as(usize, 1), cards.horizontalInsets.left);
+    try testing.expectEqual(@as(usize, 2), cards.headerHeight);
+    try testing.expect(cards.headerClickToCollapse and cards.hideOriginalLineNumbers);
+    try testing.expectEqualStrings("multiDiffEditor-compact", compact.classNames[0]);
+    try testing.expectEqual(@as(usize, 0), compact.horizontalInsets.left);
+    try testing.expectEqual(@as(usize, 1), compact.contentBottomPadding);
+    try testing.expect(compact.headerClickToCollapse and compact.hideOriginalLineNumbers);
+    try testing.expectEqualStrings("multiDiffEditor-standard", standard.classNames[0]);
+    try testing.expectEqual(@as(usize, 1), standard.horizontalInsets.left);
+    try testing.expect(!standard.headerClickToCollapse and !standard.hideOriginalLineNumbers);
+}
+
+fn textItem(path: []const u8, original_text: []const u8, modified_text: []const u8) !*model.IDocumentDiffItem {
+    const original = try EditorDocument.createFromText(testing.allocator, testing.io, path, original_text, .{ .scheme = "inmemory", .host = .{ .raw = "original" }, .path = .{ .raw = path } });
+    defer original.release();
+    const modified = try EditorDocument.createFromText(testing.allocator, testing.io, path, modified_text, .{ .scheme = "inmemory", .host = .{ .raw = "modified" }, .path = .{ .raw = path } });
+    defer modified.release();
+    return model.IDocumentDiffItem.create(testing.allocator, source(original), source(modified), .{});
+}
+
+pub fn Tests(comptime View: type) type {
+    return struct {
+        const Widget = widget_mod.MultiDiffEditorWidget(View);
+        const Fixture = struct {
+            documents: model.MultiDiffEditorModel = undefined,
+            queue: dispatch.Queue = .{ .io = testing.io },
+            widget: *Widget = undefined,
+            vm: *view_model.MultiDiffEditorViewModel = undefined,
+            opened_binary: usize = 0,
+            opened_file: usize = 0,
+
+            fn init(self: *@This(), items: []const *model.IDocumentDiffItem, variant: variant_mod.MultiDiffEditorVariant, width: usize, height: usize) !void {
+                self.documents = .init(testing.allocator);
+                errdefer self.documents.deinit();
+                try self.documents.setDocuments(.{ .items = items });
+                self.widget = try Widget.create(testing.allocator, testing.io, &self.queue, .{ .context = self, .view_factory = View.init, .open_file = openFile, .open_binary_diff = openBinaryDiff }, variant);
+                errdefer self.widget.destroy();
+                self.vm = try self.widget.createViewModel(self.documents.interface(), null);
+                errdefer self.vm.destroy();
+                errdefer self.widget.setViewModel(null, .{}) catch {};
+                try self.widget.layout(width, height);
+                try self.widget.setViewModel(self.vm, .{ .preserveFocus = true });
+                try testing.expect(self.widget.impl.last_error == null);
+            }
+            fn deinit(self: *@This()) void {
+                self.widget.destroy();
+                self.vm.destroy();
+                self.documents.deinit();
+            }
+            fn openFile(context: *anyopaque, _: std.Uri) !void {
+                const self: *@This() = @ptrCast(@alignCast(context));
+                self.opened_file += 1;
+            }
+            fn openBinaryDiff(context: *anyopaque, _: std.Uri, _: std.Uri) !void {
+                const self: *@This() = @ptrCast(@alignCast(context));
+                self.opened_binary += 1;
+            }
+            fn scroll(self: *@This(), top: isize) !void {
+                try self.widget.impl.setScrollState(top, null);
+                try testing.expect(self.widget.impl.last_error == null);
+            }
+        };
+
+        test "View: MultiDiffEditorWidget resolves original line number visibility from variant and explicit options" {
+            const item = try textItem("/line-numbers.js", "const value = 1;", "const value = 2;");
+            defer item.release();
+            var f: Fixture = .{};
+            try f.init(&.{item}, .noCards, 80, 15);
+            defer f.deinit();
+            try f.widget.setRenderSideBySide(false);
+            try testing.expectEqual(@as(usize, 0), f.widget.activeControl().?.paneWidths().original);
+            try item.setHideOriginalLineNumbers(false);
+            try testing.expect(f.widget.activeControl().?.paneWidths().original > 0);
+            try item.setHideOriginalLineNumbers(true);
+            try testing.expectEqual(@as(usize, 0), f.widget.activeControl().?.paneWidths().original);
+            try item.setHideOriginalLineNumbers(null);
+            try f.widget.setVariant(.cards);
+            try testing.expectEqual(@as(usize, 0), f.widget.activeControl().?.paneWidths().original);
+            try f.widget.setVariant(.noCardsNonCompact);
+            try testing.expect(f.widget.activeControl().?.paneWidths().original > 0);
+        }
+
+        test "View: MultiDiffEditorWidget exposes host view model and only visible templates" {
+            const a = try textItem("/first.txt", "a\nb\nc\nd\ne\nf", "A\nB\nC\nD\nE\nF");
+            defer a.release();
+            const b = try textItem("/second.txt", "x\ny\nz", "X\nY\nZ");
+            defer b.release();
+            const c = try textItem("/third.txt", "one\ntwo\nthree", "ONE\nTWO\nTHREE");
+            defer c.release();
+            var f: Fixture = .{};
+            try f.init(&.{ a, b, c }, .noCardsNonCompact, 80, 5);
+            defer f.deinit();
+            try testing.expectEqual(f.vm, f.widget.getViewModel().?);
+            try testing.expect(f.widget.impl.bindingFor(f.vm.items[0]) != null);
+            try testing.expect(f.widget.impl.bindingFor(f.vm.items[2]) == null);
+            const first = f.widget.activeControl().?;
+            try testing.expectEqual(a.original.?.textModel.?.model, first.originalModel());
+            try testing.expectEqual(a.modified.?.textModel.?.model, first.modifiedModel());
+            var frame = try ui.Frame.init(testing.allocator, 80, 5);
+            defer frame.deinit();
+            frame.begin();
+            try f.widget.paint(&frame, 0, 0, 80, 5);
+            var header_found = false;
+            for (0..5) |row| {
+                const text = try frame.next.rowText(testing.allocator, row);
+                defer testing.allocator.free(text);
+                header_found = header_found or std.mem.indexOf(u8, text, "first.txt") != null;
+            }
+            try testing.expect(header_found);
+            try f.scroll(@intCast(f.widget.impl.scroll_view.layout.scrollHeight));
+            try testing.expect(f.widget.impl.bindingFor(f.vm.items[0]) == null);
+            try testing.expect(f.widget.impl.bindingFor(f.vm.items[2]) != null);
+            try testing.expectEqual(@as(usize, 0), f.vm.items[0].diffEditorViewModel.mounted_view_count);
+            try testing.expect(f.vm.items[0].diffEditorViewModel.is_diff_up_to_date);
+        }
+
+        test "View: MultiDiffEditorWidget renders binary files as a placeholder" {
+            const binary = try model.IDocumentDiffItem.create(testing.allocator, .{ .uri = .{ .scheme = "git", .path = .{ .raw = "/image.png" } } }, .{ .uri = .{ .scheme = "file", .path = .{ .raw = "/image.png" } } }, .{});
+            defer binary.release();
+            var f: Fixture = .{};
+            try f.init(&.{binary}, .noCardsNonCompact, 70, 12);
+            defer f.deinit();
+            const binding = f.widget.impl.bindingFor(f.vm.items[0]).?;
+            try testing.expect(binding.editor == null);
+            var frame = try ui.Frame.init(testing.allocator, 70, 12);
+            defer frame.deinit();
+            frame.begin();
+            try f.widget.paint(&frame, 0, 0, 70, 12);
+            var placeholder = false;
+            var open_diff = false;
+            for (0..12) |row| {
+                const text = try frame.next.rowText(testing.allocator, row);
+                defer testing.allocator.free(text);
+                placeholder = placeholder or std.mem.indexOf(u8, text, "Binary file changed") != null;
+                open_diff = open_diff or std.mem.indexOf(u8, text, "Open Diff") != null;
+            }
+            try testing.expect(placeholder and open_diff);
+            var enter: ui.KeyEvent = .{ .key = .enter };
+            try testing.expect(try f.widget.dispatchKey(&enter));
+            try testing.expectEqual(@as(usize, 1), f.opened_binary);
+        }
+
+        test "View: MultiDiffEditorWidget models bottom padding as trailing scroll content" {
+            const item = try textItem("/one", "abc", "xyz");
+            defer item.release();
+            var f: Fixture = .{};
+            try f.init(&.{item}, .noCardsNonCompact, 80, 8);
+            defer f.deinit();
+            const before = f.widget.impl.scroll_view.layout.logicalScrollHeight;
+            try f.widget.setPaddingBottom(13);
+            const layout = &f.widget.impl.scroll_view.layout;
+            try testing.expectEqual(@as(usize, 2), layout.items.len);
+            try testing.expectEqual(before + 13, layout.logicalScrollHeight);
+            try testing.expectEqual(@as(usize, 13), layout.items[1].contentRange.length());
+        }
+
+        test "View: MultiDiffEditorWidget uses the taller side while binding a deleted file" {
+            const doc_a = try doc("/deleted.txt", "a\nb\nc\nd\ne\nf\ng\nh\ni\nj");
+            defer doc_a.release();
+            const deleted = try model.IDocumentDiffItem.create(testing.allocator, source(doc_a), null, .{});
+            defer deleted.release();
+            var f: Fixture = .{};
+            try f.init(&.{deleted}, .noCardsNonCompact, 80, 6);
+            defer f.deinit();
+            const binding = f.widget.impl.bindingFor(f.vm.items[0]).?;
+            try testing.expectEqual(@as(usize, 10), binding.measured_height);
+            try testing.expectEqual(@as(usize, 12), binding.getExpandedContentHeight());
+        }
+
+        test "View: MultiDiffEditorWidget switches variants while preserving state and focus" {
+            const a = try textItem("/variant-switch.js", "const value = 1;\nconst other = 1;", "const value = 2;\nconst other = 1;");
+            defer a.release();
+            const b = try textItem("/variant-switch-second.js", "const second = 1;", "const second = 2;");
+            defer b.release();
+            var f: Fixture = .{};
+            try f.init(&.{ a, b }, .noCards, 80, 4);
+            defer f.deinit();
+            try f.widget.setRenderSideBySide(false);
+            try f.vm.items[1].setCollapsed(true);
+            try f.widget.setFocused(true);
+            const active = f.widget.activeControl().?;
+            const Selection = @import("../../../common/core/selection.zig").Selection;
+            try active.modified_editor.setSelections(&.{Selection.init(1, 7, 1, 12)});
+            try f.scroll(1);
+            var saved = try f.widget.getViewState(testing.allocator);
+            defer saved.deinit();
+            const old_impl = @intFromPtr(f.widget.impl);
+            try f.widget.setVariant(.cards);
+            try testing.expect(old_impl != @intFromPtr(f.widget.impl));
+            try testing.expectEqual(.cards, f.widget.impl.variant);
+            try testing.expect(f.vm.items[1].collapsed);
+            try testing.expect(f.widget.activeControl().?.modified_view.isFocused());
+            var after = try f.widget.getViewState(testing.allocator);
+            defer after.deinit();
+            try testing.expectEqualStrings(saved.activeDiffItemKey.?, after.activeDiffItemKey.?);
+            try testing.expectEqualSlices(Selection, saved.docStates[0].selections.?, after.docStates[0].selections.?);
+            try testing.expectEqual(saved.scrollState, after.scrollState);
+        }
+
+        test "View: MultiDiffEditorWidget user navigation supersedes clamped restored scroll state" {
+            const first = try model.IDocumentDiffItem.create(testing.allocator, .{ .uri = .{ .scheme = "git", .path = .{ .raw = "/first.png" } } }, .{ .uri = .{ .scheme = "file", .path = .{ .raw = "/first.png" } } }, .{});
+            defer first.release();
+            const second = try model.IDocumentDiffItem.create(testing.allocator, .{ .uri = .{ .scheme = "git", .path = .{ .raw = "/second.png" } } }, .{ .uri = .{ .scheme = "file", .path = .{ .raw = "/second.png" } } }, .{});
+            defer second.release();
+            var f: Fixture = .{};
+            try f.init(&.{ first, second }, .noCardsNonCompact, 80, 4);
+            defer f.deinit();
+            const restore: widget_mod.IMultiDiffEditorViewState = .{ .allocator = testing.allocator, .scrollState = .{ .scrollTop = 1000, .scrollLeft = 0 }, .docStates = &.{}, .activeDiffItemKey = null };
+            try f.widget.setViewState(restore);
+            const restored = f.widget.impl.scroll_view.getScrollPosition().scrollTop;
+            try testing.expectEqual(@as(usize, 10), restored);
+            try f.widget.setPaddingBottom(2);
+            try testing.expectEqual(restored + 2, f.widget.impl.scroll_view.getScrollPosition().scrollTop);
+            try f.widget.reveal(.{ .original = first.original.?.uri, .modified = first.modified.?.uri }, null);
+            try testing.expectEqual(@as(usize, 0), f.widget.impl.scroll_view.getScrollPosition().scrollTop);
+            try f.widget.setPaddingBottom(6);
+            try testing.expectEqual(@as(usize, 0), f.widget.impl.scroll_view.getScrollPosition().scrollTop);
+        }
+
+        test "View: MultiDiffEditorWidget applies document and responsive options before binding the shared diff model" {
+            const item = try textItem("/test.js", "const value = 1;", "const value = 2;");
+            defer item.release();
+            var options = item.options;
+            options.original_editable = true;
+            options.sticky_scroll_enabled = false;
+            try item.updateOptions(options);
+            var f: Fixture = .{};
+            try f.init(&.{item}, .noCardsNonCompact, 40, 10);
+            defer f.deinit();
+            try f.widget.setDiffLayoutOptions(.automatic, null);
+            const control = f.widget.activeControl().?;
+            try testing.expectEqual(&f.vm.items[0].diffEditorViewModel, control.view_model);
+            try testing.expect(!control.original_editor.isReadOnly());
+            try testing.expectEqual(@as(?bool, false), control.options.sticky_scroll_enabled);
+            try testing.expect(control.options.render_side_by_side and control.options.use_inline_view_when_space_is_limited);
+            try testing.expect(!control.sideBySide());
+            try f.widget.layout(80, 10);
+            try testing.expect(control.sideBySide());
+            try testing.expectEqual(control, f.widget.activeControl().?);
+        }
+
+        test "View: MultiDiffEditorWidget preserves expanded height when a collapsed template is recycled" {
+            const a = try textItem("/first.txt", "a\nb\nc\nd\ne\nf\ng\nh", "A\nB\nC\nD\nE\nF\nG\nH");
+            defer a.release();
+            const b = try textItem("/second.txt", "a\nb\nc\nd\ne\nf\ng\nh", "A\nB\nC\nD\nE\nF\nG\nH");
+            defer b.release();
+            var f: Fixture = .{};
+            try f.init(&.{ a, b }, .noCardsNonCompact, 80, 5);
+            defer f.deinit();
+            const first = f.vm.items[0];
+            const expanded = f.widget.impl.bindingFor(first).?.getExpandedContentHeight();
+            try first.setCollapsed(true);
+            try testing.expectEqual(@as(usize, 2), f.widget.impl.manager.items[0].size());
+            try f.scroll(@intCast(f.widget.impl.scroll_view.layout.scrollHeight));
+            try testing.expect(f.widget.impl.bindingFor(first) == null);
+            try testing.expectEqual(expanded, first.lastTemplateData.expandedContentHeight);
+            try f.scroll(0);
+            try first.setCollapsed(false);
+            try testing.expectEqual(expanded, f.widget.impl.bindingFor(first).?.getExpandedContentHeight());
+        }
+    };
+}

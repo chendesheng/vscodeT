@@ -210,6 +210,10 @@ pub const CompressedVirtualizedScrollView = struct {
         return null;
     }
 
+    pub fn invalidateLayout(self: *CompressedVirtualizedScrollView) !void {
+        try self.requestUpdate();
+    }
+
     fn requestUpdate(self: *CompressedVirtualizedScrollView) !void {
         self.update_pending = true;
         if (self.transaction_depth > 0 or self.updating) return;
