@@ -636,15 +636,21 @@ pub fn Tests(comptime ViewType: type) type {
             defer controller.deinit();
 
             const widget = controller.widget();
+            widget.attachViewZones(editor, view.terminal_view_host, view.viewZones());
             try controller.open(false);
             try std.testing.expectEqual(@as(usize, 1), widget.viewZoneRows());
+            try std.testing.expect(widget.view_zone_id != null);
+            try std.testing.expectEqual(@as(usize, 1), widget.view_zone_height);
             widget.toggleReplace();
             try std.testing.expectEqual(@as(usize, 2), widget.viewZoneRows());
+            try std.testing.expectEqual(@as(usize, 2), widget.view_zone_height);
 
             widget.setAddExtraSpaceOnTop(false);
             try std.testing.expectEqual(@as(usize, 0), widget.viewZoneRows());
+            try std.testing.expect(widget.view_zone_id == null);
             widget.setAddExtraSpaceOnTop(true);
             try std.testing.expectEqual(@as(usize, 2), widget.viewZoneRows());
+            try std.testing.expectEqual(@as(usize, 2), widget.view_zone_height);
         }
 
         test "FindController: Up/Down navigate find input history" {

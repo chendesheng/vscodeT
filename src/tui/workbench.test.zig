@@ -5979,7 +5979,17 @@ test "Workbench: the find bar reserves a view-zone row" {
     defer workbench_window.deinit();
     const tab = workbench.activeTab().?;
     try tab.ensureControllers();
-    tab.controllers.?.find.widget().open();
+    const find = tab.controllers.?.find.widget();
+    find.open();
+    // The model-anchored zone is present before the next paint, rather than
+    // being discovered by a top-inset comparison during Tab.paint.
+    const zone = find.view_zone_id orelse return error.TestExpectedFindZone;
+    try std.testing.expectEqual(@as(usize, 1), find.view_zone_height);
+    try std.testing.expectEqual(@as(usize, 1), tab.editor.visibleRowOfViewLine(1).?);
+    try std.testing.expectEqual(@as(usize, 0), tab.top_view_zone_rows);
+    var saved = try tab.editor.saveViewState(allocator);
+    defer saved.deinit(allocator);
+    try std.testing.expect(saved.contributionsState.@"editor.contrib.findController".?.widgetViewZoneVisible);
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -5990,12 +6000,59 @@ test "Workbench: the find bar reserves a view-zone row" {
     const row = try workbench.frame.prev.rowText(allocator, top + 1);
     defer allocator.free(row);
     try std.testing.expect(std.mem.indexOf(u8, row, "alpha") != null);
-    try std.testing.expectEqual(@as(usize, 1), tab.top_view_zone_rows);
+    try std.testing.expectEqual(@as(usize, 0), tab.top_view_zone_rows);
 
     _ = tab.editor.scrollViewLines(3);
-    tab.view.invalidate();
+    try std.testing.expectEqualStrings(zone, find.view_zone_id.?);
+    try std.testing.expect(!find.getViewState().widgetViewZoneVisible);
     try renderFrame(workbench, &out.writer);
     try std.testing.expectEqual(@as(usize, 0), tab.top_view_zone_rows);
+    try tab.editor.restoreViewState(saved);
+    try std.testing.expect(find.getViewState().widgetViewZoneVisible);
+    try std.testing.expectEqual(@as(usize, 1), tab.editor.visibleRowOfViewLine(1).?);
+
+    find.toggleReplace();
+    try std.testing.expectEqualStrings(zone, find.view_zone_id.?);
+    try std.testing.expectEqual(@as(usize, 2), find.view_zone_height);
+    find.setAddExtraSpaceOnTop(false);
+    try std.testing.expect(find.view_zone_id == null);
+    try std.testing.expectEqual(@as(usize, 0), tab.editor.visibleRowOfViewLine(1).?);
+    find.close();
+}
+
+test "Diff editor commands: each find overlay owns a real view zone on its model" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(a, io, &tmp, "find_diff.txt", "before\nline 2\nline 3\nline 4\nline 5\n");
+    defer a.free(path);
+    const window = try TestWindow.init(a, io, &.{}, 120, 20);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "before\nline 2\nline 3\nline 4\nline 5\n", "after\nline 2\nline 3\nline 4\nline 5\n", "Original", "Modified");
+    const tab = wb.activeTab().?;
+    const widget = tab.diff.?.widget;
+    const original_model = widget.originalModel();
+    const modified_model = widget.modifiedModel();
+    try tab.ensureControllers();
+    const modified = tab.controllers.?.find.widget();
+    const original = tab.original_controllers.?.find.widget();
+    widget.setFocus(.modified);
+    try wb.commands.execute("actions.find");
+    try std.testing.expect(modified.view_zone_id != null);
+    try std.testing.expect(original.view_zone_id == null);
+    try std.testing.expectEqual(@as(usize, 0), widget.modified_editor.top_inset_rows);
+    widget.setFocus(.original);
+    try wb.commands.execute("actions.find");
+    try std.testing.expect(original.view_zone_id != null);
+    try std.testing.expect(modified.view_zone_id != null);
+    try std.testing.expectEqual(@as(usize, 0), widget.original_editor.top_inset_rows);
+    modified.close();
+    try std.testing.expect(modified.view_zone_id == null);
+    try std.testing.expect(original.view_zone_id != null);
+    try std.testing.expectEqual(original_model, widget.originalModel());
+    try std.testing.expectEqual(modified_model, widget.modifiedModel());
 }
 
 test "startup opens files at the laid-out pane width with one wrapping pass" {

@@ -18,9 +18,9 @@
 // input histories are kept host-side and navigated with Up/Down.
 // `findOnType`, `closeOnResult`, `loop`, `seedSearchStringFromSelection` and
 // history enablement are host-resolved options. The browser
-// `FindWidgetViewZone` becomes a terminal top inset: while the bar is visible
-// and `editor.find.addExtraSpaceOnTop` is enabled, the editor reserves the
-// bar's 1-2 rows above line 1 and shifts text/hit testing below it.
+// `FindWidgetViewZone` uses the shared model-anchored ViewZones part, with
+// terminal cell heights rather than browser pixels. Its spacer scrolls with
+// the content while the overlay remains fixed at the top-right corner.
 // Ctrl-H cannot be used for replace because terminals report it as
 // Backspace; the replace row is on Ctrl-R instead.
 
@@ -32,6 +32,14 @@ const editorBrowser = @import("../../../browser/editorBrowser.zig");
 const find_state = @import("./findState.zig");
 const FindReplaceState = find_state.FindReplaceState;
 const FindModel = @import("./findModel.zig").FindModel;
+const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const ViewZones = @import("../../../browser/viewParts/viewZones/viewZones.zig").ViewZones;
+const ViewHost = @import("../../../browser/widget/codeEditor/terminalViewHost.zig").TerminalViewHost;
+const ViewEventHandler = @import("../../../common/viewEventHandler.zig").ViewEventHandler;
+const view_events = @import("../../../common/viewEvents.zig");
+const dispatch = @import("../../../../base/common/windowDispatch.zig");
+const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
+pub const FindWidgetViewState = struct { widgetViewZoneVisible: bool, scrollTop: usize };
 
 const Allocator = std.mem.Allocator;
 const RangeType = @import("../../../common/core/range.zig").Range;
@@ -126,6 +134,14 @@ pub const FindWidget = struct {
     on_close: ?*const fn (context: ?*anyopaque) void = null,
     layout_context: ?*anyopaque = null,
     on_layout: ?*const fn (context: ?*anyopaque) void = null,
+    state_listener: ?usize = null,
+    zone_host: ?struct { editor: *Editor, view: *ViewHost, zones: *ViewZones } = null,
+    view_zone_id: ?[]const u8 = null,
+    view_zone_height: usize = 0,
+    zone_transition: bool = false,
+    scroll_handler: ViewEventHandler = .{},
+    zone_layout_task: dispatch.Task = .{},
+    pending_view_state: ?FindWidgetViewState = null,
 
     pub fn init(allocator: Allocator, state: *FindReplaceState, model: *FindModel) !*FindWidget {
         const self = try allocator.create(FindWidget);
@@ -140,6 +156,12 @@ pub const FindWidget = struct {
             .history = std.array_list.Managed([]u8).init(allocator),
             .replace_history = std.array_list.Managed([]u8).init(allocator),
         };
+        errdefer {
+            self.find_input.deinit();
+            self.replace_input.deinit();
+            self.history.deinit();
+            self.replace_history.deinit();
+        }
         self.find_input.placeholder = "Find";
         self.find_input.color = foreground;
         self.find_input.placeholder_color = dim_foreground;
@@ -152,6 +174,7 @@ pub const FindWidget = struct {
         self.replace_input.callback_context = self;
         self.replace_input.on_change = onReplaceChanged;
         self.applyTheme();
+        self.state_listener = try state.on_find_replace_state_change.listen(self, onStateChanged);
 
         return self;
     }
@@ -174,6 +197,8 @@ pub const FindWidget = struct {
     }
 
     pub fn deinit(self: *FindWidget) void {
+        self.detachViewZones();
+        if (self.state_listener) |listener| self.state.on_find_replace_state_change.unlisten(listener);
         for (self.history.items) |entry| self.allocator.free(entry);
         self.history.deinit();
         for (self.replace_history.items) |entry| self.allocator.free(entry);
@@ -315,7 +340,10 @@ pub const FindWidget = struct {
     }
 
     pub fn setAddExtraSpaceOnTop(self: *FindWidget, enabled: bool) void {
+        if (self.add_extra_space_on_top == enabled) return;
         self.add_extra_space_on_top = enabled;
+        if (enabled) self.showViewZone(true) catch {} else self.removeViewZone(true) catch {};
+        self.notifyLayout();
     }
 
     pub fn setFindOnType(self: *FindWidget, enabled: bool) void {
@@ -371,6 +399,176 @@ pub const FindWidget = struct {
     pub fn viewZoneRows(self: *const FindWidget) usize {
         if (!self.state.is_revealed or !self.add_extra_space_on_top) return 0;
         return if (self.state.is_replace_revealed) 2 else 1;
+    }
+
+    pub fn attachViewZones(self: *FindWidget, editor: *Editor, view: *ViewHost, zones: *ViewZones) void {
+        self.detachViewZones();
+        self.zone_host = .{ .editor = editor, .view = view, .zones = zones };
+        self.scroll_handler = ViewEventHandler.init(self, .{ .onScrollChanged = onScrollChanged });
+        editor.addViewEventHandler(&self.scroll_handler);
+        const state = self.pending_view_state;
+        self.pending_view_state = null;
+        if (state) |saved| {
+            self.setViewState(saved);
+        } else self.layoutViewZone(null) catch {};
+    }
+
+    pub fn detachViewZones(self: *FindWidget) void {
+        self.zone_layout_task.schedule(null);
+        const host = self.zone_host orelse return;
+        host.editor.removeViewEventHandler(&self.scroll_handler);
+        self.removeViewZone(false) catch {};
+        self.zone_host = null;
+        self.view_zone_id = null;
+        self.view_zone_height = 0;
+    }
+
+    pub fn onModelDetached(self: *FindWidget) void {
+        self.zone_layout_task.schedule(null);
+        self.removeViewZone(false) catch {};
+        self.view_zone_id = null;
+        self.view_zone_height = 0;
+    }
+
+    pub fn onModelAttached(self: *FindWidget) void {
+        self.layoutViewZone(null) catch {};
+    }
+
+    pub fn attachWindow(self: *FindWidget, window: *dispatch.Queue) void {
+        if (self.zone_layout_task.queue == window) return;
+        self.zone_layout_task.schedule(null);
+        self.zone_layout_task = .{ .queue = window, .context = self, .run = onLayoutDeadline };
+    }
+
+    pub fn getViewState(self: *const FindWidget) FindWidgetViewState {
+        const scroll_top = if (self.zone_host) |host| host.editor.scrollTop() else if (self.model) |model| model.editor.scrollTop() else 0;
+        return .{ .widgetViewZoneVisible = self.view_zone_id != null and self.view_zone_height > scroll_top, .scrollTop = scroll_top };
+    }
+
+    pub fn setViewState(self: *FindWidget, state: ?FindWidgetViewState) void {
+        const saved = state orelse return;
+        if (self.zone_host == null) {
+            self.pending_view_state = saved;
+            return;
+        }
+        if (saved.widgetViewZoneVisible) self.layoutViewZone(saved.scrollTop) catch {};
+    }
+
+    fn notifyLayout(self: *FindWidget) void {
+        if (self.on_layout) |callback| callback(self.layout_context);
+    }
+
+    fn onStateChanged(event: find_state.FindReplaceStateChangedEvent, self: *FindWidget) !void {
+        if (event.is_revealed) {
+            if (self.state.is_revealed) try self.showViewZone(self.adjustScrollOnReveal()) else try self.removeViewZone(true);
+            self.notifyLayout();
+        }
+        if (event.is_replace_revealed) {
+            try self.showViewZone(true);
+            self.notifyLayout();
+        }
+        if (event.search_string or event.current_match) try self.layoutViewZone(null);
+    }
+
+    fn onScrollChanged(context: *anyopaque, event: *const view_events.ViewScrollChangedEvent) bool {
+        const self: *FindWidget = @ptrCast(@alignCast(context));
+        if (self.zone_transition or self.view_zone_id != null or self.viewZoneRows() == 0) return false;
+        if (event.scrollTopChanged or self.zone_layout_task.queue == null) {
+            self.layoutViewZone(null) catch {};
+        } else self.zone_layout_task.post();
+        return false;
+    }
+
+    fn onLayoutDeadline(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *FindWidget = @ptrCast(@alignCast(context));
+        self.layoutViewZone(null) catch {};
+        return self.view_zone_id != null;
+    }
+
+    fn positionCell(editor: *Editor, position: @import("../../../common/core/position.zig").Position) usize {
+        const data = editor.viewLineData(position.lineNumber) catch return editor.gutterWidth();
+        const column = @min(@max(position.column, data.minColumn), data.maxColumn);
+        const visible = CursorColumns.visibleColumnFromColumn(data.content, column, editor.tabSize());
+        return editor.gutterWidth() + (visible -| editor.scrollLeft());
+    }
+
+    /// Avoid covering a selected range that would intersect the fixed bar.
+    /// This is the terminal-cell projection of FindWidget._reveal's
+    /// scrolled-position/DOM-overlap check.
+    fn adjustScrollOnReveal(self: *FindWidget) bool {
+        const host = self.zone_host orelse return true;
+        const editor = host.editor;
+        const selection = editor.modelSelection();
+        const start = editor.viewPositionOfModelPosition(selection.getStartPosition());
+        const row = editor.visibleRowOfViewLine(start.lineNumber) orelse return true;
+        if (row >= self.viewZoneRows()) return true;
+        if (selection.startLineNumber != selection.endLineNumber) return false;
+        const end = editor.viewPositionOfModelPosition(selection.getEndPosition());
+        const widget_left = editor.screen_width -| @min(editor.screen_width, @max(self.preferred_width, 20));
+        return positionCell(editor, start) <= widget_left and positionCell(editor, end) <= widget_left;
+    }
+
+    fn zone(self: *FindWidget, rows: usize) editorBrowser.IViewZone {
+        _ = self;
+        return .{ .after_line_number = 0, .height_in_lines = rows };
+    }
+
+    const ZoneUpdate = struct { widget: *FindWidget, height: usize };
+
+    fn updateZone(update: ZoneUpdate, accessor: editorBrowser.IViewZoneChangeAccessor) !void {
+        const self = update.widget;
+        if (self.view_zone_id) |id| {
+            try accessor.layoutZone(id, self.zone(update.height));
+        } else self.view_zone_id = try accessor.addZone(self.zone(update.height));
+        self.view_zone_height = update.height;
+    }
+
+    fn eraseZone(self: *FindWidget, accessor: editorBrowser.IViewZoneChangeAccessor) !void {
+        if (self.view_zone_id) |id| try accessor.removeZone(id);
+        self.view_zone_id = null;
+        self.view_zone_height = 0;
+    }
+
+    fn layoutViewZone(self: *FindWidget, target_scroll_top: ?usize) !void {
+        if (self.zone_transition or self.view_zone_id != null) return;
+        const host = self.zone_host orelse return;
+        const rows = self.viewZoneRows();
+        if (rows == 0) return;
+        self.zone_transition = true;
+        defer self.zone_transition = false;
+        const previous = host.editor.scrollTop();
+        try host.zones.changeViewZones(ZoneUpdate{ .widget = self, .height = rows }, updateZone);
+        const target = target_scroll_top orelse 0;
+        _ = host.editor.setScrollTop(if (target != 0) target else previous +| rows);
+    }
+
+    fn showViewZone(self: *FindWidget, adjust_scroll: bool) !void {
+        if (self.zone_transition) return;
+        const host = self.zone_host orelse return;
+        var rows = self.viewZoneRows();
+        if (rows == 0) return;
+        const old_height = self.view_zone_height;
+        if (self.view_zone_id == null) {
+            const padding: usize = @intFromFloat(@ceil(@max(0, host.view.options.get(.padding).top)));
+            rows -|= padding;
+            if (rows == 0) return;
+        } else if (rows == old_height) return;
+        self.zone_transition = true;
+        defer self.zone_transition = false;
+        const previous = host.editor.scrollTop();
+        try host.zones.changeViewZones(ZoneUpdate{ .widget = self, .height = rows }, updateZone);
+        if (adjust_scroll) _ = host.editor.setScrollTop(if (rows >= old_height) previous +| (rows - old_height) else previous -| (old_height - rows));
+    }
+
+    fn removeViewZone(self: *FindWidget, adjust_scroll: bool) !void {
+        if (self.zone_transition or self.view_zone_id == null) return;
+        const host = self.zone_host orelse return;
+        self.zone_transition = true;
+        defer self.zone_transition = false;
+        const previous = host.editor.scrollTop();
+        const old_height = self.view_zone_height;
+        try host.zones.changeViewZones(self, eraseZone);
+        if (adjust_scroll) _ = host.editor.setScrollTop(previous -| old_height);
     }
 
     fn getId(context: *anyopaque) []const u8 {

@@ -10,9 +10,19 @@ const Description = extensions.IEditorContributionDescription;
 const dispatch = @import("../../../../base/common/windowDispatch.zig");
 const time = @import("../../../../base/common/timeCompat.zig");
 
+/// The terminal serializes the currently ported contribution mementos with
+/// their upstream IDs; the registry, not the code editor, invokes each
+/// instantiated contribution's state hooks. Folding's model memento is
+/// supplied by the existing built-in folding controller.
+pub const State = struct {
+    @"editor.contrib.folding": ?@import("../../../contrib/folding/browser/folding.zig").FoldingStateMemento = null,
+    @"editor.contrib.findController": ?@import("../../../contrib/find/browser/findWidget.zig").FindWidgetViewState = null,
+    @"editor.contrib.wordHighlighter": ?bool = null,
+};
+
 pub const CodeEditorContributions = struct {
-    instances: std.StringHashMapUnmanaged(Instance) = .empty,
-    pending: std.StringHashMapUnmanaged(Description) = .empty,
+    instances: std.StringArrayHashMapUnmanaged(Instance) = .empty,
+    pending: std.StringArrayHashMapUnmanaged(Description) = .empty,
     finished_instantiation: [@backingInt(Instantiation.lazy) + 1]bool = @splat(false),
     after_first_render: dispatch.Task = .{},
     before_first_interaction: dispatch.Task = .{},
@@ -21,11 +31,28 @@ pub const CodeEditorContributions = struct {
     const Instance = struct {
         value: *anyopaque,
         lifetime: IDisposable = .none,
+        save_view_state: ?*const fn (*anyopaque, *State) void = null,
+        restore_view_state: ?*const fn (*anyopaque, State) void = null,
     };
 
     pub fn register(self: *CodeEditorContributions, allocator: std.mem.Allocator, comptime T: type, value: *T, lifetime: IDisposable) !void {
         if (self.instances.contains(T.ID)) return error.DuplicateEditorContribution;
-        try self.instances.put(allocator, T.ID, .{ .value = value, .lifetime = lifetime });
+        var instance: Instance = .{ .value = value, .lifetime = lifetime };
+        if (comptime @hasField(State, T.ID) and @hasDecl(T, "saveViewState") and @hasDecl(T, "restoreViewState")) {
+            instance.save_view_state = struct {
+                fn run(context: *anyopaque, state: *State) void {
+                    const contribution: *T = @ptrCast(@alignCast(context));
+                    @field(state.*, T.ID) = contribution.saveViewState();
+                }
+            }.run;
+            instance.restore_view_state = struct {
+                fn run(context: *anyopaque, state: State) void {
+                    const contribution: *T = @ptrCast(@alignCast(context));
+                    contribution.restoreViewState(@field(state, T.ID));
+                }
+            }.run;
+        }
+        try self.instances.put(allocator, T.ID, instance);
     }
 
     pub fn registerFactory(self: *CodeEditorContributions, allocator: std.mem.Allocator, description: Description) !void {
@@ -40,7 +67,7 @@ pub const CodeEditorContributions = struct {
     /// stable widget can bind the descriptor again on the next model.
     pub fn unregisterFactory(self: *CodeEditorContributions, id: []const u8, context: *anyopaque) void {
         const pending = self.pending.get(id) orelse return;
-        if (pending.context == context) _ = self.pending.remove(id);
+        if (pending.context == context) _ = self.pending.orderedRemove(id);
     }
 
     pub fn getInstantiated(self: *const CodeEditorContributions, comptime T: type) ?*T {
@@ -51,6 +78,20 @@ pub const CodeEditorContributions = struct {
     pub fn get(self: *CodeEditorContributions, comptime T: type) ?*T {
         _ = self.instantiateById(T.ID);
         return self.getInstantiated(T);
+    }
+
+    pub fn saveViewState(self: *CodeEditorContributions) State {
+        var state: State = .{};
+        for (self.instances.values()) |instance| {
+            if (instance.save_view_state) |save| save(instance.value, &state);
+        }
+        return state;
+    }
+
+    pub fn restoreViewState(self: *CodeEditorContributions, state: State) void {
+        for (self.instances.values()) |instance| {
+            if (instance.restore_view_state) |restore| restore(instance.value, state);
+        }
     }
 
     pub fn attachWindow(self: *CodeEditorContributions, queue: *dispatch.Queue) void {
@@ -82,7 +123,7 @@ pub const CodeEditorContributions = struct {
     }
 
     fn instantiateById(self: *CodeEditorContributions, id: []const u8) bool {
-        const pending = self.pending.fetchRemove(id) orelse return false;
+        const pending = self.pending.fetchOrderedRemove(id) orelse return false;
         const description = pending.value;
         description.instantiate(description.context) catch |err| {
             std.log.scoped(.editor_contributions).warn("Failed to instantiate {s}: {s}", .{ description.id, @errorName(err) });
@@ -135,7 +176,7 @@ pub const CodeEditorContributions = struct {
     /// their models. Owned instances remain until the widget is disposed.
     pub fn unregister(self: *CodeEditorContributions, comptime T: type, value: *T) void {
         const instance = self.instances.get(T.ID) orelse return;
-        if (instance.value == @as(*anyopaque, @ptrCast(value)) and instance.lifetime.isNone()) _ = self.instances.remove(T.ID);
+        if (instance.value == @as(*anyopaque, @ptrCast(value)) and instance.lifetime.isNone()) _ = self.instances.orderedRemove(T.ID);
     }
 
     pub fn deinit(self: *CodeEditorContributions, allocator: std.mem.Allocator) void {
@@ -145,7 +186,7 @@ pub const CodeEditorContributions = struct {
         while (self.instances.count() != 0) {
             var iterator = self.instances.iterator();
             const entry = iterator.next().?;
-            const instance = self.instances.fetchRemove(entry.key_ptr.*).?.value;
+            const instance = self.instances.fetchOrderedRemove(entry.key_ptr.*).?.value;
             instance.lifetime.dispose();
         }
         self.instances.deinit(allocator);

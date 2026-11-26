@@ -655,10 +655,7 @@ pub const EditorDocument = struct {
 pub const ICodeEditorViewState = struct {
     cursorState: []editor_common.ICursorState,
     viewState: editor_common.IViewState,
-    contributionsState: struct {
-        @"editor.contrib.folding": ?folding.FoldingStateMemento = null,
-        @"editor.contrib.wordHighlighter": ?bool = null,
-    } = .{},
+    contributionsState: @import("codeEditorContributions.zig").State = .{},
 
     pub fn deinit(self: *ICodeEditorViewState, allocator: Allocator) void {
         allocator.free(self.cursorState);
@@ -2201,7 +2198,7 @@ pub const Editor = struct {
         return @max(@as(usize, 1), self.screen_height -| reserved -| self.top_inset_rows);
     }
 
-    /// Terminal find view zone: blank rows reserved at the top of the editor.
+    /// Native editor-pane header space outside the scrollable content.
     pub fn setTopInset(self: *Editor, rows: usize) void {
         const clamped = @min(rows, self.screen_height -| 1);
         if (clamped == self.top_inset_rows) return;
@@ -4825,14 +4822,12 @@ pub const Editor = struct {
             .position = selection.getPosition(),
         };
         const state = @import("../../../common/viewModel/viewModelImpl.zig").saveState(&self.view_lines, self.converter.interface(), &self.view_layout);
-        const WordHighlighter = @import("../../../contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
+        var contributions_state = self.contributions.saveViewState();
+        contributions_state.@"editor.contrib.folding" = if (self.folding_override == false) null else try self.folding.saveViewState(allocator);
         return .{
             .cursorState = cursor_state,
             .viewState = state,
-            .contributionsState = .{
-                .@"editor.contrib.folding" = if (self.folding_override == false) null else try self.folding.saveViewState(allocator),
-                .@"editor.contrib.wordHighlighter" = if (self.getContribution(WordHighlighter)) |highlight| highlight.saveViewState() else null,
-            },
+            .contributionsState = contributions_state,
         };
     }
 
@@ -4852,10 +4847,7 @@ pub const Editor = struct {
             try self.folding.restoreViewState(folding_state);
             try self.applyFoldingVisibility();
         };
-        const WordHighlighter = @import("../../../contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
-        if (state.contributionsState.@"editor.contrib.wordHighlighter" orelse false) {
-            if (self.getContribution(WordHighlighter)) |highlight| highlight.restoreViewState(250);
-        }
+        self.contributions.restoreViewState(state.contributionsState);
         self.restoreScrollState(state.viewState);
     }
 

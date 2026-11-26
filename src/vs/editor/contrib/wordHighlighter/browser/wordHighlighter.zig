@@ -492,8 +492,9 @@ pub const WordHighlighterContribution = struct {
         if (self.word_highlighter) |highlighter| highlighter.trigger();
     }
 
-    pub fn restoreViewState(self: *WordHighlighterContribution, delay_ms: u64) void {
-        if (self.word_highlighter) |highlighter| highlighter.restore(delay_ms);
+    pub fn restoreViewState(self: *WordHighlighterContribution, state: ?bool) void {
+        if (!(state orelse false)) return;
+        if (self.word_highlighter) |highlighter| highlighter.restore(250);
     }
 };
 

@@ -581,7 +581,6 @@ pub const Tab = struct {
         const controllers = try Controllers.init(self.allocator, control, view);
         errdefer controllers.deinit();
         try controllers.attachWidgets();
-        if (self.diff != null) controllers.attachDiffFindZone();
         if (self.window) |window| controllers.attachWindow(window);
         if (self.code_lens_services) |services| try controllers.attachCodeLensServices(services);
         return controllers;
@@ -1030,9 +1029,8 @@ pub const Tab = struct {
 
     fn editorTopInset(self: *Tab) usize {
         if (self.diff != null or self.multi_diff != null) return 0;
-        const find_rows = if (self.controllers) |controllers| controllers.find.viewZoneRows() else 0;
         const query_rows = if (self.search_editor_input) |input| input.search_editor.headerRows() else 0;
-        return find_rows + query_rows;
+        return query_rows;
     }
 
     pub fn layoutCells(self: *Tab, width: usize, height: usize) void {
@@ -1350,8 +1348,6 @@ pub const Controllers = struct {
     language_features: ?*LanguageFeaturesService,
     window: ?*@import("../../../../base/common/windowDispatch.zig").Queue,
     widgets_attached: bool = false,
-    diff_find_zone: bool = false,
-    diff_find_handler: ViewEventHandler = .{},
 
     /// Applies the palette-derived hover code-block background and the find
     /// bar theme. Upstream resolves these through CSS variables and the
@@ -1423,8 +1419,6 @@ pub const Controllers = struct {
         self.window = null;
         self.hover_registration = null;
         self.widgets_attached = false;
-        self.diff_find_zone = false;
-        self.diff_find_handler = .{};
 
         self.search_highlight_sink = ModelDecorationSink.incrementalSearch(editor.model);
         editor.setSearchHighlightSink(.{
@@ -1469,6 +1463,8 @@ pub const Controllers = struct {
 
         self.setThemeColors(view.themeColors());
         self.find.applyConfiguration(view.terminal_view_host.options.get(.find));
+        self.find.widget().attachViewZones(editor, view.terminal_view_host, view.viewZones());
+        errdefer self.find.widget().detachViewZones();
         try view.addConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
         errdefer view.removeConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
         return self;
@@ -1614,27 +1610,6 @@ pub const Controllers = struct {
         self.widgets_attached = true;
     }
 
-    fn attachDiffFindZone(self: *Controllers) void {
-        self.diff_find_zone = true;
-        self.find.widget().layout_context = self;
-        self.find.widget().on_layout = onDiffFindLayout;
-        self.diff_find_handler = ViewEventHandler.init(self, .{ .onScrollChanged = onDiffFindScroll });
-        self.editor.addViewEventHandler(&self.diff_find_handler);
-    }
-
-    fn onDiffFindLayout(context: ?*anyopaque) void {
-        const self: *Controllers = @ptrCast(@alignCast(context orelse return));
-        const rows = self.find.viewZoneRows();
-        self.editor.setTopInset(rows);
-        self.view.setTopInset(rows);
-        self.view.invalidate();
-    }
-
-    fn onDiffFindScroll(context: *anyopaque, event: *const view_events.ViewScrollChangedEvent) bool {
-        if (event.scrollTopChanged) onDiffFindLayout(context);
-        return false;
-    }
-
     pub fn attachLanguageRegistry(self: *Controllers, features: *LanguageFeaturesService) void {
         self.language_features = features;
         if (self.hover != null) {
@@ -1694,7 +1669,7 @@ pub const Controllers = struct {
 
     pub fn deinit(self: *Controllers) void {
         self.detachCodeLensServices();
-        if (self.diff_find_zone) self.editor.removeViewEventHandler(&self.diff_find_handler);
+        self.find.widget().detachViewZones();
         if (self.widgets_attached) {
             const find = self.find.widget().interface();
             self.view.removeOverlayWidget(find.get_id(find.context)) catch {};
@@ -1725,12 +1700,10 @@ pub const MultiDiffBindingServices = struct {
         const original = try Controllers.init(allocator, widget.original_editor, widget.original_view);
         errdefer original.deinit();
         try original.attachWidgets();
-        original.attachDiffFindZone();
         original.attachWindow(window);
         const modified = try Controllers.init(allocator, widget.modified_editor, widget.modified_view);
         errdefer modified.deinit();
         try modified.attachWidgets();
-        modified.attachDiffFindZone();
         modified.attachWindow(window);
         self.* = .{ .allocator = allocator, .widget = widget, .original = original, .modified = modified };
         return self.interface();

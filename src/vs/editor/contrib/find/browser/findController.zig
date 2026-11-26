@@ -106,6 +106,7 @@ pub const FindController = struct {
 
     fn onWillChangeModel(change: ModelChange, self: *FindController) !void {
         if (change.newModelUrl == null) self.find_widget.focused = false;
+        self.find_widget.onModelDetached();
         self.disposeModel();
     }
 
@@ -118,6 +119,7 @@ pub const FindController = struct {
         self.model.cursor_move_on_type = self.cursor_move_on_type;
         self.find_widget.model = self.model;
         if (self.window) |window| self.model.attachWindow(window);
+        self.find_widget.onModelAttached();
     }
 
     pub fn deinit(self: *FindController) void {
@@ -191,13 +193,12 @@ pub const FindController = struct {
         self.auto_find_in_selection = mode;
     }
 
-    /// Terminal view-zone rows. The browser zone scrolls with the content; the
-    /// terminal reserves the rows only while line 1 is at the top and releases
-    /// them when the editor scrolls, approximating the zone without adding
-    /// scrollable space above line 1.
-    pub fn viewZoneRows(self: *FindController) usize {
-        if (!self.model_attached or self.editor.topViewLine() != 1) return 0;
-        return self.find_widget.viewZoneRows();
+    pub fn saveViewState(self: *FindController) @import("findWidget.zig").FindWidgetViewState {
+        return self.find_widget.getViewState();
+    }
+
+    pub fn restoreViewState(self: *FindController, state: ?@import("findWidget.zig").FindWidgetViewState) void {
+        self.find_widget.setViewState(state);
     }
 
     pub fn open(self: *FindController, requested_replace: bool) !void {
@@ -278,6 +279,7 @@ pub const FindController = struct {
     pub fn attachWindow(self: *FindController, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
         self.window = window;
         if (self.model_attached) self.model.attachWindow(window);
+        self.find_widget.attachWindow(window);
     }
 
     fn onClose(context: ?*anyopaque) void {
