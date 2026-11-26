@@ -2047,10 +2047,17 @@ Terminal substitutions and their reasons:
 - The main loop drives the quick-diff delay and dispatches completed worker
   results. The native worker receives owned text snapshots.
 
-Limitations are documented in `README.md`: read-only snapshots, no staging or
-commit, no inline diff/hidden-unchanged/moved blocks/peek/multi-diff/accessible
-viewer, single repository view, no diff-tab session restore, and the original
-pane is not keyboard-focusable.
+Limitations are documented in `README.md` and `docs/diff-view-audit.md`.
+The aligned snapshot substitution still materializes rows rather than
+using view zones. Contiguous filler ranges now share a decoration, and the
+gutter looks up aligned mappings with binary search. Both panes support
+read-only keyboard commands and synchronize scrolling; narrow layouts switch to
+interleaved inline text. Hidden unchanged regions currently use folding and
+moved blocks use model decorations. The actual disclosure widgets, moved-block
+connectors, accessible viewer, combined overview ruler, diff-tab session
+restore, and full sub-editor contributions remain unported. Git snapshot
+resolution and the initial diff computation now run in the editor worker;
+the window receives completion events and obsolete replies are detached.
 
 ## 9. POC acceptance
 

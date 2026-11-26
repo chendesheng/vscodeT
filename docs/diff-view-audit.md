@@ -1,6 +1,6 @@
 # Diff view audit: terminal port vs VS Code 1.147.0
 
-**Status:** audit only. No source code was changed for this document.
+**Status:** partial remediation in progress. The historical findings below describe the re-audited baseline; see the implementation ledger for changes and remaining gaps.
 Re-audited after the 2026-11-26 source refactor.
 **Date:** 2026-11-25, re-audited 2026-11-26
 **Initial audit commit:** `cdde4cf8`
@@ -27,6 +27,28 @@ correctness gaps that are visible as missing or misplaced UI and that should be
 fixed together with the presentation work.
 
 ---
+
+## Implementation ledger (2026-11-26)
+
+The following changes are implemented in separate commits. This is not full
+upstream parity, and the historical findings below remain useful as a baseline.
+
+| Plan item | Current implementation |
+|---|---|
+| 1 — worker and snapshot reads | Initial SCM and history diff opens/refreshes resolve owned Git virtual snapshot sources and compute diffs on the native editor worker. A one-second progress deadline, detached stale replies, and a 10-entry content/computation-options cache are implemented. Direct test construction and live diff-option recomputation are still synchronous; cancellation detaches the reply rather than interrupting a running algorithm. |
+| 2 — double rendering | Diff tab refresh invalidates both views; rendering is deferred to the frame. |
+| 3–4 — gutter and moved coordinates | Binary search on sorted aligned hunk ranges; pure deletion and post-filler paint regressions; moved ranges are converted to display rows. The 1k/10k benchmark measures 40,000 lookups across 1,000 viewport offsets (about 3–4 ms in the local Debug run; this is not end-to-end rendering). |
+| 5 — hidden coordinates | Convert view rows to model rows for line numbers/gutter, use model positions for navigation. Generic folding remains a substitution, not the upstream region feature. |
+| 6 — narrow fallback | Automatic interleaved inline layout across width transitions; respects the inline fallback setting and projects the configurable breakpoint to cells. True inline view zones are still absent. |
+| 7 — key routing | Shared editor key dispatch and scroll synchronization restored; full contribution controllers remain open. |
+| 8 — indicators | Margin classes and indicator glyphs are ported. Contiguous filler blocks share one decoration; the real view-zone representation and empty-range markers remain open. |
+| 9 — theme/settings | Both panes receive theme updates; line and filler colors resolve theme IDs. Editor and diff settings are reapplied on configuration events; diff-specific option changes still regenerate snapshots synchronously. |
+| 10 — gutter/sash | Current hunk follows the cursor; split ratio validation and disabled-sash behavior corrected. Gutter theme colors are resolved; toolbar and sash reset remain open. |
+| 11–13 — features | Unchanged-region disclosure widgets, combined overview ruler, moved connectors and hover/compare remain open. |
+| 14 — commands and swap | Swap reverses mappings, decorations, snapshot identity and title, including inline layout. Upstream command IDs for focus side, toggle inline, explicit view modes, and ignore whitespace are registered. Other commands and editor-title actions remain open. |
+| 15–17 — larger parity | Inline view zones, accessible viewer and full sub-editor contributions remain open. |
+| 18 — state | Refresh preserves split, cursor and scroll and reapplies theme; session serialization, code lens, and explicit diff word wrap remain open. |
+| 19 — tests | New focused regressions cover input/scroll, narrow transitions, gutter paint, filler grouping, hidden coordinates, theme and swap/refresh. The worker/cancellation/cache tests and SCM integration are in `test-view`. Complete upstream widget scenarios and end-to-end performance measurements remain open. |
 
 ## 0. Re-audit update (2026-11-26)
 

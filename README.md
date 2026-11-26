@@ -1257,12 +1257,20 @@ console API for raw mode, sizing and input polling.
   accessible diff viewer, or editing either side; moved blocks are surfaced as
   block decorations, hide-unchanged regions collapse as folding ranges, and
   `renderSideBySide: false` uses an interleaved inline view with inner-character
-  and moved-block decorations and inline hide-unchanged folding; the original pane is not
-  keyboard-focusable; the combined two-lane overview ruler is per-side; the
-  gutter width/pattern/minimap settings are reduced to one marker cell and a
-  dimmed pattern; panes narrower than 50 cells fall back to a modified-only
-  view without the gutter or original pane; and only one repository per
-  workspace folder is shown.
+  and moved-block decorations and inline hide-unchanged folding. Both panes
+  accept ordinary read-only editor navigation/selection commands, and the
+  focused pane's scrolling is synchronized. The default 900px side-by-side
+  breakpoint maps to 53 terminal cells using the workbench width scale;
+  narrower views switch to inline mode without hiding deleted text.
+  Diff line indicators and margin classes follow `renderIndicators`; line
+  and character backgrounds use the active theme. Refresh preserves the split,
+  cursor and scroll state. Git snapshot resolution and diff computation run on
+  the editor worker; identical content/options reuse a bounded result cache.
+  Remaining port gaps include actual alignment view zones, the combined
+  two-lane overview ruler, disclosure widgets for unchanged regions, moved-block
+  connectors, full sub-editor contributions, and additional diff commands.
+  See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
+  Only one repository per workspace folder is shown.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and
   `src/vs/workbench/contrib/search/browser/searchWidget.zig`) over the upstream-shaped portable view:
   `src/vs/workbench/contrib/search/browser/searchView.zig` owns the query

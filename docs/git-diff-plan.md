@@ -1,8 +1,11 @@
 # Git integration and diff view plan
 
-**Status:** implemented (read-only scope). Follow-ups remain: staging/commit,
-discard, inline/hide-unchanged/moved-block diff, quick-diff peek, multi-diff,
-accessible diff viewer, editable/serialized diff tabs and multi-repository SCM.
+**Status:** partial read-only implementation. Inline layout, hidden-unchanged
+folding and moved-block decorations exist; they are not complete ports of the
+upstream view features. Initial Git snapshot resolution and diff computation
+are asynchronous. Follow-ups remain: alignment view zones, disclosure and
+moved-block widgets, quick-diff peek, multi-diff, accessible diff viewer, editable/serialized diff tabs and
+multi-repository SCM. See `docs/diff-view-audit.md` for current status.
 **Date:** 2026-11-20
 **Upstream:** VS Code 1.147.0, `vscode/` pinned at `e31c2e52f563620846caab877103f630ea361b9c`
 
