@@ -18,11 +18,16 @@ pub const IMultiDiffEditorResource = struct {
     modified: ?std.Uri = null,
     goToFileResource: ?std.Uri = null,
 };
+pub const IMultiDiffEditorOptions = struct {
+    preserveFocus: bool = false,
+    viewState: ?@import("../../editor/common/multiDiffEditor.zig").IMultiDiffEditorOptionsViewState = null,
+};
 pub const IResourceMultiDiffEditorInput = struct {
     multiDiffSource: ?std.Uri = null,
     label: ?[]const u8 = null,
     resources: ?[]const IMultiDiffEditorResource = null,
     isTransient: bool = false,
+    options: IMultiDiffEditorOptions = .{},
 };
 
 pub const GroupIdentifier = u32;

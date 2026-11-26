@@ -15,6 +15,9 @@ const event = @import("../../../../base/common/event.zig");
 const configuration = @import("../../../../platform/configuration/common/configuration.zig");
 const storage = @import("../../../../platform/storage/common/storage.zig");
 const Workspace = @import("../../../services/workspaces/common/workspaceContextService.zig").WorkspaceContextService;
+const editor_common = @import("../../../common/editor.zig");
+const diff_common = @import("../../../../editor/common/multiDiffEditor.zig");
+const std_uri = @import("../../../../base/common/stdUri.zig");
 const ListService = @import("../../../../platform/list/browser/listService.zig").ListService;
 
 pub const ID = common.MULTI_DIFF_EDITOR_ID;
@@ -38,7 +41,17 @@ pub fn MultiDiffEditor(comptime View: type) type {
         preferences_listener: ?event.SignalSubscription = null,
         widget_listener: ?event.SignalSubscription = null,
         composite_listener: ?event.SignalSubscription = null,
+        resolving_listener: ?event.SignalSubscription = null,
+        pending_reveal: ?PendingReveal = null,
         changed: event.Emitter(void),
+
+        const PendingReveal = struct {
+            arena: std.heap.ArenaAllocator,
+            data: diff_common.IMultiDiffEditorRevealData,
+            fn deinit(self: *PendingReveal) void {
+                self.arena.deinit();
+            }
+        };
 
         pub fn create(allocator: std.mem.Allocator, io: std.Io, input: *input_mod.MultiDiffEditorInput, window: *dispatch.Queue, host: Host, worker: ?vm_mod.WorkerServices, width: usize, height: usize, preserve_focus: bool, settings: ?Settings) !*Self {
             const preferences = if (settings) |services| try common.Preferences.create(allocator, services.configuration_service, services.storage_service) else null;
@@ -59,12 +72,55 @@ pub fn MultiDiffEditor(comptime View: type) type {
             const vm = try input.getViewModel(io, window, worker);
             if (composite) |value| try value.setViewModel(vm, preserve_focus) else try widget.setViewModel(vm, .{ .preserveFocus = preserve_focus });
             self.widget_listener = try widget.on_did_change_layout.listenDisposable(self, onChanged);
+            self.resolving_listener = try input.on_did_change_resolving_documents.listenDisposable(self, onChanged);
             if (composite) |value| self.composite_listener = try value.changed.listenDisposable(self, onChanged);
             if (preferences) |prefs| self.preferences_listener = try prefs.changed.listenDisposable(self, onPreferences);
             return self;
         }
         fn onChanged(_: void, self: *Self) !void {
+            self.applyPendingReveal() catch |err| {
+                if (err != error.DiffResourceNotFound) return err;
+            };
             try self.changed.fire({});
+        }
+        fn cloneUri(a: std.mem.Allocator, value: ?std.Uri) !?std.Uri {
+            return if (value) |uri| try std.Uri.parse(try std_uri.encodedResource(a, uri)) else null;
+        }
+        pub fn setOptions(self: *Self, options: editor_common.IMultiDiffEditorOptions) !void {
+            self.widget.impl.preserve_focus_on_load = options.preserveFocus;
+            const state = options.viewState orelse return;
+            const reveal = state.revealData orelse return;
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            var transferred = false;
+            errdefer if (!transferred) arena.deinit();
+            const a = arena.allocator();
+            const pending: PendingReveal = .{
+                .data = .{
+                    .resource = .{ .original = try cloneUri(a, reveal.resource.original), .modified = try cloneUri(a, reveal.resource.modified) },
+                    .range = reveal.range,
+                },
+                .arena = arena,
+            };
+            if (self.pending_reveal) |*previous| previous.deinit();
+            self.pending_reveal = pending;
+            transferred = true;
+            try self.applyPendingReveal();
+        }
+        fn applyPendingReveal(self: *Self) !void {
+            var pending = self.pending_reveal orelse return;
+            self.pending_reveal = null;
+            self.widget.reveal(pending.data.resource, pending.data.range) catch |err| {
+                if (err == error.DiffResourceNotFound) {
+                    const loading = if (self.widget.getViewModel()) |vm| vm.isLoading or !std.mem.eql(*vm_mod.DocumentDiffItemViewModel, vm.pending, vm.items) else true;
+                    if (loading or self.input.isResolvingDocuments) {
+                        self.pending_reveal = pending;
+                        return;
+                    }
+                }
+                pending.deinit();
+                return err;
+            };
+            pending.deinit();
         }
         fn onPreferences(state: common.Preferences.State, self: *Self) !void {
             if (self.widget.impl.variant != state.variant) try self.widget.setVariant(state.variant);
@@ -78,6 +134,10 @@ pub fn MultiDiffEditor(comptime View: type) type {
             if (self.preferences_listener) |listener| listener.dispose();
             if (self.widget_listener) |listener| listener.dispose();
             if (self.composite_listener) |listener| listener.dispose();
+            if (self.resolving_listener) |listener| listener.dispose();
+            self.resolving_listener = null;
+            if (self.pending_reveal) |*pending| pending.deinit();
+            self.pending_reveal = null;
             self.preferences_listener = null;
             self.widget_listener = null;
             self.composite_listener = null;

@@ -734,7 +734,8 @@ pub const EditorOpening = struct {
         };
         defer self.allocator.free(uri);
         if (self.findMultiDiffTab(uri)) |existing| {
-            try self.openMultiDiffInput(existing.tab.multi_diff.?.input, existing.pane.group.id, false);
+            try self.openMultiDiffInput(existing.tab.multi_diff.?.input, existing.pane.group.id, options.options.preserveFocus);
+            try existing.tab.multi_diff.?.setOptions(options.options);
             return;
         }
         const input = try multi_diff_input.MultiDiffEditorInput.create(self.allocator, uri, options.label, options.isTransient);
@@ -750,7 +751,8 @@ pub const EditorOpening = struct {
             try input.setInitialResources(items);
         }
         try self.bindMultiDiffInput(input, if (services.configuration) |configuration| configuration.* else null, services.resolver, services.provider);
-        try self.openMultiDiffInput(input, null, false);
+        try self.openMultiDiffInput(input, null, options.options.preserveFocus);
+        if (self.findMultiDiffTab(uri)) |opened| try opened.tab.multi_diff.?.setOptions(options.options);
     }
 
     fn bindMultiDiffInput(self: *EditorOpening, input: *multi_diff_input.MultiDiffEditorInput, configuration: ?IConfigurationService, resolver: multi_source.IMultiDiffSourceResolverService, provider: multi_source.ResourceSnapshotProvider) !void {
@@ -813,6 +815,7 @@ pub const EditorOpening = struct {
             const self: *SourceBinding = @ptrCast(@alignCast(context));
             if (self.request != request) return false;
             self.request = null;
+            defer self.input.setResolvingDocuments(false) catch {};
             const opening = self.opening;
             if (request.failure) |failure| {
                 opening.setStatusHint("Open changes failed: {s}", .{@errorName(failure)});

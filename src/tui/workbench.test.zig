@@ -10961,8 +10961,12 @@ test "Workbench: git scm integration opens live Changes group and retains surviv
     const action = for (frame.next.cluster, 0..) |cp, index| {
         if (cp == glyph) break index;
     } else return error.TestExpectedScmGroupAction;
-    var mouse: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = action % 60, .y = action / 60 };
+    const b_click = std.mem.indexOf(u32, frame.next.cluster, &.{ 'b', '.', 't', 'x', 't' }) orelse return error.TestExpectedScmResource;
+    const a_click = std.mem.indexOf(u32, frame.next.cluster, &.{ 'a', '.', 't', 'x', 't' }) orelse return error.TestExpectedScmResource;
+    wb.setFocus(.sidebar);
+    var mouse: ui.MouseEvent = .{ .kind = .down, .button = .middle, .x = b_click % 60, .y = b_click / 60 };
     try std.testing.expect(try changes.handleMouse(&mouse, rect));
+    try std.testing.expect(wb.activeTab().?.multi_diff.?.input.isResolvingDocuments);
     for (0..6000) |_| {
         if (wb.activeTab()) |tab| if (tab.multi_diff) |multi| {
             if (!multi.widget.getViewModel().?.isLoading and multi.input.entries.len == 2) break;
@@ -10975,6 +10979,20 @@ test "Workbench: git scm integration opens live Changes group and retains surviv
     try std.testing.expect(multi.input.source_binding != null);
     try std.testing.expect(std.mem.startsWith(u8, multi.input.source_uri, "scm-multi-diff-source:"));
     try std.testing.expectEqual(@as(usize, 2), multi.input.entries.len);
+    try std.testing.expect(!multi.input.isResolvingDocuments);
+    const initial_vm = multi.widget.getViewModel().?;
+    try std.testing.expectEqual(initial_vm.items[1], initial_vm.activeDiffItem.?);
+    try std.testing.expectEqual(.sidebar, wb.focus);
+    // Reopening an existing source still reveals the explicitly clicked item.
+    mouse = .{ .kind = .down, .button = .middle, .x = a_click % 60, .y = a_click / 60 };
+    try std.testing.expect(try changes.handleMouse(&mouse, rect));
+    try std.testing.expectEqual(tab, wb.activeTab().?);
+    try std.testing.expectEqual(initial_vm.items[0], initial_vm.activeDiffItem.?);
+    try std.testing.expectEqual(.sidebar, wb.focus);
+    // The normal group action follows the same input matching path.
+    mouse = .{ .kind = .down, .button = .left, .x = action % 60, .y = action / 60 };
+    try std.testing.expect(try changes.handleMouse(&mouse, rect));
+    try std.testing.expectEqual(tab, wb.activeTab().?);
     const a_path = try std.fs.path.join(allocator, &.{ root, "a.txt" });
     defer allocator.free(a_path);
     const b_path = try std.fs.path.join(allocator, &.{ root, "b.txt" });

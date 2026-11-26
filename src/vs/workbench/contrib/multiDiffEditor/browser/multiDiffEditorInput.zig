@@ -52,6 +52,8 @@ pub const MultiDiffEditorInput = struct {
     resolved_resource_count: ?usize = null,
     resource_order: ?workbench_multi.MultiDiffEditorFileListViewMode = null,
     last_resolution_failure: ?anyerror = null,
+    isResolvingDocuments: bool = false,
+    on_did_change_resolving_documents: @import("../../../../base/common/event.zig").Emitter(void),
     initial_resources_arena: ?std.heap.ArenaAllocator = null,
     initial_resources: ?[]const source_mod.MultiDiffEditorItem = null,
 
@@ -88,6 +90,7 @@ pub const MultiDiffEditorInput = struct {
             self.resolved_source = null;
             source.dispose(source.context);
         }
+        self.setResolvingDocuments(false) catch {};
     }
 
     fn onSourceResourcesChanged(_: void, self: *MultiDiffEditorInput) !void {
@@ -104,7 +107,15 @@ pub const MultiDiffEditorInput = struct {
         if (source.failure()) |failure| return failure;
         try self.updateSourceName();
         const binding = self.source_binding orelse return;
+        try self.setResolvingDocuments(true);
+        errdefer self.setResolvingDocuments(false) catch {};
         try binding.resolve_resources(binding.context, source.resources(source.context));
+    }
+
+    pub fn setResolvingDocuments(self: *MultiDiffEditorInput, resolving: bool) !void {
+        if (self.isResolvingDocuments == resolving) return;
+        self.isResolvingDocuments = resolving;
+        try self.on_did_change_resolving_documents.fire({});
     }
 
     fn formatName(self: *const MultiDiffEditorInput, label: []const u8, count: ?usize) ![]u8 {
@@ -170,6 +181,7 @@ pub const MultiDiffEditorInput = struct {
             .name = name,
             .is_transient = transient,
             .document_set = .init(allocator),
+            .on_did_change_resolving_documents = .init(allocator),
         };
         self.base.impl = self;
         self.base.resource = self.source_uri;
@@ -210,6 +222,7 @@ pub const MultiDiffEditorInput = struct {
         self.base.dispose();
         if (self.vm) |value| value.destroy();
         self.document_set.deinit();
+        self.on_did_change_resolving_documents.deinit();
         self.releaseEntries(self.entries);
         self.base.deinit();
         self.allocator.free(self.source_uri);

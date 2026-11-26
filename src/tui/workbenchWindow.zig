@@ -2878,6 +2878,7 @@ pub const TerminalWorkbench = struct {
                         try host.commands.execute(command);
                     }
                 }.run,
+                .editor_service = self.editor_api,
                 .resource_action = scmViewResourceAction,
                 .refresh = scmRefresh,
                 .focus_editor = scmFocusEditor,

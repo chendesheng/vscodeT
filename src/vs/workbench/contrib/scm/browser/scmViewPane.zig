@@ -165,6 +165,7 @@ pub const Host = struct {
     context: *anyopaque,
     open_change: *const fn (context: *anyopaque, resource: *ISCMResource) anyerror!void,
     open_group_changes: ?*const fn (*anyopaque, *const ISCMResourceGroup) anyerror!void = null,
+    editor_service: ?@import("../../../services/editor/common/editorService.zig").IEditorService = null,
     resource_action: ?*const fn (context: *anyopaque, action: ResourceAction, resource: *ISCMResource) anyerror!void = null,
     refresh: *const fn (context: *anyopaque) void,
     focus_editor: *const fn (context: *anyopaque) void,
@@ -1087,7 +1088,13 @@ pub const SCMViewPane = struct {
                 return true;
             },
             .down, .click => {
-                if (event.button != .left or col >= list_width) return false;
+                if (col >= list_width) return false;
+                if (event.button == .middle) {
+                    const row_index = self.resourceRowAt(row) orelse return false;
+                    const resource = resolveResource(&self.rows.items[row_index]) orelse return false;
+                    return self.openResourceInMultiDiff(resource);
+                }
+                if (event.button != .left) return false;
                 self.setInputFocused(false);
                 self.input_box.focused = false;
                 const row_index = self.resourceRowAt(row) orelse {
@@ -1123,6 +1130,38 @@ pub const SCMViewPane = struct {
             },
             else => return false,
         }
+    }
+
+    /// Upstream's middle-click on an open/diff resource opens the whole
+    /// resource group and reveals the corresponding diff without taking
+    /// focus from the SCM list. Native Git supplies the same URI pair directly.
+    fn openResourceInMultiDiff(self: *SCMViewPane, resource: *ISCMResource) !bool {
+        const service = self.host.editor_service orelse return false;
+        if (resource.command) |command| {
+            if (!std.mem.eql(u8, command.id, "_workbench.open") and !std.mem.eql(u8, command.id, "_workbench.diff")) return false;
+        }
+        const original = if (resource.multi_diff_original_uri) |uri| try std.Uri.parse(uri) else null;
+        const modified = if (resource.multi_diff_modified_uri) |uri| try std.Uri.parse(uri) else null;
+        if (original == null and modified == null) return false;
+        const group = resource.resource_group;
+        const root = group.provider.root_path orelse return false;
+        var uri = try @import("../../../../base/common/uri.zig").URI.file(self.allocator, root);
+        defer uri.deinit();
+        const encoded = try uri.toStringEncoded(self.allocator);
+        defer self.allocator.free(encoded);
+        const title = try std.fmt.allocPrint(self.allocator, "{s}: {s}", .{ group.provider.label, group.label });
+        defer self.allocator.free(title);
+        const action = @import("../../multiDiffEditor/browser/scmMultiDiffSourceResolver.zig").OpenScmGroupAction;
+        try action.openMultiFileDiffEditor(self.allocator, service, .{
+            .title = title,
+            .repositoryUri = try std.Uri.parse(encoded),
+            .resourceGroupId = group.id,
+            .editorOptions = .{
+                .preserveFocus = true,
+                .viewState = .{ .revealData = .{ .resource = .{ .original = original, .modified = modified } } },
+            },
+        });
+        return true;
     }
 
     fn openResource(self: *SCMViewPane, resource: *ISCMResource) !void {

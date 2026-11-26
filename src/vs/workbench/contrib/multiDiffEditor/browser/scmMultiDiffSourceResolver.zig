@@ -409,7 +409,12 @@ pub const ScmMultiDiffSourceResolverContribution = struct {
 };
 
 pub const OpenScmGroupAction = struct {
-    pub const Options = struct { title: []const u8, repositoryUri: std.Uri, resourceGroupId: []const u8 };
+    pub const Options = struct {
+        title: []const u8,
+        repositoryUri: std.Uri,
+        resourceGroupId: []const u8,
+        editorOptions: @import("../../../common/editor.zig").IMultiDiffEditorOptions = .{},
+    };
     const actions = @import("../../../../platform/actions/common/actions.zig");
     const ServicesAccessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
     const editor_service = @import("../../../services/editor/common/editorService.zig");
@@ -433,6 +438,10 @@ pub const OpenScmGroupAction = struct {
         defer allocator.free(repository);
         const uri = try ScmMultiDiffSourceResolver.getMultiDiffSourceUri(allocator, repository, options.resourceGroupId);
         defer allocator.free(uri);
-        try service.openMultiDiffSource(uri, options.title);
+        try service.openMultiDiffResources(.{
+            .multiDiffSource = try std.Uri.parse(uri),
+            .label = options.title,
+            .options = options.editorOptions,
+        });
     }
 };
