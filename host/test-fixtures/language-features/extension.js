@@ -17,10 +17,18 @@ function activate(context) {
         title: document.uri.query + ':' + document.lineAt(0).text,
         command: 'fixture.codeLens',
         arguments: [document.uri.toString()]
-      })];
+      }), new vscode.CodeLens(new vscode.Range(0, 1, 0, 1))];
+    },
+    resolveCodeLens(lens) {
+      lens.command = { title: 'resolved lens', command: 'fixture.codeLens' };
+      return lens;
     }
   }));
   context.subscriptions.push(vscode.commands.registerCommand('fixture.codeLens', () => {}));
+  context.subscriptions.push(vscode.commands.registerCommand('fixture.executeCodeLens', async (uri, count) => {
+    const items = await vscode.commands.executeCommand('vscode.executeCodeLensProvider', vscode.Uri.parse(uri), count);
+    return items.map(item => ({ title: item.command?.title, start: item.range.start.character }));
+  }));
   context.subscriptions.push(vscode.languages.registerHoverProvider({ language: 'json' }, {
     provideHover() {
       return { contents: ['fixture hover'] };

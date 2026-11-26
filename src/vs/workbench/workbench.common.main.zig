@@ -154,6 +154,7 @@ pub fn registerActions(commands: *CommandRegistry, instantiation: *Instantiation
     for (@import("../editor/contrib/folding/browser/folding.zig").editor_actions) |action| try commands.registerEditorAction(instantiation, action);
     for (sticky_actions.editor_actions) |action| try commands.registerEditorAction(instantiation, action);
     try commands.registerEditorAction(instantiation, @import("../editor/contrib/codelens/browser/codelensController.zig").show_lenses_action);
+    try commands.registerAction(instantiation, @import("../editor/contrib/codelens/browser/codelens.zig").execute_provider_action);
     for (@import("../editor/contrib/wordHighlighter/browser/wordHighlighter.zig").navigation_actions) |action| try commands.registerEditorAction(instantiation, action);
 }
 

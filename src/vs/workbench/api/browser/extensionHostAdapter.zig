@@ -512,6 +512,21 @@ pub const Extensions = struct {
     fn invokeCommands(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         _ = token;
         const self: *Extensions = @ptrCast(@alignCast(context));
+        if (std.mem.eql(u8, method, "$executeCommand") and args.len > 1 and args[0] == .json and args[0].json == .string and std.mem.eql(u8, args[0].json.string, "_executeCodeLensProvider")) {
+            if (args[1] != .json or args[1].json != .array or args[1].json.array.items.len == 0) return error.InvalidArguments;
+            const parameters = args[1].json.array.items;
+            const components = try std_uri.componentsFromJson(parameters[0], arena);
+            const key = try std_uri.resourceKeyFromComponents(arena, components);
+            const document = self.models.documentForResource(key) orelse return error.InvalidArguments;
+            const count: ?usize = if (parameters.len > 1) switch (parameters[1]) {
+                .null => null,
+                .integer => |number| @intCast(@max(0, number)),
+                .float => |number| if (std.math.isFinite(number) and number <= @as(f64, @floatFromInt(std.math.maxInt(i32)))) @intFromFloat(@ceil(@max(0, number))) else return error.InvalidArguments,
+                else => return error.InvalidArguments,
+            } else null;
+            const provider = if (self.language_features_actor) |*actor| actor else return error.LanguageFeaturesUnavailable;
+            return provider.executeCodeLensCommand(document, count, self.services.common.commands, self.services.window);
+        }
         if (self.commands_actor) |*actor| return actor.invoke(method, args, arena);
         return .empty;
     }
@@ -2159,8 +2174,23 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                 try std.testing.expect(providers.len > 0);
                 const list = (try providers[0].provide_code_lenses(providers[0].context, arena.allocator(), model, token)).?;
                 defer if (list.disposable) |disposable| disposable.dispose();
-                try std.testing.expectEqual(@as(usize, 1), list.lenses.len);
+                try std.testing.expectEqual(@as(usize, 2), list.lenses.len);
                 try std.testing.expectEqualStrings(title, list.lenses[0].command.?.title);
+                try std.testing.expect(list.lenses[1].command == null);
+                const uri = try std_uri.resourceKey(arena.allocator(), model.uri());
+                const id = proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands);
+                const value = try extensions.host.requestSync(arena.allocator(), id, "$executeContributedCommand", &.{
+                    .{ .json = .{ .string = "fixture.executeCodeLens" } },
+                    .{ .json = .{ .string = uri } },
+                    .{ .json = .{ .integer = 1 } },
+                }, null, 5000);
+                try std.testing.expectEqual(@as(usize, 2), value.array.items.len);
+                try std.testing.expectEqualStrings(title, value.array.items[0].object.get("title").?.string);
+                try std.testing.expectEqualStrings("resolved lens", value.array.items[1].object.get("title").?.string);
+                try std.testing.expectEqual(@as(i64, 1), value.array.items[1].object.get("start").?.integer);
+                try std.testing.expect(extensions.language_features_actor.?.code_lens_commands.items.len != 0);
+                for (0..64) |_| _ = wb.window_events.dispatch(std.math.maxInt(i64));
+                try std.testing.expectEqual(@as(usize, 0), extensions.language_features_actor.?.code_lens_commands.items.len);
             }
             diff.setFocus(.original);
             try std.testing.expectEqual(diff.original_editor, extensions.active.?.editor);

@@ -137,3 +137,53 @@ test "CodeLens: cache retains inert labels and stores only line numbers at shutd
     try testing.expectEqual(2, restored_model.lenses.items[0].symbol.range.startLineNumber);
     try testing.expect(restored_model.lenses.items[0].symbol.command == null);
 }
+
+test "CodeLens: execute provider returns commands first and resolves only the requested number" {
+    const a = testing.allocator;
+    var text = try TestModel.init(a, "one\ntwo\nthree\nfour", "nullLanguage");
+    defer text.deinit();
+    const Resolver = struct {
+        calls: usize = 0,
+        fn provide(_: *anyopaque, _: std.mem.Allocator, _: *TextModel, _: CancellationToken) !?languages.CodeLensList {
+            return .{ .lenses = &.{
+                .{ .range = Range.init(1, 1, 1, 1) },
+                lens(2, 1, "already resolved"),
+                .{ .range = Range.init(3, 1, 3, 1) },
+                .{ .range = Range.init(4, 1, 4, 1) },
+            } };
+        }
+        fn resolve(context: *anyopaque, _: std.mem.Allocator, _: *TextModel, symbol: languages.CodeLens, _: CancellationToken) !?languages.CodeLens {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            if (symbol.range.startLineNumber != 1) return null;
+            return lens(1, 1, "newly resolved");
+        }
+    };
+    const Receiver2 = struct {
+        result: ?[]const languages.CodeLens = null,
+        fn complete(context: *anyopaque, result: anyerror![]const languages.CodeLens) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.result = result catch null;
+        }
+    };
+    var resolver: Resolver = .{};
+    const provider: languages.CodeLensProvider = .{ .context = &resolver, .provide_code_lenses = Resolver.provide, .resolve_code_lens = Resolver.resolve };
+    var receiver: Receiver2 = .{};
+    var execution: model.Execution = .{ .allocator = a, .model = text.model, .resolve_count = 2, .context = &receiver, .complete = Receiver2.complete };
+    defer execution.deinit();
+    try execution.start(&.{provider});
+    try testing.expectEqual(@as(usize, 2), resolver.calls);
+    const result = receiver.result.?;
+    try testing.expectEqual(@as(usize, 3), result.len);
+    try testing.expectEqualStrings("already resolved", result[0].command.?.title);
+    try testing.expectEqualStrings("newly resolved", result[1].command.?.title);
+    try testing.expectEqual(@as(usize, 3), result[2].range.startLineNumber);
+    try testing.expect(result[2].command == null);
+    var receiver_all: Receiver2 = .{};
+    var all: model.Execution = .{ .allocator = a, .model = text.model, .resolve_count = null, .context = &receiver_all, .complete = Receiver2.complete };
+    defer all.deinit();
+    try all.start(&.{provider});
+    try testing.expectEqual(@as(usize, 2), resolver.calls);
+    try testing.expectEqual(@as(usize, 4), receiver_all.result.?.len);
+    try testing.expect(receiver_all.result.?[0].command == null);
+}

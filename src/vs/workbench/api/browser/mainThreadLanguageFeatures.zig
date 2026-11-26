@@ -99,6 +99,95 @@ const FormattingState = struct {
     trigger_characters: []const []const u8 = &.{},
 };
 
+const code_lens_model = @import("../../../editor/contrib/codelens/browser/codelens.zig");
+const EditorDocument = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").EditorDocument;
+const CommandRegistry = @import("../../browser/commands.zig").CommandRegistry;
+const WindowDispatch = @import("../../../base/common/windowDispatch.zig");
+
+/// Async command result ownership: the provider cache stays alive for the
+/// upstream 100 ms grace period after delivering the CodeLens DTOs.
+const CodeLensCommandRequest = struct {
+    owner: *MainThreadLanguageFeatures,
+    document: *EditorDocument,
+    commands: *CommandRegistry,
+    execution: code_lens_model.Execution,
+    cleanup: WindowDispatch.Task,
+    channel: ?*rpc.RpcProtocol = null,
+    request_id: u32 = 0,
+
+    fn start(context: *anyopaque, channel: *rpc.RpcProtocol, request_id: u32) void {
+        const self: *CodeLensCommandRequest = @ptrCast(@alignCast(context));
+        self.channel = channel;
+        self.request_id = request_id;
+        self.run() catch |err| onComplete(self, err);
+    }
+
+    fn run(self: *CodeLensCommandRequest) !void {
+        const providers = try self.owner.features.code_lens_provider.ordered(self.owner.allocator, self.document.model, false);
+        defer self.owner.allocator.free(providers);
+        const command = self.commands.get("_executeCodeLensProvider") orelse return error.CommandNotFound;
+        const args: code_lens_model.ExecuteCodeLensProviderArgs = .{ .execution = &self.execution, .providers = providers };
+        try command.executeWithArgument(@import("../../../platform/commands/common/commands.zig").CommandArgument.from(code_lens_model.ExecuteCodeLensProviderArgs, &args));
+    }
+
+    fn onComplete(context: *anyopaque, result: anyerror![]const languages.CodeLens) void {
+        const self: *CodeLensCommandRequest = @ptrCast(@alignCast(context));
+        if (self.channel) |channel| {
+            var scratch = std.heap.ArenaAllocator.init(self.owner.allocator);
+            defer scratch.deinit();
+            const value = self.serialize(scratch.allocator(), result) catch |err| {
+                channel.sendReply(self.request_id, .{ .err = .{ .name = @errorName(err), .message = @errorName(err) } });
+                self.channel = null;
+                self.cleanup.schedule(@import("../../../base/common/timeCompat.zig").milliTimestamp() + 100);
+                return;
+            };
+            channel.sendReply(self.request_id, .{ .json = value });
+            self.channel = null;
+        }
+        self.cleanup.schedule(@import("../../../base/common/timeCompat.zig").milliTimestamp() + 100);
+    }
+
+    fn serialize(self: *CodeLensCommandRequest, a: Allocator, result: anyerror![]const languages.CodeLens) !std.json.Value {
+        var rows = std.json.Array.init(a);
+        for (try result) |lens| {
+            var item: std.json.ObjectMap = .empty;
+            try item.put(a, "range", try rangeJson(a, self.document.model, lens.range));
+            if (lens.command) |command| {
+                var dto: std.json.ObjectMap = .empty;
+                try dto.put(a, "id", .{ .string = command.id });
+                try dto.put(a, "title", .{ .string = command.title });
+                if (command.arguments) |args| try dto.put(a, "arguments", args);
+                try item.put(a, "command", .{ .object = dto });
+            }
+            try rows.append(.{ .object = item });
+        }
+        return .{ .array = rows };
+    }
+
+    fn onCleanup(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *CodeLensCommandRequest = @ptrCast(@alignCast(context));
+        self.dispose();
+        return false;
+    }
+
+    fn dispose(self: *CodeLensCommandRequest) void {
+        self.cleanup.schedule(null);
+        for (self.owner.code_lens_commands.items, 0..) |candidate, index| {
+            if (candidate != self) continue;
+            _ = self.owner.code_lens_commands.swapRemove(index);
+            break;
+        }
+        self.execution.deinit();
+        self.document.release();
+        self.owner.allocator.destroy(self);
+    }
+
+    fn cancel(self: *CodeLensCommandRequest) void {
+        if (self.channel) |channel| channel.sendReply(self.request_id, .{ .err = .{ .name = "Canceled", .message = "CodeLens provider disposed" } });
+        self.dispose();
+    }
+};
+
 pub const InlineProvider = struct { handle: u32, supports_events: bool };
 
 pub const MainThreadLanguageFeatures = struct {
@@ -107,6 +196,7 @@ pub const MainThreadLanguageFeatures = struct {
     proxy: HostProxy,
     registrations: std.AutoHashMap(u32, *Registration),
     code_lens_events: std.AutoHashMap(u32, *CodeLensState),
+    code_lens_commands: std.ArrayList(*CodeLensCommandRequest) = .empty,
     inline_providers: @import("../../../editor/common/languageFeatureRegistry.zig").LanguageFeatureRegistry(InlineProvider),
 
     pub fn init(allocator: Allocator, features: *features_mod.LanguageFeaturesService, proxy: HostProxy) MainThreadLanguageFeatures {
@@ -121,14 +211,40 @@ pub const MainThreadLanguageFeatures = struct {
     }
 
     pub fn deinit(self: *MainThreadLanguageFeatures) void {
+        while (self.code_lens_commands.items.len != 0) self.code_lens_commands.items[self.code_lens_commands.items.len - 1].dispose();
         var iterator = self.registrations.valueIterator();
         while (iterator.next()) |registration_ptr| self.destroyRegistration(registration_ptr.*);
         self.registrations.deinit();
+        self.code_lens_commands.deinit(self.allocator);
         self.code_lens_events.deinit();
         self.inline_providers.deinit();
     }
 
+    pub fn executeCodeLensCommand(self: *MainThreadLanguageFeatures, document: *EditorDocument, resolve_count: ?usize, commands: *CommandRegistry, queue: *WindowDispatch.Queue) !rpc.HandlerReply {
+        const request = try self.allocator.create(CodeLensCommandRequest);
+        errdefer self.allocator.destroy(request);
+        document.retain();
+        errdefer document.release();
+        request.* = .{
+            .owner = self,
+            .document = document,
+            .commands = commands,
+            .execution = .{ .allocator = self.allocator, .model = document.model, .resolve_count = resolve_count, .context = request, .complete = CodeLensCommandRequest.onComplete },
+            .cleanup = .{ .queue = queue, .context = request, .run = CodeLensCommandRequest.onCleanup },
+        };
+        try self.code_lens_commands.append(self.allocator, request);
+        return .{ .deferred = .{ .context = request, .start = CodeLensCommandRequest.start } };
+    }
+
     fn destroyRegistration(self: *MainThreadLanguageFeatures, registration: *Registration) void {
+        if (registration.code_lens_state != null) {
+            var index = self.code_lens_commands.items.len;
+            while (index != 0) {
+                index -= 1;
+                const request = self.code_lens_commands.items[index];
+                if (!request.execution.finished) request.cancel();
+            }
+        }
         if (registration.disposable) |disposable| disposable.dispose();
         if (registration.code_lens_state) |state| {
             if (state.event_handle) |handle| _ = self.code_lens_events.remove(handle);

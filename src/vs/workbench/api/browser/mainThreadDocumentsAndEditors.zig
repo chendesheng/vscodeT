@@ -366,7 +366,7 @@ pub const ModelCollection = struct {
         self.documents.deinit(self.allocator);
     }
 
-    fn documentForResource(self: *ModelCollection, key: []const u8) ?*EditorDocument {
+    pub fn documentForResource(self: *ModelCollection, key: []const u8) ?*EditorDocument {
         for (self.documents.items) |document| if (std.mem.eql(u8, document.key, key)) return document.document;
         return null;
     }
