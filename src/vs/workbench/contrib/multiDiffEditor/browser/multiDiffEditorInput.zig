@@ -13,6 +13,7 @@ const model = @import("../../../../editor/browser/widget/multiDiffEditor/model.z
 const view_model = @import("../../../../editor/browser/widget/multiDiffEditor/multiDiffEditorViewModel.zig");
 const DiffOptions = @import("../../../../editor/browser/widget/diffEditor/diffEditorOptions.zig").Options;
 const source_mod = @import("multiDiffSourceResolverService.zig");
+const workbench_multi = @import("../common/multiDiffEditor.zig");
 const SignalSubscription = @import("../../../../base/common/event.zig").SignalSubscription;
 const std_uri = @import("../../../../base/common/stdUri.zig");
 const dispatch = @import("../../../../base/common/windowDispatch.zig");
@@ -28,6 +29,7 @@ pub const ResolvedItem = struct {
     go_to_file_uri: ?std.Uri = null,
     go_to_file_title: ?[]const u8 = null,
     options: DiffOptions = .{},
+    source_index: usize = 0,
 };
 
 pub const MultiDiffEditorInput = struct {
@@ -48,6 +50,7 @@ pub const MultiDiffEditorInput = struct {
     source_label_listener: ?SignalSubscription = null,
     resolved_label: ?[]u8 = null,
     resolved_resource_count: ?usize = null,
+    resource_order: ?workbench_multi.MultiDiffEditorFileListViewMode = null,
     last_resolution_failure: ?anyerror = null,
     initial_resources_arena: ?std.heap.ArenaAllocator = null,
     initial_resources: ?[]const source_mod.MultiDiffEditorItem = null,
@@ -131,6 +134,7 @@ pub const MultiDiffEditorInput = struct {
 
     pub const Entry = struct {
         item: *model.IDocumentDiffItem,
+        source_index: usize,
         original: ?SideInput = null,
         modified: ?SideInput = null,
         go_to_file_uri: ?[]u8 = null,
@@ -278,7 +282,7 @@ pub const MultiDiffEditorInput = struct {
         const modified_dirty = if (b) |input| try input.interface().on_did_change_dirty.listenDisposable(self, onSideDirty) else null;
         errdefer if (modified_dirty) |subscription| subscription.dispose();
         if (existing != null) try item.updateOptions(options);
-        return .{ .item = item, .original = a, .modified = b, .go_to_file_uri = go_to, .go_to_file_title = title, .original_dirty = original_dirty, .modified_dirty = modified_dirty };
+        return .{ .item = item, .source_index = value.source_index, .original = a, .modified = b, .go_to_file_uri = go_to, .go_to_file_title = title, .original_dirty = original_dirty, .modified_dirty = modified_dirty };
     }
     pub const FoundItem = struct { entry: *const Entry, is_original: bool };
     pub fn findDocumentDiffItem(self: *const MultiDiffEditorInput, uri: std.Uri) !?FoundItem {
@@ -299,7 +303,48 @@ pub const MultiDiffEditorInput = struct {
         for (entries) |*entry| entry.release(self.allocator);
         self.allocator.free(entries);
     }
-    pub fn setResolvedItems(self: *MultiDiffEditorInput, values: []const ResolvedItem) !void {
+    fn getResolvedItemUri(item: ResolvedItem) std.Uri {
+        return (item.modified orelse item.original.?).uri;
+    }
+
+    /// The composite owns the order of resources, not the viewport.
+    /// Reordering retains the already-resolved text models and diff state.
+    pub fn setResourceOrder(self: *MultiDiffEditorInput, mode: ?workbench_multi.MultiDiffEditorFileListViewMode) !void {
+        if (self.resource_order == mode) return;
+        self.resource_order = mode;
+        if (self.entries.len == 0) return;
+        const values = try self.allocator.alloc(ResolvedItem, self.entries.len);
+        defer self.allocator.free(values);
+        for (self.entries, values) |entry, *value| {
+            value.* = .{
+                .original = if (entry.item.original) |source| .{ .uri = source.uri, .input = entry.original } else null,
+                .modified = if (entry.item.modified) |source| .{ .uri = source.uri, .input = entry.modified } else null,
+                .go_to_file_uri = if (entry.go_to_file_uri) |uri| try std.Uri.parse(uri) else null,
+                .go_to_file_title = entry.go_to_file_title,
+                .options = entry.item.options,
+                .source_index = entry.source_index,
+            };
+        }
+        std.mem.sort(ResolvedItem, values, {}, struct {
+            fn less(_: void, left: ResolvedItem, right: ResolvedItem) bool {
+                return left.source_index < right.source_index;
+            }
+        }.less);
+        try self.publishResolvedItems(values);
+    }
+
+    pub fn setResolvedItems(self: *MultiDiffEditorInput, unsorted_values: []const ResolvedItem) !void {
+        const values = try self.allocator.dupe(ResolvedItem, unsorted_values);
+        defer self.allocator.free(values);
+        for (values, 0..) |*value, index| value.source_index = index;
+        try self.publishResolvedItems(values);
+    }
+
+    fn publishResolvedItems(self: *MultiDiffEditorInput, unsorted_values: []const ResolvedItem) !void {
+        for (unsorted_values) |value| if (value.original == null and value.modified == null) return error.MissingDiffResources;
+        const sorted = if (self.resource_order) |mode| try workbench_multi.sortMultiDiffEditorFileListItems(ResolvedItem, self.allocator, unsorted_values, getResolvedItemUri, mode) else null;
+        defer if (sorted) |values| self.allocator.free(values);
+        const values = sorted orelse unsorted_values;
         const entries = try self.allocator.alloc(Entry, values.len);
         var count: usize = 0;
         var adopted = false;

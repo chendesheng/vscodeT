@@ -329,6 +329,19 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
             for (self.manager.items) |managed| if (managed.item == item) return managed.binding();
             return null;
         }
+        /// The file list selection follows the active visible item, otherwise
+        /// the topmost visible diff. The compressed layout owns visibility.
+        pub fn currentVisibleItem(self: *const Self) ?*model.DocumentDiffItemViewModel {
+            const active = if (self.model) |value| value.activeDiffItem else null;
+            var first: ?*model.DocumentDiffItemViewModel = null;
+            for (self.manager.items, 0..) |managed, index| {
+                if (index >= self.scroll_view.layout.items.len) break;
+                if (self.scroll_view.layout.items[index].visibility != .visible) continue;
+                if (managed.item == active) return managed.item;
+                if (first == null) first = managed.item;
+            }
+            return first orelse active;
+        }
         pub fn activeControl(self: *Self) ?*Widget {
             const value = self.model orelse return null;
             const active = value.activeDiffItem orelse return null;
