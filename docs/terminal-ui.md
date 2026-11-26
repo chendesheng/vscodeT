@@ -2088,7 +2088,16 @@ browser accessibility tree. File-to-file diff inputs restore through the
 composite serializer. The two code editor states and collapsed-region model
 state are stored using the ordered pair of model URIs and the group ID;
 ordinary file tabs and diff panes resolve shared documents during restoration.
-Virtual Git revision inputs have no upstream text-resource serializer. Git snapshot
+Virtual Git revision inputs have no upstream text-resource serializer. The SCM
+change peek reuses a retained `ZoneWidget` and `PeekViewWidget`; its child
+inline diff mounts the shared working document and the provider's real
+original resource. The terminal replaces the browser arrow/frame and
+pixel-sized header with cell geometry, the base selector with the shared
+quick-input picker, and action icons with cell glyphs. The child unmounts
+before its containing zone is removed or rebuilt. Keyboard focus, hardware
+cursor and code-editor service lookup follow the embedded editor while it has
+focus. Git actions are resolved from the scoped `SCMChangeContext` menu and
+forward the selected provider changes to the Git commands. Git snapshot
 resolution and the initial diff computation now run in the editor worker;
 the window receives completion events and obsolete replies are detached.
 

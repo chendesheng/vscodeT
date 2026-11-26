@@ -7,8 +7,9 @@
 //   with the ported `LineDiffProvider` on a worker using an owned input.
 // - Each model uses a window deadline for its 200 ms ThrottledDelayer.
 //   Worker replies wake the window to apply decorations on the UI thread.
-// - `getDiffEditorModel` returns the original content/ref label instead of two
-//   text models; diff snapshots are built by the workbench.
+// - `getDiffEditorModel` returns the original resource URI, content and ref
+//   label. The embedded peek resolves it into a retained original document
+//   and shares the working document with the outer editor.
 // - Paths replace `URI` values, and suppressed secondary changes stay in
 //   `all_changes` (the API-visible list) while `changes` contains the visible
 //   primary/contributed and non-overlapping secondary changes, matching the

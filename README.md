@@ -1235,8 +1235,15 @@ console API for raw mode, sizing and input polling.
   worker. It receives owned text snapshots and delivers versioned results to
   the decoration listener. It honors `scm.diffDecorations`,
   `scm.diffDecorationsIgnoreTrimWhitespace` (including `inherit`) and
-  `scm.diffDecorationsGutterPattern`. `Alt-Down`/`Alt-Up` navigate changes
-  (TUI-specific because a normal terminal cannot deliver F5/F7).
+  `scm.diffDecorationsGutterPattern`. Clicking a change marker (when
+  `scm.diffDecorationsGutterAction` is `diff`) and Alt-F3/Shift-Alt-F3 open or
+  navigate the retained SCM change peek. Alt-F5/Shift-Alt-F5 go to the next or
+  previous change; Escape closes the peek and Ctrl/Cmd-K F2 toggles its focus.
+  The peek embeds the normal inline diff editor over the working document and
+  the provider’s original URI, has a resizable model-anchored zone, and offers
+  a baseline picker for overlapping visible providers. Its registered Git
+  actions stage an individual change into the index or revert it and save the
+  working document, preserving all other changes.
 - The diff editor view (`src/vs/editor/browser/widget/diffEditor/` plus
   `src/vs/workbench/browser/parts/editor/textDiffEditor.zig`) opens a
   side-by-side comparison from a changed SCM resource. Both sides retain
@@ -1263,7 +1270,7 @@ console API for raw mode, sizing and input polling.
   scroll anchors and collapsed unchanged regions are stored in the group’s
   diff resource memento. Virtual Git revision inputs have no upstream
   serializer and therefore are not included in session restoration. Remaining
-  portable gaps include quick-diff peek and multi-diff editor. Moved
+  portable gaps include the multi-diff editor. Moved
   blocks are surfaced as model decorations, gutter connectors and Compare controls
   in side-by-side mode only; the active comparison aligns both moved ranges.
   Hide-unchanged uses the upstream unchanged-region range model, direct model
@@ -1300,8 +1307,11 @@ console API for raw mode, sizing and input polling.
   `diffEditor.codeLens` enables CodeLens rows in both panes (off by default);
   the normal editor contribution owns their model, viewport resolution,
   command picker and clickable commands. Both real side documents are kept
-  in the extension-host model set regardless of which pane has focus.
-  Multi-file diff and quick-diff peek remain unported.
+  in the extension-host model set regardless of which pane has focus. The
+  public `vscode.executeCodeLensProvider` command supports both resources and
+  its resolution budget. The diff helper offers a whitespace-only-change
+  button and a computation-time limit prompt; both update the effective
+  modified-resource configuration. Multi-file diff remains unported.
   See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
   Only one repository per workspace folder is shown.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and
