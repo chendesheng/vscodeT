@@ -49,6 +49,7 @@ pub const HostProxy = struct {
         timeout_ms: u32,
     ) anyerror!std.json.Value,
     notify: *const fn (context: *anyopaque, method: []const u8, args: []const rpc.Arg) anyerror!void,
+    request_async: ?*const fn (context: *anyopaque, method: []const u8, args: []const rpc.Arg, callback: rpc.ReplyCallback) anyerror!IDisposable = null,
 };
 
 const timeout_hover_ms: u32 = 750;
@@ -61,6 +62,7 @@ const Registration = struct {
     arena: std.heap.ArenaAllocator,
     disposable: ?IDisposable = null,
     hover_arena: ?*std.heap.ArenaAllocator = null,
+    code_lens_state: ?*CodeLensState = null,
 };
 
 const HoverState = struct {
@@ -77,6 +79,11 @@ const ReferenceState = struct { registration: *Registration };
 const DocumentSymbolState = struct {
     registration: *Registration,
     display_name: []const u8,
+};
+const CodeLensState = struct {
+    registration: *Registration,
+    event_handle: ?u32 = null,
+    changed: @import("../../../base/common/event.zig").Emitter(void),
 };
 const CodeActionState = struct {
     registration: *Registration,
@@ -99,6 +106,7 @@ pub const MainThreadLanguageFeatures = struct {
     features: *features_mod.LanguageFeaturesService,
     proxy: HostProxy,
     registrations: std.AutoHashMap(u32, *Registration),
+    code_lens_events: std.AutoHashMap(u32, *CodeLensState),
     inline_providers: @import("../../../editor/common/languageFeatureRegistry.zig").LanguageFeatureRegistry(InlineProvider),
 
     pub fn init(allocator: Allocator, features: *features_mod.LanguageFeaturesService, proxy: HostProxy) MainThreadLanguageFeatures {
@@ -108,6 +116,7 @@ pub const MainThreadLanguageFeatures = struct {
             .proxy = proxy,
             .inline_providers = .init(allocator),
             .registrations = std.AutoHashMap(u32, *Registration).init(allocator),
+            .code_lens_events = std.AutoHashMap(u32, *CodeLensState).init(allocator),
         };
     }
 
@@ -115,11 +124,16 @@ pub const MainThreadLanguageFeatures = struct {
         var iterator = self.registrations.valueIterator();
         while (iterator.next()) |registration_ptr| self.destroyRegistration(registration_ptr.*);
         self.registrations.deinit();
+        self.code_lens_events.deinit();
         self.inline_providers.deinit();
     }
 
     fn destroyRegistration(self: *MainThreadLanguageFeatures, registration: *Registration) void {
         if (registration.disposable) |disposable| disposable.dispose();
+        if (registration.code_lens_state) |state| {
+            if (state.event_handle) |handle| _ = self.code_lens_events.remove(handle);
+            state.changed.deinit();
+        }
         if (registration.hover_arena) |arena| {
             arena.deinit();
             self.allocator.destroy(arena);
@@ -154,6 +168,7 @@ pub const MainThreadLanguageFeatures = struct {
         if (std.mem.eql(u8, method, "$unregister")) {
             const handle = handleArg(args) orelse return error.InvalidArguments;
             if (self.registrations.fetchRemove(handle)) |entry| self.destroyRegistration(entry.value);
+            if (self.code_lens_events.fetchRemove(handle)) |entry| entry.value.event_handle = null;
             return .empty;
         }
         if (std.mem.eql(u8, method, "$registerInlineCompletionsSupport")) {
@@ -171,6 +186,12 @@ pub const MainThreadLanguageFeatures = struct {
         if (std.mem.eql(u8, method, "$registerTypeDefinitionSupport")) return self.registerLocationProvider(args, arena, .type_definition);
         if (std.mem.eql(u8, method, "$registerReferenceSupport")) return self.registerReference(args, arena);
         if (std.mem.eql(u8, method, "$registerDocumentSymbolProvider")) return self.registerDocumentSymbol(args, arena);
+        if (std.mem.eql(u8, method, "$registerCodeLensSupport")) return self.registerCodeLens(args, arena);
+        if (std.mem.eql(u8, method, "$emitCodeLensEvent")) {
+            const handle = handleArg(args) orelse return error.InvalidArguments;
+            if (self.code_lens_events.get(handle)) |state| try state.changed.fire({});
+            return .empty;
+        }
         if (std.mem.eql(u8, method, "$registerCodeActionSupport")) return self.registerCodeAction(args, arena);
         if (std.mem.eql(u8, method, "$registerDocumentFormattingSupport")) return self.registerDocumentFormatting(args, arena);
         if (std.mem.eql(u8, method, "$registerRangeFormattingSupport")) return self.registerRangeFormatting(args, arena);
@@ -278,6 +299,33 @@ pub const MainThreadLanguageFeatures = struct {
             .context = state,
             .display_name = state.display_name,
             .provide_document_symbols = provideDocumentSymbols,
+        });
+        return .empty;
+    }
+
+    fn registerCodeLens(self: *MainThreadLanguageFeatures, args: []const rpc.Arg, arena: Allocator) !rpc.HandlerReply {
+        const handle = handleArg(args) orelse return error.InvalidArguments;
+        const selector = try parseSelector(arena, jsonArg(args, 1) orelse return error.InvalidArguments);
+        const registration = try self.createRegistration(arena, handle);
+        errdefer {
+            _ = self.registrations.remove(handle);
+            self.destroyRegistration(registration);
+        }
+        const state = try registration.arena.allocator().create(CodeLensState);
+        state.* = .{ .registration = registration, .changed = @import("../../../base/common/event.zig").Emitter(void).init(self.allocator) };
+        registration.code_lens_state = state;
+        if (jsonArg(args, 2)) |event| if (event == .integer and event.integer >= 0 and event.integer <= std.math.maxInt(u32)) {
+            const event_handle: u32 = @intCast(event.integer);
+            try self.code_lens_events.put(event_handle, state);
+            state.event_handle = event_handle;
+        };
+        registration.disposable = try self.features.code_lens_provider.register(selector, .{
+            .context = state,
+            .on_did_change = if (state.event_handle != null) &state.changed else null,
+            .provide_code_lenses = provideCodeLenses,
+            .request_code_lenses = requestCodeLenses,
+            .resolve_code_lens = resolveCodeLens,
+            .request_resolve_code_lens = requestResolveCodeLens,
         });
         return .empty;
     }
@@ -524,6 +572,120 @@ pub const MainThreadLanguageFeatures = struct {
             try result.append(try parseDocumentSymbol(allocator, item.object, model));
         }
         return result.toOwnedSlice();
+    }
+
+    const CodeLensRelease = struct {
+        proxy: HostProxy,
+        handle: u32,
+        cache_id: i64,
+        fn dispose(context: *anyopaque) void {
+            const self: *CodeLensRelease = @ptrCast(@alignCast(context));
+            self.proxy.notify(self.proxy.context, "$releaseCodeLenses", &.{ .{ .json = .{ .integer = self.handle } }, .{ .json = .{ .integer = self.cache_id } } }) catch {};
+        }
+    };
+
+    fn parseCodeLens(allocator: Allocator, model: *TextModel, value: std.json.Value) !?languages.CodeLens {
+        if (value != .object) return null;
+        const range = rangeFromJson(model, value.object.get("range") orelse return null) orelse return null;
+        var command: ?languages.Command = null;
+        if (value.object.get("command")) |cmd| if (cmd == .object) {
+            command = .{
+                .id = try dupJsonString(allocator, cmd.object.get("id")),
+                .title = try dupJsonString(allocator, cmd.object.get("title")),
+                .arguments = if (cmd.object.get("arguments")) |arguments| try rpc.cloneJsonValue(allocator, arguments) else null,
+            };
+        };
+        return .{ .range = range, .command = command, .provider_data = try rpc.cloneJsonValue(allocator, value) };
+    }
+
+    fn parseCodeLensList(state: *CodeLensState, allocator: Allocator, model: *TextModel, value: std.json.Value) !?languages.CodeLensList {
+        if (value != .object) return null;
+        var release: ?IDisposable = null;
+        if (value.object.get("cacheId")) |cache| if (cache == .integer) {
+            const context = try allocator.create(CodeLensRelease);
+            context.* = .{ .proxy = state.registration.owner.proxy, .handle = state.registration.handle, .cache_id = cache.integer };
+            release = .{ .context = context, .disposeFn = CodeLensRelease.dispose };
+        };
+        errdefer if (release) |disposable| disposable.dispose();
+        var result: std.ArrayList(languages.CodeLens) = .empty;
+        const lenses = value.object.get("lenses") orelse return .{ .disposable = release };
+        if (lenses != .array) return .{ .disposable = release };
+        for (lenses.array.items) |item| if (try parseCodeLens(allocator, model, item)) |lens| try result.append(allocator, lens);
+        return .{ .lenses = try result.toOwnedSlice(allocator), .disposable = release };
+    }
+
+    fn provideCodeLenses(context: *anyopaque, allocator: Allocator, model: *TextModel, token: CancellationToken) !?languages.CodeLensList {
+        const state: *CodeLensState = @ptrCast(@alignCast(context));
+        const self = state.registration.owner;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        const args = [_]rpc.Arg{ .{ .json = .{ .integer = state.registration.handle } }, .{ .json = try std_uri.jsonComponents(a, model.uri()) } };
+        const value = try self.call(a, "$provideCodeLenses", &args, token, timeout_format_ms);
+        return parseCodeLensList(state, allocator, model, value);
+    }
+
+    const CodeLensRequest = struct {
+        state: *CodeLensState,
+        allocator: Allocator,
+        model: *TextModel,
+        callback: union(enum) { provide: languages.CodeLensCallback, resolve: languages.CodeLensResolveCallback },
+
+        fn ready(context: *anyopaque, reply: rpc.Reply) void {
+            const self: *CodeLensRequest = @ptrCast(@alignCast(context));
+            switch (self.callback) {
+                .provide => |cb| cb.complete(cb.context, if (reply == .json) parseCodeLensList(self.state, self.allocator, self.model, reply.json) catch null else null),
+                .resolve => |cb| cb.complete(cb.context, if (reply == .json) parseCodeLens(self.allocator, self.model, reply.json) catch null else null),
+            }
+        }
+    };
+
+    fn requestCodeLenses(context: *anyopaque, allocator: Allocator, model: *TextModel, callback: languages.CodeLensCallback) !?IDisposable {
+        const state: *CodeLensState = @ptrCast(@alignCast(context));
+        const proxy = state.registration.owner.proxy;
+        if (proxy.request_async) |request| {
+            var scratch = std.heap.ArenaAllocator.init(state.registration.owner.allocator);
+            defer scratch.deinit();
+            const pending = try allocator.create(CodeLensRequest);
+            pending.* = .{ .state = state, .allocator = allocator, .model = model, .callback = .{ .provide = callback } };
+            const args = [_]rpc.Arg{ .{ .json = .{ .integer = state.registration.handle } }, .{ .json = try std_uri.jsonComponents(scratch.allocator(), model.uri()) } };
+            return try request(proxy.context, "$provideCodeLenses", &args, .{ .context = pending, .callback = CodeLensRequest.ready });
+        }
+        callback.complete(callback.context, provideCodeLenses(context, allocator, model, CancellationToken.None) catch null);
+        return null;
+    }
+
+    fn resolveArgs(allocator: Allocator, state: *CodeLensState, model: *TextModel, symbol: languages.CodeLens) ![2]rpc.Arg {
+        var dto = try rpc.cloneJsonValue(allocator, symbol.provider_data orelse return error.InvalidCodeLens);
+        if (dto != .object) return error.InvalidCodeLens;
+        try dto.object.put(allocator, "range", try rangeJson(allocator, model, symbol.range));
+        return .{ .{ .json = .{ .integer = state.registration.handle } }, .{ .json = dto } };
+    }
+
+    fn resolveCodeLens(context: *anyopaque, allocator: Allocator, model: *TextModel, symbol: languages.CodeLens, token: CancellationToken) !?languages.CodeLens {
+        const state: *CodeLensState = @ptrCast(@alignCast(context));
+        const self = state.registration.owner;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        const args = try resolveArgs(a, state, model, symbol);
+        const value = try self.call(a, "$resolveCodeLens", &args, token, timeout_format_ms);
+        return parseCodeLens(allocator, model, value);
+    }
+
+    fn requestResolveCodeLens(context: *anyopaque, allocator: Allocator, model: *TextModel, symbol: languages.CodeLens, callback: languages.CodeLensResolveCallback) !?IDisposable {
+        const state: *CodeLensState = @ptrCast(@alignCast(context));
+        const proxy = state.registration.owner.proxy;
+        if (proxy.request_async) |request| {
+            var scratch = std.heap.ArenaAllocator.init(state.registration.owner.allocator);
+            defer scratch.deinit();
+            const pending = try allocator.create(CodeLensRequest);
+            pending.* = .{ .state = state, .allocator = allocator, .model = model, .callback = .{ .resolve = callback } };
+            const args = try resolveArgs(scratch.allocator(), state, model, symbol);
+            return try request(proxy.context, "$resolveCodeLens", &args, .{ .context = pending, .callback = CodeLensRequest.ready });
+        }
+        callback.complete(callback.context, resolveCodeLens(context, allocator, model, symbol, CancellationToken.None) catch null);
+        return null;
     }
 
     fn provideCodeActions(context: *anyopaque, allocator: Allocator, model: *TextModel, range: Range, action_context: languages.CodeActionContext, token: CancellationToken) anyerror!languages.CodeActionList {

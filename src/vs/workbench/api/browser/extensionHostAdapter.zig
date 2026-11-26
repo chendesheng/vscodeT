@@ -452,6 +452,7 @@ pub const Extensions = struct {
             .context = self,
             .request = languageFeaturesRequest,
             .notify = languageFeaturesNotify,
+            .request_async = languageFeaturesRequestAsync,
         });
         try self.inline_completions.start(&self.language_features_actor.?);
         self.diagnostics_actor = try MainThreadDiagnostics.init(self.allocator, marker_service, .{
@@ -463,6 +464,34 @@ pub const Extensions = struct {
     fn languageFeaturesRequest(context: *anyopaque, allocator: Allocator, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, timeout_ms: u32) anyerror!std.json.Value {
         const self: *Extensions = @ptrCast(@alignCast(context));
         return self.host.requestSync(allocator, proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostLanguageFeatures), method, args, token, timeout_ms);
+    }
+
+    const AsyncLanguageRequest = struct {
+        owner: *Extensions,
+        request_id: u32,
+        callback: rpc.ReplyCallback,
+
+        fn complete(context: *anyopaque, reply: rpc.Reply) void {
+            const self: *AsyncLanguageRequest = @ptrCast(@alignCast(context));
+            const allocator = self.owner.allocator;
+            const callback = self.callback;
+            allocator.destroy(self);
+            callback.call(reply);
+        }
+        fn cancel(context: *anyopaque) void {
+            const self: *AsyncLanguageRequest = @ptrCast(@alignCast(context));
+            self.owner.host.rpc.cancel(self.request_id);
+            self.owner.allocator.destroy(self);
+        }
+    };
+
+    fn languageFeaturesRequestAsync(context: *anyopaque, method: []const u8, args: []const rpc.Arg, callback: rpc.ReplyCallback) !@import("../../../base/common/lifecycle.zig").IDisposable {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        const pending = try self.allocator.create(AsyncLanguageRequest);
+        errdefer self.allocator.destroy(pending);
+        pending.* = .{ .owner = self, .request_id = 0, .callback = callback };
+        pending.request_id = try self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostLanguageFeatures), method, args, @import("../../../base/common/cancellation.zig").CancellationToken.None, .{ .context = pending, .callback = AsyncLanguageRequest.complete });
+        return .{ .context = pending, .disposeFn = AsyncLanguageRequest.cancel };
     }
 
     fn languageFeaturesNotify(context: *anyopaque, method: []const u8, args: []const rpc.Arg) anyerror!void {

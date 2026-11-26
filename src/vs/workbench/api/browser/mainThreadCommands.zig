@@ -24,6 +24,13 @@ const ContributedCommand = struct {
         const self: *@This() = @ptrCast(@alignCast(context));
         try self.host.executeContributedCommand(self.id, &.{});
     }
+
+    fn runWithArgument(context: *anyopaque, argument: @import("../../../platform/commands/common/commands.zig").CommandArgument) !void {
+        const self: *ContributedCommand = @ptrCast(@alignCast(context));
+        const value = argument.as(std.json.Value) orelse return error.InvalidArgument;
+        if (value.* != .array) return error.InvalidArgument;
+        try self.host.executeContributedCommand(self.id, value.array.items);
+    }
 };
 
 pub const CommandHost = struct {
@@ -113,11 +120,18 @@ pub const MainThreadCommands = struct {
                 // The picker can expose them once it evaluates their when clause.
                 const visible = valid and !hasPaletteCondition(points.object, id);
                 errdefer self.registry.unregister(id);
-                try self.registry.registerCommand(.{ .id = id, .context = binding, .run = ContributedCommand.run }, .{ .id = id, .title = title.string, .category = if (category != null and category.? == .string) category.?.string else "", .precondition = binding.enablement }, .{ .show_in_palette = visible });
+                try self.registry.registerCommand(.{ .id = id, .context = binding, .run = ContributedCommand.run, .run_with_argument = ContributedCommand.runWithArgument }, .{ .id = id, .title = title.string, .category = if (category != null and category.? == .string) category.?.string else "", .precondition = binding.enablement }, .{ .show_in_palette = visible });
                 return binding;
             }
         }
-        return null;
+        // Commands registered at runtime (including converted CodeLens
+        // commands) are executable even without a manifest palette entry.
+        const binding = try self.allocator.create(ContributedCommand);
+        errdefer self.allocator.destroy(binding);
+        binding.* = .{ .host = self.host, .id = id, .arena = .init(self.allocator) };
+        errdefer binding.arena.deinit();
+        try self.registry.registerCommand(.{ .id = id, .context = binding, .run = ContributedCommand.run, .run_with_argument = ContributedCommand.runWithArgument }, .{ .id = id, .title = id }, .{ .show_in_palette = false });
+        return binding;
     }
 
     pub fn invoke(

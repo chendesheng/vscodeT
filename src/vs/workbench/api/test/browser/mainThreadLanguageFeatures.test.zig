@@ -263,3 +263,100 @@ test "mainThreadLanguageFeatures: reference registration and result conversion" 
     try std.testing.expectEqualStrings("file:///tmp/fake.ts", locations[0].uri);
     try std.testing.expectEqual(@as(usize, 2), locations[1].range.startLineNumber);
 }
+
+test "mainThreadLanguageFeatures: CodeLens async provide resolve change and release" {
+    const a = std.testing.allocator;
+    const languages = @import("../../../../editor/common/languages.zig");
+    const Disposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
+    const CancellationToken = @import("../../../../base/common/cancellation.zig").CancellationToken;
+    const Proxy = struct {
+        pending: ?rpc.ReplyCallback = null,
+        last_method: []const u8 = "",
+        releases: usize = 0,
+        cancels: usize = 0,
+        resolved_cache: i64 = -1,
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: []const rpc.Arg, _: ?CancellationToken, _: u32) !std.json.Value {
+            return error.MustUseAsyncRequest;
+        }
+        fn asyncRequest(context: *anyopaque, method: []const u8, args: []const rpc.Arg, callback: rpc.ReplyCallback) !Disposable {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.last_method = method;
+            self.pending = callback;
+            if (std.mem.eql(u8, method, "$resolveCodeLens")) self.resolved_cache = args[1].json.object.get("cacheId").?.array.items[0].integer;
+            return .{ .context = self, .disposeFn = cancel };
+        }
+        fn cancel(context: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.pending = null;
+            self.cancels += 1;
+        }
+        fn notify(context: *anyopaque, method: []const u8, args: []const rpc.Arg) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try std.testing.expectEqualStrings("$releaseCodeLenses", method);
+            try std.testing.expectEqual(31, args[0].json.integer);
+            try std.testing.expectEqual(42, args[1].json.integer);
+            self.releases += 1;
+        }
+        fn complete(self: *@This(), value: std.json.Value) void {
+            const callback = self.pending.?;
+            self.pending = null;
+            callback.call(.{ .json = value });
+        }
+    };
+    const Receiver = struct {
+        list: ?languages.CodeLensList = null,
+        resolved: ?languages.CodeLens = null,
+        changes: usize = 0,
+        fn provide(context: *anyopaque, list: ?languages.CodeLensList) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.list = list;
+        }
+        fn resolve(context: *anyopaque, lens: ?languages.CodeLens) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.resolved = lens;
+        }
+        fn changed(_: void, self: *@This()) !void {
+            self.changes += 1;
+        }
+    };
+    var model = try TestModel.init(a, "😀hello", "typescript");
+    defer model.deinit();
+    var features = LanguageFeaturesService.init(a);
+    defer features.deinit();
+    var proxy: Proxy = .{};
+    var actor = MainThreadLanguageFeatures.init(a, &features, .{ .context = &proxy, .request = Proxy.request, .notify = Proxy.notify, .request_async = Proxy.asyncRequest });
+    defer actor.deinit();
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const selector = try std.json.parseFromSliceLeaky(std.json.Value, scratch, "[{\"language\":\"typescript\"}]", .{});
+    _ = try actor.invoke("$registerCodeLensSupport", &.{ .{ .json = .{ .integer = 31 } }, .{ .json = selector }, .{ .json = .{ .integer = 32 } } }, null, scratch);
+    const providers = try features.code_lens_provider.ordered(scratch, model.model, false);
+    try std.testing.expectEqual(1, providers.len);
+    const provider = providers[0];
+    var receiver: Receiver = .{};
+    const change_listener = try provider.on_did_change.?.listen(&receiver, Receiver.changed);
+    _ = try actor.invoke("$emitCodeLensEvent", &.{.{ .json = .{ .integer = 32 } }}, null, scratch);
+    try std.testing.expectEqual(1, receiver.changes);
+    provider.on_did_change.?.unlisten(change_listener);
+    _ = try provider.request_code_lenses.?(provider.context, scratch, model.model, .{ .context = &receiver, .complete = Receiver.provide });
+    try std.testing.expectEqualStrings("$provideCodeLenses", proxy.last_method);
+    try std.testing.expect(receiver.list == null);
+    proxy.complete(try std.json.parseFromSliceLeaky(std.json.Value, scratch, "{\"cacheId\":42,\"lenses\":[{\"cacheId\":[42,0],\"range\":{\"startLineNumber\":1,\"startColumn\":3,\"endLineNumber\":1,\"endColumn\":4}}]}", .{}));
+    const list = receiver.list.?;
+    try std.testing.expectEqual(1, list.lenses.len);
+    try std.testing.expectEqual(5, list.lenses[0].range.startColumn);
+    _ = try provider.request_resolve_code_lens.?(provider.context, scratch, model.model, list.lenses[0], .{ .context = &receiver, .complete = Receiver.resolve });
+    try std.testing.expectEqualStrings("$resolveCodeLens", proxy.last_method);
+    try std.testing.expectEqual(42, proxy.resolved_cache);
+    proxy.complete(try std.json.parseFromSliceLeaky(std.json.Value, scratch, "{\"cacheId\":[42,0],\"range\":{\"startLineNumber\":1,\"startColumn\":3,\"endLineNumber\":1,\"endColumn\":4},\"command\":{\"id\":\"internal.run\",\"title\":\"Run\",\"arguments\":[7]}}", .{}));
+    try std.testing.expectEqualStrings("internal.run", receiver.resolved.?.command.?.id);
+    try std.testing.expectEqual(7, receiver.resolved.?.command.?.arguments.?.array.items[0].integer);
+    list.disposable.?.dispose();
+    try std.testing.expectEqual(1, proxy.releases);
+    const pending = (try provider.request_code_lenses.?(provider.context, scratch, model.model, .{ .context = &receiver, .complete = Receiver.provide })).?;
+    pending.dispose();
+    try std.testing.expectEqual(1, proxy.cancels);
+    _ = try actor.invoke("$unregister", &.{.{ .json = .{ .integer = 31 } }}, null, scratch);
+    try std.testing.expect(!features.code_lens_provider.has(model.model));
+}
