@@ -361,8 +361,8 @@ pub const Tab = struct {
             return;
         }
         if (self.diff) |diff| {
-            diff.widget.original_view.refresh() catch {};
-            diff.widget.modified_view.refresh() catch {};
+            diff.widget.original_view.invalidate();
+            diff.widget.modified_view.invalidate();
             return;
         }
         try self.view.refresh();
