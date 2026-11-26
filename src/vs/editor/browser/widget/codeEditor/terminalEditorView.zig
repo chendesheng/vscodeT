@@ -7,6 +7,7 @@ const ui = @import("ui");
 const Editor = @import("./codeEditorWidgetTerminal.zig").Editor;
 const TerminalViewHost = @import("./terminalViewHost.zig").TerminalViewHost;
 const editorBrowser = @import("../../editorBrowser.zig");
+const ViewLine = @import("../../viewParts/viewLines/viewLine.zig").ViewLine;
 const editor_options = @import("../../../common/config/editorOptions.zig");
 const terminal_editor_config = @import("../../config/terminalEditorConfiguration.zig");
 const Position = @import("../../../common/core/position.zig").Position;
@@ -72,6 +73,8 @@ pub const IEditorView = struct {
         stickyScrollHost: *const fn (*anyopaque) StickyScrollHost,
         interface: *const fn (*anyopaque) editorBrowser.IEditorKeyTarget,
         themeColors: *const fn (*anyopaque) ?*const theme_colors_mod.ThemeColors,
+        lineStyleFunction: *const fn (*anyopaque) ViewLine.PartStyleFn,
+        decorationBitsFunction: *const fn (*anyopaque) *const fn ([]const u8) u32,
     };
 
     pub fn deinit(self: *IEditorView) void {
@@ -216,6 +219,14 @@ pub const IEditorView = struct {
 
     pub fn themeColors(self: *IEditorView) ?*const theme_colors_mod.ThemeColors {
         return self.vtable.themeColors(self.context);
+    }
+
+    pub fn lineStyleFunction(self: *IEditorView) ViewLine.PartStyleFn {
+        return self.vtable.lineStyleFunction(self.context);
+    }
+
+    pub fn decorationBitsFunction(self: *IEditorView) *const fn ([]const u8) u32 {
+        return self.vtable.decorationBitsFunction(self.context);
     }
 
     /// Constructs a borrowed handle. The native view owns this handle and
@@ -367,6 +378,14 @@ pub const IEditorView = struct {
                 const view: *Native = @ptrCast(@alignCast(context));
                 return view.theme_colors;
             }
+            fn lineStyleFunction(context: *anyopaque) ViewLine.PartStyleFn {
+                const view: *Native = @ptrCast(@alignCast(context));
+                return view.lineStyleFunction();
+            }
+            fn decorationBitsFunction(context: *anyopaque) *const fn ([]const u8) u32 {
+                const view: *Native = @ptrCast(@alignCast(context));
+                return view.decorationBitsFunction();
+            }
             const vtable: VTable = .{
                 .deinit = @This().deinit,
                 .refresh = @This().refresh,
@@ -404,6 +423,8 @@ pub const IEditorView = struct {
                 .stickyScrollHost = @This().stickyScrollHost,
                 .interface = @This().interface,
                 .themeColors = @This().themeColors,
+                .lineStyleFunction = @This().lineStyleFunction,
+                .decorationBitsFunction = @This().decorationBitsFunction,
             };
         };
         return .{

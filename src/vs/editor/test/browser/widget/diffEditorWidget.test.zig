@@ -197,21 +197,30 @@ pub fn Tests(comptime View: type) type {
             try testing.expectEqual(@as(usize, 28), widths.modified);
             try testing.expectEqual(@as(usize, 2), widths.overview);
             try testing.expect(widget.inline_mode);
-            var deleted = try widget.modifiedModel().getLineContent(1);
-            defer deleted.deinit();
-            try testing.expectEqualStrings("a", deleted.items);
-            const editor = widget.modified_editor;
-            widget.layout(80, 5);
-            try testing.expect(widget.sideBySide());
-            try testing.expectEqual(editor, widget.modified_editor);
+            var original = try widget.originalModel().getLineContent(1);
+            defer original.deinit();
+            try testing.expectEqualStrings("a", original.items);
             var modified = try widget.modifiedModel().getLineContent(1);
             defer modified.deinit();
             try testing.expectEqualStrings("b", modified.items);
+            const editor = widget.modified_editor;
+            const version = editor.model.getVersionId();
+            try widget.modified_view.paint();
+            const deleted = try widget.modified_view.grid().rowText(allocator, 0);
+            defer allocator.free(deleted);
+            try testing.expect(std.mem.indexOf(u8, deleted, "a") != null);
+            widget.layout(80, 5);
+            try testing.expect(widget.sideBySide());
+            try testing.expectEqual(editor, widget.modified_editor);
+            try testing.expectEqual(version, editor.model.getVersionId());
             widget.layout(30, 5);
             try testing.expect(widget.inline_mode);
-            var deleted_again = try widget.modifiedModel().getLineContent(1);
-            defer deleted_again.deinit();
-            try testing.expectEqualStrings("a", deleted_again.items);
+            try testing.expectEqual(editor, widget.modified_editor);
+            try testing.expectEqual(version, editor.model.getVersionId());
+            const whitespace = try editor.viewLayout().getWhitespaces(allocator);
+            defer allocator.free(whitespace);
+            try testing.expectEqual(@as(usize, 1), whitespace.len);
+            try testing.expectEqual(@as(usize, 0), whitespace[0].afterLineNumber);
         }
 
         test "diffEditorWidget: gutter paints pure deletions and hunks after fillers" {
@@ -657,24 +666,35 @@ pub fn Tests(comptime View: type) type {
             defer widget.destroy();
 
             try std.testing.expect(widget.inline_mode);
-            try std.testing.expectEqual(@as(usize, 4), widget.lineCount());
+            try std.testing.expectEqual(@as(usize, 3), widget.lineCount());
             var line = try widget.modified_editor.model.getLineContent(2);
             defer line.deinit();
-            try std.testing.expectEqualStrings("b", line.items);
+            try std.testing.expectEqualStrings("B", line.items);
             var line3 = try widget.modified_editor.model.getLineContent(3);
             defer line3.deinit();
-            try std.testing.expectEqualStrings("B", line3.items);
+            try std.testing.expectEqualStrings("c", line3.items);
+            var original_line = try widget.original_editor.model.getLineContent(2);
+            defer original_line.deinit();
+            try std.testing.expectEqualStrings("b", original_line.items);
+            const zones = try widget.modified_editor.viewLayout().getWhitespaces(allocator);
+            defer allocator.free(zones);
+            try testing.expectEqual(@as(usize, 1), zones.len);
+            try testing.expectEqual(@as(usize, 1), zones[0].afterLineNumber);
+            try testing.expectEqual(@as(f64, 1), zones[0].height);
 
-            const decorations = try widget.modified_editor.model.getAllDecorations(0, false);
-            defer widget.modified_editor.model.getAllocator().free(decorations);
+            const original_decorations = try widget.original_editor.model.getAllDecorations(0, false);
+            defer allocator.free(original_decorations);
+            const modified_decorations = try widget.modified_editor.model.getAllDecorations(0, false);
+            defer allocator.free(modified_decorations);
             var deleted: usize = 0;
             var inserted: usize = 0;
-            for (decorations) |decoration| {
-                if (decoration.options.className) |class_name| {
-                    if (std.mem.eql(u8, class_name, "line-delete")) deleted += 1;
-                    if (std.mem.eql(u8, class_name, "line-insert")) inserted += 1;
-                }
-            }
+            for (original_decorations) |decoration| if (decoration.options.className) |class_name| {
+                if (std.mem.eql(u8, class_name, "line-delete")) deleted += 1;
+            };
+            for (modified_decorations) |decoration| if (decoration.options.className) |class_name| {
+                if (std.mem.eql(u8, class_name, "line-insert")) inserted += 1;
+                try testing.expect(!std.mem.eql(u8, class_name, "line-delete"));
+            };
             try std.testing.expectEqual(@as(usize, 1), deleted);
             try std.testing.expectEqual(@as(usize, 1), inserted);
 
@@ -688,6 +708,41 @@ pub fn Tests(comptime View: type) type {
             const inserted_row = try grid.rowText(allocator, 2);
             defer allocator.free(inserted_row);
             try std.testing.expect(std.mem.indexOf(u8, inserted_row, "B") != null);
+        }
+
+        test "diffEditorWidget: large deleted-code view zone renders only visible rows" {
+            const allocator = testing.allocator;
+            var original: std.ArrayList(u8) = .empty;
+            defer original.deinit(allocator);
+            for (0..200) |index| {
+                const line = try std.fmt.allocPrint(allocator, "removed-{d:0>4}\n", .{index});
+                defer allocator.free(line);
+                try original.appendSlice(allocator, line);
+            }
+            try original.appendSlice(allocator, "end");
+            const widget = try DiffEditorWidget.create(View.init, allocator, Io.Threaded.global_single_threaded.io(), "a.txt", "b.txt", original.items, "end", "Original", "Modified", 80, 5, .{ .render_side_by_side = false });
+            defer widget.destroy();
+            try testing.expectEqual(@as(usize, 1), widget.modifiedModel().getLineCount());
+            const zones = try widget.modified_editor.viewLayout().getWhitespaces(allocator);
+            defer allocator.free(zones);
+            try testing.expectEqual(@as(usize, 1), zones.len);
+            try testing.expectEqual(@as(f64, 200), zones[0].height);
+            try testing.expectEqual(@as(usize, 201), widget.modified_editor.scrollHeight());
+            _ = widget.modified_editor.setScrollTop(0);
+            try widget.modified_view.paint();
+            const first = try widget.modified_view.grid().rowText(allocator, 0);
+            defer allocator.free(first);
+            try testing.expect(std.mem.indexOf(u8, first, "removed-0000") != null);
+            try testing.expect(widget.modified_editor.setScrollTop(100));
+            try widget.modified_view.paint();
+            const later = try widget.modified_view.grid().rowText(allocator, 0);
+            defer allocator.free(later);
+            try testing.expect(std.mem.indexOf(u8, later, "removed-0100") != null);
+            const root = widget.modified_view.zone_content_root.?.first_child.?.first_child.?.first_child.?;
+            var count: usize = 0;
+            var child = root.first_child;
+            while (child) |node| : (child = node.next) count += 1;
+            try testing.expectEqual(@as(usize, 5), count);
         }
 
         test "diffEditorWidget: inline mode hides unchanged regions" {
@@ -774,18 +829,26 @@ pub fn Tests(comptime View: type) type {
             );
             defer widget.destroy();
 
-            const decorations = try widget.modified_editor.model.getAllDecorations(0, false);
-            defer widget.modified_editor.model.getAllocator().free(decorations);
+            const original_decorations = try widget.original_editor.model.getAllDecorations(0, false);
+            defer allocator.free(original_decorations);
+            const modified_decorations = try widget.modified_editor.model.getAllDecorations(0, false);
+            defer allocator.free(modified_decorations);
             var delete_chars: usize = 0;
             var insert_chars: usize = 0;
-            for (decorations) |decoration| {
-                if (decoration.options.className) |class_name| {
-                    if (std.mem.eql(u8, class_name, "char-delete")) delete_chars += 1;
-                    if (std.mem.eql(u8, class_name, "char-insert")) insert_chars += 1;
-                }
-            }
+            for (original_decorations) |decoration| if (decoration.options.className) |class_name| {
+                if (std.mem.eql(u8, class_name, "char-delete")) delete_chars += 1;
+            };
+            for (modified_decorations) |decoration| if (decoration.options.className) |class_name| {
+                if (std.mem.eql(u8, class_name, "char-insert")) insert_chars += 1;
+                try testing.expect(!std.mem.eql(u8, class_name, "char-delete"));
+            };
             try std.testing.expect(delete_chars > 0);
             try std.testing.expect(insert_chars > 0);
+            try widget.modified_view.paint();
+            const grid = widget.modified_view.grid();
+            const column = widget.modified_editor.gutterWidth() + 6;
+            try testing.expectEqual(ui.cell.packColor(.{ .r = 92, .g = 30, .b = 30 }), grid.bg[grid.index(column, 0)]);
+            try testing.expectEqual(ui.cell.packColor(.{ .r = 74, .g = 84, .b = 45 }), grid.bg[grid.index(column, 1)]);
         }
     };
 }

@@ -417,16 +417,7 @@ pub const ViewLine = struct {
             break :blk node;
         };
         self.dom_node = line;
-        line.setStyle(.{
-            .position = .absolute,
-            .left = .{ .cells = @floatFromInt(options.left_cells) },
-            .top = .{ .cells = @floatFromInt(options.top_cells) },
-            .width = .{ .cells = @floatFromInt(options.width_cells) },
-            .height = .{ .cells = @floatFromInt(options.height_cells) },
-            .white_space = .pre,
-            .overflow = .hidden,
-            .background = options.background,
-        });
+        setPaintGeometry(line, options);
         self.painted_top = @floatFromInt(options.top_cells);
 
         const paint_key = paintKeyOf(options);
@@ -437,6 +428,51 @@ pub const ViewLine = struct {
         line.clearChildren();
 
         const rendered = self.rendered_view_line orelse return line;
+        try paintParts(doc, line, &rendered.input, &rendered.rendered, options, style_fn);
+        return line;
+    }
+
+    /// The same ViewLine cell compositor used by upstream renderLines.ts-
+    /// shaped diff zones. Unlike retained editor lines the temporary token
+    /// runs are released after painting, so document text nodes own bytes.
+    pub fn paintTransient(
+        doc: *ui.Document,
+        input: *const view_line_renderer.Input,
+        rendered: *const view_line_renderer.RenderedLine,
+        paint_options: PaintOptions,
+        style_fn: PartStyleFn,
+    ) !*ui.Node {
+        var options = paint_options;
+        options.borrow_text = false;
+        const line = try doc.createElement(.div);
+        errdefer doc.destroy(line);
+        try line.addClass(view_lines_css.Class.view_line);
+        setPaintGeometry(line, options);
+        try paintParts(doc, line, input, rendered, options, style_fn);
+        return line;
+    }
+
+    fn setPaintGeometry(line: *ui.Node, options: PaintOptions) void {
+        line.setStyle(.{
+            .position = .absolute,
+            .left = .{ .cells = @floatFromInt(options.left_cells) },
+            .top = .{ .cells = @floatFromInt(options.top_cells) },
+            .width = .{ .cells = @floatFromInt(options.width_cells) },
+            .height = .{ .cells = @floatFromInt(options.height_cells) },
+            .white_space = .pre,
+            .overflow = .hidden,
+            .background = options.background,
+        });
+    }
+
+    fn paintParts(
+        doc: *ui.Document,
+        line: *ui.Node,
+        input: *const view_line_renderer.Input,
+        rendered: *const view_line_renderer.RenderedLine,
+        options: PaintOptions,
+        style_fn: PartStyleFn,
+    ) !void {
         var part_index: usize = 0;
         var byte_in_part: usize = 0;
         var cell: usize = 0;
@@ -460,8 +496,8 @@ pub const ViewLine = struct {
         var arrow_overlays: [max_arrow_overlays]ArrowOverlay = undefined;
         var arrow_overlay_count: usize = 0;
 
-        while (part_index < rendered.rendered.parts.len) {
-            const part = rendered.rendered.parts[part_index];
+        while (part_index < rendered.parts.len) {
+            const part = rendered.parts[part_index];
             if (byte_in_part >= part.text.len) {
                 part_index += 1;
                 byte_in_part = 0;
@@ -488,8 +524,8 @@ pub const ViewLine = struct {
                 for (options.guides) |guide| {
                     if (guide.column != cell) continue;
                     const tab_width = renderedTabWidth(
-                        rendered.input.tab_size,
-                        rendered.input.start_visible_column,
+                        input.tab_size,
+                        input.start_visible_column,
                         cell,
                     );
                     if (tab_width > 1 and arrow_overlay_count < max_arrow_overlays) {
@@ -505,9 +541,9 @@ pub const ViewLine = struct {
             if (run_style == null or run_style.? != style) {
                 if (run_style != null and absolute > run_start) {
                     const node = if (options.borrow_text)
-                        try doc.createTextBorrowed(rendered.rendered.bytes[run_start..absolute])
+                        try doc.createTextBorrowed(rendered.bytes[run_start..absolute])
                     else
-                        try doc.createText(rendered.rendered.bytes[run_start..absolute]);
+                        try doc.createText(rendered.bytes[run_start..absolute]);
                     node.setPaintRef(run_style.?);
                     _ = try line.appendChild(node);
                 }
@@ -522,9 +558,9 @@ pub const ViewLine = struct {
 
         if (run_style != null and absolute > run_start) {
             const node = if (options.borrow_text)
-                try doc.createTextBorrowed(rendered.rendered.bytes[run_start..absolute])
+                try doc.createTextBorrowed(rendered.bytes[run_start..absolute])
             else
-                try doc.createText(rendered.rendered.bytes[run_start..absolute]);
+                try doc.createText(rendered.bytes[run_start..absolute]);
             node.setPaintRef(run_style.?);
             _ = try line.appendChild(node);
         }
@@ -605,8 +641,6 @@ pub const ViewLine = struct {
             _ = try guide_node.appendChild(glyph);
             _ = try line.appendChild(guide_node);
         }
-
-        return line;
     }
 
     pub fn getWidth(self: *const ViewLine) usize {

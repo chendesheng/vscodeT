@@ -40,6 +40,9 @@ pub const IViewZone = struct {
     min_width: usize = 0,
     show_in_hidden_areas: bool = false,
     suppress_mouse_down: bool = false,
+    /// Terminal-only windowing for large zone content: preserve the full
+    /// whitespace height while asking the delegate to build visible rows.
+    clip_to_viewport: bool = false,
     context: ?*anyopaque = null,
     build: ?Build = null,
     build_margin: ?Build = null,
@@ -51,6 +54,8 @@ pub const IViewZone = struct {
         width: usize,
         height: usize,
         scroll_left: usize,
+        visible_start_row: usize = 0,
+        visible_end_row: ?usize = null,
     };
 };
 

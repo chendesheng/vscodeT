@@ -50,6 +50,8 @@ pub const ViewZones = struct {
         width: usize = 0,
         height: usize = 0,
         scroll_left: usize = 0,
+        visible_start: usize = 0,
+        visible_end: usize = 0,
     };
 
     pub fn init(allocator: std.mem.Allocator) ViewZones {
@@ -248,6 +250,14 @@ pub const ViewZones = struct {
         }
     }
 
+    /// Content has changed without changing the model anchor or whitespace.
+    pub fn invalidateZoneContent(self: *ViewZones, id: []const u8) void {
+        if (self.zones.getPtr(id)) |zone| {
+            zone.dirty = true;
+            self.base.handler.forceShouldRender();
+        }
+    }
+
     pub fn resetNodes(self: *ViewZones) void {
         var values = self.zones.valueIterator();
         while (values.next()) |zone| {
@@ -265,10 +275,11 @@ pub const ViewZones = struct {
         }
         for (self.retired_nodes.items) |node| destroyNode(doc, node, host);
         self.retired_nodes.clearRetainingCapacity();
+        const viewport_height = if (self.editor) |editor| editor.textHeight() else 0;
         var values = self.zones.valueIterator();
         while (values.next()) |zone| {
-            try renderNode(doc, host, content_root, &zone.content, zone, zone.delegate.build, gutter, text_width, scroll_left);
-            try renderNode(doc, host, margin_root, &zone.margin, zone, zone.delegate.build_margin, 0, gutter, 0);
+            try renderNode(doc, host, content_root, &zone.content, zone, zone.delegate.build, gutter, text_width, scroll_left, viewport_height);
+            try renderNode(doc, host, margin_root, &zone.margin, zone, zone.delegate.build_margin, 0, gutter, 0, viewport_height);
             zone.dirty = false;
         }
     }
@@ -278,24 +289,36 @@ pub const ViewZones = struct {
         doc.destroy(node);
     }
 
-    fn renderNode(doc: *ui.Document, host: ?*browser.RetainedViewPartHost, root: *ui.Node, state: *NodeState, zone: *Zone, builder: ?IViewZone.Build, left: usize, width: usize, scroll_left: usize) !void {
+    fn renderNode(doc: *ui.Document, host: ?*browser.RetainedViewPartHost, root: *ui.Node, state: *NodeState, zone: *Zone, builder: ?IViewZone.Build, left: usize, width: usize, scroll_left: usize, viewport_height: usize) !void {
         if (!zone.visible or builder == null or width == 0) {
             if (state.node) |node| destroyNode(doc, node, host);
             state.* = .{};
             return;
         }
-        const rebuild = zone.dirty or state.left != left or state.width != width or state.height != zone.height or state.scroll_left != scroll_left;
+        const visible_start: usize = if (zone.delegate.clip_to_viewport) @intFromFloat(@max(0, -zone.top)) else 0;
+        const visible_end: usize = if (zone.delegate.clip_to_viewport)
+            @min(zone.height, @as(usize, @intFromFloat(@max(0, @as(f64, @floatFromInt(viewport_height)) - zone.top))))
+        else
+            zone.height;
+        const height = visible_end -| visible_start;
+        const top = zone.top + @as(f64, @floatFromInt(visible_start));
+        if (height == 0) {
+            if (state.node) |node| destroyNode(doc, node, host);
+            state.* = .{};
+            return;
+        }
+        const rebuild = zone.dirty or state.left != left or state.width != width or state.height != height or state.scroll_left != scroll_left or state.visible_start != visible_start or state.visible_end != visible_end;
         if (rebuild) {
             if (state.node) |node| destroyNode(doc, node, host);
             state.* = .{};
         }
         if (state.node) |node| {
-            if (state.top != zone.top) {
+            if (state.top != top) {
                 var style = node.asElement().style;
-                style.top = .{ .cells = zone.top };
+                style.top = .{ .cells = top };
                 node.setStyle(style);
-                if (host) |retained| retained.translateSubtree(node, zone.top - state.top);
-                state.top = zone.top;
+                if (host) |retained| retained.translateSubtree(node, top - state.top);
+                state.top = top;
             }
             return;
         }
@@ -304,15 +327,15 @@ pub const ViewZones = struct {
         node.setStyle(.{
             .position = .absolute,
             .left = .{ .cells = @floatFromInt(left) },
-            .top = .{ .cells = zone.top },
+            .top = .{ .cells = top },
             .width = .{ .cells = @floatFromInt(width) },
-            .height = .{ .cells = @floatFromInt(zone.height) },
+            .height = .{ .cells = @floatFromInt(height) },
             .overflow = .hidden,
         });
-        const content = try builder.?(zone.delegate.context, doc, .{ .width = width, .height = zone.height, .scroll_left = scroll_left });
+        const content = try builder.?(zone.delegate.context, doc, .{ .width = width, .height = zone.height, .scroll_left = scroll_left, .visible_start_row = visible_start, .visible_end_row = visible_end });
         _ = try node.appendChild(content);
         _ = try root.appendChild(node);
         if (host) |retained| try retained.addSubtree(node);
-        state.* = .{ .node = node, .top = zone.top, .left = left, .width = width, .height = zone.height, .scroll_left = scroll_left };
+        state.* = .{ .node = node, .top = top, .left = left, .width = width, .height = height, .scroll_left = scroll_left, .visible_start = visible_start, .visible_end = visible_end };
     }
 };

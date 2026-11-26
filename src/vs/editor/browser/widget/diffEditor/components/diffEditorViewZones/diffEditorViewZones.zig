@@ -200,6 +200,9 @@ pub fn computeRangeAlignmentFromHeights(allocator: Allocator, original_model: *T
 
 const ui = @import("ui");
 const ZoneView = @import("../../../../viewParts/viewZones/viewZones.zig");
+const render_lines = @import("./renderLines.zig");
+const TerminalViewHost = @import("../../../codeEditor/terminalViewHost.zig").TerminalViewHost;
+const ViewLine = @import("../../../../viewParts/viewLines/viewLine.zig").ViewLine;
 const ViewEventHandler = @import("../../../../../common/viewEventHandler.zig").ViewEventHandler;
 const events = @import("../../../../../common/viewEvents.zig");
 
@@ -212,14 +215,41 @@ pub const DiffEditorViewZones = struct {
     original: Pane,
     modified: Pane,
     mappings: []const diff_model.DiffMapping,
-    enabled: bool = false,
+    mode: Mode = .disabled,
+    modified_host: *TerminalViewHost,
+    style_fn: ViewLine.PartStyleFn,
+    decoration_bits_fn: *const fn ([]const u8) u32,
+    render_indicators: bool,
     updating: bool = false,
     syncing_scroll: bool = false,
     batch_depth: usize = 0,
-    filler_color: ui.Color = .{ .r = 40, .g = 42, .b = 44 },
+    colors: Colors = .{},
 
-    const ZoneSpec = struct { after_line_number: usize, height: usize };
-    const ZoneRecord = struct { spec: ZoneSpec, id: []const u8 };
+    pub const Mode = enum { disabled, side_by_side, inline_view };
+    pub const Colors = struct {
+        filler: ui.Color = .{ .r = 40, .g = 42, .b = 44 },
+        removed_line: ui.Color = .{ .r = 75, .g = 24, .b = 24 },
+        removed_text: ui.Color = .{ .r = 92, .g = 30, .b = 30 },
+        indicator: ui.Color = .{ .r = 158, .g = 93, .b = 80 },
+    };
+
+    const DeletedSpec = struct {
+        range: LineRange,
+        diff_index: usize,
+        options: render_lines.RenderOptions,
+    };
+    const ZoneSpec = struct {
+        after_line_number: usize,
+        height: usize,
+        min_width: usize = 0,
+        deleted: ?DeletedSpec = null,
+    };
+    const DeletedData = struct {
+        owner: *DiffEditorViewZones,
+        spec: DeletedSpec,
+        measurement: render_lines.RenderLinesResult,
+    };
+    const ZoneRecord = struct { spec: ZoneSpec, id: []const u8, deleted: ?*DeletedData = null };
 
     const Pane = struct {
         owner: *DiffEditorViewZones,
@@ -229,18 +259,24 @@ pub const DiffEditorViewZones = struct {
         records: std.ArrayList(ZoneRecord) = .empty,
     };
 
-    pub fn init(self: *DiffEditorViewZones, allocator: Allocator, original: *Editor, original_zones: *ZoneView.ViewZones, modified: *Editor, modified_zones: *ZoneView.ViewZones, mappings: []const diff_model.DiffMapping) void {
+    pub fn init(self: *DiffEditorViewZones, allocator: Allocator, original: *Editor, original_zones: *ZoneView.ViewZones, modified: *Editor, modified_zones: *ZoneView.ViewZones, modified_host: *TerminalViewHost, style_fn: ViewLine.PartStyleFn, decoration_bits_fn: *const fn ([]const u8) u32, render_indicators: bool, mappings: []const diff_model.DiffMapping) void {
         self.* = .{
             .allocator = allocator,
             .original = .{ .owner = self, .editor = original, .view_zones = original_zones },
             .modified = .{ .owner = self, .editor = modified, .view_zones = modified_zones },
             .mappings = mappings,
+            .modified_host = modified_host,
+            .style_fn = style_fn,
+            .decoration_bits_fn = decoration_bits_fn,
+            .render_indicators = render_indicators,
         };
         for ([_]*Pane{ &self.original, &self.modified }) |pane| {
             pane.handler = ViewEventHandler.init(pane, .{
                 .onLineMappingChanged = onLineMappingChanged,
+                .onConfigurationChanged = onConfigurationChanged,
                 .onZonesChanged = onZonesChanged,
                 .onScrollChanged = onScrollChanged,
+                .onTokensChanged = onTokensChanged,
             });
             pane.editor.addViewEventHandler(&pane.handler);
         }
@@ -266,15 +302,15 @@ pub const DiffEditorViewZones = struct {
         if (self.batch_depth == 0) self.updateAfterEvent();
     }
 
-    pub fn setEnabled(self: *DiffEditorViewZones, enabled: bool) void {
-        if (self.enabled == enabled) return;
-        self.enabled = enabled;
+    pub fn setMode(self: *DiffEditorViewZones, mode: Mode) void {
+        if (self.mode == mode) return;
+        self.mode = mode;
         self.updateAfterEvent();
     }
 
-    pub fn setFillerColor(self: *DiffEditorViewZones, color: ui.Color) void {
-        if (std.meta.eql(self.filler_color, color)) return;
-        self.filler_color = color;
+    pub fn setColors(self: *DiffEditorViewZones, colors: Colors) void {
+        if (std.meta.eql(self.colors, colors)) return;
+        self.colors = colors;
         self.updating = true;
         defer self.updating = false;
         self.relayout(&self.original) catch {};
@@ -298,10 +334,27 @@ pub const DiffEditorViewZones = struct {
         return false;
     }
 
+    fn onConfigurationChanged(context: *anyopaque, _: *const events.ViewConfigurationChangedEvent) bool {
+        const pane: *Pane = @ptrCast(@alignCast(context));
+        if (pane.owner.mode == .inline_view) pane.owner.updateAfterEvent();
+        return false;
+    }
+
+    fn onTokensChanged(context: *anyopaque, _: *const events.ViewTokensChangedEvent) bool {
+        const pane: *Pane = @ptrCast(@alignCast(context));
+        const self = pane.owner;
+        if (self.mode != .inline_view or pane != &self.original) return false;
+        for (self.modified.records.items) |record| {
+            if (record.deleted != null) self.modified.view_zones.invalidateZoneContent(record.id);
+        }
+        return false;
+    }
+
     fn onScrollChanged(context: *anyopaque, event: *const events.ViewScrollChangedEvent) bool {
         const pane: *Pane = @ptrCast(@alignCast(context));
         const self = pane.owner;
-        if (!self.enabled or self.updating or self.syncing_scroll or self.batch_depth > 0 or !event.scrollTopChanged) return false;
+        if (self.mode == .disabled or self.updating or self.syncing_scroll or self.batch_depth > 0 or !event.scrollTopChanged) return false;
+        if (self.mode == .inline_view and pane == &self.original) return false;
         self.syncing_scroll = true;
         defer self.syncing_scroll = false;
         const other = if (pane == &self.original) &self.modified else &self.original;
@@ -317,14 +370,39 @@ pub const DiffEditorViewZones = struct {
         defer original_specs.deinit(self.allocator);
         var modified_specs: std.ArrayList(ZoneSpec) = .empty;
         defer modified_specs.deinit(self.allocator);
-        if (self.enabled) {
+        if (self.mode != .disabled) {
             const original_ignored = try self.ids(&self.original);
             defer self.allocator.free(original_ignored);
             const modified_ignored = try self.ids(&self.modified);
             defer self.allocator.free(modified_ignored);
-            const alignments = try computeRangeAlignment(self.allocator, self.original.editor, self.modified.editor, self.mappings, original_ignored, modified_ignored, true);
+            const alignments = try computeRangeAlignment(self.allocator, self.original.editor, self.modified.editor, self.mappings, original_ignored, modified_ignored, self.mode == .side_by_side);
             defer self.allocator.free(alignments);
+            const options = self.renderOptions();
             for (alignments) |alignment| {
+                if (self.mode == .inline_view and alignment.diff_index != null) {
+                    if (!alignment.original_range.isEmpty()) {
+                        var measurement = try render_lines.measure(self.allocator, self.original.editor.model, alignment.original_range, &self.modified.editor.view_lines.classifier, options);
+                        defer measurement.deinit();
+                        try modified_specs.append(self.allocator, .{
+                            .after_line_number = alignment.modified_range.startLineNumber - 1,
+                            .height = measurement.height_in_lines,
+                            .min_width = measurement.min_width,
+                            .deleted = .{ .range = alignment.original_range, .diff_index = alignment.diff_index.?, .options = options },
+                        });
+                        for (0..alignment.original_range.length()) |index| {
+                            const count = measurement.viewLineCount(index);
+                            if (count > 1) try original_specs.append(self.allocator, .{
+                                .after_line_number = alignment.original_range.startLineNumber + index,
+                                .height = count - 1,
+                            });
+                        }
+                    }
+                    if (alignment.modified_height > 0) try original_specs.append(self.allocator, .{
+                        .after_line_number = alignment.original_range.endLineNumberExclusive - 1,
+                        .height = alignment.modified_height,
+                    });
+                    continue;
+                }
                 if (alignment.original_height < alignment.modified_height) {
                     try original_specs.append(self.allocator, .{
                         .after_line_number = alignment.original_range.endLineNumberExclusive - 1,
@@ -348,7 +426,25 @@ pub const DiffEditorViewZones = struct {
         return result;
     }
 
-    fn delegate(self: *DiffEditorViewZones, spec: ZoneSpec) ZoneView.IViewZone {
+    fn renderOptions(self: *DiffEditorViewZones) render_lines.RenderOptions {
+        var options = render_lines.RenderOptions.fromEditor(self.modified.editor);
+        options.render_whitespace = self.modified_host.options.get(.renderWhitespace);
+        options.render_control_characters = self.modified_host.options.get(.renderControlCharacters);
+        options.stop_rendering_line_after = self.modified_host.options.get(.stopRenderingLineAfter);
+        return options;
+    }
+
+    fn delegate(self: *DiffEditorViewZones, spec: ZoneSpec, deleted: ?*DeletedData) ZoneView.IViewZone {
+        if (deleted) |data| return .{
+            .after_line_number = spec.after_line_number,
+            .height_in_lines = spec.height,
+            .min_width = spec.min_width,
+            .show_in_hidden_areas = true,
+            .clip_to_viewport = true,
+            .context = data,
+            .build = buildDeleted,
+            .build_margin = buildDeletedMargin,
+        };
         return .{
             .after_line_number = spec.after_line_number,
             .height_in_lines = spec.height,
@@ -362,8 +458,42 @@ pub const DiffEditorViewZones = struct {
     fn buildFiller(context: ?*anyopaque, doc: *ui.Document, _: ZoneView.IViewZone.RenderInfo) anyerror!*ui.Node {
         const self: *DiffEditorViewZones = @ptrCast(@alignCast(context.?));
         const node = try doc.createElement(.div);
-        node.setStyle(.{ .width = .{ .percent = 100 }, .height = .{ .percent = 100 }, .background = self.filler_color });
+        node.setStyle(.{ .width = .{ .percent = 100 }, .height = .{ .percent = 100 }, .background = self.colors.filler });
         return node;
+    }
+
+    fn buildDeleted(context: ?*anyopaque, doc: *ui.Document, info: ZoneView.IViewZone.RenderInfo) anyerror!*ui.Node {
+        const data: *DeletedData = @ptrCast(@alignCast(context.?));
+        const self = data.owner;
+        const mapping = self.mappings[data.spec.diff_index].line_range_mapping;
+        return render_lines.renderLines(self.allocator, doc, self.original.editor.model, data.spec.range, mapping.inner_changes orelse &.{}, &data.measurement, &self.modified.editor.view_lines.classifier, data.spec.options, .{
+            .colors = .{ .line_background = self.colors.removed_line, .text_background = self.colors.removed_text },
+            .style_fn = self.style_fn,
+            .decoration_bits_fn = self.decoration_bits_fn,
+        }, info);
+    }
+
+    fn buildDeletedMargin(context: ?*anyopaque, doc: *ui.Document, info: ZoneView.IViewZone.RenderInfo) anyerror!*ui.Node {
+        const data: *DeletedData = @ptrCast(@alignCast(context.?));
+        return render_lines.renderMargin(doc, info, data.owner.render_indicators, data.owner.colors.indicator);
+    }
+
+    fn createDeletedData(self: *DiffEditorViewZones, spec: DeletedSpec) !*DeletedData {
+        const data = try self.allocator.create(DeletedData);
+        errdefer self.allocator.destroy(data);
+        data.* = .{
+            .owner = self,
+            .spec = spec,
+            .measurement = try render_lines.measure(self.allocator, self.original.editor.model, spec.range, &self.modified.editor.view_lines.classifier, spec.options),
+        };
+        return data;
+    }
+
+    fn freeDeletedData(self: *DiffEditorViewZones, data: ?*DeletedData) void {
+        if (data) |deleted| {
+            deleted.measurement.deinit();
+            self.allocator.destroy(deleted);
+        }
     }
 
     fn apply(self: *DiffEditorViewZones, pane: *Pane, desired: []const ZoneSpec, relayout_only: bool) !void {
@@ -372,7 +502,7 @@ pub const DiffEditorViewZones = struct {
                 owner: *DiffEditorViewZones,
                 pane: *Pane,
                 fn run(tx: @This(), accessor: ZoneView.IViewZoneChangeAccessor) anyerror!void {
-                    for (tx.pane.records.items) |record| try accessor.layoutZone(record.id, tx.owner.delegate(record.spec));
+                    for (tx.pane.records.items) |record| try accessor.layoutZone(record.id, tx.owner.delegate(record.spec, record.deleted));
                 }
             };
             try pane.view_zones.changeViewZones(Transaction{ .owner = self, .pane = pane }, Transaction.run);
@@ -397,12 +527,16 @@ pub const DiffEditorViewZones = struct {
             desired: []const ZoneSpec,
             fn run(tx: @This(), accessor: ZoneView.IViewZoneChangeAccessor) anyerror!void {
                 while (tx.pane.records.items.len > 0) {
-                    try accessor.removeZone(tx.pane.records.items[tx.pane.records.items.len - 1].id);
+                    const record = tx.pane.records.items[tx.pane.records.items.len - 1];
+                    try accessor.removeZone(record.id);
                     _ = tx.pane.records.pop();
+                    tx.owner.freeDeletedData(record.deleted);
                 }
                 for (tx.desired) |spec| {
-                    const id = try accessor.addZone(tx.owner.delegate(spec));
-                    tx.pane.records.appendAssumeCapacity(.{ .id = id, .spec = spec });
+                    const data = if (spec.deleted) |deleted| try tx.owner.createDeletedData(deleted) else null;
+                    errdefer tx.owner.freeDeletedData(data);
+                    const id = try accessor.addZone(tx.owner.delegate(spec, data));
+                    tx.pane.records.appendAssumeCapacity(.{ .id = id, .spec = spec, .deleted = data });
                 }
             }
         };
