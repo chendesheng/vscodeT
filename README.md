@@ -1254,7 +1254,7 @@ console API for raw mode, sizing and input polling.
   revert, reload and external-change handling are inert, they are not working
   copies, history entries or session-serialized, and closing them returns to
   the untouched file tab. Remaining portable gaps include quick-diff peek,
-  multi-diff editor, accessible diff viewer, and editing either side. Moved
+  multi-diff editor and editing either side. Moved
   blocks are surfaced as model decorations in side-by-side mode only.
   Hide-unchanged uses the upstream unchanged-region range model, direct model
   hidden areas, and model-anchored disclosures with keyboard support.
@@ -1273,8 +1273,12 @@ console API for raw mode, sizing and input polling.
   overrides the configured editor wrap mode, with the hidden original always
   unwrapped. The editor renderer supports layout whitespace, including scroll
   and hit-testing; diff-specific delegates and alignment use that same view
-  layer. Remaining gaps include true-inline word presentation, moved-block
-  connectors, additional diff commands, disclosure breadcrumbs and code lens.
+  layer. Experimental true-inline mode uses injected deleted text and
+  strikethrough; empty character ranges render a one-cell marker. The accessible
+  diff viewer uses grouped unified review rows (F7/Shift-F7), arrow-key line
+  navigation, and Enter to reveal the selected source. Remaining gaps include
+  moved-block connectors, title/hunk action rendering, disclosure breadcrumbs
+  and code lens.
   See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
   Only one repository per workspace folder is shown.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and

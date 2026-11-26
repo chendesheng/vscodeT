@@ -2063,9 +2063,14 @@ regions own direct hidden areas and model-anchored disclosure controls; the
 compact disclosure keeps its keyboard target across expand/collapse. The
 terminal collapses browser disclosure geometry to a single cell row.
 Moved blocks use side-by-side model decorations. Both pane controllers attach
-and dispose with their editor views. Moved connectors, true-inline word
-presentation, disclosure breadcrumbs, accessible viewer and session restore
-remain unported. Git snapshot
+and dispose with their editor views. True-inline word changes inject deleted
+text into view projections, preserving model coordinates and painting removed
+text with strikethrough. Browser
+three-pixel empty-range borders become one marker cell. The accessible review
+viewer uses the same line renderer and a retained unified row window; its
+ARIA labels are represented in the terminal document, not exposed through a
+browser accessibility tree. Moved connectors, disclosure breadcrumbs and
+session restore remain unported. Git snapshot
 resolution and the initial diff computation now run in the editor worker;
 the window receives completion events and obsolete replies are detached.
 
