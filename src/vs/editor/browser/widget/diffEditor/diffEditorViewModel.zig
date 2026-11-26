@@ -55,6 +55,144 @@ pub const DiffState = struct {
     }
 };
 
+pub const RevealPreference = enum { from_closer_side, from_top, from_bottom };
+
+/// Port of UnchangedRegion in diffEditorViewModel.ts. The line ranges are
+/// in the two real model coordinate systems, not the aligned display rows.
+pub const UnchangedRegion = struct {
+    original_line_number: usize,
+    modified_line_number: usize,
+    line_count: usize,
+    visible_line_count_top: usize = 0,
+    visible_line_count_bottom: usize = 0,
+    is_dragged: ?enum { bottom, top } = null,
+
+    pub fn fromDiffs(allocator: Allocator, changes: []const range_mapping.LineRangeMapping, original_line_count: usize, modified_line_count: usize, min_hidden_line_count: usize, min_context: usize) ![]UnchangedRegion {
+        const inverse = try range_mapping.LineRangeMapping.inverse(allocator, changes, original_line_count, modified_line_count);
+        defer allocator.free(inverse);
+        var result = std.array_list.Managed(UnchangedRegion).init(allocator);
+        errdefer result.deinit();
+        for (inverse) |mapping| {
+            var original_start = mapping.original.startLineNumber;
+            var modified_start = mapping.modified.startLineNumber;
+            var length = mapping.original.length();
+            const at_start = original_start == 1 and modified_start == 1;
+            const at_end = original_start + length == original_line_count + 1 and modified_start + length == modified_line_count + 1;
+            if ((at_start or at_end) and length >= min_context +| min_hidden_line_count) {
+                if (at_start and !at_end) length -= min_context;
+                if (at_end and !at_start) {
+                    original_start += min_context;
+                    modified_start += min_context;
+                    length -= min_context;
+                }
+            } else if (length >= min_context *| 2 +| min_hidden_line_count) {
+                original_start += min_context;
+                modified_start += min_context;
+                length -= min_context * 2;
+            } else continue;
+            try result.append(.{ .original_line_number = original_start, .modified_line_number = modified_start, .line_count = length });
+        }
+        return result.toOwnedSlice();
+    }
+
+    pub fn originalUnchangedRange(self: UnchangedRegion) LineRange {
+        return .ofLength(self.original_line_number, self.line_count);
+    }
+
+    pub fn modifiedUnchangedRange(self: UnchangedRegion) LineRange {
+        return .ofLength(self.modified_line_number, self.line_count);
+    }
+
+    pub fn getHiddenOriginalRange(self: UnchangedRegion) LineRange {
+        return .ofLength(self.original_line_number + self.visible_line_count_top, self.line_count - self.visible_line_count_top - self.visible_line_count_bottom);
+    }
+
+    pub fn getHiddenModifiedRange(self: UnchangedRegion) LineRange {
+        return .ofLength(self.modified_line_number + self.visible_line_count_top, self.line_count - self.visible_line_count_top - self.visible_line_count_bottom);
+    }
+
+    pub fn setHiddenModifiedRange(self: *UnchangedRegion, range: LineRange) void {
+        self.setState(range.startLineNumber -| self.modified_line_number, self.modified_line_number + self.line_count -| range.endLineNumberExclusive);
+    }
+
+    pub fn setState(self: *UnchangedRegion, top: usize, bottom: usize) void {
+        self.visible_line_count_top = @min(top, self.line_count);
+        self.visible_line_count_bottom = @min(bottom, self.line_count - self.visible_line_count_top);
+    }
+
+    pub fn getMaxVisibleLineCountTop(self: UnchangedRegion) usize {
+        return self.line_count - self.visible_line_count_bottom;
+    }
+
+    pub fn getMaxVisibleLineCountBottom(self: UnchangedRegion) usize {
+        return self.line_count - self.visible_line_count_top;
+    }
+
+    pub fn shouldHideControls(self: UnchangedRegion) bool {
+        return self.getHiddenModifiedRange().isEmpty() and self.is_dragged == null;
+    }
+
+    pub fn showMoreAbove(self: *UnchangedRegion, count: usize) void {
+        self.visible_line_count_top = @min(self.visible_line_count_top +| count, self.getMaxVisibleLineCountTop());
+    }
+
+    pub fn showMoreBelow(self: *UnchangedRegion, count: usize) void {
+        self.visible_line_count_bottom = @min(self.visible_line_count_bottom +| count, self.getMaxVisibleLineCountBottom());
+    }
+
+    pub fn showAll(self: *UnchangedRegion) void {
+        self.visible_line_count_bottom = self.getMaxVisibleLineCountBottom();
+    }
+
+    pub fn collapseAll(self: *UnchangedRegion) void {
+        self.setState(0, 0);
+    }
+
+    pub fn showModifiedLine(self: *UnchangedRegion, line_number: usize, preference: RevealPreference) void {
+        const hidden = self.getHiddenModifiedRange();
+        if (!hidden.contains(line_number)) return;
+        const top = line_number + 1 - hidden.startLineNumber;
+        const bottom = hidden.endLineNumberExclusive - line_number;
+        if ((preference == .from_closer_side and top < bottom) or preference == .from_top) self.showMoreAbove(top) else self.showMoreBelow(bottom);
+    }
+
+    pub fn showOriginalLine(self: *UnchangedRegion, line_number: usize, preference: RevealPreference) void {
+        if (!self.getHiddenOriginalRange().contains(line_number)) return;
+        const top = line_number - self.original_line_number;
+        const bottom = self.original_line_number + self.line_count - line_number;
+        // The pinned upstream uses the difference of the distances here.
+        if ((preference == .from_closer_side and top < bottom) or preference == .from_top) {
+            self.visible_line_count_top = @min(self.visible_line_count_top +| bottom -| top, self.getMaxVisibleLineCountTop());
+        } else {
+            self.visible_line_count_bottom = @min(self.visible_line_count_bottom +| top -| bottom, self.getMaxVisibleLineCountBottom());
+        }
+    }
+
+    pub fn setVisibleRanges(self: *UnchangedRegion, allocator: Allocator, visible_ranges: []const range_mapping.LineRangeMapping) ![]UnchangedRegion {
+        var visible = @import("../../../common/core/ranges/lineRange.zig").LineRangeSet.empty(allocator);
+        defer visible.deinit();
+        for (visible_ranges) |range| try visible.addRange(range.modified);
+        var hidden = try visible.subtractFrom(self.modifiedUnchangedRange());
+        defer hidden.deinit();
+        if (hidden.ranges().len == 0) {
+            self.showAll();
+            return allocator.dupe(UnchangedRegion, &.{self.*});
+        }
+        const result = try allocator.alloc(UnchangedRegion, hidden.ranges().len);
+        var original_start = self.original_line_number;
+        var modified_start = self.modified_line_number;
+        const end = modified_start + self.line_count;
+        for (hidden.ranges(), 0..) |range, i| {
+            const length = (if (i + 1 == result.len) end else range.endLineNumberExclusive) - modified_start;
+            result[i] = .{ .original_line_number = original_start, .modified_line_number = modified_start, .line_count = length };
+            result[i].setHiddenModifiedRange(range);
+            original_start += length;
+            modified_start += length;
+        }
+        return result;
+    }
+};
+
 pub const DiffEditorViewModel = struct {
     allocator: Allocator,
     original_lines: []const []const u8,

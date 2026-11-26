@@ -944,31 +944,16 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         fn applyInlineHideUnchanged(self: *Self) !void {
-            if (self.options.hide_unchanged_regions_context_line_count > 1000 or
-                self.options.hide_unchanged_regions_minimum_line_count > 1000) return;
+            const regions = try unchangedRegions(self.allocator, &self.aligned, self.options.hide_unchanged_regions_context_line_count, self.options.hide_unchanged_regions_minimum_line_count);
+            defer self.allocator.free(regions);
             var ranges = std.array_list.Managed(LineRange).init(self.allocator);
             defer ranges.deinit();
-
-            var run_start: ?usize = null;
-            var index: usize = 0;
-            while (index <= self.inline_kinds.len) : (index += 1) {
-                const unchanged = index < self.inline_kinds.len and self.inline_kinds[index] == .unchanged;
-                if (unchanged) {
-                    if (run_start == null) run_start = index;
-                    continue;
-                }
-                if (run_start) |start| {
-                    try appendInlineHiddenRange(
-                        &ranges,
-                        start,
-                        index - 1,
-                        start > 0,
-                        index < self.inline_kinds.len,
-                        self.options.hide_unchanged_regions_context_line_count,
-                        self.options.hide_unchanged_regions_minimum_line_count,
-                    );
-                    run_start = null;
-                }
+            for (regions) |region| {
+                const hidden = region.getHiddenModifiedRange();
+                if (hidden.isEmpty()) continue;
+                const start = self.inline_modified_rows[hidden.startLineNumber - 1] orelse continue;
+                const end = self.inline_modified_rows[hidden.endLineNumberExclusive - 2] orelse continue;
+                try ranges.append(.init(start, end + 1));
             }
             if (ranges.items.len == 0) return;
 
@@ -1104,13 +1089,15 @@ pub fn applyHideUnchangedRegions(
     var ranges = std.array_list.Managed(LineRange).init(allocator);
     defer ranges.deinit();
 
-    var cursor: usize = 1;
-    for (aligned.mappings) |mapping| {
-        const run_end = mapping.original.startLineNumber -| 1;
-        try appendHiddenRange(&ranges, cursor, run_end, true, true, context_line_count, minimum_line_count);
-        cursor = mapping.original.endLineNumberExclusive;
+    const regions = try unchangedRegions(allocator, aligned, context_line_count, minimum_line_count);
+    defer allocator.free(regions);
+    for (regions) |region| {
+        const hidden = region.getHiddenOriginalRange();
+        if (hidden.isEmpty()) continue;
+        const start = aligned.displayRowForOriginal(hidden.startLineNumber) orelse continue;
+        const end = aligned.displayRowForOriginal(hidden.endLineNumberExclusive - 1) orelse continue;
+        try ranges.append(.init(start, end + 1));
     }
-    try appendHiddenRange(&ranges, cursor, aligned.lineCount(), true, false, context_line_count, minimum_line_count);
     if (ranges.items.len == 0) return;
 
     const fold_ranges = try allocator.alloc(
@@ -1130,48 +1117,12 @@ pub fn applyHideUnchangedRegions(
     try modified_editor.addFoldingRanges(fold_ranges);
 }
 
-fn appendInlineHiddenRange(
-    ranges: *std.array_list.Managed(LineRange),
-    start_index: usize,
-    end_index: usize,
-    has_previous: bool,
-    has_next: bool,
-    context_line_count: usize,
-    minimum_line_count: usize,
-) !void {
-    if (start_index > end_index) return;
-    const left_keep = if (has_previous) context_line_count else 0;
-    const right_keep = if (has_next) context_line_count else 0;
-    const start = start_index + 1;
-    const end = end_index + 1;
-    const collapse_start = start +| left_keep;
-    if (collapse_start > end) return;
-    const collapse_end = end -| right_keep;
-    if (collapse_end < collapse_start) return;
-    const hidden_count = collapse_end - collapse_start + 1;
-    if (hidden_count < minimum_line_count or hidden_count == 0) return;
-    try ranges.append(LineRange.init(collapse_start, collapse_end + 1));
-}
-
-fn appendHiddenRange(
-    ranges: *std.array_list.Managed(LineRange),
-    start: usize,
-    end: usize,
-    has_previous: bool,
-    has_next: bool,
-    context_line_count: usize,
-    minimum_line_count: usize,
-) !void {
-    if (start > end) return;
-    const left_keep = if (has_previous) context_line_count else 0;
-    const right_keep = if (has_next) context_line_count else 0;
-    const collapse_start = start +| left_keep;
-    if (collapse_start > end) return;
-    const collapse_end = end -| right_keep;
-    if (collapse_end < collapse_start) return;
-    const hidden_count = collapse_end - collapse_start + 1;
-    if (hidden_count < minimum_line_count or hidden_count == 0) return;
-    try ranges.append(LineRange.init(collapse_start, collapse_end + 1));
+fn unchangedRegions(allocator: Allocator, aligned: *const AlignedRows, context_line_count: usize, minimum_line_count: usize) ![]diff_view_model.UnchangedRegion {
+    const LineRangeMapping = @import("../../../common/diff/rangeMapping.zig").LineRangeMapping;
+    const changes = try allocator.alloc(LineRangeMapping, aligned.mappings.len);
+    defer allocator.free(changes);
+    for (aligned.mappings, changes) |mapping, *change| change.* = mapping.source.toLineRangeMapping();
+    return diff_view_model.UnchangedRegion.fromDiffs(allocator, changes, aligned.original_to_display.len, aligned.modified_to_display.len, minimum_line_count, context_line_count);
 }
 
 fn splitOwnedLines(allocator: Allocator, text: []const u8) ![][]u8 {

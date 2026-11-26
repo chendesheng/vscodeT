@@ -368,6 +368,61 @@ pub fn Tests(comptime View: type) type {
             try std.testing.expect(found);
         }
 
+        test "diffEditorWidget: upstream UnchangedRegion fromDiffs scenarios" {
+            const allocator = testing.allocator;
+            const R = @import("../../../common/core/ranges/lineRange.zig").LineRange;
+            const M = @import("../../../common/diff/rangeMapping.zig").LineRangeMapping;
+            const U = @import("../../../browser/widget/diffEditor/diffEditorViewModel.zig").UnchangedRegion;
+            const Scenario = struct {
+                changes: []const M,
+                count: usize,
+                expected: []const M,
+            };
+            const cases = [_]Scenario{
+                .{ .changes = &.{M.init(R.init(1, 10), R.init(1, 10))}, .count = 10, .expected = &.{} },
+                .{ .changes = &.{}, .count = 10, .expected = &.{M.init(R.init(1, 11), R.init(1, 11))} },
+                .{ .changes = &.{M.init(R.init(50, 60), R.init(50, 60))}, .count = 100, .expected = &.{ M.init(R.init(1, 47), R.init(1, 47)), M.init(R.init(63, 101), R.init(63, 101)) } },
+                .{ .changes = &.{M.init(R.init(99, 100), R.init(100, 100))}, .count = 100, .expected = &.{M.init(R.init(1, 96), R.init(1, 96))} },
+            };
+            for (cases) |scenario| {
+                const regions = try U.fromDiffs(allocator, scenario.changes, scenario.count, scenario.count, 3, 3);
+                defer allocator.free(regions);
+                try testing.expectEqual(scenario.expected.len, regions.len);
+                for (regions, scenario.expected) |region, expected| {
+                    try testing.expectEqual(expected.original, region.originalUnchangedRange());
+                    try testing.expectEqual(expected.modified, region.modifiedUnchangedRange());
+                }
+            }
+        }
+
+        test "diffEditorWidget: UnchangedRegion reveals and splits real model ranges" {
+            const allocator = testing.allocator;
+            const R = @import("../../../common/core/ranges/lineRange.zig").LineRange;
+            const M = @import("../../../common/diff/rangeMapping.zig").LineRangeMapping;
+            const U = @import("../../../browser/widget/diffEditor/diffEditorViewModel.zig").UnchangedRegion;
+            var region = U{ .original_line_number = 10, .modified_line_number = 20, .line_count = 30 };
+            region.showMoreAbove(10);
+            region.showMoreBelow(5);
+            try testing.expectEqual(R.init(20, 35), region.getHiddenOriginalRange());
+            try testing.expectEqual(R.init(30, 45), region.getHiddenModifiedRange());
+            region.showModifiedLine(43, .from_closer_side);
+            try testing.expectEqual(R.init(30, 43), region.getHiddenModifiedRange());
+            region.showAll();
+            try testing.expect(region.shouldHideControls());
+            region.is_dragged = .top;
+            try testing.expect(!region.shouldHideControls());
+            region.is_dragged = null;
+            region.collapseAll();
+            const regions = try region.setVisibleRanges(allocator, &.{M.init(R.init(20, 25), R.init(30, 35))});
+            defer allocator.free(regions);
+            try testing.expectEqual(@as(usize, 2), regions.len);
+            try testing.expectEqual(R.init(20, 30), regions[0].getHiddenModifiedRange());
+            try testing.expectEqual(R.init(35, 50), regions[1].getHiddenModifiedRange());
+            try testing.expectEqual(R.init(25, 40), regions[1].getHiddenOriginalRange());
+            region.showOriginalLine(11, .from_closer_side);
+            try testing.expectEqual(@as(usize, 28), region.visible_line_count_top);
+        }
+
         test "diffEditorWidget: hide unchanged regions folds the middle" {
             const allocator = std.testing.allocator;
             const io = std.Io.Threaded.global_single_threaded.io();
