@@ -24,6 +24,7 @@ pub const WorkingCopyService = struct {
     const Registration = struct {
         service: *WorkingCopyService,
         copy: IWorkingCopy,
+        references: usize = 1,
         dirty_listener: WorkingCopyListener,
         content_listener: WorkingCopyListener,
         save_listener: WorkingCopyListener,
@@ -84,6 +85,32 @@ pub const WorkingCopyService = struct {
         try self.registrations.append(registration);
         try self.on_did_register.fire(&registration.copy);
         if (copy.getDirty()) try self.on_did_change_dirty.fire(&registration.copy);
+    }
+
+    /// Terminal panes are independent references to a single registered
+    /// document. Do not register the same model twice when split/diff views
+    /// coexist; release it only when the final pane reference closes.
+    pub fn acquireWorkingCopy(self: *WorkingCopyService, copy: IWorkingCopy) !void {
+        for (self.registrations.items) |registration| {
+            if (registration.copy.context != copy.context) continue;
+            if (!std.mem.eql(u8, registration.copy.getTypeId(), copy.getTypeId())) continue;
+            registration.references += 1;
+            return;
+        }
+        return self.registerWorkingCopy(copy);
+    }
+
+    pub fn releaseWorkingCopy(self: *WorkingCopyService, copy: IWorkingCopy) bool {
+        for (self.registrations.items) |registration| {
+            if (registration.copy.context != copy.context) continue;
+            if (!std.mem.eql(u8, registration.copy.getTypeId(), copy.getTypeId())) continue;
+            if (registration.references > 1) {
+                registration.references -= 1;
+                return true;
+            }
+            return self.unregisterWorkingCopy(copy);
+        }
+        return false;
     }
 
     pub fn unregisterWorkingCopy(self: *WorkingCopyService, copy: IWorkingCopy) bool {

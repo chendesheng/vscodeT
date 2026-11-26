@@ -1961,11 +1961,11 @@ pub const TerminalWorkbench = struct {
     fn registerWorkingCopy(self: *TerminalWorkbench, tab: *Tab) void {
         tab.editor.undo_redo.setNotificationService(self.notification_api);
         if (self.search_window.view) |view| view.model.result.onModelAdded(tab.editor.path, tab.editor.model) catch {};
-        self.working_copy_service.registerWorkingCopy(tui_editor_mod.workingCopyInterface(tab.editor)) catch {};
+        self.working_copy_service.acquireWorkingCopy(tui_editor_mod.workingCopyInterface(tab.editor)) catch {};
     }
 
     fn unregisterWorkingCopy(self: *TerminalWorkbench, tab: *Tab) void {
-        _ = self.working_copy_service.unregisterWorkingCopy(tui_editor_mod.workingCopyInterface(tab.editor));
+        _ = self.working_copy_service.releaseWorkingCopy(tui_editor_mod.workingCopyInterface(tab.editor));
     }
 
     fn initAfterRestoredWorkspaceWatcher(context: *anyopaque) !void {

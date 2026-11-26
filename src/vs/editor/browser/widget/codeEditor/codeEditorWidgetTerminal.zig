@@ -332,6 +332,12 @@ pub const EditorDocument = struct {
     declarative: ?*const extensions_registry.Registry = null,
     encoding: encoding_mod.Encoding = .utf8,
     on_did_change_encoding: Emitter(void),
+    /// Working copy notifications belong to the shared document, not any
+    /// particular editor view that happens to be mounted.
+    working_copy_dirty_listeners: std.array_list.Managed(ChangeListener),
+    working_copy_content_listeners: std.array_list.Managed(ChangeListener),
+    working_copy_save_listeners: std.array_list.Managed(ChangeListener),
+    dirty_state: bool = false,
     /// Alternative version id at the last successful save. Shared by every
     /// view so both split panes flip clean together.
     saved_version: u32,
@@ -442,6 +448,9 @@ pub const EditorDocument = struct {
             .declarative = declarative,
             .encoding = encoding,
             .on_did_change_encoding = Emitter(void).init(allocator),
+            .working_copy_dirty_listeners = .init(allocator),
+            .working_copy_content_listeners = .init(allocator),
+            .working_copy_save_listeners = .init(allocator),
             .saved_version = model.getAlternativeVersionId(),
             .refs = 1,
             .editors = std.array_list.Managed(*Editor).init(allocator),
@@ -459,6 +468,8 @@ pub const EditorDocument = struct {
     }
 
     fn contentChanged(event: InternalModelContentChangeEvent, self: *EditorDocument) anyerror!void {
+        self.publishDirtyState();
+        for (self.working_copy_content_listeners.items) |listener| listener.callback(listener.context);
         if (self.json.uri == null or self.editors.items.len == 0) return;
         self.editors.items[0].changeJsonDocument(&event.contentChangedEvent) catch |err| self.editors.items[0].setMessage("JSON sync failed: {s}", .{@errorName(err)});
     }
@@ -482,6 +493,9 @@ pub const EditorDocument = struct {
         std.debug.assert(self.editors.items.len == 0);
         self.editors.deinit();
         self.on_did_change_encoding.deinit();
+        self.working_copy_dirty_listeners.deinit();
+        self.working_copy_content_listeners.deinit();
+        self.working_copy_save_listeners.deinit();
         // Mirror the old single-owner teardown order: registry/arena data
         // before the model, then undo, then the language service and codec.
         self.language_config_service.deinit();
@@ -528,7 +542,15 @@ pub const EditorDocument = struct {
     /// Notifies every view of a shared dirty/save/conflict transition. The
     /// per-editor emitter stays view-local, matching `IWorkingCopy` listeners
     /// that observe the same document through different editor panes.
+    fn publishDirtyState(self: *EditorDocument) void {
+        const dirty = self.isDirty();
+        if (dirty == self.dirty_state) return;
+        self.dirty_state = dirty;
+        for (self.working_copy_dirty_listeners.items) |listener| listener.callback(listener.context);
+    }
+
     fn refreshDirtyState(self: *EditorDocument) void {
+        self.publishDirtyState();
         for (self.editors.items) |editor| editor.refreshDirtyState();
     }
 };
@@ -5087,6 +5109,7 @@ pub const Editor = struct {
         self.document.saved_version = self.model.getAlternativeVersionId();
         self.clearConflict();
         self.document.refreshDirtyState();
+        for (self.document.working_copy_save_listeners.items) |listener| listener.callback(listener.context);
         for (self.document.editors.items) |editor| {
             for (editor.working_copy_save_listeners.items) |listener| listener.callback(listener.context);
             editor.setMessage("Saved {s}", .{path});
@@ -6693,52 +6716,52 @@ const WorkingCopyListener = working_copy.WorkingCopyListener;
 pub const TYPE_ID = "workbench.editors.files.textFileEditor";
 
 fn wcResource(context: *anyopaque) []const u8 {
-    const editor: *Editor = @ptrCast(@alignCast(context));
-    return editor.path;
+    const document: *EditorDocument = @ptrCast(@alignCast(context));
+    return document.path;
 }
 fn wcTypeId(_: *anyopaque) []const u8 {
     return TYPE_ID;
 }
 fn wcName(context: *anyopaque) []const u8 {
-    const editor: *Editor = @ptrCast(@alignCast(context));
-    return std.fs.path.basename(editor.path);
+    const document: *EditorDocument = @ptrCast(@alignCast(context));
+    return std.fs.path.basename(document.path);
 }
 fn wcIsDirty(context: *anyopaque) bool {
-    const editor: *Editor = @ptrCast(@alignCast(context));
-    return editor.isDirty();
+    const document: *EditorDocument = @ptrCast(@alignCast(context));
+    return document.isDirty();
 }
 fn wcIsModified(context: *anyopaque) bool {
     return wcIsDirty(context);
 }
 
 fn wcAddDirty(context: *anyopaque, listener: WorkingCopyListener) void {
-    const editor: *Editor = @ptrCast(@alignCast(context));
-    editor.addWorkingCopyDirtyListener(.{ .context = listener.context, .callback = listener.callback });
+    const document: *EditorDocument = @ptrCast(@alignCast(context));
+    document.working_copy_dirty_listeners.append(.{ .context = listener.context, .callback = listener.callback }) catch {};
 }
 fn wcRemoveDirty(context: *anyopaque, listener: WorkingCopyListener) void {
-    const editor: *Editor = @ptrCast(@alignCast(context));
-    editor.removeWorkingCopyDirtyListener(.{ .context = listener.context, .callback = listener.callback });
+    const document: *EditorDocument = @ptrCast(@alignCast(context));
+    Editor.removeChangeListener(&document.working_copy_dirty_listeners, .{ .context = listener.context, .callback = listener.callback });
 }
 fn wcAddContent(context: *anyopaque, listener: WorkingCopyListener) void {
-    const editor: *Editor = @ptrCast(@alignCast(context));
-    editor.addWorkingCopyContentListener(.{ .context = listener.context, .callback = listener.callback });
+    const document: *EditorDocument = @ptrCast(@alignCast(context));
+    document.working_copy_content_listeners.append(.{ .context = listener.context, .callback = listener.callback }) catch {};
 }
 fn wcRemoveContent(context: *anyopaque, listener: WorkingCopyListener) void {
-    const editor: *Editor = @ptrCast(@alignCast(context));
-    editor.removeWorkingCopyContentListener(.{ .context = listener.context, .callback = listener.callback });
+    const document: *EditorDocument = @ptrCast(@alignCast(context));
+    Editor.removeChangeListener(&document.working_copy_content_listeners, .{ .context = listener.context, .callback = listener.callback });
 }
 fn wcAddSave(context: *anyopaque, listener: WorkingCopyListener) void {
-    const editor: *Editor = @ptrCast(@alignCast(context));
-    editor.addWorkingCopySaveListener(.{ .context = listener.context, .callback = listener.callback });
+    const document: *EditorDocument = @ptrCast(@alignCast(context));
+    document.working_copy_save_listeners.append(.{ .context = listener.context, .callback = listener.callback }) catch {};
 }
 fn wcRemoveSave(context: *anyopaque, listener: WorkingCopyListener) void {
-    const editor: *Editor = @ptrCast(@alignCast(context));
-    editor.removeWorkingCopySaveListener(.{ .context = listener.context, .callback = listener.callback });
+    const document: *EditorDocument = @ptrCast(@alignCast(context));
+    Editor.removeChangeListener(&document.working_copy_save_listeners, .{ .context = listener.context, .callback = listener.callback });
 }
 
 pub fn workingCopyInterface(editor: *Editor) IWorkingCopy {
     return .{
-        .context = editor,
+        .context = editor.document,
         .resource = wcResource,
         .type_id = wcTypeId,
         .name = wcName,
@@ -6751,6 +6774,36 @@ pub fn workingCopyInterface(editor: *Editor) IWorkingCopy {
         .add_save_listener = wcAddSave,
         .remove_save_listener = wcRemoveSave,
     };
+}
+
+test "Editor: working copy reference survives closing one of its shared views" {
+    const allocator = std.testing.allocator;
+    const Service = @import("../../../../workbench/services/workingCopy/common/workingCopyService.zig").WorkingCopyService;
+    var service = Service.init(allocator);
+    defer service.deinit();
+    const first = try Editor.createFromText(allocator, std.testing.io, "original", "a.txt", 40, 8);
+    const second = try Editor.createViewFromEditor(first, 40, 8);
+    defer {
+        second.deinit();
+        allocator.destroy(second);
+    }
+    const first_copy = workingCopyInterface(first);
+    const second_copy = workingCopyInterface(second);
+    try std.testing.expectEqual(first_copy.context, second_copy.context);
+    try service.acquireWorkingCopy(first_copy);
+    try service.acquireWorkingCopy(second_copy);
+    try std.testing.expectEqual(@as(usize, 1), service.registrations.items.len);
+    try std.testing.expect(service.releaseWorkingCopy(first_copy));
+    first.deinit();
+    allocator.destroy(first);
+    try std.testing.expectEqual(@as(usize, 1), service.registrations.items.len);
+    try second.insertText("x");
+    try std.testing.expect(service.hasDirty());
+    try std.testing.expectEqual(@as(usize, 1), service.dirtyCount());
+    try second.undo();
+    try std.testing.expect(!service.hasDirty());
+    try std.testing.expect(service.releaseWorkingCopy(second_copy));
+    try std.testing.expectEqual(@as(usize, 0), service.registrations.items.len);
 }
 
 test "Editor: virtual model resource owns its URI through a shared view" {

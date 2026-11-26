@@ -88,7 +88,7 @@ pub const RestoredEditorPanes = struct {
         try tab.view.setStatusBarVisible(false);
         if (tab.file_input != null) {
             const widget = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
-            self.working_copies.registerWorkingCopy(widget.workingCopyInterface(tab.editor)) catch |err| switch (err) {
+            self.working_copies.acquireWorkingCopy(widget.workingCopyInterface(tab.editor)) catch |err| switch (err) {
                 error.AlreadyRegistered => {},
                 else => return err,
             };
