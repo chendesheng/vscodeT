@@ -228,7 +228,7 @@ pub fn ResourceTree(comptime T: type, comptime C: type) type {
             var relative = path;
             if (self.root_path.len > 0) {
                 const root = std.mem.trimEnd(u8, self.root_path, "/\\");
-                if (root.len > 0 and std.mem.startsWith(u8, relative, root)) {
+                if (root.len > 0 and std.mem.startsWith(u8, relative, root) and (relative.len == root.len or relative[root.len] == '/' or relative[root.len] == '\\')) {
                     relative = relative[root.len..];
                 }
             }
@@ -250,7 +250,7 @@ pub fn ResourceTree(comptime T: type, comptime C: type) type {
             errdefer self.allocator.free(relative);
 
             const full_path = if (parent == self.root)
-                try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.root_path, name })
+                try std.fmt.allocPrint(self.allocator, "{s}{s}{s}", .{ self.root_path, if (self.root_path.len == 0 or std.mem.endsWith(u8, self.root_path, "/")) "" else "/", name })
             else
                 try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ parent.path, name });
             errdefer self.allocator.free(full_path);

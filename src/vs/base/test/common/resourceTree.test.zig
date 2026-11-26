@@ -102,6 +102,9 @@ test "ResourceTree: insertion order, root-relative paths and collect" {
     const node = tree.getNode("/repo/b/first.zig").?;
     try testing.expectEqual(@as(u32, 3), node.element.?);
     try testing.expectEqualStrings("first.zig", node.name);
+    try testing.expectEqualStrings("/repo/b/first.zig", node.path);
+    try testing.expectEqualStrings("/repo/b", node.parent.?.path);
+    try testing.expect(tree.getNode("/repository/b/first.zig") == null);
     try testing.expect(ResourceTree(u32, *u32).getRoot(node) == root);
 }
 

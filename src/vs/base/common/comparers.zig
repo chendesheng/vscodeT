@@ -77,14 +77,19 @@ pub fn compareFileExtensions(one: []const u8, other: []const u8) i32 {
 pub fn comparePaths(one: []const u8, other: []const u8) i32 {
     var a = std.mem.splitScalar(u8, one, '/');
     var b = std.mem.splitScalar(u8, other, '/');
+    var current_a = a.next().?;
+    var current_b = b.next().?;
     while (true) {
         const next_a = a.next();
         const next_b = b.next();
-        if (next_a == null and next_b == null) return 0;
+        if (next_a == null and next_b == null) return compareFileNames(current_a, current_b);
+        // Upstream compares files before folders at each path level.
         if (next_a == null) return -1;
         if (next_b == null) return 1;
-        const result = compareFileNames(next_a.?, next_b.?);
-        if (result != 0) return result;
+        const order = std.ascii.orderIgnoreCase(current_a, current_b);
+        if (order != .eq) return if (order == .lt) -1 else 1;
+        current_a = next_a.?;
+        current_b = next_b.?;
     }
 }
 
@@ -93,6 +98,8 @@ test "comparers: numeric names and paths" {
     try std.testing.expect(compareFileNames("foo10", "foo2") > 0);
     try std.testing.expect(compareFileNames("Foo", "foo") == 0);
     try std.testing.expect(comparePaths("/a/b", "/a/c") < 0);
+    try std.testing.expect(comparePaths("/repo/z.txt", "/repo/a/f.txt") < 0);
+    try std.testing.expect(comparePaths("/repo/folder10/f.txt", "/repo/folder2/f.txt") < 0);
     try std.testing.expect(compareFileExtensions("a.zig", "b.ts") > 0);
 }
 
