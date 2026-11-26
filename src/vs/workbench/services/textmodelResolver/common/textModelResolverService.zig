@@ -7,6 +7,8 @@ const text_file = @import("../../textfile/common/textFileService.zig");
 const encoding = @import("../../textfile/common/encoding.zig");
 const uri_util = @import("../../../../base/common/stdUri.zig");
 const DiskFileService = @import("../../../../platform/files/common/fileService.zig").DiskFileService;
+const files = @import("../../../../platform/files/common/files.zig");
+const event = @import("../../../../base/common/event.zig");
 
 const resolver = @import("../../../../editor/common/services/resolverService.zig");
 const EditorDocument = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").EditorDocument;
@@ -23,6 +25,8 @@ pub const TextModelResolverService = struct {
     io: std.Io,
     window: *dispatch.Queue,
     collection: ResourceModelCollection,
+    file_service: ?files.IFileService = null,
+    file_listener: ?event.SignalSubscription = null,
     providers: std.ArrayList(*ProviderEntry) = .empty,
     next_provider_id: usize = 0,
     worker: ?*worker_mod.EditorWorkerService = null,
@@ -53,7 +57,39 @@ pub const TextModelResolverService = struct {
         return .{ .allocator = allocator, .io = io, .window = window, .collection = ResourceModelCollection.init(allocator, window) };
     }
 
+    /// The workbench supplies the window's registered file service. Virtual
+    /// filesystem resources resolve through the same raw-byte text-file
+    /// decoding path; content providers retain their distinct upstream role.
+    pub fn bindFileService(self: *TextModelResolverService, service: files.IFileService) !void {
+        if (self.file_listener) |listener| listener.dispose();
+        self.file_listener = null;
+        self.file_service = service;
+        self.file_listener = try service.on_did_files_change.listenDisposable(self, onFilesChanged);
+    }
+
+    fn onFilesChanged(change: files.FileChangesEvent, self: *TextModelResolverService) !void {
+        const service = self.file_service orelse return;
+        for ([_][]const []const u8{ change.raw_updated, change.raw_added, change.raw_deleted }) |resources| {
+            for (resources) |encoded| {
+                const uri = std.Uri.parse(encoded) catch continue;
+                // Working files are handled by the text-file working copy
+                // service; never overwrite their unsaved contents here.
+                if (std.mem.eql(u8, uri.scheme, "file") or !service.hasProvider(uri)) continue;
+                try self.queueProviderRefresh(uri);
+            }
+        }
+    }
+
+    pub fn hasResolvedModel(self: *TextModelResolverService, uri: std.Uri) bool {
+        const key = uri_util.resourceKey(self.allocator, uri) catch return false;
+        defer self.allocator.free(key);
+        return self.collection.entries.contains(key);
+    }
+
     pub fn deinit(self: *TextModelResolverService) void {
+        if (self.file_listener) |listener| listener.dispose();
+        self.file_listener = null;
+        self.file_service = null;
         for (self.providers.items) |entry| entry.destroy();
         self.providers.deinit(self.allocator);
         var delivery = self.delivering;
@@ -157,8 +193,11 @@ pub const TextModelResolverService = struct {
             }
             return FileContentRequest.create(self.io, resource);
         }
-        // Upstream registers most recent provider first, falling through only
-        // when it declines the resource. A provider can refresh a live URI.
+        if (self.file_service) |service| {
+            if (try service.captureRead(resource)) |request| return ProviderContentRequest.create(resource, request);
+        }
+        // Upstream registers most recent content provider first, falling
+        // through only when it declines the resource.
         var index = self.providers.items.len;
         while (index != 0) {
             index -= 1;
@@ -208,6 +247,7 @@ pub const TextModelResolverService = struct {
 
     fn shouldRefresh(self: *TextModelResolverService, resource: std.Uri) bool {
         if (std.mem.eql(u8, resource.scheme, "file")) return false;
+        if (self.file_service) |service| if (service.hasProvider(resource)) return true;
         for (self.providers.items) |entry| if (std.mem.eql(u8, entry.scheme, resource.scheme)) return true;
         return false;
     }
@@ -690,23 +730,76 @@ const FileContentRequest = struct {
     fn read(context: *anyopaque, a: Allocator) !resolver.TextContentRequest.Result {
         const self: *FileContentRequest = @ptrCast(@alignCast(context));
         var resource: resolver.TextContentRequest.Result = .{ .uri = try std.Uri.parse(try a.dupe(u8, self.uri)), .path = try a.dupe(u8, self.path) };
-        var files = DiskFileService.init(a, self.io);
-        defer files.deinit();
-        var data = files.readFile(self.path) catch |err| {
+        var disk = DiskFileService.init(a, self.io);
+        defer disk.deinit();
+        var data = disk.readFile(self.path) catch |err| {
             if (err == error.OutOfMemory) return err;
             resource.failure = err;
             return resource;
         };
         defer data.deinit(a);
-        const detected = if (encoding.detectBOM(data.bytes)) |bom| bom.encoding else encoding.Encoding.utf8;
-        if (!encoding.isUTF16(detected) and std.mem.indexOfScalar(u8, data.bytes, 0) != null) return resource;
-        resource.is_working_file = true;
-        resource.encoding = @tagName(detected);
-        resource.text = try encoding.decode(a, data.bytes, detected);
+        try decodeFileContents(a, &resource, data.bytes, true);
         return resource;
     }
     fn destroy(context: *anyopaque) void {
         const self: *FileContentRequest = @ptrCast(@alignCast(context));
+        self.arena.deinit();
+        std.heap.page_allocator.destroy(self);
+    }
+};
+
+fn decodeFileContents(a: Allocator, result: *resolver.TextContentRequest.Result, bytes: []const u8, working_file: bool) !void {
+    const detected = if (encoding.detectBOM(bytes)) |bom| bom.encoding else encoding.Encoding.utf8;
+    if (!encoding.isUTF16(detected) and std.mem.indexOfScalar(u8, bytes, 0) != null) return;
+    result.is_working_file = working_file;
+    result.encoding = @tagName(detected);
+    result.text = try encoding.decode(a, bytes, detected);
+}
+
+/// Owns a captured filesystem read independently of provider registration.
+/// Decode and binary classification share the native text-file path.
+const ProviderContentRequest = struct {
+    arena: std.heap.ArenaAllocator,
+    source: files.FileReadRequest,
+    uri: []const u8,
+    path: []const u8,
+
+    fn create(uri: std.Uri, source: files.FileReadRequest) !resolver.TextContentRequest {
+        errdefer source.destroy(source.context);
+        const self = try std.heap.page_allocator.create(ProviderContentRequest);
+        errdefer std.heap.page_allocator.destroy(self);
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        self.* = .{
+            .arena = undefined,
+            .source = source,
+            .uri = try uri_util.encodedResource(a, uri),
+            .path = try a.dupe(u8, source.display_path orelse try uri_util.fsPath(uri, a)),
+        };
+        self.arena = arena;
+        return .{ .context = self, .read = read, .destroy = destroy };
+    }
+
+    fn read(context: *anyopaque, a: Allocator) !resolver.TextContentRequest.Result {
+        const self: *ProviderContentRequest = @ptrCast(@alignCast(context));
+        var result: resolver.TextContentRequest.Result = .{
+            .uri = try std.Uri.parse(try a.dupe(u8, self.uri)),
+            .path = try a.dupe(u8, self.path),
+        };
+        const bytes = self.source.read(self.source.context, a) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            result.failure = err;
+            return result;
+        };
+        defer a.free(bytes);
+        try decodeFileContents(a, &result, bytes, false);
+        return result;
+    }
+
+    fn destroy(context: *anyopaque) void {
+        const self: *ProviderContentRequest = @ptrCast(@alignCast(context));
+        self.source.destroy(self.source.context);
         self.arena.deinit();
         std.heap.page_allocator.destroy(self);
     }

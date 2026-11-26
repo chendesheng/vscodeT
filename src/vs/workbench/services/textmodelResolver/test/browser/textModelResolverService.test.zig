@@ -451,3 +451,80 @@ test "TextModelResolverService: provider content event during an immutable captu
     try std.testing.expectEqual(@as(usize, 2), provider.calls);
     try std.testing.expectEqualStrings("second refresh", try model.borrowLineContent(1));
 }
+
+test "TextModelResolverService: registered filesystem bytes and URI changes use the retained model" {
+    const a = std.testing.allocator;
+    const file_common = @import("../../../../../platform/files/common/files.zig");
+    const FileService = @import("../../../../../platform/files/common/fileService.zig").ProviderFileService;
+    const MemoryProvider = @import("../../../../../platform/files/common/inMemoryFilesystemProvider.zig").InMemoryFileSystemProvider;
+    const Provider = struct {
+        memory: MemoryProvider,
+        bytes: []const u8,
+        captures: usize = 0,
+
+        fn capture(context: *anyopaque, _: std.Uri) !file_common.FileReadRequest {
+            const memory: *MemoryProvider = @ptrCast(@alignCast(context));
+            const self: *@This() = @fieldParentPtr("memory", memory);
+            self.captures += 1;
+            const owner = try std.heap.page_allocator.create(Request);
+            errdefer std.heap.page_allocator.destroy(owner);
+            owner.* = .{ .bytes = try std.heap.page_allocator.dupe(u8, self.bytes) };
+            return .{ .context = owner, .read = Request.read, .destroy = Request.destroy };
+        }
+
+        const Request = struct {
+            bytes: []u8,
+            fn read(context: *anyopaque, allocator: std.mem.Allocator) ![]u8 {
+                const self: *@This() = @ptrCast(@alignCast(context));
+                return allocator.dupe(u8, self.bytes);
+            }
+            fn destroy(context: *anyopaque) void {
+                const self: *@This() = @ptrCast(@alignCast(context));
+                std.heap.page_allocator.free(self.bytes);
+                std.heap.page_allocator.destroy(self);
+            }
+        };
+    };
+    var provider: Provider = .{ .memory = try MemoryProvider.init(a), .bytes = "\xff\xfeA\x00" };
+    defer provider.memory.deinit();
+    var file_service = FileService.init(a);
+    defer file_service.deinit();
+    var file_provider = provider.memory.interface();
+    file_provider.capture_read_uri = Provider.capture;
+    const registration = try file_service.registerProvider("virtual", file_provider);
+    defer registration.dispose();
+    var queue: dispatch.Queue = .{ .io = std.testing.io };
+    var service = resolver.TextModelResolverService.init(a, std.testing.io, &queue);
+    defer service.deinit();
+    try service.bindFileService(file_service.interface());
+
+    const encoded = "virtual://host/model%23a?revision=one";
+    const uri = try std.Uri.parse(encoded);
+    try std.testing.expect(service.canHandleResource(uri));
+    var opened: AsyncReference = .{};
+    defer opened.deinit();
+    const request = try service.createModelReference(uri, opened.listener());
+    defer request.cancel();
+    try std.testing.expectEqual(@as(usize, 1), provider.captures);
+    service.worker.?.waitForReply();
+    flush(&queue);
+    try std.testing.expect(opened.failure == null);
+    const reference = opened.reference orelse return error.TestExpectedResource;
+    const document = resolver.TextModelResolverService.documentOf(reference);
+    try std.testing.expectEqual(.utf16le_with_bom, document.encoding);
+    try std.testing.expectEqualStrings("A", try document.model.borrowLineContent(1));
+    try std.testing.expect(service.hasResolvedModel(uri));
+
+    // The registered provider emits a full URI, not a path stripped of its
+    // query. The existing retained document receives the subsequent bytes.
+    provider.bytes = "new";
+    var change = try file_common.FileChangesEvent.init(a, &.{.{ .type = .UPDATED, .resource = encoded }}, false);
+    defer change.deinit();
+    try file_service.on_did_files_change.fire(change);
+    try std.testing.expectEqual(@as(usize, 2), provider.captures);
+    service.worker.?.waitForReply();
+    flush(&queue);
+    try std.testing.expectEqualStrings("new", try document.model.borrowLineContent(1));
+    try std.testing.expectEqual(.utf8, document.encoding);
+    try std.testing.expect(!document.isDirty());
+}
