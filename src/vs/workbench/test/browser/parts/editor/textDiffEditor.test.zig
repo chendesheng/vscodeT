@@ -5,16 +5,16 @@ const std = @import("std");
 const Io = std.Io;
 const testing = std.testing;
 const diff = @import("../../../../browser/parts/editor/textDiffEditor.zig");
-const SnapshotEditorInput = diff.SnapshotEditorInput;
+const TextResourceEditorInput = diff.TextResourceEditorInput;
 
 pub fn Tests(comptime View: type) type {
     return struct {
         const DiffView = diff.DiffView(View);
-        test "SnapshotEditorInput: identity, read-only and no dirty state" {
+        test "TextResourceEditorInput: identity, read-only and no dirty state" {
             const allocator = testing.allocator;
-            const original = try SnapshotEditorInput.init(allocator, "/repo/a.zig", "HEAD", "/repo/a.zig::HEAD::original");
+            const original = try TextResourceEditorInput.init(allocator, testing.io, "/repo/a.zig", "HEAD", "a", .{ .scheme = "git", .path = .{ .raw = "/repo/a.zig" }, .query = .{ .raw = "HEAD" } });
             defer original.destroy();
-            const modified = try SnapshotEditorInput.init(allocator, "/repo/a.zig", "Working Tree", "/repo/a.zig::working::modified");
+            const modified = try TextResourceEditorInput.init(allocator, testing.io, "/repo/a.zig", "Working Tree", "b", .{ .scheme = "git", .path = .{ .raw = "/repo/a.zig" }, .query = .{ .raw = "working" } });
             defer modified.destroy();
 
             try testing.expectEqualStrings("a.zig", original.base.getName());
@@ -53,9 +53,18 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(view.widget.modified_editor.isReadOnly());
             try testing.expect(view.widget.original_editor.isReadOnly());
 
+            const mounted_widget = view.widget;
+            const old_original = view.widget.originalModel();
+            const old_modified = view.widget.modifiedModel();
+            try testing.expectEqual(old_original, view.original_input.resolve().model);
+            try testing.expectEqual(old_modified, view.modified_input.resolve().model);
+            try testing.expect(!std.mem.eql(u8, view.original_input.key, view.modified_input.key));
             view.widget.sash_layout.ratio = 0.7;
             try view.replace("a\nb\nc", "a\nB", 80, 10, .{});
             try testing.expectEqual(@as(usize, 1), view.widget.changeCount());
+            try testing.expectEqual(mounted_widget, view.widget);
+            try testing.expectEqual(old_original, view.widget.originalModel());
+            try testing.expectEqual(old_modified, view.widget.modifiedModel());
             try testing.expectEqual(@as(f64, 0.7), view.widget.sash_layout.getRatio(0.5, true));
             view.swapSides();
             try testing.expectEqualStrings("Working Tree", view.model.original_label);

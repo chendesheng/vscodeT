@@ -562,7 +562,7 @@ pub fn Tests(comptime View: type) type {
                 source.deinit();
                 testing.allocator.destroy(source);
             }
-            const widget = try DiffEditorWidget.createWithModelSources(View.init, testing.allocator, testing.io, "old.txt", "working.txt", "old\nend", "", "HEAD", "Working Tree", 80, 8, .{}, .{ .modified = source }, null);
+            const widget = try DiffEditorWidget.createWithModelSources(View.init, testing.allocator, testing.io, "old.txt", "working.txt", "old\nend", "", "HEAD", "Working Tree", 80, 8, .{}, .{ .modified = source.document }, null);
             defer widget.destroy();
             try testing.expectEqual(source.model, widget.modifiedModel());
             try testing.expect(widget.modified_editor != source);

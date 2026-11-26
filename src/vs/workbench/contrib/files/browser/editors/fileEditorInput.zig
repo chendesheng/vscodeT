@@ -373,11 +373,11 @@ test "Diff editor serializer round-trips file inputs" {
     const restored_original: *FileEditorInput = @ptrCast(@alignCast(restored_diff.original.impl.?));
     const restored_modified: *FileEditorInput = @ptrCast(@alignCast(restored_diff.modified.impl.?));
     defer {
+        restored_diff.destroy();
         restored_original.deinit();
         allocator.destroy(restored_original);
         restored_modified.deinit();
         allocator.destroy(restored_modified);
-        restored_diff.destroy();
     }
     try std.testing.expectEqualStrings(original_path, restored_original.path);
     try std.testing.expectEqualStrings(modified_path, restored_modified.path);

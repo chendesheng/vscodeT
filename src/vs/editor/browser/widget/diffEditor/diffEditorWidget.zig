@@ -14,6 +14,7 @@ const ui = @import("ui");
 const sash_css = @import("../../../../base/browser/ui/sash/sash_css.zig");
 
 const Editor = @import("../codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const EditorDocument = @import("../codeEditor/codeEditorWidgetTerminal.zig").EditorDocument;
 const TextEdit = @import("../codeEditor/codeEditorWidgetTerminal.zig").TextEdit;
 const terminal_input = @import("../codeEditor/codeEditorWidgetTerminalInput.zig");
 const diff_view_model = @import("./diffEditorViewModel.zig");
@@ -143,11 +144,11 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         /// Create independently owned inner editor views over resolved model
-        /// sources. The source editors remain owned by their inputs; a snapshot
+        /// sources. The documents remain owned by their inputs; a snapshot
         /// without a resolved model uses the provided immutable text.
         pub const ModelSources = struct {
-            original: ?*Editor = null,
-            modified: ?*Editor = null,
+            original: ?*EditorDocument = null,
+            modified: ?*EditorDocument = null,
         };
 
         pub fn createWithModelSources(
@@ -181,7 +182,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
             const is_inline = !normalized_options.renderSideBySide(width);
             const original_editor = if (sources.original) |source|
-                try Editor.createViewFromEditorWithOptions(source, @max(width, 1), @max(height, 1), .{ .reserve_scrollbar = false })
+                try Editor.createViewFromDocument(source, @max(width, 1), @max(height, 1), .{ .reserve_scrollbar = false })
             else
                 try Editor.createFromTextWithOptions(
                     allocator,
@@ -194,7 +195,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 );
             errdefer destroyEditor(original_editor);
             const modified_editor = if (sources.modified) |source|
-                try Editor.createViewFromEditorWithOptions(source, @max(width, 1), @max(height, 1), .{ .reserve_scrollbar = false })
+                try Editor.createViewFromDocument(source, @max(width, 1), @max(height, 1), .{ .reserve_scrollbar = false })
             else
                 try Editor.createFromTextWithOptions(
                     allocator,

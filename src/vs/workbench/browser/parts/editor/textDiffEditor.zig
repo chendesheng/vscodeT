@@ -1,15 +1,9 @@
 // Port of the terminal workbench diff pane in
 // `src/vs/workbench/browser/parts/editor/textDiffEditor.ts`.
 //
-// Terminal adaptations:
-// - `DiffEditorModel` owns the paths and labels of the snapshots. The diff
-//   widget builds aligned display snapshots from the supplied text.
-// - `SnapshotEditorInput` is a terminal workbench input with no upstream
-//   counterpart. It gives `HEAD`/index/working variants distinct resource keys
-//   so they do not collide in the editor group, and it can never save or
-//   revert. Its read-only editor is the diff widget's snapshot editor, owned by
-//   the widget (not duplicated in the input).
-// - The diff input has no serializer, so session save skips diff tabs.
+// Terminal adaptation: resolved virtual text resources own native document
+// references. The widget mounts independent editor views over those documents,
+// with model-anchored alignment and deleted-code zones.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -18,7 +12,6 @@ const ui = @import("ui");
 const widget_mod = @import("../../../../editor/browser/widget/diffEditor/diffEditorWidget.zig");
 const diff_editor_input = @import("../../../common/editor/diffEditorInput.zig");
 const editor_input = @import("../../../common/editor/editorInput.zig");
-const editor_mod = @import("../../../common/editor.zig");
 const text_files = @import("../../../services/textfile/common/textFileService.zig");
 const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 
@@ -111,70 +104,13 @@ pub fn computeConfiguration(configuration_service: ?@import("../../../../platfor
     return options;
 }
 
-pub const SnapshotEditorInput = struct {
-    allocator: Allocator,
-    base: editor_input.EditorInput,
-    key: []u8,
-    name: []u8,
+pub const TextResourceEditorInput = @import("../../../common/editor/textResourceEditorInput.zig").TextResourceEditorInput;
 
-    pub const TYPE_ID = "workbench.editors.textDiffSnapshot";
-
-    pub fn init(allocator: Allocator, path: []const u8, label: []const u8, key: []const u8) !*SnapshotEditorInput {
-        const self = try allocator.create(SnapshotEditorInput);
-        errdefer allocator.destroy(self);
-        const key_copy = try allocator.dupe(u8, key);
-        errdefer allocator.free(key_copy);
-        const name_copy = try allocator.dupe(u8, std.fs.path.basename(path));
-        errdefer allocator.free(name_copy);
-
-        self.* = .{
-            .allocator = allocator,
-            .base = editor_input.EditorInput.init(allocator, TYPE_ID),
-            .key = key_copy,
-            .name = name_copy,
-        };
-        self.base.impl = self;
-        self.base.resource = self.key;
-        self.base.name = self.name;
-        self.base.description = label;
-        self.base.capabilities = editor_mod.EditorInputCapabilities.Readonly;
-        self.base.is_dirty_fn = alwaysClean;
-        self.base.save_fn = saveNoop;
-        self.base.revert_fn = revertNoop;
-        self.base.matches_fn = matches;
-        return self;
-    }
-
-    pub fn destroy(self: *SnapshotEditorInput) void {
-        self.base.dispose();
-        self.base.deinit();
-        self.allocator.free(self.key);
-        self.allocator.free(self.name);
-        self.allocator.destroy(self);
-    }
-
-    pub fn interface(self: *SnapshotEditorInput) *editor_input.EditorInput {
-        return &self.base;
-    }
-
-    fn alwaysClean(_: *const editor_input.EditorInput) bool {
-        return false;
-    }
-
-    fn saveNoop(base: *editor_input.EditorInput, _: editor_input.GroupIdentifier) anyerror!editor_input.SaveResult {
-        return base;
-    }
-
-    fn revertNoop(_: *editor_input.EditorInput, _: editor_input.GroupIdentifier) anyerror!void {}
-
-    fn matches(base: *editor_input.EditorInput, other: *editor_input.EditorInput) bool {
-        if (base == other) return true;
-        if (!std.mem.eql(u8, base.type_id, other.type_id)) return false;
-        const left = base.resource orelse return false;
-        const right = other.resource orelse return false;
-        return std.mem.eql(u8, left, right);
-    }
-};
+/// A generic snapshot comparison without an extension-provided resource
+/// uses the label as a virtual URI query. SCM provides its actual ref URI.
+fn snapshotResource(absolute_path: []const u8, label: []const u8) std.Uri {
+    return .{ .scheme = "vscode-diff", .path = .{ .raw = absolute_path }, .query = .{ .raw = label } };
+}
 
 pub const DiffEditorModel = struct {
     original_path: []const u8,
@@ -196,8 +132,8 @@ pub fn DiffView(comptime View: type) type {
         widget: *DiffEditorWidget,
         theme_colors: ?*const @import("../../themeColors.zig").ThemeColors = null,
         on_control_changed: ?struct { context: *anyopaque, run: *const fn (*anyopaque) void } = null,
-        original_input: *SnapshotEditorInput,
-        modified_input: *SnapshotEditorInput,
+        original_input: *TextResourceEditorInput,
+        modified_input: *TextResourceEditorInput,
         diff_input: *diff_editor_input.DiffEditorInput,
 
         pub fn create(
@@ -240,7 +176,15 @@ pub fn DiffView(comptime View: type) type {
             const modified_label = try allocator.dupe(u8, model.modified_label);
             errdefer allocator.free(modified_label);
 
-            const widget = try DiffEditorWidget.createWithDiff(
+            const original_absolute = try text_files.absolutePath(allocator, io, model.original_path);
+            defer allocator.free(original_absolute);
+            const modified_absolute = try text_files.absolutePath(allocator, io, model.modified_path);
+            defer allocator.free(modified_absolute);
+            const original_input = try TextResourceEditorInput.init(allocator, io, original_path, original_label, original_text, snapshotResource(original_absolute, original_label));
+            errdefer original_input.destroy();
+            const modified_input = try TextResourceEditorInput.init(allocator, io, modified_path, modified_label, modified_text, snapshotResource(modified_absolute, modified_label));
+            errdefer modified_input.destroy();
+            const widget = try DiffEditorWidget.createWithModelSources(
                 factory,
                 allocator,
                 io,
@@ -253,27 +197,10 @@ pub fn DiffView(comptime View: type) type {
                 width,
                 height,
                 snapshotOptions(options),
+                .{ .original = original_input.resolve(), .modified = modified_input.resolve() },
                 computed,
             );
             errdefer widget.destroy();
-
-            const original_key = try std.fmt.allocPrint(
-                allocator,
-                "{s}::{s}",
-                .{ model.original_path, model.original_label },
-            );
-            defer allocator.free(original_key);
-            const modified_key = try std.fmt.allocPrint(
-                allocator,
-                "{s}::{s}",
-                .{ model.modified_path, model.modified_label },
-            );
-            defer allocator.free(modified_key);
-
-            const original_input = try SnapshotEditorInput.init(allocator, original_path, original_label, original_key);
-            errdefer original_input.destroy();
-            const modified_input = try SnapshotEditorInput.init(allocator, modified_path, modified_label, modified_key);
-            errdefer modified_input.destroy();
 
             const basename = std.fs.path.basename(model.modified_path);
             const title = try std.fmt.allocPrint(
@@ -322,52 +249,21 @@ pub fn DiffView(comptime View: type) type {
             allocator.destroy(self);
         }
 
-        /// Replaces the snapshot texts in place, recreating the diff widget with
-        /// the new content while keeping the input identity/tab.
+        /// Refresh both immutable resources in place. Their inputs, models,
+        /// mounted editors, selections and contributions retain identity.
         pub fn replace(self: *Self, original_text: []const u8, modified_text: []const u8, width: usize, height: usize, options: Options) !void {
             try self.replaceWithDiff(original_text, modified_text, width, height, options, null);
         }
 
         pub fn replaceWithDiff(self: *Self, original_text: []const u8, modified_text: []const u8, width: usize, height: usize, options: Options, computed: ?IDocumentDiff) !void {
-            if (snapshotLinesEqual(self.allocator, self.widget.originalModel(), original_text) and snapshotLinesEqual(self.allocator, self.widget.modifiedModel(), modified_text)) {
-                _ = try self.widget.updateOptionsWithDiff(snapshotOptions(options), computed);
-                self.widget.layout(width, height);
-                return;
+            if (!snapshotLinesEqual(self.allocator, self.widget.originalModel(), original_text)) {
+                try self.widget.original_editor.replaceGeneratedContents(original_text, false);
             }
-            const widget = try DiffEditorWidget.createWithDiff(
-                self.factory,
-                self.allocator,
-                self.io,
-                self.model.original_path,
-                self.model.modified_path,
-                original_text,
-                modified_text,
-                self.model.original_label,
-                self.model.modified_label,
-                width,
-                height,
-                snapshotOptions(options),
-                computed,
-            );
-            const previous = self.widget;
-            widget.sash_layout = previous.sash_layout;
-            widget.width_based_layout = previous.width_based_layout;
-            widget.width_based_layout.updateOptions(previous.options, widget.options);
-            widget.layout(width, height);
-            const position = previous.modified_editor.modelCursorPosition();
-            widget.modified_editor.setCursorPosition(widget.modified_editor.model.validatePosition(position)) catch {};
-            _ = widget.modified_editor.setScrollTop(previous.modified_editor.scrollTop());
-            _ = widget.original_editor.setScrollTop(previous.original_editor.scrollTop());
-            if (previous.current_change) |index| {
-                widget.current_change = if (index < widget.changeCount()) index else null;
+            if (!snapshotLinesEqual(self.allocator, self.widget.modifiedModel(), modified_text)) {
+                try self.widget.modified_editor.replaceGeneratedContents(modified_text, false);
             }
-            widget.setFocus(previous.focused);
-            widget.setThemeColors(self.theme_colors);
-            self.widget = widget;
-            // EditorPane.onDidChangeControl precedes disposal, so consumers
-            // can unlisten from the old code editor while it is still alive.
-            if (self.on_control_changed) |listener| listener.run(listener.context);
-            previous.destroy();
+            _ = try self.widget.updateOptionsWithDiff(snapshotOptions(options), computed);
+            self.widget.layout(width, height);
         }
 
         pub fn matchesSnapshot(self: *Self, original: []const u8, modified: []const u8, options: Options) bool {
@@ -442,9 +338,9 @@ pub fn DiffView(comptime View: type) type {
             self.widget.swapSides();
             std.mem.swap([]const u8, &self.model.original_path, &self.model.modified_path);
             std.mem.swap([]const u8, &self.model.original_label, &self.model.modified_label);
-            std.mem.swap(*SnapshotEditorInput, &self.original_input, &self.modified_input);
-            self.diff_input.original = &self.original_input.base;
-            self.diff_input.modified = &self.modified_input.base;
+            std.mem.swap(*TextResourceEditorInput, &self.original_input, &self.modified_input);
+            self.diff_input.setSides(self.original_input.interface(), self.modified_input.interface()) catch {};
+
             self.diff_input.base.name = title;
             if (self.diff_input.owned_name) |old| self.allocator.free(old);
             self.diff_input.owned_name = title;
