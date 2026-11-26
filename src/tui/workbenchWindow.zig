@@ -617,7 +617,15 @@ pub const TerminalWorkbench = struct {
             try editor_groups.EditorGroupsService.init(allocator, .{});
         errdefer self.service.deinit();
         self.part = try editor_part.EditorPart(GroupPane).initWithState(allocator, self.service, if (previous_editor_state) |previous| previous.serialized_grid else null);
-        errdefer self.part.deinit();
+        self.code_editors = .init(allocator, self.part);
+        self.code_editor_api = self.code_editors.interface();
+        self.word_highlight_session = .init(allocator);
+        self.word_highlight_session.editors = self.code_editor_api;
+        errdefer {
+            self.part.deinit();
+            self.word_highlight_session.deinit();
+            self.code_editors.deinit();
+        }
         self.configured_languages = .{ .allocator = allocator, .part = self.part, .configuration = &self.configuration_binding };
         try self.configured_languages.attach();
         errdefer self.configured_languages.deinit();
@@ -1244,10 +1252,6 @@ pub const TerminalWorkbench = struct {
         _ = try self.services.set(views_service.views_service_id, &self.views_api);
         self.editor_groups_api = self.part.interface();
         _ = try self.services.set(editor_groups.editor_groups_service_id, &self.editor_groups_api);
-        self.code_editors = .init(self.allocator, self.part);
-        self.code_editor_api = self.code_editors.interface();
-        self.word_highlight_session = .init(self.allocator);
-        self.word_highlight_session.editors = self.code_editor_api;
         _ = try self.services.set(code_editor_service.code_editor_service_id, &self.code_editor_api);
         self.editors = .{ .part = self.part, .opening = &self.editor_opening };
         self.editor_api = self.editors.interface();
