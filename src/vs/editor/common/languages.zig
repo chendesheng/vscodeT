@@ -401,9 +401,15 @@ pub const HoverContext = struct {
     verbosity_request: ?HoverVerbosityRequest = null,
 };
 
+pub const HoverCallback = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, anyerror!?Hover) void,
+};
+
 /// The contract between extensions and the hover feature.
 pub const HoverProvider = struct {
     context: *anyopaque,
+    request_hover: ?*const fn (*anyopaque, Allocator, *TextModel, Position, CancellationToken, ?*const HoverContext, HoverCallback) anyerror!?@import("../../base/common/lifecycle.zig").IDisposable = null,
     provide_hover: *const fn (
         context: *anyopaque,
         model: *TextModel,
