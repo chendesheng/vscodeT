@@ -90,9 +90,13 @@ pub fn logStd(
 /// the log only: a direct stderr write would paint over the cell grid.
 const WillShutdownEvent = @import("../vs/workbench/services/lifecycle/common/lifecycle.zig").WillShutdownEvent;
 pub fn startWorkbench(allocator: std.mem.Allocator, io: std.Io, surface: *ui.Surface, paths: []const []const u8, previous: ?Workbench.PreviousState) !*Workbench {
+    return startWorkbenchWithOptions(allocator, io, surface, paths, previous, .{});
+}
+
+fn startWorkbenchWithOptions(allocator: std.mem.Allocator, io: std.Io, surface: *ui.Surface, paths: []const []const u8, previous: ?Workbench.PreviousState, options: @import("../vs/workbench/browser/workbench.zig").IWorkbenchOptions) !*Workbench {
     var services = try @import("../vs/workbench/workbench.common.main.zig").createServices(allocator);
     defer services.deinit();
-    const workbench = try Workbench.init(allocator, io, @import("./editorView.zig").View.createHandle, surface, &services, .{}, previous);
+    const workbench = try Workbench.init(allocator, io, @import("./editorView.zig").View.createHandle, surface, &services, options, previous);
     errdefer workbench.deinit();
     _ = try workbench.startup();
     for (paths) |path| try workbench.openPath(path);
@@ -480,6 +484,13 @@ pub fn main(init: std.process.Init) !void {
         try registry.?.registerEditorSerializerFactory(multi_diff.ID, factory_registry.SerializerFactory.bound(multi_diff.MultiDiffEditorSerializer, &multi_diff_serializer));
     }
 
+    const profile_storage_path = if (profile.user_data_dir) |dir| try std.fs.path.join(allocator, &.{ dir, "User", "globalStorage", "storage.state.json" }) else null;
+    defer if (profile_storage_path) |path| allocator.free(path);
+    const startup_options: @import("../vs/workbench/browser/workbench.zig").IWorkbenchOptions = .{
+        .initial_user_settings_paths = profile.settings_paths,
+        .profile_storage_path = profile_storage_path,
+    };
+
     var surface: ui.Surface = undefined;
     try terminal_workbench.initWindowSurface(&surface, allocator, size.width, size.height);
     defer surface.deinit();
@@ -494,7 +505,7 @@ pub fn main(init: std.process.Init) !void {
             var owned = data;
             defer owned.deinit(allocator);
 
-            const created = startWorkbench(allocator, io, &surface, &.{}, .{ .data = data, .registry = &registry.? }) catch |err| blk: {
+            const created = startWorkbenchWithOptions(allocator, io, &surface, &.{}, .{ .data = data, .registry = &registry.? }, startup_options) catch |err| blk: {
                 report(log_service, "session restore failed: {s}", .{@errorName(err)});
                 break :blk @as(?*Workbench, null);
             };
@@ -514,7 +525,7 @@ pub fn main(init: std.process.Init) !void {
             report(log_service, "no files or folders to open and no restorable session", .{});
             return;
         }
-        workbench = try startWorkbench(allocator, io, &surface, &.{}, if (registry) |*value| .{ .registry = value } else null);
+        workbench = try startWorkbenchWithOptions(allocator, io, &surface, &.{}, if (registry) |*value| .{ .registry = value } else null, startup_options);
     }
     if (file_serializer) |*value| value.clearResolvedDocuments();
     infoLog(log_service, "startup: workbench-init={d}ms", .{
@@ -532,7 +543,6 @@ pub fn main(init: std.process.Init) !void {
     workbench.enableLanguageFeatures() catch |err| report(log_service, "language features unavailable: {s}", .{@errorName(err)});
     workbench.setJsonLanguageClient(json_client);
 
-    try workbench.setUserSettingsPaths(profile.settings_paths);
     try workbench.setKeybindingsPaths(profile.keybindings_paths);
     const HistoryStorage = @import("historyStorage.zig").HistoryStorage;
     var history_storage: HistoryStorage = undefined;

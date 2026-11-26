@@ -33,6 +33,8 @@ pub const IWorkbenchOptions = struct {
     /// Class IDs in the terminal document stylesheet.
     extra_classes: []const u16 = &.{},
     reset_layout: bool = false,
+    initial_user_settings_paths: []const []const u8 = &.{},
+    profile_storage_path: ?[]const u8 = null,
 };
 
 pub const Workbench = struct {

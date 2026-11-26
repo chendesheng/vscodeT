@@ -11288,3 +11288,68 @@ test "Workbench: serialize and restore multiple diff file list actions share foc
     try wb.commands.execute("multiDiffEditor.toggleFileList");
     try std.testing.expect(!first.fileListVisible() and !second.fileListVisible());
 }
+
+test "Workbench: serialize and restore multiple diff file list preferences before creating restored panes" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "settings.json", .data = "{\"multiDiffEditor.experimental.fileList\": true}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "changed.png", .data = "\x00\x01" });
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const settings_path = try std.fs.path.join(allocator, &.{ root, "settings.json" });
+    defer allocator.free(settings_path);
+    const profile_path = try std.fs.path.join(allocator, &.{ root, "profile.json" });
+    defer allocator.free(profile_path);
+    const session_path = try std.fs.path.join(allocator, &.{ root, "session.json" });
+    defer allocator.free(session_path);
+    const file_path = try std.fs.path.join(allocator, &.{ root, "changed.png" });
+    defer allocator.free(file_path);
+    var file_uri = try @import("../vs/base/common/uri.zig").URI.file(allocator, file_path);
+    defer file_uri.deinit();
+    const encoded = try file_uri.toStringEncoded(allocator);
+    defer allocator.free(encoded);
+    const input_mod = @import("../vs/workbench/contrib/multiDiffEditor/browser/multiDiffEditorInput.zig");
+    const registry_mod = @import("../vs/workbench/common/editor/editorFactory.zig");
+    const session = @import("../vs/workbench/browser/parts/editor/editorSession.zig");
+    const common = @import("../vs/workbench/contrib/multiDiffEditor/common/multiDiffEditor.zig");
+    var registry = registry_mod.EditorFactoryRegistry.init(allocator);
+    defer registry.deinit();
+    var serializer = input_mod.MultiDiffEditorSerializer.init(allocator);
+    try registry.registerEditorSerializer(input_mod.ID, serializer.interface());
+    const options: @import("../vs/workbench/browser/workbench.zig").IWorkbenchOptions = .{
+        .initial_user_settings_paths = &.{settings_path},
+        .profile_storage_path = profile_path,
+    };
+    {
+        const window = try TestWindow.initWithOptions(allocator, io, &.{}, 120, 25, options, null);
+        defer window.deinit();
+        const wb = window.workbench;
+        try wb.editor_api.openMultiDiffResources(.{ .multiDiffSource = try std.Uri.parse("multi-diff-editor:prefs"), .resources = &.{.{ .modified = try std.Uri.parse(encoded) }} });
+        const pane = wb.activeTab().?.multi_diff orelse return error.TestExpectedMultiDiffTab;
+        try std.testing.expect(pane.fileListVisible());
+        try wb.commands.execute("multiDiffEditor.viewFileListAsTree");
+        try wb.commands.execute("multiDiffEditor.positionFileListLeft");
+        try wb.commands.execute("multiDiffEditor.toggleFileList");
+        try wb.storage_api.store(common.FILE_LIST_WIDTH_STORAGE_KEY, .{ .number = 425 }, .profile, .user);
+        try wb.storage_api.flush(.shutdown);
+        var state = try wb.part.createState(allocator, &registry);
+        defer state.deinit(allocator);
+        try session.savePart(allocator, io, session_path, &state);
+    }
+    var restored_state = (try session.loadPart(allocator, io, session_path)).?;
+    defer restored_state.deinit(allocator);
+    const restored = try TestWindow.initWithOptions(allocator, io, &.{}, 120, 25, options, .{ .data = restored_state, .registry = &registry });
+    defer restored.deinit();
+    const wb = restored.workbench;
+    const pane = wb.activeTab().?.multi_diff orelse return error.TestExpectedMultiDiffTab;
+    const composite = pane.composite orelse return error.TestExpectedFileList;
+    try std.testing.expect(!pane.fileListVisible());
+    try std.testing.expectEqual(common.MultiDiffEditorFileListViewMode.tree, composite.mode);
+    try std.testing.expectEqual(common.MultiDiffEditorFileListPosition.left, composite.position);
+    try std.testing.expectEqual(@as(usize, 25), composite.preferred_width);
+    try wb.commands.execute("multiDiffEditor.focusFileList");
+    try std.testing.expect(pane.fileListVisible());
+    try std.testing.expect(pane.fileListFocused());
+}

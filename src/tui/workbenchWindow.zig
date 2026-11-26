@@ -575,7 +575,8 @@ pub const TerminalWorkbench = struct {
         errdefer self.contributions.deinit();
         try self.contributions.register(.after_restored, self, initAfterRestoredWorkspaceWatcher);
         try self.contributions.register(.eventually, &self.configuration_migrations, @TypeOf(self.configuration_migrations).start);
-        self.user_settings_paths = &.{};
+        self.user_settings_paths = try dupeOwnedPaths(allocator, options.initial_user_settings_paths);
+        errdefer freeOwnedPaths(allocator, self.user_settings_paths);
 
         self.service = if (previous_editor_state) |previous|
             try editor_groups.EditorGroupsService.prepareSerializedPart(allocator, previous, .{})
@@ -1066,6 +1067,7 @@ pub const TerminalWorkbench = struct {
             .context_keys = struct {
                 fn run(context: *anyopaque) !@import("../vs/platform/contextkey/common/contextkey.zig").IContextKeyService {
                     const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                    if (host.user_settings_paths.len > 0) try host.ensureConfiguration();
                     return (try host.ensureContextKeys()).interface();
                 }
             }.run,
@@ -1332,6 +1334,7 @@ pub const TerminalWorkbench = struct {
         _ = try self.view_descriptor_service.on_did_change_container.listen(self, onViewContainerChanged);
         self.notification_storage = storage_mod.InMemoryStorageService.init(self.allocator);
         errdefer self.notification_storage.deinit();
+        if (options.profile_storage_path) |path| self.notification_storage.attachProfileStorage(self.io, path) catch |err| std.log.scoped(.storage).warn("Profile storage unavailable: {s}", .{@errorName(err)});
         self.notification_service = try @import("../vs/workbench/services/notification/common/notificationService.zig").NotificationService.create(self.allocator, &self.notification_storage);
         errdefer self.notification_service.deinit();
         self.notification_api = self.notification_service.interface();
