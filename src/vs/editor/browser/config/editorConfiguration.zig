@@ -121,6 +121,7 @@ const supported_options = [_]EditorOption{
     .lineNumbers,
     .guides,
     .find,
+    .hover,
     .stickyScroll,
     .rulers,
     .fontInfo,
@@ -208,6 +209,7 @@ pub fn optionField(comptime option: EditorOption) []const u8 {
         .lineNumbers => "line_numbers",
         .guides => "guides",
         .find => "find",
+        .hover => "hover",
         .stickyScroll => "sticky_scroll",
         .rulers => "rulers",
         .fontInfo => "font_info",
@@ -301,6 +303,7 @@ pub const ComputedEditorOptions = struct {
     line_numbers: InternalEditorRenderLineNumbersOptions = .{},
     guides: InternalGuidesOptions = .{},
     find: editorOptions.EditorFindOptions = .{},
+    hover: editorOptions.EditorHoverOptions = .{},
     sticky_scroll: EditorStickyScrollOptions = .{},
     rulers: []const editorOptions.IRulerOption = &.{},
     font_info: fontInfo.FontInfo = defaultFontInfo(),
@@ -408,9 +411,10 @@ test "ComputedEditorOptions exposes the supported options" {
         _ = options.read(option);
         _ = view.get(option);
     }
-    try std.testing.expectEqual(@as(usize, 78), supported_options.len);
+    try std.testing.expectEqual(@as(usize, 79), supported_options.len);
     try std.testing.expect(options.get(.codeLens));
     try std.testing.expectEqual(editorOptions.OccurrencesHighlight.single_file, options.get(.occurrencesHighlight));
     try std.testing.expectEqual(@as(i32, 0), options.get(.occurrencesHighlightDelay));
     try std.testing.expect(!options.get(.occurrencesHighlightFromAllProviders));
+    try std.testing.expectEqual(editorOptions.EditorHoverOptions{}, options.get(.hover));
 }

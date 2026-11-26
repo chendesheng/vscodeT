@@ -74,6 +74,7 @@ pub const ContentHoverWidget = struct {
     visible_rows: usize = 0,
     show_scrollbar: bool = false,
     preference: editorBrowser.ContentWidgetPositionPreference = .below,
+    prefer_above: bool = true,
     /// Minimum content size requested by participants through the hover
     /// context (`setMinimumDimensions` upstream).
     minimum_width: usize = 1,
@@ -298,7 +299,9 @@ pub const ContentHoverWidget = struct {
             self.preference = .below;
             return;
         };
-        if (row + self.widget_height <= text_height) {
+        if (self.prefer_above and row >= self.widget_height) {
+            self.preference = .above;
+        } else if (row + self.widget_height <= text_height) {
             self.preference = .below;
         } else if (row >= self.widget_height) {
             self.preference = .above;

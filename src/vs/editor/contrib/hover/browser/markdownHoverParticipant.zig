@@ -42,7 +42,6 @@ const markdown = @import("../../../common/markdown/markdownTerminalRenderer.zig"
 /// yet, so the two long-line guards use the upstream defaults.
 const stop_rendering_line_after: usize = 10000;
 const max_tokenization_line_length: usize = 20000;
-const show_long_line_warning = true;
 
 const long_line_warning = "Rendering paused for long line for performance reasons. This can be configured via `editor.stopRenderingLineAfter`. [Don't Show Again](command:editor.action.hideLongLineWarningHover)";
 const long_tokenization_warning = "Tokenization is skipped for long lines for performance reasons. This can be configured via `editor.maxTokenizationLineLength`. [Don't Show Again](command:editor.action.hideLongLineWarningHover)";
@@ -63,6 +62,7 @@ pub const MarkdownHoverParticipant = struct {
     providers: []const HoverProvider,
     registry: ?*@import("../../../common/languageFeatureRegistry.zig").LanguageFeatureRegistry(HoverProvider) = null,
     hover_ordinal: i32 = 3,
+    show_long_line_warning: bool = true,
     /// Theme-resolved `textCodeBlock.background`. Null leaves fenced code
     /// transparent so the hover widget background shows through.
     code_background: ?ui.Color = null,
@@ -141,7 +141,7 @@ pub const MarkdownHoverParticipant = struct {
         var stop_rendering_message = false;
         if (line_length > stop_rendering_line_after and anchor_range.startColumn >= stop_rendering_line_after) {
             stop_rendering_message = true;
-            if (show_long_line_warning) {
+            if (self.show_long_line_warning) {
                 try result.append(try self.createMarkdownHover(
                     allocator,
                     anchor_range,
@@ -153,7 +153,7 @@ pub const MarkdownHoverParticipant = struct {
             }
         }
         if (!stop_rendering_message and line_length >= max_tokenization_line_length) {
-            if (show_long_line_warning) {
+            if (self.show_long_line_warning) {
                 try result.append(try self.createMarkdownHover(
                     allocator,
                     anchor_range,

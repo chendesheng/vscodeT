@@ -42,7 +42,8 @@ pub const HoverSettings = struct {
     /// Grace period before reacting while the sticky hover is visible.
     hiding_delay: u64 = 300,
     multi_cursor_modifier: MultiCursorModifier = .alt,
-    above: bool = false,
+    above: bool = true,
+    show_long_line_warning: bool = true,
 };
 
 /// A single pending deadline. The terminal attaches the window queue; tests
@@ -177,6 +178,7 @@ pub const ContentHoverController = struct {
             settings.sticky,
             self.operation_timer.interface(),
         );
+        self.updateSettings(settings);
         return self;
     }
 
@@ -189,6 +191,7 @@ pub const ContentHoverController = struct {
             try controller.wrapper.attachModel(editor.model, participants, controller.wrapperHost(), settings.sticky);
             errdefer controller.unbindModel();
             try controller.attachModelEvents();
+            controller.updateSettings(settings);
             return controller;
         }
         const self = try init(editor.allocator, editor.model, participants, settings, host);
@@ -474,6 +477,10 @@ pub const ContentHoverController = struct {
 
     pub fn updateSettings(self: *ContentHoverController, settings: HoverSettings) void {
         self.settings = settings;
+        self.wrapper.sticky = settings.sticky;
+        self.wrapper.operation.hover_time_ms = settings.delay;
+        self.wrapper.widget.prefer_above = settings.above;
+        if (settings.enabled == .off) self.hideContentHover();
     }
 
     /// Fires due timers. Returns true when the hover changed and a frame is

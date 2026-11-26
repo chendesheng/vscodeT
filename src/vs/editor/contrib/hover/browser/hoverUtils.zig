@@ -1,10 +1,6 @@
 // Port of the non-DOM helpers from
 // `src/vs/editor/contrib/hover/browser/hoverUtils.ts`.
-pub const HoverEnabled = enum {
-    on,
-    off,
-    on_keyboard_modifier,
-};
+pub const HoverEnabled = @import("../../../common/config/editorOptions.zig").EditorHoverOptions.Enabled;
 
 pub const MultiCursorModifier = enum {
     alt,

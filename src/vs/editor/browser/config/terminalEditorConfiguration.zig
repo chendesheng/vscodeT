@@ -118,24 +118,41 @@ fn occurrencesHighlight(reader: Reader, language_id: ?[]const u8, resource: ?[]c
 }
 
 fn occurrencesDelay(reader: Reader, language_id: ?[]const u8, resource: ?[]const u8) i32 {
-    const value = reader.get_value(reader.context, "editor.occurrencesHighlightDelay", language_id, resource) orelse return 0;
+    return clampedInt(reader.get_value(reader.context, "editor.occurrencesHighlightDelay", language_id, resource), 0, 0, 2000);
+}
+
+fn clampedInt(input: ?*const Value, default: i32, minimum: i32, maximum: i32) i32 {
+    const value = input orelse return default;
     const number: f64 = switch (value.*) {
         .integer => |v| @floatFromInt(v),
         .float => |v| v,
-        .number_string => |v| std.fmt.parseFloat(f64, v) catch return 0,
+        .number_string => |v| std.fmt.parseFloat(f64, v) catch return default,
         .string => |v| blk: {
             const trimmed = std.mem.trimStart(u8, v, " \t\r\n");
-            if (trimmed.len == 0) return 0;
+            if (trimmed.len == 0) return default;
             var end: usize = if (trimmed[0] == '-' or trimmed[0] == '+') 1 else 0;
             const start = end;
             while (end < trimmed.len and std.ascii.isDigit(trimmed[end])) end += 1;
-            if (end == start) return 0;
-            break :blk std.fmt.parseFloat(f64, trimmed[0..end]) catch return 0;
+            if (end == start) return default;
+            break :blk std.fmt.parseFloat(f64, trimmed[0..end]) catch return default;
         },
-        else => return 0,
+        else => return default,
     };
-    if (std.math.isNan(number)) return 0;
-    return @intFromFloat(@max(0, @min(2000, number)));
+    if (std.math.isNan(number)) return default;
+    return @intFromFloat(@max(@as(f64, @floatFromInt(minimum)), @min(@as(f64, @floatFromInt(maximum)), number)));
+}
+
+fn readHoverOptions(reader: Reader, language_id: ?[]const u8, resource: ?[]const u8) editorOptions.EditorHoverOptions {
+    const defaults: editorOptions.EditorHoverOptions = .{};
+    const enabled = readString(reader, "editor.hover.enabled", language_id, resource) orelse "on";
+    return .{
+        .enabled = if (std.mem.eql(u8, enabled, "off")) .off else if (std.mem.eql(u8, enabled, "onKeyboardModifier")) .on_keyboard_modifier else .on,
+        .delay = clampedInt(reader.get_value(reader.context, "editor.hover.delay", language_id, resource), defaults.delay, 0, 10000),
+        .hiding_delay = clampedInt(reader.get_value(reader.context, "editor.hover.hidingDelay", language_id, resource), defaults.hiding_delay, 0, 600000),
+        .sticky = findBoolean(reader.get_value(reader.context, "editor.hover.sticky", language_id, resource), defaults.sticky),
+        .above = findBoolean(reader.get_value(reader.context, "editor.hover.above", language_id, resource), defaults.above),
+        .show_long_line_warning = findBoolean(reader.get_value(reader.context, "editor.hover.showLongLineWarning", language_id, resource), defaults.show_long_line_warning),
+    };
 }
 
 /// Upstream's validated per-resource tabFocusMode option. The global
@@ -175,6 +192,11 @@ pub fn applyViewSettings(
     var any = !std.meta.eql(options.get(.find), find);
     mark(changed, .find, any);
     options.set(.find, find);
+    const hover = readHoverOptions(reader, language_id, resource);
+    const hover_changed = !std.meta.eql(options.get(.hover), hover);
+    mark(changed, .hover, hover_changed);
+    any = any or hover_changed;
+    options.set(.hover, hover);
 
     inline for (.{
         .{ .option = EditorOption.occurrencesHighlight, .value = occurrencesHighlight(reader, language_id, resource) },
@@ -635,4 +657,25 @@ test "terminalEditorConfiguration: model indentation and bracket colorization" {
     try settings.set("editor.bracketPairColorization.independentColorPoolPerBracketType", .{ .null = {} });
     try std.testing.expect(!applyModelSettings(model.model, settings.reader(), null, null));
     try std.testing.expect(model.model.getOptions().bracketPairColorizationOptions.independentColorPoolPerBracketType);
+}
+
+test "terminalEditorConfiguration: hover options validate and reset to pinned defaults" {
+    const allocator = std.testing.allocator;
+    var settings = FakeSettings.init(allocator);
+    defer settings.deinit();
+    try settings.set("editor.hover.enabled", .{ .string = "onKeyboardModifier" });
+    try settings.set("editor.hover.delay", .{ .string = "20000ms" });
+    try settings.set("editor.hover.hidingDelay", .{ .integer = -20 });
+    try settings.set("editor.hover.sticky", .{ .bool = false });
+    try settings.set("editor.hover.above", .{ .bool = false });
+    try settings.set("editor.hover.showLongLineWarning", .{ .bool = false });
+    var options = ComputedEditorOptions.init();
+    var changes: ChangeSet = undefined;
+    try std.testing.expect(applyViewSettings(&options, settings.reader(), "typescript", "/workspace/file.ts", &changes));
+    try std.testing.expect(changes[@backingInt(EditorOption.hover)]);
+    try std.testing.expectEqual(editorOptions.EditorHoverOptions{ .enabled = .on_keyboard_modifier, .delay = 10000, .hiding_delay = 0, .sticky = false, .above = false, .show_long_line_warning = false }, options.get(.hover));
+    var absent = FakeSettings.init(allocator);
+    defer absent.deinit();
+    try std.testing.expect(applyViewSettings(&options, absent.reader(), "typescript", "/workspace/file.ts", &changes));
+    try std.testing.expectEqual(editorOptions.EditorHoverOptions{}, options.get(.hover));
 }

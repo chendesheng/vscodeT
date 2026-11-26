@@ -362,6 +362,17 @@ pub const EditorFindOptions = struct {
     replace_history: History = .workspace,
 };
 
+/// Port of `EditorHoverOptions` and the pinned defaults in EditorHover.
+pub const EditorHoverOptions = struct {
+    pub const Enabled = enum { on, off, on_keyboard_modifier };
+    enabled: Enabled = .on,
+    delay: i32 = 300,
+    hiding_delay: i32 = 300,
+    sticky: bool = true,
+    above: bool = true,
+    show_long_line_warning: bool = true,
+};
+
 /// Port of `EditorStickyScrollOptions`.
 pub const EditorStickyScrollOptions = struct {
     enabled: bool = true,
@@ -524,6 +535,7 @@ pub fn OptionValueType(comptime option: EditorOption) type {
         .lineNumbers => InternalEditorRenderLineNumbersOptions,
         .guides => InternalGuidesOptions,
         .find => EditorFindOptions,
+        .hover => EditorHoverOptions,
         .stickyScroll => EditorStickyScrollOptions,
         .rulers => []const IRulerOption,
         .fontInfo => fontInfo.FontInfo,
