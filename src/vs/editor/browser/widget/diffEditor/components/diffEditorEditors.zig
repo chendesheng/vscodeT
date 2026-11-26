@@ -8,6 +8,23 @@
 // tests.
 const std = @import("std");
 
+const DiffWordWrap = @import("../diffEditorOptions.zig").DiffWordWrap;
+const WordWrap = @import("../../../../common/config/editorOptions.zig").WordWrap;
+const Editor = @import("../../codeEditor/codeEditorWidgetTerminal.zig").Editor;
+
+/// _adjustOptionsForLeftHandSide/_adjustOptionsForRightHandSide: the
+/// original editor never wraps when hidden; both visible editors inherit
+/// the editor setting unless the diff-specific override is on or off.
+pub fn applyWordWrap(original: *Editor, modified: *Editor, mode: DiffWordWrap, side_by_side: bool) void {
+    const override: ?WordWrap = switch (mode) {
+        .inherit => null,
+        .on => .on,
+        .off => .off,
+    };
+    original.setWordWrapOverride(if (side_by_side) override else .off);
+    modified.setWordWrapOverride(override);
+}
+
 pub const PaneWidths = struct {
     original: usize,
     modified: usize,

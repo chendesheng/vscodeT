@@ -368,6 +368,27 @@ pub fn Tests(comptime View: type) type {
             try std.testing.expect(found);
         }
 
+        test "diffEditorWidget: diff word wrap overrides both sides except hidden original" {
+            const widget = try DiffEditorWidget.create(View.init, testing.allocator, Io.Threaded.global_single_threaded.io(), "a.txt", "b.txt", "a\nb", "a\nB", "Original", "Modified", 80, 8, .{ .diff_word_wrap = .off });
+            defer widget.destroy();
+            try testing.expect(widget.original_editor.wrap_mode == .off);
+            try testing.expect(widget.modified_editor.wrap_mode == .off);
+            widget.original_editor.setWordWrapOptions(.bounded, 40, .Same, false);
+            widget.modified_editor.setWordWrapOptions(.bounded, 40, .Same, false);
+            try testing.expect(widget.modified_editor.wrap_mode == .off);
+            widget.options.diff_word_wrap = .on;
+            widget.layout(80, 8);
+            try testing.expect(widget.original_editor.wrap_mode == .on);
+            try testing.expect(widget.modified_editor.wrap_mode == .on);
+            widget.layout(30, 8);
+            try testing.expect(widget.original_editor.wrap_mode == .off);
+            try testing.expect(widget.modified_editor.wrap_mode == .on);
+            widget.options.diff_word_wrap = .inherit;
+            widget.layout(80, 8);
+            try testing.expect(widget.original_editor.wrap_mode == .bounded);
+            try testing.expect(widget.modified_editor.wrap_mode == .bounded);
+        }
+
         test "diffEditorWidget: whitespace transaction delivers layout before zone notification" {
             const widget = try DiffEditorWidget.create(View.init, testing.allocator, Io.Threaded.global_single_threaded.io(), "a.txt", "b.txt", "a\nb\nc", "a\nB\nc", "Original", "Modified", 80, 3, .{});
             defer widget.destroy();
@@ -586,7 +607,7 @@ pub fn Tests(comptime View: type) type {
             try std.testing.expect(collapsed > 0);
         }
 
-        test "diffEditorWidget: inline mode surfaces moved blocks" {
+        test "diffEditorWidget: inline mode disables moved block decorations" {
             const allocator = std.testing.allocator;
             const io = std.Io.Threaded.global_single_threaded.io();
             const widget = try DiffEditorWidget.create(
@@ -615,8 +636,8 @@ pub fn Tests(comptime View: type) type {
                     if (std.mem.startsWith(u8, class_name, "movedModified")) modified_move = true;
                 }
             }
-            try std.testing.expect(original_move);
-            try std.testing.expect(modified_move);
+            try std.testing.expect(!original_move);
+            try std.testing.expect(!modified_move);
         }
 
         test "diffEditorWidget: inline mode adds character decorations" {

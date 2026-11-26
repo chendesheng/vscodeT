@@ -40,6 +40,9 @@ pub fn computeConfiguration(configuration_service: ?@import("../../../../platfor
                 else => {},
             }
         }
+        if (configuration.getValue("diffEditor.wordWrap")) |value| {
+            if (value.* == .string) options.diff_word_wrap = std.meta.stringToEnum(@TypeOf(options.diff_word_wrap), value.string) orelse .inherit;
+        }
         options.render_indicators = configuration.getBool("diffEditor.renderIndicators", true);
         options.render_overview_ruler = configuration.getBool("diffEditor.renderOverviewRuler", true);
         options.enable_split_view_resizing = configuration.getBool("diffEditor.enableSplitViewResizing", true);

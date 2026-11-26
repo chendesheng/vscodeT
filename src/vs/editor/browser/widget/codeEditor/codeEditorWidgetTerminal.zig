@@ -580,6 +580,8 @@ pub const Editor = struct {
     /// Terminal default is soft wrap on; a configured `editor.wordWrap`
     /// overrides it. Zero wrapping column means no soft wrap.
     wrap_mode: WordWrap = .on,
+    configured_wrap_mode: WordWrap = .on,
+    word_wrap_override: ?WordWrap = null,
     wrap_column: i32 = 80,
     wrapping_indent: WrappingIndent = .Same,
     word_wrap_indicator: bool = false,
@@ -2841,11 +2843,13 @@ pub const Editor = struct {
     /// `editor.wrappingIndent`; rewraps when any value changes.
     pub fn setWordWrapOptions(
         self: *Editor,
-        mode: WordWrap,
+        configured_mode: WordWrap,
         column: i32,
         indent: WrappingIndent,
         indicator: bool,
     ) void {
+        self.configured_wrap_mode = configured_mode;
+        const mode = self.word_wrap_override orelse configured_mode;
         if (self.wrap_mode == mode and
             self.wrap_column == column and
             self.wrapping_indent == indent and
@@ -2860,6 +2864,13 @@ pub const Editor = struct {
         self.refreshLayout() catch |err| self.setMessage("layout error: {s}", .{@errorName(err)});
         if (self.wrap_mode != .off) _ = self.setScrollLeft(0);
         self.ensureCursorVisible();
+    }
+
+    /// Terminal projection of upstream wordWrapOverride1/2. The configured
+    /// wordWrap remains available when the override is removed.
+    pub fn setWordWrapOverride(self: *Editor, mode: ?WordWrap) void {
+        self.word_wrap_override = mode;
+        self.setWordWrapOptions(self.configured_wrap_mode, self.wrap_column, self.wrapping_indent, self.word_wrap_indicator);
     }
 
     /// Upstream `EditorLayoutInfoComputer` wrapping decision, expressed in

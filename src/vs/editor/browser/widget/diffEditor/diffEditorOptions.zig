@@ -12,6 +12,7 @@ const std = @import("std");
 const doc_diff = @import("../../../common/diff/documentDiffProvider.zig");
 
 pub const DiffAlgorithmName = doc_diff.DiffAlgorithmName;
+pub const DiffWordWrap = @import("../../../common/config/diffEditor.zig").DiffWordWrap;
 
 /// Terminal projection of `IValidDiffEditorBaseOptions`.
 pub const ValidDiffEditorBaseOptions = struct {
@@ -26,6 +27,7 @@ pub const Options = struct {
     max_computation_time_ms: i64 = 5000,
     diff_algorithm: DiffAlgorithmName = .advanced,
     show_moves: bool = false,
+    diff_word_wrap: DiffWordWrap = .inherit,
     render_side_by_side: bool = true,
     render_indicators: bool = true,
     render_overview_ruler: bool = true,

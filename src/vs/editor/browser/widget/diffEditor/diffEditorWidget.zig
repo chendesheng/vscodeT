@@ -11,7 +11,7 @@
 //
 // Inline mode (`renderSideBySide: false`) interleaves unchanged, deleted and
 // inserted lines in one modified snapshot editor with whole-line, inner
-// character and moved-block decorations plus an inline line-number map. It
+// character decorations plus an inline line-number map. It
 // also supports hide-unchanged folding over the interleaved rows. Not ported
 // in this milestone: the accessible
 // diff viewer and editing either side. The combined overview ruler reserves
@@ -166,13 +166,6 @@ fn buildInlineDisplay(
     };
 }
 
-fn inlineMovedOptions(class_name: []const u8) ModelDecorationOptions {
-    var options = ModelDecorationOptions.init("moved", .AlwaysGrowsWhenTypingAtEdges);
-    options.blockClassName = class_name;
-    options.blockPadding = .{ 1, 0, 1, 1 };
-    return options;
-}
-
 fn inlineCharOptions(class_name: []const u8) ModelDecorationOptions {
     var options = ModelDecorationOptions.init(class_name, .AlwaysGrowsWhenTypingAtEdges);
     options.className = class_name;
@@ -211,8 +204,6 @@ pub fn DiffEditorWidget(comptime View: type) type {
         inline_ids: []u64 = &.{},
         inline_delete_options: ModelDecorationOptions = undefined,
         inline_insert_options: ModelDecorationOptions = undefined,
-        inline_moved_original_options: ModelDecorationOptions = undefined,
-        inline_moved_modified_options: ModelDecorationOptions = undefined,
         inline_char_delete_options: ModelDecorationOptions = undefined,
         inline_char_insert_options: ModelDecorationOptions = undefined,
 
@@ -434,8 +425,6 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .inline_modified_rows = inline_display.modified_rows,
                 .inline_delete_options = inlineDecorationOptions("line-delete", normalized_options.render_indicators),
                 .inline_insert_options = inlineDecorationOptions("line-insert", normalized_options.render_indicators),
-                .inline_moved_original_options = inlineMovedOptions("movedOriginal"),
-                .inline_moved_modified_options = inlineMovedOptions("movedModified"),
                 .inline_char_delete_options = inlineCharOptions("char-delete"),
                 .inline_char_insert_options = inlineCharOptions("char-insert"),
                 .original_lines = original_lines,
@@ -598,6 +587,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             }
             self.width = @max(width, 1);
             self.height = @max(height, 1);
+            diff_editor_editors.applyWordWrap(self.original_editor, self.modified_editor, self.options.diff_word_wrap, self.sideBySide());
             const widths = self.paneWidths();
             self.original_editor.setViewport(widths.original, self.height);
             self.modified_editor.setViewport(widths.modified, self.height);
@@ -991,28 +981,6 @@ pub fn DiffEditorWidget(comptime View: type) type {
             });
         }
 
-        fn appendInlineMoved(
-            self: *Self,
-            decorations: *std.array_list.Managed(ModelDeltaDecoration),
-            rows: []const ?usize,
-            start_line: usize,
-            end_line_exclusive: usize,
-            options: *ModelDecorationOptions,
-        ) !void {
-            _ = self;
-            if (start_line >= end_line_exclusive or start_line == 0) return;
-            const first = rows[start_line - 1] orelse return;
-            var last = first;
-            var line = start_line;
-            while (line < end_line_exclusive and line <= rows.len) : (line += 1) {
-                if (rows[line - 1]) |row| last = row;
-            }
-            try decorations.append(.{
-                .range = Range.init(first, 1, last + 1, 1),
-                .options = options,
-            });
-        }
-
         fn applyInlineDecorations(self: *Self) !void {
             if (self.inline_kinds.len == 0) return;
             var decorations = std.array_list.Managed(ModelDeltaDecoration).init(self.allocator);
@@ -1047,22 +1015,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                         }
                     }
                 }
-                for (diff_state.moved_texts) |moved| {
-                    try self.appendInlineMoved(
-                        &decorations,
-                        self.inline_original_rows,
-                        moved.lineRangeMapping.original.startLineNumber,
-                        moved.lineRangeMapping.original.endLineNumberExclusive,
-                        &self.inline_moved_original_options,
-                    );
-                    try self.appendInlineMoved(
-                        &decorations,
-                        self.inline_modified_rows,
-                        moved.lineRangeMapping.modified.startLineNumber,
-                        moved.lineRangeMapping.modified.endLineNumberExclusive,
-                        &self.inline_moved_modified_options,
-                    );
-                }
+                // Upstream DiffEditorOptions.showMoves is false in inline mode.
             }
             self.inline_ids = try self.modified_editor.model.deltaDecorations(&.{}, decorations.items, 2002);
         }
