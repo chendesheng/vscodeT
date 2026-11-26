@@ -701,10 +701,14 @@ fn getOriginal(
     const relative = self.relativePath(path) orelse return null;
     const content = try git.readRef(self.root, relative, kind) orelse return null;
     errdefer allocator.free(content);
-    return .{
-        .content = content,
-        .ref_label = try allocator.dupe(u8, label),
-    };
+    const ref_label = try allocator.dupe(u8, label);
+    errdefer allocator.free(ref_label);
+    const absolute = try std.fs.path.join(allocator, &.{ self.root, relative });
+    defer allocator.free(absolute);
+    const uri = try @import("uri.zig").toGitUriWithOptions(allocator, absolute, if (kind == .index) "" else "HEAD", .{ .replace_file_extension = true });
+    defer allocator.free(uri.path.raw);
+    defer allocator.free(uri.query.?.raw);
+    return .{ .content = content, .ref_label = ref_label, .resource_uri = try @import("../../../vs/base/common/stdUri.zig").resourceKey(allocator, uri) };
 }
 
 // ---------------------------------------------------------------------------

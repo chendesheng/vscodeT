@@ -33,10 +33,13 @@ pub const QuickDiffProviderKind = enum {
 pub const Original = struct {
     content: []u8,
     ref_label: []u8,
+    /// Canonical provider resource; legacy providers may supply only text.
+    resource_uri: ?[]u8 = null,
 
     pub fn deinit(self: *Original, allocator: Allocator) void {
         allocator.free(self.content);
         allocator.free(self.ref_label);
+        if (self.resource_uri) |uri| allocator.free(uri);
         self.* = undefined;
     }
 };

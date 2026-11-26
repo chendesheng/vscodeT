@@ -46,6 +46,7 @@ pub const QuickDiffModelOptions = struct {
 pub const DiffEditorModel = struct {
     original_content: []const u8,
     ref_label: []const u8,
+    resource_uri: ?[]const u8 = null,
 };
 
 /// A terminal quick-diff change. `change2` owns its inner-change array; the
@@ -281,6 +282,7 @@ pub const QuickDiffModel = struct {
             return .{
                 .original_content = quick.original.content,
                 .ref_label = quick.original.ref_label,
+                .resource_uri = quick.original.resource_uri,
             };
         }
         return null;
@@ -291,6 +293,7 @@ pub const QuickDiffModel = struct {
             if (provider_id) |id| {
                 if (!std.mem.eql(u8, change.provider_id, id)) continue;
             }
+            if (!self.service.isQuickDiffProviderVisible(change.provider_id)) continue;
             if (inclusive) {
                 if (quick_diff.getModifiedEndLineNumber(change.change) >= line_number) return index;
             } else if (change.change.modifiedStartLineNumber > line_number) {
@@ -308,6 +311,7 @@ pub const QuickDiffModel = struct {
             if (provider_id) |id| {
                 if (!std.mem.eql(u8, change.provider_id, id)) continue;
             }
+            if (!self.service.isQuickDiffProviderVisible(change.provider_id)) continue;
             if (inclusive) {
                 if (change.change.modifiedStartLineNumber <= line_number) return index;
             } else if (quick_diff.getModifiedEndLineNumber(change.change) < line_number) {
