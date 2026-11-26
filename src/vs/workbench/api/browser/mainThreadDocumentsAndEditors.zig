@@ -2,8 +2,8 @@
 // `src/vs/workbench/api/browser/mainThreadDocumentsAndEditors.ts` and the
 // document/editor delta producers it owns.
 //
-// Terminal adaptation: the adapter still owns the active-editor mirror and
-// view state; this module builds the exact `$acceptDocumentsAndEditorsDelta`,
+// Terminal adaptation: the adapter supplies editor-group lifecycle and focus;
+// this module owns the real model mirrors and builds the exact `$acceptDocumentsAndEditorsDelta`,
 // `$acceptEditorTabModel`, `$acceptModelChanged` and
 // `$acceptEditorPropertiesChanged` payloads, including the UTF-16 conversion of
 // selections and visible ranges.
@@ -39,6 +39,8 @@ pub const ChangeSpec = struct {
     /// when absent.
     start_utf16: ?usize = null,
     end_utf16: ?usize = null,
+    range_offset: usize = 0,
+    range_length: usize = 0,
 };
 
 /// The delta that adds the active document and its editor. The terminal has a
@@ -50,16 +52,8 @@ pub const ChangeSpec = struct {
 /// requests carry `model.uri()`. Using the raw path here made a relative
 /// command-line path look like a different document to the extension host, so
 /// providers never found it and navigation silently produced no result.
-pub fn addDocumentDelta(
-    arena: Allocator,
-    model: *TextModel,
-    language_id: []const u8,
-    is_dirty: bool,
-    options: EditorOptions,
-    initial_selections: []const Selection,
-) !std.json.Value {
+pub fn documentData(arena: Allocator, model: *TextModel, language_id: []const u8, is_dirty: bool) !std.json.Value {
     const document_uri = try std_uri.jsonComponents(arena, model.uri());
-    var docs = std.json.Array.init(arena);
     var document: std.json.ObjectMap = .empty;
     try document.put(arena, "uri", document_uri);
     try document.put(arena, "versionId", .{ .integer = @intCast(model.getVersionId()) });
@@ -72,12 +66,23 @@ pub fn addDocumentDelta(
         try lines.append(.{ .string = try arena.dupe(u8, line.items) });
     }
     try document.put(arena, "lines", .{ .array = lines });
-    try document.put(arena, "EOL", .{ .string = "\n" });
+    try document.put(arena, "EOL", .{ .string = if (model.getEOL() == .CRLF) "\r\n" else "\n" });
     try document.put(arena, "languageId", .{ .string = try arena.dupe(u8, language_id) });
     try document.put(arena, "isDirty", .{ .bool = is_dirty });
     try document.put(arena, "encoding", .{ .string = "utf8" });
-    try docs.append(.{ .object = document });
+    return .{ .object = document };
+}
 
+pub fn addedModelDelta(arena: Allocator, model: *TextModel, language_id: []const u8, is_dirty: bool) !std.json.Value {
+    var documents = std.json.Array.init(arena);
+    try documents.append(try documentData(arena, model, language_id, is_dirty));
+    var delta = std.json.ObjectMap{};
+    try delta.put(arena, "addedDocuments", .{ .array = documents });
+    return .{ .object = delta };
+}
+
+pub fn addedEditorDelta(arena: Allocator, model: *TextModel, options: EditorOptions, initial_selections: []const Selection) !std.json.Value {
+    const document_uri = try std_uri.jsonComponents(arena, model.uri());
     var editors = std.json.Array.init(arena);
     var editor: std.json.ObjectMap = .empty;
     try editor.put(arena, "id", .{ .string = "1" });
@@ -96,9 +101,32 @@ pub fn addDocumentDelta(
     try editors.append(.{ .object = editor });
 
     var delta: std.json.ObjectMap = .empty;
-    try delta.put(arena, "addedDocuments", .{ .array = docs });
     try delta.put(arena, "addedEditors", .{ .array = editors });
     try delta.put(arena, "newActiveEditor", .{ .string = "1" });
+    return .{ .object = delta };
+}
+
+pub fn addDocumentDelta(arena: Allocator, model: *TextModel, language_id: []const u8, is_dirty: bool, options: EditorOptions, initial_selections: []const Selection) !std.json.Value {
+    var delta = try addedEditorDelta(arena, model, options, initial_selections);
+    const documents = try addedModelDelta(arena, model, language_id, is_dirty);
+    try delta.object.put(arena, "addedDocuments", documents.object.get("addedDocuments").?);
+    return delta;
+}
+
+pub fn removedEditorDelta(arena: Allocator) !std.json.Value {
+    var delta = std.json.ObjectMap{};
+    var editors = std.json.Array.init(arena);
+    try editors.append(.{ .string = "1" });
+    try delta.put(arena, "removedEditors", .{ .array = editors });
+    try delta.put(arena, "newActiveEditor", .null);
+    return .{ .object = delta };
+}
+
+pub fn removedModelDelta(arena: Allocator, model: *TextModel) !std.json.Value {
+    var delta = std.json.ObjectMap{};
+    var documents = std.json.Array.init(arena);
+    try documents.append(try std_uri.jsonComponents(arena, model.uri()));
+    try delta.put(arena, "removedDocuments", .{ .array = documents });
     return .{ .object = delta };
 }
 
@@ -185,8 +213,8 @@ pub fn modelChangesEvent(
     var change_array = std.json.Array.init(arena);
     for (changes) |change| {
         var item: std.json.ObjectMap = .empty;
-        try item.put(arena, "rangeOffset", .{ .integer = 0 });
-        try item.put(arena, "rangeLength", .{ .integer = 0 });
+        try item.put(arena, "rangeOffset", .{ .integer = @intCast(change.range_offset) });
+        try item.put(arena, "rangeLength", .{ .integer = @intCast(change.range_length) });
         try item.put(arena, "text", .{ .string = try arena.dupe(u8, change.text) });
         var range: std.json.ObjectMap = .empty;
         try range.put(arena, "startLineNumber", .{ .integer = @intCast(change.start.line) });
@@ -199,7 +227,7 @@ pub fn modelChangesEvent(
 
     var event: std.json.ObjectMap = .empty;
     try event.put(arena, "changes", .{ .array = change_array });
-    try event.put(arena, "eol", .{ .string = "\n" });
+    try event.put(arena, "eol", .{ .string = if (model.getEOL() == .CRLF) "\r\n" else "\n" });
     try event.put(arena, "versionId", .{ .integer = @intCast(version) });
     try event.put(arena, "isUndoing", .{ .bool = false });
     try event.put(arena, "isRedoing", .{ .bool = false });
@@ -274,7 +302,6 @@ fn utf16Column(model: *TextModel, line_number: usize, column: usize) usize {
 }
 
 test "documentsAndEditors: the document resource is the model URI" {
-    const Editor = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     // The editor's path is a relative spelling; the model resource is the
@@ -304,4 +331,346 @@ test "documentsAndEditors: the document resource is the model URI" {
     try std.testing.expect(!std.mem.eql(u8, editor.path, document_path));
     try std.testing.expectEqualStrings(document_path, editor_uri.get("path").?.string);
     try std.testing.expectEqualStrings(try std_uri.fsPath(editor.model.uri(), arena.allocator()), document_path);
+}
+
+// MainThreadDocumentAndEditorStateComputer's model collection. The terminal
+// supplies model additions/removals from editor-group lifecycle events; each
+// resource owns exactly one mirror, including both models of a diff editor.
+const editor_terminal = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
+const Editor = editor_terminal.Editor;
+const EditorDocument = editor_terminal.EditorDocument;
+const WorkingCopy = @import("../../services/workingCopy/common/workingCopy.zig").IWorkingCopy;
+const model_events = @import("../../../editor/common/textModelEvents.zig");
+const EOL = @import("../../../editor/common/core/misc/eolCounter.zig").EOL;
+const rpc = @import("../../services/extensions/common/rpcProtocol.zig");
+
+pub const ModelCollection = struct {
+    allocator: Allocator,
+    host: Host,
+    documents: std.ArrayList(*MirroredDocument) = .empty,
+
+    pub const Host = struct {
+        context: *anyopaque,
+        notify: *const fn (*anyopaque, Actor, []const u8, []const rpc.Arg) anyerror!void,
+    };
+    pub const Actor = enum { documents, documents_and_editors };
+
+    pub fn init(allocator: Allocator, host: Host) ModelCollection {
+        return .{ .allocator = allocator, .host = host };
+    }
+
+    pub fn deinit(self: *ModelCollection) void {
+        while (self.documents.items.len > 0) self.remove(self.documents.items.len - 1) catch {
+            self.documents.pop().?.deinit();
+        };
+        self.documents.deinit(self.allocator);
+    }
+
+    fn documentForResource(self: *ModelCollection, key: []const u8) ?*EditorDocument {
+        for (self.documents.items) |document| if (std.mem.eql(u8, document.key, key)) return document.document;
+        return null;
+    }
+
+    pub fn modelForResource(self: *ModelCollection, key: []const u8) ?*TextModel {
+        return if (self.documentForResource(key)) |document| document.model else null;
+    }
+
+    pub fn writableEditorForResource(self: *ModelCollection, key: []const u8) ?*Editor {
+        const document = self.documentForResource(key) orelse return null;
+        if (!std.mem.eql(u8, document.model.uri().scheme, "file")) return null;
+        for (document.editors.items) |editor| if (!editor.isReadOnly()) return editor;
+        return null;
+    }
+
+    /// `editors` is the model set delivered by the editor-group lifecycle;
+    /// the active editor is first when two controls resolve the same URI.
+    pub fn synchronize(self: *ModelCollection, editors: []const *Editor) !void {
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        var wanted = std.StringHashMap(*Editor).init(a);
+        for (editors) |editor| {
+            const key = try std_uri.resourceKey(a, editor.model.uri());
+            const entry = try wanted.getOrPut(key);
+            if (!entry.found_existing) entry.value_ptr.* = editor;
+        }
+        var index: usize = 0;
+        while (index < self.documents.items.len) {
+            const mirrored = self.documents.items[index];
+            const editor = wanted.get(mirrored.key);
+            if (editor == null or editor.?.document != mirrored.document) {
+                try self.remove(index);
+            } else {
+                _ = wanted.remove(mirrored.key);
+                index += 1;
+            }
+        }
+        // Preserve the caller's model ordering in addedDocuments.
+        for (editors) |editor| {
+            const key = try std_uri.resourceKey(a, editor.model.uri());
+            if (wanted.fetchRemove(key)) |entry| try self.add(entry.value, key);
+        }
+    }
+
+    fn add(self: *ModelCollection, editor: *Editor, key: []const u8) !void {
+        const mirrored = try MirroredDocument.create(self, editor, key);
+        errdefer mirrored.deinit();
+        try self.documents.ensureUnusedCapacity(self.allocator, 1);
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const delta = try addedModelDelta(scratch.allocator(), editor.model, editor.languageId(), editor.document.isDirty());
+        try self.host.notify(self.host.context, .documents_and_editors, "$acceptDocumentsAndEditorsDelta", &.{.{ .json = delta }});
+        self.documents.appendAssumeCapacity(mirrored);
+    }
+
+    fn remove(self: *ModelCollection, index: usize) !void {
+        const mirrored = self.documents.items[index];
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const delta = try removedModelDelta(scratch.allocator(), mirrored.document.model);
+        try self.host.notify(self.host.context, .documents_and_editors, "$acceptDocumentsAndEditorsDelta", &.{.{ .json = delta }});
+        _ = self.documents.orderedRemove(index);
+        mirrored.deinit();
+    }
+};
+
+const MirroredDocument = struct {
+    owner: *ModelCollection,
+    document: *EditorDocument,
+    copy: WorkingCopy,
+    key: []const u8,
+    lines: std.array_list.Managed([]u8),
+    eol: EOL,
+    content_listener: ?usize = null,
+    language_listener: ?usize = null,
+    dirty_listener: bool = false,
+    save_listener: bool = false,
+
+    fn create(owner: *ModelCollection, editor: *Editor, key: []const u8) !*MirroredDocument {
+        const a = owner.allocator;
+        const self = try a.create(MirroredDocument);
+        const owned = a.dupe(u8, key) catch |err| {
+            a.destroy(self);
+            return err;
+        };
+        self.* = .{ .owner = owner, .document = editor.document, .copy = editor_terminal.workingCopyInterface(editor), .key = owned, .lines = .init(a), .eol = editor.model.getEOL() };
+        self.document.retain();
+        errdefer self.deinit();
+        self.lines = try captureLines(a, editor.model);
+        self.content_listener = try editor.model.onDidChangeContentWithContextId(self, onContent);
+        self.language_listener = try editor.model.listenDidChangeLanguage(self, onLanguage);
+        self.copy.add_dirty_listener(self.copy.context, .{ .context = self, .callback = onDirty });
+        self.dirty_listener = true;
+        self.copy.add_save_listener(self.copy.context, .{ .context = self, .callback = onSave });
+        self.save_listener = true;
+        return self;
+    }
+
+    fn deinit(self: *MirroredDocument) void {
+        const a = self.owner.allocator;
+        const model = self.document.model;
+        if (self.content_listener) |id| model.removeDidChangeContentListener(id);
+        if (self.language_listener) |id| model.removeDidChangeLanguageListener(id);
+        if (self.dirty_listener) self.copy.remove_dirty_listener(self.copy.context, .{ .context = self, .callback = onDirty });
+        if (self.save_listener) self.copy.remove_save_listener(self.copy.context, .{ .context = self, .callback = onSave });
+        freeLines(a, &self.lines);
+        a.free(self.key);
+        self.document.release();
+        a.destroy(self);
+    }
+
+    fn onContent(event: model_events.InternalModelContentChangeEvent, self: *MirroredDocument) !void {
+        const model = self.document.model;
+        const changes = event.contentChangedEvent;
+        const a = self.owner.allocator;
+        var scratch = std.heap.ArenaAllocator.init(a);
+        defer scratch.deinit();
+        const arena = scratch.allocator();
+        var specs: std.ArrayList(ChangeSpec) = .empty;
+        const eol_width: usize = if (self.eol == .CRLF) 2 else 1;
+        for (changes.changes.items) |change| {
+            const range = change.range;
+            const start_utf16 = utf16ColumnForLines(self.lines.items, range.startLineNumber, range.startColumn);
+            const end_utf16 = utf16ColumnForLines(self.lines.items, range.endLineNumber, range.endColumn);
+            const offset = offsetForLines(self.lines.items, range.startLineNumber, start_utf16, eol_width);
+            const end = offsetForLines(self.lines.items, range.endLineNumber, end_utf16, eol_width);
+            try specs.append(arena, .{
+                .text = change.text.items(),
+                .start = .{ .line = range.startLineNumber, .column = range.startColumn },
+                .end = .{ .line = range.endLineNumber, .column = range.endColumn },
+                .start_utf16 = start_utf16,
+                .end_utf16 = end_utf16,
+                .range_offset = offset,
+                .range_length = end -| offset,
+            });
+        }
+        var payload = try modelChangesEvent(arena, model, specs.items, @intCast(changes.versionId));
+        try payload.object.put(arena, "isUndoing", .{ .bool = changes.isUndoing });
+        try payload.object.put(arena, "isRedoing", .{ .bool = changes.isRedoing });
+        try payload.object.put(arena, "isFlush", .{ .bool = changes.isFlush });
+        try payload.object.put(arena, "isEolChange", .{ .bool = changes.isEolChange });
+        self.owner.host.notify(self.owner.host.context, .documents, "$acceptModelChanged", &.{ .{ .json = try std_uri.jsonComponents(arena, model.uri()) }, .{ .json = payload }, .{ .json = .{ .bool = self.copy.getDirty() } } }) catch {};
+        self.eol = model.getEOL();
+        for (changes.changes.items) |change| {
+            applyLineChange(a, &self.lines, change.range, change.text.items()) catch {
+                const replacement = try captureLines(a, model);
+                freeLines(a, &self.lines);
+                self.lines = replacement;
+                break;
+            };
+        }
+    }
+
+    fn onLanguage(event: model_events.ModelLanguageChangedEvent, self: *MirroredDocument) !void {
+        var scratch = std.heap.ArenaAllocator.init(self.owner.allocator);
+        defer scratch.deinit();
+        const arena = scratch.allocator();
+        try self.owner.host.notify(self.owner.host.context, .documents, "$acceptModelLanguageChanged", &.{ .{ .json = try std_uri.jsonComponents(arena, self.document.model.uri()) }, .{ .json = .{ .string = event.newLanguage } } });
+    }
+    fn workingCopyEvent(self: *MirroredDocument, method: []const u8, dirty: ?bool) !void {
+        var scratch = std.heap.ArenaAllocator.init(self.owner.allocator);
+        defer scratch.deinit();
+        const uri = try std_uri.jsonComponents(scratch.allocator(), self.document.model.uri());
+        if (dirty) |value| {
+            try self.owner.host.notify(self.owner.host.context, .documents, method, &.{ .{ .json = uri }, .{ .json = .{ .bool = value } } });
+        } else try self.owner.host.notify(self.owner.host.context, .documents, method, &.{.{ .json = uri }});
+    }
+    fn onDirty(context: *anyopaque) void {
+        const self: *MirroredDocument = @ptrCast(@alignCast(context));
+        self.workingCopyEvent("$acceptDirtyStateChanged", self.copy.getDirty()) catch {};
+    }
+    fn onSave(context: *anyopaque) void {
+        const self: *MirroredDocument = @ptrCast(@alignCast(context));
+        self.workingCopyEvent("$acceptModelSaved", null) catch {};
+    }
+};
+
+pub fn freeLines(allocator: Allocator, lines: *std.array_list.Managed([]u8)) void {
+    for (lines.items) |line| allocator.free(line);
+    lines.deinit();
+}
+
+pub fn captureLines(allocator: Allocator, model: *TextModel) !std.array_list.Managed([]u8) {
+    var lines = std.array_list.Managed([]u8).init(allocator);
+    errdefer freeLines(allocator, &lines);
+    for (1..model.getLineCount() + 1) |number| {
+        var content = try model.getLineContent(number);
+        defer content.deinit();
+        const copy = try allocator.dupe(u8, content.items);
+        errdefer allocator.free(copy);
+        try lines.append(copy);
+    }
+    return lines;
+}
+
+pub fn utf16ColumnForLines(lines: []const []u8, line: usize, column: usize) usize {
+    if (line == 0 or line > lines.len) return column;
+    return position_converter.utf16OffsetForColumn(lines[line - 1], column);
+}
+
+fn offsetForLines(lines: []const []u8, line: usize, utf16_column: usize, eol_width: usize) usize {
+    var offset: usize = 0;
+    for (lines[0..@min(line -| 1, lines.len)]) |content| offset += position_converter.utf16OffsetForColumn(content, content.len + 1) - 1 + eol_width;
+    return offset + utf16_column -| 1;
+}
+
+pub fn applyLineChange(allocator: Allocator, lines: *std.array_list.Managed([]u8), range: @import("../../../editor/common/core/range.zig").Range, text: []const u8) !void {
+    const start = range.startLineNumber;
+    const end = range.endLineNumber;
+    if (start < 1 or end < start or end > lines.items.len) return error.InvalidChange;
+    const start_column = @min(@max(range.startColumn, 1), lines.items[start - 1].len + 1);
+    const end_column = @min(@max(range.endColumn, 1), lines.items[end - 1].len + 1);
+    var segment = std.array_list.Managed(u8).init(allocator);
+    defer segment.deinit();
+    try segment.appendSlice(lines.items[start - 1][0 .. start_column - 1]);
+    try segment.appendSlice(text);
+    try segment.appendSlice(lines.items[end - 1][end_column - 1 ..]);
+    var replacement = std.array_list.Managed([]u8).init(allocator);
+    errdefer freeLines(allocator, &replacement);
+    var split = std.mem.splitScalar(u8, segment.items, '\n');
+    while (split.next()) |line| {
+        const content = if (split.peek() != null and std.mem.endsWith(u8, line, "\r")) line[0 .. line.len - 1] else line;
+        const copy = try allocator.dupe(u8, content);
+        errdefer allocator.free(copy);
+        try replacement.append(copy);
+    }
+    const count = end - start + 1;
+    const removed = try allocator.dupe([]u8, lines.items[start - 1 .. end]);
+    defer allocator.free(removed);
+    try lines.replaceRange(start - 1, count, replacement.items);
+    for (removed) |line| allocator.free(line);
+    replacement.deinit();
+}
+
+test "documentsAndEditors: diff model resources survive editor focus changes and mirror nonfocused edits" {
+    const a = std.testing.allocator;
+    const Range = @import("../../../editor/common/core/range.zig").Range;
+    const Host = struct {
+        added: usize = 0,
+        removed: usize = 0,
+        content: usize = 0,
+        fn notify(context: *anyopaque, actor: ModelCollection.Actor, method: []const u8, args: []const rpc.Arg) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (actor == .documents_and_editors) {
+                const delta = args[0].json.object;
+                if (delta.get("addedDocuments")) |docs| {
+                    const doc = docs.array.items[0].object;
+                    const uri = doc.get("uri").?.object;
+                    if (self.added == 0) {
+                        try std.testing.expectEqualStrings("git", uri.get("scheme").?.string);
+                        try std.testing.expectEqualStrings("HEAD", uri.get("query").?.string);
+                        try std.testing.expectEqualStrings("\r\n", doc.get("EOL").?.string);
+                    } else try std.testing.expectEqualStrings("file", uri.get("scheme").?.string);
+                    self.added += 1;
+                }
+                if (delta.get("removedDocuments")) |docs| {
+                    const uri = docs.array.items[0].object;
+                    try std.testing.expectEqualStrings(if (self.removed == 0) "git" else "file", uri.get("scheme").?.string);
+                    self.removed += 1;
+                }
+            } else if (std.mem.eql(u8, method, "$acceptModelChanged")) {
+                const uri = args[0].json.object;
+                try std.testing.expectEqualStrings("git", uri.get("scheme").?.string);
+                try std.testing.expectEqualStrings("HEAD", uri.get("query").?.string);
+                const event = args[1].json.object;
+                const change = event.get("changes").?.array.items[0].object;
+                try std.testing.expectEqual(@as(i64, 5), change.get("rangeOffset").?.integer);
+                try std.testing.expectEqual(@as(i64, 1), change.get("rangeLength").?.integer);
+                const range = change.get("range").?.object;
+                try std.testing.expectEqual(@as(i64, 3), range.get("startColumn").?.integer);
+                try std.testing.expectEqual(@as(i64, 4), range.get("endColumn").?.integer);
+                self.content += 1;
+            }
+        }
+    };
+    var host: Host = .{};
+    var models = ModelCollection.init(a, .{ .context = &host, .notify = Host.notify });
+    defer models.deinit();
+    const original_doc = try EditorDocument.createFromText(a, std.testing.io, "/diff-model.txt", "a\r\n😀x", try std.Uri.parse("git:/diff-model.txt?HEAD"));
+    defer original_doc.release();
+    const original = try Editor.createViewFromDocument(original_doc, 40, 8, .{});
+    defer {
+        original.deinit();
+        a.destroy(original);
+    }
+    const modified = try Editor.createFromText(a, std.testing.io, "new", "/diff-model.txt", 40, 8);
+    defer {
+        modified.deinit();
+        a.destroy(modified);
+    }
+    try models.synchronize(&.{ original, modified });
+    try std.testing.expectEqual(@as(usize, 2), host.added);
+    const key = try std_uri.resourceKey(a, original.model.uri());
+    defer a.free(key);
+    try std.testing.expectEqual(original.model, models.modelForResource(key).?);
+    try models.synchronize(&.{ modified, original, modified });
+    try std.testing.expectEqual(@as(usize, 2), host.added);
+    try std.testing.expectEqual(@as(usize, 0), host.removed);
+    try original.applyTextEdits(&.{.{ .range = Range.init(2, 5, 2, 6), .text = "z" }}, &.{});
+    try std.testing.expectEqual(@as(usize, 1), host.content);
+    try models.synchronize(&.{modified});
+    try std.testing.expectEqual(@as(usize, 1), host.removed);
+    try std.testing.expect(models.modelForResource(key) == null);
+    try models.synchronize(&.{});
+    try std.testing.expectEqual(@as(usize, 2), host.removed);
 }

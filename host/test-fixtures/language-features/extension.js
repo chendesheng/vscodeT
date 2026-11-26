@@ -11,6 +11,16 @@ function activate(context) {
   context.subscriptions.push(vscode.languages.registerInlineCompletionItemProvider({ scheme: 'file', language: 'json' }, {
     provideInlineCompletionItems() { return []; }
   }));
+  context.subscriptions.push(vscode.languages.registerCodeLensProvider({ language: 'json' }, {
+    provideCodeLenses(document) {
+      return [new vscode.CodeLens(new vscode.Range(0, 0, 0, 0), {
+        title: document.uri.query + ':' + document.lineAt(0).text,
+        command: 'fixture.codeLens',
+        arguments: [document.uri.toString()]
+      })];
+    }
+  }));
+  context.subscriptions.push(vscode.commands.registerCommand('fixture.codeLens', () => {}));
   context.subscriptions.push(vscode.languages.registerHoverProvider({ language: 'json' }, {
     provideHover() {
       return { contents: ['fixture hover'] };

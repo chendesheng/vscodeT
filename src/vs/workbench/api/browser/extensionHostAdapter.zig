@@ -2,7 +2,7 @@
 //
 // The portable pieces (transport, RPC, generated protocol table, host boot)
 // live under `src/vs/workbench/services/extensions/`. This file owns only the
-// terminal-specific state: the active tab's document mirror, the command
+// terminal-specific state: the editor-group model lifecycle and focused editor mirror, the command
 // surface Node extensions call back into, and the typed-text path
 // through the `type` command.
 
@@ -29,7 +29,7 @@ const EditorService = @import("../../services/editor/browser/editorService.zig")
 const GroupModelChangeEvent = @import("../../common/editor/editorGroupModel.zig").GroupModelChangeEvent;
 const Task = @import("../../../base/common/windowDispatch.zig").Task;
 const ModelLanguageChangedEvent = @import("../../../editor/common/textModelEvents.zig").ModelLanguageChangedEvent;
-const EditorPaneSelectionChangeReason = @import("../../common/editor.zig").EditorPaneSelectionChangeReason;
+const ViewEventHandler = @import("../../../editor/common/viewEventHandler.zig").ViewEventHandler;
 const GroupDirection = @import("../../services/editor/common/editorGroupsService.zig").GroupDirection;
 const statusbar = @import("../../services/statusbar/browser/statusbar.zig");
 const statusbar_part = @import("../../browser/parts/statusbar/statusbarPart.zig");
@@ -76,10 +76,6 @@ const ActiveDocument = struct {
     uri: []u8,
     id: []const u8 = "1",
     language_id: []u8,
-    /// The document contents the extension host currently mirrors. Change
-    /// ranges are expressed against this snapshot, not against the already
-    /// edited model, so end columns past a shortened line stay valid.
-    lines: std.array_list.Managed([]u8),
 };
 
 /// Source of a cursor-selection change, using upstream's
@@ -100,66 +96,11 @@ pub const SelectionSource = enum {
     }
 };
 
-fn freeDocumentLines(allocator: Allocator, lines: *std.array_list.Managed([]u8)) void {
-    for (lines.items) |line| allocator.free(line);
-    lines.deinit();
-}
+const freeDocumentLines = documents_and_editors.freeLines;
+const utf16ColumnInLines = documents_and_editors.utf16ColumnForLines;
 
-fn captureDocumentLines(allocator: Allocator, model: *TextModel) !std.array_list.Managed([]u8) {
-    var lines = std.array_list.Managed([]u8).init(allocator);
-    errdefer freeDocumentLines(allocator, &lines);
-    var line_number: usize = 1;
-    while (line_number <= model.getLineCount()) : (line_number += 1) {
-        var line = try model.getLineContent(line_number);
-        defer line.deinit();
-        const copy = try allocator.dupe(u8, line.items);
-        errdefer allocator.free(copy);
-        try lines.append(copy);
-    }
-    return lines;
-}
-
-/// Applies one model change to the extension host's mirrored lines. The change
-/// ranges are byte columns of the mirrored snapshot, matching the model's
-/// pre-edit coordinates; this is also what makes UTF-16 range conversion work
-/// when an edit deletes the end of a line.
-fn applyChangeToDocumentLines(
-    allocator: Allocator,
-    lines: *std.array_list.Managed([]u8),
-    change: LastContentChange,
-) !void {
-    const start_line = change.range.startLineNumber;
-    const end_line = change.range.endLineNumber;
-    if (start_line == 0 or end_line < start_line or end_line > lines.items.len) return error.InvalidChange;
-    const start_column = @min(@max(change.range.startColumn, 1), lines.items[start_line - 1].len + 1);
-    const end_column = @min(@max(change.range.endColumn, 1), lines.items[end_line - 1].len + 1);
-
-    var segment = std.array_list.Managed(u8).init(allocator);
-    defer segment.deinit();
-    try segment.appendSlice(lines.items[start_line - 1][0 .. start_column - 1]);
-    try segment.appendSlice(change.text);
-    try segment.appendSlice(lines.items[end_line - 1][end_column - 1 ..]);
-
-    var replacement = std.array_list.Managed([]u8).init(allocator);
-    errdefer {
-        for (replacement.items) |line| allocator.free(line);
-        replacement.deinit();
-    }
-    var split = std.mem.splitScalar(u8, segment.items, '\n');
-    while (split.next()) |line| try replacement.append(try allocator.dupe(u8, line));
-
-    const remove_count = end_line - start_line + 1;
-    const removed = try allocator.alloc([]u8, remove_count);
-    defer allocator.free(removed);
-    @memcpy(removed, lines.items[start_line - 1 .. end_line]);
-    try lines.replaceRange(start_line - 1, remove_count, replacement.items);
-    for (removed) |line| allocator.free(line);
-    replacement.deinit();
-}
-
-fn utf16ColumnInLines(lines: []const []u8, line_number: usize, column: usize) usize {
-    if (line_number == 0 or line_number > lines.len) return column;
-    return position_converter.utf16OffsetForColumn(lines[line_number - 1], column);
+fn applyChangeToDocumentLines(allocator: Allocator, lines: *std.array_list.Managed([]u8), change: LastContentChange) !void {
+    try documents_and_editors.applyLineChange(allocator, lines, change.range, change.text);
 }
 
 pub const Extensions = struct {
@@ -185,15 +126,14 @@ pub const Extensions = struct {
     remove_group_listener: ?usize = null,
     move_group_listener: ?usize = null,
     tabs_task: Task = .{},
+    models_task: Task = .{},
+    models: documents_and_editors.ModelCollection,
+    active_selection_handler: ViewEventHandler,
     selection_task: Task = .{},
     visible_ranges_task: Task = .{},
     pending_selection_source: SelectionSource = .keyboard,
     /// The active editor whose scroll events are mirrored to the host.
     scroll_listener_editor: ?*Editor = null,
-    /// The active editor whose content changes are mirrored to the host. This
-    /// is the single content-event path for host edits, terminal typing and
-    /// built-in extensions such as native Vim.
-    content_listener_editor: ?*Editor = null,
     inline_completions: @import("inlineCompletionSession.zig").Session = undefined,
     language_features_actor: ?MainThreadLanguageFeatures = null,
     diagnostics_actor: ?*MainThreadDiagnostics = null,
@@ -265,8 +205,11 @@ pub const Extensions = struct {
             .user_data_dir = data,
             .activation_tracker = extension_service.ActivationTracker.init(allocator),
             .last_selections = std.array_list.Managed(Selection).init(allocator),
+            .models = documents_and_editors.ModelCollection.init(allocator, .{ .context = self, .notify = notifyModelMirror }),
+            .active_selection_handler = ViewEventHandler.init(self, .{ .onCursorStateChanged = onActiveSelection }),
         };
 
+        self.models_task = .{ .queue = services.window, .context = self, .run = updateModels, .progress = true };
         self.tabs_task = .{ .queue = services.window, .context = self, .run = updateTabs, .progress = true };
         self.selection_task = .{ .queue = services.window, .context = self, .run = updateSelection, .progress = true };
         self.visible_ranges_task = .{ .queue = services.window, .context = self, .run = updateVisibleRanges, .progress = true };
@@ -287,6 +230,7 @@ pub const Extensions = struct {
             .parent_pid = @intCast(manager.currentProcessId()),
         });
         errdefer self.host.deinit();
+        errdefer self.models.deinit();
         self.inline_completions = .{
             .editors = services.common.editors,
             .configuration = .{ .context = self, .get_value = configurationValue },
@@ -387,6 +331,7 @@ pub const Extensions = struct {
         self.inline_completions.deinit();
         self.unregisterEditorListeners();
         self.removeActiveDocument() catch {};
+        self.models.deinit();
         if (self.diagnostics_actor) |actor| {
             actor.deinit();
             self.diagnostics_actor = null;
@@ -532,17 +477,9 @@ pub const Extensions = struct {
 
     fn diagnosticsModelFor(context: *anyopaque, resource: markers_mod.Resource) ?*TextModel {
         const self: *Extensions = @ptrCast(@alignCast(context));
-        for (self.editor_service.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                var candidate = markers_mod.Resource.fromUri(self.allocator, tab.editor.model.uri()) catch continue;
-                defer candidate.deinit(self.allocator);
-                if (!std.mem.eql(u8, candidate.scheme, resource.scheme)) continue;
-                if (!std.mem.eql(u8, candidate.authority, resource.authority)) continue;
-                if (!std.mem.eql(u8, candidate.path, resource.path)) continue;
-                return tab.editor.model;
-            }
-        }
-        return null;
+        const key = resource.key(self.allocator) catch return null;
+        defer self.allocator.free(key);
+        return self.models.modelForResource(key);
     }
 
     fn invokeLanguageFeatures(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
@@ -695,6 +632,10 @@ pub const Extensions = struct {
     fn documentsOpenHost(context: *anyopaque, uri: std.json.Value, options: std.json.Value, arena: Allocator) anyerror!std.json.Value {
         _ = options;
         const self: *Extensions = @ptrCast(@alignCast(context));
+        const components = try std_uri.componentsFromJson(uri, arena);
+        const key = try std_uri.resourceKeyFromComponents(arena, components);
+        if (self.models.modelForResource(key)) |model| return try std_uri.jsonComponents(arena, model.uri());
+        if (!std.mem.eql(u8, components.scheme, "file")) return .null;
         const path = uriPath(uri) orelse return .null;
         self.services.common.open_path(self.services.common.context, path) catch {};
         // Make the document known before `workspace.openTextDocument`
@@ -715,10 +656,14 @@ pub const Extensions = struct {
     }
 
     fn documentsSaveHost(context: *anyopaque, uri: std.json.Value) anyerror!bool {
-        _ = uri;
         const self: *Extensions = @ptrCast(@alignCast(context));
-        const active = self.active orelse return false;
-        active.editor.save() catch return false;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const arena = scratch.allocator();
+        const components = try std_uri.componentsFromJson(uri, arena);
+        const key = try std_uri.resourceKeyFromComponents(arena, components);
+        const editor = self.models.writableEditorForResource(key) orelse return false;
+        editor.save() catch return false;
         self.needs_render = true;
         return true;
     }
@@ -915,6 +860,7 @@ pub const Extensions = struct {
         if (self.remove_group_listener) |id| part.on_did_remove_group.unlisten(id);
         if (self.move_group_listener) |id| part.on_did_move_group.unlisten(id);
         self.tabs_task.schedule(null);
+        self.models_task.schedule(null);
         self.selection_task.schedule(null);
         self.visible_ranges_task.schedule(null);
     }
@@ -924,15 +870,21 @@ pub const Extensions = struct {
     }
     fn onVisibleEditorsChanged(_: void, self: *Extensions) !void {
         self.syncActiveDocument() catch {};
+        self.models_task.post();
         self.tabs_task.post();
     }
     fn onGroupChanged(_: *GroupPane, self: *Extensions) !void {
         self.syncActiveDocument() catch {};
+        self.models_task.post();
         self.tabs_task.post();
     }
     fn onGroupModelChanged(event: GroupModelChangeEvent, self: *Extensions) !void {
         switch (event) {
-            .EDITOR_OPEN, .EDITOR_CLOSE, .EDITOR_MOVE, .EDITOR_ACTIVE, .EDITOR_DIRTY, .EDITOR_LABEL, .EDITOR_PIN, .EDITOR_STICKY, .EDITOR_TRANSIENT => self.tabs_task.post(),
+            .EDITOR_OPEN, .EDITOR_CLOSE => {
+                self.models_task.post();
+                self.tabs_task.post();
+            },
+            .EDITOR_MOVE, .EDITOR_ACTIVE, .EDITOR_DIRTY, .EDITOR_LABEL, .EDITOR_PIN, .EDITOR_STICKY, .EDITOR_TRANSIENT => self.tabs_task.post(),
             else => {},
         }
     }
@@ -941,10 +893,11 @@ pub const Extensions = struct {
         self.syncTabs() catch {};
         return true;
     }
-    fn onSelectionChanged(context: *anyopaque, _: EditorPaneSelectionChangeReason) void {
+    fn onActiveSelection(context: *anyopaque, _: *const view_events.ViewCursorStateChangedEvent) bool {
         const self: *Extensions = @ptrCast(@alignCast(context));
         self.pending_selection_source = self.selection_source;
         self.selection_task.post();
+        return false;
     }
     fn updateSelection(context: *anyopaque, _: i64, _: bool) bool {
         const self: *Extensions = @ptrCast(@alignCast(context));
@@ -966,9 +919,6 @@ pub const Extensions = struct {
         const language = try self.allocator.dupe(u8, event.newLanguage);
         self.allocator.free(active.language_id);
         active.language_id = language;
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        try self.host.notify(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocuments), "$acceptModelLanguageChanged", &.{ .{ .json = try std_uri.jsonComponents(arena.allocator(), active.editor.model.uri()) }, .{ .json = .{ .string = language } } });
         self.activation_tracker.activateLanguage(self.host, event.newLanguage);
     }
 
@@ -986,62 +936,87 @@ pub const Extensions = struct {
         return result;
     }
 
+    fn notifyModelMirror(context: *anyopaque, actor: documents_and_editors.ModelCollection.Actor, method: []const u8, args: []const rpc.Arg) !void {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        const identifier = switch (actor) {
+            .documents => protocol.ExtHostContext.ExtHostDocuments,
+            .documents_and_editors => protocol.ExtHostContext.ExtHostDocumentsAndEditors,
+        };
+        try self.host.notify(proxyIdentifier.identifierFromEnum(identifier), method, args);
+    }
+
+    fn updateModels(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        self.syncActiveDocument() catch {};
+        self.syncDocumentModels() catch {};
+        return true;
+    }
+
+    fn syncDocumentModels(self: *Extensions) !void {
+        var editors: std.ArrayList(*Editor) = .empty;
+        defer editors.deinit(self.allocator);
+        if (self.editor_service.activeEditorPane()) |tab| {
+            if (!tab.isImage() and tab.terminalInstance() == null) try editors.append(self.allocator, if (tab.diff) |diff| diff.widget.focusedEditor() else tab.editor);
+        }
+        for (self.editor_service.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.isImage() or tab.terminalInstance() != null) continue;
+                if (tab.diff) |diff| {
+                    try editors.appendSlice(self.allocator, &.{ diff.widget.original_editor, diff.widget.modified_editor });
+                } else try editors.append(self.allocator, tab.editor);
+            }
+        }
+        try self.models.synchronize(editors.items);
+    }
+
     fn syncActiveDocument(self: *Extensions) !void {
         const tab = self.editor_service.activeEditorPane() orelse {
             if (self.active != null) try self.removeActiveDocument();
+            try self.syncDocumentModels();
             return;
         };
+        if (tab.isImage() or tab.terminalInstance() != null) {
+            if (self.active != null) try self.removeActiveDocument();
+            try self.syncDocumentModels();
+            return;
+        }
+        const editor = if (tab.diff) |diff| diff.widget.focusedEditor() else tab.editor;
         if (self.active) |active| {
-            if (active.tab == tab) return;
+            if (active.tab == tab and active.editor == editor) return;
             try self.removeActiveDocument();
         }
+        try self.syncDocumentModels();
 
         var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_instance.deinit();
         const arena = arena_instance.allocator();
-        // The mirror resource must be the text model's URI: language-feature
-        // requests carry `model.uri()`, and a raw relative editor path would
-        // name a document the extension host never opened. That mismatch made
-        // `gd` and the F12 actions return no result for relative paths.
-        const uri = try self.allocator.dupe(u8, try std_uri.fsPath(tab.editor.model.uri(), arena));
+        const uri = try self.allocator.dupe(u8, try std_uri.fsPath(editor.model.uri(), arena));
         errdefer self.allocator.free(uri);
-        const language = try self.allocator.dupe(u8, tab.editor.languageId());
+        const language = try self.allocator.dupe(u8, editor.languageId());
         errdefer self.allocator.free(language);
 
-        const language_ids = try tab.editor.language_service.getRegisteredLanguageIds(arena);
+        const language_ids = try editor.language_service.getRegisteredLanguageIds(arena);
         var ids = std.json.Array.init(arena);
         for (language_ids) |id| try ids.append(.{ .string = id });
         try self.host.notify(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostLanguages), "$acceptLanguageIds", &.{.{ .json = .{ .array = ids } }});
 
-        const selections = try tab.editor.getSelections();
-        defer tab.editor.allocator.free(selections);
-        const delta = try documents_and_editors.addDocumentDelta(
-            arena,
-            tab.editor.model,
-            language,
-            tab.editor.dirty_state,
-            .{
-                .tab_size = tab.editor.cursor_config.tabSize,
-                .indent_size = tab.editor.cursor_config.indentSize,
-                .insert_spaces = tab.editor.cursor_config.insertSpaces,
-            },
-            selections,
-        );
-        var args = [_]rpc.Arg{.{ .json = delta }};
-        _ = try self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocumentsAndEditors), "$acceptDocumentsAndEditorsDelta", &args, null, manager.noop_callback);
-
-        var lines = try captureDocumentLines(self.allocator, tab.editor.model);
-        errdefer freeDocumentLines(self.allocator, &lines);
+        const selections = try editor.getSelections();
+        defer editor.allocator.free(selections);
+        const delta = try documents_and_editors.addedEditorDelta(arena, editor.model, .{
+            .tab_size = editor.cursor_config.tabSize,
+            .indent_size = editor.cursor_config.indentSize,
+            .insert_spaces = editor.cursor_config.insertSpaces,
+        }, selections);
         const dispose_listener = try tab.listenWillDispose(self, onActiveTabWillDispose);
         errdefer tab.unlistenWillDispose(dispose_listener);
-        const language_listener = try tab.editor.model.listenDidChangeLanguage(self, onActiveLanguageChanged);
-        errdefer tab.editor.model.removeDidChangeLanguageListener(language_listener);
-        try tab.addSelectionListener(.{ .context = self, .callback = onSelectionChanged });
-        self.active = .{ .tab = tab, .dispose_listener = dispose_listener, .language_listener = language_listener, .editor = tab.editor, .uri = uri, .language_id = language, .lines = lines };
-        self.setScrollListener(tab.editor);
-        self.setContentListener(tab.editor);
-        self.captureSelections(tab.editor);
-        self.activation_tracker.activateLanguage(self.host, tab.editor.languageId());
+        const language_listener = try editor.model.listenDidChangeLanguage(self, onActiveLanguageChanged);
+        errdefer editor.model.removeDidChangeLanguageListener(language_listener);
+        try notifyModelMirror(self, .documents_and_editors, "$acceptDocumentsAndEditorsDelta", &.{.{ .json = delta }});
+        editor.addViewEventHandler(&self.active_selection_handler);
+        self.active = .{ .tab = tab, .dispose_listener = dispose_listener, .language_listener = language_listener, .editor = editor, .uri = uri, .language_id = language };
+        self.setScrollListener(editor);
+        self.captureSelections(editor);
+        self.activation_tracker.activateLanguage(self.host, editor.languageId());
         self.needs_render = true;
     }
 
@@ -1069,23 +1044,23 @@ pub const Extensions = struct {
     }
 
     fn removeActiveDocument(self: *Extensions) !void {
-        var active = self.active orelse return;
+        const active = self.active orelse return;
         self.active = null;
         self.selection_task.schedule(null);
         self.visible_ranges_task.schedule(null);
         active.tab.unlistenWillDispose(active.dispose_listener);
-        active.tab.removeSelectionListener(.{ .context = self, .callback = onSelectionChanged });
+        active.editor.removeViewEventHandler(&self.active_selection_handler);
         active.editor.model.removeDidChangeLanguageListener(active.language_listener);
         self.setScrollListener(null);
-        self.setContentListener(null);
+
         defer self.allocator.free(active.uri);
         defer self.allocator.free(active.language_id);
-        defer freeDocumentLines(self.allocator, &active.lines);
+
         self.needs_render = true;
         var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_instance.deinit();
         const arena = arena_instance.allocator();
-        const delta = try documents_and_editors.removedDocumentDelta(arena, active.uri);
+        const delta = try documents_and_editors.removedEditorDelta(arena);
         var args = [_]rpc.Arg{.{ .json = delta }};
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocumentsAndEditors), "$acceptDocumentsAndEditorsDelta", &args, null, manager.noop_callback) catch {};
     }
@@ -1139,7 +1114,7 @@ pub const Extensions = struct {
     }
 
     /// Mirrors the selection/scroll result of a command. Content changes are
-    /// handled once, by the active editor's content listener.
+    /// handled once, by the model's document mirror.
     fn syncAfterEditorCommand(self: *Extensions, _: Allocator, _: *Editor) !void {
         try self.syncSelection();
         self.sendVisibleRanges() catch {};
@@ -1175,42 +1150,6 @@ pub const Extensions = struct {
         self.needs_render = true;
     }
 
-    fn sendModelChanges(self: *Extensions, arena: Allocator, changes: []const LastContentChange) !void {
-        const active = if (self.active) |*value| value else return;
-        var specs = std.array_list.Managed(documents_and_editors.ChangeSpec).init(arena);
-        for (changes) |change| {
-            try specs.append(.{
-                .text = change.text,
-                .start = .{ .line = change.range.startLineNumber, .column = change.range.startColumn },
-                .end = .{ .line = change.range.endLineNumber, .column = change.range.endColumn },
-                // Convert against the host's mirrored document, not the model
-                // that already contains the edit. A deletion's end column is
-                // past the shortened line in the new model and would otherwise
-                // collapse to a zero-width change.
-                .start_utf16 = utf16ColumnInLines(active.lines.items, change.range.startLineNumber, change.range.startColumn),
-                .end_utf16 = utf16ColumnInLines(active.lines.items, change.range.endLineNumber, change.range.endColumn),
-            });
-        }
-        const event = try documents_and_editors.modelChangesEvent(arena, active.editor.model, specs.items, active.editor.model.getVersionId());
-        var args = [_]rpc.Arg{
-            .{ .json = try manager.fileUri(arena, active.uri) },
-            .{ .json = event },
-            .{ .json = .{ .bool = false } },
-        };
-        _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocuments), "$acceptModelChanged", &args, null, manager.noop_callback) catch {};
-
-        for (changes) |change| {
-            applyChangeToDocumentLines(self.allocator, &active.lines, change) catch {
-                // A malformed change must not poison every later edit; the
-                // model is already at the post-batch state, so resnapshot it.
-                freeDocumentLines(self.allocator, &active.lines);
-                active.lines = captureDocumentLines(self.allocator, active.editor.model) catch
-                    std.array_list.Managed([]u8).init(self.allocator);
-                break;
-            };
-        }
-    }
-
     fn sendSelection(self: *Extensions, arena: Allocator, source: SelectionSource) !void {
         const active = self.active orelse return;
         const selections = try active.editor.getSelections();
@@ -1231,27 +1170,6 @@ pub const Extensions = struct {
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostEditors), "$acceptEditorPropertiesChanged", &args, null, manager.noop_callback) catch {};
         self.visible_ranges_task.schedule(null);
         self.captureSelections(active.editor);
-    }
-
-    fn onEditorContent(context: *anyopaque) void {
-        const self: *Extensions = @ptrCast(@alignCast(context));
-        const active = self.active orelse return;
-        if (active.editor.last_content_changes.items.len == 0) return;
-        var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena_instance.deinit();
-        self.sendModelChanges(arena_instance.allocator(), active.editor.last_content_changes.items) catch {};
-    }
-
-    fn setContentListener(self: *Extensions, editor: ?*Editor) void {
-        if (self.content_listener_editor == editor) return;
-        if (self.content_listener_editor) |old| {
-            old.removeWorkingCopyContentListener(.{ .context = self, .callback = onEditorContent });
-        }
-        self.content_listener_editor = null;
-        if (editor) |value| {
-            value.addWorkingCopyContentListener(.{ .context = self, .callback = onEditorContent });
-            self.content_listener_editor = value;
-        }
     }
 
     fn onEditorScroll(context: *anyopaque) void {
@@ -1333,9 +1251,11 @@ pub fn runLspCommand(services: Services, command: []const u8) bool {
         _ = services.show_hover(services.common.context) catch false;
         return true;
     }
-    if (std.mem.eql(u8, command, "outline.focus") or
-        std.mem.eql(u8, command, "workbench.action.gotoSymbol"))
-    {
+    if (std.mem.eql(u8, command, "outline.focus")) {
+        services.common.commands.execute(command) catch return false;
+        return true;
+    }
+    if (std.mem.eql(u8, command, "workbench.action.gotoSymbol")) {
         _ = services.goto_symbol(services.common.context) catch false;
         return true;
     }
@@ -2072,8 +1992,9 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(workbench.quick_access.isOpen());
             workbench.quick_access.inputService().hide();
             try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "outline.focus"));
-            try std.testing.expect(workbench.quick_access.isOpen());
-            workbench.quick_access.inputService().hide();
+            try std.testing.expect(workbench.outline_view != null);
+            try std.testing.expect(workbench.outline_view.?.focused);
+            workbench.focusEditor();
             try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.showHover"));
             try std.testing.expect(workbench.activeTab().?.controllers.?.hover.isVisible());
             const tab = workbench.activeTab().?;
@@ -2198,6 +2119,53 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqual(@as(usize, 2), extension_host.last_selections.items[0].endLineNumber);
             _ = try workbench.closeActive();
             try std.testing.expect(extension_host.active.?.tab == tab);
+        }
+
+        test "Extensions: CodeLens providers receive both distinct diff side documents before focus" {
+            if (!build_options.e2e) return error.SkipZigTest;
+            const io = time_compat.io;
+            std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+            const a = std.testing.allocator;
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try tmp.dir.writeFile(io, .{ .sub_path = "diff.json", .data = "{}" });
+            var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const path_len = try tmp.dir.realPathFile(io, "diff.json", &path_buffer);
+            const path = path_buffer[0..path_len];
+            const window = try TestWindow.init(a, io, &.{path}, 120, 24);
+            defer window.deinit();
+            const wb = window.workbench;
+            try wb.enableLanguageFeatures();
+            const extensions = try Extensions.init(a, io, wb.extensionHostServices(), &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }}, ".cache-ext/data-diff-lens-fixture", "host/dist");
+            defer extensions.deinit();
+            try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "{\"old\":1}", "{\"new\":2}", "Original", "Modified");
+            const tab = wb.activeTab().?;
+            const diff = tab.diff.?.widget;
+            try std.testing.expectEqual(diff.modified_editor, extensions.active.?.editor);
+            const features = wb.language_features.?;
+            const token = @import("../../../base/common/cancellation.zig").CancellationToken.None;
+            const deadline = time_compat.milliTimestamp() + 10_000;
+            while (time_compat.milliTimestamp() < deadline) {
+                _ = extensions.pump();
+                const providers = try features.code_lens_provider.ordered(a, diff.originalModel(), false);
+                defer a.free(providers);
+                if (providers.len != 0) break;
+                time_compat.sleepMillis(10);
+            }
+            var arena = std.heap.ArenaAllocator.init(a);
+            defer arena.deinit();
+            for ([_]*TextModel{ diff.originalModel(), diff.modifiedModel() }, [_][]const u8{ "Original:{\"old\":1}", "Modified:{\"new\":2}" }) |model, title| {
+                const providers = try features.code_lens_provider.ordered(arena.allocator(), model, false);
+                try std.testing.expect(providers.len > 0);
+                const list = (try providers[0].provide_code_lenses(providers[0].context, arena.allocator(), model, token)).?;
+                defer if (list.disposable) |disposable| disposable.dispose();
+                try std.testing.expectEqual(@as(usize, 1), list.lenses.len);
+                try std.testing.expectEqualStrings(title, list.lenses[0].command.?.title);
+            }
+            diff.setFocus(.original);
+            try std.testing.expectEqual(diff.original_editor, extensions.active.?.editor);
+            diff.setFocus(.modified);
+            try std.testing.expectEqual(diff.modified_editor, extensions.active.?.editor);
         }
 
         test "Extensions: real TypeScript extension drives the language features" {
