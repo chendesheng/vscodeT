@@ -126,6 +126,108 @@ pub fn Tests(comptime View: type) type {
             try testing.expectEqual(@as(usize, 4), selection.endColumn);
         }
 
+        test "diffEditorWidget: live options preserve both models and recompute only diff options" {
+            const allocator = testing.allocator;
+            const widget = try DiffEditorWidget.create(View.init, allocator, std.testing.io, "a.txt", "b.txt", "before\n  same\nend", "before\nsame\nend", "Original", "Modified", 80, 8, .{});
+            defer widget.destroy();
+            const original = widget.originalModel();
+            const modified = widget.modifiedModel();
+            const original_view = widget.original_view;
+            const modified_view = widget.modified_view;
+            const first_mappings = widget.state().?.mappings.ptr;
+            try testing.expectEqual(@as(usize, 0), widget.changeCount());
+            var options = widget.options;
+            options.render_side_by_side = false;
+            try testing.expect(try widget.updateOptions(options));
+            try testing.expectEqual(first_mappings, widget.state().?.mappings.ptr);
+            try testing.expectEqual(original_view, widget.original_view);
+            try testing.expectEqual(modified_view, widget.modified_view);
+            options.ignore_trim_whitespace = false;
+            try testing.expect(try widget.updateOptions(options));
+            try testing.expectEqual(@as(usize, 1), widget.changeCount());
+            try testing.expectEqual(original, widget.originalModel());
+            try testing.expectEqual(modified, widget.modifiedModel());
+            try testing.expectEqual(widget.state().?.mappings.ptr, widget.zones.mappings.ptr);
+            try testing.expectEqual(original_view, widget.original_view);
+            try testing.expectEqual(modified_view, widget.modified_view);
+            options.render_side_by_side = true;
+            try testing.expect(try widget.updateOptions(options));
+            try testing.expect(widget.sideBySide());
+            try testing.expect(!(try widget.updateOptions(options)));
+        }
+
+        test "diffEditorWidget: content events recompute the real model diff" {
+            const widget = try DiffEditorWidget.create(View.init, testing.allocator, testing.io, "a.txt", "b.txt", "a", "a", "Original", "Modified", 80, 8, .{});
+            defer widget.destroy();
+            const modified = widget.modifiedModel();
+            widget.modified_editor.setReadOnly(false);
+            try widget.modified_editor.setCursorPosition(.{ .lineNumber = 1, .column = 2 });
+            try widget.modified_editor.insertText("b");
+            try testing.expectEqual(modified, widget.modifiedModel());
+            try testing.expect(widget.view_model.is_diff_up_to_date);
+            try testing.expectEqual(@as(usize, 1), widget.changeCount());
+        }
+
+        test "diffEditorWidget: worker drops superseded results and detaches on dispose" {
+            const Worker = @import("../../../browser/services/editorWorkerService.zig").EditorWorkerService;
+            const Queue = @import("../../../../base/common/windowDispatch.zig").Queue;
+            const time = @import("../../../../base/common/timeCompat.zig");
+            var queue: Queue = .{ .io = testing.io };
+            var worker = Worker.init();
+            worker.attachWindow(&queue);
+            defer worker.deinit();
+            const widget = try DiffEditorWidget.create(View.init, testing.allocator, testing.io, "a.txt", "b.txt", " a ", "a", "Original", "Modified", 80, 8, .{});
+            var alive = true;
+            defer if (alive) widget.destroy();
+            const modified = widget.modifiedModel();
+            widget.view_model.attachWorker(&worker, null, &queue);
+            var options = widget.options;
+            options.ignore_trim_whitespace = false;
+            try testing.expect(try widget.updateOptions(options));
+            try testing.expect(!widget.view_model.is_diff_up_to_date);
+            try testing.expectEqual(@as(usize, 0), widget.changeCount());
+            _ = queue.dispatch(time.milliTimestamp() + 1000);
+            try testing.expect(widget.view_model.pending_request != null);
+            options.ignore_trim_whitespace = true;
+            try testing.expect(try widget.updateOptions(options));
+            try testing.expect(widget.view_model.pending_request == null);
+            // Deliver the superseded reply before starting the new computation.
+            worker.waitForReply();
+            _ = worker.dispatchReplies();
+            try testing.expect(!widget.view_model.is_diff_up_to_date);
+            try testing.expectEqual(@as(usize, 0), widget.changeCount());
+            _ = queue.dispatch(time.milliTimestamp() + 1000);
+            if (widget.view_model.pending_request == null) _ = queue.dispatch(time.milliTimestamp() + 1000);
+            try testing.expect(widget.view_model.pending_request != null);
+            worker.waitForReply();
+            _ = worker.dispatchReplies();
+            try testing.expect(widget.view_model.is_diff_up_to_date);
+            try testing.expectEqual(@as(usize, 0), widget.changeCount());
+            widget.modified_editor.setReadOnly(false);
+            try widget.modified_editor.setCursorPosition(.{ .lineNumber = 1, .column = 2 });
+            try widget.modified_editor.insertText("b");
+            try testing.expect(!widget.view_model.is_diff_up_to_date);
+            try testing.expect(widget.view_model.compute_task.at != null);
+            try testing.expect(widget.view_model.pending_request == null);
+            _ = queue.dispatch(time.milliTimestamp() + 1000);
+            if (widget.view_model.pending_request == null) _ = queue.dispatch(time.milliTimestamp() + 1000);
+            try testing.expect(widget.view_model.pending_request != null);
+            worker.waitForReply();
+            _ = worker.dispatchReplies();
+            try testing.expect(widget.view_model.is_diff_up_to_date);
+            try testing.expectEqual(@as(usize, 1), widget.changeCount());
+            try testing.expectEqual(modified, widget.modifiedModel());
+            options.ignore_trim_whitespace = false;
+            _ = try widget.updateOptions(options);
+            _ = queue.dispatch(time.milliTimestamp() + 1000);
+            if (widget.view_model.pending_request == null) _ = queue.dispatch(time.milliTimestamp() + 1000);
+            try testing.expect(widget.view_model.pending_request != null);
+            widget.destroy();
+            alive = false;
+            worker.waitForReply();
+            _ = worker.dispatchReplies();
+        }
+
         test "diffEditorWidget: real snapshot models align through view zones" {
             const allocator = testing.allocator;
             const io = Io.Threaded.global_single_threaded.io();
@@ -146,6 +248,8 @@ pub fn Tests(comptime View: type) type {
             defer widget.destroy();
 
             try testing.expectEqual(@as(usize, 1), widget.changeCount());
+            try testing.expectEqual(widget.originalModel(), widget.view_model.model.original);
+            try testing.expectEqual(widget.modifiedModel(), widget.view_model.model.modified);
             try testing.expectEqual(@as(usize, 3), widget.originalModel().getLineCount());
             try testing.expectEqual(@as(usize, 4), widget.modifiedModel().getLineCount());
             try testing.expectEqual(@as(?usize, 2), widget.original_editor.displayLineNumber(2));

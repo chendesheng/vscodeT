@@ -186,6 +186,13 @@ pub const AccessibleDiffViewer = struct {
         }
     }
 
+    pub fn setCanClose(self: *AccessibleDiffViewer, can_close: bool) !void {
+        if (self.can_close == can_close) return;
+        self.can_close = can_close;
+        if (self.view) |*view| view.last_group = null;
+        try self.updateView();
+    }
+
     pub fn setTheme(self: *AccessibleDiffViewer, theme: ?*const ThemeColors) !void {
         if (self.view) |*view| {
             view.theme = theme;

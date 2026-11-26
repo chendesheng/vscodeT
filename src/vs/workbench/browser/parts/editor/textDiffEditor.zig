@@ -321,6 +321,11 @@ pub fn DiffView(comptime View: type) type {
         }
 
         pub fn replaceWithDiff(self: *Self, original_text: []const u8, modified_text: []const u8, width: usize, height: usize, options: Options, computed: ?IDocumentDiff) !void {
+            if (snapshotLinesEqual(self.allocator, self.widget.originalModel(), original_text) and snapshotLinesEqual(self.allocator, self.widget.modifiedModel(), modified_text)) {
+                _ = try self.widget.updateOptionsWithDiff(options, computed);
+                self.widget.layout(width, height);
+                return;
+            }
             const widget = try DiffEditorWidget.createWithDiff(
                 self.factory,
                 self.allocator,
@@ -359,31 +364,27 @@ pub fn DiffView(comptime View: type) type {
 
         pub fn matchesSnapshot(self: *Self, original: []const u8, modified: []const u8, options: Options) bool {
             return std.meta.eql(self.widget.options, options.normalize()) and
-                snapshotLinesEqual(self.widget.view_model.original_lines, original) and
-                snapshotLinesEqual(self.widget.view_model.modified_lines, modified);
+                snapshotLinesEqual(self.allocator, self.widget.originalModel(), original) and
+                snapshotLinesEqual(self.allocator, self.widget.modifiedModel(), modified);
         }
 
-        fn snapshotLinesEqual(lines: []const []const u8, text: []const u8) bool {
-            var iterator = std.mem.splitScalar(u8, text, '\n');
-            for (lines) |line| {
-                const next = iterator.next() orelse return false;
-                if (!std.mem.eql(u8, line, next)) return false;
+        fn snapshotLinesEqual(allocator: Allocator, model: *@import("../../../../editor/common/model/textModel.zig").TextModel, text: []const u8) bool {
+            const strings = @import("../../../../base/common/strings.zig");
+            const source = if (strings.startsWithUTF8BOM(text)) text[strings.UTF8_BOM_CHARACTER.len..] else text;
+            var lines = strings.splitLines(allocator, source) catch return false;
+            defer lines.deinit();
+            if (lines.items.len != model.getLineCount()) return false;
+            for (lines.items, 1..) |line, number| {
+                const model_line = model.borrowLineContent(number) catch return false;
+                if (!std.mem.eql(u8, line, model_line)) return false;
             }
-            return iterator.next() == null;
+            return true;
         }
 
-        /// Reapply the diff-specific configuration when its owner receives
-        /// IConfigurationService's change event. Snapshot source lines remain
-        /// owned by the current model until replacement succeeds.
+        /// Configuration changes update the existing diff model and views.
+        /// Presentation-only changes do not re-run the diff provider.
         pub fn updateOptions(self: *Self, options: Options) !bool {
-            const normalized = options.normalize();
-            if (std.meta.eql(self.widget.options, normalized)) return false;
-            const original = try std.mem.join(self.allocator, "\n", self.widget.view_model.original_lines);
-            defer self.allocator.free(original);
-            const modified = try std.mem.join(self.allocator, "\n", self.widget.view_model.modified_lines);
-            defer self.allocator.free(modified);
-            try self.replace(original, modified, self.widget.width, self.widget.height, normalized);
-            return true;
+            return self.widget.updateOptions(options);
         }
 
         pub fn setThemeColors(self: *Self, palette: ?*const @import("../../themeColors.zig").ThemeColors) void {

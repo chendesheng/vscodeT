@@ -70,6 +70,15 @@ pub fn getAdditionalLineHeights(allocator: Allocator, editor: *Editor, ignored_z
 }
 
 pub fn computeRangeAlignment(allocator: Allocator, original: *Editor, modified: *Editor, diffs: []const diff_model.DiffMapping, original_ignored: []const []const u8, modified_ignored: []const []const u8, inner_hunk_alignment: bool) ![]ILineRangeAlignment {
+    // A content event can precede the debounced diff result. The previous
+    // mappings are sorted; do not construct deleted-code zones outside the
+    // real model while that result is pending.
+    if (diffs.len > 0) {
+        const last = diffs[diffs.len - 1].line_range_mapping;
+        if (last.original.endLineNumberExclusive > original.model.getLineCount() + 1 or
+            last.modified.endLineNumberExclusive > modified.model.getLineCount() + 1)
+            return allocator.alloc(ILineRangeAlignment, 0);
+    }
     const original_heights = try getAdditionalLineHeights(allocator, original, original_ignored);
     defer allocator.free(original_heights);
     const modified_heights = try getAdditionalLineHeights(allocator, modified, modified_ignored);
@@ -320,6 +329,19 @@ pub const DiffEditorViewZones = struct {
         if (self.batch_depth == 0) self.updateAfterEvent();
     }
 
+    pub fn replaceMappings(self: *DiffEditorViewZones, mappings: []const diff_model.DiffMapping) !void {
+        self.mappings = mappings;
+        self.compare_move = null;
+        self.original_top_padding = 0;
+        self.modified_top_padding = 0;
+        // Derived deleted-code widgets borrow their former mapping/inner
+        // changes. Uninstall them before rebuilding against the new diff.
+        self.updating = true;
+        defer self.updating = false;
+        try self.apply(&self.original, &.{}, false);
+        try self.apply(&self.modified, &.{}, false);
+    }
+
     pub fn setMode(self: *DiffEditorViewZones, mode: Mode) void {
         if (self.mode == mode) return;
         self.mode = mode;
@@ -340,6 +362,15 @@ pub const DiffEditorViewZones = struct {
     fn topForLine(editor: *Editor, model_line: usize) usize {
         const view_line = editor.viewPositionOfModelPosition(.{ .lineNumber = model_line, .column = 1 }).lineNumber;
         return @intFromFloat(@max(0, editor.viewLayout().getVerticalOffsetForLineNumber(view_line, false)));
+    }
+
+    pub fn setRenderIndicators(self: *DiffEditorViewZones, enabled: bool) void {
+        if (self.render_indicators == enabled) return;
+        self.render_indicators = enabled;
+        self.updating = true;
+        defer self.updating = false;
+        self.relayout(&self.original) catch {};
+        self.relayout(&self.modified) catch {};
     }
 
     pub fn setColors(self: *DiffEditorViewZones, colors: Colors) void {

@@ -109,12 +109,18 @@ pub const DiffEditorDecorations = struct {
     }
 
     pub fn setConfig(self: *DiffEditorDecorations, config: Config, state: *const DiffState, show_moves: bool) !void {
-        // Remove before rewriting the option values: the model buckets
-        // decorations by the options it saw at insertion time.
-        self.detach();
-        self.config = config;
-        self.buildOptions();
-        try self.update(state, show_moves);
+        try self.setConfigWithMoveState(config, state, show_moves, null, null);
+    }
+
+    pub fn setConfigWithMoveState(self: *DiffEditorDecorations, config: Config, state: *const DiffState, show_moves: bool, active: ?usize, compare: ?usize) !void {
+        if (!std.meta.eql(self.config, config)) {
+            // Remove before rewriting the option values: the model buckets
+            // decorations by the options it saw at insertion time.
+            self.detach();
+            self.config = config;
+            self.buildOptions();
+        }
+        try self.updateWithMoveState(state, show_moves, active, compare);
     }
 
     fn buildOptions(self: *DiffEditorDecorations) void {

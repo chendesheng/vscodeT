@@ -53,8 +53,6 @@ pub fn DiffEditorWidget(comptime View: type) type {
         options: Options,
         inline_mode: bool = false,
         width_based_layout: diff_editor_options.WidthBasedLayout = .{},
-        original_lines: [][]u8,
-        modified_lines: [][]u8,
 
         view_model: DiffEditorViewModel,
         zones: view_zones.DiffEditorViewZones = undefined,
@@ -64,6 +62,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         accessible_viewer: accessible_module.AccessibleDiffViewer,
         moved_blocks: moved_feature.MovedBlocksLinesFeature = undefined,
         move_listener: ?usize = null,
+        diff_listener: ?usize = null,
         laying_out: bool = false,
         layout_pending: bool = false,
 
@@ -151,28 +150,6 @@ pub fn DiffEditorWidget(comptime View: type) type {
             const modified_label_copy = try allocator.dupe(u8, modified_label);
             errdefer allocator.free(modified_label_copy);
 
-            const original_lines = try splitOwnedLines(allocator, original_text);
-            errdefer freeLines(allocator, original_lines);
-            const modified_lines = try splitOwnedLines(allocator, modified_text);
-            errdefer freeLines(allocator, modified_lines);
-
-            const original_views = try allocator.alloc([]const u8, original_lines.len);
-            errdefer allocator.free(original_views);
-            for (original_lines, 0..) |line, index| original_views[index] = line;
-            const modified_views = try allocator.alloc([]const u8, modified_lines.len);
-            errdefer allocator.free(modified_views);
-            for (modified_lines, 0..) |line, index| modified_views[index] = line;
-
-            var diff_model = DiffEditorViewModel.init(allocator, original_views, modified_views, .{
-                .ignore_trim_whitespace = options.ignore_trim_whitespace,
-                .max_computation_time_ms = options.max_computation_time_ms,
-                .diff_algorithm = options.diff_algorithm,
-                .show_moves = options.show_moves,
-            });
-            errdefer diff_model.deinit();
-            if (computed) |result| try diff_model.applyComputedDiff(result) else try diff_model.compute();
-            const diff_state = diff_model.stateRef() orelse return error.DiffUnavailable;
-
             const is_inline = !normalized_options.renderSideBySide(width);
             const original_editor = try Editor.createFromTextWithOptions(
                 allocator,
@@ -201,6 +178,17 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 allocator.destroy(modified_editor);
             }
 
+            var diff_model = DiffEditorViewModel.init(allocator, original_editor.model, modified_editor.model, .{
+                .ignore_trim_whitespace = options.ignore_trim_whitespace,
+                .max_computation_time_ms = options.max_computation_time_ms,
+                .diff_algorithm = options.diff_algorithm,
+                .show_moves = options.show_moves,
+            });
+            var model_owned = true;
+            errdefer if (model_owned) diff_model.deinit();
+            if (computed) |result| try diff_model.applyComputedDiff(result) else try diff_model.compute();
+            const diff_state = diff_model.stateRef() orelse return error.DiffUnavailable;
+
             const original_view = try factory(allocator, original_editor);
             errdefer original_view.deinit();
             const modified_view = try factory(allocator, modified_editor);
@@ -216,7 +204,6 @@ pub fn DiffEditorWidget(comptime View: type) type {
             modified_view.setStatusBarVisible(false) catch {};
             original_editor.disableFolding();
             modified_editor.disableFolding();
-            try diff_model.initializeUnchangedRegions(normalized_options.hide_unchanged_regions, normalized_options.hide_unchanged_regions_minimum_line_count, normalized_options.hide_unchanged_regions_context_line_count);
 
             // The model decorations store pointers into the options structs owned
             // by `DiffEditorDecorations`, so it must live at a stable address
@@ -251,8 +238,6 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .modified_label = modified_label_copy,
                 .options = normalized_options,
                 .inline_mode = is_inline,
-                .original_lines = original_lines,
-                .modified_lines = modified_lines,
                 .view_model = diff_model,
                 .accessible_viewer = accessible_module.AccessibleDiffViewer.init(allocator),
                 .decorations = decorations,
@@ -261,6 +246,9 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .original_view = original_view,
                 .modified_view = modified_view,
             };
+            model_owned = false;
+            errdefer self.view_model.deinit();
+            try self.view_model.initializeUnchangedRegions(normalized_options.hide_unchanged_regions, normalized_options.hide_unchanged_regions_minimum_line_count, normalized_options.hide_unchanged_regions_context_line_count);
             self.overview.init(allocator, original_editor, modified_editor);
             self.zones.init(allocator, original_editor, original_view.viewZones(), modified_editor, modified_view.viewZones(), modified_view.terminal_view_host, modified_view.lineStyleFunction(), modified_view.decorationBitsFunction(), normalized_options.render_indicators, self.state().?.mappings);
             errdefer self.zones.deinit();
@@ -271,6 +259,9 @@ pub fn DiffEditorWidget(comptime View: type) type {
             errdefer self.moved_blocks.deinit();
             self.move_listener = try self.view_model.on_did_change_active_move.listen(self, onMoveStateChanged);
             errdefer self.view_model.on_did_change_active_move.unlisten(self.move_listener.?);
+            self.diff_listener = try self.view_model.on_did_change.listen(self, onDiffStateChanged);
+            errdefer self.view_model.on_did_change.unlisten(self.diff_listener.?);
+            try self.view_model.startListening();
             // Keep the line views alive for layout changes and recomputation.
             self.layout(width, height);
             self.selectInitialChange();
@@ -281,6 +272,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         pub fn destroy(self: *Self) void {
             const allocator = self.allocator;
             self.accessible_viewer.close();
+            if (self.diff_listener) |id| self.view_model.on_did_change.unlisten(id);
             if (self.move_listener) |id| self.view_model.on_did_change_active_move.unlisten(id);
             self.moved_blocks.deinit();
             self.hide_unchanged.deinit();
@@ -288,8 +280,6 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.overview.deinit(self.original_editor, self.modified_editor);
             self.decorations.deinit();
             allocator.destroy(self.decorations);
-            allocator.free(self.view_model.original_lines);
-            allocator.free(self.view_model.modified_lines);
             self.view_model.deinit();
 
             self.original_view.deinit();
@@ -299,14 +289,106 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.modified_editor.deinit();
             allocator.destroy(self.modified_editor);
 
-            freeLines(allocator, self.original_lines);
-            freeLines(allocator, self.modified_lines);
             allocator.free(self.original_path);
             allocator.free(self.modified_path);
             allocator.free(self.original_label);
             allocator.free(self.modified_label);
             if (self.message) |message| allocator.free(message);
             allocator.destroy(self);
+        }
+
+        fn computationOptions(options: Options) diff_view_model.Options {
+            return .{
+                .ignore_trim_whitespace = options.ignore_trim_whitespace,
+                .max_computation_time_ms = options.max_computation_time_ms,
+                .diff_algorithm = options.diff_algorithm,
+                .show_moves = options.show_moves,
+            };
+        }
+
+        pub fn updateOptions(self: *Self, raw_options: Options) !bool {
+            return self.updateOptionsWithDiff(raw_options, null);
+        }
+
+        pub fn updateOptionsWithDiff(self: *Self, raw_options: Options, computed: ?IDocumentDiff) !bool {
+            const options = raw_options.normalize();
+            const old = self.options;
+            if (std.meta.eql(old, options) and computed == null) return false;
+            const next_base = computationOptions(options);
+            const needs_compute = !std.meta.eql(self.view_model.options, next_base);
+            var result: ?IDocumentDiff = null;
+            defer if (result) |*diff| @import("../../../common/diff/documentDiffProvider.zig").deinitDiff(self.allocator, diff);
+            if (needs_compute and computed == null and self.view_model.worker == null) {
+                var provider = @import("../../../common/diff/documentDiffProvider.zig").LineDiffProvider.init(next_base.diff_algorithm);
+                result = try provider.interface().computeDiff(self.allocator, self.originalModel(), self.modifiedModel(), .{
+                    .ignoreTrimWhitespace = next_base.ignore_trim_whitespace,
+                    .maxComputationTimeMs = next_base.max_computation_time_ms,
+                    .computeMoves = next_base.show_moves,
+                }, .None);
+            }
+            self.width_based_layout.updateOptions(old, options);
+            self.options = options;
+            self.view_model.options = next_base;
+            self.view_model.provider = @import("../../../common/diff/documentDiffProvider.zig").LineDiffProvider.init(next_base.diff_algorithm);
+            self.original_editor.setLineDecorationsWidth(if (options.render_indicators) 1 else 0);
+            self.modified_editor.setLineDecorationsWidth(if (options.render_indicators) 1 else 0);
+            self.zones.setRenderIndicators(options.render_indicators);
+            try self.hide_unchanged.updateOptions(options);
+            const selected = if (computed) |diff| @as(?IDocumentDiff, diff) else result;
+            if (selected) |diff| {
+                try self.view_model.applyComputedDiff(diff);
+            } else {
+                if (needs_compute) self.view_model.requestRecompute(0);
+                self.zones.beginBatch();
+                defer self.zones.endBatch();
+                if (old.hide_unchanged_regions != options.hide_unchanged_regions or old.hide_unchanged_regions_minimum_line_count != options.hide_unchanged_regions_minimum_line_count or old.hide_unchanged_regions_context_line_count != options.hide_unchanged_regions_context_line_count) {
+                    try self.updateUnchangedRegions();
+                }
+                try self.updateDiffDecorations();
+            }
+            self.layout(self.width, self.height);
+            if (options.only_show_accessible_diff_viewer and !self.accessible_viewer.visible()) try self.openAccessibleViewer();
+            try self.accessible_viewer.setCanClose(!options.only_show_accessible_diff_viewer);
+            return true;
+        }
+
+        fn updateUnchangedRegions(self: *Self) !void {
+            try self.view_model.initializeUnchangedRegions(self.options.hide_unchanged_regions, self.options.hide_unchanged_regions_minimum_line_count, self.options.hide_unchanged_regions_context_line_count);
+        }
+
+        fn updateDiffDecorations(self: *Self) !void {
+            var config = self.decorations.config;
+            config.render_indicators = self.options.render_indicators;
+            config.show_empty_decorations = self.options.show_empty_decorations;
+            config.use_true_inline_view = self.options.use_true_inline_view and self.inline_mode;
+            const show_moves = self.options.show_moves and self.sideBySide();
+            const compare = if (show_moves) self.view_model.moved_text_to_compare else null;
+            self.zones.setCompareMove(if (compare) |index| &self.state().?.moved_texts[index] else null, self.focused == .original);
+            try self.decorations.setConfigWithMoveState(config, self.state().?, show_moves, self.view_model.activeMovedText(), compare);
+            self.original_view.invalidate();
+            self.modified_view.invalidate();
+        }
+
+        fn onDiffStateChanged(_: void, self: *Self) anyerror!void {
+            self.zones.beginBatch();
+            defer {
+                self.zones.endBatch();
+                self.layout(self.width, self.height);
+            }
+            const was_accessible = self.accessible_viewer.visible();
+            self.accessible_viewer.close();
+            const compare = self.view_model.moved_text_to_compare;
+            try self.zones.replaceMappings(self.state().?.mappings);
+            try self.moved_blocks.setEnabled(false);
+            try self.updateUnchangedRegions();
+            try self.updateDiffDecorations();
+            try self.moved_blocks.setEnabled(self.options.show_moves and self.sideBySide());
+            if (self.options.show_moves and self.sideBySide()) self.view_model.setMovedTextToCompare(compare);
+            if (self.current_change) |index| {
+                if (index >= self.changeCount()) self.current_change = if (self.changeCount() > 0) self.changeCount() - 1 else null;
+            }
+            self.overview.invalidate();
+            if (was_accessible) try self.openAccessibleViewer();
         }
 
         pub fn state(self: *const Self) ?*const DiffState {
@@ -531,8 +613,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             std.mem.swap(*View, &self.original_view, &self.modified_view);
             std.mem.swap([]u8, &self.original_label, &self.modified_label);
             std.mem.swap([]u8, &self.original_path, &self.modified_path);
-            std.mem.swap([][]u8, &self.original_lines, &self.modified_lines);
-            std.mem.swap([]const []const u8, &self.view_model.original_lines, &self.view_model.modified_lines);
+            self.view_model.swapModels();
             const diff_state = if (self.view_model.state) |*state_value| state_value else unreachable;
             for (self.view_model.unchanged_regions) |*region| std.mem.swap(usize, &region.original_line_number, &region.modified_line_number);
             for (diff_state.mappings) |*mapping| flipMapping(&mapping.line_range_mapping);
@@ -555,6 +636,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.layout(self.width, self.height);
             if (self.current_change) |index| self.revealChange(index);
             if (accessible) try self.openAccessibleViewer();
+            if (!self.view_model.is_diff_up_to_date) self.view_model.requestRecompute(0);
         }
 
         fn applyZoneTheme(self: *Self, palette: ?*const @import("../../../../workbench/browser/themeColors.zig").ThemeColors) void {
@@ -928,19 +1010,4 @@ fn flipMapping(mapping: *view_model.DetailedLineRangeMapping) void {
             std.mem.swap(Range, &change.originalRange, &change.modifiedRange);
         }
     }
-}
-
-fn splitOwnedLines(allocator: Allocator, text: []const u8) ![][]u8 {
-    var lines = std.array_list.Managed([]u8).init(allocator);
-    errdefer freeLines(allocator, lines.items);
-    var iterator = std.mem.splitScalar(u8, text, '\n');
-    while (iterator.next()) |line| {
-        try lines.append(try allocator.dupe(u8, line));
-    }
-    return lines.toOwnedSlice();
-}
-
-fn freeLines(allocator: Allocator, lines: [][]u8) void {
-    for (lines) |line| allocator.free(line);
-    if (lines.len > 0) allocator.free(lines);
 }

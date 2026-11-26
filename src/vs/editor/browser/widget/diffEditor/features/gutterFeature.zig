@@ -43,9 +43,9 @@ pub fn gutterGlyph(mapping: view_model.DetailedLineRangeMapping, display_row: us
 const Editor = @import("../../codeEditor/codeEditorWidgetTerminal.zig").Editor;
 
 fn rangeRows(editor: *Editor, range: LineRange) ?LineRange {
-    if (range.isEmpty()) return null;
+    if (range.isEmpty() or range.startLineNumber < 1 or range.startLineNumber > editor.model.getLineCount()) return null;
     const start = editor.viewPositionOfModelPosition(.{ .lineNumber = range.startLineNumber, .column = 1 }).lineNumber;
-    const last = range.endLineNumberExclusive - 1;
+    const last = @min(range.endLineNumberExclusive - 1, editor.model.getLineCount());
     const end = editor.viewPositionOfModelPosition(.{ .lineNumber = last, .column = editor.model.getLineMaxColumn(last) }).lineNumber;
     const layout = editor.viewLayout();
     return LineRange.init(@intFromFloat(layout.getVerticalOffsetForLineNumber(start, false)), @intFromFloat(layout.getVerticalOffsetAfterLineNumber(end, false)));

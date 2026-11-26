@@ -208,6 +208,12 @@ pub const HideUnchangedRegionsFeature = struct {
         }
     }
 
+    pub fn updateOptions(self: *HideUnchangedRegionsFeature, options: Options) !void {
+        const changed = self.options.variant != options.variant or self.options.compact_mode != options.compact_mode;
+        self.options = options;
+        if (changed) try self.apply();
+    }
+
     fn removeZones(pane: *Pane, accessor: browser.IViewZoneChangeAccessor) anyerror!void {
         for (pane.bindings) |*binding| {
             if (binding.id) |id| try accessor.removeZone(id);

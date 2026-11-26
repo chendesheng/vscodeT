@@ -114,10 +114,10 @@ pub const WorkerBasedDocumentDiffProvider = struct {
         }
 
         fn splitLines(allocator: std.mem.Allocator, text: []const u8) ![][]const u8 {
-            var lines: std.ArrayList([]const u8) = .empty;
-            var iterator = std.mem.splitScalar(u8, text, '\n');
-            while (iterator.next()) |line| try lines.append(allocator, line);
-            return lines.toOwnedSlice(allocator);
+            const strings = @import("../../../../base/common/strings.zig");
+            const source = if (strings.startsWithUTF8BOM(text)) text[strings.UTF8_BOM_CHARACTER.len..] else text;
+            var lines = try strings.splitLines(allocator, source);
+            return lines.toOwnedSlice();
         }
 
         fn compute(message: *worker.Request) void {
@@ -250,4 +250,15 @@ test "diffProviderFactory: worker replies with detached snapshot result" {
     service.waitForReply();
     try std.testing.expect(service.dispatchReplies());
     try std.testing.expect(!capture.cache_hit);
+}
+
+test "diffProviderFactory: worker line snapshots match text-model EOL and BOM boundaries" {
+    const allocator = std.testing.allocator;
+    const lines = try WorkerBasedDocumentDiffProvider.Request.splitLines(allocator, "\xef\xbb\xbfalpha\r\nbeta\rgamma\n");
+    defer allocator.free(lines);
+    try std.testing.expectEqual(@as(usize, 4), lines.len);
+    try std.testing.expectEqualStrings("alpha", lines[0]);
+    try std.testing.expectEqualStrings("beta", lines[1]);
+    try std.testing.expectEqualStrings("gamma", lines[2]);
+    try std.testing.expectEqualStrings("", lines[3]);
 }

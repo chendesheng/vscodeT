@@ -137,6 +137,7 @@ pub const EditorService = struct {
             const tab = existing.tab;
             const dims = existing.pane.contentDimensions();
             try tab.diff.?.replaceWithDiff(original_text, modified_text, dims.width, dims.height, options, computed);
+            if (self.opening) |opening| try opening.attachDiffModel(&tab.diff.?.widget.view_model);
             tab.syncDiffViews();
             try existing.pane.activateTab(tab);
             self.part.service.activateGroup(existing.pane.group);
@@ -170,6 +171,7 @@ pub const EditorService = struct {
         };
         var registered = false;
         defer if (!registered) tab.deinit();
+        if (self.opening) |opening| try opening.attachDiffModel(&tab.diff.?.widget.view_model);
 
         try pane.tabs.ensureUnusedCapacity(1);
         errdefer if (pane.group.model.indexOfExact(tab.input) != null) {
@@ -374,6 +376,19 @@ pub const EditorOpening = struct {
         self.reload_jobs.deinit();
     }
 
+    fn ensureDiffWorker(self: *EditorOpening) !*DiffWorker {
+        if (self.diff_worker) |worker| return worker;
+        const instance = try self.allocator.create(DiffWorker);
+        instance.* = DiffWorker.init();
+        instance.attachWindow(self.window_events);
+        self.diff_worker = instance;
+        return instance;
+    }
+
+    fn attachDiffModel(self: *EditorOpening, model: *@import("../../../../editor/browser/widget/diffEditor/diffEditorViewModel.zig").DiffEditorViewModel) !void {
+        model.attachWorker(try self.ensureDiffWorker(), &self.diff_cache, self.window_events);
+    }
+
     /// Consumes the provider's virtual document source on all outcomes.
     pub fn requestOpenSnapshotDiff(self: *EditorOpening, configuration: ?IConfigurationService, path: []const u8, source: diff_provider.SnapshotSource, left: []const u8, right: []const u8) !void {
         var source_owned = true;
@@ -381,13 +396,7 @@ pub const EditorOpening = struct {
         self.cancelPendingOpen();
         self.cancelPendingDiff();
         const options = text_diff_editor_mod.computeConfiguration(configuration);
-        const worker = self.diff_worker orelse blk: {
-            const instance = try self.allocator.create(DiffWorker);
-            instance.* = DiffWorker.init();
-            instance.attachWindow(self.window_events);
-            self.diff_worker = instance;
-            break :blk instance;
-        };
+        const worker = try self.ensureDiffWorker();
         const path_copy = try self.allocator.dupe(u8, path);
         errdefer self.allocator.free(path_copy);
         const left_copy = try self.allocator.dupe(u8, left);
@@ -444,7 +453,7 @@ pub const EditorOpening = struct {
             return true;
         };
         if (self.part.service.getGroup(pending.group) == null) return false;
-        const editors = EditorService{ .part = self.part };
+        const editors = EditorService{ .part = self.part, .opening = self };
         if (editors.findDiffTab(pending.path, pending.left, pending.right)) |existing| {
             if (existing.tab.diff.?.matchesSnapshot(request.original, request.modified, request.options)) {
                 existing.pane.activateTab(existing.tab) catch return false;

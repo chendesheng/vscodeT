@@ -63,10 +63,16 @@ pub fn Tests(comptime View: type) type {
             try testing.expectEqualStrings("a.zig (Working Tree ↔ HEAD)", view.input().getName());
             try testing.expectEqual(view.original_input.interface(), view.diff_input.original);
             try testing.expectEqual(view.modified_input.interface(), view.diff_input.modified);
+            const existing_widget = view.widget;
+            const original_model = view.widget.originalModel();
+            const modified_model = view.widget.modifiedModel();
             var options = view.widget.options;
             options.render_side_by_side = false;
             try testing.expect(try view.updateOptions(options));
             try testing.expect(view.widget.inline_mode);
+            try testing.expectEqual(existing_widget, view.widget);
+            try testing.expectEqual(original_model, view.widget.originalModel());
+            try testing.expectEqual(modified_model, view.widget.modifiedModel());
             try testing.expect(!(try view.updateOptions(options)));
         }
     };

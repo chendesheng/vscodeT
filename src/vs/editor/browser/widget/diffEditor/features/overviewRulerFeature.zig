@@ -67,9 +67,9 @@ pub const OverviewRulerFeature = struct {
     }
 
     fn appendZone(zones: *std.ArrayList(ruler.Decoration), allocator: Allocator, editor: *Editor, range: LineRange, color: [3]u8) !void {
-        if (range.isEmpty() or range.startLineNumber == 0) return;
+        if (range.isEmpty() or range.startLineNumber == 0 or range.startLineNumber > editor.model.getLineCount()) return;
         const first = range.startLineNumber;
-        const last = range.endLineNumberExclusive - 1;
+        const last = @min(range.endLineNumberExclusive - 1, editor.model.getLineCount());
         const start = editor.viewPositionOfModelPosition(.{ .lineNumber = first, .column = 1 }).lineNumber;
         const end = editor.viewPositionOfModelPosition(.{ .lineNumber = last, .column = editor.model.getLineMaxColumn(last) }).lineNumber;
         const layout = editor.viewLayout();

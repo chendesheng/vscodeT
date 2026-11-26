@@ -1,10 +1,9 @@
-// Port of the compute/state subset of
+// Port of the compute/state and unchanged-region subset of
 // `src/vs/editor/browser/widget/diffEditor/diffEditorViewModel.ts`.
 //
 // Terminal adaptations:
-// - The view model works on line arrays and computes synchronously; there is
-//   no observable system, cancellation token source or incremental edit
-//   application. `recompute` replaces the whole `DiffState`.
+// - The view model borrows the two real text models. Native worker results
+//   enter through applyComputedDiff; direct provider computation is synchronous.
 // - `normalizeDocumentDiff`/`normalizeRangeMapping` and `toLineChanges` keep
 //   the upstream rules: inner ranges that end at the line max column are
 //   widened to the next line, and line changes encode empty insert/delete
@@ -17,6 +16,13 @@ const range_mapping = @import("../../../common/diff/rangeMapping.zig");
 const lines_diff_computer = @import("../../../common/diff/linesDiffComputer.zig");
 const LineRange = @import("../../../common/core/ranges/lineRange.zig").LineRange;
 const Range = @import("../../../common/core/range.zig").Range;
+const model_mod = @import("../../../common/model.zig");
+const diff_provider = @import("diffProviderFactoryService.zig");
+const Worker = @import("../../services/editorWorkerService.zig").EditorWorkerService;
+const WindowTask = @import("../../../../base/common/windowDispatch.zig").Task;
+const WindowQueue = @import("../../../../base/common/windowDispatch.zig").Queue;
+const time = @import("../../../../base/common/timeCompat.zig");
+const InternalModelContentChangeEvent = @import("../../../common/textModelEvents.zig").InternalModelContentChangeEvent;
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
 
 pub const DetailedLineRangeMapping = range_mapping.DetailedLineRangeMapping;
@@ -193,30 +199,39 @@ pub const UnchangedRegion = struct {
 
 pub const DiffEditorViewModel = struct {
     allocator: Allocator,
-    original_lines: []const []const u8,
-    modified_lines: []const []const u8,
+    model: struct { original: *doc_diff.TextModel, modified: *doc_diff.TextModel },
     options: Options,
     provider: doc_diff.LineDiffProvider,
     state: ?DiffState = null,
     on_did_change: Emitter(void),
     unchanged_regions: []UnchangedRegion = &.{},
+    original_region_ids: []u64 = &.{},
+    modified_region_ids: []u64 = &.{},
+    region_track_options: model_mod.ModelDecorationOptions = model_mod.ModelDecorationOptions.init("unchanged", .AlwaysGrowsWhenTypingAtEdges),
     on_did_change_unchanged_regions: Emitter(void),
     on_did_change_active_move: Emitter(void),
     moved_text_to_compare: ?usize = null,
     active_moved_text_from_cursor: ?usize = null,
     hovered_moved_text: ?usize = null,
     computed_once: bool = false,
+    is_diff_up_to_date: bool = false,
+    worker: ?*Worker = null,
+    cache: ?*diff_provider.Cache = null,
+    compute_task: WindowTask = .{},
+    pending_request: ?*diff_provider.WorkerBasedDocumentDiffProvider.Request = null,
+    original_content_listener: ?usize = null,
+    modified_content_listener: ?usize = null,
+    last_compute_error: ?anyerror = null,
 
     pub fn init(
         allocator: Allocator,
-        original_lines: []const []const u8,
-        modified_lines: []const []const u8,
+        original: *doc_diff.TextModel,
+        modified: *doc_diff.TextModel,
         options: Options,
     ) DiffEditorViewModel {
         return .{
             .allocator = allocator,
-            .original_lines = original_lines,
-            .modified_lines = modified_lines,
+            .model = .{ .original = original, .modified = modified },
             .options = options,
             .provider = doc_diff.LineDiffProvider.init(options.diff_algorithm),
             .on_did_change = Emitter(void).init(allocator),
@@ -226,24 +241,123 @@ pub const DiffEditorViewModel = struct {
     }
 
     pub fn deinit(self: *DiffEditorViewModel) void {
+        self.cancelPendingComputation();
+        if (self.original_content_listener) |id| self.model.original.removeDidChangeContentListener(id);
+        if (self.modified_content_listener) |id| self.model.modified.removeDidChangeContentListener(id);
         if (self.state) |*state| state.deinit(self.allocator);
         self.on_did_change.deinit();
         self.on_did_change_unchanged_regions.deinit();
         self.on_did_change_active_move.deinit();
+        self.clearRegionDecorations();
         self.allocator.free(self.unchanged_regions);
         self.* = undefined;
     }
 
+    /// The model owns content listeners and outstanding diff work. Production
+    /// supplies the shared window worker; small isolated editor tests can
+    /// compute immediately through the document provider.
+    pub fn startListening(self: *DiffEditorViewModel) !void {
+        if (self.original_content_listener != null) return;
+        self.original_content_listener = try self.model.original.onDidChangeContentWithContextId(self, onContentChanged);
+        errdefer {
+            self.model.original.removeDidChangeContentListener(self.original_content_listener.?);
+            self.original_content_listener = null;
+        }
+        self.modified_content_listener = try self.model.modified.onDidChangeContentWithContextId(self, onContentChanged);
+    }
+
+    pub fn attachWorker(self: *DiffEditorViewModel, worker: *Worker, cache: ?*diff_provider.Cache, queue: *WindowQueue) void {
+        if (self.worker == worker) return;
+        self.cancelPendingComputation();
+        self.worker = worker;
+        self.cache = cache;
+        self.compute_task = .{ .queue = queue, .context = self, .run = onComputeDeadline };
+        if (!self.is_diff_up_to_date) self.requestRecompute(0);
+    }
+
+    fn onContentChanged(_: InternalModelContentChangeEvent, self: *DiffEditorViewModel) anyerror!void {
+        self.requestRecompute(200);
+    }
+
+    pub fn cancelPendingComputation(self: *DiffEditorViewModel) void {
+        self.compute_task.schedule(null);
+        if (self.pending_request) |request| request.cancel();
+        self.pending_request = null;
+    }
+
+    pub fn requestRecompute(self: *DiffEditorViewModel, delay_ms: i64) void {
+        self.cancelPendingComputation();
+        self.is_diff_up_to_date = false;
+        self.last_compute_error = null;
+        if (self.worker != null) {
+            self.compute_task.schedule(time.milliTimestamp() + delay_ms);
+        } else {
+            self.compute() catch |err| {
+                self.last_compute_error = err;
+            };
+        }
+    }
+
+    fn onComputeDeadline(context: *anyopaque, now: i64, _: bool) bool {
+        const self: *DiffEditorViewModel = @ptrCast(@alignCast(context));
+        self.startWorkerComputation(now) catch |err| {
+            self.last_compute_error = err;
+            return true;
+        };
+        return false;
+    }
+
+    fn startWorkerComputation(self: *DiffEditorViewModel, now: i64) !void {
+        var original = try self.model.original.getValue(null, true);
+        defer original.deinit();
+        var modified = try self.model.modified.getValue(null, true);
+        defer modified.deinit();
+        self.pending_request = try diff_provider.WorkerBasedDocumentDiffProvider.computeDiff(
+            self.worker.?,
+            self.cache,
+            original.items,
+            modified.items,
+            .{
+                .ignore_trim_whitespace = self.options.ignore_trim_whitespace,
+                .max_computation_time_ms = self.options.max_computation_time_ms,
+                .diff_algorithm = self.options.diff_algorithm,
+                .show_moves = self.options.show_moves,
+            },
+            .{ .context = self, .run = completeWorkerComputation },
+            now,
+        );
+    }
+
+    fn completeWorkerComputation(context: *anyopaque, request: *diff_provider.WorkerBasedDocumentDiffProvider.Request, result: ?IDocumentDiff) bool {
+        const self: *DiffEditorViewModel = @ptrCast(@alignCast(context));
+        if (self.pending_request != request) return false;
+        self.pending_request = null;
+        if (result) |diff| {
+            self.applyComputedDiff(diff) catch |err| {
+                self.last_compute_error = err;
+            };
+        } else self.last_compute_error = request.failure orelse error.DiffUnavailable;
+        return true;
+    }
+
+    pub fn swapModels(self: *DiffEditorViewModel) void {
+        self.cancelPendingComputation();
+        std.mem.swap(*doc_diff.TextModel, &self.model.original, &self.model.modified);
+        std.mem.swap(?usize, &self.original_content_listener, &self.modified_content_listener);
+        std.mem.swap([]u64, &self.original_region_ids, &self.modified_region_ids);
+    }
+
     pub fn compute(self: *DiffEditorViewModel) !void {
-        var result = try self.provider.computeDiffFromLines(
+        var result = try self.provider.interface().computeDiff(
             self.allocator,
-            self.original_lines,
-            self.modified_lines,
+            self.model.original,
+            self.model.modified,
             .{
                 .ignoreTrimWhitespace = self.options.ignore_trim_whitespace,
                 .maxComputationTimeMs = self.options.max_computation_time_ms,
                 .computeMoves = self.options.show_moves,
             },
+            doc_diff.CancellationToken.None,
         );
         defer doc_diff.deinitDiff(self.allocator, &result);
 
@@ -252,10 +366,30 @@ pub const DiffEditorViewModel = struct {
 
     pub fn applyComputedDiff(self: *DiffEditorViewModel, result: IDocumentDiff) !void {
         const normalized = try self.normalizeDocumentDiff(result);
-        if (self.state) |*state| state.deinit(self.allocator);
+        var previous = self.state;
+        defer if (previous) |*state| state.deinit(self.allocator);
+        const previous_compare = if (self.moved_text_to_compare) |index|
+            if (previous) |state| if (index < state.moved_texts.len) state.moved_texts[index].lineRangeMapping.modified else null else null
+        else
+            null;
+        self.cancelPendingComputation();
         self.state = normalized;
         self.computed_once = true;
-        self.on_did_change.fire({}) catch {};
+        self.is_diff_up_to_date = true;
+        self.moved_text_to_compare = null;
+        self.active_moved_text_from_cursor = null;
+        self.hovered_moved_text = null;
+        if (previous_compare) |range| {
+            for (normalized.moved_texts, 0..) |move, index| {
+                if (move.lineRangeMapping.modified.intersect(range) != null) {
+                    self.moved_text_to_compare = index;
+                    break;
+                }
+            }
+        }
+        // Keep the old mapping allocation alive until the synchronous
+        // derived consumers have installed the new state.
+        try self.on_did_change.fire({});
     }
 
     pub fn activeMovedText(self: *const DiffEditorViewModel) ?usize {
@@ -288,12 +422,84 @@ pub const DiffEditorViewModel = struct {
         defer self.allocator.free(changes);
         for (state.mappings, changes) |mapping, *change| change.* = mapping.line_range_mapping.toLineRangeMapping();
         const regions = if (enabled)
-            try UnchangedRegion.fromDiffs(self.allocator, changes, self.original_lines.len, self.modified_lines.len, minimum, context)
+            try UnchangedRegion.fromDiffs(self.allocator, changes, self.model.original.getLineCount(), self.model.modified.getLineCount(), minimum, context)
         else
             try self.allocator.alloc(UnchangedRegion, 0);
+        errdefer self.allocator.free(regions);
+        const visible = if (self.unchanged_regions.len > 0) try self.previousVisibleRegions() else null;
+        defer if (visible) |ranges| self.allocator.free(ranges);
+        var restored: std.ArrayList(UnchangedRegion) = .empty;
+        defer restored.deinit(self.allocator);
+        for (regions) |*region| {
+            if (visible) |ranges| {
+                var intersecting: std.ArrayList(range_mapping.LineRangeMapping) = .empty;
+                defer intersecting.deinit(self.allocator);
+                for (ranges) |range| {
+                    if (range.original.intersectsStrict(region.originalUnchangedRange()) and range.modified.intersectsStrict(region.modifiedUnchangedRange())) try intersecting.append(self.allocator, range);
+                }
+                const restored_regions = try region.setVisibleRanges(self.allocator, intersecting.items);
+                defer self.allocator.free(restored_regions);
+                try restored.appendSlice(self.allocator, restored_regions);
+            } else try restored.append(self.allocator, region.*);
+        }
+        const new_regions = try restored.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(new_regions);
+        try self.trackRegions(new_regions);
+        self.allocator.free(regions);
         self.allocator.free(self.unchanged_regions);
-        self.unchanged_regions = regions;
-        try self.on_did_change_unchanged_regions.fire({});
+        self.unchanged_regions = new_regions;
+        self.on_did_change_unchanged_regions.fire({}) catch {};
+    }
+
+    fn previousVisibleRegions(self: *DiffEditorViewModel) ![]range_mapping.LineRangeMapping {
+        var hidden: std.ArrayList(range_mapping.LineRangeMapping) = .empty;
+        defer hidden.deinit(self.allocator);
+        var previous: ?UnchangedRegion = null;
+        for (self.unchanged_regions, 0..) |old, index| {
+            if (index >= self.original_region_ids.len or index >= self.modified_region_ids.len) continue;
+            const original = LineRange.fromRangeInclusive(self.model.original.getDecorationRange(self.original_region_ids[index]) orelse continue);
+            const modified = LineRange.fromRangeInclusive(self.model.modified.getDecorationRange(self.modified_region_ids[index]) orelse continue);
+            var region: UnchangedRegion = .{ .original_line_number = original.startLineNumber, .modified_line_number = modified.startLineNumber, .line_count = original.length() };
+            region.setState(old.visible_line_count_top, old.visible_line_count_bottom);
+            if (previous) |before| {
+                if (region.original_line_number < before.original_line_number + before.line_count or region.modified_line_number < before.modified_line_number + before.line_count) continue;
+            }
+            previous = region;
+            try hidden.append(self.allocator, .{ .original = region.getHiddenOriginalRange(), .modified = region.getHiddenModifiedRange() });
+        }
+        const clipped = try range_mapping.LineRangeMapping.clip(self.allocator, hidden.items, LineRange.ofLength(1, self.model.original.getLineCount()), LineRange.ofLength(1, self.model.modified.getLineCount()));
+        defer self.allocator.free(clipped);
+        return range_mapping.LineRangeMapping.inverse(self.allocator, clipped, self.model.original.getLineCount(), self.model.modified.getLineCount());
+    }
+
+    fn trackRegions(self: *DiffEditorViewModel, regions: []const UnchangedRegion) !void {
+        const original = try self.allocator.alloc(model_mod.ModelDeltaDecoration, regions.len);
+        defer self.allocator.free(original);
+        const modified = try self.allocator.alloc(model_mod.ModelDeltaDecoration, regions.len);
+        defer self.allocator.free(modified);
+        for (regions, original, modified) |region, *a, *b| {
+            a.* = .{ .range = region.originalUnchangedRange().toInclusiveRange().?, .options = &self.region_track_options };
+            b.* = .{ .range = region.modifiedUnchangedRange().toInclusiveRange().?, .options = &self.region_track_options };
+        }
+        const original_ids = try self.model.original.deltaDecorations(self.original_region_ids, original, 1004);
+        self.allocator.free(self.original_region_ids);
+        self.original_region_ids = original_ids;
+        const modified_ids = try self.model.modified.deltaDecorations(self.modified_region_ids, modified, 1005);
+        self.allocator.free(self.modified_region_ids);
+        self.modified_region_ids = modified_ids;
+    }
+
+    fn clearRegionDecorations(self: *DiffEditorViewModel) void {
+        if (self.original_region_ids.len > 0) {
+            const removed = self.model.original.deltaDecorations(self.original_region_ids, &.{}, 1004) catch &.{};
+            self.allocator.free(removed);
+        }
+        if (self.modified_region_ids.len > 0) {
+            const removed = self.model.modified.deltaDecorations(self.modified_region_ids, &.{}, 1005) catch &.{};
+            self.allocator.free(removed);
+        }
+        self.allocator.free(self.original_region_ids);
+        self.allocator.free(self.modified_region_ids);
     }
 
     pub fn ensureLineVisible(self: *DiffEditorViewModel, original: bool, line: usize) bool {
@@ -389,10 +595,10 @@ pub const DiffEditorViewModel = struct {
         const modified_line = modified_range.endLineNumber;
         if (original_range.startColumn == 1 and modified_range.startColumn == 1 and
             (original_range.endColumn != 1 or modified_range.endColumn != 1) and
-            original_range.endColumn == self.lineMaxColumn(self.original_lines, original_line) and
-            modified_range.endColumn == self.lineMaxColumn(self.modified_lines, modified_line) and
-            original_line < self.original_lines.len and
-            modified_line < self.modified_lines.len)
+            original_range.endColumn == lineMaxColumn(self.model.original, original_line) and
+            modified_range.endColumn == lineMaxColumn(self.model.modified, modified_line) and
+            original_line < self.model.original.getLineCount() and
+            modified_line < self.model.modified.getLineCount())
         {
             original_range = Range.init(original_range.startLineNumber, original_range.startColumn, original_line + 1, 1);
             modified_range = Range.init(modified_range.startLineNumber, modified_range.startColumn, modified_line + 1, 1);
@@ -400,9 +606,9 @@ pub const DiffEditorViewModel = struct {
         return .{ .originalRange = original_range, .modifiedRange = modified_range };
     }
 
-    fn lineMaxColumn(_: *const DiffEditorViewModel, lines: []const []const u8, line_number: usize) usize {
-        if (line_number == 0 or line_number > lines.len) return 1;
-        return lines[line_number - 1].len + 1;
+    fn lineMaxColumn(model: *doc_diff.TextModel, line_number: usize) usize {
+        if (line_number == 0 or line_number > model.getLineCount()) return 1;
+        return model.getLineMaxColumn(line_number);
     }
 
     /// Upstream `toLineChange`: empty original/modified ranges are encoded with
@@ -433,12 +639,12 @@ pub const DiffEditorViewModel = struct {
 
 test "diffEditorViewModel: identical and changed line counts" {
     const allocator = std.testing.allocator;
-    var view_model = DiffEditorViewModel.init(
-        allocator,
-        &.{ "a", "b", "c" },
-        &.{ "a", "B", "c" },
-        .{},
-    );
+    const TestModel = @import("../../../test/common/port/testSupport.zig").TestModel;
+    var original = try TestModel.init(allocator, "a\nb\nc", "nullLanguage");
+    defer original.deinit();
+    var modified = try TestModel.init(allocator, "a\nB\nc", "nullLanguage");
+    defer modified.deinit();
+    var view_model = DiffEditorViewModel.init(allocator, original.model, modified.model, .{});
     defer view_model.deinit();
 
     try view_model.compute();
@@ -454,7 +660,7 @@ test "diffEditorViewModel: identical and changed line counts" {
     try std.testing.expectEqual(@as(usize, 2), changes[0].modifiedStartLineNumber);
     try std.testing.expectEqual(@as(usize, 2), changes[0].modifiedEndLineNumber);
 
-    var identical = DiffEditorViewModel.init(allocator, &.{"a"}, &.{"a"}, .{});
+    var identical = DiffEditorViewModel.init(allocator, original.model, original.model, .{});
     defer identical.deinit();
     try identical.compute();
     try std.testing.expect(identical.stateRef().?.identical);
@@ -463,14 +669,19 @@ test "diffEditorViewModel: identical and changed line counts" {
 
 test "diffEditorViewModel: insertion and deletion encode empty ranges" {
     const allocator = std.testing.allocator;
-    var insertion = DiffEditorViewModel.init(allocator, &.{ "a", "b" }, &.{ "a", "x", "b" }, .{});
+    const TestModel = @import("../../../test/common/port/testSupport.zig").TestModel;
+    var original = try TestModel.init(allocator, "a\nb", "nullLanguage");
+    defer original.deinit();
+    var modified = try TestModel.init(allocator, "a\nx\nb", "nullLanguage");
+    defer modified.deinit();
+    var insertion = DiffEditorViewModel.init(allocator, original.model, modified.model, .{});
     defer insertion.deinit();
     try insertion.compute();
     const insert_change = DiffEditorViewModel.toLineChange(insertion.stateRef().?.mappings[0].line_range_mapping);
     try std.testing.expectEqual(@as(usize, 0), insert_change.originalEndLineNumber);
     try std.testing.expectEqual(@as(usize, 2), insert_change.modifiedStartLineNumber);
 
-    var deletion = DiffEditorViewModel.init(allocator, &.{ "a", "x", "b" }, &.{ "a", "b" }, .{});
+    var deletion = DiffEditorViewModel.init(allocator, modified.model, original.model, .{});
     defer deletion.deinit();
     try deletion.compute();
     const delete_change = DiffEditorViewModel.toLineChange(deletion.stateRef().?.mappings[0].line_range_mapping);
@@ -480,7 +691,12 @@ test "diffEditorViewModel: insertion and deletion encode empty ranges" {
 
 test "diffEditorViewModel: max column inner ranges are widened to the next line" {
     const allocator = std.testing.allocator;
-    var view_model = DiffEditorViewModel.init(allocator, &.{ "abc", "d" }, &.{ "abd", "d" }, .{});
+    const TestModel = @import("../../../test/common/port/testSupport.zig").TestModel;
+    var original = try TestModel.init(allocator, "abc\nd", "nullLanguage");
+    defer original.deinit();
+    var modified = try TestModel.init(allocator, "abd\nd", "nullLanguage");
+    defer modified.deinit();
+    var view_model = DiffEditorViewModel.init(allocator, original.model, modified.model, .{});
     defer view_model.deinit();
     try view_model.compute();
     const inner = view_model.stateRef().?.mappings[0].line_range_mapping.inner_changes orelse return error.TestUnexpectedResult;
