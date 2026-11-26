@@ -838,6 +838,7 @@ pub const TerminalWorkbench = struct {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
                         host.editor_configuration.applyToTab(tab);
                         host.attachCodeLensServices(tab);
+                        host.instantiation.invokeFunction(@import("../vs/workbench/workbench.common.main.zig").attachDiffEditorContributions, .{tab}) catch {};
                         tab.attachDiffActionServices(host.clipboard_api, host.context_menu_api);
                         if (tab.diff != null) {
                             tab.attachDiffGutterServices(&host.menu_service, host.core.context_keys.getContext(), host.context_menu_api);
@@ -1615,6 +1616,7 @@ pub const TerminalWorkbench = struct {
         for (self.part.group_views.items) |pane| for (pane.tabs.items) |tab| {
             tab.detachDiffBreadcrumbs();
             tab.detachCodeLensServices();
+            if (tab.diff) |diff| diff.widget.detachContributions();
         };
         if (self.context_keys != null) {
             self.terminal_context.deinit();
@@ -3339,6 +3341,7 @@ pub const TerminalWorkbench = struct {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
         self.editor_configuration.applyToTab(tab);
         self.attachCodeLensServices(tab);
+        self.instantiation.invokeFunction(@import("../vs/workbench/workbench.common.main.zig").attachDiffEditorContributions, .{tab}) catch {};
         if (!tab.isImage()) self.registerWorkingCopy(tab);
         if (self.language_features) |features| tab.attachLanguageRegistry(features);
     }

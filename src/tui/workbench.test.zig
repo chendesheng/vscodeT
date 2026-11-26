@@ -10149,6 +10149,65 @@ test "Diff editor commands: CodeLens action uses the active provider context and
     for (after) |pick| try std.testing.expect(!std.mem.eql(u8, pick.command_id, "codelens.showLensesInCurrentLine"));
 }
 
+test "Diff editor commands: whitespace hint and timeout prompt use effective configuration" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(a, io, &tmp, "whitespace.txt", "a\n");
+    defer a.free(path);
+    const settings = try seedFile(a, io, &tmp, "settings.json", "{}");
+    defer a.free(settings);
+    const window = try TestWindow.init(a, io, &.{}, 120, 28);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.setUserSettingsPaths(&.{settings});
+    wb.ensureConfigurationReady();
+    try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "a \n", "a\n", "Original", "Modified");
+    const tab = wb.activeTab().?;
+    const widget = tab.diff.?.widget;
+    try std.testing.expectEqual(@as(usize, 1), widget.contributions.items.len);
+    try std.testing.expect(!widget.state().?.identical);
+    try std.testing.expectEqual(@as(usize, 0), widget.changeCount());
+    var frame: std.Io.Writer.Allocating = .init(a);
+    defer frame.deinit();
+    try renderFrame(wb, &frame.writer);
+    const rendered = try frameText(a, &wb.frame);
+    defer a.free(rendered);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Show Whitespace Differences") != null);
+    const entries = widget.modified_view.terminal_view_host.viewRef().overlayWidgets().entries.items;
+    const hint = for (entries) |entry| {
+        if (entry.node.first_child.?.getAttribute("aria-label")) |label| if (std.mem.eql(u8, label, "Show Whitespace Differences")) break entry;
+    } else return error.WhitespaceHintMissing;
+    var click: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = widget.paneWidths().modifiedLeft() + hint.left + 1, .y = hint.top };
+    _ = try tab.handleDiffMouse(&click);
+    try std.testing.expect(!widget.options.ignore_trim_whitespace);
+    try std.testing.expect(!wb.configuration.?.getBool("diffEditor.ignoreTrimWhitespace", true));
+    for (0..5000) |_| {
+        if (widget.view_model.is_diff_up_to_date) break;
+        const time = @import("../vs/base/common/timeCompat.zig");
+        _ = wb.window_events.dispatch(time.milliTimestamp());
+        time.sleepMillis(1);
+    }
+    try std.testing.expect(widget.view_model.is_diff_up_to_date);
+    try std.testing.expect(widget.changeCount() > 0);
+    try renderFrame(wb, &frame.writer);
+    const after = try frameText(a, &wb.frame);
+    defer a.free(after);
+    try std.testing.expect(std.mem.indexOf(u8, after, "Show Whitespace Differences") == null);
+
+    try wb.setUserConfigurationValue("diffEditor.maxComputationTime", .{ .integer = 7 });
+    try widget.view_model.applyComputedDiff(.{ .identical = false, .quitEarly = true, .changes = &.{}, .moves = &.{} });
+    const notification_item = for (wb.notification_service.model.notifications.items) |item| {
+        if (item.actions.primary.len != 0 and std.mem.eql(u8, item.actions.primary[0].label(), "Remove Limit")) break item;
+    } else return error.DiffTimeoutPromptMissing;
+    try std.testing.expectEqual(@import("../vs/base/common/severity.zig").Severity.Warning, notification_item.severity);
+    const action = notification_item.actions.primary[0];
+    try action.run(action.context, null);
+    try std.testing.expectEqual(@as(i64, 0), widget.options.max_computation_time_ms);
+    try std.testing.expectEqual(@as(i64, 0), wb.configuration.?.getValue("diffEditor.maxComputationTime", .{}).?.integer);
+}
+
 test "Diff editor commands: retained title menu exposes navigation, toggles and view modes" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;

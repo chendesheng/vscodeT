@@ -152,3 +152,63 @@ test "rangeHighlight: active resource only, replace and remove" {
     try std.testing.expect(state.range == null);
     try std.testing.expectEqual(@as(usize, 2), state.removals);
 }
+
+/// Port of FloatingEditorClickWidget, positioned by the shared OverlayWidgets
+/// view part rather than by the workbench renderer.
+const ui = @import("ui");
+const editor_browser = @import("../../editor/browser/editorBrowser.zig");
+const FloatingClickWidget = @import("../../platform/actions/browser/floatingMenu.zig").FloatingClickWidget;
+
+pub const FloatingEditorClickWidget = struct {
+    floating: FloatingClickWidget,
+    host: ?editor_browser.EditorOverlayHost = null,
+    const id = "editor.overlayWidget.floatingClickWidget";
+
+    pub fn render(self: *FloatingEditorClickWidget, host: editor_browser.EditorOverlayHost) !void {
+        if (self.host) |previous| {
+            if (previous.context == host.context) return;
+            self.dispose();
+        }
+        self.floating.active = true;
+        self.host = host;
+        errdefer {
+            self.floating.active = false;
+            self.host = null;
+        }
+        try host.add(host.context, self.interface());
+    }
+
+    pub fn dispose(self: *FloatingEditorClickWidget) void {
+        self.floating.active = false;
+        if (self.host) |host| host.remove(host.context, id) catch {};
+        self.host = null;
+    }
+
+    pub fn interface(self: *FloatingEditorClickWidget) editor_browser.IOverlayWidget {
+        return .{ .context = self, .get_id = getId, .get_position = getPosition, .width = width, .height = height, .build = build, .focus_node = noFocus, .is_focused = isFocused };
+    }
+    fn getId(_: *anyopaque) []const u8 {
+        return id;
+    }
+    fn getPosition(_: *anyopaque) editor_browser.OverlayWidgetPositionPreference {
+        return .bottom_right_corner;
+    }
+    fn width(context: *anyopaque, cols: usize) usize {
+        const self: *FloatingEditorClickWidget = @ptrCast(@alignCast(context));
+        return @min(cols, self.floating.label.len + 2);
+    }
+    fn height(_: *anyopaque) usize {
+        return 1;
+    }
+    fn build(context: *anyopaque, doc: *ui.Document) !*ui.Node {
+        const self: *FloatingEditorClickWidget = @ptrCast(@alignCast(context));
+        const host = self.host orelse return error.OverlayDetached;
+        return self.floating.build(doc, host.color(host.context, "button.foreground", .{ 255, 255, 255 }), host.color(host.context, "button.background", .{ 14, 99, 156 }), host.color(host.context, "button.hoverBackground", .{ 17, 119, 187 }));
+    }
+    fn noFocus(_: *anyopaque) ?*ui.Node {
+        return null;
+    }
+    fn isFocused(_: *anyopaque) bool {
+        return false;
+    }
+};

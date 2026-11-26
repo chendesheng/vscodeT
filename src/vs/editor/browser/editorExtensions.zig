@@ -121,6 +121,24 @@ pub const EditorActionRegistry = struct {
     }
 };
 
+/// `registerDiffEditorContribution`: the portable widget owns the lifetime
+/// of attached contributions. The workbench supplies registered factories and
+/// its service accessor at the normal editor creation boundary.
+pub const DiffEditorContribution = struct {
+    id: []const u8,
+    context: *anyopaque,
+    dispose_fn: *const fn (*anyopaque) void,
+
+    pub fn dispose(self: DiffEditorContribution) void {
+        self.dispose_fn(self.context);
+    }
+};
+
+pub const DiffEditorContributionRegistration = struct {
+    id: []const u8,
+    create: *const fn (Allocator, @import("editorBrowser.zig").IDiffEditor, @import("../../platform/instantiation/common/instantiation.zig").ServicesAccessor) anyerror!?DiffEditorContribution,
+};
+
 test "editorExtensions: action metadata and run callback" {
     const State = struct {
         ran: bool = false,

@@ -9,7 +9,18 @@ pub fn createServices(allocator: std.mem.Allocator) !ServiceCollection {
     errdefer services.deinit();
     try @import("../editor/contrib/documentSymbols/browser/outlineModel.zig").registerSingleton(&services);
     try @import("../editor/contrib/codelens/browser/codeLensCache.zig").registerSingleton(&services);
+    try @import("../editor/common/services/textResourceConfigurationService.zig").registerSingleton(&services);
     return services;
+}
+
+/// Workbench diff editor contribution registration, assembled once and
+/// instantiated by every normal/restored diff widget at its pane boundary.
+const diff_editor_contributions = [_]@import("../editor/browser/editorExtensions.zig").DiffEditorContributionRegistration{
+    @import("contrib/codeEditor/browser/diffEditorHelper.zig").DiffEditorHelperContribution.registration,
+};
+
+pub fn attachDiffEditorContributions(accessor: @import("../platform/instantiation/common/instantiation.zig").ServicesAccessor, tab: *@import("browser/parts/editor/editorPane.zig").Tab) !void {
+    if (tab.diff) |diff| try diff.widget.attachContributions(&diff_editor_contributions, accessor);
 }
 
 pub fn registerViewContainers(registry: *@import("common/views.zig").ViewContainersRegistry) !void {

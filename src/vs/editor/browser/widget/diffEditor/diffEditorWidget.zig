@@ -185,6 +185,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
         context_state: ContextState = .{},
         on_did_change_context: Emitter(void),
         on_did_change_focused_side: Emitter(Side),
+        on_did_update_diff: Emitter(void),
+        contributions: std.ArrayList(@import("../../editorExtensions.zig").DiffEditorContribution) = .empty,
         laying_out: bool = false,
         layout_pending: bool = false,
 
@@ -215,7 +217,64 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .accessible_next = CommandAdapter.call(accessibleDiffViewerNext),
                 .accessible_previous = CommandAdapter.call(accessibleDiffViewerPrev),
                 .run_gutter_hunk = runGutterHunk,
+                .on_did_update_diff = &self.on_did_update_diff,
+                .get_computation_result = getDiffComputationResult,
+                .get_modified_control = getModifiedControl,
+                .get_max_computation_time = getMaxComputationTime,
+                .is_embedded = self.options.is_in_embedded_editor,
             };
+        }
+
+        fn getDiffComputationResult(context: *anyopaque) ?@import("../../editorBrowser.zig").DiffComputationResult {
+            const self: *Self = @ptrCast(@alignCast(context));
+            const value = self.state() orelse return null;
+            return .{ .identical = value.identical, .quit_early = value.quit_early, .change_count = value.mappings.len };
+        }
+
+        fn getMaxComputationTime(context: *anyopaque) i64 {
+            const self: *Self = @ptrCast(@alignCast(context));
+            return self.options.max_computation_time_ms;
+        }
+
+        fn getModifiedControl(context: *anyopaque) @import("../../editorBrowser.zig").ModifiedDiffControl {
+            const self: *Self = @ptrCast(@alignCast(context));
+            const Adapter = struct {
+                fn add(ctx: *anyopaque, widget: @import("../../editorBrowser.zig").IOverlayWidget) !void {
+                    const view: *View = @ptrCast(@alignCast(ctx));
+                    try view.addOverlayWidget(widget);
+                }
+                fn remove(ctx: *anyopaque, id: []const u8) !void {
+                    const view: *View = @ptrCast(@alignCast(ctx));
+                    try view.removeOverlayWidget(id);
+                }
+                fn color(ctx: *anyopaque, id: []const u8, fallback: [3]u8) ui.Color {
+                    const view: *View = @ptrCast(@alignCast(ctx));
+                    return if (view.themeColors()) |palette| palette.color(id, fallback) else .{ .r = fallback[0], .g = fallback[1], .b = fallback[2] };
+                }
+                fn invalidate(ctx: *anyopaque) void {
+                    const view: *View = @ptrCast(@alignCast(ctx));
+                    view.invalidate();
+                }
+            };
+            return .{ .editor = self.modified_editor, .overlays = .{ .context = self.modified_view, .add = Adapter.add, .remove = Adapter.remove, .color = Adapter.color, .invalidate = Adapter.invalidate } };
+        }
+
+        pub fn attachContributions(self: *Self, registrations: []const @import("../../editorExtensions.zig").DiffEditorContributionRegistration, accessor: @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor) !void {
+            for (registrations) |registration| {
+                for (self.contributions.items) |existing| {
+                    if (std.mem.eql(u8, existing.id, registration.id)) break;
+                } else {
+                    if (try registration.create(self.allocator, self.interface(), accessor)) |contribution| {
+                        errdefer contribution.dispose();
+                        try self.contributions.append(self.allocator, contribution);
+                    }
+                }
+            }
+        }
+
+        pub fn detachContributions(self: *Self) void {
+            for (self.contributions.items) |contribution| contribution.dispose();
+            self.contributions.clearRetainingCapacity();
         }
 
         fn runGutterHunk(context: *anyopaque, id: []const u8) !void {
@@ -398,6 +457,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .view_model = diff_model,
                 .on_did_change_context = Emitter(void).init(allocator),
                 .on_did_change_focused_side = Emitter(Side).init(allocator),
+                .on_did_update_diff = Emitter(void).init(allocator),
                 .accessible_viewer = accessible_module.AccessibleDiffViewer.init(allocator),
                 .inline_margin_menu = .{ .allocator = allocator },
                 .decorations = decorations,
@@ -410,6 +470,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.gutter_toolbar = .{ .allocator = allocator, .model = &self.view_model, .original = original_editor, .modified = modified_editor };
             errdefer self.on_did_change_context.deinit();
             errdefer self.on_did_change_focused_side.deinit();
+            errdefer self.on_did_update_diff.deinit();
             errdefer self.view_model.deinit();
             try self.view_model.initializeUnchangedRegions(normalized_options.hide_unchanged_regions, normalized_options.hide_unchanged_regions_minimum_line_count, normalized_options.hide_unchanged_regions_context_line_count);
             self.overview.init(allocator, original_editor, modified_editor);
@@ -442,6 +503,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         pub fn destroy(self: *Self) void {
             const allocator = self.allocator;
+            self.detachContributions();
+            self.contributions.deinit(allocator);
             self.smooth_resize.deinit();
             self.gutter_toolbar.deinit();
             self.revert_buttons.deinit();
@@ -459,6 +522,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.view_model.deinit();
             self.on_did_change_context.deinit();
             self.on_did_change_focused_side.deinit();
+            self.on_did_update_diff.deinit();
 
             self.original_view.deinit();
             self.modified_view.deinit();
@@ -550,7 +614,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         fn onDiffStateChanged(_: void, self: *Self) anyerror!void {
             self.zones.beginBatch();
-            defer {
+            errdefer {
                 self.zones.endBatch();
                 self.layout(self.width, self.height);
             }
@@ -570,6 +634,9 @@ pub fn DiffEditorWidget(comptime View: type) type {
             try self.gutter_toolbar.updateSelection();
             try self.revert_buttons.update();
             if (was_accessible) try self.openAccessibleViewer();
+            self.zones.endBatch();
+            self.layout(self.width, self.height);
+            self.on_did_update_diff.fire({}) catch {};
         }
 
         pub fn state(self: *const Self) ?*const DiffState {
@@ -880,6 +947,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             if (self.current_change) |index| self.revealChange(index);
             if (accessible) try self.openAccessibleViewer();
             if (!self.view_model.is_diff_up_to_date) self.view_model.requestRecompute(0);
+            self.on_did_update_diff.fire({}) catch {};
         }
 
         fn applyZoneTheme(self: *Self, palette: ?*const @import("../../../../workbench/browser/themeColors.zig").ThemeColors) void {

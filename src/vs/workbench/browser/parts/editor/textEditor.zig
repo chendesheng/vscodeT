@@ -140,7 +140,10 @@ pub const TextEditorConfiguration = struct {
     pub fn applyToTab(self: *TextEditorConfiguration, tab: *Tab) void {
         if (tab.diff) |diff| {
             if (self.configuration.service) |service| {
-                const options = @import("textDiffEditor.zig").computeConfigurationForResource(service.interface(), .{ .resource = diff.widget.modified_editor.path, .override_identifier = diff.widget.modified_editor.languageId() });
+                var scratch = std.heap.ArenaAllocator.init(tab.editor.allocator);
+                defer scratch.deinit();
+                const resource = @import("../../../../base/common/stdUri.zig").fsPath(diff.widget.modifiedModel().uri(), scratch.allocator()) catch diff.widget.modified_editor.path;
+                const options = @import("textDiffEditor.zig").computeConfigurationForResource(service.interface(), .{ .resource = resource, .override_identifier = diff.widget.modified_editor.languageId() });
                 if (diff.updateOptions(options) catch false) tab.syncDiffViews();
             }
             const settings = self.reader();

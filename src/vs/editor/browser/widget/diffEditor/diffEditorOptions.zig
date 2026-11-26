@@ -31,6 +31,7 @@ pub const Options = struct {
     use_true_inline_view: bool = false,
     diff_word_wrap: DiffWordWrap = .inherit,
     diff_code_lens: bool = false,
+    is_in_embedded_editor: bool = false,
     render_side_by_side: bool = true,
     read_only: bool = false,
     original_editable: bool = false,

@@ -18,6 +18,27 @@ const ui = @import("ui");
 const Position = @import("../common/core/position.zig").Position;
 const Range = @import("../common/core/range.zig").Range;
 
+pub const DiffComputationResult = struct {
+    identical: bool,
+    quit_early: bool,
+    change_count: usize,
+};
+
+/// Terminal adaptation of the code editor overlay API used by diff editor
+/// contributions. No contribution depends on the concrete native View type.
+pub const EditorOverlayHost = struct {
+    context: *anyopaque,
+    add: *const fn (*anyopaque, IOverlayWidget) anyerror!void,
+    remove: *const fn (*anyopaque, []const u8) anyerror!void,
+    color: *const fn (*anyopaque, []const u8, [3]u8) ui.Color,
+    invalidate: *const fn (*anyopaque) void,
+};
+
+pub const ModifiedDiffControl = struct {
+    editor: *@import("widget/codeEditor/codeEditorWidgetTerminal.zig").Editor,
+    overlays: EditorOverlayHost,
+};
+
 /// Portable commands on the upstream IDiffEditor. Concrete terminal
 /// widgets expose this interface to ICodeEditorService without exporting
 /// their native View type.
@@ -31,6 +52,23 @@ pub const IDiffEditor = struct {
     accessible_next: *const fn (*anyopaque) anyerror!void,
     accessible_previous: *const fn (*anyopaque) anyerror!void,
     run_gutter_hunk: ?*const fn (*anyopaque, []const u8) anyerror!void = null,
+    on_did_update_diff: ?*@import("../../base/common/event.zig").Emitter(void) = null,
+    get_computation_result: ?*const fn (*anyopaque) ?DiffComputationResult = null,
+    get_modified_control: ?*const fn (*anyopaque) ModifiedDiffControl = null,
+    get_max_computation_time: ?*const fn (*anyopaque) i64 = null,
+    is_embedded: bool = false,
+
+    pub fn getDiffComputationResult(self: IDiffEditor) ?DiffComputationResult {
+        return if (self.get_computation_result) |get| get(self.context) else null;
+    }
+
+    pub fn getModifiedControl(self: IDiffEditor) ?ModifiedDiffControl {
+        return if (self.get_modified_control) |get| get(self.context) else null;
+    }
+
+    pub fn maxComputationTime(self: IDiffEditor) i64 {
+        return if (self.get_max_computation_time) |get| get(self.context) else 0;
+    }
 
     pub fn runGutterHunk(self: IDiffEditor, id: []const u8) !void {
         if (self.run_gutter_hunk) |run| try run(self.context, id);
