@@ -7,7 +7,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const view_model = @import("../diffEditorViewModel.zig");
-const view_zones = @import("../components/diffEditorViewZones.zig");
+const view_zones = @import("../components/diffEditorViewZones/diffEditorViewZones.zig");
 const gutter = @import("./gutterFeature.zig");
 
 pub const Side = enum { original, modified };

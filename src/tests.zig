@@ -660,7 +660,7 @@ comptime {
     _ = @import("./vs/editor/browser/widget/diffEditor/diffEditorViewModel.zig");
     _ = @import("./vs/editor/browser/widget/diffEditor/diffProviderFactoryService.zig");
     _ = @import("./vs/editor/browser/services/editorWorkerService.zig");
-    _ = @import("./vs/editor/browser/widget/diffEditor/components/diffEditorViewZones.zig");
+    _ = @import("./vs/editor/browser/widget/diffEditor/components/diffEditorViewZones/diffEditorViewZones.zig");
     _ = @import("./vs/editor/browser/widget/diffEditor/components/diffEditorDecorations.zig");
     _ = @import("./vs/editor/browser/widget/diffEditor/components/diffEditorEditors.zig");
     _ = @import("./vs/editor/browser/widget/diffEditor/diffEditorOptions.zig");

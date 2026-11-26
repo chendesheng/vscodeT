@@ -15,7 +15,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const view_zones = @import("./diffEditorViewZones.zig");
+const view_zones = @import("./diffEditorViewZones/diffEditorViewZones.zig");
 const view_model = @import("../diffEditorViewModel.zig");
 const model_mod = @import("../../../../common/model.zig");
 const text_model = @import("../../../../common/model/textModel.zig");

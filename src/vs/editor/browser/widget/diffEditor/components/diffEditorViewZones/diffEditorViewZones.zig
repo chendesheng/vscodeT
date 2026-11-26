@@ -1,5 +1,5 @@
 // Terminal replacement for the view-zone alignment subset of
-// `src/vs/editor/browser/widget/diffEditor/components/diffEditorViewZones.ts`.
+// `src/vs/editor/browser/widget/diffEditor/components/diffEditorViewZones/diffEditorViewZones.ts`.
 //
 // Upstream inserts view zones and filler lines through the editor's view-zone
 // API so both panes render equal-height rows. The terminal editor has no view
@@ -12,10 +12,197 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const range_mapping = @import("../../../../common/diff/rangeMapping.zig");
-const LineRange = @import("../../../../common/core/ranges/lineRange.zig").LineRange;
+const range_mapping = @import("../../../../../common/diff/rangeMapping.zig");
+const LineRange = @import("../../../../../common/core/ranges/lineRange.zig").LineRange;
 
 pub const DetailedLineRangeMapping = range_mapping.DetailedLineRangeMapping;
+
+const diff_model = @import("../../diffEditorViewModel.zig");
+const Editor = @import("../../../codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const TextModel = @import("../../../../../common/model/textModel.zig").TextModel;
+
+/// Upstream range alignment includes line wrapping and foreign view zones.
+/// Heights are whole terminal rows; a diff index refers to a mapping from
+/// the diff view-model state. Unchanged wrapped lines have no diff index.
+pub const ILineRangeAlignment = struct {
+    original_range: LineRange,
+    modified_range: LineRange,
+    original_height: usize,
+    modified_height: usize,
+    diff_index: ?usize = null,
+};
+
+pub const AdditionalLineHeightInfo = struct {
+    line_number: usize,
+    height: usize,
+};
+
+pub fn getAdditionalLineHeights(allocator: Allocator, editor: *Editor, ignored_zone_ids: []const []const u8) ![]AdditionalLineHeightInfo {
+    var result: std.ArrayList(AdditionalLineHeightInfo) = .empty;
+    errdefer result.deinit(allocator);
+    if (editor.wrap_mode != .off) {
+        for (1..editor.model.getLineCount() + 1) |line| {
+            const count = editor.view_lines.getModelLineViewLineCount(line);
+            if (count > 1) try result.append(allocator, .{ .line_number = line, .height = count - 1 });
+        }
+    }
+    var ignored: std.StringHashMapUnmanaged(void) = .empty;
+    defer ignored.deinit(allocator);
+    try ignored.ensureTotalCapacity(allocator, @intCast(ignored_zone_ids.len));
+    for (ignored_zone_ids) |id| ignored.putAssumeCapacity(id, {});
+    const whitespaces = try editor.viewLayout().getWhitespaces(allocator);
+    defer allocator.free(whitespaces);
+    for (whitespaces) |whitespace| {
+        if (ignored.contains(whitespace.id) or whitespace.height <= 0) continue;
+        const model_line = if (whitespace.afterLineNumber == 0) 0 else editor.modelLineNumber(whitespace.afterLineNumber);
+        try result.append(allocator, .{ .line_number = model_line, .height = @intFromFloat(whitespace.height) });
+    }
+    std.mem.sort(AdditionalLineHeightInfo, result.items, {}, struct {
+        fn lessThan(_: void, left: AdditionalLineHeightInfo, right: AdditionalLineHeightInfo) bool {
+            return left.line_number < right.line_number;
+        }
+    }.lessThan);
+    var write: usize = 0;
+    for (result.items) |value| {
+        if (write > 0 and result.items[write - 1].line_number == value.line_number) {
+            result.items[write - 1].height += value.height;
+        } else {
+            result.items[write] = value;
+            write += 1;
+        }
+    }
+    result.shrinkRetainingCapacity(write);
+    return result.toOwnedSlice(allocator);
+}
+
+pub fn computeRangeAlignment(allocator: Allocator, original: *Editor, modified: *Editor, diffs: []const diff_model.DiffMapping, original_ignored: []const []const u8, modified_ignored: []const []const u8, inner_hunk_alignment: bool) ![]ILineRangeAlignment {
+    const original_heights = try getAdditionalLineHeights(allocator, original, original_ignored);
+    defer allocator.free(original_heights);
+    const modified_heights = try getAdditionalLineHeights(allocator, modified, modified_ignored);
+    defer allocator.free(modified_heights);
+    return computeRangeAlignmentFromHeights(allocator, original.model, diffs, original_heights, modified_heights, inner_hunk_alignment);
+}
+
+const HeightQueue = struct {
+    items: []const AdditionalLineHeightInfo,
+
+    fn peekBefore(self: HeightQueue, until: usize) ?AdditionalLineHeightInfo {
+        if (self.items.len == 0 or self.items[0].line_number >= until) return null;
+        return self.items[0];
+    }
+    fn pop(self: *HeightQueue) void {
+        self.items = self.items[1..];
+    }
+    fn takeHeightBefore(self: *HeightQueue, until: usize) usize {
+        var result: usize = 0;
+        while (self.peekBefore(until)) |next| {
+            result += next.height;
+            self.pop();
+        }
+        return result;
+    }
+};
+
+const AlignmentBuilder = struct {
+    allocator: Allocator,
+    original: HeightQueue,
+    modified: HeightQueue,
+    result: std.ArrayList(ILineRangeAlignment) = .empty,
+    last_original: usize = 0,
+    last_modified: usize = 0,
+
+    fn handleAlignmentsOutsideOfDiffs(self: *AlignmentBuilder, until_original: usize, until_modified: usize) !void {
+        while (true) {
+            var original_next = self.original.peekBefore(until_original);
+            var modified_next = self.modified.peekBefore(until_modified);
+            if (original_next == null and modified_next == null) break;
+            const original_distance = if (original_next) |next| next.line_number -| self.last_original else std.math.maxInt(usize);
+            const modified_distance = if (modified_next) |next| next.line_number -| self.last_modified else std.math.maxInt(usize);
+            if (original_distance < modified_distance) {
+                self.original.pop();
+                modified_next = .{ .line_number = self.last_modified + original_distance, .height = 0 };
+            } else if (original_distance > modified_distance) {
+                self.modified.pop();
+                original_next = .{ .line_number = self.last_original + modified_distance, .height = 0 };
+            } else {
+                self.original.pop();
+                self.modified.pop();
+            }
+            try self.result.append(self.allocator, .{
+                .original_range = LineRange.ofLength(original_next.?.line_number, 1),
+                .modified_range = LineRange.ofLength(modified_next.?.line_number, 1),
+                .original_height = 1 + original_next.?.height,
+                .modified_height = 1 + modified_next.?.height,
+            });
+        }
+    }
+
+    const DiffAlignment = struct {
+        builder: *AlignmentBuilder,
+        diff_index: usize,
+        first: bool = true,
+        last_original: usize,
+        last_modified: usize,
+
+        fn emit(self: *DiffAlignment, original_end: usize, modified_end: usize, force: bool) !void {
+            if (original_end < self.last_original or modified_end < self.last_modified) return;
+            if (self.first) {
+                self.first = false;
+            } else if (!force and (original_end == self.last_original or modified_end == self.last_modified)) {
+                return;
+            }
+            const original_range = LineRange.init(self.last_original, original_end);
+            const modified_range = LineRange.init(self.last_modified, modified_end);
+            if (original_range.isEmpty() and modified_range.isEmpty()) return;
+            const original_height = original_range.length() + self.builder.original.takeHeightBefore(original_end);
+            const modified_height = modified_range.length() + self.builder.modified.takeHeightBefore(modified_end);
+            try self.builder.result.append(self.builder.allocator, .{
+                .original_range = original_range,
+                .modified_range = modified_range,
+                .original_height = original_height,
+                .modified_height = modified_height,
+                .diff_index = self.diff_index,
+            });
+            self.last_original = original_end;
+            self.last_modified = modified_end;
+        }
+    };
+};
+
+pub fn computeRangeAlignmentFromHeights(allocator: Allocator, original_model: *TextModel, diffs: []const diff_model.DiffMapping, original_heights: []const AdditionalLineHeightInfo, modified_heights: []const AdditionalLineHeightInfo, inner_hunk_alignment: bool) ![]ILineRangeAlignment {
+    var builder = AlignmentBuilder{
+        .allocator = allocator,
+        .original = .{ .items = original_heights },
+        .modified = .{ .items = modified_heights },
+    };
+    errdefer builder.result.deinit(allocator);
+    for (diffs, 0..) |mapping, index| {
+        const change = mapping.line_range_mapping;
+        try builder.handleAlignmentsOutsideOfDiffs(change.original.startLineNumber, change.modified.startLineNumber);
+        var alignment = AlignmentBuilder.DiffAlignment{
+            .builder = &builder,
+            .diff_index = index,
+            .last_original = change.original.startLineNumber,
+            .last_modified = change.modified.startLineNumber,
+        };
+        if (inner_hunk_alignment) for (change.inner_changes orelse &.{}) |inner| {
+            const original = inner.originalRange;
+            const modified = inner.modifiedRange;
+            if (original.startColumn > 1 and modified.startColumn > 1) {
+                try alignment.emit(original.startLineNumber, modified.startLineNumber, false);
+            }
+            const max_column = if (original.endLineNumber <= original_model.getLineCount()) original_model.getLineMaxColumn(original.endLineNumber) else std.math.maxInt(usize);
+            if (original.endColumn < max_column) {
+                try alignment.emit(original.endLineNumber, modified.endLineNumber, false);
+            }
+        };
+        try alignment.emit(change.original.endLineNumberExclusive, change.modified.endLineNumberExclusive, true);
+        builder.last_original = change.original.endLineNumberExclusive;
+        builder.last_modified = change.modified.endLineNumberExclusive;
+    }
+    try builder.handleAlignmentsOutsideOfDiffs(std.math.maxInt(usize), std.math.maxInt(usize));
+    return builder.result.toOwnedSlice(allocator);
+}
 
 /// One changed block in display coordinates. `original`/`modified` are
 /// exclusive line ranges over the aligned display rows and include fillers.
@@ -198,9 +385,9 @@ fn appendFillers(list: *std.array_list.Managed(?usize), count: usize) !void {
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
-const test_support = @import("../../../../test/common/port/testSupport.zig");
+const test_support = @import("../../../../../test/common/port/testSupport.zig");
 const TestModel = test_support.TestModel;
-const doc_diff = @import("../../../../common/diff/documentDiffProvider.zig");
+const doc_diff = @import("../../../../../common/diff/documentDiffProvider.zig");
 const LineDiffProvider = doc_diff.LineDiffProvider;
 const deinitDiff = doc_diff.deinitDiff;
 
@@ -333,4 +520,51 @@ fn countFillers(rows: []const ?usize) usize {
         if (row == null) count += 1;
     }
     return count;
+}
+
+test "diffEditorWidget: range alignment accounts for wrapping and foreign whitespace outside and inside changes" {
+    const allocator = testing.allocator;
+    var original = try test_support.TestModel.init(allocator, "a\nb\nc\nd\ne\nf", "plaintext");
+    defer original.deinit();
+    const mapping = diff_model.DiffMapping{ .line_range_mapping = .{
+        .original = LineRange.init(3, 4),
+        .modified = LineRange.init(3, 5),
+        .inner_changes = null,
+    } };
+    const alignments = try computeRangeAlignmentFromHeights(allocator, original.model, &.{mapping}, &.{
+        .{ .line_number = 0, .height = 2 },
+        .{ .line_number = 2, .height = 3 },
+        .{ .line_number = 3, .height = 1 },
+        .{ .line_number = 5, .height = 4 },
+    }, &.{
+        .{ .line_number = 2, .height = 1 },
+        .{ .line_number = 4, .height = 2 },
+        .{ .line_number = 6, .height = 1 },
+    }, true);
+    defer allocator.free(alignments);
+    try testing.expectEqual(@as(usize, 4), alignments.len);
+    try testing.expectEqual(ILineRangeAlignment{ .original_range = LineRange.init(0, 1), .modified_range = LineRange.init(0, 1), .original_height = 3, .modified_height = 1 }, alignments[0]);
+    try testing.expectEqual(ILineRangeAlignment{ .original_range = LineRange.init(2, 3), .modified_range = LineRange.init(2, 3), .original_height = 4, .modified_height = 2 }, alignments[1]);
+    try testing.expectEqual(ILineRangeAlignment{ .original_range = LineRange.init(3, 4), .modified_range = LineRange.init(3, 5), .original_height = 2, .modified_height = 4, .diff_index = 0 }, alignments[2]);
+    try testing.expectEqual(ILineRangeAlignment{ .original_range = LineRange.init(5, 6), .modified_range = LineRange.init(6, 7), .original_height = 5, .modified_height = 2 }, alignments[3]);
+}
+
+test "diffEditorWidget: inner hunk alignment splits at the unchanged line content" {
+    const allocator = testing.allocator;
+    var original = try test_support.TestModel.init(allocator, "a\nabc\ndef\nghi\nz", "plaintext");
+    defer original.deinit();
+    const Range = @import("../../../../../common/core/range.zig").Range;
+    const mapping = diff_model.DiffMapping{ .line_range_mapping = .{
+        .original = LineRange.init(2, 5),
+        .modified = LineRange.init(2, 6),
+        .inner_changes = &.{.{
+            .originalRange = Range.init(3, 2, 3, 3),
+            .modifiedRange = Range.init(4, 2, 4, 3),
+        }},
+    } };
+    const alignments = try computeRangeAlignmentFromHeights(allocator, original.model, &.{mapping}, &.{}, &.{}, true);
+    defer allocator.free(alignments);
+    try testing.expectEqual(@as(usize, 2), alignments.len);
+    try testing.expectEqual(ILineRangeAlignment{ .original_range = LineRange.init(2, 3), .modified_range = LineRange.init(2, 4), .original_height = 1, .modified_height = 2, .diff_index = 0 }, alignments[0]);
+    try testing.expectEqual(ILineRangeAlignment{ .original_range = LineRange.init(3, 5), .modified_range = LineRange.init(4, 6), .original_height = 2, .modified_height = 2, .diff_index = 0 }, alignments[1]);
 }

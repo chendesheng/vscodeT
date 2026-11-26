@@ -42,7 +42,7 @@ pub fn gutterGlyph(mapping: view_model.DetailedLineRangeMapping, display_row: us
 
 /// Locate the containing hunk in the sorted, non-overlapping aligned ranges.
 /// This also handles pure deletions, whose real modified range is empty.
-pub fn mappingIndexAtRow(mappings: []const @import("../components/diffEditorViewZones.zig").AlignedMapping, row: usize) ?usize {
+pub fn mappingIndexAtRow(mappings: []const @import("../components/diffEditorViewZones/diffEditorViewZones.zig").AlignedMapping, row: usize) ?usize {
     var lo: usize = 0;
     var hi = mappings.len;
     while (lo < hi) {
@@ -82,7 +82,7 @@ test "gutterFeature: markers for insert, delete and modify" {
 }
 
 test "gutterFeature: benchmark 1k and 10k aligned hunks" {
-    const AlignedMapping = @import("../components/diffEditorViewZones.zig").AlignedMapping;
+    const AlignedMapping = @import("../components/diffEditorViewZones/diffEditorViewZones.zig").AlignedMapping;
     const time = @import("../../../../../base/common/timeCompat.zig");
     const allocator = std.testing.allocator;
     for ([_]usize{ 1000, 10000 }) |count| {
