@@ -343,6 +343,8 @@ pub const InternalEditorPaddingOptions = struct {
     bottom: f64 = 0,
 };
 
+pub const OccurrencesHighlight = enum { off, single_file, multi_file };
+
 pub const EditorFindOptions = struct {
     pub const SeedSearchString = enum { never, always, selection };
     pub const AutoFindInSelection = enum { never, always, multiline };
@@ -446,6 +448,7 @@ pub fn OptionValueType(comptime option: EditorOption) type {
         .allowOverflow,
         .columnSelection,
         .codeLens,
+        .occurrencesHighlightFromAllProviders,
         .disableLayerHinting,
         .disableMonospaceOptimizations,
         .doubleClickSelectsBlock,
@@ -475,6 +478,7 @@ pub fn OptionValueType(comptime option: EditorOption) type {
         .cursorSurroundingLines,
         .cursorWidth,
         .lineNumbersMinChars,
+        .occurrencesHighlightDelay,
         .overviewRulerLanes,
         .revealHorizontalRightPadding,
         .stopRenderingLineAfter,
@@ -501,6 +505,7 @@ pub fn OptionValueType(comptime option: EditorOption) type {
         .cursorSurroundingLinesStyle => CursorSurroundingLinesStyle,
         .cursorStyle, .effectiveCursorStyle => TextEditorCursorStyle,
         .multiCursorModifier => MultiCursorModifier,
+        .occurrencesHighlight => OccurrencesHighlight,
         .matchBrackets => MatchBrackets,
         .renderFinalNewline => RenderFinalNewline,
         .renderLineHighlight => RenderLineHighlight,

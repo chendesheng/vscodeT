@@ -51,6 +51,7 @@ const supported_options = [_]EditorOption{
     .allowOverflow,
     .columnSelection,
     .codeLens,
+    .occurrencesHighlightFromAllProviders,
     .disableLayerHinting,
     .disableMonospaceOptimizations,
     .doubleClickSelectsBlock,
@@ -78,6 +79,7 @@ const supported_options = [_]EditorOption{
     .cursorSurroundingLines,
     .cursorWidth,
     .lineNumbersMinChars,
+    .occurrencesHighlightDelay,
     .overviewRulerLanes,
     .revealHorizontalRightPadding,
     .stopRenderingLineAfter,
@@ -98,6 +100,7 @@ const supported_options = [_]EditorOption{
     .cursorStyle,
     .effectiveCursorStyle,
     .multiCursorModifier,
+    .occurrencesHighlight,
     .matchBrackets,
     .renderFinalNewline,
     .renderLineHighlight,
@@ -134,6 +137,7 @@ pub fn optionField(comptime option: EditorOption) []const u8 {
         .allowOverflow => "allow_overflow",
         .columnSelection => "column_selection",
         .codeLens => "code_lens",
+        .occurrencesHighlightFromAllProviders => "occurrences_highlight_from_all_providers",
         .disableLayerHinting => "disable_layer_hinting",
         .disableMonospaceOptimizations => "disable_monospace_optimizations",
         .doubleClickSelectsBlock => "double_click_selects_block",
@@ -162,6 +166,7 @@ pub fn optionField(comptime option: EditorOption) []const u8 {
         .cursorSurroundingLines => "cursor_surrounding_lines",
         .cursorWidth => "cursor_width",
         .lineNumbersMinChars => "line_numbers_min_chars",
+        .occurrencesHighlightDelay => "occurrences_highlight_delay",
         .overviewRulerLanes => "overview_ruler_lanes",
         .revealHorizontalRightPadding => "reveal_horizontal_right_padding",
         .stopRenderingLineAfter => "stop_rendering_line_after",
@@ -183,6 +188,7 @@ pub fn optionField(comptime option: EditorOption) []const u8 {
         .cursorSurroundingLinesStyle => "cursor_surrounding_lines_style",
         .cursorStyle, .effectiveCursorStyle => if (option == .cursorStyle) "cursor_style" else "effective_cursor_style",
         .multiCursorModifier => "multi_cursor_modifier",
+        .occurrencesHighlight => "occurrences_highlight",
         .matchBrackets => "match_brackets",
         .renderFinalNewline => "render_final_newline",
         .renderLineHighlight => "render_line_highlight",
@@ -240,6 +246,7 @@ pub const ComputedEditorOptions = struct {
     tab_focus_mode: bool = false,
     word_wrap_indicator: bool = false,
     folding: bool = true,
+    occurrences_highlight_from_all_providers: bool = false,
     effective_edit_context: bool = false,
     effective_allow_variable_fonts: bool = false,
     allow_variable_fonts: bool = true,
@@ -249,6 +256,7 @@ pub const ComputedEditorOptions = struct {
     cursor_surrounding_lines: i32 = 0,
     cursor_width: i32 = 0,
     line_numbers_min_chars: i32 = 5,
+    occurrences_highlight_delay: i32 = 0,
     overview_ruler_lanes: i32 = 3,
     reveal_horizontal_right_padding: i32 = 15,
     stop_rendering_line_after: i32 = 10000,
@@ -273,6 +281,7 @@ pub const ComputedEditorOptions = struct {
     cursor_style: TextEditorCursorStyle = .Line,
     effective_cursor_style: TextEditorCursorStyle = .Line,
     multi_cursor_modifier: MultiCursorModifier = .alt_key,
+    occurrences_highlight: editorOptions.OccurrencesHighlight = .single_file,
     match_brackets: editorOptions.MatchBrackets = .always,
     render_final_newline: RenderFinalNewline = if (builtin.os.tag == .linux) .dimmed else .on,
     render_line_highlight: RenderLineHighlight = .line,
@@ -399,6 +408,9 @@ test "ComputedEditorOptions exposes the supported options" {
         _ = options.read(option);
         _ = view.get(option);
     }
-    try std.testing.expectEqual(@as(usize, 75), supported_options.len);
+    try std.testing.expectEqual(@as(usize, 78), supported_options.len);
     try std.testing.expect(options.get(.codeLens));
+    try std.testing.expectEqual(editorOptions.OccurrencesHighlight.single_file, options.get(.occurrencesHighlight));
+    try std.testing.expectEqual(@as(i32, 0), options.get(.occurrencesHighlightDelay));
+    try std.testing.expect(!options.get(.occurrencesHighlightFromAllProviders));
 }

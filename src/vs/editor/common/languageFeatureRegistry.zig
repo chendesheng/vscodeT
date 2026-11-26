@@ -191,6 +191,22 @@ pub fn LanguageFeatureRegistry(comptime T: type) type {
             return self.collect(allocator, model, recursive);
         }
 
+        /// Multi-document providers need the matching registration's
+        /// selector to filter the other models before asking the provider.
+        /// The selector is borrowed from its registration and must not
+        /// outlive that registration (consume it before starting a request).
+        pub const OrderedProvider = struct { provider: T, selector: selector_mod.CompiledSelector };
+
+        pub fn orderedWithSelectors(self: *Self, allocator: Allocator, model: *TextModel, recursive: bool) ![]OrderedProvider {
+            try self.updateScores(model, recursive);
+            var result: std.ArrayList(OrderedProvider) = .empty;
+            errdefer result.deinit(allocator);
+            for (self.entries.items) |entry| {
+                if (entry.score > 0) try result.append(allocator, .{ .provider = entry.provider, .selector = entry.selector });
+            }
+            return result.toOwnedSlice(allocator);
+        }
+
         fn collect(self: *Self, allocator: Allocator, model: *TextModel, recursive: bool) ![]T {
             try self.updateScores(model, recursive);
             var result = std.array_list.Managed(T).init(allocator);

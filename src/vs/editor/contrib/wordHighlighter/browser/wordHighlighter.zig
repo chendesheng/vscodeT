@@ -44,18 +44,312 @@ const ModelContentChange = @import("../../../common/textModelEvents.zig").Intern
 const highlightDecorations = @import("./highlightDecorations.zig");
 const ModelChange = @import("../../../common/editorCommon.zig").IModelChangedEvent;
 const WindowQueue = @import("../../../../base/common/windowDispatch.zig").Queue;
+const registry_mod = @import("../../../common/languageFeatureRegistry.zig");
+const selector_mod = @import("../../../common/languageSelector.zig");
+const cancellation = @import("../../../../base/common/cancellation.zig");
+const Disposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
+const uri_util = @import("../../../../base/common/stdUri.zig");
+
+/// Owned ResourceMap<DocumentHighlight[]> result of an occurrence request.
+pub const OccurrenceResult = struct {
+    allocator: Allocator,
+    arena: std.heap.ArenaAllocator,
+    entries: std.StringArrayHashMapUnmanaged([]const DocumentHighlight) = .empty,
+
+    fn create(allocator: Allocator) !*OccurrenceResult {
+        const self = try allocator.create(OccurrenceResult);
+        self.* = .{ .allocator = allocator, .arena = .init(allocator) };
+        return self;
+    }
+
+    pub fn dispose(self: *OccurrenceResult) void {
+        self.arena.deinit();
+        self.allocator.destroy(self);
+    }
+
+    fn put(self: *OccurrenceResult, uri: std.Uri, highlights: []const DocumentHighlight) !void {
+        const a = self.arena.allocator();
+        const key = try uri_util.resourceKey(a, uri);
+        try self.putKey(key, highlights);
+    }
+
+    fn putKey(self: *OccurrenceResult, key: []const u8, highlights: []const DocumentHighlight) !void {
+        const a = self.arena.allocator();
+        try self.entries.put(a, key, try a.dupe(DocumentHighlight, highlights));
+    }
+
+    pub fn get(self: *const OccurrenceResult, uri: std.Uri) ?[]const DocumentHighlight {
+        const key = uri_util.resourceKey(self.allocator, uri) catch return null;
+        defer self.allocator.free(key);
+        return self.entries.get(key);
+    }
+};
+
+pub const OccurrenceListener = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, *OccurrenceResult) void,
+    on_error: ?*const fn (*anyopaque, anyerror) void = null,
+};
+
+/// The native continuation of upstream's ordered first-answer search and
+/// Promise.all merge. Async providers own a detachable completion handle;
+/// cancelling an occurrence request cancels its token before releasing it.
+pub const OccurrenceRequest = struct {
+    result: *OccurrenceResult,
+    primary: *TextModel,
+    position: Position,
+    listener: OccurrenceListener,
+    source: cancellation.CancellationTokenSource,
+    token: cancellation.CancellationToken,
+    slots: []Slot,
+    merge: bool,
+    remaining: usize,
+    next_index: usize = 0,
+    starting: bool = false,
+    canceled: bool = false,
+
+    const Provider = union(enum) {
+        single: editor_languages.DocumentHighlightProvider,
+        multi: struct { provider: editor_languages.MultiDocumentHighlightProvider, models: []const *TextModel },
+    };
+
+    const MultiEntry = struct { key: []const u8, highlights: []const DocumentHighlight };
+
+    const Value = union(enum) {
+        single: []const DocumentHighlight,
+        multi: []const MultiEntry,
+    };
+
+    const Slot = struct {
+        owner: *OccurrenceRequest,
+        provider: Provider,
+        pending: ?Disposable = null,
+        started: bool = false,
+        done: bool = false,
+        value: ?Value = null,
+
+        fn documentReady(context: *anyopaque, outcome: anyerror!?[]const DocumentHighlight) void {
+            const self: *Slot = @ptrCast(@alignCast(context));
+            if (self.done or self.owner.canceled) return;
+            const highlights = outcome catch |err| {
+                self.owner.report(err);
+                return self.ready(null);
+            };
+            const value = highlights orelse return self.ready(null);
+            const owned = self.owner.result.arena.allocator().dupe(DocumentHighlight, value) catch |err| {
+                self.owner.report(err);
+                return self.ready(null);
+            };
+            self.ready(.{ .single = owned });
+        }
+
+        fn multiReady(context: *anyopaque, outcome: anyerror!?[]const editor_languages.MultiDocumentHighlight) void {
+            const self: *Slot = @ptrCast(@alignCast(context));
+            if (self.done or self.owner.canceled) return;
+            const highlights = outcome catch |err| {
+                self.owner.report(err);
+                return self.ready(null);
+            };
+            const entries = highlights orelse return self.ready(null);
+            const a = self.owner.result.arena.allocator();
+            const owned = a.alloc(MultiEntry, entries.len) catch |err| {
+                self.owner.report(err);
+                return self.ready(null);
+            };
+            for (entries, owned) |entry, *target| {
+                target.key = uri_util.resourceKey(a, entry.uri) catch |err| {
+                    self.owner.report(err);
+                    return self.ready(null);
+                };
+                target.highlights = a.dupe(DocumentHighlight, entry.highlights) catch |err| {
+                    self.owner.report(err);
+                    return self.ready(null);
+                };
+            }
+            self.ready(.{ .multi = owned });
+        }
+
+        fn ready(self: *Slot, value: ?Value) void {
+            const owner = self.owner;
+            if (self.done or owner.canceled) return;
+            self.done = true;
+            self.pending = null;
+            self.value = value;
+            owner.remaining -= 1;
+            if (owner.starting) return;
+            if (owner.merge) {
+                if (owner.remaining == 0) owner.finishMerged();
+            } else _ = owner.advance();
+        }
+    };
+
+    fn create(result: *OccurrenceResult, primary: *TextModel, position: Position, parent: cancellation.CancellationToken, merge: bool, count: usize, listener: OccurrenceListener) !*OccurrenceRequest {
+        const a = result.arena.allocator();
+        const self = try a.create(OccurrenceRequest);
+        var source = try cancellation.CancellationTokenSource.initChild(a, parent);
+        errdefer source.deinit();
+        self.* = .{ .result = result, .primary = primary, .position = position, .listener = listener, .source = source, .token = try source.token(), .slots = try a.alloc(Slot, count), .merge = merge, .remaining = count };
+        return self;
+    }
+
+    fn report(self: *OccurrenceRequest, err: anyerror) void {
+        if (self.canceled or err == error.CancellationError or err == error.Canceled) return;
+        if (self.listener.on_error) |callback| callback(self.listener.context, err);
+    }
+
+    fn invoke(self: *OccurrenceRequest, slot: *Slot) void {
+        slot.started = true;
+        const a = self.result.arena.allocator();
+        switch (slot.provider) {
+            .single => |provider| {
+                if (provider.request_document_highlights) |request| {
+                    const pending = request(provider.context, a, self.primary, self.position, self.token, .{ .context = slot, .complete = Slot.documentReady }) catch |err| {
+                        Slot.documentReady(slot, err);
+                        return;
+                    };
+                    if (!slot.done) {
+                        slot.pending = pending;
+                        if (pending == null) Slot.documentReady(slot, null);
+                    }
+                } else Slot.documentReady(slot, provider.provide_document_highlights(provider.context, a, self.primary, self.position, self.token));
+            },
+            .multi => |entry| {
+                const provider = entry.provider;
+                if (provider.request_multi_document_highlights) |request| {
+                    const pending = request(provider.context, a, self.primary, self.position, entry.models, self.token, .{ .context = slot, .complete = Slot.multiReady }) catch |err| {
+                        Slot.multiReady(slot, err);
+                        return;
+                    };
+                    if (!slot.done) {
+                        slot.pending = pending;
+                        if (pending == null) Slot.multiReady(slot, null);
+                    }
+                } else Slot.multiReady(slot, provider.provide_multi_document_highlights(provider.context, a, self.primary, self.position, entry.models, self.token));
+            },
+        }
+    }
+
+    fn start(self: *OccurrenceRequest) ?*OccurrenceRequest {
+        if (!self.merge) return if (self.advance()) self else null;
+        self.starting = true;
+        for (self.slots) |*slot| self.invoke(slot);
+        self.starting = false;
+        if (self.remaining != 0) return self;
+        self.finishMerged();
+        return null;
+    }
+
+    /// Returns whether an async first-answer request remains in progress.
+    fn advance(self: *OccurrenceRequest) bool {
+        self.starting = true;
+        while (self.next_index < self.slots.len) : (self.next_index += 1) {
+            const slot = &self.slots[self.next_index];
+            if (!slot.started) self.invoke(slot);
+            if (!slot.done) {
+                self.starting = false;
+                return true;
+            }
+            if (slot.value) |value| {
+                switch (value) {
+                    .single => |highlights| self.result.put(self.primary.uri(), highlights) catch |err| self.report(err),
+                    .multi => |entries| for (entries) |entry| self.result.putKey(entry.key, entry.highlights) catch |err| self.report(err),
+                }
+                break; // An empty array/map is a valid answer.
+            }
+        }
+        self.starting = false;
+        self.finish();
+        return false;
+    }
+
+    fn finishMerged(self: *OccurrenceRequest) void {
+        self.mergeHighlights() catch |err| self.report(err);
+        self.finish();
+    }
+
+    fn mergeHighlights(self: *OccurrenceRequest) !void {
+        const a = self.result.arena.allocator();
+        var seen: std.AutoHashMapUnmanaged(Range, void) = .empty;
+        var highlights: std.ArrayList(DocumentHighlight) = .empty;
+        var any_answer = false;
+        for (self.slots) |slot| {
+            const value = slot.value orelse continue;
+            any_answer = true;
+            for (value.single) |highlight| {
+                if ((try seen.getOrPut(a, highlight.range)).found_existing) continue;
+                try highlights.append(a, highlight);
+            }
+        }
+        if (any_answer) try self.result.put(self.primary.uri(), highlights.items);
+    }
+
+    fn finish(self: *OccurrenceRequest) void {
+        self.source.deinit();
+        self.listener.complete(self.listener.context, self.result);
+    }
+
+    pub fn cancel(self: *OccurrenceRequest) void {
+        if (self.canceled) return;
+        self.canceled = true;
+        self.source.cancel();
+        for (self.slots) |slot| if (slot.pending) |pending| pending.dispose();
+        self.source.deinit();
+        self.result.dispose();
+    }
+};
+
+pub fn getOccurrencesAtPosition(allocator: Allocator, registry: *registry_mod.LanguageFeatureRegistry(editor_languages.DocumentHighlightProvider), model: *TextModel, position: Position, token: cancellation.CancellationToken, merge: bool, listener: OccurrenceListener) !?*OccurrenceRequest {
+    const result = try OccurrenceResult.create(allocator);
+    errdefer result.dispose();
+    const providers = try registry.ordered(result.arena.allocator(), model, false);
+    var exclude_textual = false;
+    if (merge) for (providers) |provider| {
+        if (!provider.textual_fallback) {
+            exclude_textual = true;
+            break;
+        }
+    };
+    var count: usize = 0;
+    for (providers) |provider| if (!exclude_textual or !provider.textual_fallback) {
+        count += 1;
+    };
+    const request = try OccurrenceRequest.create(result, model, position, token, merge, count, listener);
+    var index: usize = 0;
+    for (providers) |provider| {
+        if (exclude_textual and provider.textual_fallback) continue;
+        request.slots[index] = .{ .owner = request, .provider = .{ .single = provider } };
+        index += 1;
+    }
+    return request.start();
+}
+
+pub fn getOccurrencesAcrossMultipleModels(allocator: Allocator, registry: *registry_mod.LanguageFeatureRegistry(editor_languages.MultiDocumentHighlightProvider), model: *TextModel, position: Position, token: cancellation.CancellationToken, others: []const *TextModel, listener: OccurrenceListener) !?*OccurrenceRequest {
+    const result = try OccurrenceResult.create(allocator);
+    errdefer result.dispose();
+    const a = result.arena.allocator();
+    const providers = try registry.orderedWithSelectors(a, model, false);
+    const request = try OccurrenceRequest.create(result, model, position, token, false, providers.len, listener);
+    errdefer request.source.deinit();
+    for (providers, request.slots) |entry, *slot| {
+        var filtered: std.ArrayList(*TextModel) = .empty;
+        for (others) |other| {
+            if (!other.shouldSynchronizeModel()) continue;
+            const candidate = try selector_mod.candidateFromUri(a, other.uri(), other.getLanguageId(), true);
+            if (selector_mod.scoreCompiled(entry.selector, candidate) > 0) try filtered.append(a, other);
+        }
+        slot.* = .{ .owner = request, .provider = .{ .multi = .{ .provider = entry.provider, .models = filtered.items } } };
+    }
+    return request.start();
+}
 
 /// Port of the `editor.occurrencesHighlight` option values.
-pub const OccurrencesHighlight = enum {
-    off,
-    single_file,
-    multi_file,
-};
+pub const OccurrencesHighlight = @import("../../../common/config/editorOptions.zig").OccurrencesHighlight;
 
 pub const WordHighlighterSettings = struct {
     occurrences_highlight: OccurrencesHighlight = .single_file,
     /// `editor.occurrencesHighlightDelay` (upstream default 0).
     delay_ms: u64 = 0,
+    merge_providers: bool = false,
     /// Upstream `runDelayer(50)`.
     run_delay_ms: u64 = 50,
 };
@@ -376,6 +670,7 @@ pub const WordHighlighterContribution = struct {
 
     pub fn getOrCreate(editor: *Editor, host: WordHighlighterHost, settings: WordHighlighterSettings) !*WordHighlighterContribution {
         if (editor.getContribution(WordHighlighterContribution)) |self| {
+            self.applyConfiguration(settings);
             self.bindHost(host);
             return self;
         }
@@ -452,6 +747,17 @@ pub const WordHighlighterContribution = struct {
     pub fn attachWindow(self: *WordHighlighterContribution, window: *WindowQueue) void {
         self.window = window;
         if (self.word_highlighter) |highlighter| highlighter.attachWindow(window);
+    }
+
+    pub fn applyConfiguration(self: *WordHighlighterContribution, settings: WordHighlighterSettings) void {
+        const previous = self.settings;
+        self.settings = settings;
+        const highlighter = self.word_highlighter orelse return;
+        highlighter.settings = settings;
+        if (previous.occurrences_highlight != settings.occurrences_highlight or previous.merge_providers != settings.merge_providers) {
+            _ = highlighter.stopAll();
+            if (settings.occurrences_highlight != .off) highlighter.run(WordHighlighter.timeNow());
+        }
     }
 
     pub fn deinit(self: *WordHighlighterContribution) void {

@@ -445,6 +445,7 @@ pub const TerminalWorkbench = struct {
     snippet_registration: ?IDisposable = null,
     word_completion_provider: ?*WordBasedCompletionProvider = null,
     word_completion_registration: ?IDisposable = null,
+    textual_highlight_feature: ?*@import("../vs/editor/contrib/wordHighlighter/browser/textualHighlightProvider.zig").TextualMultiDocumentHighlightFeature = null,
     outline_creator: ?DocumentSymbolsOutlineCreator = null,
     code_lens_cache: ?*@import("../vs/editor/contrib/codelens/browser/codeLensCache.zig").CodeLensCache = null,
     focus: Focus = .editor,
@@ -586,6 +587,7 @@ pub const TerminalWorkbench = struct {
         self.snippet_registration = null;
         self.word_completion_provider = null;
         self.word_completion_registration = null;
+        self.textual_highlight_feature = null;
         self.outline_creator = null;
         self.outline_view = null;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
@@ -1860,6 +1862,7 @@ pub const TerminalWorkbench = struct {
         if (self.snippet_registration) |registration| registration.dispose();
         self.snippet_provider.deinit();
         if (self.word_completion_registration) |registration| registration.dispose();
+        if (self.textual_highlight_feature) |feature| feature.dispose();
         if (self.word_completion_provider) |provider| self.allocator.destroy(provider);
         if (self.marker_decorations) |service| service.deinit();
         if (self.marker_listener) |listener| {
@@ -2756,6 +2759,8 @@ pub const TerminalWorkbench = struct {
         errdefer self.allocator.destroy(features);
         features.* = LanguageFeaturesService.init(self.allocator);
         errdefer features.deinit();
+        const textual_highlights = try @import("../vs/editor/contrib/wordHighlighter/browser/textualHighlightProvider.zig").TextualMultiDocumentHighlightFeature.create(self.allocator, features.interface());
+        errdefer textual_highlights.dispose();
         const marker_service = try self.allocator.create(MarkerService);
         errdefer self.allocator.destroy(marker_service);
         marker_service.* = MarkerService.init(self.allocator);
@@ -2789,6 +2794,7 @@ pub const TerminalWorkbench = struct {
         self.word_completion_provider = word_provider;
         self.snippet_registration = snippets;
         self.word_completion_registration = words;
+        self.textual_highlight_feature = textual_highlights;
         self.marker_listener = listener;
         if (self.markers_status) |status| status.attach(marker_service);
         if (self.problems_view) |*view| view.setService(marker_service);

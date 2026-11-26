@@ -430,15 +430,42 @@ pub const DocumentHighlight = struct {
     kind: ?DocumentHighlightKind = null,
 };
 
-/// Port of `DocumentHighlightProvider`.
+/// Port of `DocumentHighlightProvider`. The result lives in the request
+/// allocator; callbacks adapt providers which return a Promise upstream.
 pub const DocumentHighlightProvider = struct {
     context: *anyopaque,
+    textual_fallback: bool = false,
+    request_document_highlights: ?*const fn (*anyopaque, Allocator, *TextModel, Position, CancellationToken, DocumentHighlightCallback) anyerror!?@import("../../base/common/lifecycle.zig").IDisposable = null,
     provide_document_highlights: *const fn (
         context: *anyopaque,
+        allocator: Allocator,
         model: *TextModel,
         position: Position,
         token: CancellationToken,
     ) anyerror!?[]const DocumentHighlight,
+};
+
+pub const DocumentHighlightCallback = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, anyerror!?[]const DocumentHighlight) void,
+};
+
+/// ResourceMap<DocumentHighlight[]> projection returned by upstream's
+/// `MultiDocumentHighlightProvider`.
+pub const MultiDocumentHighlight = struct {
+    uri: std.Uri,
+    highlights: []const DocumentHighlight,
+};
+
+pub const MultiDocumentHighlightCallback = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, anyerror!?[]const MultiDocumentHighlight) void,
+};
+
+pub const MultiDocumentHighlightProvider = struct {
+    context: *anyopaque,
+    request_multi_document_highlights: ?*const fn (*anyopaque, Allocator, *TextModel, Position, []const *TextModel, CancellationToken, MultiDocumentHighlightCallback) anyerror!?@import("../../base/common/lifecycle.zig").IDisposable = null,
+    provide_multi_document_highlights: *const fn (*anyopaque, Allocator, *TextModel, Position, []const *TextModel, CancellationToken) anyerror!?[]const MultiDocumentHighlight,
 };
 
 /// Port of `SelectionRange` from

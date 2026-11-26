@@ -110,6 +110,34 @@ fn readFindOptions(reader: Reader, language_id: ?[]const u8, resource: ?[]const 
     };
 }
 
+fn occurrencesHighlight(reader: Reader, language_id: ?[]const u8, resource: ?[]const u8) editorOptions.OccurrencesHighlight {
+    const value = readString(reader, "editor.occurrencesHighlight", language_id, resource) orelse return .single_file;
+    if (std.mem.eql(u8, value, "off")) return .off;
+    if (std.mem.eql(u8, value, "multiFile")) return .multi_file;
+    return .single_file;
+}
+
+fn occurrencesDelay(reader: Reader, language_id: ?[]const u8, resource: ?[]const u8) i32 {
+    const value = reader.get_value(reader.context, "editor.occurrencesHighlightDelay", language_id, resource) orelse return 0;
+    const number: f64 = switch (value.*) {
+        .integer => |v| @floatFromInt(v),
+        .float => |v| v,
+        .number_string => |v| std.fmt.parseFloat(f64, v) catch return 0,
+        .string => |v| blk: {
+            const trimmed = std.mem.trimStart(u8, v, " \t\r\n");
+            if (trimmed.len == 0) return 0;
+            var end: usize = if (trimmed[0] == '-' or trimmed[0] == '+') 1 else 0;
+            const start = end;
+            while (end < trimmed.len and std.ascii.isDigit(trimmed[end])) end += 1;
+            if (end == start) return 0;
+            break :blk std.fmt.parseFloat(f64, trimmed[0..end]) catch return 0;
+        },
+        else => return 0,
+    };
+    if (std.math.isNan(number)) return 0;
+    return @intFromFloat(@max(0, @min(2000, number)));
+}
+
 /// Upstream's validated per-resource tabFocusMode option. The global
 /// TabFocus service is ORed with this value by the editor configuration.
 pub fn tabFocusModeSetting(reader: Reader, language_id: ?[]const u8, resource: ?[]const u8) bool {
@@ -147,6 +175,17 @@ pub fn applyViewSettings(
     var any = !std.meta.eql(options.get(.find), find);
     mark(changed, .find, any);
     options.set(.find, find);
+
+    inline for (.{
+        .{ .option = EditorOption.occurrencesHighlight, .value = occurrencesHighlight(reader, language_id, resource) },
+        .{ .option = EditorOption.occurrencesHighlightDelay, .value = occurrencesDelay(reader, language_id, resource) },
+        .{ .option = EditorOption.occurrencesHighlightFromAllProviders, .value = findBoolean(reader.get_value(reader.context, "editor.occurrencesHighlightFromAllProviders", language_id, resource), false) },
+    }) |setting| {
+        const previous = options.get(setting.option);
+        mark(changed, setting.option, previous != setting.value);
+        any = any or previous != setting.value;
+        options.set(setting.option, setting.value);
+    }
 
     inline for (.{ .{ .key = "editor.glyphMargin", .option = EditorOption.glyphMargin }, .{ .key = "editor.codeLens", .option = EditorOption.codeLens } }) |setting| {
         if (readBool(reader, setting.key, language_id, resource)) |enabled| {

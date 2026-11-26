@@ -22,6 +22,8 @@ pub const ILanguageFeaturesService = struct {
     type_definition_provider: *registry.LanguageFeatureRegistry(languages.TypeDefinitionProvider),
     reference_provider: *registry.LanguageFeatureRegistry(languages.ReferenceProvider),
     document_symbol_provider: *registry.LanguageFeatureRegistry(languages.DocumentSymbolProvider),
+    document_highlight_provider: *registry.LanguageFeatureRegistry(languages.DocumentHighlightProvider),
+    multi_document_highlight_provider: *registry.LanguageFeatureRegistry(languages.MultiDocumentHighlightProvider),
     code_lens_provider: *registry.LanguageFeatureRegistry(languages.CodeLensProvider),
     code_action_provider: *registry.LanguageFeatureRegistry(languages.CodeActionProvider),
     document_formatting_edit_provider: *registry.LanguageFeatureRegistry(languages.DocumentFormattingEditProvider),

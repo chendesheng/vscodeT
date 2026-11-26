@@ -1447,7 +1447,7 @@ pub const Controllers = struct {
             .has_text_focus = viewHasWordTextFocus,
             .set_decorations = ModelDecorationSink.set,
             .request_frame = viewRequestFrame,
-        }, .{});
+        }, wordHighlightSettings(view));
         errdefer self.word_highlighter.unbindHost();
 
         errdefer self.detachDeferredContributions();
@@ -1757,7 +1757,13 @@ pub const MultiDiffBindingServices = struct {
 fn onConfigurationChanged(context: *anyopaque, event: @import("../../../../editor/common/config/editorOptions.zig").ConfigurationChangedEvent) void {
     const self: *Controllers = @ptrCast(@alignCast(context));
     if (event.hasChanged(.find)) self.find.applyConfiguration(self.view.terminal_view_host.options.get(.find));
+    if (event.hasChanged(.occurrencesHighlight) or event.hasChanged(.occurrencesHighlightDelay) or event.hasChanged(.occurrencesHighlightFromAllProviders)) self.word_highlighter.applyConfiguration(wordHighlightSettings(self.view));
     if (self.sticky) |sticky| sticky.onConfigurationChanged();
+}
+
+fn wordHighlightSettings(view: *View) @import("../../../../editor/contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterSettings {
+    const options = &view.terminal_view_host.options;
+    return .{ .occurrences_highlight = options.get(.occurrencesHighlight), .delay_ms = @intCast(options.get(.occurrencesHighlightDelay)), .merge_providers = options.get(.occurrencesHighlightFromAllProviders) };
 }
 
 fn viewTextHeight(context: *anyopaque) usize {
