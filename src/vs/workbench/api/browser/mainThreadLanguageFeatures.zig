@@ -9,7 +9,7 @@
 // types and forwards provider calls back to `ExtHostLanguageFeatures`.
 //
 // Terminal adaptation: existing synchronous providers have bounded timeouts;
-// CodeLens and document highlight providers use cancellable RPC continuations. Workspace
+// Hover, CodeLens and document highlight providers use cancellable RPC continuations. Workspace
 // edits from code actions are retained as raw DTO JSON until a bulk-edit
 // service exists; there is no TUI code-action surface yet.
 
@@ -463,6 +463,7 @@ pub const MainThreadLanguageFeatures = struct {
         registration.disposable = try self.features.hover_provider.register(parsed, .{
             .context = state,
             .provide_hover = provideHover,
+            .request_hover = requestHover,
         });
         return .empty;
     }
@@ -673,39 +674,79 @@ pub const MainThreadLanguageFeatures = struct {
 
     // --- provider implementations
 
+    fn hoverArgs(allocator: Allocator, handle: u32, model: *TextModel, position: Position) ![4]rpc.Arg {
+        return .{
+            .{ .json = .{ .integer = handle } },
+            .{ .json = try std_uri.jsonComponents(allocator, model.uri()) },
+            .{ .json = try positionJson(allocator, model, position) },
+            .{ .json = .{ .object = .empty } },
+        };
+    }
+
+    fn parseHoverReply(allocator: Allocator, proxy: HostProxy, handle: u32, model: *TextModel, reply: std.json.Value) !?languages.Hover {
+        if (reply != .object) return null;
+        const object = reply.object;
+        // The terminal currently renders the complete result without IDE
+        // verbosity controls. Release the cached extension-host hover after
+        // copying its DTO, rather than retaining unowned provider handles.
+        if (object.get("id")) |id_value| if (id_value == .integer) {
+            const release = [_]rpc.Arg{ .{ .json = .{ .integer = handle } }, .{ .json = id_value } };
+            proxy.notify(proxy.context, "$releaseHover", &release) catch {};
+        };
+        const contents_value = object.get("contents") orelse return null;
+        var contents = std.array_list.Managed(languages.IMarkdownString).init(allocator);
+        try appendHoverContents(&contents, allocator, contents_value);
+        if (contents.items.len == 0) return null;
+        return .{
+            .contents = try contents.toOwnedSlice(),
+            .range = if (object.get("range")) |range| rangeFromJson(model, range) else null,
+            .can_increase_verbosity = optionalBool(object.get("canIncreaseVerbosity")),
+            .can_decrease_verbosity = optionalBool(object.get("canDecreaseVerbosity")),
+        };
+    }
+
     fn provideHover(context: *anyopaque, model: *TextModel, position: Position, token: CancellationToken, hover_context: ?*const languages.HoverContext) anyerror!?languages.Hover {
         _ = hover_context;
         const state: *HoverState = @ptrCast(@alignCast(context));
         const self = state.registration.owner;
         _ = state.arena.reset(.retain_capacity);
         const scratch = state.arena.allocator();
-        var args = std.array_list.Managed(rpc.Arg).init(scratch);
-        try args.append(.{ .json = .{ .integer = state.registration.handle } });
-        try args.append(.{ .json = try std_uri.jsonComponents(scratch, model.uri()) });
-        try args.append(.{ .json = try positionJson(scratch, model, position) });
-        try args.append(.{ .json = .{ .object = .empty } });
-        const reply = self.call(scratch, "$provideHover", args.items, token, timeout_hover_ms) catch return null;
-        if (reply != .object) return null;
-        const object = reply.object;
-        if (object.get("id")) |id_value| {
-            if (id_value == .integer) {
-                var release = [_]rpc.Arg{
-                    .{ .json = .{ .integer = state.registration.handle } },
-                    .{ .json = id_value },
-                };
-                self.proxy.notify(self.proxy.context, "$releaseHover", &release) catch {};
-            }
+        const args = try hoverArgs(scratch, state.registration.handle, model, position);
+        const reply = self.call(scratch, "$provideHover", &args, token, timeout_hover_ms) catch return null;
+        return parseHoverReply(scratch, self.proxy, state.registration.handle, model, reply);
+    }
+
+    const HoverAsyncRequest = struct {
+        allocator: Allocator,
+        proxy: HostProxy,
+        handle: u32,
+        model: *TextModel,
+        callback: languages.HoverCallback,
+
+        fn ready(context: *anyopaque, reply: rpc.Reply) void {
+            const self: *HoverAsyncRequest = @ptrCast(@alignCast(context));
+            self.callback.complete(self.callback.context, switch (reply) {
+                .json => |value| parseHoverReply(self.allocator, self.proxy, self.handle, self.model, value),
+                .err => error.RequestFailed,
+                else => null,
+            });
         }
-        const contents_value = object.get("contents") orelse return null;
-        var contents = std.array_list.Managed(languages.IMarkdownString).init(scratch);
-        try appendHoverContents(&contents, scratch, contents_value);
-        if (contents.items.len == 0) return null;
-        const owned = try scratch.alloc(languages.IMarkdownString, contents.items.len);
-        for (contents.items, 0..) |item, index| owned[index] = .{ .value = try scratch.dupe(u8, item.value) };
-        return .{
-            .contents = owned,
-            .range = if (object.get("range")) |range| rangeFromJson(model, range) else null,
-        };
+    };
+
+    fn requestHover(context: *anyopaque, allocator: Allocator, model: *TextModel, position: Position, token: CancellationToken, hover_context: ?*const languages.HoverContext, callback: languages.HoverCallback) !?IDisposable {
+        const state: *HoverState = @ptrCast(@alignCast(context));
+        try token.throwIfCancellationRequested();
+        const proxy = state.registration.owner.proxy;
+        if (proxy.request_async) |request| {
+            var scratch = std.heap.ArenaAllocator.init(state.registration.owner.allocator);
+            defer scratch.deinit();
+            const pending = try allocator.create(HoverAsyncRequest);
+            pending.* = .{ .allocator = allocator, .proxy = proxy, .handle = state.registration.handle, .model = model, .callback = callback };
+            const args = try hoverArgs(scratch.allocator(), state.registration.handle, model, position);
+            return try request(proxy.context, "$provideHover", &args, .{ .context = pending, .callback = HoverAsyncRequest.ready });
+        }
+        callback.complete(callback.context, provideHover(context, model, position, token, hover_context));
+        return null;
     }
 
     fn provideCompletion(context: *anyopaque, allocator: Allocator, model: *TextModel, position: Position, trigger: completion.CompletionContext, token: CancellationToken) anyerror!completion.CompletionList {
@@ -1318,12 +1359,22 @@ fn resourceKeyFromComponentsJson(allocator: Allocator, value: std.json.Value) ![
     return try std_uri.resourceKeyFromComponents(allocator, components);
 }
 
+fn optionalBool(value: ?std.json.Value) ?bool {
+    const item = value orelse return null;
+    return if (item == .bool) item.bool else null;
+}
+
 fn appendHoverContents(result: *std.array_list.Managed(languages.IMarkdownString), allocator: Allocator, value: std.json.Value) !void {
     switch (value) {
         .string => |text| try result.append(.{ .value = try allocator.dupe(u8, text) }),
         .object => |object| {
             if (object.get("value")) |content| {
-                if (content == .string) try result.append(.{ .value = try allocator.dupe(u8, content.string) });
+                if (content == .string) try result.append(.{
+                    .value = try allocator.dupe(u8, content.string),
+                    .is_trusted = optionalBool(object.get("isTrusted")),
+                    .support_theme_icons = optionalBool(object.get("supportThemeIcons")),
+                    .support_html = optionalBool(object.get("supportHtml")),
+                });
             }
         },
         .array => |array| {
