@@ -36,13 +36,14 @@ test "quickDiffController: attach, apply gutter width and detach" {
 
     var resources = ResourceEvent.init(allocator);
     defer resources.deinit();
-    var models = @import("../../browser/quickDiffModel.zig").QuickDiffModelService.init(allocator, &service, &window, resolver.interface());
+    var models = @import("../../browser/quickDiffModel.zig").QuickDiffModelService.init(allocator, service.interface(), &window, resolver.interface());
     defer models.deinit();
     try models.setRepositoryResources(&resources);
-    var controller = QuickDiffWorkbenchController.init(allocator, &service, &models);
+    var controller = QuickDiffWorkbenchController.init(allocator, service.interface(), &models);
     defer controller.deinit();
 
-    try controller.attach(editor, "/repo/test.zig");
+    try resolver.registerDocument(editor.document, false);
+    try controller.attach(editor);
     try testing.expectEqual(@as(usize, 1), controller.count());
     try testing.expectEqual(@as(usize, 1), editor.lineDecorationsWidth());
     const then = time.milliTimestamp() + 201;
@@ -83,11 +84,12 @@ test "quickDiffController: a scheduled diff updates after an edit and config dis
         allocator.destroy(editor);
     }
 
-    var models = @import("../../browser/quickDiffModel.zig").QuickDiffModelService.init(allocator, &service, &window, resolver.interface());
+    var models = @import("../../browser/quickDiffModel.zig").QuickDiffModelService.init(allocator, service.interface(), &window, resolver.interface());
     defer models.deinit();
-    var controller = QuickDiffWorkbenchController.init(allocator, &service, &models);
+    var controller = QuickDiffWorkbenchController.init(allocator, service.interface(), &models);
     defer controller.deinit();
-    try controller.attach(editor, "/repo/test.zig");
+    try resolver.registerDocument(editor.document, false);
+    try controller.attach(editor);
 
     try editor.typeCharacter("x");
     const due = controller.entries.items[0].model.due_at orelse return error.ExpectedContentEvent;
@@ -153,13 +155,14 @@ test "quickDiffController: visible split editors share one computation and indep
     }
     var resources = ResourceEvent.init(a);
     defer resources.deinit();
-    var models = @import("../../browser/quickDiffModel.zig").QuickDiffModelService.init(a, &providers, &queue, resolver.interface());
+    var models = @import("../../browser/quickDiffModel.zig").QuickDiffModelService.init(a, providers.interface(), &queue, resolver.interface());
     defer models.deinit();
     try models.setRepositoryResources(&resources);
-    var controller = QuickDiffWorkbenchController.init(a, &providers, &models);
+    var controller = QuickDiffWorkbenchController.init(a, providers.interface(), &models);
     defer controller.deinit();
-    try controller.attach(editor, "/repo/test.zig");
-    try controller.attach(split, "/repo/test.zig");
+    try resolver.registerDocument(editor.document, false);
+    try controller.attach(editor);
+    try controller.attach(split);
     const first = controller.entries.items[0].model;
     try testing.expectEqual(first, controller.entries.items[1].model);
     try testing.expectEqual(@as(usize, 1), models.references.count());

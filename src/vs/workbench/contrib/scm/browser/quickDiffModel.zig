@@ -8,7 +8,7 @@
 //   Worker replies wake the window to apply decorations on the UI thread.
 // - The embedded peek obtains the real original document from the owned
 //   resolver reference and shares the working document with the outer editor.
-// - Paths replace `URI` values, and suppressed secondary changes stay in
+// - Suppressed secondary changes stay in
 //   `all_changes` (the API-visible list) while `changes` contains the visible
 //   primary/contributed and non-overlapping secondary changes, matching the
 //   upstream split.
@@ -17,7 +17,6 @@ const Allocator = std.mem.Allocator;
 
 const worker_service = @import("../../../../editor/browser/services/editorWorkerService.zig");
 const quick_diff = @import("../common/quickDiff.zig");
-const quick_diff_service_mod = @import("../common/quickDiffService.zig");
 const doc_diff = @import("../../../../editor/common/diff/documentDiffProvider.zig");
 const text_model = @import("../../../../editor/common/model/textModel.zig");
 const range_mapping = @import("../../../../editor/common/diff/rangeMapping.zig");
@@ -33,7 +32,7 @@ pub const QuickDiffProviderKind = quick_diff.QuickDiffProviderKind;
 pub const IChange = quick_diff.IChange;
 pub const ChangeType = quick_diff.ChangeType;
 pub const QuickDiffResult = quick_diff.QuickDiffResult;
-pub const QuickDiffService = quick_diff_service_mod.QuickDiffService;
+pub const IQuickDiffService = quick_diff.IQuickDiffService;
 pub const DiffAlgorithmName = doc_diff.DiffAlgorithmName;
 pub const DetailedLineRangeMapping = range_mapping.DetailedLineRangeMapping;
 pub const LineRangeMapping = range_mapping.LineRangeMapping;
@@ -53,11 +52,11 @@ pub const DiffEditorModel = struct {
 };
 
 /// A terminal quick-diff change. `change2` owns its inner-change array; the
-/// provider/path slices are borrowed from the model's quick-diff list.
+/// provider and URI slices are borrowed from the published model state.
 pub const QuickDiffChange = struct {
     provider_id: []const u8,
-    original_path: []const u8,
-    modified_path: []const u8,
+    original: std.Uri,
+    modified: std.Uri,
     change: IChange,
     change2: DetailedLineRangeMapping,
 
@@ -170,7 +169,7 @@ pub const QuickDiffModelReference = struct {
 /// and one original-reference set for a canonical resource/options pair.
 pub const QuickDiffModelService = struct {
     allocator: Allocator,
-    service: *QuickDiffService,
+    service: IQuickDiffService,
     window: *@import("../../../../base/common/windowDispatch.zig").Queue,
     resolver: model_resolver.ITextModelService,
     worker: worker_service.EditorWorkerService,
@@ -181,24 +180,21 @@ pub const QuickDiffModelService = struct {
     const Entry = struct {
         owner: *QuickDiffModelService,
         key: []u8,
-        path: []u8,
         document: *EditorDocument,
-        document_reference: ?model_resolver.ModelReference,
+        document_reference: model_resolver.ModelReference,
         model: QuickDiffModel,
         refs: usize = 1,
 
         fn destroy(self: *Entry) void {
             const a = self.owner.allocator;
             self.model.deinit();
-            if (self.document_reference) |*reference| reference.dispose();
-            self.document.release();
-            a.free(self.path);
+            self.document_reference.dispose();
             a.free(self.key);
             a.destroy(self);
         }
     };
 
-    pub fn init(allocator: Allocator, service: *QuickDiffService, window: *@import("../../../../base/common/windowDispatch.zig").Queue, resolver: model_resolver.ITextModelService) QuickDiffModelService {
+    pub fn init(allocator: Allocator, service: IQuickDiffService, window: *@import("../../../../base/common/windowDispatch.zig").Queue, resolver: model_resolver.ITextModelService) QuickDiffModelService {
         return .{ .allocator = allocator, .service = service, .window = window, .resolver = resolver, .worker = .init() };
     }
 
@@ -213,42 +209,32 @@ pub const QuickDiffModelService = struct {
 
     pub fn createQuickDiffModelReference(self: *QuickDiffModelService, resource: std.Uri, options: QuickDiffModelOptions) !?QuickDiffModelReference {
         if (!std.mem.eql(u8, resource.scheme, "file")) return null;
-        var reference = self.resolver.acquireModelReference(resource) catch return null;
-        defer reference.dispose();
-        if (reference.object.isReadonly()) return null;
+        var reference = self.resolver.acquireModelReference(resource) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => return null,
+        };
+        errdefer reference.dispose();
         const document = TextModelResolverService.documentOf(reference);
-        return try self.acquireForDocument(document, document.path, options);
-    }
-
-    /// A native editor input already owns the resolved shared document; the
-    /// tests and decorator use this boundary instead of reopening it.
-    pub fn acquireForDocument(self: *QuickDiffModelService, document: *EditorDocument, path: []const u8, options: QuickDiffModelOptions) !QuickDiffModelReference {
         const a = self.allocator;
-        const resource = try @import("../../../../base/common/stdUri.zig").resourceKey(a, document.model.uri());
-        defer a.free(resource);
-        const key = try std.fmt.allocPrint(a, "{s}\x00{s}:{?d}", .{ resource, @tagName(options.algorithm), options.max_computation_time_ms });
+        const canonical = try @import("../../../../base/common/stdUri.zig").resourceKey(a, document.model.uri());
+        defer a.free(canonical);
+        const key = try std.fmt.allocPrint(a, "{s}\x00{s}:{?d}", .{ canonical, @tagName(options.algorithm), options.max_computation_time_ms });
         errdefer a.free(key);
         if (self.references.get(key)) |entry| {
             if (entry.document != document) return error.QuickDiffModelMismatch;
             a.free(key);
+            reference.dispose();
             entry.refs += 1;
             return .{ .object = &entry.model, .entry = entry };
         }
         const entry = try a.create(Entry);
         errdefer a.destroy(entry);
-        const path_copy = try a.dupe(u8, path);
-        errdefer a.free(path_copy);
-        document.retain();
-        errdefer document.release();
-        var reference: ?model_resolver.ModelReference = self.resolver.acquireModelReference(document.model.uri()) catch null;
-        errdefer if (reference) |*value| value.dispose();
         entry.* = .{
             .owner = self,
             .key = key,
-            .path = path_copy,
             .document = document,
             .document_reference = reference,
-            .model = QuickDiffModel.init(a, document.model, path_copy, self.service, self.resolver, options),
+            .model = QuickDiffModel.init(a, document.model, self.service, self.resolver, options),
         };
         errdefer entry.model.deinit();
         if (self.worker.replies_ready.queue == null) self.worker.attachWindow(self.window);
@@ -294,8 +280,7 @@ pub const QuickDiffModelService = struct {
 pub const QuickDiffModel = struct {
     allocator: Allocator,
     model: *TextModel,
-    path: []const u8,
-    service: *QuickDiffService,
+    service: IQuickDiffService,
     options: QuickDiffModelOptions,
     pending: ?*DiffRequest = null,
     resolver: model_resolver.ITextModelService,
@@ -491,15 +476,13 @@ pub const QuickDiffModel = struct {
     pub fn init(
         allocator: Allocator,
         model: *TextModel,
-        path: []const u8,
-        service: *QuickDiffService,
+        service: IQuickDiffService,
         resolver: model_resolver.ITextModelService,
         options: QuickDiffModelOptions,
     ) QuickDiffModel {
         var self = QuickDiffModel{
             .allocator = allocator,
             .model = model,
-            .path = path,
             .service = service,
             .resolver = resolver,
             .options = options,
@@ -614,8 +597,8 @@ pub const QuickDiffModel = struct {
             try results.append(.{
                 .provider_id = quick.id,
                 .provider_kind = quick.kind,
-                .original_path = self.path,
-                .modified_path = self.path,
+                .original = try std.Uri.parse(quick.original.resource_uri),
+                .modified = self.model.uri(),
                 .changes = try changes.toOwnedSlice(),
                 .changes2 = try changes2.toOwnedSlice(),
             });
@@ -745,14 +728,15 @@ pub const QuickDiffModel = struct {
 
         for (new_quick_diffs, 0..) |quick, quick_index| {
             const diff = request.diffs[quick_index] orelse continue;
+            const original = try std.Uri.parse(quick.original.resource_uri);
 
             for (diff.changes) |mapping| {
                 try all_changes.ensureUnusedCapacity(1);
-                all_changes.appendAssumeCapacity(try self.convertMapping(quick, mapping));
+                all_changes.appendAssumeCapacity(try self.convertMapping(quick, original, mapping));
                 if (quick.kind == .secondary and
                     self.overlapsPrimary(visible_changes.items, new_quick_diffs, request.original_lines, quick_index, mapping)) continue;
                 try visible_changes.ensureUnusedCapacity(1);
-                visible_changes.appendAssumeCapacity(try self.convertMapping(quick, mapping));
+                visible_changes.appendAssumeCapacity(try self.convertMapping(quick, original, mapping));
             }
         }
 
@@ -818,13 +802,13 @@ pub const QuickDiffModel = struct {
         return false;
     }
 
-    fn convertMapping(self: *QuickDiffModel, quick: QuickDiff, mapping: DetailedLineRangeMapping) !QuickDiffChange {
+    fn convertMapping(self: *QuickDiffModel, quick: QuickDiff, original: std.Uri, mapping: DetailedLineRangeMapping) !QuickDiffChange {
         const change = quick_diff_change_from_mapping(mapping);
         const inner = if (mapping.inner_changes) |values| try self.allocator.dupe(RangeMapping, values) else null;
         return .{
             .provider_id = quick.id,
-            .original_path = self.path,
-            .modified_path = self.path,
+            .original = original,
+            .modified = self.model.uri(),
             .change = change,
             .change2 = .{
                 .original = mapping.original,

@@ -42,8 +42,7 @@ const Harness = struct {
         self.quick_model = QuickDiffModel.init(
             self.allocator,
             self.model.model,
-            "/repo/file.zig",
-            &self.service,
+            self.service.interface(),
             self.resolver.interface(),
             .{},
         );
@@ -335,6 +334,9 @@ test "quickDiffModel: results and navigation" {
     defer QuickDiffModel.freeQuickDiffResults(std.testing.allocator, results);
     try std.testing.expectEqual(@as(usize, 1), results.len);
     try std.testing.expectEqual(@as(usize, 2), results[0].changes.len);
+    try std.testing.expectEqualStrings("test-quickdiff", results[0].original.scheme);
+    try std.testing.expectEqualStrings(harness.model.model.uri().scheme, results[0].modified.scheme);
+    try std.testing.expectEqualStrings("test-quickdiff", harness.quick_model.all_changes.items[0].original.scheme);
     try std.testing.expectEqualStrings("HEAD", harness.quick_model.getDiffEditorModel("git.primary").?.ref_label);
 }
 
@@ -365,7 +367,7 @@ test "quickDiffModel: URI references are shared, updated by model events, and re
     var worker = EditorWorkerService.init();
     defer worker.deinit();
     worker.attachWindow(&queue);
-    var model = QuickDiffModel.init(a, modified.model, "/repo/file.txt", &service, resolver.interface(), .{});
+    var model = QuickDiffModel.init(a, modified.model, service.interface(), resolver.interface(), .{});
     model.attachWindow(&queue, &worker);
     defer model.deinit();
     const Pump = struct {
@@ -413,7 +415,7 @@ test "quickDiffModel: URI references are shared, updated by model events, and re
     // cancel the acquisition without publishing a stale result.
     const restored_registration = try service.addQuickDiffProvider(&primary);
     defer restored_registration.dispose();
-    var abandoned = QuickDiffModel.init(a, modified.model, "/repo/file.txt", &service, resolver.interface(), .{});
+    var abandoned = QuickDiffModel.init(a, modified.model, service.interface(), resolver.interface(), .{});
     abandoned.attachWindow(&queue, &worker);
     abandoned.triggerDiff(time.milliTimestamp());
     const deadline = abandoned.due_at.?;
@@ -441,7 +443,7 @@ test "QuickDiffModelService: canonical resource and options share model lifetime
     defer providers.deinit();
     var resources = Emitter(void).init(a);
     defer resources.deinit();
-    var models = model_mod.QuickDiffModelService.init(a, &providers, &queue, resolver.interface());
+    var models = model_mod.QuickDiffModelService.init(a, providers.interface(), &queue, resolver.interface());
     defer models.deinit();
     try models.setRepositoryResources(&resources);
     const api = models.interface();

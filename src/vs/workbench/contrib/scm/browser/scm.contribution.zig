@@ -39,6 +39,7 @@ pub const SCMContribution = struct {
     repository: ?*scm.ISCMRepository = null,
     storage: ?*Storage = null,
     quick_diff_service: ?*quick_diff.QuickDiffService = null,
+    quick_diff_api: ?*quick_diff.IQuickDiffService = null,
     quick_diff_model_service: ?*quick_models.QuickDiffModelService = null,
     quick_diff_model_api: ?*quick_models.IQuickDiffModelService = null,
     registered_quick_providers: []quick_diff.IDisposable = &.{},
@@ -77,13 +78,17 @@ pub const SCMContribution = struct {
         errdefer a.destroy(service);
         service.* = quick_diff.QuickDiffService.init(a, storage);
         errdefer service.deinit();
+        const quick_api = try a.create(quick_diff.IQuickDiffService);
+        errdefer a.destroy(quick_api);
+        quick_api.* = service.interface();
         const models = try a.create(quick_models.QuickDiffModelService);
         errdefer a.destroy(models);
-        models.* = .init(a, service, window, resolver);
+        models.* = .init(a, quick_api.*, window, resolver);
         errdefer models.deinit();
         const api = try a.create(quick_models.IQuickDiffModelService);
         api.* = models.interface();
         self.quick_diff_service = service;
+        self.quick_diff_api = quick_api;
         self.quick_diff_model_service = models;
         self.quick_diff_model_api = api;
         return api;
@@ -145,7 +150,7 @@ pub const SCMContribution = struct {
         try models.setRepositoryResources(provider.on_did_change_resources);
 
         const controller = try allocator.create(QuickDiffWorkbenchController);
-        controller.* = QuickDiffWorkbenchController.init(allocator, quick_service, models);
+        controller.* = QuickDiffWorkbenchController.init(allocator, quick_service.interface(), models);
         self.quick_diff_controller = controller;
         controller.view_factory = options.view_factory;
         controller.quick_input = options.quick_input;
@@ -269,12 +274,14 @@ pub const SCMContribution = struct {
         const service = self.service;
         const api = self.service_api;
         const quick_service = self.quick_diff_service;
+        const quick_api = self.quick_diff_api;
         const models = self.quick_diff_model_service;
         const models_api = self.quick_diff_model_api;
         self.* = init(allocator);
         self.service = service;
         self.service_api = api;
         self.quick_diff_service = quick_service;
+        self.quick_diff_api = quick_api;
         self.quick_diff_model_service = models;
         self.quick_diff_model_api = models_api;
     }
@@ -286,6 +293,7 @@ pub const SCMContribution = struct {
             models.deinit();
             self.allocator.destroy(models);
         }
+        if (self.quick_diff_api) |api| self.allocator.destroy(api);
         if (self.quick_diff_service) |service| {
             service.deinit();
             self.allocator.destroy(service);
@@ -293,6 +301,7 @@ pub const SCMContribution = struct {
         self.quick_diff_model_api = null;
         self.quick_diff_model_service = null;
         self.quick_diff_service = null;
+        self.quick_diff_api = null;
         if (self.service_api) |api| self.allocator.destroy(api);
         if (self.service) |service| {
             service.deinit();

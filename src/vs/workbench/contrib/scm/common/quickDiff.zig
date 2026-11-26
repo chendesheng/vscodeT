@@ -71,8 +71,8 @@ pub const QuickDiff = struct {
 
 pub const QuickDiffChange = struct {
     provider_id: []const u8,
-    original_path: []const u8,
-    modified_path: []const u8,
+    original: std.Uri,
+    modified: std.Uri,
     change: IChange,
     change2: LineRangeMapping,
 };
@@ -80,11 +80,14 @@ pub const QuickDiffChange = struct {
 pub const QuickDiffResult = struct {
     provider_id: []const u8,
     provider_kind: QuickDiffProviderKind,
-    original_path: []const u8,
-    modified_path: []const u8,
+    original: std.Uri,
+    modified: std.Uri,
     changes: []IChange,
     changes2: []LineRangeMapping,
 };
+
+const instantiation = @import("../../../../platform/instantiation/common/instantiation.zig");
+pub const quick_diff_service_id = instantiation.ServiceIdentifier(IQuickDiffService, "quickDiff");
 
 pub const IQuickDiffService = struct {
     context: *anyopaque,

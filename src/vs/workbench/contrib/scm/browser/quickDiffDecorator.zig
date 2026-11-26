@@ -34,7 +34,7 @@ pub const OverviewRulerLane = model_mod.OverviewRulerLane;
 pub const TrackedRangeStickiness = model_mod.TrackedRangeStickiness;
 pub const TextModel = text_model.TextModel;
 pub const QuickDiffModel = quick_diff_model_mod.QuickDiffModel;
-pub const QuickDiffService = quick_diff_service_mod.QuickDiffService;
+pub const IQuickDiffService = quick_diff.IQuickDiffService;
 pub const ChangeType = quick_diff.ChangeType;
 
 pub const DecorationsMode = enum {
@@ -75,7 +75,7 @@ pub const QuickDiffDecorator = struct {
     allocator: Allocator,
     model: *TextModel,
     quick_model: *QuickDiffModel,
-    quick_diff_service: *QuickDiffService,
+    quick_diff_service: IQuickDiffService,
     config: Config,
     owner_id: usize,
     decoration_ids: []u64 = &.{},
@@ -95,7 +95,7 @@ pub const QuickDiffDecorator = struct {
         allocator: Allocator,
         model: *TextModel,
         quick_model: *QuickDiffModel,
-        quick_diff_service: *QuickDiffService,
+        quick_diff_service: IQuickDiffService,
         config: Config,
         owner_id: usize,
     ) QuickDiffDecorator {
@@ -382,7 +382,7 @@ const WindowQueue = @import("../../../../base/common/windowDispatch.zig").Queue;
 pub const QuickDiffWorkbenchController = struct {
     window: *WindowQueue,
     allocator: Allocator,
-    service: *QuickDiffService,
+    service: IQuickDiffService,
     model_service: *quick_diff_model_mod.QuickDiffModelService,
     entries: std.array_list.Managed(*Entry),
     config: Config = .{},
@@ -396,7 +396,7 @@ pub const QuickDiffWorkbenchController = struct {
     configuration_service: ?*ConfigurationService = null,
     configuration_listener: ?usize = null,
 
-    pub fn init(allocator: Allocator, service: *QuickDiffService, models: *quick_diff_model_mod.QuickDiffModelService) QuickDiffWorkbenchController {
+    pub fn init(allocator: Allocator, service: IQuickDiffService, models: *quick_diff_model_mod.QuickDiffModelService) QuickDiffWorkbenchController {
         return .{
             .allocator = allocator,
             .service = service,
@@ -427,13 +427,13 @@ pub const QuickDiffWorkbenchController = struct {
 
     /// Attaches quick diff to a file editor. Diff snapshot editors are skipped
     /// by the workbench (they are read-only and never passed here).
-    pub fn attach(self: *QuickDiffWorkbenchController, editor: *Editor, path: []const u8) !void {
+    pub fn attach(self: *QuickDiffWorkbenchController, editor: *Editor) !void {
         if (self.config.decorations == .none) return;
         if (self.contains(editor)) return;
+        var reference = (try self.model_service.createQuickDiffModelReference(editor.model.uri(), .{})) orelse return;
+        errdefer reference.dispose();
         const entry = try self.allocator.create(Entry);
         errdefer self.allocator.destroy(entry);
-        var reference = try self.model_service.acquireForDocument(editor.document, path, .{});
-        errdefer reference.dispose();
         entry.* = .{
             .editor = editor,
             .model = reference.object,
@@ -478,11 +478,11 @@ pub const QuickDiffWorkbenchController = struct {
         var visible = editors.visibleEditorPanes();
         while (visible.next()) |pane| {
             if (pane.file_input != null) {
-                try self.attach(pane.editor, pane.editor.path);
+                try self.attach(pane.editor);
                 if (self.view_factory) |factory| for (self.entries.items) |entry| {
                     if (entry.editor != pane.editor) continue;
                     if (entry.peek_controller == null) {
-                        var reference = try self.model_service.acquireForDocument(pane.editor.document, pane.editor.path, .{});
+                        var reference = (try self.model_service.createQuickDiffModelReference(pane.editor.model.uri(), .{})) orelse continue;
                         errdefer reference.dispose();
                         entry.peek_controller = try QuickDiffEditorController.create(self.allocator, pane.view, reference.object, factory, &self.model_service.worker, self.window);
                         entry.peek_reference = reference;
@@ -667,7 +667,7 @@ const Harness = struct {
         self.worker = TestWorker.init();
         self.service = quick_diff_service_mod.QuickDiffService.init(self.allocator, null);
         self.model = try TestModel.init(self.allocator, text, "zig");
-        self.quick_model = QuickDiffModel.init(self.allocator, self.model.model, "/repo/file.zig", &self.service, self.resolver.interface(), .{});
+        self.quick_model = QuickDiffModel.init(self.allocator, self.model.model, self.service.interface(), self.resolver.interface(), .{});
         try self.provider.init(self.allocator, &self.resolver, "git.primary", .primary, original);
         self.disposable = try self.service.addQuickDiffProvider(&self.provider.base);
         const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp();
@@ -686,7 +686,7 @@ const Harness = struct {
             self.allocator,
             self.model.model,
             &self.quick_model,
-            &self.service,
+            self.service.interface(),
             .{},
             42,
         );
