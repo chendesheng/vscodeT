@@ -78,10 +78,34 @@ function activate(context) {
     const tab = vscode.window.tabGroups.all.flatMap(group => group.tabs).find(tab => Array.isArray(tab.input?.textDiffs));
     return tab ? vscode.window.tabGroups.close(tab, true) : false;
   }));
+  const hoverEvents = [];
+  const delayedHovers = new Map();
   context.subscriptions.push(vscode.languages.registerHoverProvider({ language: 'json' }, {
-    provideHover() {
-      return { contents: ['fixture hover'] };
+    provideHover(document, position, token) {
+      const name = document.uri.query;
+      if (name !== 'HoverOriginal' && name !== 'HoverModified') return { contents: ['fixture hover'] };
+      hoverEvents.push({ name, kind: 'start', text: document.lineAt(position.line).text });
+      return new Promise(resolve => {
+        let subscription;
+        const finish = (kind, value) => {
+          if (!delayedHovers.has(name)) return;
+          delayedHovers.delete(name);
+          subscription?.dispose();
+          hoverEvents.push({ name, kind });
+          resolve(value);
+        };
+        delayedHovers.set(name, () => finish('complete', { contents: [`semantic ${name}`], range: new vscode.Range(0, 2, 0, 6) }));
+        subscription = token.onCancellationRequested(() => finish('cancel', undefined));
+        if (token.isCancellationRequested) finish('cancel', undefined);
+      });
     }
+  }));
+  context.subscriptions.push(vscode.commands.registerCommand('fixture.hoverState', () => hoverEvents));
+  context.subscriptions.push(vscode.commands.registerCommand('fixture.releaseHover', name => {
+    const finish = delayedHovers.get(name);
+    if (!finish) return false;
+    finish();
+    return true;
   }));
   context.subscriptions.push(vscode.languages.registerCompletionItemProvider({ language: 'json' }, {
     provideCompletionItems() {

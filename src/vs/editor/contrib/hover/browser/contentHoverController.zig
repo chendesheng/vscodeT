@@ -420,23 +420,21 @@ pub const ContentHoverController = struct {
 
     /// Returns true when the key was consumed by the hover.
     pub fn onKeyDown(self: *ContentHoverController, event: *ui.KeyEvent) bool {
-        if (!self.wrapper.model_attached or self.ignore_mouse_events or !self.wrapper.isVisible()) return false;
+        if (!self.wrapper.model_attached or self.ignore_mouse_events) return false;
 
         if (self.settings.enabled == .on_keyboard_modifier and
             hoverUtils.isTriggerModifierPressed(self.settings.multi_cursor_modifier, modifierState(event.mods)) and
             self.last_mouse_event != null)
         {
-            _ = self.wrapper.showsOrWillShow(self.last_mouse_event.?);
-            return true;
+            if (!self.wrapper.isVisible()) _ = self.wrapper.showsOrWillShow(self.last_mouse_event.?);
+            return false;
         }
 
-        // A focused hover owns the keyboard; its own listener handles Escape
-        // and scrolling. Upstream only sees editor keydowns while the editor
-        // has focus, so it never hides the hover from here in that state.
+        // A focused hover owns the keyboard through the widget listener.
         if (self.wrapper.isFocused()) return false;
-
+        const had_hover = self.wrapper.isVisible() or !self.wrapper.operation.isIdle() or self.react_timer.isScheduled();
         self.hideContentHover();
-        return event.key == .escape;
+        return had_hover and event.key == .escape;
     }
 
     pub fn onEditorScrollChanged(self: *ContentHoverController, scroll_top_changed: bool) void {

@@ -2398,7 +2398,15 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(workbench.outline_view.?.focused);
             workbench.focusEditor();
             try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.showHover"));
-            try std.testing.expect(workbench.activeTab().?.controllers.?.hover.?.isVisible());
+            const hover_controller = workbench.activeTab().?.controllers.?.hover.?;
+            const hover_deadline = time_compat.milliTimestamp() + 5_000;
+            while (!hover_controller.wrapper.operation.isIdle() and time_compat.milliTimestamp() < hover_deadline) {
+                _ = extension_host.pump();
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(hover_controller.wrapper.operation.isIdle());
+            try std.testing.expect(hover_controller.isVisible());
             const tab = workbench.activeTab().?;
             try tab.editor.setCursorPosition(Position.init(1, model.getLineMaxColumn(1)));
             try tab.editor.insertText("é");
@@ -2671,6 +2679,111 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqual(0, extensions.language_features_actor.?.highlight_commands.items.len);
             original.applyConfiguration(.{ .occurrences_highlight = .off });
             try std.testing.expect(!original.saveViewState() and !modified.saveViewState());
+        }
+
+        test "Extensions: async content hovers stream through real diff panes and cancel on pointer leave" {
+            if (!build_options.e2e) return error.SkipZigTest;
+            const io = time_compat.io;
+            std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+            const a = std.testing.allocator;
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try tmp.dir.writeFile(io, .{ .sub_path = "hover.json", .data = "{}" });
+            var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const path = path_buffer[0..try tmp.dir.realPathFile(io, "hover.json", &path_buffer)];
+            const window = try TestWindow.init(a, io, &.{path}, 120, 24);
+            defer window.deinit();
+            const wb = window.workbench;
+            try wb.enableLanguageFeatures();
+            const extensions = try Extensions.init(a, io, wb.extensionHostServices(), &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }}, ".cache-ext/data-diff-hover-fixture", "host/dist");
+            defer extensions.deinit();
+            try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "{\"word\":1}", "{\"word\":2}", "HoverOriginal", "HoverModified");
+            const tab = wb.activeTab().?;
+            const diff = tab.diff.?.widget;
+            const HoverController = @import("../../../editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
+            const DeadlineTimer = @import("../../../editor/contrib/hover/browser/contentHoverController.zig").DeadlineTimer;
+            const original = diff.original_editor.getContribution(HoverController).?;
+            const modified = diff.modified_editor.getContribution(HoverController).?;
+            original.updateSettings(.{ .delay = 60, .sticky = false });
+            modified.updateSettings(.{ .delay = 60, .sticky = false });
+            const features = wb.language_features.?;
+            const deadline = time_compat.milliTimestamp() + 10_000;
+            while (time_compat.milliTimestamp() < deadline) {
+                _ = extensions.pump();
+                const providers = try features.hover_provider.ordered(a, diff.originalModel(), false);
+                defer a.free(providers);
+                if (providers.len > 2) break;
+                time_compat.sleepMillis(10);
+            }
+            var scratch = std.heap.ArenaAllocator.init(a);
+            defer scratch.deinit();
+            const arena = scratch.allocator();
+            const command = proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands);
+            const Pump = struct {
+                fn fire(timer: *DeadlineTimer) !void {
+                    const due = (timer.pending orelse return error.ExpectedHoverDeadline).deadline_ms;
+                    try std.testing.expect(timer.tick(due));
+                }
+                fn call(host: *Extensions, allocator: Allocator, id: @TypeOf(command), name: []const u8, argument: ?[]const u8) !std.json.Value {
+                    var args = std.array_list.Managed(rpc.Arg).init(allocator);
+                    defer args.deinit();
+                    try args.append(.{ .json = .{ .string = name } });
+                    if (argument) |value| try args.append(.{ .json = .{ .string = value } });
+                    return host.host.requestSync(allocator, id, "$executeContributedCommand", args.items, null, 5000);
+                }
+                fn waitFor(host: *Extensions, allocator: Allocator, id: @TypeOf(command), name: []const u8, kind: []const u8, count: usize) !void {
+                    const limit = time_compat.milliTimestamp() + 10_000;
+                    while (time_compat.milliTimestamp() < limit) {
+                        _ = host.pump();
+                        const events = try call(host, allocator, id, "fixture.hoverState", null);
+                        var matching: usize = 0;
+                        for (events.array.items) |event| {
+                            if (std.mem.eql(u8, event.object.get("name").?.string, name) and std.mem.eql(u8, event.object.get("kind").?.string, kind)) matching += 1;
+                        }
+                        if (matching >= count) return;
+                        time_compat.sleepMillis(5);
+                    }
+                    return error.HoverFixtureDidNotSettle;
+                }
+                fn settle(host: *Extensions, controller: *HoverController) !void {
+                    const limit = time_compat.milliTimestamp() + 10_000;
+                    while (time_compat.milliTimestamp() < limit) {
+                        _ = host.pump();
+                        if (controller.wrapper.operation.isIdle()) return;
+                        time_compat.sleepMillis(5);
+                    }
+                    return error.HoverDidNotComplete;
+                }
+            };
+            var mouse: @import("ui").MouseEvent = .{ .kind = .move, .x = diff.original_editor.gutterWidth() + 3, .y = 0 };
+            _ = try tab.handleDiffMouse(&mouse);
+            try Pump.fire(&original.operation_timer);
+            try std.testing.expect(!original.isVisible());
+            try Pump.waitFor(extensions, arena, command, "HoverOriginal", "start", 1);
+            try Pump.fire(&original.operation_timer);
+            try std.testing.expect(!original.wrapper.operation.isIdle());
+            try std.testing.expect(original.isVisible()); // built-in textual fallback arrives first
+            try Pump.fire(&original.loading_timer);
+            try std.testing.expect(std.mem.indexOf(u8, original.widget().getWidgetContent().?, "Loading...") != null);
+            try std.testing.expect((try Pump.call(extensions, arena, command, "fixture.releaseHover", "HoverOriginal")).bool);
+            try Pump.settle(extensions, original);
+            try std.testing.expect(std.mem.indexOf(u8, original.widget().getWidgetContent().?, "semantic HoverOriginal") != null);
+            try std.testing.expect(std.mem.indexOf(u8, original.widget().getWidgetContent().?, "Loading...") == null);
+            original.hideContentHover();
+            _ = try tab.handleDiffMouse(&mouse);
+            try Pump.fire(&original.operation_timer);
+            try Pump.waitFor(extensions, arena, command, "HoverOriginal", "start", 2);
+            mouse.x = diff.paneWidths().modifiedLeft() + diff.modified_editor.gutterWidth() + 3;
+            _ = try tab.handleDiffMouse(&mouse);
+            try std.testing.expect(original.wrapper.operation.isIdle() and !original.isVisible());
+            try Pump.waitFor(extensions, arena, command, "HoverOriginal", "cancel", 1);
+            try Pump.fire(&modified.operation_timer);
+            try Pump.waitFor(extensions, arena, command, "HoverModified", "start", 1);
+            try Pump.fire(&modified.operation_timer);
+            try std.testing.expect((try Pump.call(extensions, arena, command, "fixture.releaseHover", "HoverModified")).bool);
+            try Pump.settle(extensions, modified);
+            try std.testing.expect(std.mem.indexOf(u8, modified.widget().getWidgetContent().?, "semantic HoverModified") != null);
+            try std.testing.expect(!original.isVisible());
         }
 
         test "Extensions: Quick Diff providers resolve virtual originals and publish source-control information asynchronously" {

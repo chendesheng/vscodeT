@@ -221,4 +221,28 @@ test "tui hover provider: forwards JSON hover from a local schema" {
     const hover = try TuiHoverProvider.provideHover(&provider, ctx.model, Position.init(3, 4), .None, null);
     try testing.expect(hover != null);
     try testing.expect(std.mem.indexOf(u8, hover.?.contents[0].value, "The name field") != null);
+
+    const Receiver = struct {
+        result: ?Hover = null,
+        completed: bool = false,
+        fn ready(context: *anyopaque, result: anyerror!?Hover) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.result = result catch null;
+            self.completed = true;
+        }
+    };
+    var receiver: Receiver = .{};
+    var request_arena = std.heap.ArenaAllocator.init(allocator);
+    defer request_arena.deinit();
+    const api = provider.interface();
+    const pending = try api.request_hover.?(api.context, request_arena.allocator(), ctx.model, Position.init(3, 4), .None, null, .{ .context = &receiver, .complete = Receiver.ready });
+    try testing.expect(pending != null and !receiver.completed);
+    _ = client.dispatchResponses(true);
+    try testing.expect(receiver.completed and receiver.result != null);
+    try testing.expect(std.mem.indexOf(u8, receiver.result.?.contents[0].value, "The name field") != null);
+    receiver = .{};
+    const abandoned = (try api.request_hover.?(api.context, request_arena.allocator(), ctx.model, Position.init(3, 4), .None, null, .{ .context = &receiver, .complete = Receiver.ready })).?;
+    abandoned.dispose();
+    _ = client.dispatchResponses(false);
+    try testing.expect(!receiver.completed);
 }
