@@ -579,28 +579,80 @@ pub const Git = struct {
     }
 
     fn readGitBlob(self: *Git, root: []const u8, which: []const u8, path: []const u8) !?[]u8 {
-        if (!self.directoryExists(root)) return null;
-        const revision = if (std.mem.eql(u8, which, "HEAD"))
-            try std.fmt.allocPrint(self.allocator, "HEAD:{s}", .{path})
-        else if (std.mem.eql(u8, which, "index"))
-            try std.fmt.allocPrint(self.allocator, ":{s}", .{path})
-        else
-            try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ which, path });
-        defer self.allocator.free(revision);
-
-        var argv = std.array_list.Managed([]const u8).init(self.allocator);
-        defer argv.deinit();
-        try argv.appendSlice(&.{ self.exe, "show", "--textconv", revision });
-
-        var result = self.run(argv.items, root, self.blobOutputLimit()) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
+        const bytes = self.readGitBuffer(root, if (std.mem.eql(u8, which, "index")) "" else which, path) catch |err| switch (err) {
+            error.OutOfMemory => return err,
             else => return null,
         };
-        defer self.allocator.free(result.stderr);
-        defer self.allocator.free(result.stdout);
-        if (!result.term.success()) return null;
+        defer self.allocator.free(bytes);
+        return try ownTextBlob(self.allocator, bytes, self.max_file_size);
+    }
 
-        return try ownTextBlob(self.allocator, result.stdout, self.max_file_size);
+    /// Upstream Repository.buffer: read raw Git object bytes including
+    /// binary contents and encodings, or an explicit resource-not-found error.
+    /// Index stages use the real :1/:2/:3 revision syntax.
+    pub fn readGitBuffer(self: *Git, root: []const u8, ref: []const u8, path: []const u8) ![]u8 {
+        if (!isSafeRelativePath(path) or !self.directoryExists(root)) return error.FileNotFound;
+        if (std.mem.indexOfScalar(u8, ref, 0) != null or std.mem.startsWith(u8, ref, "-")) return error.InvalidGitReference;
+        if (std.mem.indexOfScalar(u8, ref, ':') != null and !(ref.len == 2 and ref[0] == ':' and std.ascii.isDigit(ref[1]))) return error.InvalidGitReference;
+        const revision = try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ ref, path });
+        defer self.allocator.free(revision);
+        const result = self.run(&.{ self.exe, "show", "--textconv", revision }, root, self.blobOutputLimit()) catch |err| switch (err) {
+            error.OutputTooLarge => return error.FileTooLarge,
+            else => return err,
+        };
+        defer self.allocator.free(result.stderr);
+        errdefer self.allocator.free(result.stdout);
+        if (!result.term.success()) {
+            if (ref.len == 40 or ref.len == 64) {
+                const empty: ?[]u8 = self.getEmptyTree(root) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => null,
+                };
+                if (empty) |hash| {
+                    defer self.allocator.free(hash);
+                    if (std.mem.eql(u8, ref, hash)) {
+                        const bytes = try self.allocator.dupe(u8, "");
+                        self.allocator.free(result.stdout);
+                        return bytes;
+                    }
+                }
+            }
+            return error.FileNotFound;
+        }
+        if (result.stdout.len > self.max_file_size) return error.FileTooLarge;
+        return result.stdout;
+    }
+
+    /// Git's empty tree hash depends on the repository object format. Feeding
+    /// an empty stdin is the portable equivalent of upstream's /dev/null.
+    pub fn getEmptyTree(self: *Git, root: []const u8) ![]u8 {
+        const result = try self.runWithInput(&.{ self.exe, "hash-object", "-t", "tree", "--stdin" }, root, "");
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+        if (!result.term.success()) return error.GitFailed;
+        const hash = std.mem.trim(u8, result.stdout, " \t\r\n");
+        if (hash.len != 40 and hash.len != 64) return error.GitFailed;
+        for (hash) |byte| if (!std.ascii.isHex(byte)) return error.GitFailed;
+        return self.allocator.dupe(u8, hash);
+    }
+
+    /// Submodule Git virtual resources contain the patch in the parent
+    /// repository rather than a blob from the submodule working directory.
+    pub fn readSubmoduleDiff(self: *Git, root: []const u8, path: []const u8, staged: bool) ![]u8 {
+        if (!isSafeRelativePath(path) or !self.directoryExists(root)) return error.FileNotFound;
+        const args: []const []const u8 = if (staged)
+            &.{ self.exe, "--literal-pathspecs", "diff", "--cached", "--", path }
+        else
+            &.{ self.exe, "--literal-pathspecs", "diff", "--", path };
+        const result = self.run(args, root, self.blobOutputLimit()) catch |err| switch (err) {
+            error.OutputTooLarge => return error.FileTooLarge,
+            else => return err,
+        };
+        defer self.allocator.free(result.stderr);
+        errdefer self.allocator.free(result.stdout);
+        if (!result.term.success()) return error.GitFailed;
+        if (result.stdout.len > self.max_file_size) return error.FileTooLarge;
+        return result.stdout;
     }
 
     fn readWorkingFile(self: *Git, root: []const u8, path: []const u8) !?[]u8 {
@@ -1346,7 +1398,7 @@ pub const Git = struct {
         revision: []const u8,
     ) !?[]u8 {
         if (!isSafeRelativePath(path)) return null;
-        if (std.mem.indexOfScalar(u8, revision, 0) != null or std.mem.indexOfScalar(u8, revision, ':') != null) return null;
+        if (std.mem.indexOfScalar(u8, revision, 0) != null) return null;
         const content = (try self.readGitBlob(root, revision, path)) orelse return null;
         defer self.allocator.free(content);
         return try allocator.dupe(u8, content);
@@ -2802,4 +2854,48 @@ test "integration: openRepository reuses a repository and refresh updates state"
     try std.testing.expectEqual(@as(usize, 1), delegated.repositories().len);
     const reopened = (try delegated.openRepository(root)) orelse return error.SkipZigTest;
     try std.testing.expectEqual(first_repo, @as(*git_browser.GitRepository, @ptrCast(@alignCast(reopened.context))));
+}
+
+test "integration: Git buffer distinguishes binary bytes, missing refs, and conflict stages" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = root_buffer[0..try tmp.dir.realPath(io, &root_buffer)];
+    if (!try gitOk(a, root, &.{"init"})) return error.SkipZigTest;
+    try std.testing.expect(try gitOk(a, root, &.{ "symbolic-ref", "HEAD", "refs/heads/main" }));
+    try std.testing.expect(try gitOk(a, root, &.{ "config", "core.autocrlf", "false" }));
+    try std.testing.expect(try gitOk(a, root, &.{ "config", "user.name", "Test User" }));
+    try std.testing.expect(try gitOk(a, root, &.{ "config", "user.email", "test@example.com" }));
+    const utf16 = "\xff\xfeA\x00\n\x00";
+    try tmp.dir.writeFile(io, .{ .sub_path = "encoded.txt", .data = utf16 });
+    try tmp.dir.writeFile(io, .{ .sub_path = "conflict.txt", .data = "base\n" });
+    try std.testing.expect(try gitOk(a, root, &.{ "add", "encoded.txt", "conflict.txt" }));
+    try std.testing.expect(try gitOk(a, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "base" }));
+    try std.testing.expect(try gitOk(a, root, &.{ "checkout", "-b", "other" }));
+    try tmp.dir.writeFile(io, .{ .sub_path = "conflict.txt", .data = "theirs\n" });
+    try std.testing.expect(try gitOk(a, root, &.{ "-c", "commit.gpgsign=false", "commit", "-am", "other" }));
+    try std.testing.expect(try gitOk(a, root, &.{ "checkout", "main" }));
+    try tmp.dir.writeFile(io, .{ .sub_path = "conflict.txt", .data = "ours\n" });
+    try std.testing.expect(try gitOk(a, root, &.{ "-c", "commit.gpgsign=false", "commit", "-am", "main" }));
+    try std.testing.expect(!try gitOk(a, root, &.{ "-c", "commit.gpgsign=false", "merge", "other" }));
+
+    var cli = try Git.init(a, .{ .io = io, .timeout_ms = 20_000 });
+    defer cli.deinit();
+    const bytes = try cli.readGitBuffer(root, "HEAD", "encoded.txt");
+    defer a.free(bytes);
+    try std.testing.expectEqualSlices(u8, utf16, bytes);
+    try std.testing.expect((try cli.readRef(root, "encoded.txt", .head)) == null);
+    for ([_][]const u8{ ":1", ":2", ":3" }, [_][]const u8{ "base\n", "ours\n", "theirs\n" }) |ref, expected| {
+        const blob = try cli.readGitBuffer(root, ref, "conflict.txt");
+        defer a.free(blob);
+        try std.testing.expectEqualStrings(expected, blob);
+    }
+    try std.testing.expectError(error.FileNotFound, cli.readGitBuffer(root, "HEAD", "missing.txt"));
+    const empty = try cli.getEmptyTree(root);
+    defer a.free(empty);
+    const missing_at_empty = try cli.readGitBuffer(root, empty, "conflict.txt");
+    defer a.free(missing_at_empty);
+    try std.testing.expectEqual(@as(usize, 0), missing_at_empty.len);
 }

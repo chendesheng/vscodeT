@@ -45,6 +45,7 @@ const SnapshotRead = struct {
         relative: []const u8,
         ref: ?[]const u8,
         working: ?[]const u8,
+        submodule: bool = false,
     };
 
     fn destroy(context: *anyopaque) void {
@@ -73,13 +74,29 @@ const SnapshotRead = struct {
 
     fn readResource(self: *SnapshotRead, reader: *Git, allocator: Allocator, spec: ?ResourceSpec) !struct { resource: ?SnapshotSource.Resource, text: ?[]const u8 } {
         const entry = spec orelse return .{ .resource = null, .text = null };
-        const text = if (entry.ref) |ref|
-            if (ref.len == 0) try reader.readRef(self.root, entry.relative, .index) else try reader.readRefAt(allocator, self.root, entry.relative, ref)
-        else if (entry.working) |working| try allocator.dupe(u8, working) else try reader.readRef(self.root, entry.relative, .working);
-        return .{
-            .resource = .{ .path = try allocator.dupe(u8, entry.path), .uri = try std.Uri.parse(try allocator.dupe(u8, entry.encoded_uri)), .is_working_file = entry.ref == null and text != null },
-            .text = text,
+        var resolved: SnapshotSource.Resource = .{
+            .path = try allocator.dupe(u8, entry.path),
+            .uri = try std.Uri.parse(try allocator.dupe(u8, entry.encoded_uri)),
         };
+        if (entry.ref) |ref| {
+            const bytes = (if (entry.submodule)
+                reader.readSubmoduleDiff(self.root, entry.relative, std.mem.eql(u8, ref, "index"))
+            else
+                reader.readGitBuffer(self.root, ref, entry.relative)) catch |err| {
+                if (err == error.OutOfMemory) return err;
+                resolved.failure = err;
+                return .{ .resource = resolved, .text = null };
+            };
+            defer reader.allocator.free(bytes);
+            const encoding = @import("../../../vs/workbench/services/textfile/common/encoding.zig");
+            const detected = if (encoding.detectBOM(bytes)) |bom| bom.encoding else encoding.Encoding.utf8;
+            if (!encoding.isUTF16(detected) and std.mem.indexOfScalar(u8, bytes, 0) != null) return .{ .resource = resolved, .text = null };
+            resolved.encoding = detected;
+            return .{ .resource = resolved, .text = try encoding.decode(allocator, bytes, detected) };
+        }
+        const text = if (entry.working) |working| try allocator.dupe(u8, working) else try reader.readRef(self.root, entry.relative, .working);
+        resolved.is_working_file = text != null;
+        return .{ .resource = resolved, .text = text };
     }
 
     fn read(context: *anyopaque, allocator: Allocator) !SnapshotSource.Texts {
@@ -296,11 +313,17 @@ pub const Model = struct {
         const root = self.git_root orelse return error.NoRepository;
         var path: []const u8 = undefined;
         var ref: ?[]const u8 = null;
+        var submodule = false;
         if (std.mem.eql(u8, uri.scheme, "git")) {
-            const query = try std_uri.query(uri, allocator);
-            const parsed = try std.json.parseFromSlice(struct { path: []const u8, ref: []const u8 }, allocator, query, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
-            path = parsed.value.path;
-            ref = parsed.value.ref;
+            const git_uri = @import("uri.zig");
+            const params = try git_uri.fromGitUri(allocator, uri);
+            path = params.path;
+            ref = params.ref;
+            if (params.submoduleOf) |parent| {
+                if (!std.mem.eql(u8, root, parent)) return error.NoRepository;
+                submodule = true;
+            }
+            if (git_uri.normalizeIndexStage(params.ref)) |stage| ref = try allocator.dupe(u8, &stage);
             // Upstream sanitizeRef chooses the index for staged paths.
             if (std.mem.eql(u8, ref.?, "~")) {
                 const relative = extpath.relativeToRoot(path, root) orelse return error.OutsideRepository;
@@ -323,6 +346,7 @@ pub const Model = struct {
             .relative = relative,
             .ref = ref,
             .working = if (ref == null) if (working) |text| try allocator.dupe(u8, text) else null else null,
+            .submodule = submodule,
         };
     }
 

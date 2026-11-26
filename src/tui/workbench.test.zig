@@ -11699,3 +11699,99 @@ test "Workbench: git scm integration resolves a Git revision and an outside work
     try std.testing.expect(!original.isDirty());
     try std.testing.expectEqualStrings("unsaved outside", try working.model.borrowLineContent(1));
 }
+
+test "Workbench: Git URI models distinguish missing and binary resources and decode original buffers" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = root_buffer[0..try tmp.dir.realPath(io, &root_buffer)];
+    if (!try runGitTest(a, root, &.{"init"})) return error.SkipZigTest;
+    try std.testing.expect(try runGitTest(a, root, &.{ "config", "core.autocrlf", "false" }));
+    _ = try runGitTest(a, root, &.{ "config", "user.name", "Test User" });
+    _ = try runGitTest(a, root, &.{ "config", "user.email", "test@example.com" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "encoded.txt", .data = "\xff\xfeA\x00\n\x00B\x00" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "binary.dat", .data = "a\x00b" });
+    try std.testing.expect(try runGitTest(a, root, &.{ "add", "encoded.txt", "binary.dat" }));
+    try std.testing.expect(try runGitTest(a, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "initial" }));
+    // A gitlink needs no external checkout or network. The staged provider
+    // reads the parent repository's textual patch for its .diff resource.
+    try std.testing.expect(try runGitTest(a, root, &.{ "update-index", "--add", "--cacheinfo", "160000,1111111111111111111111111111111111111111,module" }));
+    const settings = try std.fs.path.join(a, &.{ root, ".git", "test-settings.json" });
+    defer a.free(settings);
+    const window = try TestWindow.init(a, io, &.{}, 100, 30);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.setUserSettingsPaths(&.{settings});
+    try wb.initSidebar(root);
+    pumpSidebarForTests(wb);
+    try wb.initGit();
+
+    const resolver = @import("../vs/editor/common/services/resolverService.zig");
+    const git_uri = @import("../extensions/git/src/uri.zig");
+    const model_resolver = @import("../vs/workbench/services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService;
+    const Harness = struct {
+        result: ?resolver.ModelReferenceResult = null,
+
+        fn complete(context: *anyopaque, result: resolver.ModelReferenceResult) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.result = result;
+        }
+
+        fn resolve(workbench: *Workbench, resource: std.Uri) !resolver.ModelReferenceResult {
+            var self: @This() = .{};
+            const request = try workbench.text_model_api.createModelReference(resource, .{ .context = &self, .complete = complete });
+            defer request.cancel();
+            for (0..5000) |_| {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                if (self.result) |value| return value;
+                std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
+            }
+            return error.TestExpectedResourceResolution;
+        }
+    };
+    var uri_arena = std.heap.ArenaAllocator.init(a);
+    defer uri_arena.deinit();
+    const scratch = uri_arena.allocator();
+    for ([_][]const u8{ "encoded.txt", "binary.dat", "missing.txt", "module" }, 0..) |name, index| {
+        const path = try std.fs.path.join(scratch, &.{ root, name });
+        const uri = if (index == 3)
+            try git_uri.toGitUriWithOptions(scratch, path, "index", .{ .submodule_of = root })
+        else
+            try git_uri.toGitUri(scratch, path, "HEAD");
+        const outcome = try Harness.resolve(wb, uri);
+        switch (index) {
+            0 => {
+                var reference = switch (outcome) {
+                    .resolved => |value| value,
+                    .failure => |err| return err,
+                };
+                defer reference.dispose();
+                try std.testing.expect(reference.object.isReadonly());
+                try std.testing.expectEqual(.utf16le_with_bom, model_resolver.documentOf(reference).encoding);
+                try std.testing.expectEqualStrings("A", try reference.object.textEditorModel.borrowLineContent(1));
+                try std.testing.expectEqualStrings("B", try reference.object.textEditorModel.borrowLineContent(2));
+            },
+            1, 2 => switch (outcome) {
+                .resolved => |value| {
+                    var reference = value;
+                    reference.dispose();
+                    return error.TestExpectedResourceFailure;
+                },
+                .failure => |err| try std.testing.expect(err == (if (index == 1) error.BinaryFile else error.FileNotFound)),
+            },
+            3 => {
+                var reference = switch (outcome) {
+                    .resolved => |value| value,
+                    .failure => |err| return err,
+                };
+                defer reference.dispose();
+                var value = try reference.object.textEditorModel.getValue(.LF, false);
+                defer value.deinit();
+                try std.testing.expect(std.mem.indexOf(u8, value.items, "Subproject commit 1111111111111111111111111111111111111111") != null);
+            },
+            else => unreachable,
+        }
+    }
+}
