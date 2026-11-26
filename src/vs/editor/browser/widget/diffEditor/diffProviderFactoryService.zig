@@ -30,6 +30,8 @@ pub const SnapshotSource = struct {
         modified: []const u8,
         original_resource: ?Resource = null,
         modified_resource: ?Resource = null,
+        original_available: bool = true,
+        modified_available: bool = true,
     };
 };
 

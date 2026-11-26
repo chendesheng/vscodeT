@@ -81,17 +81,18 @@ const SnapshotRead = struct {
                     .modified = text.modified,
                     .original_resource = try self.resource(allocator, self.original_path, resourceRef(refs.left, true), refs.left == .working and text.original_available),
                     .modified_resource = try self.resource(allocator, self.modified_path, resourceRef(refs.right, false), refs.right == .working and text.modified_available),
+                    .original_available = text.original_available,
+                    .modified_available = text.modified_available,
                 };
             },
             .revisions => |refs| {
-                const original = if (refs.left) |revision|
-                    (reader.readRefAt(allocator, self.root, self.original_path, revision) catch null) orelse try allocator.dupe(u8, "")
-                else
-                    try allocator.dupe(u8, "");
-                const modified = (reader.readRefAt(allocator, self.root, self.modified_path, refs.right) catch null) orelse try allocator.dupe(u8, "");
+                const original = if (refs.left) |revision| reader.readRefAt(allocator, self.root, self.original_path, revision) catch null else null;
+                const modified = reader.readRefAt(allocator, self.root, self.modified_path, refs.right) catch null;
                 return .{
-                    .original = original,
-                    .modified = modified,
+                    .original = original orelse try allocator.dupe(u8, ""),
+                    .modified = modified orelse try allocator.dupe(u8, ""),
+                    .original_available = original != null,
+                    .modified_available = modified != null,
                     .original_resource = try self.resource(allocator, self.original_path, refs.left orelse "empty", false),
                     .modified_resource = try self.resource(allocator, self.modified_path, refs.right, false),
                 };
