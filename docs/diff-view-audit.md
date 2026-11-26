@@ -50,6 +50,14 @@ upstream parity, and the historical findings below remain useful as a baseline.
 | 18 — state | Refresh preserves split, cursor and scroll and reapplies theme; session serialization, code lens, and explicit diff word wrap remain open. |
 | 19 — tests | New focused regressions cover input/scroll, narrow transitions, gutter paint, filler grouping, hidden coordinates, theme and swap/refresh. The worker/cancellation/cache tests and SCM integration are in `test-view`. Complete upstream widget scenarios and end-to-end performance measurements remain open. |
 
+Local verification after this pass: `zig build`, `zig build check-workbench`,
+`zig build test-view --summary all` (384/384) and
+`zig build test --summary all` (3,422 passed, 20 skipped; 48/48 build steps)
+succeeded. The full suite was run outside the filesystem sandbox because the
+native watcher tests cannot receive events within it. Formatting and Git
+whitespace checks passed. No end-to-end large-file terminal latency or
+cross-platform CI result is claimed.
+
 ## 0. Re-audit update (2026-11-26)
 
 The source tree changed substantially after the first audit, mainly through the
