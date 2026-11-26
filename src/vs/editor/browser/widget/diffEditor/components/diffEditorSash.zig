@@ -1,10 +1,11 @@
 // Port of `src/vs/editor/browser/widget/diffEditor/components/diffEditorSash.ts`.
-// Terminal adaptation: Sash's browser pointer lifecycle is supplied by the
-// terminal mouse events. Two stationary primary-button presses within 400ms
+// Terminal adaptation: Sash's browser window pointer lifecycle is supplied
+// by the terminal window capture dispatcher. Two stationary primary-button presses within 400ms
 // represent the browser's double-click reset (the existing terminal sash
 // convention). Geometry is expressed in cells, not pixels.
 const std = @import("std");
 const ui = @import("ui");
+const window_dispatch = @import("../../../../../base/common/windowDispatch.zig");
 
 pub const SashLayout = struct {
     ratio: ?f64 = null,
@@ -26,13 +27,70 @@ pub const SashLayout = struct {
 pub const DiffEditorSash = struct {
     drag: ?struct { start_x: usize, start_y: usize, start_sash: usize, moved: bool = false } = null,
     last_click: ?struct { x: usize, y: usize, time: i64 } = null,
+    capture_window: ?*window_dispatch.Queue = null,
+    capture_host: ?CaptureHost = null,
+
+    pub const Geometry = struct { sash_left: usize, content_width: usize, enabled: bool };
+    pub const CaptureHost = struct {
+        context: *anyopaque,
+        layout: *SashLayout,
+        geometry: *const fn (*anyopaque) Geometry,
+        changed: *const fn (*anyopaque) void,
+    };
+
+    pub fn attachWindow(self: *DiffEditorSash, window: *window_dispatch.Queue, host: CaptureHost) void {
+        if (self.capture_window != window) self.cancelDrag();
+        self.capture_window = window;
+        self.capture_host = host;
+    }
+
+    pub fn cancelDrag(self: *DiffEditorSash) void {
+        if (self.capture_window) |window| window.releasePointer(self);
+        self.drag = null;
+        self.last_click = null;
+    }
+
+    fn captureDragStart(self: *DiffEditorSash) void {
+        const window = self.capture_window orelse return;
+        const down = window.current_pointer_input orelse return;
+        if (down.kind != .down or self.capture_host == null) return;
+        if (self.drag) |*drag| {
+            drag.start_x = down.x;
+            drag.start_y = down.y;
+            window.capturePointer(.{ .context = self, .dispatch = capturedPointer, .cancel = cancelCapturedPointer });
+        }
+    }
+
+    fn capturedPointer(context: *anyopaque, input: window_dispatch.PointerInput) bool {
+        const self: *DiffEditorSash = @ptrCast(@alignCast(context));
+        const host = self.capture_host orelse return false;
+        const geometry = host.geometry(host.context);
+        const event: ui.MouseEvent = .{
+            .kind = switch (input.kind) {
+                .move => .move,
+                .up => .up,
+                .click => .click,
+                else => return false,
+            },
+            .button = .left,
+            .x = input.x,
+            .y = input.y,
+        };
+        const result = self.dispatchMouse(host.layout, &event, geometry.sash_left, geometry.content_width, geometry.enabled, @import("../../../../../base/common/timeCompat.zig").milliTimestamp());
+        if (result == .changed) host.changed(host.context);
+        return result != .none;
+    }
+
+    fn cancelCapturedPointer(context: *anyopaque) void {
+        const self: *DiffEditorSash = @ptrCast(@alignCast(context));
+        self.cancelDrag();
+    }
 
     pub const Result = enum { none, handled, changed };
 
     pub fn dispatchMouse(self: *DiffEditorSash, layout: *SashLayout, event: *const ui.MouseEvent, sash_left: usize, content_width: usize, enabled: bool, now: i64) Result {
         if (!enabled) {
-            self.drag = null;
-            self.last_click = null;
+            self.cancelDrag();
             return if (event.x == sash_left) .handled else .none;
         }
         if (self.drag) |*drag| {
@@ -47,6 +105,7 @@ pub const DiffEditorSash = struct {
                 .up, .click => {
                     const stationary = !drag.moved and event.x == drag.start_x and event.y == drag.start_y;
                     self.drag = null;
+                    if (self.capture_window) |window| window.releasePointer(self);
                     const previous = self.last_click;
                     self.last_click = null;
                     if (stationary) {
@@ -65,6 +124,7 @@ pub const DiffEditorSash = struct {
         }
         if (event.x == sash_left and event.kind == .down and event.button == .left) {
             self.drag = .{ .start_x = event.x, .start_y = event.y, .start_sash = sash_left };
+            self.captureDragStart();
             return .handled;
         }
         return .none;

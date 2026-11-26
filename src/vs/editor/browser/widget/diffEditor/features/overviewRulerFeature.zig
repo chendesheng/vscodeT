@@ -3,6 +3,8 @@
 // half-cell marker projection and viewport thumb reuse the editor's overview
 // renderer and ScrollbarState. Markers use the real model ranges converted
 // to the actual vertical offsets, including the diff alignment zones.
+// The scrollbar pointer gesture captures the native window, as upstream
+// delegates to the editor's global scrollbar pointer monitor.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
@@ -13,6 +15,7 @@ pub const inserted_foreground = [3]u8{ 55, 88, 13 };
 pub const removed_foreground = [3]u8{ 158, 93, 80 };
 
 const ui = @import("ui");
+const window_dispatch = @import("../../../../../base/common/windowDispatch.zig");
 const Editor = @import("../../codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const ruler = @import("../../../viewParts/overviewRuler/decorationsOverviewRuler.zig");
 const ScrollbarState = @import("../../../../../base/browser/ui/scrollbar/scrollbarState.zig").ScrollbarState;
@@ -29,6 +32,59 @@ pub const OverviewRulerFeature = struct {
     modified: []?ruler.Marker = &.{},
     drag: ?struct { row: usize, state: ScrollbarState } = null,
     height: usize = 0,
+    capture_window: ?*window_dispatch.Queue = null,
+    capture_host: ?CaptureHost = null,
+
+    pub const CaptureHost = struct {
+        context: *anyopaque,
+        editor: *Editor,
+        scrolled: *const fn (*anyopaque) void,
+    };
+
+    pub fn attachWindow(self: *OverviewRulerFeature, window: *window_dispatch.Queue, host: CaptureHost) void {
+        if (self.capture_window != window or (self.capture_host != null and self.capture_host.?.editor != host.editor)) self.cancelDrag();
+        self.capture_window = window;
+        self.capture_host = host;
+    }
+
+    pub fn cancelDrag(self: *OverviewRulerFeature) void {
+        if (self.capture_window) |window| window.releasePointer(self);
+        self.drag = null;
+    }
+
+    fn captureDragStart(self: *OverviewRulerFeature) void {
+        const window = self.capture_window orelse return;
+        const down = window.current_pointer_input orelse return;
+        if (down.kind != .down or self.capture_host == null) return;
+        if (self.drag) |*drag| {
+            drag.row = down.y;
+            window.capturePointer(.{ .context = self, .dispatch = capturedPointer, .cancel = cancelCapturedPointer });
+        }
+    }
+
+    fn capturedPointer(context: *anyopaque, input: window_dispatch.PointerInput) bool {
+        const self: *OverviewRulerFeature = @ptrCast(@alignCast(context));
+        const host = self.capture_host orelse return false;
+        const event: ui.MouseEvent = .{
+            .kind = switch (input.kind) {
+                .move => .move,
+                .up => .up,
+                .click => .click,
+                else => return false,
+            },
+            .button = .left,
+            .x = input.x,
+            .y = input.y,
+        };
+        const handled = self.dispatchMouse(host.editor, &event, self.height);
+        if (handled) host.scrolled(host.context);
+        return handled;
+    }
+
+    fn cancelCapturedPointer(context: *anyopaque) void {
+        const self: *OverviewRulerFeature = @ptrCast(@alignCast(context));
+        self.cancelDrag();
+    }
 
     pub fn init(self: *OverviewRulerFeature, allocator: Allocator, original: *Editor, modified: *Editor) void {
         self.* = .{ .allocator = allocator };
@@ -43,6 +99,7 @@ pub const OverviewRulerFeature = struct {
     }
 
     pub fn deinit(self: *OverviewRulerFeature, original: *Editor, modified: *Editor) void {
+        self.cancelDrag();
         original.removeViewEventHandler(&self.handler);
         modified.removeViewEventHandler(&self.handler);
         self.allocator.free(self.original);
@@ -140,6 +197,7 @@ pub const OverviewRulerFeature = struct {
                     state = scrollbar(editor, height);
                 }
                 self.drag = .{ .row = event.y, .state = state };
+                self.captureDragStart();
                 return true;
             },
             .move => {
@@ -149,13 +207,12 @@ pub const OverviewRulerFeature = struct {
                     return true;
                 }
             },
-            .up => {
+            .up, .click => {
                 if (self.drag != null) {
-                    self.drag = null;
+                    self.cancelDrag();
                     return true;
                 }
             },
-            else => {},
         }
         return false;
     }

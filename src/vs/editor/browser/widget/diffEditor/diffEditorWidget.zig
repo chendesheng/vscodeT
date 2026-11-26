@@ -655,7 +655,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             errdefer self.overview.deinit(original_editor, modified_editor);
             try self.hide_unchanged.init(allocator, self.view_model, &self.zones, original_editor, original_view.viewZones(), modified_editor, modified_view.viewZones(), normalized_options);
             errdefer self.hide_unchanged.deinit();
-            if (self.smooth_resize.scheduler.queue) |window| self.hide_unchanged.attachWindow(window);
+            if (self.smooth_resize.scheduler.queue) |window| self.attachModelPointerCapture(window);
             try self.revert_buttons.init(allocator, self.view_model, modified_editor, modified_view.terminal_view_host, .{ .context = self, .revert = revertMarginChange });
             errdefer self.revert_buttons.deinit();
             try self.moved_blocks.init(allocator, self.view_model, &self.zones, original_editor, original_view.viewZones(), modified_editor, modified_view.viewZones(), self, onMoveWidthChanged, onCompareMove);
@@ -719,6 +719,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 services.dispose(services.context);
             }
             self.detachContributions();
+            self.sash.cancelDrag();
             self.gutter_toolbar.deinit();
             self.revert_buttons.deinit();
             self.accessible_viewer.close();
@@ -812,6 +813,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
             }
             self.width_based_layout.updateOptions(old, options);
             self.options = options;
+            if (!options.enable_split_view_resizing) self.sash.cancelDrag();
+            if (!options.render_overview_ruler) self.overview.cancelDrag();
             if (old.accessibility_verbose != options.accessibility_verbose) try self.updateAriaLabels();
             self.original_editor.setReadOnly(!options.original_editable);
             self.modified_editor.setReadOnly(options.read_only);
@@ -900,6 +903,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             if (self.inline_mode == inline_mode) return;
             self.inline_mode = inline_mode;
             if (inline_mode) {
+                self.sash.cancelDrag();
                 self.view_model.setMovedTextToCompare(null);
                 self.view_model.setMovedTextFromCursor(null);
                 self.setFocus(.modified);
@@ -912,7 +916,33 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         pub fn attachWindow(self: *Self, window: *window_dispatch.Queue) void {
             self.smooth_resize.attach(window) catch {};
-            if (self.hasModel()) self.hide_unchanged.attachWindow(window);
+            self.sash.attachWindow(window, .{ .context = self, .layout = &self.sash_layout, .geometry = captureSashGeometry, .changed = capturedSashChanged });
+            if (self.hasModel()) self.attachModelPointerCapture(window);
+        }
+
+        fn attachModelPointerCapture(self: *Self, window: *window_dispatch.Queue) void {
+            self.hide_unchanged.attachWindow(window);
+            self.overview.attachWindow(window, .{ .context = self, .editor = self.modified_editor, .scrolled = capturedOverviewScrolled });
+        }
+
+        fn captureSashGeometry(context: *anyopaque) sash_mod.DiffEditorSash.Geometry {
+            const self: *Self = @ptrCast(@alignCast(context));
+            const widths = self.paneWidths();
+            return .{
+                .sash_left = widths.original,
+                .content_width = self.width -| widths.overview -| widths.gutter -| widths.moves -| widths.toolbar,
+                .enabled = self.hasModel() and self.sideBySide() and self.options.enable_split_view_resizing,
+            };
+        }
+
+        fn capturedSashChanged(context: *anyopaque) void {
+            const self: *Self = @ptrCast(@alignCast(context));
+            self.layout(self.width, self.height);
+        }
+
+        fn capturedOverviewScrolled(context: *anyopaque) void {
+            const self: *Self = @ptrCast(@alignCast(context));
+            if (self.hasModel() and self.sideBySide()) self.syncScrollFromPane(.modified);
         }
 
         pub fn layout(self: *Self, width: usize, height: usize) void {
@@ -1158,6 +1188,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         fn swapSidesInternal(self: *Self) !void {
             if (!self.owns_view_model) return error.SharedDiffModelCannotSwap;
+            self.sash.cancelDrag();
+            self.overview.cancelDrag();
             self.inline_margin_menu.deinit();
             const was_focused = self.focusedView().isFocused();
             const accessible = self.accessible_viewer.visible();
@@ -1185,7 +1217,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.decorations.modified_model = self.modified_editor.model;
             self.zones.init(self.allocator, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self.modified_view.terminal_view_host, self.modified_view.lineStyleFunction(), self.modified_view.decorationBitsFunction(), self.options.render_indicators, diff_state.mappings);
             try self.hide_unchanged.init(self.allocator, self.view_model, &self.zones, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self.options);
-            if (self.smooth_resize.scheduler.queue) |window| self.hide_unchanged.attachWindow(window);
+            if (self.smooth_resize.scheduler.queue) |window| self.attachModelPointerCapture(window);
             self.hide_unchanged.setScrollAnchors(self.original_scroll_anchor, self.modified_scroll_anchor);
             if (self.breadcrumbs_factory) |factory| try self.hide_unchanged.attachBreadcrumbs(factory);
             try self.revert_buttons.init(self.allocator, self.view_model, self.modified_editor, self.modified_view.terminal_view_host, .{ .context = self, .revert = revertMarginChange });

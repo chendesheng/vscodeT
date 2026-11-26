@@ -1540,6 +1540,67 @@ pub fn Tests(comptime View: type) type {
             window.endPointerInput();
         }
 
+        test "diffEditorWidget: sash and overview capture window movement and cancel on detach or option change" {
+            const a = testing.allocator;
+            const window_dispatch = @import("../../../../base/common/windowDispatch.zig");
+            var window: window_dispatch.Queue = .{ .io = testing.io, .window_events = .init(a) };
+            defer window.deinitWindowEvents();
+            var original: std.ArrayList(u8) = .empty;
+            defer original.deinit(a);
+            var modified: std.ArrayList(u8) = .empty;
+            defer modified.deinit(a);
+            for (0..100) |line| {
+                var buffer: [40]u8 = undefined;
+                const value = try std.fmt.bufPrint(&buffer, "line {d}\n", .{line});
+                try original.appendSlice(a, value);
+                try modified.appendSlice(a, if (line == 50) "changed\n" else value);
+            }
+            const widget = try DiffEditorWidget.create(View.init, a, testing.io, "a.txt", "b.txt", original.items, modified.items, "Original", "Modified", 120, 8, .{ .render_overview_ruler = true });
+            defer widget.destroy();
+            widget.attachWindow(&window);
+            const Pointer = struct {
+                fn down(w: *DiffEditorWidget, queue: *window_dispatch.Queue, x: usize, y: usize) !void {
+                    try testing.expect(!queue.beginPointerInput(.{ .kind = .down, .x = 300 + x, .y = 400 + y }));
+                    defer queue.endPointerInput();
+                    var event: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = x, .y = y };
+                    try testing.expect(try w.dispatchMouse(&event));
+                    try testing.expect(queue.pointer_capture != null);
+                }
+                fn captured(queue: *window_dispatch.Queue, kind: @FieldType(window_dispatch.PointerInput, "kind"), x: usize, y: usize) !void {
+                    try testing.expect(queue.beginPointerInput(.{ .kind = kind, .x = x, .y = y }));
+                    queue.endPointerInput();
+                }
+            };
+            const initial_sash = widget.paneWidths().original;
+            try Pointer.down(widget, &window, initial_sash, 3);
+            try Pointer.captured(&window, .move, 300 + initial_sash + 8, 500);
+            try testing.expect(widget.paneWidths().original > initial_sash);
+            try Pointer.captured(&window, .up, 300 + initial_sash + 8, 500);
+            try testing.expect(widget.sash.drag == null);
+            try testing.expect(window.pointer_capture == null);
+
+            _ = widget.modified_editor.setScrollTop(0);
+            try Pointer.down(widget, &window, 119, 0);
+            try Pointer.captured(&window, .move, 500, 420);
+            try testing.expect(widget.modified_editor.scrollTop() > 0);
+            try testing.expectEqual(widget.modified_editor.scrollTop(), widget.original_editor.scrollTop());
+            try Pointer.captured(&window, .up, 500, 420);
+            try testing.expect(widget.overview.drag == null);
+            try testing.expect(window.pointer_capture == null);
+
+            try Pointer.down(widget, &window, 119, 1);
+            var options = widget.options;
+            options.render_overview_ruler = false;
+            _ = try widget.updateOptions(options);
+            try testing.expect(widget.overview.drag == null);
+            try testing.expect(window.pointer_capture == null);
+
+            try Pointer.down(widget, &window, widget.paneWidths().original, 2);
+            try widget.setDiffModel(null);
+            try testing.expect(window.pointer_capture == null);
+            try testing.expect(widget.sash.drag == null);
+        }
+
         test "diffEditorWidget: compact disclosures expand and collapse with a persistent keyboard target" {
             const allocator = testing.allocator;
             const io = Io.Threaded.global_single_threaded.io();
