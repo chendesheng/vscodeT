@@ -840,6 +840,9 @@ pub const TerminalWorkbench = struct {
             .multi_diff_source_services = .{
                 .configuration = &self.configuration_api,
                 .resolver = self.multi_diff_sources_api,
+                .storage = &self.storage_api,
+                .workspace = self.workspace,
+                .lists = &self.lists,
                 .provider = .{ .context = &self.git_commands, .capture = @import("../extensions/git/src/commands.zig").CommandContribution.captureMultiDiffResource },
             },
             .host = .{
@@ -1952,6 +1955,7 @@ pub const TerminalWorkbench = struct {
         self.quick_access.endFileSession();
         if (self.terminal_service) |service| service.options.workspace_root = null;
         self.saveSidebarViewStates() catch {};
+        self.editor_opening.setMultiDiffWorkspace(replacement);
         self.workspace.deinit();
         self.workspace = replacement;
         self.search_window.setWorkspace(replacement);
@@ -1978,6 +1982,7 @@ pub const TerminalWorkbench = struct {
     /// is created. The app derives them from the VS Code profile and the
     /// terminal's own config directory; later layers override earlier ones.
     pub fn setUserConfigurationValue(self: *TerminalWorkbench, key: []const u8, value: ?std.json.Value) !void {
+        try self.ensureConfiguration();
         try self.configuration_api.updateValue(key, value, .USER);
     }
 
@@ -3628,6 +3633,12 @@ pub const TerminalWorkbench = struct {
             .active_multi_diff = multi_diff != null,
             .multi_diff_all_collapsed = if (multi_diff) |multi| multi.widget.impl.allCollapsed() else false,
             .multi_diff_render_side_by_side = if (multi_diff) |multi| multi.widget.impl.config.render_side_by_side orelse true else true,
+            .multi_diff_file_list_available = if (multi_diff) |multi| multi.fileListAvailable() else false,
+            .multi_diff_file_list_enabled = if (multi_diff) |multi| multi.fileListEnabled() else false,
+            .multi_diff_file_list_visible = if (multi_diff) |multi| multi.fileListVisible() else false,
+            .multi_diff_file_list_focused = self.focus == .editor and if (multi_diff) |multi| multi.fileListFocused() else false,
+            .multi_diff_file_list_view_mode = if (multi_diff) |multi| @tagName(multi.fileListViewMode()) else "list",
+            .multi_diff_file_list_position = if (multi_diff) |multi| @tagName(multi.fileListPosition()) else "right",
             .diff_original_uri = if (active_diff_widget) |widget| widget.gutter_toolbar.original_uri else "",
             .diff_modified_uri = if (active_diff_widget) |widget| widget.gutter_toolbar.modified_uri else "",
             .visible_diff = visible_diff,

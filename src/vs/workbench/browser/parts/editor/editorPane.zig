@@ -457,7 +457,7 @@ pub const Tab = struct {
         const view = try factory(allocator, editor);
         errdefer view.deinit();
         self.* = .{ .allocator = allocator, .editor = editor, .view = view, .file_input = null, .input = pane.input.interface(), .multi_diff = pane };
-        self.multi_diff_listener = try pane.widget.on_did_change_layout.listen(self, onMultiDiffChanged);
+        self.multi_diff_listener = try pane.changed.listen(self, onMultiDiffChanged);
         return self;
     }
 
@@ -546,8 +546,9 @@ pub const Tab = struct {
     pub fn detachMultiDiffControls(self: *Tab) void {
         const multi = self.multi_diff orelse return;
         multi.input.detachSource();
-        if (self.multi_diff_listener) |id| multi.widget.on_did_change_layout.unlisten(id);
+        if (self.multi_diff_listener) |id| multi.changed.unlisten(id);
         self.multi_diff_listener = null;
+        multi.detachServices();
         multi.widget.setViewModel(null, .{}) catch {};
     }
 
@@ -777,7 +778,7 @@ pub const Tab = struct {
         if (self.image_preview) |pane| {
             return (try pane.pointerAt(x, y)) orelse .default;
         }
-        if (self.multi_diff) |multi| return multi.widget.pointerAt(x, y);
+        if (self.multi_diff) |multi| return multi.pointerAt(x, y);
         if (self.diff) |diff| return diff.widget.pointerAt(x, y);
         if (self.markdown_preview) |preview| return (try preview.pointerAt(x, y)) orelse .default;
         return self.view.pointerAt(x, y);
@@ -790,7 +791,7 @@ pub const Tab = struct {
         }
         if (self.image_preview != null or self.markdown_preview != null) return null;
         if (self.multi_diff) |multi| {
-            const cell = multi.widget.cursorCell() orelse return null;
+            const cell = multi.cursorCell() orelse return null;
             return .{ .row = cell.row, .col = cell.col };
         }
         if (self.diff) |diff| {
@@ -808,7 +809,7 @@ pub const Tab = struct {
             return;
         }
         if (self.multi_diff) |multi| {
-            multi.widget.setFocused(true) catch {};
+            multi.focus() catch {};
             return;
         }
         if (self.diff) |diff| {
@@ -844,7 +845,7 @@ pub const Tab = struct {
     }
 
     pub fn handleDiffMouse(self: *Tab, event: *ui.MouseEvent) !bool {
-        if (self.multi_diff) |multi| return multi.widget.dispatchMouse(event);
+        if (self.multi_diff) |multi| return multi.dispatchMouse(event);
         const diff = self.diff orelse return false;
         try self.ensureControllers();
         return diff.widget.dispatchMouseWith(event, .{ .context = self, .dispatch = dispatchDiffPaneMouse });
@@ -877,7 +878,7 @@ pub const Tab = struct {
     }
 
     pub fn handleDiffKey(self: *Tab, event: *ui.KeyEvent) bool {
-        if (self.multi_diff) |multi| return multi.widget.dispatchKey(event) catch false;
+        if (self.multi_diff) |multi| return multi.dispatchKey(event) catch false;
         const diff = self.diff orelse return false;
         if (diff.widget.accessible_viewer.visible()) return diff.handleKey(event);
         if (diff.widget.handleDeletedSelectionKey(event)) return true;
@@ -890,7 +891,7 @@ pub const Tab = struct {
 
     pub fn setEditorFocused(self: *Tab, focused: bool) void {
         if (self.multi_diff) |multi| {
-            multi.widget.setFocused(focused) catch {};
+            multi.setFocused(focused) catch {};
         } else if (self.diff) |diff| diff.widget.setEditorFocused(focused) else _ = self.view.setFocused(focused);
     }
 
@@ -900,7 +901,16 @@ pub const Tab = struct {
         return .{
             .context = self,
             .input = self.input,
-            .id = if (self.multi_diff != null) "workbench.editor.multiDiffEditor" else self.input.editor_id orelse self.input.type_id,
+            .id = if (self.multi_diff != null) @import("../../../contrib/multiDiffEditor/common/multiDiffEditor.zig").MULTI_DIFF_EDITOR_ID else self.input.editor_id orelse self.input.type_id,
+            .multi_diff_file_list_host = if (self.multi_diff) |multi| .{
+                .context = multi,
+                .focus_file_list = struct {
+                    fn focus(context: *anyopaque) !void {
+                        const pane: *MultiDiffPane = @ptrCast(@alignCast(context));
+                        try pane.focusFileList();
+                    }
+                }.focus,
+            } else null,
             .get_control_fn = struct {
                 fn get(context: *anyopaque) ?*anyopaque {
                     const tab: *Tab = @ptrCast(@alignCast(context));
@@ -1222,7 +1232,7 @@ pub const Tab = struct {
         }
         self.view.deinit();
         if (self.multi_diff) |multi| {
-            if (self.multi_diff_listener) |id| multi.widget.on_did_change_layout.unlisten(id);
+            if (self.multi_diff_listener) |id| multi.changed.unlisten(id);
             self.multi_diff_listener = null;
             multi.destroy();
             self.editor.deinit();

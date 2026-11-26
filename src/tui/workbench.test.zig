@@ -10893,7 +10893,7 @@ test "Workbench: git scm integration opens Graph Open Changes as a real virtuali
     try std.testing.expect(tab.handleDiffKey(&escape_key));
     try wb.commands.execute("workbench.action.compareEditor.focusPrimarySide");
     const keys_service = try wb.ensureContextKeys();
-    try std.testing.expectEqualStrings("workbench.editor.multiDiffEditor", keys_service.getValue("activeEditor").string);
+    try std.testing.expectEqualStrings("multiDiffEditor", keys_service.getValue("activeEditor").string);
     const first_item = vm.activeDiffItem.?;
     const next_key: ui.KeyEvent = .{ .key = .f5, .mods = .{ .alt = true } };
     try std.testing.expect(try terminal_workbench.handleGlobalKey(wb, &next_key));
@@ -11187,4 +11187,104 @@ test "Workbench: serialize and restore multiple explicit file resources without 
     const selections = try left_tab.editor.getSelections();
     defer a.free(selections);
     try std.testing.expectEqualSlices(Selection, &.{range}, selections);
+}
+
+test "Workbench: serialize and restore multiple diff file list actions share focus and profile state" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "docs");
+    try tmp.dir.writeFile(io, .{ .sub_path = "config", .data = "\x00\x02" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/readme.png", .data = "\x00\x01" });
+    const config_path = try tmp.dir.realPathFileAlloc(io, "config", a);
+    defer a.free(config_path);
+    const doc_path = try tmp.dir.realPathFileAlloc(io, "docs/readme.png", a);
+    defer a.free(doc_path);
+    const missing_path = try std.fs.path.join(a, &.{ config_path, "missing.png" });
+    defer a.free(missing_path);
+    const URI = @import("../vs/base/common/uri.zig").URI;
+    var config_uri = try URI.file(a, config_path);
+    defer config_uri.deinit();
+    var doc_uri = try URI.file(a, doc_path);
+    defer doc_uri.deinit();
+    var missing_uri = try URI.file(a, missing_path);
+    defer missing_uri.deinit();
+    const config_encoded = try config_uri.toStringEncoded(a);
+    defer a.free(config_encoded);
+    const doc_encoded = try doc_uri.toStringEncoded(a);
+    defer a.free(doc_encoded);
+    const missing_encoded = try missing_uri.toStringEncoded(a);
+    defer a.free(missing_encoded);
+    const res: [3]@import("../vs/workbench/common/editor.zig").IMultiDiffEditorResource = .{
+        .{ .modified = try std.Uri.parse(config_encoded) },
+        .{ .original = try std.Uri.parse(missing_encoded) },
+        .{ .modified = try std.Uri.parse(doc_encoded) },
+    };
+    const window = try TestWindow.init(a, io, &.{}, 120, 25);
+    defer window.deinit();
+    const wb = window.workbench;
+    const settings_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/settings.json", .{tmp.sub_path});
+    defer a.free(settings_path);
+    try wb.setUserSettingsPaths(&.{settings_path});
+    try wb.setUserConfigurationValue("multiDiffEditor.experimental.fileList", .{ .bool = true });
+    try wb.commands.execute("multiDiffEditor.viewFileListAsTree");
+    try wb.editor_api.openMultiDiffResources(.{ .multiDiffSource = try std.Uri.parse("multi-diff-editor:files-list-first"), .resources = &res });
+    for (0..6000) |_| {
+        if (wb.activeTab()) |tab| if (tab.multi_diff) |multi| {
+            if (!multi.widget.getViewModel().?.isLoading) break;
+        };
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+    const first = wb.activeTab().?.multi_diff orelse return error.TestExpectedMultiDiffTab;
+    const composite = first.composite orelse return error.TestExpectedFileList;
+    const file_list = composite.file_list orelse return error.TestExpectedFileList;
+    try std.testing.expect(first.fileListVisible());
+    try std.testing.expectEqual(@as(usize, 2), first.input.entries.len);
+    try std.testing.expectEqual(@as(usize, 2), file_list.files.len);
+    try std.testing.expect(first.input.last_resolution_failure != null);
+    try std.testing.expectEqualStrings("readme.png", file_list.files[0].name);
+    try std.testing.expectEqualStrings("config", file_list.files[1].name);
+    try std.testing.expectEqualStrings("multiDiffEditor", wb.editor_api.activeEditorPane().?.getId());
+    const keys = try wb.ensureContextKeys();
+    try std.testing.expect(keys.getValue("multiDiffEditorFileListAvailable").boolean);
+    try std.testing.expect(keys.getValue("multiDiffEditorFileListVisible").boolean);
+    const editor_title = wb.activePane().?.title_control.primaryActions();
+    try std.testing.expect(for (editor_title) |action| {
+        if (std.mem.eql(u8, action.id(), "multiDiffEditor.toggleFileList")) break true;
+    } else false);
+    try wb.commands.execute("multiDiffEditor.toggleFileList");
+    try std.testing.expect(!first.fileListVisible());
+    const source = wb.commands.source();
+    const picks = try source.get_picks(source.context, a);
+    defer a.free(picks);
+    try std.testing.expect(for (picks) |pick| {
+        if (std.mem.eql(u8, pick.command_id, "multiDiffEditor.focusFileList")) break true;
+    } else false);
+    try wb.commands.execute("multiDiffEditor.focusFileList");
+    try std.testing.expect(first.fileListVisible() and first.fileListFocused());
+    try std.testing.expect(keys.getValue("multiDiffEditorFileListFocus").boolean);
+    try std.testing.expect(keys.getValue("listFocus").boolean);
+    try std.testing.expect(!keys.getValue("editorTextFocus").boolean);
+    try wb.commands.execute("multiDiffEditor.positionFileListLeft");
+    try std.testing.expectEqual(@as(usize, 0), composite.listX());
+    try std.testing.expect(first.fileListFocused());
+    try wb.commands.execute("multiDiffEditor.viewFileListAsList");
+    try std.testing.expectEqualStrings("config", composite.file_list.?.files[0].name);
+    try wb.setUserConfigurationValue("multiDiffEditor.experimental.variant", .{ .string = "cards" });
+    try std.testing.expectEqual(@import("../vs/editor/common/multiDiffEditor.zig").MultiDiffEditorVariant.cards, first.widget.impl.variant);
+    try std.testing.expect(first.fileListVisible());
+    try wb.editor_api.openMultiDiffResources(.{ .multiDiffSource = try std.Uri.parse("multi-diff-editor:files-list-second"), .resources = &res });
+    for (0..6000) |_| {
+        if (wb.activeTab()) |tab| if (tab.multi_diff) |multi| {
+            if (multi != first and !multi.widget.getViewModel().?.isLoading) break;
+        };
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+    const second = wb.activeTab().?.multi_diff orelse return error.TestExpectedMultiDiffTab;
+    try std.testing.expect(second != first and second.fileListVisible());
+    try wb.commands.execute("multiDiffEditor.toggleFileList");
+    try std.testing.expect(!first.fileListVisible() and !second.fileListVisible());
 }

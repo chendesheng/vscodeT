@@ -472,6 +472,9 @@ pub const EditorOpening = struct {
         configuration: ?*const IConfigurationService,
         resolver: multi_source.IMultiDiffSourceResolverService,
         provider: multi_source.ResourceSnapshotProvider,
+        storage: ?*const @import("../../../../platform/storage/common/storage.zig").IStorageService = null,
+        workspace: ?*@import("../../workspaces/common/workspaceContextService.zig").WorkspaceContextService = null,
+        lists: ?*@import("../../../../platform/list/browser/listService.zig").ListService = null,
     } = null,
     pending_open: ?struct { read: *TextFileRead, options: OpenOptions } = null,
     diff_worker: ?*DiffWorker = null,
@@ -585,6 +588,13 @@ pub const EditorOpening = struct {
         self.host.request_frame(self.host.context);
     }
 
+    pub fn setMultiDiffWorkspace(self: *EditorOpening, workspace: *@import("../../workspaces/common/workspaceContextService.zig").WorkspaceContextService) void {
+        if (self.multi_diff_source_services) |*services| services.workspace = workspace;
+        for (self.part.group_views.items) |pane| for (pane.tabs.items) |tab| {
+            if (tab.multi_diff) |multi| multi.setWorkspace(workspace) catch {};
+        };
+    }
+
     /// Fresh and restored multi-diff inputs mount the same pane and worker.
     pub fn createMultiDiffTab(self: *EditorOpening, input: *multi_diff_input.MultiDiffEditorInput, width: usize, height: usize, preserve_focus: bool) !*Tab {
         const multi = try editor_pane.MultiDiffPane.create(self.allocator, self.io, input, self.window_events, .{
@@ -594,7 +604,11 @@ pub const EditorOpening = struct {
             .dispose_diff = disposeMultiDiffWidget,
             .open_file = openMultiDiffFile,
             .open_binary_diff = openMultiDiffBinary,
-        }, .{ .worker = try self.ensureDiffWorker(), .cache = &self.diff_cache }, width, height, preserve_focus);
+        }, .{ .worker = try self.ensureDiffWorker(), .cache = &self.diff_cache }, width, height, preserve_focus, if (self.multi_diff_source_services) |services| blk: {
+            const config = services.configuration orelse break :blk null;
+            const store = services.storage orelse break :blk null;
+            break :blk .{ .configuration_service = config.*, .storage_service = store.*, .workspace = services.workspace, .lists = services.lists };
+        } else null);
         errdefer multi.destroy();
         return Tab.initMultiDiff(self.view_factory, self.allocator, self.io, multi);
     }

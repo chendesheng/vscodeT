@@ -115,7 +115,7 @@ pub fn EditorGroupView(comptime View: type) type {
             if (comptime @hasField(@typeInfo(View).pointer.child, "diff")) {
                 if (self.panes.activePane()) |tab| {
                     if (comptime @hasField(@typeInfo(View).pointer.child, "multi_diff")) {
-                        if (tab.multi_diff) |multi| return self.title_control.setActiveMultiDiff(multi.widget);
+                        if (tab.multi_diff) |multi| return self.title_control.setActiveMultiDiff(multi);
                     }
                     try self.title_control.setActiveDiff(if (tab.diff) |diff| diff.widget else null);
                 } else try self.title_control.setActiveDiff(null);
@@ -744,7 +744,7 @@ pub fn EditorGroupView(comptime View: type) type {
                     if (pane) |tab| {
                         if (comptime @hasField(@typeInfo(View).pointer.child, "multi_diff")) {
                             if (tab.multi_diff) |multi| {
-                                self.title_control.setActiveMultiDiff(multi.widget) catch {};
+                                self.title_control.setActiveMultiDiff(multi) catch {};
                             } else self.title_control.setActiveDiff(if (tab.diff) |diff| diff.widget else null) catch {};
                         } else self.title_control.setActiveDiff(if (tab.diff) |diff| diff.widget else null) catch {};
                     } else self.title_control.setActiveDiff(null) catch {};

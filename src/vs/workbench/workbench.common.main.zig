@@ -58,6 +58,7 @@ pub fn registerMenus(menus: *MenuRegistry) !void {
     try @import("contrib/scm/browser/scmViewPane.zig").registerMenus(menus);
     try @import("contrib/scm/browser/scmHistoryViewPane.zig").registerMenus(menus);
     try @import("contrib/outline/browser/outlineActions.zig").registerMenus(menus);
+    try @import("contrib/multiDiffEditor/browser/actions.zig").registerMenus(menus);
 }
 
 const Action2 = @import("../platform/actions/common/actions.zig").Action2;

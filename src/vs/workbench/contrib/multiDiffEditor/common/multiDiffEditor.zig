@@ -12,7 +12,7 @@ const std_uri = @import("../../../../base/common/stdUri.zig");
 const ResourceTree = @import("../../../../base/common/resourceTree.zig").ResourceTree;
 pub const MultiDiffEditorVariant = @import("../../../../editor/common/multiDiffEditor.zig").MultiDiffEditorVariant;
 
-pub const MULTI_DIFF_EDITOR_ID = "workbench.editor.multiDiffEditor";
+pub const MULTI_DIFF_EDITOR_ID = "multiDiffEditor";
 pub const TOGGLE_MULTI_DIFF_EDITOR_FILE_LIST_COMMAND_ID = "multiDiffEditor.toggleFileList";
 pub const multiDiffEditorExperimentalVariantSetting = "multiDiffEditor.experimental.variant";
 pub const defaultMultiDiffEditorExperimentalVariant: MultiDiffEditorVariant = .noCards;

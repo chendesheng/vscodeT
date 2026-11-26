@@ -85,11 +85,20 @@ pub const EditorOptions = struct {
 /// Port of IVisibleEditorPane. The terminal's pane adapter supplies a typed
 /// input and editor ID; the control remains an opaque widget until the caller
 /// checks that ID, as the browser does with its editor-pane type guards.
+pub const IMultiDiffEditorFileListHost = struct {
+    context: *anyopaque,
+    focus_file_list: *const fn (*anyopaque) anyerror!void,
+    pub fn focusFileList(self: IMultiDiffEditorFileListHost) !void {
+        try self.focus_file_list(self.context);
+    }
+};
+
 pub const IVisibleEditorPane = struct {
     context: *anyopaque,
     input: *@import("editor/editorInput.zig").EditorInput,
     id: []const u8,
     get_control_fn: *const fn (*anyopaque) ?*anyopaque,
+    multi_diff_file_list_host: ?IMultiDiffEditorFileListHost = null,
 
     pub fn getId(self: IVisibleEditorPane) []const u8 {
         return self.id;

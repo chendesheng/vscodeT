@@ -17,6 +17,12 @@ pub const WindowContextState = struct {
     active_multi_diff: bool = false,
     multi_diff_all_collapsed: bool = false,
     multi_diff_render_side_by_side: bool = true,
+    multi_diff_file_list_available: bool = false,
+    multi_diff_file_list_enabled: bool = false,
+    multi_diff_file_list_visible: bool = false,
+    multi_diff_file_list_focused: bool = false,
+    multi_diff_file_list_view_mode: []const u8 = "list",
+    multi_diff_file_list_position: []const u8 = "right",
     visible_diff: bool = false,
     comparing_moved_code: bool = false,
     diff_original_uri: []const u8 = "",
@@ -47,6 +53,12 @@ const WindowContextKeys = struct {
     in_multi_diff_editor: contextkeys.IContextKey,
     multi_diff_editor_all_collapsed: contextkeys.IContextKey,
     multi_diff_editor_render_side_by_side: contextkeys.IContextKey,
+    multi_diff_file_list_available: contextkeys.IContextKey,
+    multi_diff_file_list_enabled: contextkeys.IContextKey,
+    multi_diff_file_list_visible: contextkeys.IContextKey,
+    multi_diff_file_list_focus: contextkeys.IContextKey,
+    multi_diff_file_list_view_mode: contextkeys.IContextKey,
+    multi_diff_file_list_position: contextkeys.IContextKey,
     text_compare_editor_active: contextkeys.IContextKey,
     active_compare_editor_can_swap: contextkeys.IContextKey,
     text_compare_editor_visible: contextkeys.IContextKey,
@@ -91,6 +103,12 @@ const WindowContextKeys = struct {
             .in_multi_diff_editor = try service.createKey("inMultiDiffEditor", .{ .boolean = false }),
             .multi_diff_editor_all_collapsed = try service.createKey("multiDiffEditorAllCollapsed", .{ .boolean = false }),
             .multi_diff_editor_render_side_by_side = try service.createKey("multiDiffEditorRenderSideBySide", .{ .boolean = true }),
+            .multi_diff_file_list_available = try service.createKey("multiDiffEditorFileListAvailable", .{ .boolean = false }),
+            .multi_diff_file_list_enabled = try service.createKey("multiDiffEditorFileListEnabled", .{ .boolean = false }),
+            .multi_diff_file_list_visible = try service.createKey("multiDiffEditorFileListVisible", .{ .boolean = false }),
+            .multi_diff_file_list_focus = try service.createKey("multiDiffEditorFileListFocus", .{ .boolean = false }),
+            .multi_diff_file_list_view_mode = try service.createKey("multiDiffEditorFileListViewMode", .{ .string = "list" }),
+            .multi_diff_file_list_position = try service.createKey("multiDiffEditorFileListPosition", .{ .string = "right" }),
             .text_compare_editor_active = try service.createKey("textCompareEditorActive", .{ .boolean = false }),
             .active_compare_editor_can_swap = try service.createKey("activeCompareEditorCanSwap", .{ .boolean = false }),
             .text_compare_editor_visible = try service.createKey("textCompareEditorVisible", .{ .boolean = false }),
@@ -234,10 +252,16 @@ pub const WorkbenchContextKeysHandler = struct {
         keys.text_compare_editor_active.set(.{ .boolean = state.active_diff });
         keys.active_compare_editor_can_swap.set(.{ .boolean = state.active_diff });
         keys.text_compare_editor_visible.set(.{ .boolean = state.visible_diff });
-        keys.active_editor_pane.set(.{ .string = if (state.active_multi_diff) "workbench.editor.multiDiffEditor" else "" });
+        keys.active_editor_pane.set(.{ .string = if (state.active_multi_diff) @import("../contrib/multiDiffEditor/common/multiDiffEditor.zig").MULTI_DIFF_EDITOR_ID else "" });
         keys.in_multi_diff_editor.set(.{ .boolean = state.active_multi_diff });
         keys.multi_diff_editor_all_collapsed.set(.{ .boolean = state.multi_diff_all_collapsed });
         keys.multi_diff_editor_render_side_by_side.set(.{ .boolean = state.multi_diff_render_side_by_side });
+        keys.multi_diff_file_list_available.set(.{ .boolean = state.multi_diff_file_list_available });
+        keys.multi_diff_file_list_enabled.set(.{ .boolean = state.multi_diff_file_list_enabled });
+        keys.multi_diff_file_list_visible.set(.{ .boolean = state.multi_diff_file_list_visible });
+        keys.multi_diff_file_list_focus.set(.{ .boolean = state.multi_diff_file_list_focused });
+        keys.multi_diff_file_list_view_mode.set(.{ .string = state.multi_diff_file_list_view_mode });
+        keys.multi_diff_file_list_position.set(.{ .string = state.multi_diff_file_list_position });
         keys.is_in_diff_editor.set(.{ .boolean = state.active_diff or state.active_multi_diff });
         keys.comparing_moved_code.set(.{ .boolean = state.comparing_moved_code });
         self.updateUriKey(keys.diff_original_uri, &self.diff_original_uri_owned, state.diff_original_uri);
@@ -246,7 +270,7 @@ pub const WorkbenchContextKeysHandler = struct {
         keys.active_custom_editor_id.set(.{ .string = state.custom_editor_id });
         keys.editor_text_focus.set(.{ .boolean = state.editor_text_focused });
         keys.side_bar_focus.set(.{ .boolean = state.sidebar_focused });
-        keys.list_focus.set(.{ .boolean = state.sidebar_focused and (!search_active or state.search_results_focused) });
+        keys.list_focus.set(.{ .boolean = state.multi_diff_file_list_focused or (state.sidebar_focused and (!search_active or state.search_results_focused)) });
         keys.input_focus.set(.{ .boolean = state.sidebar_focused and search_active and !state.search_results_focused });
         keys.status_bar_focus.set(.{ .boolean = state.statusbar_focused });
         keys.legacy_status_bar_focus.set(.{ .boolean = state.statusbar_focused });
