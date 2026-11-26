@@ -11,6 +11,96 @@ const widget_mod = @import("../../../browser/widget/diffEditor/diffEditorWidget.
 pub fn Tests(comptime View: type) type {
     return struct {
         const DiffEditorWidget = widget_mod.DiffEditorWidget(View);
+        test "diffEditorWidget: setDiffModel retains each unchanged code editor View and emits a single model change" {
+            const a = testing.allocator;
+            const EditorDocument = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").EditorDocument;
+            const ModelEvent = @import("../../../common/editorCommon.zig").IModelChangedEvent;
+            const Selection = @import("../../../common/core/selection.zig").Selection;
+            const original = try EditorDocument.createFromText(a, testing.io, "original.txt", "old\nsecond\nthird", null);
+            defer original.release();
+            const first = try EditorDocument.createFromText(a, testing.io, "first.txt", "new\nsecond\nthird", null);
+            defer first.release();
+            const second = try EditorDocument.createFromText(a, testing.io, "second.txt", "another\nsecond\nthird", null);
+            defer second.release();
+            const widget = try DiffEditorWidget.createDetached(View.init, a, testing.io, 80, 8, .{});
+            defer widget.destroy();
+            const original_control = widget.original_editor;
+            const modified_control = widget.modified_editor;
+            var binding: DiffEditorWidget.ModelBinding = .{
+                .original = original,
+                .modified = first,
+                .original_path = original.path,
+                .modified_path = first.path,
+                .options = .{},
+                .width = 80,
+                .height = 8,
+            };
+            try widget.setDiffModel(binding);
+            try testing.expect(widget.hasModel());
+            const original_view = widget.original_view;
+            const modified_view = widget.modified_view;
+            try widget.original_editor.setSelections(&.{Selection.init(3, 1, 3, 1)});
+            try widget.modified_editor.setSelections(&.{Selection.init(2, 1, 2, 1)});
+            const Changes = struct {
+                original: usize = 0,
+                modified: usize = 0,
+                direct: bool = false,
+                diff: usize = 0,
+                fn originalChanged(_: ModelEvent, self: *@This()) !void {
+                    self.original += 1;
+                }
+                fn modifiedChanged(event: ModelEvent, self: *@This()) !void {
+                    self.modified += 1;
+                    self.direct = event.oldModelUrl != null and event.newModelUrl != null;
+                }
+                fn diffChanged(_: void, self: *@This()) !void {
+                    self.diff += 1;
+                }
+            };
+            var changes: Changes = .{};
+            const original_listener = try original_control.on_did_change_model.listen(&changes, Changes.originalChanged);
+            defer original_control.on_did_change_model.unlisten(original_listener);
+            const modified_listener = try modified_control.on_did_change_model.listen(&changes, Changes.modifiedChanged);
+            defer modified_control.on_did_change_model.unlisten(modified_listener);
+            const diff_listener = try widget.on_did_change_model.listen(&changes, Changes.diffChanged);
+            defer widget.on_did_change_model.unlisten(diff_listener);
+
+            // A new diff view model over the same two text models does not
+            // replace either code-editor View, nor reset their selections.
+            try widget.setDiffModel(binding);
+            try testing.expectEqual(original_view, widget.original_view);
+            try testing.expectEqual(modified_view, widget.modified_view);
+            try testing.expectEqual(@as(usize, 0), changes.original);
+            try testing.expectEqual(@as(usize, 0), changes.modified);
+            try testing.expectEqual(@as(usize, 1), changes.diff);
+            try testing.expectEqual(@as(usize, 3), widget.original_editor.modelCursorPosition().lineNumber);
+            try testing.expectEqual(@as(usize, 2), widget.modified_editor.modelCursorPosition().lineNumber);
+
+            binding.modified = second;
+            binding.modified_path = second.path;
+            try widget.setDiffModel(binding);
+            try testing.expectEqual(original_control, widget.original_editor);
+            try testing.expectEqual(modified_control, widget.modified_editor);
+            try testing.expectEqual(original_view, widget.original_view);
+            try testing.expectEqual(original.model, widget.originalModel());
+            try testing.expectEqual(second.model, widget.modifiedModel());
+            try testing.expectEqual(@as(usize, 0), first.editors.items.len);
+            try testing.expectEqual(@as(usize, 0), changes.original);
+            try testing.expectEqual(@as(usize, 1), changes.modified);
+            try testing.expect(changes.direct);
+            try testing.expectEqual(@as(usize, 2), changes.diff);
+
+            try widget.accessibleDiffViewerNext();
+            try testing.expect(widget.accessible_viewer.visible());
+            try widget.setDiffModel(null);
+            try widget.setDiffModel(null);
+            try testing.expect(!widget.hasModel());
+            try testing.expect(widget.state() == null and widget.getViewModel() == null);
+            try testing.expect(!widget.accessible_viewer.visible());
+            try testing.expect(!original_control.hasModel() and !modified_control.hasModel());
+            try testing.expectEqual(@as(usize, 3), changes.diff);
+        }
+
         test "diffEditorOptions: commits temporary inline when smoothly enlarging from automatic inline" {
             const option_mod = @import("../../../browser/widget/diffEditor/diffEditorOptions.zig");
             var options: option_mod.Options = .{ .minimum_side_by_side_width = 900 };

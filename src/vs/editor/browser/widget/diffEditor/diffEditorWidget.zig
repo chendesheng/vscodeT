@@ -158,6 +158,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
         const Self = @This();
         allocator: Allocator,
         io: Io,
+        view_factory: *const fn (Allocator, *Editor) anyerror!*View,
+        model_attached: bool = false,
         original_path: []u8,
         modified_path: []u8,
         original_label: []u8,
@@ -187,6 +189,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         move_listener: ?usize = null,
         diff_listener: ?usize = null,
         context_state: ContextState = .{},
+        on_did_change_model: Emitter(void),
         on_did_change_context: Emitter(void),
         on_did_change_focused_side: Emitter(Side),
         on_did_update_diff: Emitter(void),
@@ -257,6 +260,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         fn updateAriaLabels(self: *Self) !void {
+            if (!self.hasModel()) return;
             const label = try diff_editor_editors.updateAriaLabel(self.allocator, "Editor content", self.options.accessibility_verbose, self.accessibility_help_keybinding);
             defer self.allocator.free(label);
             try self.original_view.setAriaLabel(label);
@@ -400,49 +404,179 @@ pub fn DiffEditorWidget(comptime View: type) type {
             sources: ModelSources,
             computed: ?IDocumentDiff,
         ) !*Self {
+            const original_document = sources.original orelse try EditorDocument.createFromText(allocator, io, original_path, original_text, null);
+            defer if (sources.original == null) original_document.release();
+            const modified_document = sources.modified orelse try EditorDocument.createFromText(allocator, io, modified_path, modified_text, null);
+            defer if (sources.modified == null) modified_document.release();
+            const self = try createDetached(factory, allocator, io, width, height, options);
+            errdefer self.destroy();
+            try self.setDiffModel(.{
+                .original = original_document,
+                .modified = modified_document,
+                .original_path = original_path,
+                .modified_path = modified_path,
+                .original_label = original_label,
+                .modified_label = modified_label,
+                .options = options,
+                .width = width,
+                .height = height,
+                .view_model = sources.view_model,
+                .computed = computed,
+            });
+            return self;
+        }
+
+        /// DiffEditorWidget owns its two CodeEditorWidgets independently of
+        /// the currently attached diff model. The native View/feature
+        /// registrations have the shorter model attachment lifetime.
+        pub fn createDetached(
+            factory: *const fn (Allocator, *Editor) anyerror!*View,
+            allocator: Allocator,
+            io: Io,
+            width: usize,
+            height: usize,
+            options: Options,
+        ) !*Self {
             const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
+            const original = try Editor.createDetached(allocator, io, width, height, .{});
+            errdefer destroyEditor(original);
+            const modified = try Editor.createDetached(allocator, io, width, height, .{});
+            self.* = .{
+                .allocator = allocator,
+                .io = io,
+                .view_factory = factory,
+                .original_path = &.{},
+                .modified_path = &.{},
+                .original_label = &.{},
+                .modified_label = &.{},
+                .options = options.normalize(),
+                .view_model = undefined,
+                .owns_view_model = false,
+                .decorations = undefined,
+                .on_did_change_model = .init(allocator),
+                .on_did_change_context = .init(allocator),
+                .on_did_change_focused_side = .init(allocator),
+                .on_did_update_diff = .init(allocator),
+                .accessible_viewer = accessible_module.AccessibleDiffViewer.init(allocator),
+                .inline_margin_menu = .{ .allocator = allocator },
+                .original_editor = original,
+                .modified_editor = modified,
+                .original_view = undefined,
+                .modified_view = undefined,
+                .width = @max(width, 1),
+                .height = @max(height, 1),
+            };
+            return self;
+        }
+
+        pub const ModelBinding = struct {
+            original: *EditorDocument,
+            modified: *EditorDocument,
+            original_path: []const u8,
+            modified_path: []const u8,
+            original_label: []const u8 = "Original",
+            modified_label: []const u8 = "Modified",
+            options: Options,
+            width: usize,
+            height: usize,
+            view_model: ?*DiffEditorViewModel = null,
+            computed: ?IDocumentDiff = null,
+        };
+
+        pub fn hasModel(self: *const Self) bool {
+            return self.model_attached;
+        }
+
+        pub fn getViewModel(self: *const Self) ?*DiffEditorViewModel {
+            return if (self.hasModel()) self.view_model else null;
+        }
+
+        pub fn setDiffModel(self: *Self, binding: ?ModelBinding) !void {
+            const had_model = self.hasModel();
+            if (binding) |value| {
+                if (value.view_model) |vm| {
+                    if (vm.model.original != value.original.model or vm.model.modified != value.modified.model) return error.DiffModelMismatch;
+                    if (had_model and vm == self.view_model) return;
+                }
+                // The caller may refer to the outgoing documents and labels.
+                // Keep them alive until the next attachment has taken ownership.
+                value.original.retain();
+                defer value.original.release();
+                value.modified.retain();
+                defer value.modified.release();
+                var next = value;
+                var scratch = std.heap.ArenaAllocator.init(self.allocator);
+                defer scratch.deinit();
+                if (had_model) {
+                    const a = scratch.allocator();
+                    next.original_path = try a.dupe(u8, next.original_path);
+                    next.modified_path = try a.dupe(u8, next.modified_path);
+                    next.original_label = try a.dupe(u8, next.original_label);
+                    next.modified_label = try a.dupe(u8, next.modified_label);
+                }
+                var retained = self.detachModel(next);
+                self.attachModel(next, &retained) catch |err| {
+                    retained.dispose();
+                    self.original_editor.setModel(null) catch {};
+                    self.modified_editor.setModel(null) catch {};
+                    self.width_based_layout.resetWidthBasedLayout();
+                    if (had_model) self.emitModelChanged();
+                    return err;
+                };
+            } else {
+                if (!had_model) return;
+                _ = self.detachModel(null);
+                self.on_did_change_context.fire({}) catch {};
+            }
+            self.emitModelChanged();
+        }
+
+        fn emitModelChanged(self: *Self) void {
+            self.on_did_change_model.fire({}) catch {};
+            self.on_did_update_diff.fire({}) catch {};
+        }
+
+        const RetainedViews = struct {
+            original: ?*View = null,
+            modified: ?*View = null,
+            was_focused: bool = false,
+            accessible_was_visible: bool = false,
+            focus: Side = .modified,
+
+            fn dispose(self: *RetainedViews) void {
+                if (self.original) |view| view.deinit();
+                if (self.modified) |view| view.deinit();
+                self.* = .{};
+            }
+        };
+
+        fn attachModel(self: *Self, binding: ModelBinding, retained: *RetainedViews) !void {
+            std.debug.assert(!self.hasModel());
+            const allocator = self.allocator;
+            const options = binding.options;
             const normalized_options = options.normalize();
-
-            const original_path_copy = try allocator.dupe(u8, original_path);
+            const width = binding.width;
+            const height = binding.height;
+            const computed = binding.computed;
+            const original_path_copy = try allocator.dupe(u8, binding.original_path);
             errdefer allocator.free(original_path_copy);
-            const modified_path_copy = try allocator.dupe(u8, modified_path);
+            const modified_path_copy = try allocator.dupe(u8, binding.modified_path);
             errdefer allocator.free(modified_path_copy);
-            const original_label_copy = try allocator.dupe(u8, original_label);
+            const original_label_copy = try allocator.dupe(u8, binding.original_label);
             errdefer allocator.free(original_label_copy);
-            const modified_label_copy = try allocator.dupe(u8, modified_label);
+            const modified_label_copy = try allocator.dupe(u8, binding.modified_label);
             errdefer allocator.free(modified_label_copy);
-
             const is_inline = !normalized_options.renderSideBySide(width);
-            const original_editor = if (sources.original) |source|
-                try Editor.createViewFromDocument(source, @max(width, 1), @max(height, 1), .{ .reserve_scrollbar = false })
-            else
-                try Editor.createFromTextWithOptions(
-                    allocator,
-                    io,
-                    original_text,
-                    original_path,
-                    @max(width, 1),
-                    @max(height, 1),
-                    .{ .reserve_scrollbar = false },
-                );
-            errdefer destroyEditor(original_editor);
-            const modified_editor = if (sources.modified) |source|
-                try Editor.createViewFromDocument(source, @max(width, 1), @max(height, 1), .{ .reserve_scrollbar = false })
-            else
-                try Editor.createFromTextWithOptions(
-                    allocator,
-                    io,
-                    modified_text,
-                    modified_path,
-                    @max(width, 1),
-                    @max(height, 1),
-                    .{ .reserve_scrollbar = false },
-                );
-            errdefer destroyEditor(modified_editor);
+            const original_editor = self.original_editor;
+            const modified_editor = self.modified_editor;
+            original_editor.setViewport(@max(width, 1), @max(height, 1));
+            modified_editor.setViewport(@max(width, 1), @max(height, 1));
+            try original_editor.setModel(binding.original);
+            try modified_editor.setModel(binding.modified);
 
-            const owns_view_model = sources.view_model == null;
-            const diff_model = sources.view_model orelse try allocator.create(DiffEditorViewModel);
+            const owns_view_model = binding.view_model == null;
+            const diff_model = binding.view_model orelse try allocator.create(DiffEditorViewModel);
             if (owns_view_model) diff_model.* = DiffEditorViewModel.init(allocator, original_editor.model, modified_editor.model, computationOptions(normalized_options));
             errdefer if (owns_view_model) {
                 diff_model.deinit();
@@ -454,9 +588,12 @@ pub fn DiffEditorWidget(comptime View: type) type {
             } else if (computed != null) return error.SharedDiffModelAlreadyComputed;
             const diff_state = diff_model.stateRef() orelse return error.DiffUnavailable;
 
-            const original_view = try factory(allocator, original_editor);
+            const reuse_modified_view = retained.modified != null;
+            const original_view = retained.original orelse try self.view_factory(allocator, original_editor);
+            retained.original = null;
             errdefer original_view.deinit();
-            const modified_view = try factory(allocator, modified_editor);
+            const modified_view = retained.modified orelse try self.view_factory(allocator, modified_editor);
+            retained.modified = null;
             errdefer modified_view.deinit();
 
             original_editor.setReadOnly(!normalized_options.original_editable);
@@ -494,32 +631,23 @@ pub fn DiffEditorWidget(comptime View: type) type {
             errdefer decorations.deinit();
             try decorations.update(diff_state, normalized_options.show_moves and !is_inline);
 
-            self.* = .{
-                .allocator = allocator,
-                .io = io,
-                .original_path = original_path_copy,
-                .modified_path = modified_path_copy,
-                .original_label = original_label_copy,
-                .modified_label = modified_label_copy,
-                .options = normalized_options,
-                .inline_mode = is_inline,
-                .view_model = diff_model,
-                .owns_view_model = owns_view_model,
-                .on_did_change_context = Emitter(void).init(allocator),
-                .on_did_change_focused_side = Emitter(Side).init(allocator),
-                .on_did_update_diff = Emitter(void).init(allocator),
-                .accessible_viewer = accessible_module.AccessibleDiffViewer.init(allocator),
-                .inline_margin_menu = .{ .allocator = allocator },
-                .decorations = decorations,
-                .original_editor = original_editor,
-                .modified_editor = modified_editor,
-                .original_view = original_view,
-                .modified_view = modified_view,
-            };
+            self.original_path = original_path_copy;
+            self.modified_path = modified_path_copy;
+            self.original_label = original_label_copy;
+            self.modified_label = modified_label_copy;
+            self.options = normalized_options;
+            self.inline_mode = is_inline;
+            self.focused = retained.focus;
+            if (is_inline) self.focused = .modified;
+            self.view_model = diff_model;
+            self.owns_view_model = owns_view_model;
+            self.decorations = decorations;
+            self.original_view = original_view;
+            self.modified_view = modified_view;
+            self.model_attached = true;
+            errdefer self.model_attached = false;
             self.gutter_toolbar = .{ .allocator = allocator, .model = self.view_model, .original = original_editor, .modified = modified_editor };
-            errdefer self.on_did_change_context.deinit();
-            errdefer self.on_did_change_focused_side.deinit();
-            errdefer self.on_did_update_diff.deinit();
+            errdefer self.gutter_toolbar.deinit();
             try self.view_model.initializeUnchangedRegions(normalized_options.hide_unchanged_regions, normalized_options.hide_unchanged_regions_minimum_line_count, normalized_options.hide_unchanged_regions_context_line_count);
             self.overview.init(allocator, original_editor, modified_editor);
             self.zones.init(allocator, original_editor, original_view.viewZones(), modified_editor, modified_view.viewZones(), modified_view.terminal_view_host, modified_view.lineStyleFunction(), modified_view.decorationBitsFunction(), normalized_options.render_indicators, self.state().?.mappings);
@@ -538,10 +666,15 @@ pub fn DiffEditorWidget(comptime View: type) type {
             try self.view_model.startListening();
             // Keep the line views alive for layout changes and recomputation.
             self.layout(width, height);
-            self.selectInitialChange();
-            if (normalized_options.only_show_accessible_diff_viewer) try self.accessibleDiffViewerNext();
+            if (!reuse_modified_view) self.selectInitialChange();
+            if (retained.was_focused) {
+                self.focusedView().focusEditor();
+                self.setEditorFocused(true);
+            }
+            errdefer self.accessible_viewer.close();
+            if (normalized_options.only_show_accessible_diff_viewer or retained.accessible_was_visible) try self.accessibleDiffViewerNext();
+            if (self.accessibility_help_keybinding != null) try self.updateAriaLabels();
             self.view_model.mounted_view_count += 1;
-            return self;
         }
 
         fn destroyEditor(editor: *Editor) void {
@@ -552,19 +685,47 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         pub fn destroy(self: *Self) void {
             const allocator = self.allocator;
+            _ = self.detachModel(null);
+            self.contributions.deinit(allocator);
+            self.smooth_resize.deinit();
+            self.on_did_change_model.deinit();
+            self.on_did_change_context.deinit();
+            self.on_did_change_focused_side.deinit();
+            self.on_did_update_diff.deinit();
+            destroyEditor(self.original_editor);
+            destroyEditor(self.modified_editor);
+            if (self.accessibility_help_keybinding) |key| allocator.free(key);
+            allocator.destroy(self);
+        }
+
+        /// Dispose the model-specific bindings before detaching either
+        /// CodeEditorWidget. An unbound template retains only widget-level
+        /// state (options, event emitters and native resize subscription).
+        fn detachModel(self: *Self, next: ?ModelBinding) RetainedViews {
+            if (!self.hasModel()) return .{};
+            const allocator = self.allocator;
+            const retain_original = if (next) |binding| binding.original == self.original_editor.document else false;
+            const retain_modified = if (next) |binding| binding.modified == self.modified_editor.document else false;
+            const retained: RetainedViews = .{
+                .original = if (retain_original) self.original_view else null,
+                .modified = if (retain_modified) self.modified_view else null,
+                .was_focused = if (next != null) self.focusedView().isFocused() else false,
+                .accessible_was_visible = next != null and self.accessible_viewer.visible(),
+                .focus = self.focused,
+            };
             if (self.native_input_services) |services| {
                 self.native_input_services = null;
                 services.dispose(services.context);
             }
             self.detachContributions();
-            self.contributions.deinit(allocator);
-            self.smooth_resize.deinit();
             self.gutter_toolbar.deinit();
             self.revert_buttons.deinit();
             self.accessible_viewer.close();
             self.inline_margin_menu.deinit();
             if (self.diff_listener) |id| self.view_model.on_did_change.unlisten(id);
             if (self.move_listener) |id| self.view_model.on_did_change_active_move.unlisten(id);
+            self.diff_listener = null;
+            self.move_listener = null;
             self.moved_blocks.deinit();
             self.detachBreadcrumbs();
             self.hide_unchanged.deinit();
@@ -577,22 +738,38 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 self.view_model.deinit();
                 allocator.destroy(self.view_model);
             }
-            self.on_did_change_context.deinit();
-            self.on_did_change_focused_side.deinit();
-            self.on_did_update_diff.deinit();
-
-            self.original_view.deinit();
-            self.modified_view.deinit();
-            destroyEditor(self.original_editor);
-            destroyEditor(self.modified_editor);
-
+            if (!retain_original) self.original_view.deinit();
+            if (!retain_modified) self.modified_view.deinit();
+            self.model_attached = false;
+            if (next == null) {
+                self.original_editor.setModel(null) catch {};
+                self.modified_editor.setModel(null) catch {};
+            }
             allocator.free(self.original_path);
             allocator.free(self.modified_path);
             allocator.free(self.original_label);
             allocator.free(self.modified_label);
+            self.original_path = &.{};
+            self.modified_path = &.{};
+            self.original_label = &.{};
+            self.modified_label = &.{};
+            self.view_model = undefined;
+            self.owns_view_model = false;
+            self.original_scroll_anchor = null;
+            self.modified_scroll_anchor = null;
+            self.accessible_viewer.can_close = true;
+            self.inline_margin_menu = .{ .allocator = allocator };
+            self.focused = .modified;
+            self.current_change = null;
+            self.screen_x = 0;
+            self.screen_y = 0;
+            self.is_pasting = false;
+            if (!retain_original or !retain_modified) self.width_based_layout.resetWidthBasedLayout();
+            self.sash = .{};
             if (self.message) |message| allocator.free(message);
-            if (self.accessibility_help_keybinding) |key| allocator.free(key);
-            allocator.destroy(self);
+            self.message = null;
+            self.context_state = .{};
+            return retained;
         }
 
         fn computationOptions(options: Options) diff_view_model.Options {
@@ -612,6 +789,14 @@ pub fn DiffEditorWidget(comptime View: type) type {
             const options = raw_options.normalize();
             const old = self.options;
             if (std.meta.eql(old, options) and computed == null) return false;
+            if (!self.hasModel()) {
+                if (computed != null) return error.DiffUnavailable;
+                self.width_based_layout.updateOptions(old, options);
+                self.options = options;
+                self.original_editor.setReadOnly(!options.original_editable);
+                self.modified_editor.setReadOnly(options.read_only);
+                return true;
+            }
             const next_base = computationOptions(options);
             const needs_compute = !std.meta.eql(self.view_model.options, next_base);
             var result: ?IDocumentDiff = null;
@@ -699,7 +884,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         pub fn state(self: *const Self) ?*const DiffState {
-            return self.view_model.stateRef();
+            return if (self.hasModel()) self.view_model.stateRef() else null;
         }
 
         pub fn lineCount(self: *Self) usize {
@@ -734,6 +919,11 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         /// A host can pass the initial width of a continuous resize gesture.
         pub fn layoutWithResizeStart(self: *Self, width: usize, height: usize, smooth_resize_start_width: ?usize) void {
+            if (!self.hasModel()) {
+                self.width = @max(width, 1);
+                self.height = @max(height, 1);
+                return;
+            }
             if (self.laying_out) {
                 self.layout_pending = true;
                 return;
@@ -886,6 +1076,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         pub fn setEditorFocused(self: *Self, focused: bool) void {
+            if (!self.hasModel()) return;
             _ = self.original_view.setFocused(focused and self.focused == .original and self.sideBySide());
             _ = self.modified_view.setFocused(focused and (self.focused == .modified or !self.sideBySide()));
         }
@@ -1033,6 +1224,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         pub fn setThemeColors(self: *Self, palette: ?*const @import("../../../../workbench/browser/themeColors.zig").ThemeColors) void {
+            if (!self.hasModel()) return;
             if (self.native_input_services) |services| services.set_theme(services.context, palette);
             self.original_view.setThemeColors(palette);
             self.modified_view.setThemeColors(palette);

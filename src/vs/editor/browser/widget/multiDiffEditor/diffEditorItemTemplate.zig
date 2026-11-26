@@ -1,8 +1,8 @@
 // Port of `src/vs/editor/browser/widget/multiDiffEditor/diffEditorItemTemplate.ts`.
 // A pooled header DOM surface and clipped body frame replace absolutely
-// positioned browser elements. Code-editor views remain real editor views
-// over the item-owned models; the current native code editor construction
-// API requires creating those views on binding and disposing them on unbind.
+// positioned browser elements. The pooled template owns one reusable diff
+// widget and its two code editor widgets; only their model-bound Views and
+// feature registrations attach/detach with the item-owned models.
 const std = @import("std");
 const ui = @import("ui");
 const Allocator = std.mem.Allocator;
@@ -99,6 +99,7 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
         queue: *dispatch.Queue,
         virtualized_template: vm.VirtualizedItemTemplate(model.DocumentDiffItemViewModel, Binding),
         header: ui.Surface,
+        editor: *Widget,
         root: *ui.Node = undefined,
         row: *ui.Node = undefined,
         collapse_button: *ui.Node = undefined,
@@ -472,7 +473,8 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
                     if (self.original_size_listener) |id| editor.original_editor.viewLayout().onDidContentSizeChange().unlisten(id);
                     if (self.modified_size_listener) |id| editor.modified_editor.viewLayout().onDidContentSizeChange().unlisten(id);
                     if (self.template.host.dispose_diff) |dispose| dispose(self.template.host.context, editor);
-                    editor.destroy();
+                    editor.setDiffModel(null) catch {};
+                    self.editor = null;
                 }
                 self.template.header.doc.blur();
                 self.template.pending_action = null;
@@ -583,14 +585,18 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
                 .host = host,
                 .virtualized_template = .init(allocator),
                 .header = try ui.Surface.init(allocator, .{ .cols = @max(config.width, 1), .rows = config.variant.headerHeight }),
+                .editor = undefined,
             };
             errdefer self.header.deinit();
             errdefer self.virtualized_template.deinit();
             try self.buildHeader();
+            self.editor = try Widget.createDetached(host.view_factory, allocator, io, config.width, 1, .{});
+            self.editor.attachWindow(queue);
             return self;
         }
         pub fn destroy(self: *Self) void {
             self.virtualized_template.deinit();
+            self.editor.destroy();
             if (self.body_frame) |*frame| frame.deinit();
             self.header.deinit();
             self.allocator.destroy(self);
@@ -692,13 +698,19 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
             errdefer binding.destroy();
             if (!item.isBinary()) {
                 const width = @max(self.config.width -| self.config.variant.horizontalInsets.left -| self.config.variant.horizontalInsets.right, 1);
-                binding.editor = try Widget.createWithModelSources(self.host.view_factory, self.allocator, self.io, item.original.path, item.modified.path, "", "", "Original", "Modified", width, @min(height, 25), self.config.editorOptions(item), .{
+                const editor = self.editor;
+                std.debug.assert(!editor.hasModel());
+                try editor.setDiffModel(.{
                     .original = item.original,
                     .modified = item.modified,
+                    .original_path = item.original.path,
+                    .modified_path = item.modified.path,
+                    .options = self.config.editorOptions(item),
+                    .width = width,
+                    .height = @min(height, 25),
                     .view_model = &item.diffEditorViewModel,
-                }, null);
-                const editor = binding.editor.?;
-                editor.attachWindow(self.queue);
+                });
+                binding.editor = editor;
                 editor.setScrollAnchors(.{ .context = binding, .run = Binding.runWithOriginalEditorScrollAnchor }, .{ .context = binding, .run = Binding.runWithModifiedEditorScrollAnchor });
                 editor.setThemeColors(self.config.theme);
                 if (self.host.configure_diff) |configure| try configure(self.host.context, editor);

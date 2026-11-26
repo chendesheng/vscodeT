@@ -199,6 +199,16 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(f.widget.impl.bindingFor(f.vm.items[0]) != null);
             try testing.expect(f.widget.impl.bindingFor(f.vm.items[2]) == null);
             const first = f.widget.activeControl().?;
+            const first_original = first.original_editor;
+            const first_modified = first.modified_editor;
+            const Selection = @import("../../../common/core/selection.zig").Selection;
+            try first_modified.setSelections(&.{Selection.init(3, 1, 3, 1)});
+            var model_changes: usize = 0;
+            _ = try first.on_did_change_model.listen(&model_changes, struct {
+                fn changed(_: void, count: *usize) !void {
+                    count.* += 1;
+                }
+            }.changed);
             try testing.expectEqual(a.original.?.textModel.?.model, first.originalModel());
             try testing.expectEqual(a.modified.?.textModel.?.model, first.modifiedModel());
             var frame = try ui.Frame.init(testing.allocator, 80, 5);
@@ -214,7 +224,20 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(header_found);
             try f.scroll(@intCast(f.widget.impl.scroll_view.layout.scrollHeight));
             try testing.expect(f.widget.impl.bindingFor(f.vm.items[0]) == null);
-            try testing.expect(f.widget.impl.bindingFor(f.vm.items[2]) != null);
+            const third = f.widget.impl.bindingFor(f.vm.items[2]).?.editor.?;
+            // Evicting the first item releases its model attachments, not its
+            // diff editor or either of its child code editor widgets.
+            try testing.expectEqual(first, third);
+            try testing.expectEqual(first_original, third.original_editor);
+            try testing.expectEqual(first_modified, third.modified_editor);
+            try testing.expectEqual(@as(usize, 2), model_changes);
+            try testing.expectEqual(@as(usize, 0), a.original.?.textModel.?.editors.items.len);
+            try testing.expectEqual(@as(usize, 0), a.modified.?.textModel.?.editors.items.len);
+            try testing.expectEqual(c.original.?.textModel.?.model, third.originalModel());
+            try testing.expectEqual(c.modified.?.textModel.?.model, third.modifiedModel());
+            try testing.expectEqual(&f.vm.items[2].diffEditorViewModel, third.getViewModel().?);
+            try testing.expectEqual(Selection.init(3, 1, 3, 1), f.vm.items[0].lastTemplateData.selections.?[0]);
+            try testing.expect(third.modified_editor.modelCursorPosition().lineNumber != 3);
             try testing.expectEqual(@as(usize, 0), f.vm.items[0].diffEditorViewModel.mounted_view_count);
             try testing.expect(f.vm.items[0].diffEditorViewModel.is_diff_up_to_date);
         }
