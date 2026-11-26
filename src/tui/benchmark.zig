@@ -485,3 +485,323 @@ test "benchmark: explorer sidebar scroll" {
         .{ sidebar.count(), best_us, @divTrunc(total_us, @as(i64, @intCast(frames))) },
     );
 }
+
+// Real Git resources, native request/reply, retained editor controls and the
+// workbench ANSI frame. Timings are diagnostics rather than platform gates.
+const BenchPattern = enum { identical, one, many, insert_all, delete_all };
+const BenchCase = struct { path: []const u8, lines: usize, pattern: BenchPattern };
+const BenchWindow = @import("../vs/workbench/test/browser/workbenchTestServices.zig").TestWindow(terminal_workbench.TerminalWorkbench, @import("./editorView.zig").View.createHandle);
+const BenchSnapshotSource = @import("../vs/editor/browser/widget/diffEditor/diffProviderFactoryService.zig").SnapshotSource;
+
+const BenchAllocation = struct {
+    child: Allocator = std.heap.page_allocator,
+    live: std.atomic.Value(usize) = .init(0),
+    peak: std.atomic.Value(usize) = .init(0),
+
+    fn allocator(self: *BenchAllocation) Allocator {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+    const vtable: Allocator.VTable = .{ .alloc = alloc, .resize = resize, .remap = remap, .free = free };
+    fn grow(self: *BenchAllocation, len: usize) void {
+        const previous = self.live.fetchAdd(len, .monotonic);
+        _ = self.peak.fetchMax(previous + len, .monotonic);
+    }
+    fn account(self: *BenchAllocation, old: usize, new: usize) void {
+        if (new > old) self.grow(new - old) else _ = self.live.fetchSub(old - new, .monotonic);
+    }
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, address: usize) ?[*]u8 {
+        const self: *BenchAllocation = @ptrCast(@alignCast(ctx));
+        const result = self.child.vtable.alloc(self.child.ptr, len, alignment, address);
+        if (result != null) self.grow(len);
+        return result;
+    }
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, len: usize, address: usize) bool {
+        const self: *BenchAllocation = @ptrCast(@alignCast(ctx));
+        const result = self.child.vtable.resize(self.child.ptr, memory, alignment, len, address);
+        if (result) self.account(memory.len, len);
+        return result;
+    }
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, len: usize, address: usize) ?[*]u8 {
+        const self: *BenchAllocation = @ptrCast(@alignCast(ctx));
+        const result = self.child.vtable.remap(self.child.ptr, memory, alignment, len, address);
+        if (result != null) self.account(memory.len, len);
+        return result;
+    }
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, address: usize) void {
+        const self: *BenchAllocation = @ptrCast(@alignCast(ctx));
+        _ = self.live.fetchSub(memory.len, .monotonic);
+        self.child.vtable.free(self.child.ptr, memory, alignment, address);
+    }
+};
+
+const BenchDiffTimes = struct {
+    acquisition_us: std.atomic.Value(i64) = .init(0),
+    original_bytes: std.atomic.Value(usize) = .init(0),
+    modified_bytes: std.atomic.Value(usize) = .init(0),
+    submit_us: i64 = 0,
+    worker_us: i64 = 0,
+    mount_us: i64 = 0,
+    first_frame_us: i64 = 0,
+    total_us: i64 = 0,
+    cache_hit: bool = false,
+};
+
+const TimedBenchSource = struct {
+    inner: BenchSnapshotSource,
+    io: Io,
+    timings: *BenchDiffTimes,
+
+    fn wrap(inner: BenchSnapshotSource, io: Io, timings: *BenchDiffTimes) !BenchSnapshotSource {
+        errdefer inner.destroy(inner.context);
+        const self = try std.heap.page_allocator.create(TimedBenchSource);
+        self.* = .{ .inner = inner, .io = io, .timings = timings };
+        return .{ .context = self, .read = read, .destroy = destroy };
+    }
+    fn read(context: *anyopaque, a: Allocator) !BenchSnapshotSource.Texts {
+        const self: *TimedBenchSource = @ptrCast(@alignCast(context));
+        const start = nowUs(self.io);
+        defer self.timings.acquisition_us.store(nowUs(self.io) - start, .release);
+        const result = try self.inner.read(self.inner.context, a);
+        self.timings.original_bytes.store(result.original.len, .release);
+        self.timings.modified_bytes.store(result.modified.len, .release);
+        return result;
+    }
+    fn destroy(context: *anyopaque) void {
+        const self: *TimedBenchSource = @ptrCast(@alignCast(context));
+        self.inner.destroy(self.inner.context);
+        std.heap.page_allocator.destroy(self);
+    }
+};
+
+fn benchGit(a: Allocator, io: Io, root: []const u8, args: []const []const u8) !void {
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(a);
+    try argv.append(a, "git");
+    try argv.appendSlice(a, args);
+    const result = std.process.run(a, io, .{
+        .argv = argv.items,
+        .cwd = .{ .path = root },
+        .stdout_limit = .limited(1024 * 1024),
+        .stderr_limit = .limited(1024 * 1024),
+        .timeout = .{ .duration = .{ .raw = .fromMilliseconds(30_000), .clock = .awake } },
+    }) catch return error.SkipZigTest;
+    defer a.free(result.stdout);
+    defer a.free(result.stderr);
+    if (!result.term.success()) return error.BenchmarkGitFailed;
+}
+
+fn benchDiffText(a: Allocator, n: usize, pattern: BenchPattern, modified: bool) ![]u8 {
+    if ((pattern == .insert_all and !modified) or (pattern == .delete_all and modified)) return a.dupe(u8, "");
+    var out: std.Io.Writer.Allocating = .init(a);
+    defer out.deinit();
+    for (0..n) |i| {
+        const changed = modified and switch (pattern) {
+            .one => i >= n / 2 and i < n / 2 + 3,
+            .many => i % 10 == 5,
+            else => false,
+        };
+        try out.writer.print("{d} {s}", .{ i, if (changed) "new" else "old" });
+        if (i + 1 < n) try out.writer.writeByte('\n');
+    }
+    return out.toOwnedSlice();
+}
+
+fn benchNativeDiffOpen(wb: *terminal_workbench.TerminalWorkbench, io: Io, path: []const u8, refresh: bool, timings: *BenchDiffTimes, out: *std.Io.Writer.Allocating) !*Tab {
+    const start = nowUs(io);
+    const inner = try wb.git_model.snapshotSource(wb.async_io, path, null, .head, .working, refresh);
+    const source = try TimedBenchSource.wrap(inner, io, timings);
+    try wb.editor_opening.requestOpenSnapshotDiff(wb.configuration_api, path, source, "HEAD", "Working Tree");
+    timings.submit_us = nowUs(io) - start;
+    const worker = wb.editor_opening.diff_worker orelse return error.BenchmarkExpectedWorker;
+    worker.waitForReply();
+    const ready = nowUs(io);
+    timings.worker_us = ready - start - timings.submit_us;
+    if (wb.editor_opening.pending_diff) |pending| timings.cache_hit = pending.request.cache_hit;
+    while (wb.editor_opening.pending_diff != null) {
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        if (wb.editor_opening.pending_diff != null) std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+    timings.mount_us = nowUs(io) - ready;
+    const tab = wb.activeTab() orelse return error.BenchmarkExpectedDiff;
+    if (tab.diff == null) return error.BenchmarkExpectedDiff;
+    const frame_start = nowUs(io);
+    try renderFrame(wb, &out.writer);
+    out.clearRetainingCapacity();
+    timings.first_frame_us = nowUs(io) - frame_start;
+    timings.total_us = nowUs(io) - start;
+    return tab;
+}
+
+fn benchPercentile(samples: []i64, p: usize) i64 {
+    std.mem.sort(i64, samples, {}, std.sort.asc(i64));
+    return samples[(samples.len - 1) * p / 100];
+}
+
+fn benchNativeDiffInteractions(wb: *terminal_workbench.TerminalWorkbench, tab: *Tab, io: Io, out: *std.Io.Writer.Allocating, requested_hunks: usize) !void {
+    const widget = tab.diff.?.widget;
+    const view_type = @import("./editorView.zig").View;
+    const original_view = view_type.nativeView(widget.original_view);
+    const modified_view = view_type.nativeView(widget.modified_view);
+    const original_before = original_view.renderCount();
+    const modified_before = modified_view.renderCount();
+    const samples_count = 50;
+    var scroll_samples: [samples_count]i64 = undefined;
+    var gutter_samples: [samples_count]i64 = undefined;
+    var move_samples: [samples_count]i64 = undefined;
+    var key_samples: [samples_count]i64 = undefined;
+    var mouse_frame_samples: [samples_count]i64 = undefined;
+    var key_frame_samples: [samples_count]i64 = undefined;
+    const Gutter = @import("../vs/editor/browser/widget/diffEditor/features/gutterFeature.zig").DiffEditorGutter;
+    const state = widget.state() orelse return error.BenchmarkExpectedDiff;
+    const gutter: Gutter = .{ .mappings = state.mappings, .original = widget.original_editor, .modified = widget.modified_editor };
+    var visible_items: usize = 0;
+    for (0..samples_count) |i| {
+        const start = nowUs(io);
+        _ = widget.modified_editor.scrollViewLines(3);
+        try renderFrame(wb, &out.writer);
+        out.clearRetainingCapacity();
+        scroll_samples[i] = nowUs(io) - start;
+        const gutter_start = nowUs(io);
+        var items = gutter.render(widget.modified_editor.scrollTop(), 50);
+        while (items.next()) |_| visible_items += 1;
+        gutter_samples[i] = nowUs(io) - gutter_start;
+    }
+    for (0..samples_count) |i| {
+        var mouse: ui.MouseEvent = .{ .kind = .move, .x = 20 + i % 10, .y = 5 + i % 30 };
+        const start = nowUs(io);
+        _ = try widget.dispatchMouse(&mouse);
+        move_samples[i] = nowUs(io) - start;
+        const paint_start = nowUs(io);
+        try renderFrame(wb, &out.writer);
+        out.clearRetainingCapacity();
+        mouse_frame_samples[i] = nowUs(io) - paint_start;
+    }
+    for (0..samples_count) |i| {
+        var key: ui.KeyEvent = .{ .key = .down };
+        const start = nowUs(io);
+        _ = widget.dispatchKey(&key);
+        key_samples[i] = nowUs(io) - start;
+        const paint_start = nowUs(io);
+        try renderFrame(wb, &out.writer);
+        out.clearRetainingCapacity();
+        key_frame_samples[i] = nowUs(io) - paint_start;
+    }
+    const original_perf = original_view.perfCounters();
+    const modified_perf = modified_view.perfCounters();
+    std.debug.print(
+        "[bench] diff-scroll requested_hunks={d} actual_hunks={d} rows={d} scroll_p50={d}us scroll_p95={d}us gutter_layout_p50={d}us gutter_layout_p95={d}us visible_items={d} mouse_p50={d}us mouse_p95={d}us mouse_frame_p50={d}us mouse_frame_p95={d}us key_p50={d}us key_p95={d}us key_frame_p50={d}us key_frame_p95={d}us renders={d}/{d} solves={d}/{d} syncs={d}/{d}\n",
+        .{
+            requested_hunks,                         state.mappings.len,                            widget.modified_editor.textHeight(),
+            benchPercentile(&scroll_samples, 50),    benchPercentile(&scroll_samples, 95),          benchPercentile(&gutter_samples, 50),
+            benchPercentile(&gutter_samples, 95),    visible_items,                                 benchPercentile(&move_samples, 50),
+            benchPercentile(&move_samples, 95),      benchPercentile(&mouse_frame_samples, 50),     benchPercentile(&mouse_frame_samples, 95),
+            benchPercentile(&key_samples, 50),       benchPercentile(&key_samples, 95),             benchPercentile(&key_frame_samples, 50),
+            benchPercentile(&key_frame_samples, 95), original_view.renderCount() - original_before, modified_view.renderCount() - modified_before,
+            original_perf.full_box_solves,           modified_perf.full_box_solves,                 original_perf.incremental_syncs,
+            modified_perf.incremental_syncs,
+        },
+    );
+}
+
+test "benchmark: native Git diff editor open, scroll, input and refresh" {
+    if (!enabled()) return error.SkipZigTest;
+    const io = std.testing.io;
+    const scratch = std.heap.page_allocator;
+    var arena = std.heap.ArenaAllocator.init(scratch);
+    defer arena.deinit();
+    const names = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = root_buffer[0..try tmp.dir.realPath(io, &root_buffer)];
+    try benchGit(scratch, io, root, &.{"init"});
+    try benchGit(scratch, io, root, &.{ "config", "core.autocrlf", "false" });
+    try benchGit(scratch, io, root, &.{ "config", "user.name", "Diff Benchmark" });
+    try benchGit(scratch, io, root, &.{ "config", "user.email", "benchmark@example.invalid" });
+    var cases: [15]BenchCase = undefined;
+    var next: usize = 0;
+    for ([_]usize{ 1000, 10000, 100000 }) |n| {
+        for (std.meta.tags(BenchPattern)) |pattern| {
+            const name = try std.fmt.allocPrint(names, "diff-{d}-{s}.txt", .{ n, @tagName(pattern) });
+            const path = try std.fs.path.join(names, &.{ root, name });
+            const original = try benchDiffText(scratch, n, pattern, false);
+            defer scratch.free(original);
+            try tmp.dir.writeFile(io, .{ .sub_path = name, .data = original });
+            cases[next] = .{ .path = path, .lines = n, .pattern = pattern };
+            next += 1;
+        }
+    }
+    try benchGit(scratch, io, root, &.{ "add", "." });
+    try benchGit(scratch, io, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "benchmark fixture" });
+    for (cases) |item| {
+        const modified = try benchDiffText(scratch, item.lines, item.pattern, true);
+        defer scratch.free(modified);
+        try tmp.dir.writeFile(io, .{ .sub_path = std.fs.path.basename(item.path), .data = modified });
+    }
+
+    var allocation: BenchAllocation = .{};
+    const a = allocation.allocator();
+    const window = try BenchWindow.init(a, io, &.{}, 160, 54);
+    defer window.deinit();
+    const wb = window.workbench;
+    const settings = try std.fs.path.join(names, &.{ root, ".git", "bench-settings.json" });
+    try wb.setUserSettingsPaths(&.{settings});
+    try wb.initSidebar(root);
+    while (wb.sidebar.?.hasPendingLoad()) {
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        if (wb.sidebar.?.hasPendingLoad()) std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+    try wb.initGit();
+    try wb.setUserConfigurationValue("diffEditor.renderSideBySide", .{ .bool = true });
+    try wb.setUserConfigurationValue("diffEditor.useInlineViewWhenSpaceIsLimited", .{ .bool = false });
+    try wb.setUserConfigurationValue("diffEditor.hideUnchangedRegions.enabled", .{ .bool = false });
+    try wb.setUserConfigurationValue("diffEditor.diffAlgorithm", .{ .string = "advanced" });
+    try wb.setUserConfigurationValue("diffEditor.wordWrap", .{ .string = "off" });
+    var out: std.Io.Writer.Allocating = .init(scratch);
+    defer out.deinit();
+
+    const baseline_tabs = wb.tabCount();
+    for (cases) |item| {
+        for ([_]i64{ 0, 100, 5000 }) |budget| {
+            for ([_]bool{ false, true }) |moves| {
+                try wb.setUserConfigurationValue("diffEditor.maxComputationTime", .{ .integer = budget });
+                try wb.setUserConfigurationValue("diffEditor.experimental.showMoves", .{ .bool = moves });
+                const baseline = allocation.live.load(.monotonic);
+                allocation.peak.store(baseline, .monotonic);
+                var times: BenchDiffTimes = .{};
+                const tab = try benchNativeDiffOpen(wb, io, item.path, false, &times, &out);
+                const widget = tab.diff.?.widget;
+                const state = widget.state() orelse return error.BenchmarkExpectedDiff;
+                try std.testing.expect(widget.sideBySide());
+                const original_lines = widget.original_editor.model.getLineCount();
+                const modified_lines = widget.modified_editor.model.getLineCount();
+                try std.testing.expectEqual(if (item.pattern == .insert_all) @as(usize, 1) else item.lines, original_lines);
+                try std.testing.expectEqual(if (item.pattern == .delete_all) @as(usize, 1) else item.lines, modified_lines);
+                const peak = allocation.peak.load(.monotonic) -| baseline;
+                const acq = times.acquisition_us.load(.acquire);
+                std.debug.print(
+                    "[bench] diff-open n={d} case={s} budget={d} moves={} acquisition={d}us compute_and_handoff={d}us submit={d}us mount={d}us first_frame={d}us total={d}us original_bytes={d} modified_bytes={d} model_lines={d}/{d} view_lines={d}/{d} hunks={d} moved={d} quitEarly={} window_peak_delta={d}B\n",
+                    .{
+                        item.lines,           @tagName(item.pattern),         budget,                                 moves,
+                        acq,                  @max(0, times.worker_us - acq), times.submit_us,                        times.mount_us,
+                        times.first_frame_us, times.total_us,                 times.original_bytes.load(.acquire),    times.modified_bytes.load(.acquire),
+                        original_lines,       modified_lines,                 widget.original_editor.viewLineCount(), widget.modified_editor.viewLineCount(),
+                        state.mappings.len,   state.moved_texts.len,          state.quit_early,                       peak,
+                    },
+                );
+                if (item.pattern == .many and budget == 0 and !moves) {
+                    try benchNativeDiffInteractions(wb, tab, io, &out, item.lines / 10);
+                }
+                if (budget == 5000 and !moves) {
+                    var refresh: BenchDiffTimes = .{};
+                    const refreshed = try benchNativeDiffOpen(wb, io, item.path, true, &refresh, &out);
+                    try std.testing.expectEqual(tab, refreshed);
+                    std.debug.print("[bench] diff-refresh n={d} case={s} total={d}us acquisition={d}us cache_hit={}\n", .{ item.lines, @tagName(item.pattern), refresh.total_us, refresh.acquisition_us.load(.acquire), refresh.cache_hit });
+                }
+                _ = try wb.closeActive();
+                try std.testing.expectEqual(baseline_tabs, wb.tabCount());
+                while (wb.window_events.nextTimeout(time_compat.milliTimestamp(), 1) == 0) _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            }
+        }
+    }
+}
