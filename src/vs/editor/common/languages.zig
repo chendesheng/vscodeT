@@ -715,13 +715,16 @@ pub const CodeLensProvider = struct {
     request_resolve_code_lens: ?*const fn (*anyopaque, Allocator, *TextModel, CodeLens, CodeLensResolveCallback) anyerror!?@import("../../base/common/lifecycle.zig").IDisposable = null,
 };
 
-/// Port of the code-action subset. Workspace edits are kept as the raw
-/// `IWorkspaceEditDto` JSON until a bulk-edit service is ported; the TUI has no
-/// code-action surface yet.
+/// Port of the code-action contracts in `languages.ts`. Workspace edit DTOs
+/// remain at the extension-host boundary until revived by the bulk-edit service.
 pub const CodeAction = struct {
     title: []const u8,
     kind: ?[]const u8 = null,
     is_preferred: bool = false,
+    is_ai: bool = false,
+    diagnostics: []const @import("../../platform/markers/common/markers.zig").MarkerData = &.{},
+    ranges: []const Range = &.{},
+    cache_id: ?struct { list: u32, index: u32 } = null,
     disabled: ?[]const u8 = null,
     command: ?Command = null,
     edit_json: ?std.json.Value = null,
@@ -729,7 +732,13 @@ pub const CodeAction = struct {
 
 pub const CodeActionList = struct {
     actions: []const CodeAction = &.{},
+    disposable: ?@import("../../base/common/lifecycle.zig").IDisposable = null,
 };
+
+pub const CodeActionTriggerType = enum(u8) { Invoke = 1, Auto = 2 };
+pub const CodeActionDocumentation = struct { kind: []const u8, command: Command };
+pub const CodeActionCallback = struct { context: *anyopaque, complete: *const fn (*anyopaque, anyerror!CodeActionList) void };
+pub const ResolveCodeActionCallback = struct { context: *anyopaque, complete: *const fn (*anyopaque, anyerror!?CodeAction) void };
 
 pub const CodeActionContext = struct {
     only: ?[]const u8 = null,
@@ -741,7 +750,11 @@ pub const CodeActionProvider = struct {
     context: *anyopaque,
     display_name: []const u8 = "",
     extension_id: []const u8 = "",
-    provided_kinds: []const []const u8 = &.{},
+    provided_kinds: ?[]const []const u8 = null,
+    documentation: []const CodeActionDocumentation = &.{},
+    request_code_actions: ?*const fn (*anyopaque, Allocator, *TextModel, Range, CodeActionContext, CancellationToken, CodeActionCallback) anyerror!?@import("../../base/common/lifecycle.zig").IDisposable = null,
+    resolve_code_action: ?*const fn (*anyopaque, Allocator, CodeAction, CancellationToken) anyerror!?CodeAction = null,
+    request_resolve_code_action: ?*const fn (*anyopaque, Allocator, CodeAction, CancellationToken, ResolveCodeActionCallback) anyerror!?@import("../../base/common/lifecycle.zig").IDisposable = null,
     provide_code_actions: *const fn (
         context: *anyopaque,
         allocator: Allocator,
