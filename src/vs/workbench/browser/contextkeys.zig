@@ -37,6 +37,7 @@ pub const WindowContextState = struct {
 const WindowContextKeys = struct {
     editor_focus: contextkeys.IContextKey,
     text_compare_editor_active: contextkeys.IContextKey,
+    is_in_diff_editor: contextkeys.IContextKey,
     editor_text_focus: contextkeys.IContextKey,
     editor_lang_id: contextkeys.IContextKey,
     active_custom_editor_id: contextkeys.IContextKey,
@@ -68,6 +69,7 @@ const WindowContextKeys = struct {
         return .{
             .editor_focus = try service.createKey("editorFocus", .{ .boolean = false }),
             .text_compare_editor_active = try service.createKey("textCompareEditorActive", .{ .boolean = false }),
+            .is_in_diff_editor = try service.createKey("isInDiffEditor", .{ .boolean = false }),
             .editor_lang_id = try service.createKey("editorLangId", .{ .string = "" }),
             .active_custom_editor_id = try service.createKey("activeCustomEditorId", .{ .string = "" }),
             .editor_text_focus = try service.createKey("editorTextFocus", .{ .boolean = false }),
@@ -181,6 +183,7 @@ pub const WorkbenchContextKeysHandler = struct {
         const scm_active = std.mem.eql(u8, state.active_activity, "scm");
         keys.editor_focus.set(.{ .boolean = state.editor_focused });
         keys.text_compare_editor_active.set(.{ .boolean = state.active_diff });
+        keys.is_in_diff_editor.set(.{ .boolean = state.active_diff });
         keys.editor_lang_id.set(.{ .string = state.language_id });
         keys.active_custom_editor_id.set(.{ .string = state.custom_editor_id });
         keys.editor_text_focus.set(.{ .boolean = state.editor_text_focused });

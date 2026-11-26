@@ -579,6 +579,7 @@ pub const Tab = struct {
 
     pub fn handleDiffKey(self: *Tab, event: *ui.KeyEvent) bool {
         const diff = self.diff orelse return false;
+        if (diff.widget.accessible_viewer.visible()) return diff.handleKey(event);
         self.ensureControllers() catch return diff.handleKey(event);
         const controllers = (if (diff.widget.focused == .original) self.original_controllers else self.controllers) orelse return diff.handleKey(event);
         _ = editor_input_dispatch.handleKeyEvent(controllers.view.interface(), controllers.hover, controllers.word_highlighter, controllers.suggest, controllers.editor, event, &diff.widget.is_pasting, time_compat.milliTimestamp(), null) catch return false;

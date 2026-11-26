@@ -30,6 +30,8 @@ pub const RenderOptions = struct {
     render_whitespace: editor_options.RenderWhitespace = .none,
     render_control_characters: bool = false,
     stop_rendering_line_after: i32 = -1,
+    // Accessible diff rows use the upstream empty-token rendering.
+    empty_token_codec: ?*@import("../../../../../common/languages.zig").LanguageIdCodec = null,
 
     pub fn fromEditor(editor: *Editor) RenderOptions {
         return .{
@@ -159,7 +161,11 @@ pub fn renderLines(
     var row = measurement.view_line_offsets[first_model_line];
     for (range.startLineNumber + first_model_line..range.endLineNumberExclusive) |number| {
         if (row >= visible_end) break;
-        var line_tokens = try original.tokenization().getLineTokens(number);
+        var line_tokens = if (options.empty_token_codec) |codec| blk: {
+            var line_content = try original.getLineContent(number);
+            errdefer line_content.deinit();
+            break :blk try tokens_mod.LineTokens.createEmpty(allocator, line_content, codec);
+        } else try original.tokenization().getLineTokens(number);
         defer line_tokens.deinit();
         const text = line_tokens.getLineContent();
         const decorations = try LineDecoration.filter(allocator, inline_decorations.items, number, 1, text.len + 1);

@@ -55,6 +55,77 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(layout.renderSideBySide(options, false, false));
         }
 
+        test "diffEditorWidget: accessible viewer groups, navigates and reveals the source line" {
+            const allocator = testing.allocator;
+            const io = Io.Threaded.global_single_threaded.io();
+            const widget = try DiffEditorWidget.create(View.init, allocator, io, "a.txt", "b.txt", "before\nold\n0\n1\n2\n3\n4\n5\n6\n7\n8\nlast-old\nend", "before\nnew\n0\n1\n2\n3\n4\n5\n6\n7\n8\nlast-new\nend", "Original", "Modified", 80, 10, .{});
+            defer widget.destroy();
+            try widget.accessibleDiffViewerNext();
+            try testing.expect(widget.accessible_viewer.visible());
+            try testing.expectEqual(@as(usize, 2), widget.accessible_viewer.model.?.groups.len);
+            var frame = try ui.Frame.init(allocator, 80, 10);
+            defer frame.deinit();
+            try widget.paint(&frame, 0, 0, 80, 10);
+            const header = try frame.next.rowText(allocator, 0);
+            defer allocator.free(header);
+            try testing.expect(std.mem.indexOf(u8, header, "1/2: @@") != null);
+            var key: ui.KeyEvent = .{ .key = .down };
+            try testing.expect(widget.dispatchKey(&key));
+            try testing.expectEqual(@as(?usize, 1), widget.accessible_viewer.selectedLine().?.modified_line_number);
+            key = .{ .key = .down };
+            try testing.expect(widget.dispatchKey(&key));
+            try testing.expectEqual(.deleted, widget.accessible_viewer.selectedLine().?.type);
+            try testing.expectEqual(@as(usize, 2), widget.modified_editor.modelCursorPosition().lineNumber);
+            try widget.paint(&frame, 0, 0, 80, 10);
+            const row = try frame.next.rowText(allocator, 2);
+            defer allocator.free(row);
+            try testing.expect(std.mem.indexOf(u8, row, "- old") != null);
+            key = .{ .key = .enter };
+            try testing.expect(widget.dispatchKey(&key));
+            try testing.expect(!widget.accessible_viewer.visible());
+            try testing.expectEqual(widget_mod.Side.original, widget.focused);
+            try testing.expectEqual(@as(usize, 2), widget.original_editor.modelCursorPosition().lineNumber);
+            try widget.accessibleDiffViewerPrev();
+            try testing.expectEqual(@as(usize, 1), widget.accessible_viewer.model.?.current_group_index);
+            try widget.accessibleDiffViewerNext();
+            try testing.expectEqual(@as(usize, 0), widget.accessible_viewer.model.?.current_group_index);
+            key = .{ .key = .escape };
+            try testing.expect(widget.dispatchKey(&key));
+            try testing.expect(!widget.accessible_viewer.visible());
+            try testing.expectEqual(widget_mod.Side.modified, widget.focused);
+        }
+
+        test "diffEditorWidget: accessible-only mode does not close or reveal editors" {
+            const allocator = testing.allocator;
+            const widget = try DiffEditorWidget.create(View.init, allocator, std.testing.io, "a.txt", "b.txt", "a", "b", "Original", "Modified", 80, 8, .{ .only_show_accessible_diff_viewer = true });
+            defer widget.destroy();
+            try testing.expect(widget.accessible_viewer.visible());
+            var key: ui.KeyEvent = .{ .key = .escape };
+            try testing.expect(widget.dispatchKey(&key));
+            try testing.expect(widget.accessible_viewer.visible());
+            key = .{ .key = .enter };
+            try testing.expect(widget.dispatchKey(&key));
+            try testing.expect(widget.accessible_viewer.visible());
+        }
+
+        test "diffEditorWidget: switch side maps selection across line and character changes" {
+            const allocator = testing.allocator;
+            const widget = try DiffEditorWidget.create(View.init, allocator, std.testing.io, "a.txt", "b.txt", "first\nold value\nlast", "inserted\nfirst\nnew value\nlast", "Original", "Modified", 80, 8, .{});
+            defer widget.destroy();
+            try widget.modified_editor.setCursorPosition(.{ .lineNumber = 4, .column = 2 });
+            try testing.expectEqual(@as(usize, 3), widget.mapToOtherSide().startLineNumber);
+            try widget.interface().switchSide();
+            try testing.expectEqual(widget_mod.Side.original, widget.focused);
+            try testing.expectEqual(@as(usize, 3), widget.original_editor.modelCursorPosition().lineNumber);
+            try widget.original_editor.setCursorPosition(.{ .lineNumber = 2, .column = 2 });
+            try widget.interface().switchSide();
+            try testing.expectEqual(widget_mod.Side.modified, widget.focused);
+            const selection = widget.modified_editor.modelSelection();
+            try testing.expectEqual(@as(usize, 3), selection.startLineNumber);
+            try testing.expectEqual(@as(usize, 1), selection.startColumn);
+            try testing.expectEqual(@as(usize, 4), selection.endColumn);
+        }
+
         test "diffEditorWidget: real snapshot models align through view zones" {
             const allocator = testing.allocator;
             const io = Io.Threaded.global_single_threaded.io();

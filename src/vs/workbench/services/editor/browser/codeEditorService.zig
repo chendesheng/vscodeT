@@ -11,7 +11,7 @@ pub const CodeEditorService = struct {
     part: *EditorPart,
 
     pub fn interface(self: *CodeEditorService) service.ICodeEditorService {
-        return .{ .context = self, .focused = focusedEditor, .active = activeEditor };
+        return .{ .context = self, .focused = focusedEditor, .active = activeEditor, .focused_diff = focusedDiffEditor };
     }
 
     fn hasTextControl(tab: *const Tab) bool {
@@ -28,6 +28,22 @@ pub const CodeEditorService = struct {
             } else if (tab.view.isFocused()) return tab.editor;
         }
         return null;
+    }
+
+    fn focusedDiffEditor(context: *anyopaque) ?@import("../../../../editor/browser/editorBrowser.zig").IDiffEditor {
+        const self: *CodeEditorService = @ptrCast(@alignCast(context));
+        for (self.part.group_views.items) |group| {
+            const tab = group.activeTab() orelse continue;
+            if (tab.diff) |diff| {
+                if (diff.widget.focusedView().isFocused()) return diff.widget.interface();
+            }
+        }
+        // The accessible review surface is not a code-editor widget. The
+        // active diff pane is also the action target from the command palette.
+        const group = self.part.activeView() orelse return null;
+        const tab = group.activeTab() orelse return null;
+        const diff = tab.diff orelse return null;
+        return diff.widget.interface();
     }
 
     fn activeEditor(context: *anyopaque) ?*Editor {

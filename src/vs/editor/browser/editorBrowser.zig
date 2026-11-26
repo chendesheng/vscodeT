@@ -18,6 +18,34 @@ const ui = @import("ui");
 const Position = @import("../common/core/position.zig").Position;
 const Range = @import("../common/core/range.zig").Range;
 
+/// Portable commands on the upstream IDiffEditor. Concrete terminal
+/// widgets expose this interface to ICodeEditorService without exporting
+/// their native View type.
+pub const IDiffEditor = struct {
+    context: *anyopaque,
+    switch_side: *const fn (*anyopaque) anyerror!void,
+    collapse_all: *const fn (*anyopaque) anyerror!void,
+    show_all: *const fn (*anyopaque) anyerror!void,
+    accessible_next: *const fn (*anyopaque) anyerror!void,
+    accessible_previous: *const fn (*anyopaque) anyerror!void,
+
+    pub fn switchSide(self: IDiffEditor) !void {
+        try self.switch_side(self.context);
+    }
+    pub fn collapseAllUnchangedRegions(self: IDiffEditor) !void {
+        try self.collapse_all(self.context);
+    }
+    pub fn showAllUnchangedRegions(self: IDiffEditor) !void {
+        try self.show_all(self.context);
+    }
+    pub fn accessibleDiffViewerNext(self: IDiffEditor) !void {
+        try self.accessible_next(self.context);
+    }
+    pub fn accessibleDiffViewerPrev(self: IDiffEditor) !void {
+        try self.accessible_previous(self.context);
+    }
+};
+
 /// Terminal adaptation of the editor's focused widget key-event target.
 pub const IEditorKeyTarget = struct {
     context: *anyopaque,

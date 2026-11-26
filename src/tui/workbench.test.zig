@@ -9834,6 +9834,22 @@ test "Diff editor commands resolve the active snapshot pane through their servic
     try std.testing.expect(tab.diff.?.widget.sideBySide());
     try wb.commands.execute("toggle.diff.ignoreTrimWhitespace");
     try std.testing.expect(!tab.diff.?.widget.options.ignore_trim_whitespace);
+    const current = tab.diff.?.widget;
+    try wb.commands.execute("diffEditor.switchSide");
+    try std.testing.expectEqual(current.original_editor, current.focusedEditor());
+    var next_review: ui.KeyEvent = .{ .key = .f7 };
+    try std.testing.expect(try terminal_workbench.handleGlobalKey(wb, &next_review));
+    try std.testing.expect(current.accessible_viewer.visible());
+    var review_down: ui.KeyEvent = .{ .key = .down };
+    try std.testing.expect(tab.handleDiffKey(&review_down));
+    try std.testing.expect(current.accessible_viewer.model.?.current_element_index > 0);
+    var review_close: ui.KeyEvent = .{ .key = .escape };
+    try std.testing.expect(tab.handleDiffKey(&review_close));
+    try std.testing.expect(!current.accessible_viewer.visible());
+    try wb.commands.execute("diffEditor.toggleCollapseUnchangedRegions");
+    try std.testing.expect(tab.diff.?.widget.options.hide_unchanged_regions);
+    try wb.commands.execute("diffEditor.showAllUnchangedRegions");
+    try wb.commands.execute("diffEditor.collapseAllUnchangedRegions");
 }
 
 fn chooseContextMenuItem(wb: *Workbench, label: []const u8) !void {

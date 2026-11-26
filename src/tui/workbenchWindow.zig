@@ -3410,7 +3410,7 @@ pub const TerminalWorkbench = struct {
             .language_id = if (text_editor) active.?.editor.languageId() else "",
             .custom_editor_id = if (markdown_preview and active.?.file_input != null) "vscode.markdown.preview.editor" else "",
             .editor_focused = self.focus == .editor,
-            .editor_text_focused = self.focus == .editor and !terminal_editor and !markdown_preview and !self.isDialogOpen() and !self.quick_access.isOpen(),
+            .editor_text_focused = self.focus == .editor and !terminal_editor and !markdown_preview and !self.isDialogOpen() and !self.quick_access.isOpen() and !(if (active) |tab| if (tab.diff) |diff| diff.widget.accessible_viewer.visible() else false else false),
             .sidebar_focused = self.focus == .sidebar and geometry_value.sidebarShown(),
             .sidebar_visible = geometry_value.sidebarShown(),
             .active_activity = self.activity_bar_part.active_id orelse "",

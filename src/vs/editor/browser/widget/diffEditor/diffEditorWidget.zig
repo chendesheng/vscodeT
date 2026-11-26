@@ -18,6 +18,7 @@ const terminal_input = @import("../codeEditor/codeEditorWidgetTerminalInput.zig"
 const diff_view_model = @import("./diffEditorViewModel.zig");
 const diff_editor_options = @import("./diffEditorOptions.zig");
 const diff_editor_editors = @import("./components/diffEditorEditors.zig");
+const accessible_module = @import("./components/accessibleDiffViewer.zig");
 const hide_unchanged_feature = @import("./features/hideUnchangedRegionsFeature.zig");
 const gutter_feature = @import("./features/gutterFeature.zig");
 const overview_feature = @import("./features/overviewRulerFeature.zig");
@@ -59,6 +60,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         decorations: *DiffEditorDecorations,
         overview: overview_feature.OverviewRulerFeature = undefined,
         hide_unchanged: hide_unchanged_feature.HideUnchangedRegionsFeature = undefined,
+        accessible_viewer: accessible_module.AccessibleDiffViewer,
 
         original_editor: *Editor,
         modified_editor: *Editor,
@@ -75,6 +77,28 @@ pub fn DiffEditorWidget(comptime View: type) type {
         is_pasting: bool = false,
         width: usize = 0,
         height: usize = 0,
+
+        pub fn interface(self: *Self) @import("../../editorBrowser.zig").IDiffEditor {
+            return .{
+                .context = self,
+                .switch_side = CommandAdapter.call(switchSide),
+                .collapse_all = CommandAdapter.call(collapseAllUnchangedRegions),
+                .show_all = CommandAdapter.call(showAllUnchangedRegions),
+                .accessible_next = CommandAdapter.call(accessibleDiffViewerNext),
+                .accessible_previous = CommandAdapter.call(accessibleDiffViewerPrev),
+            };
+        }
+
+        const CommandAdapter = struct {
+            fn call(comptime command: fn (*Self) anyerror!void) *const fn (*anyopaque) anyerror!void {
+                return struct {
+                    fn run(context: *anyopaque) anyerror!void {
+                        const widget: *Self = @ptrCast(@alignCast(context));
+                        try command(widget);
+                    }
+                }.run;
+            }
+        };
 
         pub fn create(
             factory: *const fn (Allocator, *Editor) anyerror!*View,
@@ -224,6 +248,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .original_lines = original_lines,
                 .modified_lines = modified_lines,
                 .view_model = diff_model,
+                .accessible_viewer = accessible_module.AccessibleDiffViewer.init(allocator),
                 .decorations = decorations,
                 .original_editor = original_editor,
                 .modified_editor = modified_editor,
@@ -238,11 +263,14 @@ pub fn DiffEditorWidget(comptime View: type) type {
             // Keep the line views alive for layout changes and recomputation.
             self.layout(width, height);
             self.selectInitialChange();
+            errdefer self.hide_unchanged.deinit();
+            if (normalized_options.only_show_accessible_diff_viewer) try self.accessibleDiffViewerNext();
             return self;
         }
 
         pub fn destroy(self: *Self) void {
             const allocator = self.allocator;
+            self.accessible_viewer.close();
             self.hide_unchanged.deinit();
             self.zones.deinit();
             self.overview.deinit(self.original_editor, self.modified_editor);
@@ -320,6 +348,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.original_view.invalidate();
             self.modified_view.invalidate();
             self.overview.invalidate();
+            self.accessible_viewer.layout(self.width, self.height) catch {};
             if (self.sync_top_line and self.sideBySide()) self.syncTopLines();
         }
 
@@ -459,6 +488,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         fn swapSidesInternal(self: *Self) !void {
             const was_focused = self.focusedView().isFocused();
+            const accessible = self.accessible_viewer.visible();
+            self.accessible_viewer.close();
             self.hide_unchanged.deinit();
             self.zones.deinit();
             self.decorations.detach();
@@ -489,6 +520,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             if (self.inline_mode) self.original_view.detach();
             self.layout(self.width, self.height);
             if (self.current_change) |index| self.revealChange(index);
+            if (accessible) try self.openAccessibleViewer();
         }
 
         fn applyZoneTheme(self: *Self, palette: ?*const @import("../../../../workbench/browser/themeColors.zig").ThemeColors) void {
@@ -506,9 +538,15 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.original_view.setThemeColors(palette);
             self.modified_view.setThemeColors(palette);
             self.applyZoneTheme(palette);
+            self.accessible_viewer.setTheme(palette) catch {};
         }
 
         pub fn mount(self: *Self, surface: *ui.Surface, container: *ui.Node, x: usize, y: usize) !void {
+            if (self.accessible_viewer.visible()) {
+                self.original_view.detach();
+                self.modified_view.detach();
+                return;
+            }
             if (self.sideBySide()) {
                 const widths = self.paneWidths();
                 const offset = widths.original + widths.gutter;
@@ -524,6 +562,10 @@ pub fn DiffEditorWidget(comptime View: type) type {
         pub fn paint(self: *Self, frame: *ui.Frame, x: usize, y: usize, w: usize, h: usize) !void {
             if (w == 0 or h == 0) return;
             if (self.width != w or self.height != h) self.layout(w, h);
+            if (self.accessible_viewer.visible()) {
+                try self.accessible_viewer.paint(&frame.next, x, y);
+                return;
+            }
             const widths = self.paneWidths();
 
             if (self.sideBySide()) {
@@ -561,6 +603,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         /// The pointer shape under a pane-relative cell: text from the side that
         /// owns the cell, the split-view resize cursor over the center gutter.
         pub fn pointerAt(self: *Self, x: usize, y: usize) !ui.Pointer {
+            if (self.accessible_viewer.visible()) return .default;
             const widths = self.paneWidths();
             if (widths.overview > 0 and x >= self.width - widths.overview) return .default;
             if (self.sideBySide()) {
@@ -600,6 +643,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         pub fn cursorCell(self: *Self) ?struct { row: usize, col: usize } {
+            if (self.accessible_viewer.visible()) return null;
             const widths = self.paneWidths();
             if (self.sideBySide() and self.focused == .original) {
                 const cell = self.original_view.cursorCell() orelse return null;
@@ -611,6 +655,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         /// Routes a key event to the focused read-only pane.
         pub fn dispatchKey(self: *Self, event: *ui.KeyEvent) bool {
+            if (self.accessible_viewer.visible()) return self.dispatchAccessibleKey(event);
             if (self.focusedView().dispatchKey(event)) return true;
             _ = terminal_input.dispatch(self.focusedEditor(), event.*, &self.is_pasting);
             if (self.sideBySide()) self.syncScrollFromPane(self.focused);
@@ -629,6 +674,22 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         pub fn dispatchMouseWith(self: *Self, event: *ui.MouseEvent, target: ?MouseTarget) !bool {
+            if (self.accessible_viewer.visible()) {
+                if (event.kind == .down and event.button == .left) {
+                    if (event.y == 0 and event.x >= self.width -| 3 and self.width >= 3 and self.accessible_viewer.can_close) {
+                        self.closeAccessibleViewer(false);
+                    } else {
+                        try self.accessible_viewer.selectAtRow(event.y);
+                        self.syncAccessibleSelection();
+                    }
+                    return true;
+                }
+                if (event.kind == .wheel) {
+                    try self.accessible_viewer.scrollBy(event.delta_y);
+                    return true;
+                }
+                return false;
+            }
             if (self.hide_unchanged.dispatchDrag(event)) return true;
             defer if (event.kind == .down) self.hide_unchanged.captureDragStart(event.y);
             const widths = self.paneWidths();
@@ -665,6 +726,101 @@ pub fn DiffEditorWidget(comptime View: type) type {
             if (self.hide_unchanged.dispatchFoldGlyph(false, event, self.modified_view.top_inset_rows)) return true;
             const handled = if (target) |handler| try handler.dispatch(handler.context, .modified, self.modified_view, event) else try self.modified_view.dispatchMouse(event);
             return handled;
+        }
+
+        pub fn mapToOtherSide(self: *Self) Range {
+            const selection = self.focusedEditor().modelSelection();
+            const flip = self.focused == .modified;
+            const mappings = self.state().?.mappings;
+            const utils = @import("./utils.zig");
+            const first = utils.translatePosition(selection.getStartPosition(), mappings, flip);
+            const last = utils.translatePosition(selection.getEndPosition(), mappings, flip);
+            return Range.plusRange(&first, &last);
+        }
+
+        pub fn switchSide(self: *Self) !void {
+            const selection = self.mapToOtherSide();
+            const target_side: Side = if (self.focused == .modified) .original else .modified;
+            const editor = if (target_side == .original) self.original_editor else self.modified_editor;
+            self.setFocus(target_side);
+            try editor.setSelection(editor.model.validateRange(selection));
+        }
+
+        pub fn collapseAllUnchangedRegions(self: *Self) !void {
+            for (self.view_model.unchanged_regions) |*region| region.collapseAll();
+            try self.view_model.notifyUnchangedRegions();
+        }
+
+        pub fn showAllUnchangedRegions(self: *Self) !void {
+            for (self.view_model.unchanged_regions) |*region| region.showAll();
+            try self.view_model.notifyUnchangedRegions();
+        }
+
+        fn openAccessibleViewer(self: *Self) !void {
+            const paint_args: @import("./components/diffEditorViewZones/renderLines.zig").PaintOptions = .{
+                .colors = .{ .line_background = .{ .r = 30, .g = 30, .b = 30 }, .text_background = .{ .r = 30, .g = 30, .b = 30 } },
+                .style_fn = self.modified_view.lineStyleFunction(),
+                .decoration_bits_fn = self.modified_view.decorationBitsFunction(),
+            };
+            try self.accessible_viewer.show(self.state().?.mappings, self.original_editor, self.modified_editor, self.width, self.height, !self.options.only_show_accessible_diff_viewer, paint_args, self.modified_view.themeColors());
+            self.original_view.detach();
+            self.modified_view.detach();
+        }
+
+        pub fn accessibleDiffViewerNext(self: *Self) !void {
+            if (self.accessible_viewer.visible()) try self.accessible_viewer.nextGroup() else try self.openAccessibleViewer();
+            self.syncAccessibleSelection();
+        }
+
+        pub fn accessibleDiffViewerPrev(self: *Self) !void {
+            try self.openAccessibleViewer();
+            try self.accessible_viewer.previousGroup();
+            self.syncAccessibleSelection();
+        }
+
+        fn syncAccessibleSelection(self: *Self) void {
+            const item = self.accessible_viewer.selectedLine() orelse return;
+            if (item.type == .header) return;
+            const line = item.modified_line_number orelse self.state().?.mappings[item.diff_index.?].line_range_mapping.modified.startLineNumber;
+            const position = self.modified_editor.model.validatePosition(.{ .lineNumber = line, .column = 1 });
+            self.modified_editor.setCursorPosition(position) catch {};
+        }
+
+        fn closeAccessibleViewer(self: *Self, reveal: bool) void {
+            if (!self.accessible_viewer.can_close) return;
+            const selected = self.accessible_viewer.selectedLine();
+            self.accessible_viewer.close();
+            self.setFocus(.modified);
+            if (reveal) if (selected) |item| {
+                if (item.type == .deleted and self.sideBySide()) {
+                    self.setFocus(.original);
+                    self.original_editor.setCursorPosition(.{ .lineNumber = item.original_line_number.?, .column = 1 }) catch {};
+                } else self.syncAccessibleSelectionAfterClose(item);
+            };
+            self.focusedView().focusEditor();
+            self.original_view.invalidate();
+            self.modified_view.invalidate();
+        }
+
+        fn syncAccessibleSelectionAfterClose(self: *Self, item: accessible_module.ViewElement) void {
+            if (item.type == .header) return;
+            const line = item.modified_line_number orelse self.state().?.mappings[item.diff_index.?].line_range_mapping.modified.startLineNumber;
+            self.modified_editor.setCursorPosition(self.modified_editor.model.validatePosition(.{ .lineNumber = line, .column = 1 })) catch {};
+        }
+
+        fn dispatchAccessibleKey(self: *Self, event: *ui.KeyEvent) bool {
+            switch (event.key) {
+                .up => self.accessible_viewer.moveLine(false) catch {},
+                .down => self.accessible_viewer.moveLine(true) catch {},
+                .escape => self.closeAccessibleViewer(false),
+                .enter => self.closeAccessibleViewer(true),
+                .char => |c| if (c == ' ') self.closeAccessibleViewer(true) else return false,
+                .text => |text| if (std.mem.eql(u8, text, " ")) self.closeAccessibleViewer(true) else return false,
+                else => return false,
+            }
+            if (self.accessible_viewer.visible()) self.syncAccessibleSelection();
+            event.preventDefault();
+            return true;
         }
 
         fn syncScrollFromPane(self: *Self, side: Side) void {

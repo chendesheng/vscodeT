@@ -42,6 +42,7 @@ pub const Options = struct {
     hide_unchanged_regions: bool = false,
     hide_unchanged_regions_reveal_line_count: usize = 20,
     compact_mode: bool = false,
+    only_show_accessible_diff_viewer: bool = false,
     variant: enum { normal, compact } = .normal,
     hide_unchanged_regions_context_line_count: usize = 3,
     hide_unchanged_regions_minimum_line_count: usize = 3,
