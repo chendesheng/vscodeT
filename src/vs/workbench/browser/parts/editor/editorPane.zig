@@ -359,6 +359,17 @@ pub const Tab = struct {
         if (self.diff) |diff| diff.widget.attachActionServices(clipboard, menu);
     }
 
+    pub fn attachDiffBreadcrumbs(self: *Tab, features: *LanguageFeaturesService, models: *@import("../../../../editor/contrib/documentSymbols/browser/outlineModel.zig").OutlineModelService) void {
+        const diff = self.diff orelse return;
+        if (diff.widget.breadcrumbs_factory != null) return;
+        const factory = @import("../../../../editor/contrib/diffEditorBreadcrumbs/browser/contribution.zig").Factory.create(self.allocator, features.interface(), models) catch return;
+        diff.widget.attachBreadcrumbs(factory) catch {};
+    }
+
+    pub fn detachDiffBreadcrumbs(self: *Tab) void {
+        if (self.diff) |diff| diff.widget.detachBreadcrumbs();
+    }
+
     pub fn attachDiffGutterServices(self: *Tab, menus: *@import("../../../../platform/actions/common/menuService.zig").MenuService, context: @import("../../../../platform/contextkey/common/contextkey.zig").IContext, menu: @import("../../../../platform/contextview/browser/contextMenuService.zig").IContextMenuService) void {
         if (self.diff) |diff| diff.widget.attachGutterServices(menus, context, menu) catch {};
     }
@@ -678,6 +689,7 @@ pub const Tab = struct {
     /// Called when language features are enabled after tabs already exist.
     pub fn attachLanguageRegistry(self: *Tab, features: *LanguageFeaturesService) void {
         if (self.controllers) |controllers| controllers.attachLanguageRegistry(features);
+        if (self.original_controllers) |controllers| controllers.attachLanguageRegistry(features);
     }
 
     /// Lays the editor view out in the group pane. The height is the editor

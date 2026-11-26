@@ -543,6 +543,20 @@ pub const ReferenceProvider = struct {
     ) anyerror![]Location,
 };
 
+/// Terminal counterpart of SymbolKinds.toIcon, shared by outline and diff
+/// breadcrumbs. Document symbols use the extension API's numeric kinds.
+pub const SymbolKinds = struct {
+    pub fn terminalGlyph(kind: u32) []const u8 {
+        return switch (kind) {
+            1, 2, 3 => "N",
+            4, 9, 10, 22 => "◇",
+            5, 8, 11 => "ƒ",
+            6, 7, 12, 13, 21 => "·",
+            else => "◇",
+        };
+    }
+};
+
 /// Port of `DocumentSymbol` from `src/vs/editor/common/languages.ts`.
 /// Children own their fields through the allocator supplied to the provider.
 pub const DocumentSymbol = struct {

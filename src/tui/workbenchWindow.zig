@@ -837,7 +837,10 @@ pub const TerminalWorkbench = struct {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
                         host.editor_configuration.applyToTab(tab);
                         tab.attachDiffActionServices(host.clipboard_api, host.context_menu_api);
-                        if (tab.diff != null) tab.attachDiffGutterServices(&host.menu_service, host.core.context_keys.getContext(), host.context_menu_api);
+                        if (tab.diff != null) {
+                            tab.attachDiffGutterServices(&host.menu_service, host.core.context_keys.getContext(), host.context_menu_api);
+                            if (host.language_features) |features| if (host.outline_creator) |creator| tab.attachDiffBreadcrumbs(features, creator.models);
+                        }
                     }
                 }.configure,
                 .register_working_copy = struct {
@@ -1073,6 +1076,8 @@ pub const TerminalWorkbench = struct {
         self.menu_service.useContextService(self.context_keys.?);
         try self.part.attachTitleMenus(.{ .menus = &self.menu_service, .parent_context = self.core.context_keys.getContext(), .context = self, .request_frame = requestWorkbenchFrame });
         errdefer self.part.disposeTitleMenus();
+        // The diff breadcrumb contribution borrows the shared outline service.
+        for (self.part.group_views.items) |pane| for (pane.tabs.items) |tab| tab.detachDiffBreadcrumbs();
         try self.panel_part.attachTitleMenu(&self.menu_service, self.core.context_keys.getContext());
         _ = try self.panel_part.on_did_change.listenSignal(self, struct {
             fn run(host: *TerminalWorkbench) !void {
@@ -2553,6 +2558,7 @@ pub const TerminalWorkbench = struct {
         };
         errdefer self.outline_creator = null;
         try self.outline_creator.?.register(&self.outline_service);
+        self.outline_creator.?.models.attachWindow(&self.window_events);
         self.language_features = features;
         self.marker_service = marker_service;
         self.marker_decorations = marker_decorations;
@@ -2567,6 +2573,10 @@ pub const TerminalWorkbench = struct {
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
                 tab.editor.attachLanguageServices(features, marker_service, marker_decorations);
+                if (tab.diff) |diff| {
+                    diff.widget.original_editor.attachLanguageServices(features, marker_service, marker_decorations);
+                    tab.attachDiffBreadcrumbs(features, self.outline_creator.?.models);
+                }
                 tab.attachLanguageRegistry(features);
             }
         }

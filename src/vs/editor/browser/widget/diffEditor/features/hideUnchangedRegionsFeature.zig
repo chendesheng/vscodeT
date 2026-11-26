@@ -11,9 +11,47 @@ const Editor = @import("../../codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const ViewZones = @import("../../../viewParts/viewZones/viewZones.zig").ViewZones;
 const browser = @import("../../../editorBrowser.zig");
 const model_mod = @import("../../../../common/model.zig");
+const LineRange = @import("../../../../common/core/ranges/lineRange.zig").LineRange;
+const TextModel = @import("../../../../common/model/textModel.zig").TextModel;
+const languages = @import("../../../../common/languages.zig");
 const Range = @import("../../../../common/core/range.zig").Range;
 const EventHandler = @import("../../../../common/viewEventHandler.zig").ViewEventHandler;
 const events = @import("../../../../common/viewEvents.zig");
+
+pub const BreadcrumbItem = struct {
+    name: []const u8,
+    kind: u32,
+    start_line_number: usize,
+};
+
+pub const BreadcrumbsListener = struct {
+    context: *anyopaque,
+    changed: *const fn (*anyopaque) void,
+};
+
+/// The contribution returns owned lists whose labels borrow the current outline.
+pub const IDiffEditorBreadcrumbsSource = struct {
+    context: *anyopaque,
+    get_breadcrumb_items: *const fn (*anyopaque, std.mem.Allocator, LineRange) anyerror![]BreadcrumbItem,
+    get_at: *const fn (*anyopaque, std.mem.Allocator, usize) anyerror![]BreadcrumbItem,
+    dispose_fn: *const fn (*anyopaque) void,
+
+    pub fn dispose(self: IDiffEditorBreadcrumbsSource) void {
+        self.dispose_fn(self.context);
+    }
+};
+
+/// The upstream contribution supplies a factory through instantiation; the
+/// terminal composition passes that same factory explicitly to the widget.
+pub const BreadcrumbsSourceFactory = struct {
+    context: *anyopaque,
+    create_source: *const fn (*anyopaque, *TextModel, BreadcrumbsListener) anyerror!IDiffEditorBreadcrumbsSource,
+    dispose_fn: *const fn (*anyopaque) void,
+
+    pub fn dispose(self: BreadcrumbsSourceFactory) void {
+        self.dispose_fn(self.context);
+    }
+};
 
 pub const HideUnchangedRegionsFeature = struct {
     allocator: std.mem.Allocator,
@@ -26,6 +64,8 @@ pub const HideUnchangedRegionsFeature = struct {
     initialized: bool = true,
     updating: bool = false,
     drag: ?Drag = null,
+    breadcrumbs_source: ?IDiffEditorBreadcrumbsSource = null,
+    side_by_side: bool = true,
 
     unchanged_decoration: model_mod.ModelDecorationOptions = blk: {
         var options = model_mod.ModelDecorationOptions.init("unchanged lines", .AlwaysGrowsWhenTypingAtEdges);
@@ -102,6 +142,7 @@ pub const HideUnchangedRegionsFeature = struct {
             const r = self.region();
             const count = r.getHiddenModifiedRange().length();
             const options = self.pane.owner.options;
+            const hidden_original = self.pane.original and !self.pane.owner.side_by_side;
             const compact = options.variant == .compact;
             const compact_mode = !compact and options.compact_mode;
             var buffer: [128]u8 = undefined;
@@ -116,16 +157,78 @@ pub const HideUnchangedRegionsFeature = struct {
                 try std.fmt.bufPrint(&buffer, "{d} hidden lines  ·  Show all", .{count});
             try node.addClass(css.Class.diff_hidden_lines);
             if (compact_mode) try node.addClass(css.Class.diff_hidden_lines_compact) else node.removeClass(css.Class.diff_hidden_lines_compact);
-            node.asElement().focusable = !compact_mode;
-            node.asElement().tab_index = if (compact_mode) -1 else 0;
-            if (compact_mode) node.removeAttribute("role") else try node.setAttribute("role", "button");
+            node.asElement().focusable = !compact_mode and !hidden_original;
+            node.asElement().tab_index = if (compact_mode or hidden_original) -1 else 0;
+            if (compact_mode or hidden_original) node.removeAttribute("role") else try node.setAttribute("role", "button");
             node.document.destroyChildren(node);
+            if (hidden_original) {
+                node.removeAttribute("aria-label");
+                node.removeAttribute("aria-expanded");
+                return;
+            }
             if (!compact_mode) try self.appendControl(node, true);
             const center = try appendLabel(node, label);
             try center.addClass(css.Class.center);
+            if (!compact_mode and count != 0) try self.appendBreadcrumbs(node, compact, r.getHiddenModifiedRange());
             if (!compact_mode) try self.appendControl(node, false);
             try node.setAttribute("aria-label", label);
             try node.setAttribute("aria-expanded", if (count == 0) "true" else "false");
+        }
+
+        fn appendBreadcrumbs(self: *Binding, node: *ui.Node, compact: bool, range: LineRange) !void {
+            const source = self.pane.owner.breadcrumbs_source orelse return;
+            const allocator = self.pane.owner.allocator;
+            const items = try source.get_breadcrumb_items(source.context, allocator, range);
+            defer allocator.free(items);
+            if (items.len == 0) return;
+            _ = try appendLabel(node, if (compact) "·" else "|");
+            for (items, 0..) |item, i| {
+                const button = try appendLabel(node, "");
+                try button.addClass(css.Class.breadcrumb_item);
+                const title = try std.fmt.allocPrint(allocator, "{s} {s}{s}", .{ languages.SymbolKinds.terminalGlyph(item.kind), item.name, if (i + 1 < items.len) " ›" else "" });
+                defer allocator.free(title);
+                try button.setTextContent(title);
+                var buffer: [32]u8 = undefined;
+                try button.setAttribute("data-breadcrumb-line", try std.fmt.bufPrint(&buffer, "{d}", .{item.start_line_number}));
+                const aria_label = try std.fmt.allocPrint(allocator, "Go to {s}", .{item.name});
+                defer allocator.free(aria_label);
+                try button.setAttribute("aria-label", aria_label);
+                try button.addEventListener(.{ .context = self, .mouse_down = onBreadcrumbMouse, .key_down = onBreadcrumbKey });
+                if (compact) {
+                    button.asElement().focusable = true;
+                    button.asElement().tab_index = 0;
+                    try button.setAttribute("role", "button");
+                }
+            }
+        }
+
+        fn revealBreadcrumb(self: *Binding, target: *ui.Node) void {
+            const line = std.fmt.parseInt(usize, target.getAttribute("data-breadcrumb-line") orelse return, 10) catch return;
+            const model = self.pane.owner.model;
+            if (model.ensureLineVisibleWithPreference(false, line, .from_bottom)) model.notifyUnchangedRegions() catch |err| self.pane.editor.setMessage("unchanged regions: {s}", .{@errorName(err)});
+        }
+
+        fn onBreadcrumbMouse(context: ?*anyopaque, event: *ui.MouseEvent) void {
+            if (event.button != .left) return;
+            const self: *Binding = @ptrCast(@alignCast(context.?));
+            const target = event.current_target orelse return;
+            event.preventDefault();
+            event.stopPropagation();
+            self.revealBreadcrumb(target);
+        }
+
+        fn onBreadcrumbKey(context: ?*anyopaque, event: *ui.KeyEvent) void {
+            switch (event.key) {
+                .enter => {},
+                .char => |c| if (c != ' ') return,
+                .text => |text| if (!std.mem.eql(u8, text, " ")) return,
+                else => return,
+            }
+            const self: *Binding = @ptrCast(@alignCast(context.?));
+            const target = event.current_target orelse return;
+            event.preventDefault();
+            event.stopPropagation();
+            self.revealBreadcrumb(target);
         }
 
         fn toggle(self: *Binding) void {
@@ -275,6 +378,7 @@ pub const HideUnchangedRegionsFeature = struct {
         if (!self.initialized) return;
         self.initialized = false;
         self.drag = null;
+        self.detachBreadcrumbs();
         if (self.subscription) |id| self.model.on_did_change_unchanged_regions.unlisten(id);
         self.alignment.beginBatch();
         defer self.alignment.endBatch();
@@ -285,6 +389,35 @@ pub const HideUnchangedRegionsFeature = struct {
             const ids = pane.editor.model.deltaDecorations(pane.decoration_ids, &.{}, if (pane.original) 1002 else 1003) catch &.{};
             self.allocator.free(ids);
             self.allocator.free(pane.decoration_ids);
+        }
+    }
+
+    pub fn attachBreadcrumbs(self: *HideUnchangedRegionsFeature, factory: BreadcrumbsSourceFactory) !void {
+        self.detachBreadcrumbs();
+        self.breadcrumbs_source = try factory.create_source(factory.context, self.modified.editor.model, .{ .context = self, .changed = onBreadcrumbsChanged });
+        self.invalidateBreadcrumbs();
+    }
+
+    pub fn detachBreadcrumbs(self: *HideUnchangedRegionsFeature) void {
+        if (self.breadcrumbs_source) |source| source.dispose();
+        self.breadcrumbs_source = null;
+    }
+
+    pub fn setSideBySide(self: *HideUnchangedRegionsFeature, side_by_side: bool) void {
+        if (self.side_by_side == side_by_side) return;
+        self.side_by_side = side_by_side;
+        self.invalidateBreadcrumbs();
+    }
+
+    fn onBreadcrumbsChanged(context: *anyopaque) void {
+        const self: *HideUnchangedRegionsFeature = @ptrCast(@alignCast(context));
+        self.invalidateBreadcrumbs();
+    }
+
+    fn invalidateBreadcrumbs(self: *HideUnchangedRegionsFeature) void {
+        for ([_]*Pane{ &self.original, &self.modified }) |pane| {
+            for (pane.bindings) |binding| if (binding.id) |id| pane.zones.invalidateZoneContent(id);
+            pane.editor.emitViewEvent(.{ .ViewZonesChanged = .{} });
         }
     }
 

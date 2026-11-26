@@ -1,12 +1,12 @@
 // Port of the terminal orchestration of
 // `src/vs/editor/browser/widget/diffEditor/diffEditorWidget.ts`.
 //
-// Terminal adaptation: both editors retain the real snapshot text in every
+// Terminal adaptation: both editors retain their real resource models in every
 // view mode. The shared ViewZones part aligns changes and wrapped/foreign-zone
 // heights, and inserts the original's deleted code above modified lines in
 // inline mode. The gutter uses vertical-layout offsets and the combined
-// overview ruler reserves one cell per lane. The accessible viewer, true-inline
-// word diff and editable models remain open.
+// overview ruler reserves one cell per lane. True-inline text uses shared
+// injected-text projection and the accessible viewer uses a retained cell view.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -157,6 +157,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         decorations: *DiffEditorDecorations,
         overview: overview_feature.OverviewRulerFeature = undefined,
         hide_unchanged: hide_unchanged_feature.HideUnchangedRegionsFeature = undefined,
+        breadcrumbs_factory: ?hide_unchanged_feature.BreadcrumbsSourceFactory = null,
         accessible_viewer: accessible_module.AccessibleDiffViewer,
         moved_blocks: moved_feature.MovedBlocksLinesFeature = undefined,
         inline_margin_menu: inline_margin.MenuController,
@@ -431,6 +432,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             if (self.diff_listener) |id| self.view_model.on_did_change.unlisten(id);
             if (self.move_listener) |id| self.view_model.on_did_change_active_move.unlisten(id);
             self.moved_blocks.deinit();
+            self.detachBreadcrumbs();
             self.hide_unchanged.deinit();
             self.zones.deinit();
             self.overview.deinit(self.original_editor, self.modified_editor);
@@ -609,6 +611,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                     self.modified_editor.setMessage("diff layout failed: {s}", .{@errorName(err)});
                 };
             }
+            self.hide_unchanged.setSideBySide(self.sideBySide());
             self.width = @max(width, 1);
             self.height = @max(height, 1);
             self.moved_blocks.setEnabled(self.options.show_moves and self.sideBySide()) catch {};
@@ -818,6 +821,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.decorations.modified_model = self.modified_editor.model;
             self.zones.init(self.allocator, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self.modified_view.terminal_view_host, self.modified_view.lineStyleFunction(), self.modified_view.decorationBitsFunction(), self.options.render_indicators, diff_state.mappings);
             try self.hide_unchanged.init(self.allocator, &self.view_model, &self.zones, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self.options);
+            if (self.breadcrumbs_factory) |factory| try self.hide_unchanged.attachBreadcrumbs(factory);
             try self.revert_buttons.init(self.allocator, &self.view_model, self.modified_editor, self.modified_view.terminal_view_host, .{ .context = self, .revert = revertMarginChange });
             try self.moved_blocks.init(self.allocator, &self.view_model, &self.zones, self.original_editor, self.original_view.viewZones(), self.modified_editor, self.modified_view.viewZones(), self, onMoveWidthChanged, onCompareMove);
             self.applyZoneTheme(self.modified_view.themeColors());
@@ -956,6 +960,22 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         pub fn attachActionServices(self: *Self, clipboard: Clipboard, menu: ContextMenu) void {
             self.inline_margin_menu.attach(clipboard, menu);
+        }
+
+        pub fn attachBreadcrumbs(self: *Self, factory: hide_unchanged_feature.BreadcrumbsSourceFactory) !void {
+            if (self.breadcrumbs_factory != null) {
+                factory.dispose();
+                return;
+            }
+            errdefer factory.dispose();
+            try self.hide_unchanged.attachBreadcrumbs(factory);
+            self.breadcrumbs_factory = factory;
+        }
+
+        pub fn detachBreadcrumbs(self: *Self) void {
+            self.hide_unchanged.detachBreadcrumbs();
+            if (self.breadcrumbs_factory) |factory| factory.dispose();
+            self.breadcrumbs_factory = null;
         }
 
         pub fn attachGutterServices(self: *Self, menus: *@import("../../../../platform/actions/common/menuService.zig").MenuService, parent_context: @import("../../../../platform/contextkey/common/contextkey.zig").IContext, menu: ContextMenu) !void {

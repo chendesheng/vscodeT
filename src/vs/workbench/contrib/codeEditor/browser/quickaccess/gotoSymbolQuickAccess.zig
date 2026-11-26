@@ -50,13 +50,7 @@ pub fn label(allocator: Allocator, entry: Entry) ![]u8 {
 }
 
 pub fn glyph(kind: u32) []const u8 {
-    return switch (kind) {
-        1, 2, 3 => "N",
-        4, 9, 10, 22 => "◇",
-        5, 8, 11 => "ƒ",
-        6, 7, 12, 13, 21 => "·",
-        else => "◇",
-    };
+    return @import("../../../../../editor/common/languages.zig").SymbolKinds.terminalGlyph(kind);
 }
 
 pub fn kindLabel(kind: u32) []const u8 {

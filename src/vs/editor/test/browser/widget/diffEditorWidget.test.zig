@@ -1395,6 +1395,68 @@ pub fn Tests(comptime View: type) type {
             }
         }
 
+        fn findRegionBreadcrumb(node: *ui.Node) ?*ui.Node {
+            if (node.getAttribute("data-breadcrumb-line") != null) return node;
+            var child = node.first_child;
+            while (child) |current| : (child = current.next) if (findRegionBreadcrumb(current)) |found| return found;
+            return null;
+        }
+
+        test "diffEditorWidget: actual symbol breadcrumbs reveal hidden modified lines from the bottom" {
+            const allocator = testing.allocator;
+            const Features = @import("../../../common/services/languageFeaturesService.zig").LanguageFeaturesService;
+            const Models = @import("../../../contrib/documentSymbols/browser/outlineModel.zig").OutlineModelService;
+            const Factory = @import("../../../contrib/diffEditorBreadcrumbs/browser/contribution.zig").Factory;
+            const TextModel = @import("../../../common/model/textModel.zig").TextModel;
+            const Range = @import("../../../common/core/range.zig").Range;
+            const languages = @import("../../../common/languages.zig");
+            const CancellationToken = @import("../../../../base/common/cancellation.zig").CancellationToken;
+            const Provider = struct {
+                fn provide(_: *anyopaque, arena: std.mem.Allocator, _: *TextModel, _: CancellationToken) ![]const languages.DocumentSymbol {
+                    return arena.dupe(languages.DocumentSymbol, &.{.{ .name = "section", .kind = 5, .range = Range.init(12, 1, 40, 1), .selection_range = Range.init(12, 1, 12, 1) }});
+                }
+            };
+            var features = Features.init(allocator);
+            defer features.deinit();
+            var models = Models.init(allocator);
+            defer models.deinit();
+            var context: u8 = 0;
+            const registration = try features.document_symbol_provider.register(.{ .language = "*" }, .{ .context = &context, .provide_document_symbols = Provider.provide });
+            defer registration.dispose();
+            var original: std.ArrayList(u8) = .empty;
+            defer original.deinit(allocator);
+            var modified: std.ArrayList(u8) = .empty;
+            defer modified.deinit(allocator);
+            try original.appendSlice(allocator, "old\n");
+            try modified.appendSlice(allocator, "new\n");
+            for (0..38) |index| {
+                var line: [32]u8 = undefined;
+                const text = try std.fmt.bufPrint(&line, "unchanged {d}\n", .{index});
+                try original.appendSlice(allocator, text);
+                try modified.appendSlice(allocator, text);
+            }
+            try original.appendSlice(allocator, "old end");
+            try modified.appendSlice(allocator, "new end");
+            const widget = try DiffEditorWidget.create(View.init, allocator, testing.io, "a.txt", "b.txt", original.items, modified.items, "Original", "Modified", 160, 14, .{ .hide_unchanged_regions = true, .variant = .compact, .use_inline_view_when_space_is_limited = false });
+            defer widget.destroy();
+            try widget.attachBreadcrumbs(try Factory.create(allocator, features.interface(), &models));
+            try widget.modified_view.paint();
+            const region = &widget.view_model.unchangedRegions()[0];
+            try testing.expect(region.getHiddenModifiedRange().contains(12));
+            const crumb = findRegionBreadcrumb(widget.modified_view.zone_content_root.?) orelse return error.BreadcrumbMissing;
+            try testing.expect(crumb.hasClass(@import("../../../browser/widget/diffEditor/style_css.zig").Class.breadcrumb_item));
+            try testing.expectEqualStrings("Go to section", crumb.getAttribute("aria-label").?);
+            try testing.expect(crumb.focus());
+            var key: ui.KeyEvent = .{ .key = .enter };
+            try testing.expect(widget.dispatchKey(&key));
+            try testing.expect(widget.modified_editor.isModelLineVisible(12));
+            try testing.expect(!widget.modified_editor.isModelLineVisible(11));
+            try testing.expect(!widget.original_editor.isModelLineVisible(11));
+            try testing.expect(region.visible_line_count_bottom > 0);
+            try widget.modified_view.paint();
+            try testing.expect(findRegionBreadcrumb(widget.modified_view.zone_content_root.?) == null);
+        }
+
         test "diffEditorWidget: legacy revert glyph widgets respect options and selected changes" {
             const allocator = testing.allocator;
             const Range = @import("../../../common/core/range.zig").Range;
