@@ -242,6 +242,7 @@ const CellFlag = struct {
     /// `.squiggly-inline-unnecessary`: the inline opacity/dim tag.
     const diagnostic_inline_unnecessary: u32 = 1 << 22;
     const search_editor_match: u32 = 1 << 23;
+    const inline_deleted_text: u32 = 1 << 24;
 };
 
 const find_match_background = [3]u8{ 80, 70, 20 };
@@ -2713,7 +2714,10 @@ fn applyFlagPaint(style: *ui.style.PaintStyle, flag: u32, palette: ?*const theme
     }
     if (flag & CellFlag.diagnostic_inline_unnecessary != 0) style.dim = true;
     if (flag & CellFlag.diagnostic_deprecated != 0) style.strikethrough = true;
-    if (flag & CellFlag.char_insert != 0) {
+    if (flag & CellFlag.inline_deleted_text != 0) {
+        style.background = themedColor(palette, "diffEditor.removedTextBackground", diff_delete_char_background);
+        style.strikethrough = true;
+    } else if (flag & CellFlag.char_insert != 0) {
         style.background = themedColor(palette, "diffEditor.insertedTextBackground", diff_insert_char_background);
     } else if (flag & CellFlag.char_delete != 0) {
         style.background = themedColor(palette, "diffEditor.removedTextBackground", diff_delete_char_background);
@@ -2815,6 +2819,7 @@ fn decorationBit(class_name: []const u8) ?u32 {
     if (std.mem.eql(u8, class_name, "rangeHighlight")) return CellFlag.search_range_highlight;
     if (std.mem.eql(u8, class_name, "char-insert")) return CellFlag.char_insert;
     if (std.mem.eql(u8, class_name, "char-delete")) return CellFlag.char_delete;
+    if (std.mem.eql(u8, class_name, "inline-deleted-text")) return CellFlag.inline_deleted_text;
     if (std.mem.eql(u8, class_name, "squiggly-error")) return CellFlag.diagnostic_error;
     if (std.mem.eql(u8, class_name, "squiggly-warning")) return CellFlag.diagnostic_warning;
     if (std.mem.eql(u8, class_name, "squiggly-info")) return CellFlag.diagnostic_info;

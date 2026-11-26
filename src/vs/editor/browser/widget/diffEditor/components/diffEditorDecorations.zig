@@ -13,6 +13,7 @@ const model_mod = @import("../../../../common/model.zig");
 const text_model = @import("../../../../common/model/textModel.zig");
 const range_mapping = @import("../../../../common/diff/rangeMapping.zig");
 const Range = @import("../../../../common/core/range.zig").Range;
+const zones = @import("./diffEditorViewZones/diffEditorViewZones.zig");
 const overview_feature = @import("../features/overviewRulerFeature.zig");
 
 pub const ModelDecorationOptions = model_mod.ModelDecorationOptions;
@@ -25,7 +26,8 @@ pub const RangeMapping = range_mapping.RangeMapping;
 pub const Config = struct {
     render_indicators: bool = true,
     render_overview_ruler: bool = true,
-    show_empty_decorations: bool = false,
+    show_empty_decorations: bool = true,
+    use_true_inline_view: bool = false,
 };
 
 /// Terminal defaults for `diffEditor.insertedLineBackground`/
@@ -45,6 +47,7 @@ pub const DiffEditorDecorations = struct {
     config: Config,
     original_ids: []u64 = &.{},
     modified_ids: []u64 = &.{},
+    injected_options: std.ArrayList(*ModelDecorationOptions) = .empty,
 
     line_insert: ModelDecorationOptions,
     line_delete: ModelDecorationOptions,
@@ -98,6 +101,7 @@ pub const DiffEditorDecorations = struct {
         if (new_modified.len > 0) self.allocator.free(new_modified);
         if (self.modified_ids.len > 0) self.allocator.free(self.modified_ids);
         self.modified_ids = &.{};
+        self.freeInjectedOptions(&self.injected_options);
     }
 
     pub fn setConfig(self: *DiffEditorDecorations, config: Config, state: *const DiffState, show_moves: bool) !void {
@@ -122,8 +126,40 @@ pub const DiffEditorDecorations = struct {
         self.char_delete = createRange("char-delete");
         self.char_insert_empty = createRange("char-insert diff-range-empty");
         self.char_delete_empty = createRange("char-delete diff-range-empty");
+        // The browser paints a three-pixel border at a zero-width range.
+        // Reuse the overlay's one-cell collapsed-range support at the terminal boundary.
+        self.char_insert_empty.showIfCollapsed = true;
+        self.char_delete_empty.showIfCollapsed = true;
         self.moved_original = createMovedBlock("movedOriginal");
         self.moved_modified = createMovedBlock("movedModified");
+    }
+
+    fn freeInjectedOptions(self: *DiffEditorDecorations, options: *std.ArrayList(*ModelDecorationOptions)) void {
+        for (options.items) |option| {
+            self.allocator.free(option.before.?.content);
+            self.allocator.destroy(option);
+        }
+        options.deinit(self.allocator);
+        options.* = .empty;
+    }
+
+    fn createInjectedOption(self: *DiffEditorDecorations, original_range: Range) !*ModelDecorationOptions {
+        const option = try self.allocator.create(ModelDecorationOptions);
+        errdefer self.allocator.destroy(option);
+        var deleted = try self.original_model.getValueInRange(original_range, null);
+        defer deleted.deinit();
+        const content = try self.allocator.dupe(u8, deleted.items);
+        option.* = ModelDecorationOptions.init("deleted-text", .AlwaysGrowsWhenTypingAtEdges);
+        option.before = .{
+            .content = content,
+            .inlineClassName = "inline-deleted-text",
+            .inlineClassNameAffectsLetterSpacing = false,
+            .attachedData = null,
+            .cursorStops = null,
+        };
+        option.zIndex = 100000;
+        option.showIfCollapsed = true;
+        return option;
     }
 
     /// The real-model decoration path. Alignment whitespace belongs to
@@ -133,18 +169,27 @@ pub const DiffEditorDecorations = struct {
         defer original_decorations.deinit();
         var modified_decorations = std.array_list.Managed(ModelDeltaDecoration).init(self.allocator);
         defer modified_decorations.deinit();
+        var injected: std.ArrayList(*ModelDecorationOptions) = .empty;
+        errdefer self.freeInjectedOptions(&injected);
         for (state.mappings) |mapping| {
             const change = mapping.line_range_mapping;
             if (change.original.toInclusiveRange()) |range| try original_decorations.append(.{ .range = range, .options = &self.line_delete });
             if (change.modified.toInclusiveRange()) |range| try modified_decorations.append(.{ .range = range, .options = &self.line_insert });
             if (change.original.isEmpty() or change.modified.isEmpty()) continue;
+            const use_inline = self.config.use_true_inline_view and zones.allowsTrueInlineDiffRendering(change);
             for (change.inner_changes orelse &.{}) |inner| {
                 if (change.original.contains(inner.originalRange.startLineNumber)) {
                     const option = if (inner.originalRange.isEmpty() and self.config.show_empty_decorations) &self.char_delete_empty else &self.char_delete;
                     try original_decorations.append(.{ .range = inner.originalRange, .options = option });
                 }
                 if (change.modified.contains(inner.modifiedRange.startLineNumber)) {
-                    const option = if (inner.modifiedRange.isEmpty() and self.config.show_empty_decorations) &self.char_insert_empty else &self.char_insert;
+                    const option = if (inner.modifiedRange.isEmpty() and self.config.show_empty_decorations and !use_inline) &self.char_insert_empty else &self.char_insert;
+                    try modified_decorations.append(.{ .range = inner.modifiedRange, .options = option });
+                }
+                if (use_inline) {
+                    try injected.ensureUnusedCapacity(self.allocator, 1);
+                    const option = try self.createInjectedOption(inner.originalRange);
+                    injected.appendAssumeCapacity(option);
                     try modified_decorations.append(.{ .range = inner.modifiedRange, .options = option });
                 }
             }
@@ -159,6 +204,8 @@ pub const DiffEditorDecorations = struct {
         const new_modified = try self.applyTo(self.modified_model, self.modified_owner, self.modified_ids, modified_decorations.items);
         self.allocator.free(self.modified_ids);
         self.modified_ids = new_modified;
+        self.freeInjectedOptions(&self.injected_options);
+        self.injected_options = injected;
     }
 
     fn applyTo(

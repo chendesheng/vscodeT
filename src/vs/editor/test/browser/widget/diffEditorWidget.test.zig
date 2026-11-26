@@ -725,6 +725,59 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(!widget.modified_editor.isModelLineVisible(8));
         }
 
+        test "diffEditorWidget: true inline single-line diff retains model and renders removed text struck through" {
+            const allocator = testing.allocator;
+            const io = Io.Threaded.global_single_threaded.io();
+            const widget = try DiffEditorWidget.create(View.init, allocator, io, "a.txt", "b.txt", "a old value\nend", "a new value\nend", "Original", "Modified", 80, 8, .{
+                .render_side_by_side = false,
+                .use_true_inline_view = true,
+            });
+            defer widget.destroy();
+            const modified_model = widget.modifiedModel();
+            const decorations = try modified_model.getAllDecorations(0, false);
+            defer allocator.free(decorations);
+            var injected = false;
+            for (decorations) |decoration| {
+                if (decoration.options.before) |before| {
+                    try testing.expectEqualStrings("old", before.content);
+                    try testing.expectEqualStrings("inline-deleted-text", before.inlineClassName.?);
+                    injected = true;
+                }
+            }
+            try testing.expect(injected);
+            const zones = try widget.modified_editor.viewLayout().getWhitespaces(allocator);
+            defer allocator.free(zones);
+            try testing.expectEqual(@as(usize, 0), zones.len);
+            try testing.expectEqual(@as(usize, 2), modified_model.getLineCount());
+            try widget.modified_view.paint();
+            const row = try widget.modified_view.grid().rowText(allocator, 0);
+            defer allocator.free(row);
+            try testing.expect(std.mem.indexOf(u8, row, "oldnew") != null);
+            const grid = widget.modified_view.grid();
+            const old_start = widget.modified_editor.gutterWidth() + 2;
+            try testing.expect(grid.attrs[grid.index(old_start, 0)] & ui.cell.Attr.strikethrough != 0);
+        }
+
+        test "diffEditorWidget: empty character ranges paint one marker cell when enabled" {
+            const allocator = testing.allocator;
+            const io = Io.Threaded.global_single_threaded.io();
+            for ([_]bool{ true, false }) |enabled| {
+                const widget = try DiffEditorWidget.create(View.init, allocator, io, "a.txt", "b.txt", "a old value\nend", "a value\nend", "Original", "Modified", 80, 8, .{
+                    .show_empty_decorations = enabled,
+                });
+                defer widget.destroy();
+                const state = widget.state().?;
+                const inner = state.mappings[0].line_range_mapping.inner_changes.?[0];
+                try testing.expect(inner.modifiedRange.isEmpty());
+                try widget.modified_view.paint();
+                const grid = widget.modified_view.grid();
+                const col = widget.modified_editor.gutterWidth() + inner.modifiedRange.startColumn - 1;
+                const colors = @import("../../../browser/widget/diffEditor/components/diffEditorDecorations.zig");
+                const background = if (enabled) colors.inserted_text_background else colors.inserted_line_background;
+                try testing.expectEqual(ui.cell.packColor(.{ .r = background[0], .g = background[1], .b = background[2] }), grid.bg[grid.index(col, 0)]);
+            }
+        }
+
         test "diffEditorWidget: inline mode interleaves deleted and inserted lines" {
             const allocator = std.testing.allocator;
             const io = std.Io.Threaded.global_single_threaded.io();

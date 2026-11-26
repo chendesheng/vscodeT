@@ -29,6 +29,8 @@ pub const IDocumentDiff = widget_mod.IDocumentDiff;
 pub fn computeConfiguration(configuration_service: ?@import("../../../../platform/configuration/common/configuration.zig").IConfigurationService) Options {
     var options = Options{};
     if (configuration_service) |configuration| {
+        options.show_empty_decorations = configuration.getBool("diffEditor.experimental.showEmptyDecorations", true);
+        options.use_true_inline_view = configuration.getBool("diffEditor.experimental.useTrueInlineView", false);
         options.ignore_trim_whitespace = configuration.getBool("diffEditor.ignoreTrimWhitespace", true);
         options.render_side_by_side = configuration.getBool("diffEditor.renderSideBySide", true);
         options.use_inline_view_when_space_is_limited = configuration.getBool("diffEditor.useInlineViewWhenSpaceIsLimited", true);

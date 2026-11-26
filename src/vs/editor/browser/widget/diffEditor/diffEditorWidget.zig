@@ -202,6 +202,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 1001,
                 .{
                     .render_indicators = options.render_indicators,
+                    .show_empty_decorations = normalized_options.show_empty_decorations,
+                    .use_true_inline_view = normalized_options.use_true_inline_view and is_inline,
                     // The diff owns its combined overview ruler, not the
                     // individual editors' decoration rulers.
                     .render_overview_ruler = false,
@@ -286,7 +288,9 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 self.setFocus(.modified);
                 self.original_view.detach();
             }
-            try self.decorations.update(self.state().?, self.options.show_moves and !inline_mode);
+            var config = self.decorations.config;
+            config.use_true_inline_view = self.options.use_true_inline_view and inline_mode;
+            try self.decorations.setConfig(config, self.state().?, self.options.show_moves and !inline_mode);
         }
 
         pub fn layout(self: *Self, width: usize, height: usize) void {
@@ -310,6 +314,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             const widths = self.paneWidths();
             self.original_editor.setViewport(widths.original, self.height);
             self.modified_editor.setViewport(widths.modified, self.height);
+            self.zones.use_true_inline_view = self.options.use_true_inline_view;
             self.zones.setMode(if (self.sideBySide()) .side_by_side else .inline_view);
             self.zones.endBatch();
             self.original_view.invalidate();
@@ -322,7 +327,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             const state_ = self.state() orelse return false;
             for (state_.mappings) |mapping| {
                 const change = mapping.line_range_mapping;
-                if (!change.original.isEmpty() and !change.modified.isEmpty()) return false;
+                if (!change.original.isEmpty() and !change.modified.isEmpty() and !(self.options.use_true_inline_view and view_zones.allowsTrueInlineDiffRendering(change))) return false;
             }
             return true;
         }

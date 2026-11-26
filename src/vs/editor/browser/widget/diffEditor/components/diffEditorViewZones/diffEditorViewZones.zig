@@ -206,6 +206,18 @@ const ViewLine = @import("../../../../viewParts/viewLines/viewLine.zig").ViewLin
 const ViewEventHandler = @import("../../../../../common/viewEventHandler.zig").ViewEventHandler;
 const events = @import("../../../../../common/viewEvents.zig");
 
+/// Port of allowsTrueInlineDiffRendering: original and modified inner
+/// changes must be single-line, except a deletion anchor at document start.
+pub fn allowsTrueInlineDiffRendering(mapping: diff_model.DetailedLineRangeMapping) bool {
+    const changes = mapping.inner_changes orelse return false;
+    for (changes) |change| {
+        const original = change.originalRange;
+        const modified = change.modifiedRange;
+        if (!(original.startLineNumber == original.endLineNumber and modified.startLineNumber == modified.endLineNumber) and !(original.startLineNumber == 1 and original.endLineNumber == 1 and original.startColumn == 1 and original.endColumn == 1)) return false;
+    }
+    return true;
+}
+
 /// Owns the alignment zones installed into the two real code editors. The
 /// upstream observable derivation is driven by the corresponding view events;
 /// own zone ids are excluded so an alignment transaction cannot feed back
@@ -220,6 +232,7 @@ pub const DiffEditorViewZones = struct {
     style_fn: ViewLine.PartStyleFn,
     decoration_bits_fn: *const fn ([]const u8) u32,
     render_indicators: bool,
+    use_true_inline_view: bool = false,
     updating: bool = false,
     syncing_scroll: bool = false,
     batch_depth: usize = 0,
@@ -384,7 +397,9 @@ pub const DiffEditorViewZones = struct {
             defer self.allocator.free(alignments);
             const options = self.renderOptions();
             for (alignments) |alignment| {
-                if (self.mode == .inline_view and alignment.diff_index != null) {
+                if (self.mode == .inline_view and alignment.diff_index != null and
+                    !(self.use_true_inline_view and allowsTrueInlineDiffRendering(self.mappings[alignment.diff_index.?].line_range_mapping)))
+                {
                     if (!alignment.original_range.isEmpty()) {
                         var measurement = try render_lines.measure(self.allocator, self.original.editor.model, alignment.original_range, &self.modified.editor.view_lines.classifier, options);
                         defer measurement.deinit();
