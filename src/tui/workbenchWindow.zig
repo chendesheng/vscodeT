@@ -411,6 +411,8 @@ pub const TerminalWorkbench = struct {
         request: *const fn (*anyopaque) void,
     } = null,
     context_menu_service: context_menus.ContextMenuService,
+    clipboard_service: @import("clipboardService.zig").ClipboardService,
+    clipboard_api: @import("../vs/platform/clipboard/common/clipboardService.zig").IClipboardService,
     context_menu_api: context_menus.IContextMenuService,
     sidebar_menus: sidebar_part_mod.SidebarViewMenus,
     editor_tab_menus: @import("../vs/workbench/browser/parts/editor/editorTabsControl.zig").EditorTabsControl,
@@ -528,6 +530,9 @@ pub const TerminalWorkbench = struct {
         self.frame_scheduler = null;
         self.context_menu_service = .init(allocator, self, reportMenuError);
         errdefer self.context_menu_service.deinit();
+        self.clipboard_service = .init(allocator);
+        errdefer self.clipboard_service.deinit();
+        self.clipboard_api = self.clipboard_service.interface();
         self.hovered_tab = null;
         self.hovered_pane = null;
         self.declarative = null;
@@ -1079,6 +1084,7 @@ pub const TerminalWorkbench = struct {
     fn registerNativeServices(self: *TerminalWorkbench) !void {
         self.context_menu_api = self.context_menu_service.interface();
         _ = try self.services.set(context_menus.context_menu_service_id, &self.context_menu_api);
+        _ = try self.services.set(@import("../vs/platform/clipboard/common/clipboardService.zig").clipboard_service_id, &self.clipboard_api);
         self.statusbar_api = self.statusbar.interface();
         _ = try self.services.set(statusbar_types.statusbar_service_id, &self.statusbar_api);
         self.sidebar_menus = .{
@@ -1602,6 +1608,7 @@ pub const TerminalWorkbench = struct {
         self.symbol_quick_access.deinit();
         if (self.outline_creator) |*creator| creator.dispose();
         self.context_menu_service.deinit();
+        self.clipboard_service.deinit();
         if (self.home_path) |home| {
             self.allocator.free(home);
             self.home_path = null;

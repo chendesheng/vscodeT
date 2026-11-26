@@ -61,6 +61,7 @@ pub const TerminalHostLoop = struct {
         errdefer workbench.allocator.destroy(wake);
         wake.* = try WakeSignal.init();
         workbench.window_events.setWake(.{ .context = wake, .signal = WakeSignal.notify });
+        workbench.clipboard_service.attachOutput(output);
         return .{ .worker_wake = wake, .workbench = workbench, .output = output, .input_buffer = buffer };
     }
 
@@ -74,6 +75,7 @@ pub const TerminalHostLoop = struct {
     }
 
     pub fn deinit(self: *TerminalHostLoop) void {
+        self.workbench.clipboard_service.attachOutput(null);
         self.workbench.window_events.setWake(null);
         self.worker_wake.deinit();
         self.workbench.allocator.destroy(self.worker_wake);
