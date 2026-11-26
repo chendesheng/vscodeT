@@ -12528,7 +12528,6 @@ test "Diff editor glyph hover follows real pane mouse targets, settings and boun
     const diff = tab.diff.?.widget;
     try std.testing.expect(diff.sideBySide());
     const model = @import("../vs/editor/common/model.zig");
-    const Range = @import("../vs/editor/common/core/range.zig").Range;
     var left = model.ModelDecorationOptions.init("left-hover", .AlwaysGrowsWhenTypingAtEdges);
     left.glyphMarginClassName = "glyph-error";
     left.glyphMarginHoverMessage = &.{"Original glyph hover"};
