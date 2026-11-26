@@ -49,6 +49,7 @@ const WindowContextKeys = struct {
     diff_modified_uri: contextkeys.IContextKey,
     editor_text_focus: contextkeys.IContextKey,
     editor_lang_id: contextkeys.IContextKey,
+    editor_has_code_lens_provider: contextkeys.IContextKey,
     active_custom_editor_id: contextkeys.IContextKey,
     input_focus: contextkeys.IContextKey,
     list_focus: contextkeys.IContextKey,
@@ -84,6 +85,7 @@ const WindowContextKeys = struct {
             .comparing_moved_code = try service.createKey("comparingMovedCode", .{ .boolean = false }),
             .diff_original_uri = try service.createKey("diffEditorOriginalUri", .{ .string = "" }),
             .diff_modified_uri = try service.createKey("diffEditorModifiedUri", .{ .string = "" }),
+            .editor_has_code_lens_provider = try service.createKey("editorHasCodeLensProvider", .{ .boolean = false }),
             .editor_lang_id = try service.createKey("editorLangId", .{ .string = "" }),
             .active_custom_editor_id = try service.createKey("activeCustomEditorId", .{ .string = "" }),
             .editor_text_focus = try service.createKey("editorTextFocus", .{ .boolean = false }),
@@ -123,6 +125,7 @@ pub const WorkbenchContextKeysHandler = struct {
     language_visible: bool = false,
     language_listener: ?usize = null,
     read_only_listener: ?usize = null,
+    code_lens_provider_listener: ?usize = null,
     working_copy_service: *WorkingCopyService,
     dirty_working_copies: contextkeys.IContextKey,
     in_zen_mode: contextkeys.IContextKey,
@@ -254,7 +257,11 @@ pub const WorkbenchContextKeysHandler = struct {
         const active = editor orelse return;
         const language_listener = try active.model.listenDidChangeLanguage(self, onLanguageChanged);
         errdefer active.model.removeDidChangeLanguageListener(language_listener);
-        self.read_only_listener = try active.on_did_change_read_only.listen(self, onReadOnlyChanged);
+        const read_only_listener = try active.on_did_change_read_only.listen(self, onReadOnlyChanged);
+        errdefer active.on_did_change_read_only.unlisten(read_only_listener);
+        self.code_lens_provider_listener = try active.on_did_change_code_lens_provider.listen(self, onCodeLensProviderChanged);
+        self.window_keys.editor_has_code_lens_provider.set(.{ .boolean = active.has_code_lens_provider });
+        self.read_only_listener = read_only_listener;
         self.language_listener = language_listener;
         self.active_editor = active;
     }
@@ -263,6 +270,9 @@ pub const WorkbenchContextKeysHandler = struct {
         if (self.active_editor != editor) return;
         if (self.language_listener) |listener| editor.model.removeDidChangeLanguageListener(listener);
         if (self.read_only_listener) |listener| editor.on_did_change_read_only.unlisten(listener);
+        if (self.code_lens_provider_listener) |listener| editor.on_did_change_code_lens_provider.unlisten(listener);
+        self.code_lens_provider_listener = null;
+        self.window_keys.editor_has_code_lens_provider.set(.{ .boolean = false });
         self.language_listener = null;
         self.read_only_listener = null;
         self.active_editor = null;
@@ -270,6 +280,10 @@ pub const WorkbenchContextKeysHandler = struct {
 
     fn onLanguageChanged(_: ModelLanguageChangedEvent, self: *@This()) !void {
         if (self.active_editor) |editor| self.window_keys.editor_lang_id.set(.{ .string = if (self.language_visible) editor.languageId() else "" });
+    }
+
+    fn onCodeLensProviderChanged(has_provider: bool, self: *@This()) !void {
+        self.window_keys.editor_has_code_lens_provider.set(.{ .boolean = has_provider });
     }
 
     fn onReadOnlyChanged(read_only: bool, self: *@This()) !void {

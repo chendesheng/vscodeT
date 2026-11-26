@@ -50,6 +50,7 @@ const TextEditorCursorStyle = standaloneEnums.TextEditorCursorStyle;
 const supported_options = [_]EditorOption{
     .allowOverflow,
     .columnSelection,
+    .codeLens,
     .disableLayerHinting,
     .disableMonospaceOptimizations,
     .doubleClickSelectsBlock,
@@ -132,6 +133,7 @@ pub fn optionField(comptime option: EditorOption) []const u8 {
     return switch (option) {
         .allowOverflow => "allow_overflow",
         .columnSelection => "column_selection",
+        .codeLens => "code_lens",
         .disableLayerHinting => "disable_layer_hinting",
         .disableMonospaceOptimizations => "disable_monospace_optimizations",
         .doubleClickSelectsBlock => "double_click_selects_block",
@@ -223,6 +225,7 @@ pub const ComputedEditorOptions = struct {
     double_click_selects_block: bool = true,
     fixed_overflow_widgets: bool = false,
     glyph_margin: bool = true,
+    code_lens: bool = true,
     hide_cursor_in_overview_ruler: bool = false,
     inertial_scroll: bool = false,
     overview_ruler_border: bool = true,
@@ -396,5 +399,6 @@ test "ComputedEditorOptions exposes the supported options" {
         _ = options.read(option);
         _ = view.get(option);
     }
-    try std.testing.expectEqual(@as(usize, 74), supported_options.len);
+    try std.testing.expectEqual(@as(usize, 75), supported_options.len);
+    try std.testing.expect(options.get(.codeLens));
 }

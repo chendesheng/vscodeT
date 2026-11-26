@@ -10091,6 +10091,64 @@ test "Diff editor commands resolve the active snapshot pane through their servic
     try std.testing.expect(wb.activeTab().?.editor.isReadOnly());
 }
 
+test "Diff editor commands: CodeLens action uses the active provider context and command picker" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const TextModel = @import("../vs/editor/common/model/textModel.zig").TextModel;
+    const Provider = struct {
+        runs: usize = 0,
+        fn provide(_: *anyopaque, arena: Allocator, _: *TextModel, _: CancellationToken) !?languages.CodeLensList {
+            return .{ .lenses = try arena.dupe(languages.CodeLens, &.{.{ .range = Range.init(1, 1, 1, 1), .command = .{ .id = "test.runLens", .title = "Run lens" } }}) };
+        }
+        fn run(context: *anyopaque) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.runs += 1;
+        }
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(a, io, &tmp, "lens.txt", "old");
+    defer a.free(path);
+    const window = try TestWindow.init(a, io, &.{}, 100, 12);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.enableLanguageFeatures();
+    try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "old", "new", "Original", "Modified");
+    const tab = wb.activeTab().?;
+    const widget = tab.diff.?.widget;
+    var options = widget.options;
+    options.diff_code_lens = true;
+    _ = try widget.updateOptions(options);
+    var provider: Provider = .{};
+    try wb.commands.registerCommand(.{ .id = "test.runLens", .context = &provider, .run = Provider.run }, .{ .id = "test.runLens", .title = "Run lens" }, .{ .show_in_palette = false });
+    defer wb.commands.unregister("test.runLens");
+    const registration = try wb.language_features.?.code_lens_provider.register(.{ .language = "*" }, .{ .context = &provider, .provide_code_lenses = Provider.provide });
+    var registered = true;
+    defer if (registered) registration.dispose();
+    for (0..24) |_| _ = wb.window_events.dispatch(std.math.maxInt(i64));
+    try std.testing.expect(tab.code_lens.?.enabled);
+    try std.testing.expect(tab.editor.has_code_lens_provider);
+    const source = wb.commands.source();
+    const picks = try source.get_picks(source.context, a);
+    defer a.free(picks);
+    for (picks) |pick| {
+        if (std.mem.eql(u8, pick.command_id, "codelens.showLensesInCurrentLine")) break;
+    } else return error.CodeLensCommandMissing;
+    try wb.commands.execute("codelens.showLensesInCurrentLine");
+    for (0..12) |_| _ = wb.window_events.dispatch(std.math.maxInt(i64));
+    try std.testing.expect(wb.quick_access.isPickOpen());
+    const picker = wb.quick_access.inputService().pickerRef();
+    try std.testing.expectEqualStrings("Run lens", picker.activeItem().?.label);
+    picker.accept();
+    try std.testing.expectEqual(1, provider.runs);
+    registration.dispose();
+    registered = false;
+    try std.testing.expect(!tab.editor.has_code_lens_provider);
+    const after = try source.get_picks(source.context, a);
+    defer a.free(after);
+    for (after) |pick| try std.testing.expect(!std.mem.eql(u8, pick.command_id, "codelens.showLensesInCurrentLine"));
+}
+
 test "Diff editor commands: retained title menu exposes navigation, toggles and view modes" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;

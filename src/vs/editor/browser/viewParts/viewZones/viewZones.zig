@@ -83,6 +83,7 @@ pub const ViewZones = struct {
             }.removeAll) catch {};
         }
         self.zones.deinit(self.allocator);
+        self.releaseRetiredNodes(null);
         self.retired_nodes.deinit(self.allocator);
     }
 
@@ -158,8 +159,16 @@ pub const ViewZones = struct {
             const zone = owner.zones.get(id) orelse return;
             try owner.retired_nodes.ensureUnusedCapacity(owner.allocator, 2);
             try self.whitespace.remove(id);
-            if (zone.content.node) |node| owner.retired_nodes.appendAssumeCapacity(node);
-            if (zone.margin.node) |node| owner.retired_nodes.appendAssumeCapacity(node);
+            // Dispose focus and hit-testing immediately. Recycling waits for
+            // the next retained paint so an in-flight event can finish.
+            if (zone.content.node) |node| {
+                node.remove();
+                owner.retired_nodes.appendAssumeCapacity(node);
+            }
+            if (zone.margin.node) |node| {
+                node.remove();
+                owner.retired_nodes.appendAssumeCapacity(node);
+            }
             _ = owner.zones.remove(id);
             owner.base.handler.forceShouldRender();
         }
@@ -273,13 +282,17 @@ pub const ViewZones = struct {
         self.retired_nodes.clearRetainingCapacity();
     }
 
+    pub fn releaseRetiredNodes(self: *ViewZones, host: ?*browser.RetainedViewPartHost) void {
+        for (self.retired_nodes.items) |node| destroyNode(node.document, node, host);
+        self.retired_nodes.clearRetainingCapacity();
+    }
+
     pub fn renderDocument(self: *ViewZones, doc: *ui.Document, content_root: *ui.Node, margin_root: *ui.Node, gutter: usize, text_width: usize, scroll_left: usize, host: ?*browser.RetainedViewPartHost) !void {
         if (self.render_error) |err| {
             self.render_error = null;
             return err;
         }
-        for (self.retired_nodes.items) |node| destroyNode(doc, node, host);
-        self.retired_nodes.clearRetainingCapacity();
+        self.releaseRetiredNodes(host);
         const viewport_height = if (self.editor) |editor| editor.textHeight() else 0;
         var values = self.zones.valueIterator();
         while (values.next()) |zone| {

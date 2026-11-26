@@ -21,6 +21,7 @@ pub const editor_group = @import("../../workbench/browser/parts/editor/media/edi
 pub const search_view = @import("../../workbench/contrib/search/browser/media/searchview_css.zig");
 pub const search_editor = @import("../../workbench/contrib/searchEditor/browser/media/searchEditor_css.zig");
 pub const scm = @import("../../workbench/contrib/scm/browser/media/scm_css.zig");
+pub const codelens = @import("../contrib/codelens/browser/codelensWidget_css.zig");
 pub const diff_editor = @import("widget/diffEditor/style_css.zig");
 pub const code_editor = @import("widget/codeEditor/editor_css.zig");
 
@@ -40,6 +41,7 @@ pub fn register(doc: *ui.Document) !void {
     _ = try doc.registerSheet(folding_css.sheet);
     _ = try doc.registerSheet(code_editor.sheet);
     _ = try doc.registerSheet(diff_editor.sheet);
+    _ = try doc.registerSheet(codelens.sheet);
 }
 
 pub fn registerWorkbench(doc: *ui.Document) !void {

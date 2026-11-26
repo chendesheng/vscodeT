@@ -190,6 +190,8 @@ pub const Tab = struct {
     input: *EditorInput,
     controllers: ?*Controllers = null,
     original_controllers: ?*Controllers = null,
+    code_lens: ?*@import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution = null,
+    original_code_lens: ?*@import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution = null,
     diff: ?*DiffView = null,
     control_change_service: ?*groups.EditorGroupsService = null,
     markdown_preview: ?*MarkdownPreview = null,
@@ -444,6 +446,32 @@ pub const Tab = struct {
         return .{ .group = group, .resource = resource, .state = try diff.computeEditorViewState(allocator) };
     }
 
+    fn codeLensColors(palette: ?*const theme_colors_mod.ThemeColors) @import("../../../../editor/contrib/codelens/browser/codelensWidget.zig").Colors {
+        const colors = palette orelse return .{};
+        return .{ .foreground = colors.color("editorCodeLens.foreground", .{ 130, 130, 130 }), .hover = colors.color("editorLink.activeForeground", .{ 82, 170, 255 }) };
+    }
+
+    pub fn attachCodeLensServices(self: *Tab, features: *LanguageFeaturesService, cache: *@import("../../../../editor/contrib/codelens/browser/codeLensCache.zig").CodeLensCache, commands: @import("../../../../editor/contrib/codelens/browser/codelensWidget.zig").CommandHost, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+        if (self.image_preview != null or self.terminal_input != null or self.markdown_panel != null) return;
+        const Contribution = @import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution;
+        if (self.code_lens == null) {
+            self.code_lens = Contribution.create(self.allocator, self.editor, self.view.terminal_view_host, self.view.viewZones(), features.interface(), cache, commands, window) catch null;
+            if (self.code_lens) |lens| lens.setColors(codeLensColors(self.view.themeColors()));
+        }
+        if (self.diff) |diff| if (self.original_code_lens == null) {
+            const view = diff.widget.original_view;
+            self.original_code_lens = Contribution.create(self.allocator, diff.widget.original_editor, view.terminal_view_host, view.viewZones(), features.interface(), cache, commands, window) catch null;
+            if (self.original_code_lens) |lens| lens.setColors(codeLensColors(view.themeColors()));
+        };
+    }
+
+    pub fn detachCodeLensServices(self: *Tab) void {
+        if (self.code_lens) |lens| lens.dispose();
+        if (self.original_code_lens) |lens| lens.dispose();
+        self.code_lens = null;
+        self.original_code_lens = null;
+    }
+
     pub fn attachDiffBreadcrumbs(self: *Tab, features: *LanguageFeaturesService, models: *@import("../../../../editor/contrib/documentSymbols/browser/outlineModel.zig").OutlineModelService) void {
         const diff = self.diff orelse return;
         if (diff.widget.breadcrumbs_factory != null) return;
@@ -504,6 +532,8 @@ pub const Tab = struct {
         } else self.view.setThemeColors(palette);
         if (self.controllers) |controllers| controllers.setThemeColors(palette);
         if (self.original_controllers) |controllers| controllers.setThemeColors(palette);
+        if (self.code_lens) |lens| lens.setColors(codeLensColors(palette));
+        if (self.original_code_lens) |lens| lens.setColors(codeLensColors(palette));
     }
 
     pub fn refresh(self: *Tab) !void {
@@ -571,6 +601,7 @@ pub const Tab = struct {
         if (changed) {
             if (self.editor == diff.widget.original_editor) {
                 std.mem.swap(?*Controllers, &self.controllers, &self.original_controllers);
+                std.mem.swap(@TypeOf(self.code_lens), &self.code_lens, &self.original_code_lens);
             } else {
                 if (self.controllers) |controllers| controllers.deinit();
                 if (self.original_controllers) |controllers| controllers.deinit();
@@ -1025,6 +1056,7 @@ pub const Tab = struct {
     }
 
     pub fn deinit(self: *Tab) void {
+        self.detachCodeLensServices();
         // Disposable.onWillDispose: detach consumers while the code editor's
         // event handlers and its model still exist.
         if (self.on_will_dispose) |*event| {

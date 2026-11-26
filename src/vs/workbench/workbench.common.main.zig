@@ -8,6 +8,7 @@ pub fn createServices(allocator: std.mem.Allocator) !ServiceCollection {
     var services = ServiceCollection.init(allocator);
     errdefer services.deinit();
     try @import("../editor/contrib/documentSymbols/browser/outlineModel.zig").registerSingleton(&services);
+    try @import("../editor/contrib/codelens/browser/codeLensCache.zig").registerSingleton(&services);
     return services;
 }
 
@@ -152,6 +153,7 @@ pub fn registerActions(commands: *CommandRegistry, instantiation: *Instantiation
     for (@import("../editor/contrib/indentation/browser/indentation.zig").reindent_actions) |action| try commands.registerEditorAction(instantiation, action);
     for (@import("../editor/contrib/folding/browser/folding.zig").editor_actions) |action| try commands.registerEditorAction(instantiation, action);
     for (sticky_actions.editor_actions) |action| try commands.registerEditorAction(instantiation, action);
+    try commands.registerEditorAction(instantiation, @import("../editor/contrib/codelens/browser/codelensController.zig").show_lenses_action);
     for (@import("../editor/contrib/wordHighlighter/browser/wordHighlighter.zig").navigation_actions) |action| try commands.registerEditorAction(instantiation, action);
 }
 

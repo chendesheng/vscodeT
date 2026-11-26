@@ -445,6 +445,7 @@ pub fn OptionValueType(comptime option: EditorOption) type {
     return switch (option) {
         .allowOverflow,
         .columnSelection,
+        .codeLens,
         .disableLayerHinting,
         .disableMonospaceOptimizations,
         .doubleClickSelectsBlock,

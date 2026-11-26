@@ -30,6 +30,7 @@ pub const Options = struct {
     show_empty_decorations: bool = true,
     use_true_inline_view: bool = false,
     diff_word_wrap: DiffWordWrap = .inherit,
+    diff_code_lens: bool = false,
     render_side_by_side: bool = true,
     read_only: bool = false,
     original_editable: bool = false,

@@ -142,6 +142,15 @@ pub fn applyViewSettings(
     mark(changed, .find, any);
     options.set(.find, find);
 
+    inline for (.{ .{ .key = "editor.glyphMargin", .option = EditorOption.glyphMargin }, .{ .key = "editor.codeLens", .option = EditorOption.codeLens } }) |setting| {
+        if (readBool(reader, setting.key, language_id, resource)) |enabled| {
+            const previous = options.get(setting.option);
+            mark(changed, setting.option, previous != enabled);
+            any = any or previous != enabled;
+            options.set(setting.option, enabled);
+        }
+    }
+
     if (readString(reader, "editor.lineNumbers", language_id, resource)) |text| {
         if (parseLineNumbers(text)) |value| {
             const previous = options.get(.lineNumbers).render_type;

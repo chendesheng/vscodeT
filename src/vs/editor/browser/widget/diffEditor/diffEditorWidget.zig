@@ -184,6 +184,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         diff_listener: ?usize = null,
         context_state: ContextState = .{},
         on_did_change_context: Emitter(void),
+        on_did_change_focused_side: Emitter(Side),
         laying_out: bool = false,
         layout_pending: bool = false,
 
@@ -396,6 +397,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .inline_mode = is_inline,
                 .view_model = diff_model,
                 .on_did_change_context = Emitter(void).init(allocator),
+                .on_did_change_focused_side = Emitter(Side).init(allocator),
                 .accessible_viewer = accessible_module.AccessibleDiffViewer.init(allocator),
                 .inline_margin_menu = .{ .allocator = allocator },
                 .decorations = decorations,
@@ -407,6 +409,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             model_owned = false;
             self.gutter_toolbar = .{ .allocator = allocator, .model = &self.view_model, .original = original_editor, .modified = modified_editor };
             errdefer self.on_did_change_context.deinit();
+            errdefer self.on_did_change_focused_side.deinit();
             errdefer self.view_model.deinit();
             try self.view_model.initializeUnchangedRegions(normalized_options.hide_unchanged_regions, normalized_options.hide_unchanged_regions_minimum_line_count, normalized_options.hide_unchanged_regions_context_line_count);
             self.overview.init(allocator, original_editor, modified_editor);
@@ -455,6 +458,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             allocator.destroy(self.decorations);
             self.view_model.deinit();
             self.on_did_change_context.deinit();
+            self.on_did_change_focused_side.deinit();
 
             self.original_view.deinit();
             self.modified_view.deinit();
@@ -633,7 +637,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.revert_buttons.setEnabled(self.options.render_margin_revert_icon and self.sideBySide() and !self.options.read_only and !self.options.render_gutter_menu) catch {};
             self.moved_blocks.recomputeGeometry() catch {};
             diff_editor_editors.applyWordWrap(self.original_editor, self.modified_editor, self.options.diff_word_wrap, self.sideBySide());
-            diff_editor_editors.applySubEditorOptions(self.original_view, self.modified_view, self.sideBySide(), self.options.hide_unchanged_regions);
+            diff_editor_editors.applySubEditorOptions(self.original_view, self.modified_view, self.sideBySide(), self.options.hide_unchanged_regions, self.options.diff_code_lens);
             const widths = self.paneWidths();
             self.original_editor.setViewport(widths.original, self.height);
             self.modified_editor.setViewport(widths.modified, self.height);
@@ -752,6 +756,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.moved_blocks.setFocusedSide(side == .original);
             self.focusedView().focusEditor();
             if (was_focused) _ = self.focusedView().setFocused(true);
+            self.on_did_change_focused_side.fire(side) catch {};
         }
 
         pub fn setEditorFocused(self: *Self, focused: bool) void {

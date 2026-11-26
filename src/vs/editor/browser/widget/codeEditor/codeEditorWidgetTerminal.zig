@@ -627,6 +627,9 @@ pub const Editor = struct {
     scroll_listeners: std.array_list.Managed(ChangeListener),
     working_copy_save_listeners: std.array_list.Managed(ChangeListener),
     on_did_change_dirty: Emitter(void),
+    on_did_layout_change: Emitter(void),
+    on_did_change_code_lens_provider: Emitter(bool),
+    has_code_lens_provider: bool = false,
     screen_width: usize,
     screen_height: usize,
     /// Terminal default is soft wrap on; a configured `editor.wordWrap`
@@ -952,6 +955,8 @@ pub const Editor = struct {
             .scroll_listeners = std.array_list.Managed(ChangeListener).init(allocator),
             .working_copy_save_listeners = std.array_list.Managed(ChangeListener).init(allocator),
             .on_did_change_dirty = Emitter(void).init(allocator),
+            .on_did_layout_change = Emitter(void).init(allocator),
+            .on_did_change_code_lens_provider = Emitter(bool).init(allocator),
             .screen_width = @max(width, 1),
             .screen_height = @max(height, 1),
             .status_row = true,
@@ -1809,6 +1814,8 @@ pub const Editor = struct {
         if (self.keybindings) |service| service.deinit();
         self.shortcut_commands.deinit();
         self.on_did_change_dirty.deinit();
+        self.on_did_layout_change.deinit();
+        self.on_did_change_code_lens_provider.deinit();
         for (self.last_content_changes.items) |change| self.allocator.free(change.text);
         self.last_content_changes.deinit();
 
@@ -2182,6 +2189,12 @@ pub const Editor = struct {
     pub fn unregisterContribution(self: *Editor, comptime Contribution: type, value: *Contribution) void {
         const registered = self.getContribution(Contribution) orelse return;
         if (registered == value) _ = self.contributions.remove(Contribution.ID);
+    }
+
+    pub fn setHasCodeLensProvider(self: *Editor, has_provider: bool) void {
+        if (self.has_code_lens_provider == has_provider) return;
+        self.has_code_lens_provider = has_provider;
+        self.on_did_change_code_lens_provider.fire(has_provider) catch {};
     }
 
     pub fn setReadOnly(self: *Editor, read_only: bool) void {
@@ -2958,10 +2971,12 @@ pub const Editor = struct {
     }
 
     pub fn setViewport(self: *Editor, width: usize, height: usize) void {
+        const changed = self.screen_width != @max(width, 1) or self.screen_height != @max(height, 1);
         self.screen_width = @max(width, 1);
         self.screen_height = @max(height, 1);
         self.refreshLayout() catch |err| self.setMessage("layout error: {s}", .{@errorName(err)});
         self.ensureCursorVisible();
+        if (changed) self.on_did_layout_change.fire({}) catch {};
     }
 
     /// Reserves rightmost text columns for the view's scrollbar/overview ruler.

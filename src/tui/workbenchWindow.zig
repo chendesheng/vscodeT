@@ -433,6 +433,7 @@ pub const TerminalWorkbench = struct {
     word_completion_provider: ?*WordBasedCompletionProvider = null,
     word_completion_registration: ?IDisposable = null,
     outline_creator: ?DocumentSymbolsOutlineCreator = null,
+    code_lens_cache: ?*@import("../vs/editor/contrib/codelens/browser/codeLensCache.zig").CodeLensCache = null,
     focus: Focus = .editor,
     focus_subscriptions: [5]?@import("../vs/base/common/event.zig").SignalSubscription = .{ null, null, null, null, null },
     terminal_focus_subscription: ?@import("../vs/base/common/event.zig").SignalSubscription = null,
@@ -836,6 +837,7 @@ pub const TerminalWorkbench = struct {
                     fn configure(context: *anyopaque, tab: *Tab) void {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
                         host.editor_configuration.applyToTab(tab);
+                        host.attachCodeLensServices(tab);
                         tab.attachDiffActionServices(host.clipboard_api, host.context_menu_api);
                         if (tab.diff != null) {
                             tab.attachDiffGutterServices(&host.menu_service, host.core.context_keys.getContext(), host.context_menu_api);
@@ -1076,8 +1078,6 @@ pub const TerminalWorkbench = struct {
         self.menu_service.useContextService(self.context_keys.?);
         try self.part.attachTitleMenus(.{ .menus = &self.menu_service, .parent_context = self.core.context_keys.getContext(), .context = self, .request_frame = requestWorkbenchFrame });
         errdefer self.part.disposeTitleMenus();
-        // The diff breadcrumb contribution borrows the shared outline service.
-        for (self.part.group_views.items) |pane| for (pane.tabs.items) |tab| tab.detachDiffBreadcrumbs();
         try self.panel_part.attachTitleMenu(&self.menu_service, self.core.context_keys.getContext());
         _ = try self.panel_part.on_did_change.listenSignal(self, struct {
             fn run(host: *TerminalWorkbench) !void {
@@ -1611,6 +1611,11 @@ pub const TerminalWorkbench = struct {
         // Detach them before those services are disposed, not with the later
         // native tab/view teardown.
         self.part.disposeTitleMenus();
+        // The diff breadcrumb contribution borrows the shared outline service.
+        for (self.part.group_views.items) |pane| for (pane.tabs.items) |tab| {
+            tab.detachDiffBreadcrumbs();
+            tab.detachCodeLensServices();
+        };
         if (self.context_keys != null) {
             self.terminal_context.deinit();
             self.workbench_context.deinit();
@@ -2571,6 +2576,7 @@ pub const TerminalWorkbench = struct {
         errdefer self.outline_creator = null;
         try self.outline_creator.?.register(&self.outline_service);
         self.outline_creator.?.models.attachWindow(&self.window_events);
+        self.code_lens_cache = try self.instantiation.invokeFunction(@import("../vs/editor/contrib/codelens/browser/codeLensCache.zig").getCodeLensCache, .{});
         self.language_features = features;
         self.marker_service = marker_service;
         self.marker_decorations = marker_decorations;
@@ -2590,8 +2596,23 @@ pub const TerminalWorkbench = struct {
                     tab.attachDiffBreadcrumbs(features, self.outline_creator.?.models);
                 }
                 tab.attachLanguageRegistry(features);
+                self.attachCodeLensServices(tab);
             }
         }
+    }
+
+    fn attachCodeLensServices(self: *TerminalWorkbench, tab: *Tab) void {
+        const features = self.language_features orelse return;
+        const cache = self.code_lens_cache orelse return;
+        tab.attachCodeLensServices(features, cache, .{ .context = self, .execute = struct {
+            fn execute(context: *anyopaque, command: @import("../vs/editor/common/languages.zig").Command) !void {
+                const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                const registered = host.commands.get(command.id) orelse return error.CommandNotFound;
+                if (command.arguments) |args| {
+                    try registered.executeWithArgument(@import("../vs/platform/commands/common/commands.zig").CommandArgument.from(std.json.Value, &args));
+                } else try registered.execute();
+            }
+        }.execute }, &self.window_events);
     }
 
     fn onMarkersChanged(_: MarkerChangeEvent, self: *TerminalWorkbench) !void {
@@ -3317,6 +3338,7 @@ pub const TerminalWorkbench = struct {
     fn configureCopiedPane(context: *anyopaque, tab: *Tab) void {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
         self.editor_configuration.applyToTab(tab);
+        self.attachCodeLensServices(tab);
         if (!tab.isImage()) self.registerWorkingCopy(tab);
         if (self.language_features) |features| tab.attachLanguageRegistry(features);
     }

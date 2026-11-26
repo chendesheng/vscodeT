@@ -63,7 +63,7 @@ pub const IEditorView = struct {
         clearGlyphHover: *const fn (*anyopaque) void,
         setTopInset: *const fn (*anyopaque, usize) void,
         applyEditorSettings: *const fn (*anyopaque, terminal_editor_config.Reader, ?[]const u8, ?[]const u8) anyerror!bool,
-        applySubEditorOptionOverrides: *const fn (*anyopaque, ?bool, ?bool) void,
+        applySubEditorOptionOverrides: *const fn (*anyopaque, ?bool, ?bool, ?bool) void,
         applyLineNumbersOverride: *const fn (*anyopaque, editor_options.RenderLineNumbersType) anyerror!void,
         setThemeColors: *const fn (*anyopaque, ?*const theme_colors_mod.ThemeColors) void,
         setMarkerSelectionHighlights: *const fn (*anyopaque, []const editorBrowser.Decoration) anyerror!void,
@@ -182,8 +182,8 @@ pub const IEditorView = struct {
         return self.vtable.applyEditorSettings(self.context, reader, language_id, resource);
     }
 
-    pub fn applySubEditorOptionOverrides(self: *IEditorView, glyph_margin: ?bool, sticky_scroll: ?bool) void {
-        self.vtable.applySubEditorOptionOverrides(self.context, glyph_margin, sticky_scroll);
+    pub fn applySubEditorOptionOverrides(self: *IEditorView, glyph_margin: ?bool, sticky_scroll: ?bool, code_lens: ?bool) void {
+        self.vtable.applySubEditorOptionOverrides(self.context, glyph_margin, sticky_scroll, code_lens);
     }
 
     pub fn applyLineNumbersOverride(self: *IEditorView, render_type: editor_options.RenderLineNumbersType) anyerror!void {
@@ -343,9 +343,9 @@ pub const IEditorView = struct {
                 const view: *Native = @ptrCast(@alignCast(context));
                 return view.applyEditorSettings(reader, language_id, resource);
             }
-            fn applySubEditorOptionOverrides(context: *anyopaque, glyph_margin: ?bool, sticky_scroll: ?bool) void {
+            fn applySubEditorOptionOverrides(context: *anyopaque, glyph_margin: ?bool, sticky_scroll: ?bool, code_lens: ?bool) void {
                 const view: *Native = @ptrCast(@alignCast(context));
-                view.applySubEditorOptionOverrides(glyph_margin, sticky_scroll);
+                view.applySubEditorOptionOverrides(glyph_margin, sticky_scroll, code_lens);
             }
             fn applyLineNumbersOverride(context: *anyopaque, render_type: editor_options.RenderLineNumbersType) anyerror!void {
                 const view: *Native = @ptrCast(@alignCast(context));

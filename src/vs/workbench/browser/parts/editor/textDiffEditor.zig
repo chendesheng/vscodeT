@@ -30,6 +30,7 @@ fn snapshotOptions(options: Options) Options {
 pub fn computeConfiguration(configuration_service: ?@import("../../../../platform/configuration/common/configuration.zig").IConfigurationService) Options {
     var options = snapshotOptions(.{});
     if (configuration_service) |configuration| {
+        options.diff_code_lens = configuration.getBool("diffEditor.codeLens", false);
         options.show_empty_decorations = configuration.getBool("diffEditor.experimental.showEmptyDecorations", true);
         options.use_true_inline_view = configuration.getBool("diffEditor.experimental.useTrueInlineView", false);
         options.ignore_trim_whitespace = configuration.getBool("diffEditor.ignoreTrimWhitespace", true);

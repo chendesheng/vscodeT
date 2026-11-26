@@ -1402,6 +1402,103 @@ pub fn Tests(comptime View: type) type {
             return null;
         }
 
+        test "diffEditorWidget: CodeLens providers render aligned zones and clickable resolved commands" {
+            const a = testing.allocator;
+            const Features = @import("../../../common/services/languageFeaturesService.zig").LanguageFeaturesService;
+            const Cache = @import("../../../contrib/codelens/browser/codeLensCache.zig").CodeLensCache;
+            const Contribution = @import("../../../contrib/codelens/browser/codelensController.zig").CodeLensContribution;
+            const TextModel = @import("../../../common/model/textModel.zig").TextModel;
+            const Range = @import("../../../common/core/range.zig").Range;
+            const languages = @import("../../../common/languages.zig");
+            const CancellationToken = @import("../../../../base/common/cancellation.zig").CancellationToken;
+            const dispatch = @import("../../../../base/common/windowDispatch.zig");
+            const Provider = struct {
+                provided: usize = 0,
+                resolved: usize = 0,
+                executed: usize = 0,
+                fn provide(context: *anyopaque, arena: std.mem.Allocator, model: *TextModel, _: CancellationToken) !?languages.CodeLensList {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    self.provided += 1;
+                    var first = try model.getLineContent(1);
+                    defer first.deinit();
+                    const line: usize = if (std.mem.eql(u8, first.items, "old")) 2 else 3;
+                    const lenses = try arena.dupe(languages.CodeLens, &.{ .{ .range = Range.init(line, 1, line, 1) }, .{ .range = Range.init(25, 1, 25, 1) } });
+                    return .{ .lenses = lenses };
+                }
+                fn resolve(context: *anyopaque, _: std.mem.Allocator, _: *TextModel, lens: languages.CodeLens, _: CancellationToken) !?languages.CodeLens {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    self.resolved += 1;
+                    var result = lens;
+                    result.command = .{ .id = "test.codeLens", .title = "Run lens" };
+                    return result;
+                }
+                fn execute(context: *anyopaque, command: languages.Command) !void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    try testing.expectEqualStrings("test.codeLens", command.id);
+                    self.executed += 1;
+                }
+            };
+            var features = Features.init(a);
+            defer features.deinit();
+            var cache: Cache = .{ .allocator = a };
+            defer cache.deinit();
+            var queue: dispatch.Queue = .{ .io = testing.io };
+            defer queue.deinitWindowEvents();
+            var provider: Provider = .{};
+            const registration = try features.code_lens_provider.register(.{ .language = "*" }, .{ .context = &provider, .provide_code_lenses = Provider.provide, .resolve_code_lens = Provider.resolve });
+            defer registration.dispose();
+            var original: std.ArrayList(u8) = .empty;
+            defer original.deinit(a);
+            var modified: std.ArrayList(u8) = .empty;
+            defer modified.deinit(a);
+            try original.appendSlice(a, "old\n");
+            try modified.appendSlice(a, "new\n");
+            for (0..30) |index| {
+                var line: [32]u8 = undefined;
+                const content = try std.fmt.bufPrint(&line, "line {d}\n", .{index});
+                try original.appendSlice(a, content);
+                try modified.appendSlice(a, content);
+            }
+            const widget = try DiffEditorWidget.create(View.init, a, testing.io, "a.txt", "b.txt", original.items, modified.items, "Original", "Modified", 120, 10, .{ .use_inline_view_when_space_is_limited = false });
+            defer widget.destroy();
+            const commands = @import("../../../contrib/codelens/browser/codelensWidget.zig").CommandHost{ .context = &provider, .execute = Provider.execute };
+            const left = try Contribution.create(a, widget.original_editor, widget.original_view.terminal_view_host, widget.original_view.viewZones(), features.interface(), &cache, commands, &queue);
+            defer left.dispose();
+            const right = try Contribution.create(a, widget.modified_editor, widget.modified_view.terminal_view_host, widget.modified_view.viewZones(), features.interface(), &cache, commands, &queue);
+            defer right.dispose();
+            try testing.expect(!left.enabled and !right.enabled);
+            var options = widget.options;
+            options.diff_code_lens = true;
+            _ = try widget.updateOptions(options);
+            try testing.expect(left.enabled and right.enabled);
+            for (0..12) |_| _ = queue.dispatch(std.math.maxInt(i64));
+            try testing.expectEqual(2, provider.provided);
+            try testing.expectEqual(2, provider.resolved);
+            try testing.expectEqual(2, left.widgets.items.len);
+            try testing.expectEqual(2, right.widgets.items.len);
+            const left_line = widget.original_editor.viewPositionOfModelPosition(.{ .lineNumber = 4, .column = 1 }).lineNumber;
+            const right_line = widget.modified_editor.viewPositionOfModelPosition(.{ .lineNumber = 4, .column = 1 }).lineNumber;
+            try testing.expectEqual(widget.original_editor.viewLayout().getVerticalOffsetForLineNumber(left_line, false), widget.modified_editor.viewLayout().getVerticalOffsetForLineNumber(right_line, false));
+            var frame = try ui.Frame.init(a, 120, 10);
+            defer frame.deinit();
+            try widget.paint(&frame, 0, 0, 120, 10);
+            const Hit = struct { x: usize, y: usize };
+            const hit = blk: {
+                for (0..10) |y| for (widget.paneWidths().modifiedLeft()..120 - widget.paneWidths().overview) |x| {
+                    if (frame.next.cluster[frame.next.index(x, y)] == 'R') break :blk Hit{ .x = x, .y = y };
+                };
+                return error.CodeLensMissing;
+            };
+            var mouse: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = hit.x, .y = hit.y };
+            try testing.expect(try widget.dispatchMouse(&mouse));
+            try testing.expectEqual(1, provider.executed);
+            options.diff_code_lens = false;
+            _ = try widget.updateOptions(options);
+            try testing.expect(!left.enabled and !right.enabled);
+            try testing.expectEqual(0, left.widgets.items.len);
+            try testing.expectEqual(0, right.widgets.items.len);
+        }
+
         test "diffEditorWidget: inner editor options follow inline and hide-unchanged layout" {
             const a = testing.allocator;
             const widget = try DiffEditorWidget.create(View.init, a, testing.io, "a.txt", "b.txt", "old", "new", "Original", "Modified", 100, 8, .{ .use_inline_view_when_space_is_limited = false });
