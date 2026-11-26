@@ -122,8 +122,12 @@ Changes:
 - `m` match mode: `mm` matching bracket, `ms`/`md`/`mr` add/delete/replace a
   simple bracket or quote surround, and `mi`/`ma` select inside/around a
   text object. Text objects are `w`/`W` (word/WORD), `p` (paragraph), a
-  specified bracket or quote (`(`, `[`, `{`, `<`, `"`, `'`, `` ` ``), or `m`
-  for the closest surround pair. Tree-sitter-only objects (`f`, `t`, `a`, `c`,
+  specified bracket or quote (`(`, `[`, `{`, `"`, `'`, `` ` ``), or `m`
+  for the closest surround pair. Bracket matching and bracket text objects use
+  the editor's token-aware bracket-pair AST, so they follow the language's
+  configured bracket pairs and skip brackets inside comments and strings.
+  `<`/`>` is available only when the language configuration declares it
+  (plaintext declares `()[]{}`). Tree-sitter-only objects (`f`, `t`, `a`, `c`,
   `T`, `g`, `x`) report that the grammar object is unavailable.
 - `z` and `Z` view mode: `zc`/`zz` center, `zt` top, `zb` bottom, `zj`/`zk`
   scroll one line, `Ctrl-d`/`Ctrl-u`/`Ctrl-f`/`Ctrl-b` page. `zm` is a no-op

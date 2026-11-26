@@ -454,11 +454,14 @@ pub const LanguageConfigurationService = struct {
         // registry so priority merging and invalidation use the upstream path.
         if (self.language_service.getLanguageConfiguration(language_id)) |config| {
             var registration = self.registry.register(language_id, config, 0) catch
-                return self.registry.getLanguageConfiguration("plaintext");
+                return null;
             registration.disposed = true;
             return self.registry.getLanguageConfiguration(language_id);
         }
-        return self.registry.getLanguageConfiguration("plaintext");
+        // Upstream resolves an empty configuration for a registered language
+        // that has no entries. `null` is the port's representation of that
+        // empty configuration for bracket consumers.
+        return null;
     }
 
     fn get(self: *LanguageConfigurationService, language_id: []const u8) ResolvedLanguageConfiguration {

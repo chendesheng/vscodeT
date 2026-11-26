@@ -63,8 +63,7 @@ pub const BracketMatchingController = struct {
     }
 
     /// The AST parser consumes token metadata and the headless tests do not
-    /// attach a view, so the AST path still tokenizes the model. The terminal
-    /// uses the fallback matcher, which tokenizes only the lines it scans.
+    /// attach a view, so tokenize the model before querying the AST.
     fn ensureTokenized(self: *BracketMatchingController) void {
         var line_number: usize = 1;
         while (line_number <= self.model.getLineCount()) : (line_number += 1) {

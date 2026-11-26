@@ -8,8 +8,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
 const TextModel = @import("../../textModel.zig").TextModel;
-const LanguageService = @import("../../../services/languageService.zig").LanguageService;
-const LanguageConfiguration = @import("../../../languages/languageConfiguration.zig").LanguageConfiguration;
+const LanguageConfigurationService = @import("../../../languages/languageConfigurationRegistry.zig").LanguageConfigurationService;
 const CharacterPair = @import("../../../languages/languageConfiguration.zig").CharacterPair;
 const Range = @import("../../../core/range.zig").Range;
 const Position = @import("../../../core/position.zig").Position;
@@ -97,8 +96,8 @@ pub fn allLinesHaveAccurateTokens(model: *TextModel) bool {
     return model.getLineCount() == 0 or model.hasAccurateTokensForLine(model.getLineCount());
 }
 
-pub fn parseDocument(allocator: Allocator, model: *TextModel, languageService: *LanguageService, ids: *StringIdProvider) !ParsedDocument {
-    return parseDocumentIncremental(allocator, model, languageService, &.{}, null, ids);
+pub fn parseDocument(allocator: Allocator, model: *TextModel, languageConfigurationService: *LanguageConfigurationService, ids: *StringIdProvider) !ParsedDocument {
+    return parseDocumentIncremental(allocator, model, languageConfigurationService, &.{}, null, ids);
 }
 
 /// Parses an already tokenized stream. Takes ownership of `tokens`.
@@ -112,7 +111,7 @@ pub fn parseTokens(allocator: Allocator, tokens: ArrayList(Token)) !ParsedDocume
     return .{ .arena = arena, .root = root };
 }
 
-pub fn parseDocumentIncremental(allocator: Allocator, model: *TextModel, languageService: *LanguageService, edits: []const TextEditInfo, oldRoot: ?*AstNode, ids: *StringIdProvider) !ParsedDocument {
+pub fn parseDocumentIncremental(allocator: Allocator, model: *TextModel, languageConfigurationService: *LanguageConfigurationService, edits: []const TextEditInfo, oldRoot: ?*AstNode, ids: *StringIdProvider) !ParsedDocument {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     const a = arena.allocator();
@@ -129,7 +128,7 @@ pub fn parseDocumentIncremental(allocator: Allocator, model: *TextModel, languag
         brackets.deinit();
     }
 
-    var tokenizer = Tokenizer.init(allocator, model, languageService, ids, &brackets);
+    var tokenizer = Tokenizer.init(allocator, model, languageConfigurationService, ids, &brackets);
     defer tokenizer.deinit();
     // Terminal adaptation: colorization consumes token types. The fast tree is
     // only used for the *initial* build while tokens are incomplete; once an

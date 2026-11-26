@@ -402,7 +402,7 @@ pub const EditorDocument = struct {
         errdefer undo_redo.deinit();
 
         var encoding: encoding_mod.Encoding = .utf8;
-        const model = try createModel(allocator, io, path, language_id, undo_redo, language_service, text, loaded, &encoding);
+        const model = try createModel(allocator, io, path, language_id, undo_redo, language_service, language_config_service, text, loaded, &encoding);
         errdefer {
             model.deinit();
             allocator.destroy(model);
@@ -413,13 +413,6 @@ pub const EditorDocument = struct {
             try codec.register(detected);
             model.setLanguage(detected);
         }
-        // The fallback bracket matcher resolves RichEditBrackets through the
-        // terminal language-configuration host; the AST path does not need it.
-        model.bracketPairs().setLanguageConfigurationProvider(.{
-            .context = language_config_service,
-            .get = resolvedLanguageConfigurationForBrackets,
-        });
-
         const self = try allocator.create(EditorDocument);
         errdefer allocator.destroy(self);
         self.* = .{
@@ -5004,14 +4997,6 @@ fn digitsFor(line_count: usize) usize {
     return digits;
 }
 
-fn resolvedLanguageConfigurationForBrackets(
-    context: *anyopaque,
-    language_id: []const u8,
-) ?*const language_configuration_registry.ResolvedLanguageConfiguration {
-    const service: *LanguageConfigurationService = @ptrCast(@alignCast(context));
-    return service.resolved(language_id);
-}
-
 fn createModel(
     allocator: Allocator,
     io: Io,
@@ -5019,6 +5004,7 @@ fn createModel(
     language_id: []const u8,
     undo_redo: *UndoRedoService,
     language_service: *LanguageService,
+    language_configuration_service: *LanguageConfigurationService,
     text: ?[]const u8,
     loaded: ?*const LoadedText,
     encoding_out: *encoding_mod.Encoding,
@@ -5067,7 +5053,7 @@ fn createModel(
         .query = null,
         .fragment = null,
     };
-    return try TextModel.init(allocator, &fixed, language_id, options, associated, undo_redo, language_service);
+    return try TextModel.init(allocator, &fixed, language_id, options, associated, undo_redo, language_service, language_configuration_service);
 }
 
 fn guessFromFirstLine(service: *LanguageService, model: *TextModel) !?[]const u8 {
@@ -6955,6 +6941,21 @@ test "Editor: AST bracket matching (colorization disabled)" {
     disableBracketColorization(stringed.model);
     stringed.ensureTokensVisible();
     try std.testing.expect(stringed.model.bracketPairs().matchBracket(Position.init(1, 12), null) == null);
+}
+
+test "Editor: plaintext resolves the built-in bracket configuration" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "(a)", "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try editor.model.bracketPairs().updateNow();
+    const pair = editor.model.bracketPairs().matchBracket(Position.init(1, 1), null);
+    try std.testing.expect(pair != null);
+    try std.testing.expectEqual(@as(usize, 1), pair.?[0].startColumn);
+    try std.testing.expectEqual(@as(usize, 3), pair.?[1].startColumn);
 }
 
 test "Editor: read-only guards, line-number map and gutter width" {

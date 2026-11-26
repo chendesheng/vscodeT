@@ -26,6 +26,7 @@ const SearchData = Model.SearchData;
 const FindMatch = Model.FindMatch;
 const ModelContentChangedEvent = @import("../textModelEvents.zig").ModelContentChangedEvent;
 const LanguageConfigurationServiceChangeEvent = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationServiceChangeEvent;
+const LanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationService;
 const ModelRawContentChangedEvent = @import("../textModelEvents.zig").ModelRawContentChangedEvent;
 const PieceTreeTextBuffer = @import("./pieceTreeTextBuffer/pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
 const EditStack = @import("./editStack.zig").EditStack;
@@ -404,7 +405,7 @@ pub const TextModel = struct {
         self._eventEmitter.unlistenSlow(id);
     }
 
-    pub fn init(allocator: Allocator, source: *Io.Reader, languageId: []const u8, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService, languageService: *LanguageService) !*TextModel {
+    pub fn init(allocator: Allocator, source: *Io.Reader, languageId: []const u8, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService, languageService: *LanguageService, languageConfigurationService: *LanguageConfigurationService) !*TextModel {
         MODEL_ID += 1;
         var buffer = try createTextBuffer(allocator, source, creationOptions.defaultEOL);
         // Resolve the options (which may scan the buffer for indentation and
@@ -465,7 +466,7 @@ pub const TextModel = struct {
             ._decorations = std.AutoHashMap(u64, *IntervalNode).init(allocator),
             ._decorationsTree = DecorationsTrees.init(allocator),
             ._decorationProvider = ColorizedBracketPairsDecorationProvider.init(allocator, model),
-            ._bracketPairs = BracketPairsTextModelPart.init(allocator, model, languageService),
+            ._bracketPairs = BracketPairsTextModelPart.init(allocator, model, languageConfigurationService),
             ._guides = GuidesTextModelPart.init(model, languageService),
             ._commandManager = EditStack.init(model, undoRedoService),
             ._isUndoing = false,
@@ -2281,6 +2282,7 @@ fn createTestTextModel(allocator: Allocator, text: []const u8, undoRedoService: 
     const codec = try std.heap.page_allocator.create(LanguageIdCodec);
     codec.* = try LanguageIdCodec.init(std.heap.page_allocator);
     var languageService = LanguageService.init(std.heap.page_allocator, codec);
+    var languageConfigurationService = try LanguageConfigurationService.init(std.heap.page_allocator, &languageService);
 
     return try TextModel.init(
         allocator,
@@ -2303,6 +2305,7 @@ fn createTestTextModel(allocator: Allocator, text: []const u8, undoRedoService: 
         null,
         undoRedoService,
         &languageService,
+        &languageConfigurationService,
     );
 }
 

@@ -581,6 +581,10 @@ operations (`mi`/`ma`), and the `:` commands (`:w`, `:q`, `:q!`, `:wq`, `:e`,
 in Zig. Vim and Helix are mutually exclusive: enabling one disables and
 persists the other off. Helix Insert mode uses the regular editor key dispatch
 for suggestions, snippets, auto-closing pairs, and indentation.
+Bracket matching and bracket text objects in both engines use the ported VS
+Code bracket-pair AST, so they honor the language's configured bracket pairs
+and skip brackets inside comments and strings; `< >` text objects require a
+language configuration that declares them.
 See `docs/helix.md` for the supported surface and
 deliberate gaps.
 
@@ -1567,7 +1571,10 @@ Bracket-pair colorization:
   unmatched-closing detection. The upstream non-AST fallback matcher is ported
   as well; it is used for documents above the AST length limit. The AST
   is built lazily by visible bracket-guide and colorization queries, subject
-  to upstream’s maximum supported document length.
+  to upstream’s maximum supported document length. The native Vim and Helix
+  engines query this AST for `%`/`mm` and bracket text objects; the tokenizer
+  resolves language configurations through the same resolved configuration
+  service the fallback matcher uses, including the built-in plaintext default.
 - `ColorizedBracketPairsDecorationProvider` turns colorized brackets into
   `bracket-highlighting-N` / `unexpected-closing-bracket` decorations, honoring
   `bracketPairColorizationOptions`. The view resolves them before decorations,

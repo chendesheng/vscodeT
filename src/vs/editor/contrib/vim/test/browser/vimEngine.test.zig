@@ -953,6 +953,36 @@ test "Vim: macro insert, count and repeat" {
     try count.expectValue("def");
 }
 
+test "Vim: bracket text objects walk outward and span lines" {
+    const nested = try Harness.init(std.testing.allocator, "f([a])");
+    defer nested.deinit();
+    try nested.editor.setCursorPosition(Position.init(1, 4));
+    try nested.sendChar('d');
+    try nested.sendChar('i');
+    try nested.sendChar('(');
+    try nested.expectValue("f()");
+
+    const multiline = try Harness.init(std.testing.allocator, "f(\n  a\n)");
+    defer multiline.deinit();
+    try multiline.editor.setCursorPosition(Position.init(2, 3));
+    try multiline.sendChar('d');
+    try multiline.sendChar('i');
+    try multiline.sendChar('(');
+    try multiline.expectValue("f()");
+}
+
+test "Vim: percent searches the rest of the cursor line" {
+    const same_line = try Harness.init(std.testing.allocator, "x (a)");
+    defer same_line.deinit();
+    try same_line.sendChar('%');
+    try std.testing.expectEqual(@as(usize, 5), same_line.editor.modelCursorPosition().column);
+
+    const next_line = try Harness.init(std.testing.allocator, "x\n(a)");
+    defer next_line.deinit();
+    try next_line.sendChar('%');
+    try std.testing.expectEqual(Position.init(1, 1), next_line.editor.modelCursorPosition());
+}
+
 test "Vim: bracket and quote text objects, including b alias" {
     const paren = try Harness.init(std.testing.allocator, "f(a, (b), c)");
     defer paren.deinit();

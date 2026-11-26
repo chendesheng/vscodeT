@@ -15,8 +15,7 @@ const ArrayList = std.array_list.Managed;
 const Position = @import("../../../common/core/position.zig").Position;
 const Range = @import("../../../common/core/range.zig").Range;
 const TextModel = @import("../../../common/model/textModel.zig").TextModel;
-const language_configuration = @import("../../../common/languages/languageConfiguration.zig");
-const LanguageService = @import("../../../common/services/languageService.zig").LanguageService;
+const LanguageConfigurationService = @import("../../../common/languages/languageConfigurationRegistry.zig").LanguageConfigurationService;
 const languages = @import("../../../common/languages.zig");
 const SelectionRange = languages.SelectionRange;
 const SelectionRangeProvider = languages.SelectionRangeProvider;
@@ -52,7 +51,7 @@ pub const BracketSelectionRangeProvider = struct {
     ) ![]const []const SelectionRange {
         _ = self;
         ensureTokenized(model);
-        const service = model.bracketPairs().languageService;
+        const service = model.bracketPairs().languageConfigurationService;
 
         const result = try allocator.alloc([]SelectionRange, positions.len);
         errdefer allocator.free(result);
@@ -93,7 +92,7 @@ fn ensureTokenized(model: *TextModel) void {
 fn bracketsRight(
     allocator: Allocator,
     model: *TextModel,
-    service: *LanguageService,
+    service: *LanguageConfigurationService,
     start_position: Position,
     ranges: *std.StringHashMap(ArrayList(Range)),
     token: CancellationToken,
@@ -130,7 +129,7 @@ fn bracketsRight(
 fn bracketsLeft(
     allocator: Allocator,
     model: *TextModel,
-    service: *LanguageService,
+    service: *LanguageConfigurationService,
     start_position: Position,
     ranges: *std.StringHashMap(ArrayList(Range)),
     bucket: *ArrayList(SelectionRange),
@@ -215,24 +214,15 @@ fn addBracketLeading(bucket: *ArrayList(SelectionRange), model: *TextModel, brac
     }
 }
 
-fn configuration(service: *LanguageService, language_id: []const u8) ?language_configuration.LanguageConfiguration {
-    return service.getLanguageConfiguration(language_id);
+fn isOpeningBracket(service: *LanguageConfigurationService, language_id: []const u8, text: []const u8) bool {
+    const config = service.resolved(language_id) orelse return false;
+    return config.bracketsNew.getOpeningBracketInfo(text) != null;
 }
 
-fn isOpeningBracket(service: *LanguageService, language_id: []const u8, text: []const u8) bool {
-    const config = configuration(service, language_id) orelse return false;
-    const brackets = config.brackets orelse return false;
-    for (brackets) |pair| {
-        if (std.mem.eql(u8, pair[0], text)) return true;
-    }
-    return false;
-}
-
-fn openingBracketText(service: *LanguageService, language_id: []const u8, text: []const u8) ?[]const u8 {
-    const config = configuration(service, language_id) orelse return null;
-    const brackets = config.brackets orelse return null;
-    for (brackets) |pair| {
-        if (std.mem.eql(u8, pair[1], text)) return pair[0];
-    }
-    return null;
+fn openingBracketText(service: *LanguageConfigurationService, language_id: []const u8, text: []const u8) ?[]const u8 {
+    const config = service.resolved(language_id) orelse return null;
+    const closing = config.bracketsNew.getClosingBracketInfo(text) orelse return null;
+    const openings = closing.openingBrackets.values();
+    if (openings.len == 0) return null;
+    return openings[0].bracketText;
 }

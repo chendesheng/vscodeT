@@ -6,6 +6,7 @@ const TextModel = @import("../../../common/model/textModel.zig").TextModel;
 const TextModelCreationOptions = @import("../../../common/model.zig").TextModelCreationOptions;
 const UndoRedoService = @import("../../../../platform/undoRedo/common/undoRedoService.zig").UndoRedoService;
 const LanguageService = @import("../../../common/services/languageService.zig").LanguageService;
+const LanguageConfigurationService = @import("../../../common/languages/languageConfigurationRegistry.zig").LanguageConfigurationService;
 const LanguageIdCodec = @import("../../../common/languages.zig").LanguageIdCodec;
 const SparseToken = @import("../../../common/tokens/sparseMultilineTokens.zig").SparseToken;
 const SparseMultilineTokens = @import("../../../common/tokens/sparseMultilineTokens.zig").SparseMultilineTokens;
@@ -18,6 +19,7 @@ pub const TestModel = struct {
     allocator: Allocator,
     codec: *LanguageIdCodec,
     languageService: *LanguageService,
+    languageConfigurationService: *LanguageConfigurationService,
     undoRedoService: *UndoRedoService,
     model: *TextModel,
 
@@ -32,6 +34,11 @@ pub const TestModel = struct {
         errdefer allocator.destroy(languageService);
         languageService.* = LanguageService.init(allocator, codec);
         errdefer languageService.deinit();
+
+        const languageConfigurationService = try allocator.create(LanguageConfigurationService);
+        errdefer allocator.destroy(languageConfigurationService);
+        languageConfigurationService.* = try LanguageConfigurationService.init(allocator, languageService);
+        errdefer languageConfigurationService.deinit();
 
         const undoRedoService = try allocator.create(UndoRedoService);
         errdefer allocator.destroy(undoRedoService);
@@ -52,7 +59,7 @@ pub const TestModel = struct {
                 .enabled = true,
                 .independentColorPoolPerBracketType = false,
             },
-        }, null, undoRedoService, languageService);
+        }, null, undoRedoService, languageService, languageConfigurationService);
         errdefer {
             model.deinit();
             allocator.destroy(model);
@@ -62,6 +69,7 @@ pub const TestModel = struct {
             .allocator = allocator,
             .codec = codec,
             .languageService = languageService,
+            .languageConfigurationService = languageConfigurationService,
             .undoRedoService = undoRedoService,
             .model = model,
         };
@@ -72,6 +80,8 @@ pub const TestModel = struct {
         self.allocator.destroy(self.model);
         self.undoRedoService.deinit();
         self.allocator.destroy(self.undoRedoService);
+        self.languageConfigurationService.deinit();
+        self.allocator.destroy(self.languageConfigurationService);
         self.languageService.deinit();
         self.allocator.destroy(self.languageService);
         self.codec.deinit();

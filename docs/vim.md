@@ -65,7 +65,10 @@ Normal/edit:
 - Registers: unnamed and named (`"a`–`"z`).
 - Macro recording/replay (`q{a-z}`, `@{a-z}`, `@@`) with a recursion guard.
 - Text objects: `iw aw iW aW`, `i(`/`a(`/`ib`/`ab`, `i[`/`a[`,
-  `i{`/`a{`, `i<`/`a<`, and `i"`/`a"`, `i'`/`a'`, `` i` ``/`` a` ``.
+  `i{`/`a{`, and `i"`/`a"`, `i'`/`a'`, `` i` ``/`` a` ``. `i<`/`a<` work only
+  when the language configuration declares `< >` (plaintext declares
+  `()[]{}`). Bracket text objects and `%` use the editor's token-aware
+  bracket-pair AST, so brackets inside comments and strings are skipped.
 - `%`, `(`, `)`, `g_`, `g0`/`g^`/`g$`, `*`/`#`, `U`, `gv`, `gi`, and `.`
   dot-repeat for the last change. Local marks use `m` and the mark-jump
   keys. Visual-block `I`/`A` prefix/suffix every selected line in one undo

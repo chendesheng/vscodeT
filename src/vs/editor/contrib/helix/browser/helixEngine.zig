@@ -11,6 +11,7 @@ const ArrayList = std.array_list.Managed;
 const Position = @import("../../../common/core/position.zig").Position;
 const Range = @import("../../../common/core/range.zig").Range;
 const Selection = @import("../../../common/core/selection.zig").Selection;
+const bracket_text_objects = @import("../../../common/model/bracketPairsTextModelPart/bracketTextObjects.zig");
 const InternalModelContentChangeEvent = @import("../../../common/textModelEvents.zig").InternalModelContentChangeEvent;
 const extension_api = @import("../../../../workbench/api/common/extensionApi.zig");
 const ui = @import("ui");
@@ -2802,14 +2803,14 @@ pub const HelixEngine = struct {
             'w' => try self.wordObject(around, false, cursor),
             'W' => try self.wordObject(around, true, cursor),
             'p' => try self.paragraphObject(around, cursor),
-            '(' => try self.bracketObject(around, '(', ')', cursor),
-            ')' => try self.bracketObject(around, '(', ')', cursor),
-            '[' => try self.bracketObject(around, '[', ']', cursor),
-            ']' => try self.bracketObject(around, '[', ']', cursor),
-            '{' => try self.bracketObject(around, '{', '}', cursor),
-            '}' => try self.bracketObject(around, '{', '}', cursor),
-            '<' => try self.bracketObject(around, '<', '>', cursor),
-            '>' => try self.bracketObject(around, '<', '>', cursor),
+            '(' => try self.bracketObject(around, "(", ")", cursor),
+            ')' => try self.bracketObject(around, "(", ")", cursor),
+            '[' => try self.bracketObject(around, "[", "]", cursor),
+            ']' => try self.bracketObject(around, "[", "]", cursor),
+            '{' => try self.bracketObject(around, "{", "}", cursor),
+            '}' => try self.bracketObject(around, "{", "}", cursor),
+            '<' => try self.bracketObject(around, "<", ">", cursor),
+            '>' => try self.bracketObject(around, "<", ">", cursor),
             '"', '\'', '`' => try self.quoteObject(around, @intCast(char), cursor),
             'm' => try self.closestSurround(around, cursor),
             else => null,
@@ -2875,69 +2876,9 @@ pub const HelixEngine = struct {
         return true;
     }
 
-    fn bracketObject(self: *HelixEngine, around: bool, open: u8, close: u8, cursor: Position) !?Range {
-        var value = try self.modelValue();
-        defer value.deinit();
-        if (value.items.len == 0) return null;
-        var offset = self.editor.model.getOffsetAt(cursor);
-        if (offset >= value.items.len) offset = value.items.len - 1;
-
-        var open_index: ?usize = null;
-        var close_index: ?usize = null;
-        if (value.items[offset] == open) {
-            open_index = offset;
-        } else if (value.items[offset] == close) {
-            var depth: isize = 1;
-            var index = offset;
-            while (index > 0) {
-                index -= 1;
-                if (value.items[index] == close) {
-                    depth += 1;
-                } else if (value.items[index] == open) {
-                    depth -= 1;
-                    if (depth == 0) {
-                        open_index = index;
-                        close_index = offset;
-                        break;
-                    }
-                }
-            }
-        } else {
-            var depth: isize = 0;
-            var index = offset;
-            while (index > 0) {
-                index -= 1;
-                if (value.items[index] == close) {
-                    depth += 1;
-                } else if (value.items[index] == open) {
-                    if (depth == 0) {
-                        open_index = index;
-                        break;
-                    }
-                    depth -= 1;
-                }
-            }
-        }
-        const start = open_index orelse return null;
-        if (close_index == null) {
-            var depth: isize = 0;
-            var index = start + 1;
-            while (index < value.items.len) : (index += 1) {
-                if (value.items[index] == open) {
-                    depth += 1;
-                } else if (value.items[index] == close) {
-                    if (depth == 0) {
-                        close_index = index;
-                        break;
-                    }
-                    depth -= 1;
-                }
-            }
-        }
-        const end = close_index orelse return null;
-        const start_offset = if (around) start else start + 1;
-        const end_offset = if (around) end + 1 else end;
-        return Range.fromPositions(self.editor.model.getPositionAt(start_offset), self.editor.model.getPositionAt(end_offset));
+    fn bracketObject(self: *HelixEngine, around: bool, open_text: []const u8, close_text: []const u8, cursor: Position) !?Range {
+        const pair = try bracket_text_objects.ofType(self.editor.model, cursor, open_text, close_text) orelse return null;
+        return if (around) pair.around() else pair.inside();
     }
 
     fn quoteObject(self: *HelixEngine, around: bool, quote: u8, cursor: Position) !?Range {
@@ -2996,40 +2937,31 @@ pub const HelixEngine = struct {
         );
     }
 
-    const SurroundCandidate = struct {
-        open: u8,
-        close: u8,
-        quote: bool,
-    };
-
     fn closestSurround(self: *HelixEngine, around: bool, cursor: Position) !?Range {
-        const candidates = [_]SurroundCandidate{
-            .{ .open = '(', .close = ')', .quote = false },
-            .{ .open = '[', .close = ']', .quote = false },
-            .{ .open = '{', .close = '}', .quote = false },
-            .{ .open = '<', .close = '>', .quote = false },
-            .{ .open = '"', .close = '"', .quote = true },
-            .{ .open = '\'', .close = '\'', .quote = true },
-            .{ .open = '`', .close = '`', .quote = true },
-        };
         var best_outer: ?Range = null;
         var best_inner: ?Range = null;
         var best_span: usize = std.math.maxInt(usize);
-        for (candidates) |candidate| {
-            const outer = if (candidate.quote)
-                try self.quoteObject(true, candidate.open, cursor)
-            else
-                try self.bracketObject(true, candidate.open, candidate.close, cursor);
-            const outer_range = outer orelse continue;
+
+        if (bracket_text_objects.closest(self.editor.model, cursor)) |pair| {
+            const outer_range = pair.around();
+            if (outer_range.containsPosition(&cursor)) {
+                best_outer = outer_range;
+                best_inner = pair.inside();
+                best_span = self.editor.model.getOffsetAt(outer_range.getEndPosition()) -
+                    self.editor.model.getOffsetAt(outer_range.getStartPosition());
+            }
+        }
+
+        const quote_chars = [_]u8{ '"', '\'', '`' };
+        for (quote_chars) |quote| {
+            const outer_range = try self.quoteObject(true, quote, cursor) orelse continue;
             if (!outer_range.containsPosition(&cursor)) continue;
-            const span = self.editor.model.getOffsetAt(outer_range.endPosition()) - self.editor.model.getOffsetAt(outer_range.startPosition());
+            const span = self.editor.model.getOffsetAt(outer_range.getEndPosition()) -
+                self.editor.model.getOffsetAt(outer_range.getStartPosition());
             if (span >= best_span) continue;
-            const inner = if (candidate.quote)
-                try self.quoteObject(false, candidate.open, cursor)
-            else
-                try self.bracketObject(false, candidate.open, candidate.close, cursor);
-            best_inner = inner orelse continue;
+            const inner = try self.quoteObject(false, quote, cursor) orelse continue;
             best_outer = outer_range;
+            best_inner = inner;
             best_span = span;
         }
         return if (around) best_outer else best_inner;
@@ -3542,26 +3474,12 @@ pub const HelixEngine = struct {
 
     fn matchBracket(self: *HelixEngine) !void {
         const head = self.primaryHead();
-        if (self.editor.model.bracketPairs().matchBracket(head, null)) |pair| {
-            const opening = pair[0];
-            const closing = pair[1];
-            const target = if (opening.containsPosition(&head)) closing.startPosition() else opening.startPosition();
-            self.recordJump();
-            try self.gotoPosition(target, self.extendMode());
-            return;
-        }
-        // The ported bracket-pair service can be disabled or empty for plain
-        // text; fall back to the same line scan Vim uses.
-        const content = try self.editor.model.getLineContent(head.lineNumber);
-        defer content.deinit();
-        var index = @min(head.column -| 1, content.items.len);
-        while (index < content.items.len) : (index += 1) {
-            const kind = bracketKind(content.items[index]) orelse continue;
-            const target = scanBracket(content.items, index, kind) orelse return;
-            self.recordJump();
-            try self.gotoPosition(Position.init(head.lineNumber, target + 1), self.extendMode());
-            return;
-        }
+        const pair = self.editor.model.bracketPairs().matchBracket(head, null) orelse return;
+        const opening = pair[0];
+        const closing = pair[1];
+        const target = if (opening.containsPosition(&head)) closing.startPosition() else opening.startPosition();
+        self.recordJump();
+        try self.gotoPosition(target, self.extendMode());
     }
 
     fn gotoFileUnderCursor(self: *HelixEngine) !void {
@@ -3813,65 +3731,6 @@ fn isPair(open: u8, close: u8) bool {
         '<' => close == '>',
         else => false,
     };
-}
-
-const BracketKind = enum { open_paren, close_paren, open_square, close_square, open_brace, close_brace };
-
-fn bracketKind(byte: u8) ?BracketKind {
-    return switch (byte) {
-        '(' => .open_paren,
-        ')' => .close_paren,
-        '[' => .open_square,
-        ']' => .close_square,
-        '{' => .open_brace,
-        '}' => .close_brace,
-        else => null,
-    };
-}
-
-fn scanBracket(line: []const u8, start: usize, kind: BracketKind) ?usize {
-    const open: u8 = switch (kind) {
-        .open_paren => '(',
-        .close_paren => ')',
-        .open_square => '[',
-        .close_square => ']',
-        .open_brace => '{',
-        .close_brace => '}',
-    };
-    const close: u8 = switch (kind) {
-        .open_paren => ')',
-        .close_paren => '(',
-        .open_square => ']',
-        .close_square => '[',
-        .open_brace => '}',
-        .close_brace => '{',
-    };
-    const forward = switch (kind) {
-        .open_paren, .open_square, .open_brace => true,
-        else => false,
-    };
-    var depth: isize = 0;
-    if (forward) {
-        var index = start;
-        while (index < line.len) : (index += 1) {
-            if (line[index] == open) depth += 1;
-            if (line[index] == close) {
-                depth -= 1;
-                if (depth == 0) return index;
-            }
-        }
-    } else {
-        var index: isize = @intCast(start);
-        while (index >= 0) : (index -= 1) {
-            const byte = line[@intCast(index)];
-            if (byte == open) depth += 1;
-            if (byte == close) {
-                depth -= 1;
-                if (depth == 0) return @intCast(index);
-            }
-        }
-    }
-    return null;
 }
 
 fn trimSelectionText(allocator: Allocator, text: []const u8) ![]u8 {

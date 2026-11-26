@@ -23,6 +23,7 @@ const uriToString = @import("../model.zig").uriToString;
 const TextModelCreationOptions = @import("../model.zig").TextModelCreationOptions;
 const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
 const LanguageService = @import("../services/languageService.zig").LanguageService;
+const LanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationService;
 const ValidAnnotatedEditOperation = @import("../model.zig").ValidAnnotatedEditOperation;
 const utils = @import("../../../base/common/utils.zig");
 const Pair = utils.Pair;
@@ -654,6 +655,8 @@ test "SingleModelEditStackElement" {
     defer codec.deinit();
     var languageService = LanguageService.init(allocator, &codec);
     defer languageService.deinit();
+    var languageConfigurationService = try LanguageConfigurationService.init(allocator, &languageService);
+    defer languageConfigurationService.deinit();
 
     var textModel = try TextModel.init(allocator, &reader, "test", TextModelCreationOptions{
         .tabSize = 4,
@@ -668,7 +671,7 @@ test "SingleModelEditStackElement" {
             .enabled = false,
             .independentColorPoolPerBracketType = false,
         },
-    }, null, &undoRedoService, &languageService);
+    }, null, &undoRedoService, &languageService, &languageConfigurationService);
     defer allocator.destroy(textModel);
     defer textModel.deinit();
 

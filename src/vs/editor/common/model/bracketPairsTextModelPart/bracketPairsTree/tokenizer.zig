@@ -8,7 +8,8 @@ const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
 const Position = @import("../../../core/position.zig").Position;
 const TextModel = @import("../../textModel.zig").TextModel;
-const LanguageService = @import("../../../services/languageService.zig").LanguageService;
+const LanguageConfigurationService = @import("../../../languages/languageConfigurationRegistry.zig").LanguageConfigurationService;
+const NULL_LANGUAGE_ID = @import("../../../languages.zig").NULL_LANGUAGE_ID;
 const length_mod = @import("./length.zig");
 const Length = length_mod.Length;
 const toLength = length_mod.toLength;
@@ -73,8 +74,7 @@ pub const Token = struct {
 pub const Tokenizer = struct {
     allocator: Allocator,
     model: *TextModel,
-    languageService: *LanguageService,
-    fallbackLanguage: []const u8,
+    languageConfigurationService: *LanguageConfigurationService,
     ids: *StringIdProvider,
     brackets: *std.StringHashMap(LanguageBrackets),
     tokens: ArrayList(Token),
@@ -83,12 +83,11 @@ pub const Tokenizer = struct {
     tokenOffset: Length = 0,
     offset: Length = 0,
 
-    pub fn init(allocator: Allocator, model: *TextModel, languageService: *LanguageService, ids: *StringIdProvider, brackets: *std.StringHashMap(LanguageBrackets)) Tokenizer {
+    pub fn init(allocator: Allocator, model: *TextModel, languageConfigurationService: *LanguageConfigurationService, ids: *StringIdProvider, brackets: *std.StringHashMap(LanguageBrackets)) Tokenizer {
         return .{
             .allocator = allocator,
             .model = model,
-            .languageService = languageService,
-            .fallbackLanguage = model.getLanguageId(),
+            .languageConfigurationService = languageConfigurationService,
             .ids = ids,
             .brackets = brackets,
             .tokens = ArrayList(Token).init(allocator),
@@ -107,8 +106,7 @@ pub const Tokenizer = struct {
         return .{
             .allocator = allocator,
             .model = undefined,
-            .languageService = undefined,
-            .fallbackLanguage = "",
+            .languageConfigurationService = undefined,
             .ids = undefined,
             .brackets = undefined,
             .tokens = tokens,
@@ -183,7 +181,7 @@ pub const Tokenizer = struct {
             const text = line_content.items;
             if (text.len == 0) continue;
 
-            const language = self.fallbackLanguage;
+            const language = self.model.getLanguageId();
             const defs = try self.getBrackets(language);
             if (defs.defs.items.len == 0) continue;
 
@@ -246,7 +244,13 @@ pub const Tokenizer = struct {
                     continue;
                 }
                 const tokenLanguage = lineTokens.getLanguageId(tokenIndex);
-                const language = if (self.languageService.getLanguageConfiguration(tokenLanguage) != null) tokenLanguage else self.fallbackLanguage;
+                // Port adaptation: TextMate tokens leave the language id at
+                // `nullLanguage`; use the model language for those tokens, as
+                // the upstream fallback matcher does.
+                const language = if (std.mem.eql(u8, tokenLanguage, NULL_LANGUAGE_ID))
+                    self.model.getLanguageId()
+                else
+                    tokenLanguage;
                 const defs = try self.getBrackets(language);
                 if (defs.defs.items.len == 0) {
                     pos = token_end;
@@ -281,7 +285,8 @@ pub const Tokenizer = struct {
 
     pub fn getBrackets(self: *Tokenizer, language: []const u8) !*LanguageBrackets {
         if (self.brackets.getPtr(language)) |b| return b;
-        const config = self.languageService.getLanguageConfiguration(language) orelse self.languageService.getLanguageConfiguration(self.fallbackLanguage) orelse @import("../../../languages/languageConfiguration.zig").empty();
+        const resolved = self.languageConfigurationService.resolved(language);
+        const config = if (resolved) |value| value.underlyingConfig else @import("../../../languages/languageConfiguration.zig").empty();
         try self.brackets.put(language, try buildLanguageBrackets(self.allocator, config));
         return self.brackets.getPtr(language).?;
     }
