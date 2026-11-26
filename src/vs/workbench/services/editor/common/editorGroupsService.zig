@@ -84,6 +84,7 @@ pub const GroupsArrangement = enum { EVEN, MAXIMIZE };
 pub const IEditorGroupsService = struct {
     context: *anyopaque,
     active_group: *const fn (*anyopaque) ?IEditorGroup,
+    get_groups_in_grid_order: *const fn (*anyopaque, Allocator) anyerror![]IEditorGroup,
     arrange_groups: *const fn (*anyopaque, GroupsArrangement) void,
     find_group: *const fn (*anyopaque, IFindGroupScope, GroupIdentifier, bool) anyerror!?IEditorGroup,
     add_group: *const fn (*anyopaque, GroupIdentifier, GroupDirection) anyerror!IEditorGroup,
@@ -92,6 +93,10 @@ pub const IEditorGroupsService = struct {
 
     pub fn arrangeGroups(self: IEditorGroupsService, arrangement: GroupsArrangement) void {
         self.arrange_groups(self.context, arrangement);
+    }
+
+    pub fn getGroupsInGridOrder(self: IEditorGroupsService, allocator: Allocator) ![]IEditorGroup {
+        return self.get_groups_in_grid_order(self.context, allocator);
     }
 
     pub fn activeGroup(self: IEditorGroupsService) ?IEditorGroup {

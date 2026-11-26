@@ -34,6 +34,7 @@ pub const DiffEditorInput = struct {
         const modified_name = modified.getName();
         var base = EditorInput.init(allocator, ID);
         base.impl = self;
+        base.editor_id = commonEditorId(original, modified);
         base.matches_fn = matches;
         base.matches_untyped_fn = matchesUntyped;
         base.is_dirty_fn = isDirty;
@@ -67,6 +68,12 @@ pub const DiffEditorInput = struct {
         }
         try self.registerSideListeners();
         return self;
+    }
+
+    fn commonEditorId(original: *EditorInput, modified: *EditorInput) ?[]const u8 {
+        const original_id = original.editor_id orelse return null;
+        const modified_id = modified.editor_id orelse return null;
+        return if (std.mem.eql(u8, original_id, modified_id)) modified_id else null;
     }
 
     fn registerSideListeners(self: *DiffEditorInput) !void {
@@ -112,6 +119,7 @@ pub const DiffEditorInput = struct {
         self.detachSideListeners();
         self.original = original;
         self.modified = modified;
+        self.base.editor_id = commonEditorId(original, modified);
         try self.registerSideListeners();
         try onSideCapabilities({}, self);
         if (previous_dirty != self.base.isDirty()) try self.base.fireDirty();

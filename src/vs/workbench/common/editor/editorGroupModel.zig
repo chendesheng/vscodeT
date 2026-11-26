@@ -46,6 +46,7 @@ pub const EditorOpenOptions = struct {
     sticky: bool = false,
     transient: bool = false,
     active: bool = false,
+    preserve_focus: bool = false,
     inactive_selection: []const *EditorInput = &.{},
     index: ?isize = null,
     support_side_by_side: ?editor.SideBySideEditor = null,

@@ -449,6 +449,13 @@ pub fn EditorGroupView(comptime View: type) type {
         /// drag cancellation, the losing pane's external registrations and
         /// terminal focus after a transfer.
         pub fn moveEditor(self: *Self, dest: *Self, tab: View, options: @import("../../../common/editor/editorGroupModel.zig").EditorOpenOptions, host: MoveEditorHost) !View {
+            if (self == dest) {
+                if (options.index) |index| {
+                    if (try self.group.model.moveEditor(tab.input, index) != null) _ = try self.group.model.pin(tab.input);
+                }
+                if (options.sticky) _ = try self.group.model.stick(tab.input);
+                return tab;
+            }
             try dest.tabs.ensureUnusedCapacity(1);
             try tab.ensureControllers();
             host.will_move(host.context, self, tab);
@@ -473,8 +480,10 @@ pub fn EditorGroupView(comptime View: type) type {
                             "Move blocked: {s} is already open with unsaved changes in the target group",
                             .{tab.input.getName()},
                         );
-                        self.group.service.activateGroup(dest.group);
-                        host.focus_editor(host.context);
+                        if (!options.preserve_focus) {
+                            self.group.service.activateGroup(dest.group);
+                            host.focus_editor(host.context);
+                        }
                         return target_tab;
                     }
                 }
@@ -493,19 +502,23 @@ pub fn EditorGroupView(comptime View: type) type {
             if (!opened.is_new) {
                 const existing = dest.tabForInput(opened.editor) orelse return error.EditorAlreadyOpen;
                 try dest.activateTab(existing);
-                existing.focusEditor();
+                if (!options.preserve_focus) existing.focusEditor();
                 // The moved view loses to the already-open tab; detach every
                 // workbench registration before destroying it.
                 host.discard(host.context, tab);
-                self.group.service.activateGroup(dest.group);
-                host.focus_editor(host.context);
+                if (!options.preserve_focus) {
+                    self.group.service.activateGroup(dest.group);
+                    host.focus_editor(host.context);
+                }
                 return existing;
             }
 
             try dest.addTab(tab);
-            self.group.service.activateGroup(dest.group);
-            tab.focusEditor();
-            host.focus_editor(host.context);
+            if (!options.preserve_focus) {
+                self.group.service.activateGroup(dest.group);
+                tab.focusEditor();
+                host.focus_editor(host.context);
+            }
             return tab;
         }
 

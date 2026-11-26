@@ -50,6 +50,10 @@ function activate(context) {
       }))
     }))
   })));
+  context.subscriptions.push(vscode.commands.registerCommand('fixture.closeComparison', async () => {
+    const tab = vscode.window.tabGroups.all.flatMap(group => group.tabs).find(tab => Array.isArray(tab.input?.textDiffs));
+    return tab ? vscode.window.tabGroups.close(tab, true) : false;
+  }));
   context.subscriptions.push(vscode.languages.registerHoverProvider({ language: 'json' }, {
     provideHover() {
       return { contents: ['fixture hover'] };

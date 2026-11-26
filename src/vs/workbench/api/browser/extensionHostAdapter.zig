@@ -635,7 +635,31 @@ pub const Extensions = struct {
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostEditorTabs), method, &args, null, manager.noop_callback) catch {};
     }
 
-    fn editorTabsMoveHost(_: *anyopaque, _: []const u8, _: usize) anyerror!void {}
+    fn editorTabsMoveHost(context: *anyopaque, tab_id: []const u8, requested_index: i64, column: i64, preserve_focus: bool) anyerror!void {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        const target = (try self.findTabById(tab_id)) orelse return error.UnknownTab;
+        const opening = self.editor_service.opening orelse return error.EditorOpeningUnavailable;
+        const group_actions = opening.group_actions;
+        const part = self.editor_service.part;
+        const previous_group = part.service.activeGroup().id;
+        const columns = @import("../../services/editor/common/editorGroupColumn.zig");
+        const preference = group_actions.preferredSideBySideDirection();
+        const target_id = try columns.columnToEditorGroup(part.interface(), self.allocator, preference, column);
+        const dest = if (std.math.cast(u32, target_id)) |id| part.viewForGroup(part.service.getGroup(id) orelse return error.UnknownTabGroup) orelse return error.UnknownTabGroup else blk: {
+            const ordered = try part.orderedViews(self.allocator);
+            defer self.allocator.free(ordered);
+            if (ordered.len == 0) return error.UnknownTabGroup;
+            break :blk try part.addGroup(ordered[ordered.len - 1], if (column == columns.SIDE_GROUP) preference else .RIGHT);
+        };
+        if (preserve_focus) if (part.service.getGroup(previous_group)) |group| part.service.activateGroup(group);
+        const length = dest.group.model.count();
+        const index = if (requested_index < 0 or requested_index > @as(i64, @intCast(length))) length else @as(usize, @intCast(requested_index));
+        if (target.pane != dest and target.tab.input.canMove(target.pane.group.id, dest.group.id) != .yes) return error.EditorMoveVetoed;
+        _ = try target.pane.moveEditor(dest, target.tab, .{ .pinned = true, .sticky = target.pane.group.model.isSticky(.{ .editor = target.tab.input }), .active = true, .preserve_focus = preserve_focus, .index = @intCast(index) }, group_actions.transfer.move);
+        if (target.pane != dest and target.pane.group.model.count() == 0) part.collapseGroup(target.pane, group_actions.transfer);
+        group_actions.transfer.layout(group_actions.transfer.copy.context);
+        self.needs_render = true;
+    }
 
     const LocatedTab = struct { pane: *GroupPane, tab: *Tab };
 
@@ -1192,7 +1216,7 @@ pub const Extensions = struct {
         const part = self.editor_service.part;
         const panes = try part.orderedViews(arena);
         var specs: std.ArrayList(editor_tabs.GroupSpec) = .empty;
-        for (panes, 1..) |pane, column| {
+        for (panes, 0..) |pane, column| {
             const inputs = try pane.group.model.getEditors(arena, .SEQUENTIAL, false);
             var tabs: std.ArrayList(editor_tabs.TabSpec) = .empty;
             for (inputs) |input| try tabs.append(arena, try tabSpec(arena, pane.group, input));
@@ -2404,6 +2428,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const state = try extensions.host.requestSync(arena, command_id, "$executeContributedCommand", command_args, null, 5000);
             const groups = state.object.get("groups").?.array.items;
             try std.testing.expectEqual(@as(usize, 1), groups.len);
+            try std.testing.expectEqual(@as(i64, 1), groups[0].object.get("column").?.integer);
             const tabs = groups[0].object.get("tabs").?.array.items;
             try std.testing.expectEqual(@as(usize, 2), tabs.len);
             const comparison = tabs[1].object;
@@ -2442,7 +2467,42 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const after = try extensions.host.requestSync(arena, command_id, "$executeContributedCommand", command_args, null, 5000);
             try std.testing.expectEqual(@as(usize, 7), after.object.get("documents").?.array.items.len);
             try std.testing.expectEqualStrings(try std_uri.encodedResource(arena, control.modified_editor.model.uri()), after.object.get("activeDocument").?.string);
-            _ = try wb.closeActive();
+            // Exercise the main-thread move RPC, including zero-based wire
+            // columns, signed append index, target-group creation, and focus
+            // preservation. The real extension host must see both groups.
+            const source_pane = wb.activePane().?;
+            const source_id = source_pane.group.id;
+            const comparison_id = try Extensions.tabId(arena, source_id, tab.input);
+            const actor = &extensions.editor_tabs_actor.?;
+            _ = try actor.invoke("$moveTab", &.{
+                .{ .json = .{ .string = comparison_id } },
+                .{ .json = .{ .integer = -1 } },
+                .{ .json = .{ .integer = 1 } },
+                .{ .json = .{ .bool = true } },
+            }, arena);
+            try std.testing.expectEqual(source_id, wb.activePane().?.group.id);
+            try std.testing.expect(wb.activeTab().?.multi_diff == null);
+            const ordered = try wb.part.orderedViews(arena);
+            try std.testing.expectEqual(@as(usize, 2), ordered.len);
+            try std.testing.expectEqual(tab, ordered[1].activeTab().?);
+            for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            const moved_state = try extensions.host.requestSync(arena, command_id, "$executeContributedCommand", command_args, null, 5000);
+            const moved_groups = moved_state.object.get("groups").?.array.items;
+            try std.testing.expectEqual(@as(usize, 2), moved_groups.len);
+            try std.testing.expectEqual(@as(i64, 2), moved_groups[1].object.get("column").?.integer);
+            try std.testing.expect(!moved_groups[1].object.get("active").?.bool);
+            const moved_id = try Extensions.tabId(arena, ordered[1].group.id, tab.input);
+            _ = try actor.invoke("$moveTab", &.{
+                .{ .json = .{ .string = moved_id } },
+                .{ .json = .{ .integer = 0 } },
+                .{ .json = .{ .integer = 0 } },
+                .{ .json = .{ .bool = false } },
+            }, arena);
+            try std.testing.expectEqual(tab, wb.activeTab().?);
+            try std.testing.expectEqual(@as(usize, 0), wb.activePane().?.group.model.indexOf(.{ .input = tab.input }).?);
+            for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            const close_result = try extensions.host.requestSync(arena, command_id, "$executeContributedCommand", &.{.{ .json = .{ .string = "fixture.closeComparison" } }}, null, 5000);
+            try std.testing.expect(close_result.bool);
             for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp());
             const closed = try extensions.host.requestSync(arena, command_id, "$executeContributedCommand", command_args, null, 5000);
             try std.testing.expectEqual(@as(usize, 1), closed.object.get("documents").?.array.items.len);

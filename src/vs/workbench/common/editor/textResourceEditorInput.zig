@@ -36,6 +36,7 @@ pub const TextResourceEditorInput = struct {
             .description = label,
         };
         self.base.impl = self;
+        self.base.editor_id = "default";
         self.base.resource = key;
         self.base.name = std.fs.path.basename(document.path);
         self.base.description = label;

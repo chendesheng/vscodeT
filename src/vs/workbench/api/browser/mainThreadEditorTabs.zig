@@ -112,7 +112,7 @@ pub fn tabModel(arena: Allocator, groups: []const GroupSpec) !std.json.Value {
 pub const Host = struct {
     context: *anyopaque,
     notify: *const fn (context: *anyopaque, method: []const u8, model: std.json.Value) anyerror!void,
-    move_tab: *const fn (context: *anyopaque, tab_id: []const u8, index: usize) anyerror!void,
+    move_tab: *const fn (context: *anyopaque, tab_id: []const u8, index: i64, column: i64, preserve_focus: bool) anyerror!void,
     close_tab: *const fn (context: *anyopaque, tab_id: []const u8) anyerror!bool,
     close_group: *const fn (context: *anyopaque, group_id: i64) anyerror!bool,
 };
@@ -257,8 +257,9 @@ pub const MainThreadEditorTabs = struct {
     pub fn invoke(self: *MainThreadEditorTabs, method: []const u8, args: []const rpc.Arg, arena: Allocator) !rpc.HandlerReply {
         _ = arena;
         if (std.mem.eql(u8, method, "$moveTab")) {
-            if (args.len >= 2 and args[0] == .json and args[0].json == .string and args[1] == .json and args[1].json == .integer) {
-                try self.host.move_tab(self.host.context, args[0].json.string, @intCast(args[1].json.integer));
+            if (args.len >= 3 and args[0] == .json and args[0].json == .string and args[1] == .json and args[1].json == .integer and args[2] == .json and args[2].json == .integer) {
+                const preserve_focus = args.len > 3 and args[3] == .json and args[3].json == .bool and args[3].json.bool;
+                try self.host.move_tab(self.host.context, args[0].json.string, args[1].json.integer, args[2].json.integer, preserve_focus);
             }
             return .empty;
         }
@@ -325,7 +326,7 @@ test "MainThreadEditorTabs: sends the initial model and incremental tab operatio
             last_kind = if (std.mem.eql(u8, method, "$acceptTabOperation")) value.object.get("kind").?.integer else null;
             is_group_update = std.mem.eql(u8, method, "$acceptTabGroupUpdate");
         }
-        fn move(_: *anyopaque, _: []const u8, _: usize) anyerror!void {}
+        fn move(_: *anyopaque, _: []const u8, _: i64, _: i64, _: bool) anyerror!void {}
         fn close(_: *anyopaque, _: []const u8) anyerror!bool {
             return true;
         }
@@ -344,7 +345,7 @@ test "MainThreadEditorTabs: sends the initial model and incremental tab operatio
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const tabs = [_]TabSpec{.{ .id = "a", .input = .{ .text = try std.Uri.parse("file:///a.ts") }, .label = "a.ts", .is_active = true, .is_dirty = false }};
-    const groups = [_]GroupSpec{.{ .id = 1, .view_column = 1, .is_active = true, .tabs = &tabs }};
+    const groups = [_]GroupSpec{.{ .id = 1, .view_column = 0, .is_active = true, .tabs = &tabs }};
     try actor.sync(arena.allocator(), &groups);
     try std.testing.expectEqual(@as(usize, 1), Fake.notifications);
     var changed = tabs[0];
@@ -375,7 +376,7 @@ test "MainThreadEditorTabs: group columns, sticky flags and declared multi-diff 
     const diffs = [_]TextDiffSpec{.{ .original = original, .modified = modified }};
     const first = [_]TabSpec{.{ .id = "4~multi", .label = "Changes", .editor_id = "multiDiffEditor", .input = .{ .multi_diff = &diffs }, .is_active = true, .is_dirty = false, .is_pinned = true }};
     const second = [_]TabSpec{.{ .id = "7~diff", .label = "a.json", .input = .{ .text_diff = diffs[0] }, .is_active = true, .is_dirty = true, .is_preview = true }};
-    const model = try tabModel(arena, &.{ .{ .id = 4, .view_column = 1, .is_active = false, .tabs = &first }, .{ .id = 7, .view_column = 2, .is_active = true, .tabs = &second } });
+    const model = try tabModel(arena, &.{ .{ .id = 4, .view_column = 0, .is_active = false, .tabs = &first }, .{ .id = 7, .view_column = 1, .is_active = true, .tabs = &second } });
     try std.testing.expectEqual(@as(usize, 2), model.array.items.len);
     const group = model.array.items[0].object;
     try std.testing.expectEqual(@as(i64, 4), group.get("groupId").?.integer);
@@ -389,7 +390,7 @@ test "MainThreadEditorTabs: group columns, sticky flags and declared multi-diff 
     try std.testing.expectEqual(@as(i64, 2), child.get("kind").?.integer);
     try std.testing.expectEqualStrings("old", child.get("original").?.object.get("query").?.string);
     const other = model.array.items[1].object;
-    try std.testing.expectEqual(@as(i64, 2), other.get("viewColumn").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), other.get("viewColumn").?.integer);
     const diff = other.get("tabs").?.array.items[0].object;
     try std.testing.expect(diff.get("isPreview").?.bool and diff.get("isDirty").?.bool);
     try std.testing.expect(!diff.get("isPinned").?.bool);

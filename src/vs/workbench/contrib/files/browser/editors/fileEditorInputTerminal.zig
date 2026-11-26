@@ -41,6 +41,7 @@ pub const FileEditorInput = struct {
         };
 
         self.base.impl = self;
+        self.base.editor_id = "default";
         self.base.resource = editor.path;
         self.base.name = std.fs.path.basename(editor.path);
         // File inputs are editable by default; upstream returns `None` here,

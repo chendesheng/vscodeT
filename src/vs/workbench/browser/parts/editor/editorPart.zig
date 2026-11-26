@@ -221,7 +221,16 @@ pub fn EditorPart(comptime GroupView: type) type {
         }
 
         pub fn interface(self: *Self) editor_groups.IEditorGroupsService {
-            return .{ .context = self, .active_group = activeGroup, .find_group = findGroupView, .arrange_groups = arrangeGroupsContext, .add_group = addGroupContext, .activate_group = activateGroupContext, .move_group = moveGroupContext };
+            return .{ .context = self, .active_group = activeGroup, .get_groups_in_grid_order = getGroupsInGridOrder, .find_group = findGroupView, .arrange_groups = arrangeGroupsContext, .add_group = addGroupContext, .activate_group = activateGroupContext, .move_group = moveGroupContext };
+        }
+
+        fn getGroupsInGridOrder(context: *anyopaque, allocator: Allocator) ![]editor_groups.IEditorGroup {
+            const self: *Self = @ptrCast(@alignCast(context));
+            const views = try self.orderedViews(allocator);
+            defer allocator.free(views);
+            const groups = try allocator.alloc(editor_groups.IEditorGroup, views.len);
+            for (views, groups) |view, *group| group.* = view.interface();
+            return groups;
         }
 
         fn addGroupContext(context: *anyopaque, source: editor_mod.GroupIdentifier, direction: GroupDirection) !editor_groups.IEditorGroup {

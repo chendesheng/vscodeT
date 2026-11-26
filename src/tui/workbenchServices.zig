@@ -198,8 +198,12 @@ pub fn extensionHostServices(host: *TerminalWorkbench) ExtensionServices {
             return get(context).runLspAction(id);
         }
     };
+    var common = host.builtinExtensionServices();
+    // The Node host starts after the workbench service registrations, unlike
+    // the compiled extensions that are constructed during window startup.
+    common.editors = host.editors;
     return .{
-        .common = host.builtinExtensionServices(),
+        .common = common,
         .window = &host.window_events,
         .quick_access = host.quick_access,
         .notification = host.notification_api,
