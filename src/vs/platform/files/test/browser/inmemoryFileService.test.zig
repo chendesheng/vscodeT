@@ -66,7 +66,7 @@ const Fixture = struct {
         self.service = ProviderFileService.init(allocator);
         errdefer self.service.deinit();
         self.arena = std.heap.ArenaAllocator.init(allocator);
-        try self.service.registerProvider("inmemory", self.provider.interface());
+        _ = try self.service.registerProvider("inmemory", self.provider.interface());
 
         _ = try self.service.createFolder(try self.path("examples"));
         _ = try self.service.createFolder(try self.path("other"));

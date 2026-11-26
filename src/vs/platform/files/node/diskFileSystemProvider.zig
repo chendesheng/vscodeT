@@ -475,7 +475,7 @@ test "disk provider: backs the provider file service" {
     defer provider.deinit();
     var service = @import("../common/fileService.zig").ProviderFileService.init(allocator);
     defer service.deinit();
-    try service.registerProvider("file", provider.interface());
+    _ = try service.registerProvider("file", provider.interface());
 
     const folder_resource = try std.fmt.allocPrint(allocator, "file:{s}/nested/deep", .{root});
     defer allocator.free(folder_resource);

@@ -460,12 +460,56 @@ pub const IFileChangeListener = struct {
     callback: *const fn (context: *anyopaque, changes: []const IFileChange) void,
 };
 
+/// Native equivalent of the async provider read. The window captures an
+/// immutable request and a worker owns its bytes. No worker accesses the
+/// live provider or file-service registry.
+pub const FileReadRequest = struct {
+    context: *anyopaque,
+    read: *const fn (*anyopaque, Allocator) anyerror![]u8,
+    destroy: *const fn (*anyopaque) void,
+    /// Native document display path, when distinct from the resource URI.
+    display_path: ?[]const u8 = null,
+};
+
+const IDisposable = @import("../../../base/common/lifecycle.zig").IDisposable;
+const Emitter = @import("../../../base/common/event.zig").Emitter;
+const instantiation = @import("../../instantiation/common/instantiation.zig");
+pub const file_service_id = instantiation.ServiceIdentifier(IFileService, "fileService");
+
+/// The URI registration and read surface of upstream IFileService. Native
+/// consumers capture requests rather than invoking a blocking provider from
+/// the window or moving a mutable provider into a worker.
+pub const IFileService = struct {
+    context: *anyopaque,
+    register_provider: *const fn (*anyopaque, []const u8, IFileSystemProvider) anyerror!IDisposable,
+    has_provider: *const fn (*anyopaque, std.Uri) bool,
+    capture_read: *const fn (*anyopaque, std.Uri) anyerror!?FileReadRequest,
+    stat_uri: *const fn (*anyopaque, std.Uri) anyerror!IStat,
+    on_did_files_change: *Emitter(FileChangesEvent),
+
+    pub fn registerProvider(self: IFileService, scheme: []const u8, provider: IFileSystemProvider) !IDisposable {
+        return self.register_provider(self.context, scheme, provider);
+    }
+
+    pub fn hasProvider(self: IFileService, resource: std.Uri) bool {
+        return self.has_provider(self.context, resource);
+    }
+
+    pub fn captureRead(self: IFileService, resource: std.Uri) !?FileReadRequest {
+        return self.capture_read(self.context, resource);
+    }
+
+    pub fn stat(self: IFileService, resource: std.Uri) !IStat {
+        return self.stat_uri(self.context, resource);
+    }
+};
+
 /// The terminal provider contract. Resources are canonical path strings (the
 /// repository-wide terminal substitution for `URI`). Mutations and reads are
 /// synchronous and, like the disk provider's shared state, are currently only
-/// called from the TUI thread. Interactive file/dir reads that must not block
-/// the TUI bypass this registry and run on the workbench async Io instead;
-/// making the provider vtable itself async remains a follow-up.
+/// called from the TUI thread. URI-aware providers can capture an immutable
+/// async read and supply stat/change events with the entire resource URI.
+/// The older path-only mutation/fd operations retain their native boundary.
 pub const IFileSystemProvider = struct {
     context: *anyopaque,
     capabilities: *const fn (context: *anyopaque) u32,
@@ -483,6 +527,11 @@ pub const IFileSystemProvider = struct {
     watch: *const fn (context: *anyopaque, resource: []const u8, options: IWatchOptions) FileSystemProviderError!void,
     add_change_listener: *const fn (context: *anyopaque, listener: IFileChangeListener) void,
     remove_change_listener: *const fn (context: *anyopaque, listener: IFileChangeListener) void,
+    capture_read_uri: ?*const fn (*anyopaque, std.Uri) anyerror!FileReadRequest = null,
+    stat_uri: ?*const fn (*anyopaque, std.Uri) FileSystemProviderError!IStat = null,
+    /// Legacy native providers emit paths in their registered scheme; URI
+    /// providers emit full encoded resource identities, including queries.
+    change_resources_are_uris: bool = false,
 
     pub fn getCapabilities(self: IFileSystemProvider) u32 {
         return self.capabilities(self.context);

@@ -341,6 +341,25 @@ pub const ProviderFileService = struct {
         service: *ProviderFileService,
         scheme: []u8,
         provider: files.IFileSystemProvider,
+
+        fn dispose(self: *ProviderRegistration) void {
+            const service = self.service;
+            _ = service.providers.remove(self.scheme);
+            for (service.registrations.items, 0..) |registration, index| {
+                if (registration == self) {
+                    _ = service.registrations.orderedRemove(index);
+                    break;
+                }
+            }
+            self.destroy();
+        }
+
+        fn destroy(self: *ProviderRegistration) void {
+            const a = self.service.allocator;
+            self.provider.removeChangeListener(.{ .context = self, .callback = providerChanged });
+            a.free(self.scheme);
+            a.destroy(self);
+        }
     };
 
     pub fn init(allocator: Allocator) ProviderFileService {
@@ -354,22 +373,15 @@ pub const ProviderFileService = struct {
     }
 
     pub fn deinit(self: *ProviderFileService) void {
-        for (self.registrations.items) |registration| {
-            registration.provider.removeChangeListener(.{
-                .context = registration,
-                .callback = providerChanged,
-            });
-            registration.provider = undefined;
-            self.allocator.free(registration.scheme);
-            self.allocator.destroy(registration);
-        }
+        for (self.registrations.items) |registration| registration.destroy();
         self.registrations.deinit();
         self.providers.deinit();
         self.on_did_files_change.deinit();
         self.on_did_run_operation.deinit();
     }
 
-    pub fn registerProvider(self: *ProviderFileService, scheme: []const u8, provider: files.IFileSystemProvider) !void {
+    pub fn registerProvider(self: *ProviderFileService, scheme: []const u8, provider: files.IFileSystemProvider) !@import("../../../base/common/lifecycle.zig").IDisposable {
+        if (self.providers.contains(scheme)) return error.ProviderAlreadyRegistered;
         const registration = try self.allocator.create(ProviderRegistration);
         errdefer self.allocator.destroy(registration);
         registration.* = .{
@@ -379,8 +391,54 @@ pub const ProviderFileService = struct {
         };
         errdefer self.allocator.free(registration.scheme);
         try self.providers.put(registration.scheme, provider);
+        errdefer _ = self.providers.remove(registration.scheme);
         try self.registrations.append(registration);
         provider.addChangeListener(.{ .context = registration, .callback = providerChanged });
+        return @import("../../../base/common/lifecycle.zig").IDisposable.from(ProviderRegistration, registration, ProviderRegistration.dispose);
+    }
+
+    pub fn interface(self: *ProviderFileService) files.IFileService {
+        const Adapter = struct {
+            fn register(context: *anyopaque, scheme: []const u8, provider: files.IFileSystemProvider) !@import("../../../base/common/lifecycle.zig").IDisposable {
+                const service: *ProviderFileService = @ptrCast(@alignCast(context));
+                return service.registerProvider(scheme, provider);
+            }
+            fn has(context: *anyopaque, resource: std.Uri) bool {
+                const service: *ProviderFileService = @ptrCast(@alignCast(context));
+                return service.providers.contains(resource.scheme);
+            }
+            fn capture(context: *anyopaque, resource: std.Uri) !?files.FileReadRequest {
+                const service: *ProviderFileService = @ptrCast(@alignCast(context));
+                return service.captureRead(resource);
+            }
+            fn stat(context: *anyopaque, resource: std.Uri) !files.IStat {
+                const service: *ProviderFileService = @ptrCast(@alignCast(context));
+                return service.statUri(resource);
+            }
+        };
+        return .{
+            .context = self,
+            .register_provider = Adapter.register,
+            .has_provider = Adapter.has,
+            .capture_read = Adapter.capture,
+            .stat_uri = Adapter.stat,
+            .on_did_files_change = &self.on_did_files_change,
+        };
+    }
+
+    pub fn captureRead(self: *ProviderFileService, resource: std.Uri) !?files.FileReadRequest {
+        const provider = self.providers.get(resource.scheme) orelse return null;
+        const capture = provider.capture_read_uri orelse return null;
+        return try capture(provider.context, resource);
+    }
+
+    pub fn statUri(self: *ProviderFileService, resource: std.Uri) !files.IStat {
+        const provider = self.providers.get(resource.scheme) orelse return error.ProviderUnavailable;
+        if (provider.stat_uri) |statFn| return statFn(provider.context, resource);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const path = try @import("../../../base/common/stdUri.zig").fsPath(resource, arena.allocator());
+        return provider.getStat(path);
     }
 
     pub fn listenFilesChange(self: *ProviderFileService, context: anytype, callback: fn (files.FileChangesEvent, @TypeOf(context)) anyerror!void) !usize {
@@ -433,16 +491,25 @@ pub const ProviderFileService = struct {
 
     pub fn exists(self: *ProviderFileService, resource: []const u8) bool {
         const found = self.providerFor(resource) orelse return false;
-        _ = found.provider.getStat(found.parsed.path) catch return false;
+        if (found.provider.stat_uri != null) {
+            _ = self.statUri(std.Uri.parse(resource) catch return false) catch return false;
+        } else {
+            _ = found.provider.getStat(found.parsed.path) catch return false;
+        }
         return true;
     }
 
     pub fn stat(self: *ProviderFileService, resource: []const u8) !files.FileStat {
         const found = self.providerFor(resource) orelse return error.ProviderUnavailable;
-        const stat_info = try found.provider.getStat(found.parsed.path);
+        const typed = if (found.provider.stat_uri != null) try std.Uri.parse(resource) else null;
+        const stat_info = if (typed) |uri| try self.statUri(uri) else try found.provider.getStat(found.parsed.path);
+        const path = if (typed) |uri| switch (uri.path) {
+            .raw => |value| value,
+            .percent_encoded => |value| value,
+        } else found.parsed.path;
         return .{
             .resource = resource,
-            .name = resourceBasename(found.parsed.path),
+            .name = resourceBasename(path),
             .type = stat_info.type,
             .size = stat_info.size,
             .mtime = @intCast(@max(stat_info.mtime, 0)),
@@ -517,6 +584,14 @@ pub const ProviderFileService = struct {
 
     pub fn readFile(self: *ProviderFileService, allocator: Allocator, resource: []const u8, position: usize) !VSBuffer {
         const found = self.providerFor(resource) orelse return error.ProviderUnavailable;
+        if (found.provider.capture_read_uri != null) {
+            const request = (try self.captureRead(try std.Uri.parse(resource))) orelse return error.ProviderUnavailable;
+            defer request.destroy(request.context);
+            const bytes = try request.read(request.context, allocator);
+            if (position == 0) return .{ .bytes = bytes };
+            defer allocator.free(bytes);
+            return .{ .bytes = try allocator.dupe(u8, bytes[@min(position, bytes.len)..]) };
+        }
         const data = try found.provider.readFile(found.parsed.path);
         defer self.allocator.free(data);
         const value = if (position < data.len) data[position..] else data[data.len..];
@@ -642,7 +717,10 @@ pub const ProviderFileService = struct {
             converted.deinit();
         }
         for (changes) |change| {
-            const resource = std.fmt.allocPrint(changes_alloc, "{s}:{s}", .{ registration.scheme, change.resource }) catch continue;
+            const resource = if (registration.provider.change_resources_are_uris)
+                changes_alloc.dupe(u8, change.resource) catch continue
+            else
+                std.fmt.allocPrint(changes_alloc, "{s}:{s}", .{ registration.scheme, change.resource }) catch continue;
             converted.append(.{ .type = change.type, .resource = resource }) catch {
                 changes_alloc.free(resource);
                 continue;
@@ -665,4 +743,77 @@ test "ProviderFileService parses schemes and normalizes leading URI slashes" {
     try std.testing.expectEqualStrings("C:\\temp\\file.txt", disk.path);
 
     try std.testing.expect(ProviderFileService.parseResource("no-scheme") == null);
+}
+
+test "ProviderFileService: capture full URI and retain independent read after unregister" {
+    const a = std.testing.allocator;
+    const MemoryProvider = @import("inMemoryFilesystemProvider.zig").InMemoryFileSystemProvider;
+    const Encoded = "virtual://host/path%23name?revision=one%20two";
+    const uri = try std.Uri.parse(Encoded);
+    const Request = struct {
+        query: []u8,
+        fn capture(_: *anyopaque, resource: std.Uri) !files.FileReadRequest {
+            const scratch = std.heap.page_allocator;
+            var arena = std.heap.ArenaAllocator.init(scratch);
+            defer arena.deinit();
+            const temporary = arena.allocator();
+            const uri_util = @import("../../../base/common/stdUri.zig");
+            try std.testing.expectEqualStrings("host", try uri_util.authority(resource, temporary));
+            try std.testing.expectEqualStrings("/path#name", try uri_util.path(resource, temporary));
+            const self = try scratch.create(@This());
+            errdefer scratch.destroy(self);
+            self.* = .{ .query = try scratch.dupe(u8, try uri_util.query(resource, temporary)) };
+            return .{ .context = self, .read = read, .destroy = destroy };
+        }
+
+        fn read(context: *anyopaque, allocator: Allocator) ![]u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return allocator.dupe(u8, self.query);
+        }
+
+        fn destroy(context: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            std.heap.page_allocator.free(self.query);
+            std.heap.page_allocator.destroy(self);
+        }
+
+        fn stat(_: *anyopaque, resource: std.Uri) files.FileSystemProviderError!files.IStat {
+            if (resource.query == null or resource.host == null) return error.Unknown;
+            return .{ .type = files.FileType.File, .size = 16, .mtime = 1, .ctime = 0 };
+        }
+    };
+    const ChangeSink = struct {
+        received: bool = false,
+        fn event(change: files.FileChangesEvent, self: *@This()) !void {
+            try std.testing.expectEqual(@as(usize, 1), change.raw_updated.len);
+            try std.testing.expectEqualStrings(Encoded, change.raw_updated[0]);
+            self.received = true;
+        }
+    };
+    var provider = try MemoryProvider.init(a);
+    defer provider.deinit();
+    var service = ProviderFileService.init(a);
+    defer service.deinit();
+    var api = provider.interface();
+    api.capture_read_uri = Request.capture;
+    api.stat_uri = Request.stat;
+    api.change_resources_are_uris = true;
+    const service_api = service.interface();
+    const registration = try service_api.registerProvider("virtual", api);
+    try std.testing.expect(service_api.hasProvider(uri));
+    try std.testing.expectError(error.ProviderAlreadyRegistered, service_api.registerProvider("virtual", api));
+    try std.testing.expectEqual(@as(u64, 16), (try service_api.stat(uri)).size);
+
+    var sink: ChangeSink = .{};
+    _ = try service.listenFilesChange(&sink, ChangeSink.event);
+    ProviderFileService.providerChanged(service.registrations.items[0], &.{.{ .type = .UPDATED, .resource = Encoded }});
+    try std.testing.expect(sink.received);
+    const captured = (try service_api.captureRead(uri)).?;
+    defer captured.destroy(captured.context);
+    registration.dispose();
+    try std.testing.expect(!service_api.hasProvider(uri));
+    try std.testing.expectEqual(@as(usize, 0), service.registrations.items.len);
+    const bytes = try captured.read(captured.context, a);
+    defer a.free(bytes);
+    try std.testing.expectEqualStrings("revision=one two", bytes);
 }
