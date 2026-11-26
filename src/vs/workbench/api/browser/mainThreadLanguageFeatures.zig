@@ -26,7 +26,7 @@ const Position = @import("../../../editor/common/core/position.zig").Position;
 const Range = @import("../../../editor/common/core/range.zig").Range;
 const languages = @import("../../../editor/common/languages.zig");
 const completion = @import("../../../editor/common/languages/completion.zig");
-const selector_mod = @import("../../../editor/common/languageSelector.zig");
+const parseSelector = @import("../common/extHostTypeConverters.zig").parseSelector;
 const std_uri = @import("../../../base/common/stdUri.zig");
 const position_converter = @import("../common/positionConverter.zig");
 const features_mod = @import("../../../editor/common/services/languageFeaturesService.zig");
@@ -1169,44 +1169,4 @@ fn parseDocumentSymbol(allocator: Allocator, object: std.json.ObjectMap, model: 
         .selection_range = if (object.get("selectionRange")) |value| rangeFromJson(model, value) orelse Range.init(1, 1, 1, 1) else Range.init(1, 1, 1, 1),
         .children = try children.toOwnedSlice(),
     };
-}
-
-fn parseSelector(arena: Allocator, value: std.json.Value) !selector_mod.Selector {
-    switch (value) {
-        .string => |language| return .{ .language = language },
-        .array => |array| {
-            const items = try arena.alloc(selector_mod.Selector, array.items.len);
-            for (array.items, 0..) |item, index| items[index] = try parseSelector(arena, item);
-            return .{ .list = items };
-        },
-        .object => |object| {
-            var filter: selector_mod.Filter = .{};
-            if (object.get("language")) |language| if (language == .string) {
-                filter.language = language.string;
-            };
-            if (object.get("scheme")) |scheme| if (scheme == .string) {
-                filter.scheme = scheme.string;
-            };
-            if (object.get("notebookType")) |notebook| if (notebook == .string) {
-                filter.notebook_type = notebook.string;
-            };
-            if (object.get("exclusive")) |exclusive| filter.exclusive = exclusive == .bool and exclusive.bool;
-            if (object.get("isBuiltin")) |builtin| filter.is_builtin = builtin == .bool and builtin.bool;
-            if (object.get("pattern")) |pattern_value| {
-                if (pattern_value == .string) {
-                    filter.pattern = .{ .string = pattern_value.string };
-                } else if (pattern_value == .object) {
-                    const text = if (pattern_value.object.get("pattern")) |pattern_text| if (pattern_text == .string) pattern_text.string else "" else "";
-                    const base_value = pattern_value.object.get("baseUri");
-                    const base = if (base_value) |base_json| blk: {
-                        const components = std_uri.componentsFromJson(base_json, arena) catch break :blk "";
-                        break :blk components.path;
-                    } else "";
-                    filter.pattern = .{ .relative = .{ .base = base, .pattern = text } };
-                }
-            }
-            return .{ .filter = filter };
-        },
-        else => return .{ .language = "" },
-    }
 }

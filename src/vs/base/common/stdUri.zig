@@ -207,6 +207,23 @@ pub fn componentsFromJson(value: std.json.Value, arena: Allocator) !Components {
     };
 }
 
+/// Revive decoded UriComponents without treating literal '#' or '?' in
+/// the path as delimiters. The caller owns the encoded backing string.
+pub fn encodedResourceFromJson(allocator: Allocator, value: std.json.Value) ![]u8 {
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    const components = try componentsFromJson(value, scratch.allocator());
+    var uri = try @import("uri.zig").URI.from(scratch.allocator(), .{
+        .scheme = components.scheme,
+        .authority = components.authority,
+        .path = components.path,
+        .query = components.query,
+        .fragment = components.fragment,
+    }, false);
+    defer uri.deinit();
+    return uri.toStringEncoded(allocator);
+}
+
 fn stringField(arena: Allocator, object: std.json.ObjectMap, name: []const u8) ![]const u8 {
     const value = object.get(name) orelse return "";
     if (value != .string) return "";
