@@ -169,8 +169,85 @@ buffer/stat and binary/missing resolution, shared filesystem change events,
 provider cache retention and UTF-16 single-diff integration. Remaining
 portable gaps include automatic repository discovery for Git URIs in empty
 windows and multi-repository workspaces, further contribution lifecycle
-and focus/capture coverage, and end-to-end native large-diff benchmarks. Browser pixel geometry, browser accessibility-tree traversal and
+and focus/capture coverage. Native large-diff benchmarks are recorded below. Browser pixel geometry, browser accessibility-tree traversal and
 a native separate Agents window remain genuine terminal-boundary adaptations.
+
+### Native performance measurements (2026-11-27)
+
+The opt-in `zig build bench-open --summary all` benchmark exercises native
+Git acquisition, the asynchronous snapshot worker and the actual workbench
+pane and retained frame. The second Debug run passed 8/8 benchmark tests
+(43/43 build steps): 90 open cases (3 file sizes × 5 change patterns × 3
+computation budgets × move detection on/off), 15 cached refreshes, and three
+50-row interaction runs. The [complete open matrix](diff-view-benchmark.csv)
+includes both model/view line counts, authored decorations, view zones and
+memory measurements. These are local measurements, not cross-platform or
+upstream-browser comparisons.
+
+Default 5,000 ms budget, move detection off; times are milliseconds, rounded
+to the nearest millisecond. All cases return a first frame; a timed-out result
+is explicitly marked rather than claimed as the exact diff.
+
+| Lines | Pattern | Git acquisition | Diff + handoff | Mount | First frame | Total | Hunks / timeout |
+|---:|---|---:|---:|---:|---:|---:|---|
+| 1,000 | identical | 16 | 0 | 30 | 30 | 77 | 0 |
+| 1,000 | one | 16 | 2 | 30 | 31 | 79 | 1 |
+| 1,000 | many | 16 | 26 | 32 | 31 | 106 | 100 |
+| 1,000 | insert_all | 16 | 0 | 25 | 18 | 59 | 1 |
+| 1,000 | delete_all | 16 | 0 | 26 | 18 | 60 | 1 |
+| 10,000 | identical | 16 | 3 | 140 | 229 | 388 | 0 |
+| 10,000 | one | 16 | 15 | 140 | 228 | 400 | 1 |
+| 10,000 | many | 16 | 2,316 | 164 | 238 | 2,735 | 1,000 |
+| 10,000 | insert_all | 16 | 1 | 82 | 119 | 219 | 1 |
+| 10,000 | delete_all | 16 | 1 | 77 | 117 | 211 | 1 |
+| 100,000 | identical | 20 | 30 | 839 | 2,216 | 3,105 | 0 |
+| 100,000 | one | 19 | 147 | 841 | 2,289 | 3,296 | 1 |
+| 100,000 | many | 18 | 5,067 | 855 | 2,190 | 8,132 | 1 (timeout) |
+| 100,000 | insert_all | 18 | 11 | 463 | 1,114 | 1,605 | 1 |
+| 100,000 | delete_all | 19 | 11 | 401 | 1,111 | 1,541 | 1 |
+
+At 100,000 lines the unlimited many-hunk diff returned all 10,000 hunks,
+taking 236.4 seconds for computation/handoff (239.8 seconds to frame) with move
+detection off, and 230.3 seconds (233.8 seconds total) with it on. The 100 ms
+budget returned a coarse mapping after about 214 ms of computation; the
+5,000 ms budget returned a coarse mapping after about 5.07 seconds. The
+deadline is cooperative, not a hard wall-clock limit. Even identical
+100,000-line files spend roughly 2.2 seconds in first-frame work in this
+Debug build, so opening a large diff is not instantaneous. Insertion/deletion
+of the complete 100,000-line file uses one zone and two authored decorations
+per pane, rather than 100,000 materialized filler lines.
+
+Window allocation peak deltas were about 58.5 MB for a 100,000-line identical
+or coarse-diff case and 71.4 MB for the exact 10,000-hunk case. Cumulative
+process peak RSS across the matrix was 1.33 GB; it includes all previous
+cases and is not an isolated per-document memory measurement.
+
+All 15 refreshes hit the calculation cache; total elapsed milliseconds:
+
+| Lines | Identical | One | Many | Insert all | Delete all |
+|---:|---:|---:|---:|---:|---:|
+| 1,000 | 39 | 40 | 40 | 39 | 37 |
+| 10,000 | 46 | 51 | 50 | 41 | 41 |
+| 100,000 | 110 | 168 | 173 | 73 | 74 |
+
+Steady-state 50-row scroll/input measurements (microseconds unless noted):
+
+| Actual hunks | Scroll p50 / p95 (ms) | Gutter layout p50 / p95 | Mouse p50 / p95 | Key p50 / p95 | Key frame p50 / p95 (ms) |
+|---:|---:|---:|---:|---:|---:|
+| 100 | 4.646 / 4.753 | 18 / 19 | 17 / 18 | 85 / 154 | 3.057 / 3.094 |
+| 1,000 | 4.703 / 4.778 | 23 / 24 | 17 / 18 | 119 / 849 | 3.276 / 3.344 |
+| 10,000 | 5.035 / 5.313 | 32 / 34 | 17 / 18 | 465 / 8,236 | 6.448 / 6.729 |
+
+The gutter visits 250 visible items over the interaction sample at each hunk
+count, with 51 viewport renders out of 100 events and one full layout solve per
+pane. A native sample of the first run identified a whole-document dynamic
+bracket-decoration lookup while computing glyph-margin lanes. The port now
+follows upstream `View._computeGlyphMarginLanes` and calls
+`TextModel.getAllMarginDecorations`; the terminal margin class lookup also
+requests only authored line decorations, since dynamic bracket color
+decorations have no gutter classes. The regression checks that glyph-margin
+layout does not force the bracket tree to materialize. This fixes a real
+unnecessary dependency, not the dominant large-file initial rendering cost.
 
 ## 0. Re-audit update (2026-11-26)
 
