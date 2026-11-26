@@ -3952,6 +3952,7 @@ pub const TerminalWorkbench = struct {
     }
 
     fn applyThemeToParts(self: *TerminalWorkbench, palette: ?*const theme_colors_mod.ThemeColors) void {
+        editor_css.hover.registerTheme(self.editor_surface.document(), theme_colors_mod.ThemeColors.hoverTheme(palette)) catch {};
         self.applyContextMenuTheme(palette);
         if (self.sidebar) |sidebar| sidebar.setThemeColors(palette);
         self.search_window.setThemeColors(palette);

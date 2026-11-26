@@ -149,6 +149,8 @@ Rules:
   | `zoneWidget.css` | `0x0100` | model-anchored zone widget and frame container |
   | `peekViewWidget.css` | `0x0110` | peek header, title, actions and body |
   | Multi-diff editor `style.css` | `0x0120` | file header, disclosure, labels, actions, keyboard focus and binary placeholder |
+  | Base `hoverWidget.css` | `0x0130` | common hover container and clipped content; native cell scrollbar |
+  | Editor `hover.css` | `0x0140` | themed editor hover and focus border; registered on the native document at theme changes |
 
   The multi-diff changed-files list's
   `media/multiDiffEditorWithFileList.css` is projected directly through the

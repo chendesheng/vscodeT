@@ -26,6 +26,8 @@ pub const zone_widget = @import("../contrib/zoneWidget/browser/zoneWidget_css.zi
 pub const peek_view = @import("../contrib/peekView/browser/media/peekViewWidget_css.zig");
 pub const diff_editor = @import("widget/diffEditor/style_css.zig");
 pub const multi_diff_editor = @import("widget/multiDiffEditor/style_css.zig");
+pub const hover = @import("../contrib/hover/browser/hover_css.zig");
+pub const hover_widget = @import("../../base/browser/ui/hover/hoverWidget_css.zig");
 pub const code_editor = @import("widget/codeEditor/editor_css.zig");
 
 pub const block_decorations = block_decorations_css;
@@ -48,6 +50,8 @@ pub fn register(doc: *ui.Document) !void {
     _ = try doc.registerSheet(codelens.sheet);
     _ = try doc.registerSheet(zone_widget.sheet);
     _ = try doc.registerSheet(peek_view.sheet);
+    _ = try doc.registerSheet(hover_widget.sheet);
+    _ = try doc.registerSheet(hover.sheet);
 }
 
 pub fn registerWorkbench(doc: *ui.Document) !void {
@@ -106,6 +110,13 @@ test "editor css: sheets register into disjoint class ranges" {
 
     try std.testing.expectEqual(ui.Display.flex, doc.classStyle(@backingInt(multi_diff_editor.Class.header_content)).?.display.?);
     try std.testing.expect(peek_view.base < multi_diff_editor.base);
+
+    try std.testing.expectEqual(ui.Overflow.hidden, doc.classStyle(@backingInt(hover_widget.Class.monaco_hover)).?.overflow.?);
+    try std.testing.expectEqual(ui.Position.absolute, doc.classStyle(@backingInt(hover_widget.Class.monaco_hover_content)).?.position.?);
+    try std.testing.expect(multi_diff_editor.base < hover_widget.base and hover_widget.base < hover.base);
+    const color = ui.Color{ .r = 5, .g = 6, .b = 7 };
+    try hover.registerTheme(&doc, .{ .background = color });
+    try std.testing.expectEqual(color, doc.classStyle(@backingInt(hover.Class.monaco_hover)).?.background.?);
 
     // Ranges are disjoint.
     try std.testing.expect(block_decorations_css.base < view_lines_css.base);

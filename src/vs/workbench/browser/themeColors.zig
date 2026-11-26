@@ -54,6 +54,18 @@ pub const ThemeColors = struct {
         return self.colorOr("sash.hoverBorder", self.color("focusBorder", fallback));
     }
 
+    pub fn hoverTheme(palette: ?*const ThemeColors) @import("../../base/browser/ui/hover/hoverWidget.zig").Theme {
+        const colors = palette orelse return .{};
+        return .{
+            .background = colors.color("editorHoverWidget.background", .{ 37, 37, 38 }),
+            .foreground = colors.color("editorHoverWidget.foreground", .{ 204, 204, 204 }),
+            .border = colors.color("editorHoverWidget.border", .{ 69, 69, 69 }),
+            .focused_border = colors.color("focusBorder", .{ 96, 130, 200 }),
+            .scrollbar = colors.color("scrollbarSlider.background", .{ 90, 90, 90 }),
+            .scrollbar_thumb = colors.color("scrollbarSlider.hoverBackground", .{ 160, 160, 160 }),
+        };
+    }
+
     /// Raw theme color, including its alpha. Surfaces that need to know
     /// whether a color was defined at all (for example the bracket-highlight
     /// pool, which skips transparent entries like upstream's `ColorProvider`)

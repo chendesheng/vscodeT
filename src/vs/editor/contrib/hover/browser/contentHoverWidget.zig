@@ -22,21 +22,9 @@ const Position = @import("../../../common/core/position.zig").Position;
 const editorBrowser = @import("../../../browser/editorBrowser.zig");
 const RenderedContentHover = @import("./contentHoverRendered.zig").RenderedContentHover;
 
-const background = ui.Color{ .r = 37, .g = 37, .b = 38 };
-const border_color = ui.Color{ .r = 69, .g = 69, .b = 69 };
-const foreground = ui.Color{ .r = 204, .g = 204, .b = 204 };
-const scrollbar_color = ui.Color{ .r = 90, .g = 90, .b = 90 };
-const scrollbar_thumb = ui.Color{ .r = 160, .g = 160, .b = 160 };
-const focused_border_color = ui.Color{ .r = 96, .g = 130, .b = 200 };
-
-pub const Theme = struct {
-    background: ui.Color = .{ .r = 37, .g = 37, .b = 38 },
-    border: ui.Color = .{ .r = 69, .g = 69, .b = 69 },
-    foreground: ui.Color = .{ .r = 204, .g = 204, .b = 204 },
-    scrollbar: ui.Color = .{ .r = 90, .g = 90, .b = 90 },
-    scrollbar_thumb: ui.Color = .{ .r = 160, .g = 160, .b = 160 },
-    focused_border: ui.Color = .{ .r = 96, .g = 130, .b = 200 },
-};
+const hover_css = @import("hover_css.zig");
+const base_hover = @import("../../../../base/browser/ui/hover/hoverWidget.zig");
+pub const Theme = base_hover.Theme;
 
 /// Upstream `ContentHoverWidget.ID`.
 pub const widget_id = "editor.contrib.resizableContentHoverWidget";
@@ -350,91 +338,26 @@ pub const ContentHoverWidget = struct {
         const self: *ContentHoverWidget = @ptrCast(@alignCast(context));
         const rendered = self.rendered orelse return error.NoRenderedHover;
 
-        const root = try doc.createElement(.div);
+        const widget = try base_hover.HoverWidget.build(doc, .{
+            .root_width = self.widget_width -| border_width * 2,
+            .root_height = self.widget_height -| border_width * 2,
+            .border = border_width,
+            .content_width = self.content_width,
+            .content_rows = self.content_rows,
+            .visible_rows = self.visible_rows,
+            .scroll_top = self.scroll_top,
+            .scrollbar = self.show_scrollbar,
+        }, self.theme);
+        const root = widget.containerDomNode;
+        try root.addClass(hover_css.Class.monaco_hover);
+        if (self.focused) try root.addClass(hover_css.Class.focused);
         root.asElement().focusable = true;
-        // The terminal layout has no `border-box` sizing: the border adds to
-        // the content size, so subtract it to keep the border box inside the
-        // container the view sized for us.
-        const root_width = self.widget_width -| border_width * 2;
-        const root_height = self.widget_height -| border_width * 2;
-        root.setStyle(.{
-            .position = .absolute,
-            .left = .{ .cells = 0 },
-            .top = .{ .cells = 0 },
-            .width = .{ .cells = @floatFromInt(root_width) },
-            .height = .{ .cells = @floatFromInt(root_height) },
-            .overflow = .hidden,
-            .background = self.theme.background,
-            .color = self.theme.foreground,
-            .border = .all(@floatFromInt(border_width)),
-            .border_style = .rounded,
-            .border_color = if (self.focused) self.theme.focused_border else self.theme.border,
-        });
         try root.addEventListener(.{ .context = self, .key_down = onKey });
         try root.addEventListener(.{ .context = self, .wheel = onWheel });
         try root.addEventListener(.{ .context = self, .focus = onFocus, .blur = onBlur });
         self.root = root;
-
-        // Absolute children resolve against the padding box, so the border is
-        // already accounted for here.
-        const clip = try doc.createElement(.div);
-        clip.setStyle(.{
-            .position = .absolute,
-            .left = .{ .cells = 0 },
-            .top = .{ .cells = 0 },
-            .width = .{ .cells = @floatFromInt(if (self.show_scrollbar) self.content_width + 1 else self.content_width) },
-            .height = .{ .cells = @floatFromInt(self.visible_rows) },
-            .overflow = .hidden,
-        });
-        _ = try root.appendChild(clip);
-
-        const content = try doc.createElement(.div);
-        content.setStyle(.{
-            .position = .absolute,
-            .left = .{ .cells = 0 },
-            .top = .{ .cells = 0 },
-            .width = .{ .cells = @floatFromInt(self.content_width) },
-            .height = .{ .cells = @floatFromInt(@max(self.content_rows, self.visible_rows)) },
-            .translate_y = -@as(f64, @floatFromInt(self.scroll_top)),
-        });
-        _ = try clip.appendChild(content);
-        _ = try rendered.build(doc, content, self.content_width, 0);
-
-        if (self.show_scrollbar) {
-            try self.buildScrollbar(doc, root);
-        }
-
+        _ = try rendered.build(doc, widget.contentsDomNode, self.content_width, 0);
         return root;
-    }
-
-    fn buildScrollbar(self: *ContentHoverWidget, doc: *ui.Document, root: *ui.Node) !void {
-        const track_height = self.visible_rows;
-        if (track_height == 0) return;
-        const thumb_height = @max(@as(usize, 1), track_height * track_height / @max(self.content_rows, 1));
-        const max_thumb_top = track_height - thumb_height;
-        const thumb_top = if (self.maxScroll() == 0)
-            0
-        else
-            self.scroll_top * max_thumb_top / self.maxScroll();
-
-        const x = self.content_width;
-        for (0..track_height) |row| {
-            const cell = try doc.createElement(.div);
-            cell.setStyle(.{
-                .position = .absolute,
-                .left = .{ .cells = @floatFromInt(x) },
-                .top = .{ .cells = @floatFromInt(row) },
-                .width = .{ .cells = 1 },
-                .height = .{ .cells = 1 },
-                .white_space = .pre,
-                .color = self.theme.scrollbar,
-            });
-            const is_thumb = row >= thumb_top and row < thumb_top + thumb_height;
-            const text = try doc.createText(if (is_thumb) "█" else "│");
-            text.setStyle(.{ .color = if (is_thumb) self.theme.scrollbar_thumb else self.theme.scrollbar });
-            _ = try cell.appendChild(text);
-            _ = try root.appendChild(cell);
-        }
     }
 
     fn onWheel(context: ?*anyopaque, event: *ui.MouseEvent) void {

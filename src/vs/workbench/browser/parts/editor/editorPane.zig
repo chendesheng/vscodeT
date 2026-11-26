@@ -1401,17 +1401,11 @@ pub const Controllers = struct {
                 .selection_foreground = selection_foreground,
             });
             if (self.suggest) |suggest| suggest.setTheme(suggest_theme);
-            const hover_theme: @import("../../../../editor/contrib/hover/browser/contentHoverWidget.zig").Theme = .{
-                .background = colors.color("editorHoverWidget.background", .{ 37, 37, 38 }),
-                .foreground = colors.color("editorHoverWidget.foreground", .{ 204, 204, 204 }),
-                .border = colors.color("editorHoverWidget.border", .{ 69, 69, 69 }),
-                .focused_border = colors.color("focusBorder", .{ 96, 130, 200 }),
-                .scrollbar = colors.color("scrollbarSlider.background", .{ 90, 90, 90 }),
-                .scrollbar_thumb = colors.color("scrollbarSlider.hoverBackground", .{ 160, 160, 160 }),
-            };
+            const hover_theme = theme_colors_mod.ThemeColors.hoverTheme(palette);
             if (self.hover) |hover| hover.setTheme(hover_theme);
             if (self.glyph_hover) |glyph| glyph.setTheme(hover_theme, code_background);
         } else {
+            if (self.hover) |hover| hover.setTheme(.{});
             if (self.glyph_hover) |glyph| glyph.setTheme(.{}, null);
             self.find.setTheme(.{});
         }

@@ -16,7 +16,9 @@ const Options = computer.GlyphHoverComputerOptions;
 const Message = computer.IHoverMessage;
 const MouseEvent = @import("hoverTypes.zig").EditorMouseEvent;
 const DeadlineTimer = @import("contentHoverController.zig").DeadlineTimer;
-const Theme = @import("contentHoverWidget.zig").Theme;
+const hover_css = @import("hover_css.zig");
+const base_hover = @import("../../../../base/browser/ui/hover/hoverWidget.zig");
+const Theme = base_hover.Theme;
 const WindowQueue = @import("../../../../base/common/windowDispatch.zig").Queue;
 
 pub const GlyphHoverWidget = struct {
@@ -230,42 +232,20 @@ pub const GlyphHoverWidget = struct {
 
     fn build(context: *anyopaque, doc: *ui.Document) !*ui.Node {
         const self: *GlyphHoverWidget = @ptrCast(@alignCast(context));
-        const root = try doc.createElement(.div);
-        root.setStyle(.{
-            .position = .absolute,
-            .left = .{ .cells = 0 },
-            .top = .{ .cells = 0 },
-            .width = .{ .cells = @floatFromInt(self.width_cells) },
-            .height = .{ .cells = @floatFromInt(self.height_cells) },
-            .overflow = .hidden,
-            .background = self.theme.background,
-            .color = self.theme.foreground,
-            .border = .all(@floatFromInt(self.border)),
-            .border_color = self.theme.border,
-            .border_style = .rounded,
-        });
-        try root.addEventListener(.{ .context = self, .wheel = onWheel });
-        const clip = try doc.createElement(.div);
-        clip.setStyle(.{ .position = .absolute, .left = .{ .cells = 0 }, .top = .{ .cells = 0 }, .width = .{ .cells = @floatFromInt(self.content_width) }, .height = .{ .cells = @floatFromInt(self.visible_rows) }, .overflow = .hidden });
-        _ = try root.appendChild(clip);
-        const content = try doc.createElement(.div);
-        content.setStyle(.{ .position = .absolute, .left = .{ .cells = 0 }, .top = .{ .cells = 0 }, .width = .{ .cells = @floatFromInt(self.content_width) }, .height = .{ .cells = @floatFromInt(self.content_rows) }, .translate_y = -@as(f64, @floatFromInt(self.scroll_top)) });
-        _ = try clip.appendChild(content);
-        _ = try markdown_rows.buildMarkdownContents(self.contents, doc, content, self.content_width, 0);
-        if (self.scrollbar and self.visible_rows != 0) {
-            const thumb_height = @max(@as(usize, 1), self.visible_rows * self.visible_rows / @max(1, self.content_rows));
-            const thumb_top = self.scroll_top * (self.visible_rows -| thumb_height) / @max(1, self.content_rows -| self.visible_rows);
-            for (0..self.visible_rows) |row| {
-                const cell = try doc.createElement(.div);
-                cell.setStyle(.{ .position = .absolute, .left = .{ .cells = @floatFromInt(self.content_width) }, .top = .{ .cells = @floatFromInt(row) }, .width = .{ .cells = 1 }, .height = .{ .cells = 1 } });
-                const thumb = row >= thumb_top and row < thumb_top + thumb_height;
-                const label = try doc.createText(if (thumb) "█" else "│");
-                label.setStyle(.{ .color = if (thumb) self.theme.scrollbar_thumb else self.theme.scrollbar });
-                _ = try cell.appendChild(label);
-                _ = try root.appendChild(cell);
-            }
-        }
-        return root;
+        const widget = try base_hover.HoverWidget.build(doc, .{
+            .root_width = self.width_cells,
+            .root_height = self.height_cells,
+            .border = self.border,
+            .content_width = self.content_width,
+            .content_rows = self.content_rows,
+            .visible_rows = self.visible_rows,
+            .scroll_top = self.scroll_top,
+            .scrollbar = self.scrollbar,
+        }, self.theme);
+        try widget.containerDomNode.addClass(hover_css.Class.monaco_hover);
+        try widget.containerDomNode.addEventListener(.{ .context = self, .wheel = onWheel });
+        _ = try markdown_rows.buildMarkdownContents(self.contents, doc, widget.contentsDomNode, self.content_width, 0);
+        return widget.containerDomNode;
     }
 
     fn onWheel(context: ?*anyopaque, event: *ui.MouseEvent) void {

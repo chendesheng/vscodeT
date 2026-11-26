@@ -558,6 +558,7 @@ pub const View = struct {
         });
         errdefer self.surface.deinit();
         try editor_css.register(self.surface.document());
+        try editor_css.hover.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.hoverTheme(self.theme_colors));
         self.owns_surface = true;
     }
 
@@ -1290,6 +1291,7 @@ pub const View = struct {
 
     pub fn setThemeColors(self: *View, palette: ?*const theme_colors_mod.ThemeColors) void {
         self.theme_colors = palette;
+        if (self.owns_surface) editor_css.hover.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.hoverTheme(palette)) catch {};
         self.ghost_text.editor_foreground = if (palette) |colors| colors.color("editor.foreground", .{ 212, 212, 212 }) else color(.{ 212, 212, 212 });
         self.ghost_text.foreground = if (palette) |colors| colors.color("editorGhostText.foreground", .{ 128, 128, 128 }) else color(.{ 128, 128, 128 });
         self.terminal_view_host.viewRef().marginPart().setTheme(marginTheme(palette));
@@ -6495,6 +6497,15 @@ test "View: glyph hover contribution renders all lane messages and line number m
     const handle = try View.createHandle(allocator, editor);
     const view = View.nativeView(handle);
     defer view.deinit();
+    var registry = @import("../vs/platform/theme/common/colorUtils.zig").ColorRegistry.init(allocator);
+    defer registry.deinit();
+    const theme = try @import("../vs/workbench/services/themes/common/colorThemeData.zig").ColorThemeData.createUnloadedTheme(allocator, &registry, "hover-theme", &.{
+        .{ "editorHoverWidget.background", "#123456" },
+        .{ "editorHoverWidget.foreground", "#abcdef" },
+    });
+    defer theme.deinit();
+    const palette = theme_colors_mod.ThemeColors.init(theme);
+    view.setThemeColors(&palette);
     const controller = try @import("../vs/editor/contrib/hover/browser/glyphHoverController.zig").GlyphHoverController.getOrCreate(editor, handle, .{ .delay = 4 });
     defer controller.unbindHost();
     var queue: @import("../vs/base/common/windowDispatch.zig").Queue = .{ .io = io };
@@ -6515,10 +6526,18 @@ test "View: glyph hover contribution renders all lane messages and line number m
     try view.renderAnsi(&out.writer);
     var found = false;
     var second = false;
+    var themed = false;
     for (0..view.surface.grid().rows) |row| {
         const text = try view.surface.grid().rowText(allocator, row);
         defer allocator.free(text);
-        found = found or std.mem.indexOf(u8, text, "glyph message") != null;
+        if (std.mem.indexOf(u8, text, "glyph message")) |_| {
+            found = true;
+            const grid = view.surface.grid();
+            for (0..grid.cols) |col| {
+                const index = grid.index(col, row);
+                if (grid.bg[index] == ui.cell.packColor(.{ .r = 0x12, .g = 0x34, .b = 0x56 }) and grid.fg[index] == ui.cell.packColor(.{ .r = 0xab, .g = 0xcd, .b = 0xef })) themed = true;
+            }
+        }
         second = second or std.mem.indexOf(u8, text, "second row") != null;
     }
     if (!found or !second) {
@@ -6529,7 +6548,7 @@ test "View: glyph hover contribution renders all lane messages and line number m
             std.debug.print("{s}\n", .{text});
         }
     }
-    try std.testing.expect(found and second);
+    try std.testing.expect(found and second and themed);
     controller.hideGlyphHover();
     const line_target = try view.mouseTargetAt(editor.gutterGlyphWidth(), 0);
     try std.testing.expectEqual(editorBrowser.MouseTargetType.gutter_line_numbers, line_target.type);
