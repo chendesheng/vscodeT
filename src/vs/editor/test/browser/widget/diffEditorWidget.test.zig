@@ -11,6 +11,50 @@ const widget_mod = @import("../../../browser/widget/diffEditor/diffEditorWidget.
 pub fn Tests(comptime View: type) type {
     return struct {
         const DiffEditorWidget = widget_mod.DiffEditorWidget(View);
+        test "diffEditorOptions: commits temporary inline when smoothly enlarging from automatic inline" {
+            const option_mod = @import("../../../browser/widget/diffEditor/diffEditorOptions.zig");
+            var options: option_mod.Options = .{ .minimum_side_by_side_width = 900 };
+            var layout: option_mod.WidthBasedLayout = .{};
+            layout.setWidth(options, 1000, null, false, false);
+            try testing.expect(layout.renderSideBySide(options, false, false));
+            layout.setWidth(options, 800, 1000, false, false);
+            try testing.expect(!layout.renderSideBySide(options, false, false));
+            try testing.expect(!layout.temporaryInlineMode());
+            layout.setWidth(options, 1000, 1000, false, false);
+            try testing.expect(layout.renderSideBySide(options, false, false));
+            layout.setWidth(options, 800, 1000, false, false);
+            try testing.expect(!layout.temporaryInlineMode());
+            layout.setWidth(options, 1000, 800, false, false);
+            try testing.expect(!layout.renderSideBySide(options, false, false));
+            try testing.expect(layout.temporaryInlineMode());
+            layout.setWidth(options, 800, null, false, false);
+            try testing.expect(!layout.temporaryInlineMode());
+            layout.setWidth(options, 1000, 800, false, false);
+            layout.resetWidthBasedLayout();
+            try testing.expect(layout.renderSideBySide(options, false, false));
+            layout.setWidth(options, 800, null, false, false);
+            try testing.expect(!layout.renderSideBySideInAutomaticMode(options, false, false));
+            layout.setWidth(options, 1000, null, false, false);
+            try testing.expect(layout.renderSideBySideInAutomaticMode(options, false, false));
+            var new_options = options;
+            new_options.render_side_by_side = false;
+            layout.updateOptions(options, new_options);
+            options = new_options;
+            new_options.render_side_by_side = true;
+            layout.updateOptions(options, new_options);
+            try testing.expect(layout.renderSideBySide(new_options, false, false));
+        }
+
+        test "diffEditorOptions: keeps auto layout after a non-resize layout change" {
+            const option_mod = @import("../../../browser/widget/diffEditor/diffEditorOptions.zig");
+            const options: option_mod.Options = .{ .minimum_side_by_side_width = 900 };
+            var layout: option_mod.WidthBasedLayout = .{};
+            layout.setWidth(options, 800, null, false, false);
+            try testing.expect(!layout.renderSideBySide(options, false, false));
+            layout.setWidth(options, 1000, null, false, false);
+            try testing.expect(layout.renderSideBySide(options, false, false));
+        }
+
         test "diffEditorWidget: real snapshot models align through view zones" {
             const allocator = testing.allocator;
             const io = Io.Threaded.global_single_threaded.io();

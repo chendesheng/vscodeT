@@ -50,6 +50,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         modified_label: []u8,
         options: Options,
         inline_mode: bool = false,
+        width_based_layout: diff_editor_options.WidthBasedLayout = .{},
         original_lines: [][]u8,
         modified_lines: [][]u8,
 
@@ -289,8 +290,15 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         pub fn layout(self: *Self, width: usize, height: usize) void {
+            self.layoutWithResizeStart(width, height, null);
+        }
+
+        /// A host can pass the initial width of a continuous resize gesture.
+        pub fn layoutWithResizeStart(self: *Self, width: usize, height: usize, smooth_resize_start_width: ?usize) void {
             self.zones.beginBatch();
-            const inline_mode = !self.options.renderSideBySide(width);
+            const smart_inline = self.isSimpleDiff();
+            self.width_based_layout.setWidth(self.options, width, smooth_resize_start_width, false, smart_inline);
+            const inline_mode = !self.width_based_layout.renderSideBySide(self.options, false, smart_inline);
             if (self.inline_mode != inline_mode) {
                 self.setInlineMode(inline_mode) catch |err| {
                     self.modified_editor.setMessage("diff layout failed: {s}", .{@errorName(err)});
@@ -308,6 +316,20 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.modified_view.invalidate();
             self.overview.invalidate();
             if (self.sync_top_line and self.sideBySide()) self.syncTopLines();
+        }
+
+        fn isSimpleDiff(self: *const Self) bool {
+            const state_ = self.state() orelse return false;
+            for (state_.mappings) |mapping| {
+                const change = mapping.line_range_mapping;
+                if (!change.original.isEmpty() and !change.modified.isEmpty()) return false;
+            }
+            return true;
+        }
+
+        pub fn resetWidthBasedLayout(self: *Self) void {
+            self.width_based_layout.resetWidthBasedLayout();
+            self.layout(self.width, self.height);
         }
 
         pub const PaneWidths = diff_editor_editors.PaneWidths;

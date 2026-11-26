@@ -46,7 +46,7 @@ pub const Options = struct {
 
     pub fn renderSideBySide(self: Options, width: usize) bool {
         return self.render_side_by_side and width >= 3 and
-            (!self.use_inline_view_when_space_is_limited or width >= self.minimum_side_by_side_width);
+            (!self.use_inline_view_when_space_is_limited or width > self.minimum_side_by_side_width);
     }
 
     pub fn fromBase(base: ValidDiffEditorBaseOptions) Options {
@@ -76,6 +76,46 @@ pub const Options = struct {
             result.hide_unchanged_regions_minimum_line_count = 1000;
         }
         return result;
+    }
+};
+
+/// Port of DiffEditorOptions._widthBasedLayout and its transaction updates.
+pub const WidthBasedLayout = struct {
+    width: usize = 0,
+    mode: enum { auto, inline_view } = .auto,
+
+    pub fn setWidth(self: *WidthBasedLayout, options: Options, width: usize, smooth_resize_start_width: ?usize, screen_reader: bool, smart_inline: bool) void {
+        self.width = width;
+        if (width <= options.minimum_side_by_side_width) {
+            self.mode = .auto;
+        } else if (smooth_resize_start_width) |start| {
+            if (self.mode == .auto and options.render_side_by_side and options.use_inline_view_when_space_is_limited and start <= options.minimum_side_by_side_width and !screen_reader and !(options.compact_mode and smart_inline)) {
+                self.mode = .inline_view;
+            }
+        }
+    }
+
+    pub fn updateOptions(self: *WidthBasedLayout, current: Options, new: Options) void {
+        if (current.render_side_by_side != new.render_side_by_side or current.use_inline_view_when_space_is_limited != new.use_inline_view_when_space_is_limited or current.minimum_side_by_side_width != new.minimum_side_by_side_width) self.resetWidthBasedLayout();
+    }
+
+    pub fn resetWidthBasedLayout(self: *WidthBasedLayout) void {
+        self.mode = .auto;
+    }
+
+    pub fn temporaryInlineMode(self: WidthBasedLayout) bool {
+        return self.mode == .inline_view;
+    }
+
+    pub fn renderSideBySideInAutomaticMode(self: WidthBasedLayout, options: Options, screen_reader: bool, smart_inline: bool) bool {
+        if (options.compact_mode and smart_inline) return false;
+        return self.width > options.minimum_side_by_side_width or screen_reader;
+    }
+
+    pub fn renderSideBySide(self: WidthBasedLayout, options: Options, screen_reader: bool, smart_inline: bool) bool {
+        if (options.compact_mode and smart_inline) return false;
+        return options.render_side_by_side and self.width >= 3 and self.mode == .auto and
+            !(options.use_inline_view_when_space_is_limited and self.width <= options.minimum_side_by_side_width and !screen_reader);
     }
 };
 

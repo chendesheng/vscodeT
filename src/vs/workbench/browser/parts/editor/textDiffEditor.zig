@@ -336,6 +336,8 @@ pub fn DiffView(comptime View: type) type {
             );
             const previous = self.widget;
             widget.sash_layout = previous.sash_layout;
+            widget.width_based_layout = previous.width_based_layout;
+            widget.width_based_layout.updateOptions(previous.options, widget.options);
             widget.layout(width, height);
             const position = previous.modified_editor.modelCursorPosition();
             widget.modified_editor.setCursorPosition(widget.modified_editor.model.validatePosition(position)) catch {};
