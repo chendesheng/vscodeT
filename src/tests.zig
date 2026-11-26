@@ -586,6 +586,7 @@ comptime {
     _ = @import("./vs/workbench/services/themes/common/plistParser.zig");
     _ = @import("./vs/workbench/services/themes/test/common/colorThemeData.test.zig");
     _ = @import("./vs/workbench/test/common/memento.test.zig");
+    _ = @import("./vs/workbench/test/common/configuration.test.zig");
     _ = @import("./vs/platform/storage/test/common/storageService.test.zig");
     _ = @import("./vs/platform/commands/test/common/commands.test.zig");
     _ = @import("./vs/base/common/errorMessage.zig");

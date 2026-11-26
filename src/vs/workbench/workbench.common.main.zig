@@ -13,6 +13,10 @@ pub fn createServices(allocator: std.mem.Allocator) !ServiceCollection {
     return services;
 }
 
+pub fn registerConfigurationMigrations(registry: *@import("common/configuration.zig").ConfigurationMigrationRegistry) !void {
+    try registry.registerConfigurationMigrations(&@import("contrib/codeEditor/browser/diffEditorHelper.zig").configuration_migrations);
+}
+
 /// Workbench diff editor contribution registration, assembled once and
 /// instantiated by every normal/restored diff widget at its pane boundary.
 const diff_editor_contributions = [_]@import("../editor/browser/editorExtensions.zig").DiffEditorContributionRegistration{

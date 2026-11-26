@@ -354,6 +354,7 @@ pub const TerminalWorkbench = struct {
     range_highlights: ?*RangeHighlightDecorations = null,
     workspace: *WorkspaceContextService,
     configuration: ?*ConfigurationService,
+    configuration_migrations: @import("../vs/workbench/common/configuration.zig").ConfigurationMigrationWorkbenchContribution,
     configuration_binding: configuration_mod.ConfigurationServiceBinding,
     editor_configuration: @import("../vs/workbench/browser/parts/editor/textEditor.zig").TextEditorConfiguration,
     configured_languages: @import("../vs/workbench/services/language/common/languageService.zig").ConfiguredLanguageAssociations,
@@ -551,6 +552,9 @@ pub const TerminalWorkbench = struct {
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         errdefer self.workspace.deinit();
         self.configuration = null;
+        self.configuration_migrations = .init(allocator);
+        errdefer self.configuration_migrations.deinit();
+        try @import("../vs/workbench/workbench.common.main.zig").registerConfigurationMigrations(&self.configuration_migrations.registry);
         self.configuration_binding = .init(allocator);
         errdefer self.configuration_binding.deinit();
         self.settings_watcher = null;
@@ -561,6 +565,7 @@ pub const TerminalWorkbench = struct {
         errdefer self.lifecycle.deinit();
         errdefer self.contributions.deinit();
         try self.contributions.register(.after_restored, self, initAfterRestoredWorkspaceWatcher);
+        try self.contributions.register(.eventually, &self.configuration_migrations, @TypeOf(self.configuration_migrations).start);
         self.user_settings_paths = &.{};
 
         self.service = if (previous_editor_state) |previous|
@@ -1700,6 +1705,7 @@ pub const TerminalWorkbench = struct {
         }
         self.contributions.deinit();
         self.lifecycle.deinit();
+        self.configuration_migrations.deinit();
         self.configuration_binding.deinit();
         if (self.configuration) |configuration| configuration.deinit();
         freeOwnedPaths(self.allocator, self.user_settings_paths);
@@ -1859,6 +1865,7 @@ pub const TerminalWorkbench = struct {
             self.scm.detachConfiguration();
             if (self.theme_service) |service| service.detachConfiguration();
             if (self.core.notification_controller) |controller| try controller.attachConfiguration(null);
+            try self.configuration_migrations.bind(null);
             try self.configuration_binding.bind(null);
             configuration.deinit();
             self.configuration = null;
@@ -1918,6 +1925,7 @@ pub const TerminalWorkbench = struct {
             self.scm.detachConfiguration();
             if (self.theme_service) |service| service.detachConfiguration();
             if (self.core.notification_controller) |controller| try controller.attachConfiguration(null);
+            try self.configuration_migrations.bind(null);
             try self.configuration_binding.bind(null);
             configuration.deinit();
             self.configuration = null;
@@ -1972,6 +1980,7 @@ pub const TerminalWorkbench = struct {
             watcher.setAsyncIo(self.async_io);
         }
         try self.breadcrumbs.attachServices(self.workspace, self.configuration);
+        try self.configuration_migrations.bind(self.configuration);
         self.applyLayoutSettings(null);
     }
 

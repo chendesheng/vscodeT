@@ -78,3 +78,9 @@ pub const DiffEditorHelperContribution = struct {
         if (self.diff.getModifiedControl()) |control| self.configuration.updateValue(control.editor.model, "diffEditor.maxComputationTime", .{ .integer = 0 }, null) catch |err| control.editor.setMessage("Configuration update failed: {s}", .{@errorName(err)});
     }
 };
+
+/// Registered with the workbench's configuration migration registry alongside
+/// the contribution, as in the upstream module.
+pub const configuration_migrations = [_]@import("../../../common/configuration.zig").ConfigurationMigration{
+    .{ .key = "diffEditor.experimental.collapseUnchangedRegions", .rename_to = "diffEditor.hideUnchangedRegions.enabled" },
+};

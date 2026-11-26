@@ -10688,3 +10688,31 @@ test "Workbench: git scm integration peek actions stage and revert only the sele
     defer restored.deinit();
     try std.testing.expectEqualStrings(modified, restored.items);
 }
+
+test "Diff editor commands: legacy collapse configuration migrates at Eventually and updates the mounted diff" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(a, io, &tmp, "file.txt", "one\ntwo\nthree\n");
+    defer a.free(path);
+    const settings = try seedFile(a, io, &tmp, "settings.json", "{\n// retain this comment\n\"diffEditor.experimental.collapseUnchangedRegions\": true,\n}");
+    defer a.free(settings);
+    const window = try TestWindow.init(a, io, &.{}, 100, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.setUserSettingsPaths(&.{settings});
+    wb.ensureConfigurationReady();
+    try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "one\ntwo\nthree\n", "ONE\ntwo\nthree\n", "left", "right");
+    const widget = wb.activeTab().?.diff.?.widget;
+    try std.testing.expect(!widget.options.hide_unchanged_regions);
+    try std.testing.expect(wb.configuration.?.getBool("diffEditor.experimental.collapseUnchangedRegions", false));
+    try wb.lifecycle.setPhase(.Eventually);
+    try std.testing.expect(wb.configuration_migrations.started);
+    try std.testing.expect(widget.options.hide_unchanged_regions);
+    try std.testing.expect(wb.configuration.?.getValue("diffEditor.experimental.collapseUnchangedRegions", .{}) == null);
+    const saved = try tmp.dir.readFileAlloc(io, "settings.json", a, .limited(1024));
+    defer a.free(saved);
+    try std.testing.expect(std.mem.indexOf(u8, saved, "// retain this comment") != null);
+    try std.testing.expect(std.mem.indexOf(u8, saved, "diffEditor.hideUnchangedRegions.enabled") != null);
+}
