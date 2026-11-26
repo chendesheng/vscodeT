@@ -1255,7 +1255,8 @@ console API for raw mode, sizing and input polling.
   copies, history entries or session-serialized, and closing them returns to
   the untouched file tab. Remaining portable gaps include quick-diff peek,
   multi-diff editor and editing either side. Moved
-  blocks are surfaced as model decorations in side-by-side mode only.
+  blocks are surfaced as model decorations, gutter connectors and Compare controls
+  in side-by-side mode only; the active comparison aligns both moved ranges.
   Hide-unchanged uses the upstream unchanged-region range model, direct model
   hidden areas, and model-anchored disclosures with keyboard support.
   `renderSideBySide: false` inserts original deleted code in view zones above
@@ -1268,6 +1269,9 @@ console API for raw mode, sizing and input polling.
   and character backgrounds use the active theme. Refresh preserves the split,
   cursor and scroll state. Git snapshot resolution and diff computation run on
   the editor worker; identical content/options reuse a bounded result cache.
+  Model-content events debounce a new diff by 200 ms and computation-option
+  changes schedule immediate work. Presentation-only changes retain the mounted
+  views and models; obsolete results are detached, including on disposal.
   The combined two-lane overview ruler uses two terminal cells and a draggable
   viewport slider; the split sash supports double-click reset. `diffEditor.wordWrap`
   overrides the configured editor wrap mode, with the hidden original always
@@ -1277,7 +1281,7 @@ console API for raw mode, sizing and input polling.
   strikethrough; empty character ranges render a one-cell marker. The accessible
   diff viewer uses grouped unified review rows (F7/Shift-F7), arrow-key line
   navigation, and Enter to reveal the selected source. Remaining gaps include
-  moved-block connectors, title/hunk action rendering, disclosure breadcrumbs
+  title/hunk action rendering, disclosure breadcrumbs
   and code lens.
   See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
   Only one repository per workspace folder is shown.
