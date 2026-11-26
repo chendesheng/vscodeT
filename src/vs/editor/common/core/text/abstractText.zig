@@ -12,6 +12,8 @@ const Range = @import("../range.zig").Range;
 const LineRange = @import("../ranges/lineRange.zig").LineRange;
 const OffsetRange = @import("../ranges/offsetRange.zig").OffsetRange;
 const TextLength = @import("textLength.zig").TextLength;
+const TextModelText = @import("../../model/textModelText.zig").TextModelText;
+const TextModel = @import("../../model/textModel.zig").TextModel;
 const PositionOffsetTransformer = @import("positionToOffset.zig").PositionOffsetTransformer;
 
 pub const StringText = struct {
@@ -60,6 +62,7 @@ pub const AbstractText = struct {
         string: StringText,
         array: ArrayText,
         line_based: LineBasedText,
+        text_model: TextModelText,
     };
 
     pub fn initString(allocator: Allocator, value: []const u8) AbstractText {
@@ -72,6 +75,10 @@ pub const AbstractText = struct {
 
     pub fn initLineBased(allocator: Allocator, line_based: LineBasedText) AbstractText {
         return .{ .allocator = allocator, .kind = .{ .line_based = line_based } };
+    }
+
+    pub fn initTextModel(allocator: Allocator, model: *TextModel) AbstractText {
+        return .{ .allocator = allocator, .kind = .{ .text_model = TextModelText.init(allocator, model) } };
     }
 
     pub fn deinit(self: *AbstractText) void {
@@ -107,6 +114,7 @@ pub const AbstractText = struct {
                 return self.getValueOfRangeArray(&array_text, range);
             },
             .line_based => |text| self.getValueOfRangeLineBased(text, range),
+            .text_model => |text| text.getValueOfRange(range),
         };
     }
 
@@ -120,6 +128,7 @@ pub const AbstractText = struct {
             .string => |text| lineLengthInString(text.value, lineNumber),
             .array => |text| if (lineNumber - 1 < text.lines.len) text.lines[lineNumber - 1].len else 0,
             .line_based => |text| text.getLineContent(text.context, lineNumber).len,
+            .text_model => |text| text.getLineLength(lineNumber),
         };
     }
 
@@ -169,6 +178,7 @@ pub const AbstractText = struct {
                 const lastLine = text.lines[text.lines.len - 1];
                 break :blk TextLength{ .lineCount = text.lines.len - 1, .columnCount = lastLine.len };
             },
+            .text_model => |text| text.length(),
             .line_based => |text| blk: {
                 if (text.lineCount == 0) break :blk TextLength{ .lineCount = 0, .columnCount = 0 };
                 const lastLine = text.getLineContent(text.context, text.lineCount);

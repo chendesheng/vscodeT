@@ -7,8 +7,8 @@ const TextModel = @import("textModel.zig").TextModel;
 
 /// An `AbstractText`-like view over a `TextModel`.
 ///
-/// The local `AbstractText` is a tagged union rather than a base class, so this
-/// type exposes the same useful operations directly. Values returned by
+/// The local `AbstractText` is a tagged union rather than a base class; its
+/// text_model variant delegates to this adapter. Values returned by
 /// `getValueOfRange` are owned by the caller.
 pub const TextModelText = struct {
     const Self = @This();
@@ -22,7 +22,8 @@ pub const TextModelText = struct {
 
     pub fn getValueOfRange(self: *const Self, text_range: Range) ![]u8 {
         var value = try self.text_model.getValueInRange(text_range, null);
-        return value.toOwnedSlice();
+        defer value.deinit();
+        return self.allocator.dupe(u8, value.items);
     }
 
     pub fn getLineLength(self: *const Self, line_number: usize) usize {
