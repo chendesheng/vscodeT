@@ -489,6 +489,9 @@ pub const EditorOpening = struct {
         storage: ?*const @import("../../../../platform/storage/common/storage.zig").IStorageService = null,
         workspace: ?*@import("../../workspaces/common/workspaceContextService.zig").WorkspaceContextService = null,
         lists: ?*@import("../../../../platform/list/browser/listService.zig").ListService = null,
+        menus: ?*@import("../../../../platform/actions/common/menuService.zig").MenuService = null,
+        context_keys: ?*const @import("../../../../platform/contextkey/common/contextkey.zig").IContextKeyService = null,
+        context_menu: ?*const @import("../../../../platform/contextview/browser/contextMenuService.zig").IContextMenuService = null,
     } = null,
     pending_open: ?struct { read: *TextFileRead, options: OpenOptions } = null,
     diff_worker: ?*DiffWorker = null,
@@ -618,6 +621,11 @@ pub const EditorOpening = struct {
             .dispose_diff = disposeMultiDiffWidget,
             .open_file = openMultiDiffFile,
             .open_binary_diff = openMultiDiffBinary,
+            .file_toolbar = if (self.multi_diff_source_services) |services| blk: {
+                const menus = services.menus orelse break :blk null;
+                const keys = services.context_keys orelse break :blk null;
+                break :blk .{ .menus = menus, .parent_context = keys, .context_menu_service = if (services.context_menu) |menu| menu.* else null };
+            } else null,
         }, .{ .worker = try self.ensureDiffWorker(), .cache = &self.diff_cache }, width, height, preserve_focus, if (self.multi_diff_source_services) |services| blk: {
             const config = services.configuration orelse break :blk null;
             const store = services.storage orelse break :blk null;

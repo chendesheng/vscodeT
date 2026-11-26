@@ -11018,6 +11018,58 @@ test "Workbench: git scm integration opens live Changes group and retains surviv
     const after_highlight = try original_editor.model.getAllDecorations(owner, false);
     defer allocator.free(after_highlight);
     for (after_highlight) |decoration| try std.testing.expect(!std.mem.eql(u8, decoration.options.description, "symbol-navigate-action-highlight"));
+    // The actual registered per-file menu sees source and item context,
+    // resolves a contribution made after binding, and forwards the URI.
+    const source_context = multi.widget.impl.getContextKey("scmResourceGroup").?;
+    try std.testing.expect(source_context == .string);
+    const title_context = wb.activePane().?.title_control.menu.?.context;
+    try std.testing.expectEqualStrings(source_context.string, title_context.getValue("scmResourceGroup").string);
+    const actions_mod = @import("../vs/platform/actions/common/actions.zig");
+    const ContextExpr = @import("../vs/platform/contextkey/common/contextkey.zig").Expr;
+    const CommandArgument = @import("../vs/platform/commands/common/commands.zig").CommandArgument;
+    const Probe = struct {
+        runs: usize = 0,
+        correct_resource: bool = false,
+        fn run(_: *anyopaque) !void {
+            return error.MissingURIArgument;
+        }
+        fn runArg(context: *anyopaque, argument: CommandArgument) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const resource = argument.as(std.Uri) orelse return error.MissingURIArgument;
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            self.correct_resource = std.mem.eql(u8, std.fs.path.basename(try std_uri.path(resource.*, arena.allocator())), "a.txt");
+            self.runs += 1;
+        }
+    };
+    var probe: Probe = .{};
+    try wb.commands.platform.register(.{ .id = "test.multiDiffFileAction", .context = &probe, .run = Probe.run, .run_with_argument = Probe.runArg });
+    defer wb.commands.platform.unregister("test.multiDiffFileAction");
+    const source_group_id = try allocator.dupe(u8, source_context.string);
+    defer allocator.free(source_group_id);
+    const source_when: ContextExpr = .{ .Equals = .{ .key = "scmResourceGroup", .value = .{ .string = source_group_id } } };
+    const item_when: ContextExpr = .{ .Defined = "test.itemScope" };
+    const when: ContextExpr = .{ .And = @constCast(&[_]*const ContextExpr{ &source_when, &item_when }) };
+    const registration = try wb.commands.menus.appendMenuItemTracked(actions_mod.menu_ids.MultiDiffEditorFileToolbar, .{ .command = .{ .id = "test.multiDiffFileAction", .title = "Scoped File Action", .icon = "check" }, .group = "navigation", .order = 50, .when = &when });
+    defer registration.dispose();
+    try target_item.documentDiffItem.setContextKeys(&.{.{ .key = "test.itemScope", .value = .{ .boolean = true } }});
+    const toolbar = binding.toolbar_menu orelse return error.TestExpectedMultiDiffToolbar;
+    try std.testing.expectEqualStrings(source_context.string, toolbar.context.getValue("scmResourceGroup").string);
+    try std.testing.expect(toolbar.context.getValue("test.itemScope").boolean);
+    try binding.template.header.paintFrame();
+    var button = binding.template.actions.first_child;
+    const node = while (button) |child| : (button = child.next) {
+        if (std.mem.eql(u8, child.getAttribute("aria-label") orelse "", "Scoped File Action")) break child;
+    } else return error.TestExpectedScopedFileAction;
+    const button_rect = node.asElement().rect;
+    const active_header = binding.headerRange();
+    mouse = .{ .kind = .down, .button = .left, .x = ui.cell.snap(button_rect.x) + 1, .y = active_header.start - multi.widget.impl.scroll_view.layout.renderedViewport.start };
+    try std.testing.expect(try multi.widget.dispatchMouse(&mouse));
+    try std.testing.expectEqual(@as(usize, 1), probe.runs);
+    try std.testing.expect(probe.correct_resource);
+    try target_item.documentDiffItem.setContextKeys(&.{});
+    var child = binding.template.actions.first_child;
+    while (child) |value| : (child = value.next) try std.testing.expect(!std.mem.eql(u8, value.getAttribute("aria-label") orelse "", "Scoped File Action"));
     // The normal group action follows the same input matching path.
     mouse = .{ .kind = .down, .button = .left, .x = action % 60, .y = action / 60 };
     try std.testing.expect(try changes.handleMouse(&mouse, rect));

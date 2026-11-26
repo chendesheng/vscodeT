@@ -844,6 +844,9 @@ pub const TerminalWorkbench = struct {
                 .storage = &self.storage_api,
                 .workspace = self.workspace,
                 .lists = &self.lists,
+                .menus = &self.menu_service,
+                .context_keys = &self.core.context_keys,
+                .context_menu = &self.context_menu_api,
                 .provider = .{ .context = &self.git_commands, .capture = @import("../extensions/git/src/commands.zig").CommandContribution.captureMultiDiffResource },
             },
             .host = .{

@@ -144,6 +144,8 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
         preserve_focus_on_load: bool = false,
         initialized_active: bool = false,
         focused: bool = false,
+        origin_x: usize = 0,
+        origin_y: usize = 0,
         focus_transition: bool = false,
         pending_state: ?IMultiDiffEditorViewState = null,
         pending_scroll: ?scroll_mod.ScrollPosition = null,
@@ -683,6 +685,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
                 .collapse => try item.setCollapsed(!item.collapsed),
                 .open_file => if (self.host.open_file) |callback| try callback(self.host.context, (doc.modified orelse doc.original.?).uri),
                 .open_binary_diff => if (self.host.open_binary_diff) |callback| if (doc.original != null and doc.modified != null) try callback(self.host.context, doc.original.?.uri, doc.modified.?.uri),
+                .toolbar_action => return error.MissingToolbarMouseEvent,
             }
         }
         pub fn dispatchMouse(self: *Self, event: *ui.MouseEvent) !bool {
@@ -699,7 +702,12 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
                     const item = binding.item;
                     if (event.kind == .down) try item.setActive();
                     if (try binding.dispatchHeaderMouse(event, row - header.start)) |action| {
-                        try self.runItemAction(item, action);
+                        if (action == .toolbar_action) {
+                            var absolute = event.*;
+                            absolute.x += self.origin_x;
+                            absolute.y += self.origin_y;
+                            try binding.runToolbarAction(&absolute);
+                        } else try self.runItemAction(item, action);
                         return true;
                     }
                     return event.default_prevented;
@@ -716,7 +724,7 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
                         try self.syncInnerScroll(binding, editor.focusedEditor().scrollTop());
                         return handled;
                     }
-                    if (event.kind == .down and event.button == .left) {
+                    if (event.kind == .down and event.button == .left and binding.binaryActionHit(event.x, row)) {
                         try self.runItemAction(binding.item, .open_binary_diff);
                         return true;
                     }
@@ -745,6 +753,8 @@ pub fn MultiDiffEditorWidgetImpl(comptime View: type) type {
             return .{ .row = absolute - binding.rendered_viewport.start, .col = cell.col + self.config.variant.horizontalInsets.left };
         }
         pub fn paint(self: *Self, frame: *ui.Frame, x: usize, y: usize, width: usize, height: usize) !void {
+            self.origin_x = x;
+            self.origin_y = y;
             if (width == 0 or height == 0) return;
             if (self.scroll_view.width != width or self.scroll_view.height != height) try self.layout(width, height);
             const bg = if (self.config.theme) |theme| theme.color("multiDiffEditor.background", .{ 30, 30, 30 }) else ui.Color{ .r = 30, .g = 30, .b = 30 };

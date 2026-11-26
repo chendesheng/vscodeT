@@ -67,6 +67,7 @@ pub const Menu = struct {
     service: *MenuService,
     id: MenuId,
     context: contextkey.IContext,
+    options: MenuActionOptions = .{},
     arena: std.heap.ArenaAllocator,
     groups: []const MenuGroup,
     menu_ids: std.StringHashMap(void),
@@ -98,7 +99,7 @@ pub const Menu = struct {
         self.arena = std.heap.ArenaAllocator.init(self.allocator);
         freeMenuIds(self.allocator, &self.menu_ids);
         freeMenuIds(self.allocator, &self.context_keys);
-        self.groups = try self.service.buildGroups(self.arena.allocator(), self.id, self.context, &self.menu_ids, &self.context_keys, .{});
+        self.groups = try self.service.buildGroups(self.arena.allocator(), self.id, self.context, &self.menu_ids, &self.context_keys, self.options);
     }
 
     fn onRegistryChange(event: actions.MenuChangeEvent, menu: *Menu) anyerror!void {
@@ -596,6 +597,10 @@ pub const MenuService = struct {
     /// Resolves a menu: visibility filtering, upstream sorting/grouping, group
     /// titles, enablement/toggled state and flattened submenus.
     pub fn createMenu(self: *MenuService, allocator: Allocator, id: MenuId, context: contextkey.IContext) !*Menu {
+        return self.createMenuWithOptions(allocator, id, context, .{});
+    }
+
+    pub fn createMenuWithOptions(self: *MenuService, allocator: Allocator, id: MenuId, context: contextkey.IContext, options: MenuActionOptions) !*Menu {
         const menu = try allocator.create(Menu);
         errdefer allocator.destroy(menu);
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -604,12 +609,13 @@ pub const MenuService = struct {
         errdefer freeMenuIds(allocator, &menu_ids);
         var context_keys = std.StringHashMap(void).init(allocator);
         errdefer freeMenuIds(allocator, &context_keys);
-        const groups = try self.buildGroups(arena.allocator(), id, context, &menu_ids, &context_keys, .{});
+        const groups = try self.buildGroups(arena.allocator(), id, context, &menu_ids, &context_keys, options);
         menu.* = .{
             .allocator = allocator,
             .service = self,
             .id = id,
             .context = context,
+            .options = options,
             .arena = arena,
             .groups = groups,
             .menu_ids = menu_ids,

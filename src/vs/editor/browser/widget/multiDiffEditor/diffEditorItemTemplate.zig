@@ -23,6 +23,14 @@ const dispatch = @import("../../../../base/common/windowDispatch.zig");
 const ContentSizeChangedEvent = @import("../../../common/viewModelEventDispatcher.zig").ContentSizeChangedEvent;
 const ThemeColors = @import("../../../../workbench/browser/themeColors.zig").ThemeColors;
 const std_uri = @import("../../../../base/common/stdUri.zig");
+const actions_mod = @import("../../../../platform/actions/common/actions.zig");
+const menu_mod = @import("../../../../platform/actions/common/menuService.zig");
+const contextkey = @import("../../../../platform/contextkey/common/contextkey.zig");
+const context_menu = @import("../../../../platform/contextview/browser/contextMenuService.zig");
+const command_mod = @import("../../../../platform/commands/common/commands.zig");
+const IAction = @import("../../../../base/common/actions.zig").IAction;
+const SignalSubscription = @import("../../../../base/common/event.zig").SignalSubscription;
+const diff_vm = @import("../diffEditor/diffEditorViewModel.zig");
 
 const symbol_highlight_options = blk: {
     var options = model_types.ModelDecorationOptions.init("symbol-navigate-action-highlight", .NeverGrowsWhenTypingAtEdges);
@@ -32,7 +40,7 @@ const symbol_highlight_options = blk: {
 };
 
 pub const binaryFilePlaceholderContentHeight: usize = 5;
-pub const ItemAction = enum { collapse, open_file, open_binary_diff };
+pub const ItemAction = enum { collapse, open_file, open_binary_diff, toolbar_action };
 pub const ViewMode = enum { inline_view, side_by_side, automatic };
 
 pub const Configuration = struct {
@@ -69,6 +77,11 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
     return struct {
         const Self = @This();
         pub const Widget = DiffWidget(View);
+        pub const FileToolbarHost = struct {
+            menus: *menu_mod.MenuService,
+            parent_context: *const contextkey.IContextKeyService,
+            context_menu_service: ?context_menu.IContextMenuService = null,
+        };
         pub const Host = struct {
             context: *anyopaque,
             view_factory: *const fn (Allocator, *Editor) anyerror!*View,
@@ -76,6 +89,7 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
             dispose_diff: ?*const fn (*anyopaque, *Widget) void = null,
             open_file: ?*const fn (*anyopaque, std.Uri) anyerror!void = null,
             open_binary_diff: ?*const fn (*anyopaque, std.Uri, std.Uri) anyerror!void = null,
+            file_toolbar: ?FileToolbarHost = null,
         };
         allocator: Allocator,
         io: std.Io,
@@ -114,6 +128,17 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
             options_listener: ?usize = null,
             original_size_listener: ?usize = null,
             modified_size_listener: ?usize = null,
+            toolbar_menu: ?*menu_mod.Menu = null,
+            toolbar_listener: ?SignalSubscription = null,
+            item_context_listener: ?SignalSubscription = null,
+            source_context_listener: ?SignalSubscription = null,
+            region_context_listener: ?SignalSubscription = null,
+            toolbar_buttons: []ToolbarButton = &.{},
+            pending_toolbar_index: ?usize = null,
+            overflow_open: bool = false,
+
+            const ToolbarButton = struct { binding: *Binding, index: usize };
+            const overflow_index = std.math.maxInt(usize);
 
             pub fn size(self: *Binding) usize {
                 return if (self.item.collapsed) self.template.config.variant.headerHeight else self.getExpandedContentHeight();
@@ -183,6 +208,182 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
             fn onOptionsChanged(_: void, self: *Binding) !void {
                 try self.updateOptions();
             }
+            fn toolbarContext(self: *Binding) contextkey.IContext {
+                return .{ .context = self, .get_value = toolbarContextValue };
+            }
+            fn toolbarContextValue(context: *anyopaque, key: []const u8) contextkey.ContextKeyValue {
+                const self: *Binding = @ptrCast(@alignCast(context));
+                if (std.mem.eql(u8, key, "inMultiDiffEditor")) return .{ .boolean = true };
+                if (std.mem.eql(u8, key, "activeEditor")) return .{ .string = "multiDiffEditor" };
+                if (std.mem.eql(u8, key, "multiDiffEditorItemAllUnchangedRegionsShown")) {
+                    const all_shown = for (self.item.diffEditorViewModel.unchangedRegions()) |region| {
+                        if (!region.getHiddenModifiedRange().isEmpty()) break false;
+                    } else true;
+                    return .{ .boolean = all_shown };
+                }
+                if (self.item.documentDiffItem.context_keys.get(key)) |value| return value;
+                if (self.item.owner.model.getContextKey(key)) |value| return value;
+                return if (self.template.host.file_toolbar) |host| host.parent_context.getContextKeyValue(key) else .undefined_value;
+            }
+            fn mountToolbar(self: *Binding) !void {
+                const host = self.template.host.file_toolbar orelse return;
+                const allocator = self.template.allocator;
+                self.toolbar_menu = try host.menus.createMenuWithOptions(allocator, actions_mod.menu_ids.MultiDiffEditorFileToolbar, self.toolbarContext(), .{ .should_forward_args = true });
+                self.toolbar_listener = try self.toolbar_menu.?.onDidChange.listenDisposable(self, onToolbarChanged);
+                self.item_context_listener = try self.item.documentDiffItem.onContextKeysDidChange.listenDisposable(self, onToolbarContextChanged);
+                if (self.item.owner.model.on_did_change_context_keys) |changed| self.source_context_listener = try changed.listenDisposable(self, onToolbarContextChanged);
+                self.region_context_listener = try self.item.diffEditorViewModel.on_did_change_unchanged_regions.listenDisposable(self, onRegionsChanged);
+                try self.rebuildToolbar();
+            }
+            fn onRegionsChanged(_: diff_vm.UnchangedRegionsChange, self: *Binding) !void {
+                try onToolbarContextChanged({}, self);
+            }
+            fn onToolbarContextChanged(_: void, self: *Binding) !void {
+                if (self.toolbar_menu) |menu| try menu.refresh();
+                try self.rebuildToolbar();
+            }
+            fn onToolbarChanged(_: void, self: *Binding) !void {
+                try self.rebuildToolbar();
+            }
+            fn isVisibleAction(action: IAction) bool {
+                return if (menu_mod.MenuItemAction.from(action)) |item| !item.hidden else true;
+            }
+            fn isPrimary(group: menu_mod.MenuGroup) bool {
+                return std.mem.startsWith(u8, group.id, "navigation");
+            }
+            fn actionGlyph(action: IAction) []const u8 {
+                const menu_item = menu_mod.MenuItemAction.from(action) orelse return "•";
+                const icon = menu_item.item.icon orelse return "•";
+                if (std.mem.eql(u8, icon, "go-to-file")) return "↗";
+                if (std.mem.eql(u8, icon, "check")) return "✓";
+                if (std.mem.eql(u8, icon, "plus") or std.mem.eql(u8, icon, "add")) return "+";
+                if (std.mem.eql(u8, icon, "trash")) return "×";
+                if (std.mem.eql(u8, icon, "arrow-right")) return "→";
+                return "•";
+            }
+            fn rebuildToolbar(self: *Binding) !void {
+                const menu = self.toolbar_menu orelse return;
+                const allocator = self.template.allocator;
+                // Remove DOM listeners before releasing their button contexts.
+                self.template.actions.clearChildren();
+                allocator.free(self.toolbar_buttons);
+                self.toolbar_buttons = &.{};
+                self.pending_toolbar_index = null;
+                var count: usize = 0;
+                var has_secondary = false;
+                for (menu.getActions()) |group| for (group.actions) |action| {
+                    if (!isVisibleAction(action)) continue;
+                    if (isPrimary(group)) count += 1 else has_secondary = true;
+                };
+                const show_overflow = has_secondary and self.template.host.file_toolbar.?.context_menu_service != null;
+                self.toolbar_buttons = try allocator.alloc(ToolbarButton, count + @as(usize, @intFromBool(show_overflow)));
+                var index: usize = 0;
+                var raw_index: usize = 0;
+                for (menu.getActions()) |group| for (group.actions) |action| {
+                    defer raw_index += 1;
+                    if (!isVisibleAction(action) or !isPrimary(group)) continue;
+                    self.toolbar_buttons[index] = .{ .binding = self, .index = raw_index };
+                    try self.addToolbarButton(&self.toolbar_buttons[index], actionGlyph(action), action.label(), action.enabled(), action.checked() orelse false);
+                    index += 1;
+                };
+                if (show_overflow) {
+                    self.toolbar_buttons[index] = .{ .binding = self, .index = overflow_index };
+                    try self.addToolbarButton(&self.toolbar_buttons[index], "…", "More Actions", true, false);
+                }
+                self.template.actions.setStyle(.{ .display = if (self.toolbar_buttons.len > 0) .flex else .none });
+            }
+            fn addToolbarButton(self: *Binding, button: *ToolbarButton, glyph: []const u8, label: []const u8, enabled: bool, checked: bool) !void {
+                const node = try self.template.actions.document.createElement(.span);
+                errdefer self.template.actions.document.destroy(node);
+                try node.setTextContent(glyph);
+                try node.setAttribute("role", "button");
+                try node.setAttribute("aria-label", label);
+                try node.setAttribute("aria-disabled", if (enabled) "false" else "true");
+                node.setStyle(.{ .width = .{ .cells = 3 }, .text_align = .center, .pointer = if (enabled) .pointer else .default, .bold = checked, .dim = !enabled });
+                try node.addEventListener(.{ .context = button, .mouse_down = toolbarButtonClick });
+                _ = try self.template.actions.appendChild(node);
+            }
+            fn toolbarButtonClick(context: ?*anyopaque, event: *ui.MouseEvent) void {
+                const button: *ToolbarButton = @ptrCast(@alignCast(context.?));
+                if (event.button != .left) return;
+                button.binding.pending_toolbar_index = button.index;
+                button.binding.template.pending_action = .toolbar_action;
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            fn toolbarUri(self: *Binding) std.Uri {
+                const item = self.item.documentDiffItem;
+                return (item.modified orelse item.original.?).uri;
+            }
+            pub fn runToolbarAction(self: *Binding, event: *const ui.MouseEvent) !void {
+                const selected = self.pending_toolbar_index orelse return;
+                self.pending_toolbar_index = null;
+                if (selected == overflow_index) return self.showToolbarOverflow(context_menu.Anchor.mouse(event));
+                const menu = self.toolbar_menu orelse return;
+                var raw_index: usize = 0;
+                for (menu.getActions()) |group| for (group.actions) |action| {
+                    defer raw_index += 1;
+                    if (raw_index != selected or !isVisibleAction(action) or !action.enabled()) continue;
+                    const item = menu_mod.MenuItemAction.from(action) orelse return;
+                    const uri = self.toolbarUri();
+                    try item.runWithArgument(command_mod.CommandArgument.from(std.Uri, &uri));
+                    return;
+                };
+            }
+            const Overflow = struct {
+                binding: *Binding,
+                commands: *command_mod.CommandRegistry,
+                uri: std.Uri,
+                fn run(self: *Overflow, id: []const u8) !void {
+                    _ = try self.commands.executeWithArgument(id, command_mod.CommandArgument.from(std.Uri, &self.uri));
+                }
+                fn hide(context: *anyopaque) void {
+                    const self: *Overflow = @ptrCast(@alignCast(context));
+                    self.binding.overflow_open = false;
+                }
+            };
+            fn showToolbarOverflow(self: *Binding, anchor: context_menu.Anchor) !void {
+                const host = self.template.host.file_toolbar orelse return;
+                const service = host.context_menu_service orelse return;
+                const commands = host.menus.command_registry orelse return;
+                const menu = self.toolbar_menu orelse return;
+                const popup = try context_menu.Menu.init(self.template.allocator, Overflow{ .binding = self, .commands = commands, .uri = undefined }, Overflow.run);
+                errdefer popup.deinit();
+                popup.on_hide = Overflow.hide;
+                const a = popup.arena.allocator();
+                popup.getActionsContext(Overflow).?.uri = try std.Uri.parse(try std_uri.encodedResource(a, self.toolbarUri()));
+                for (menu.getActions()) |group| {
+                    if (isPrimary(group)) continue;
+                    var first = true;
+                    for (group.actions) |action| {
+                        if (!isVisibleAction(action)) continue;
+                        if (first and popup.items.items.len > 0) try popup.separator();
+                        first = false;
+                        try popup.add(try a.dupe(u8, action.id()), .{ .label = try a.dupe(u8, action.label()), .enabled = action.enabled() });
+                    }
+                }
+                if (popup.items.items.len == 0) {
+                    popup.deinit();
+                    return;
+                }
+                try service.showContextMenu(popup, anchor);
+                self.overflow_open = true;
+            }
+            fn unmountToolbar(self: *Binding) void {
+                if (self.overflow_open) if (self.template.host.file_toolbar) |host| if (host.context_menu_service) |service| service.hideContextMenu();
+                if (self.toolbar_listener) |listener| listener.dispose();
+                if (self.item_context_listener) |listener| listener.dispose();
+                if (self.source_context_listener) |listener| listener.dispose();
+                if (self.region_context_listener) |listener| listener.dispose();
+                if (self.toolbar_menu) |menu| {
+                    self.template.actions.clearChildren();
+                    self.template.allocator.free(self.toolbar_buttons);
+                    self.toolbar_buttons = &.{};
+                    menu.deinit();
+                    self.template.allocator.destroy(menu);
+                    self.toolbar_menu = null;
+                }
+            }
             pub fn updateOptions(self: *Binding) !void {
                 if (self.editor) |editor| {
                     _ = try editor.updateOptions(self.template.config.editorOptions(self.item));
@@ -218,6 +419,7 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
             pub fn destroy(self: *Binding) void {
                 self.vertical_update.schedule(null);
                 self.clearHighlight();
+                self.unmountToolbar();
                 if (self.options_listener) |id| self.item.on_did_change_options.unlisten(id);
                 if (self.editor) |editor| {
                     if (self.original_size_listener) |id| editor.original_editor.viewLayout().onDidContentSizeChange().unlisten(id);
@@ -298,12 +500,26 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
                 template.pending_action = null;
                 return action;
             }
+            /// The binary placeholder is focusable, but only its Open Diff
+            /// button invokes the action on pointer input.
+            pub fn binaryActionHit(self: *Binding, x: usize, absolute_row: usize) bool {
+                if (self.editor != null or self.item.collapsed or self.template.host.open_binary_diff == null or self.item.documentDiffItem.original == null or self.item.documentDiffItem.modified == null) return false;
+                const body = self.bodyRange();
+                if (!body.contains(absolute_row) or body.length() == 0) return false;
+                const insets = self.template.config.variant.horizontalInsets;
+                const width = self.width -| insets.left -| insets.right;
+                const label = "Open Diff";
+                const left = insets.left + (width -| label.len) / 2;
+                const right = @min(left + label.len, insets.left + width);
+                return absolute_row == body.start + @min(body.length() - 1, body.length() / 2 + 1) and x >= left and x < right;
+            }
             pub fn pointerAt(self: *Binding, x: usize, absolute_row: usize) !ui.Pointer {
                 const header = self.headerRange();
                 if (header.contains(absolute_row)) return (try self.template.header.pointerAt(x, absolute_row - header.start)) orelse .default;
                 const body = self.bodyRange();
                 if (body.contains(absolute_row)) {
                     if (self.editor) |editor| return editor.pointerAt(x -| self.template.config.variant.horizontalInsets.left, absolute_row - body.start);
+                    if (self.binaryActionHit(x, absolute_row)) return .pointer;
                 }
                 return .default;
             }
@@ -364,10 +580,12 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
             self.status = try element(file_path, .status, .span);
             self.secondary_path = try element(file_path, .title, .span);
             self.actions = try element(self.row, .actions, .span);
-            try self.actions.setTextContent("↗");
-            try self.actions.setAttribute("role", "button");
-            try self.actions.setAttribute("aria-label", "Go to File");
-            try self.actions.addEventListener(.{ .context = self, .mouse_down = openFileClick });
+            if (self.host.file_toolbar == null) {
+                try self.actions.setTextContent("↗");
+                try self.actions.setAttribute("role", "button");
+                try self.actions.setAttribute("aria-label", "Go to File");
+                try self.actions.addEventListener(.{ .context = self, .mouse_down = openFileClick });
+            }
             try self.row.addEventListener(.{ .context = self, .mouse_down = headerClick });
         }
         pub fn updateHeader(self: *Self, item: *model.DocumentDiffItemViewModel) !void {
@@ -387,7 +605,7 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
             self.primary_path.setStyle(.{ .strikethrough = value.modified == null });
             self.secondary_path.setStyle(.{ .strikethrough = true, .display = if (renamed) .inline_block else .none });
             self.status.setStyle(.{ .display = if (renamed or value.original == null or value.modified == null) .inline_block else .none });
-            self.actions.setStyle(.{ .display = if (self.host.open_file != null) .flex else .none });
+            if (self.host.file_toolbar == null) self.actions.setStyle(.{ .display = if (self.host.open_file != null) .flex else .none });
         }
         fn collapseClick(context: ?*anyopaque, event: *ui.MouseEvent) void {
             const self: *Self = @ptrCast(@alignCast(context.?));
@@ -444,6 +662,7 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
             }
             binding.options_listener = try item.on_did_change_options.listen(binding, Binding.onOptionsChanged);
             try self.updateHeader(item);
+            try binding.mountToolbar();
             return binding;
         }
     };

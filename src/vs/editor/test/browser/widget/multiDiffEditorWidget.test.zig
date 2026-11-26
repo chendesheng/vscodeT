@@ -231,18 +231,26 @@ pub fn Tests(comptime View: type) type {
             defer frame.deinit();
             frame.begin();
             try f.widget.paint(&frame, 0, 0, 70, 12);
-            var placeholder = false;
-            var open_diff = false;
+            const Point = struct { x: usize, y: usize };
+            var placeholder: ?Point = null;
+            var open_diff: ?Point = null;
             for (0..12) |row| {
                 const text = try frame.next.rowText(testing.allocator, row);
                 defer testing.allocator.free(text);
-                placeholder = placeholder or std.mem.indexOf(u8, text, "Binary file changed") != null;
-                open_diff = open_diff or std.mem.indexOf(u8, text, "Open Diff") != null;
+                if (std.mem.indexOf(u8, text, "Binary file changed")) |col| placeholder = .{ .x = col, .y = row };
+                if (std.mem.indexOf(u8, text, "Open Diff")) |col| open_diff = .{ .x = col, .y = row };
             }
-            try testing.expect(placeholder and open_diff);
+            try testing.expect(placeholder != null and open_diff != null);
+            var click: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = placeholder.?.x, .y = placeholder.?.y };
+            _ = try f.widget.dispatchMouse(&click);
+            try testing.expectEqual(@as(usize, 0), f.opened_binary);
+            try testing.expectEqual(.pointer, try f.widget.pointerAt(open_diff.?.x, open_diff.?.y));
+            click = .{ .kind = .down, .button = .left, .x = open_diff.?.x, .y = open_diff.?.y };
+            try testing.expect(try f.widget.dispatchMouse(&click));
+            try testing.expectEqual(@as(usize, 1), f.opened_binary);
             var enter: ui.KeyEvent = .{ .key = .enter };
             try testing.expect(try f.widget.dispatchKey(&enter));
-            try testing.expectEqual(@as(usize, 1), f.opened_binary);
+            try testing.expectEqual(@as(usize, 2), f.opened_binary);
         }
 
         test "View: MultiDiffEditorWidget models bottom padding as trailing scroll content" {
