@@ -108,10 +108,12 @@ Moving the same monolith to a different file is not an architectural port.
   Preserve existing tests, commands and observable behavior during extraction;
   add upstream cases and regressions for event ordering and disposal. When
   needed, snapshot the existing command metadata or other observable contracts
-  before migration. Shrink temporary import exceptions and monolith budgets
-  as the debt is removed. `zig build check-workbench` enforces the current
-  Workbench import boundary and native window size ratchet; do not enlarge the
-  native budget to accommodate new feature logic.
+  before migration. Remove temporary import exceptions as the debt is removed.
+  `zig build check-workbench` enforces the Workbench composition and import
+  boundaries. Line counts are diagnostic, not acceptance criteria: legitimate
+  composition, native bindings, cleanup and upstream fidelity may require more
+  code. Review additions by responsibility and dependency direction, not by
+  net line count. Do not move, compress or delete code merely to meet a quota.
 
 The upstream pin is the specification, not the existing Zig shortcut. A
 similar-looking terminal UI, a passing test suite, or a smaller shell file
