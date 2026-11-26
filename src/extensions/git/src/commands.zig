@@ -339,7 +339,6 @@ pub const CommandContribution = struct {
         has_diff: *const fn (*anyopaque, []const u8, []const u8, []const u8) bool,
         // Consumes the virtual source even when opening fails.
         open_snapshot: *const fn (*anyopaque, []const u8, SnapshotSource, []const u8, []const u8) anyerror!void,
-        open_multi_snapshot: ?*const fn (*anyopaque, []const u8, []const u8, multi_diff_source.SnapshotBatch) anyerror!void = null,
         refresh: *const fn (*anyopaque) void,
         commit_input: *const fn (*anyopaque) void,
         selected_resource: *const fn (*anyopaque) ?*scm.ISCMResource,
@@ -489,10 +488,9 @@ pub const CommandContribution = struct {
         try self.host.open_snapshot(self.host.context, path, source, left_label, right_label);
     }
 
-    /// Capture every resource from the Graph's selected history item. The
-    /// workbench source resolver reads these immutable snapshots on its worker.
-    pub fn openHistoryChanges(self: *CommandContribution, item: *const history.ISCMHistoryItem, changes: []const history.ISCMHistoryItemChange, revision: []const u8) !void {
-        const open = self.host.open_multi_snapshot orelse return error.MultiDiffUnavailable;
+    /// Open the Graph history source by its upstream source URI. The registered
+    /// resolver owns the ordered resource set and its readiness lifecycle.
+    pub fn openHistoryChanges(self: *CommandContribution, item: *const history.ISCMHistoryItem, _: []const history.ISCMHistoryItemChange, revision: []const u8) !void {
         const repository = self.model.repository orelse return error.NoRepository;
         const parent = if (item.parent_ids.len != 0) item.parent_ids[0] else null;
         const display = if (std.mem.eql(u8, revision, item.id)) item.display_id orelse item.id else revision[0..@min(revision.len, 7)];
@@ -505,23 +503,24 @@ pub const CommandContribution = struct {
         defer self.allocator.free(source_uri);
         const label = try std.fmt.allocPrint(self.allocator, "{s} - {s}", .{ display, item.subject });
         defer self.allocator.free(label);
-        const items = try self.allocator.alloc(multi_diff_source.SnapshotItem, changes.len);
-        var count: usize = 0;
-        var owned = true;
-        defer if (owned) {
-            for (items[0..count]) |entry| entry.source.destroy(entry.source.context);
-            self.allocator.free(items);
-        };
-        for (changes, items) |change, *entry| {
-            entry.* = .{
-                .source = try self.model.revisionSnapshotSource(self.snapshot_io, change.path, change.original_path, parent, revision),
-                .original_exists = parent != null and change.status != 'A',
-                .modified_exists = change.status != 'D',
-            };
-            count += 1;
-        }
-        owned = false;
-        try open(self.host.context, source_uri, label, .{ .allocator = self.allocator, .items = items });
+        try self.editors.openMultiDiffSource(source_uri, label);
+    }
+
+    pub fn captureMultiDiffResource(context: *anyopaque, resource: multi_diff_source.MultiDiffEditorItem) !SnapshotSource {
+        const self: *CommandContribution = @ptrCast(@alignCast(context));
+        const std_uri = @import("../../../vs/base/common/stdUri.zig");
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const original_working = if (resource.originalUri) |uri|
+            if (std.mem.eql(u8, uri.scheme, "file")) try self.host.working_text(self.host.context, a, try std_uri.fsPath(uri, a)) else null
+        else
+            null;
+        const modified_working = if (resource.modifiedUri) |uri|
+            if (std.mem.eql(u8, uri.scheme, "file")) try self.host.working_text(self.host.context, a, try std_uri.fsPath(uri, a)) else null
+        else
+            null;
+        return self.model.resourceSnapshotSource(self.snapshot_io, resource.originalUri, resource.modifiedUri, original_working, modified_working);
     }
 
     pub fn openRefDiff(self: *CommandContribution, path: []const u8, original_path: ?[]const u8, left: ?[]const u8, right: []const u8, left_label: []const u8, right_label: []const u8) !void {
@@ -621,6 +620,69 @@ pub const CommandContribution = struct {
                 self.host.refresh_resources(self.host.context);
             }
         }.run;
+    }
+
+    pub fn multiDiffGroupCommandId(group: *const scm.ISCMResourceGroup) ?[]const u8 {
+        if (!std.mem.eql(u8, group.provider.provider_id, "git")) return null;
+        if (std.mem.eql(u8, group.id, "index")) return "git.viewStagedChanges";
+        if (std.mem.eql(u8, group.id, "working")) return "git.viewChanges";
+        return null;
+    }
+
+    fn viewResourceGroupChanges(self: *CommandContribution, group_id: []const u8) !void {
+        const repository = self.model.repository orelse return error.NoRepository;
+        const group = for (repository.interface().groups()) |candidate| {
+            if (std.mem.eql(u8, candidate.id, group_id)) break candidate;
+        } else return;
+        if (group.resources().len == 0) {
+            self.host.report_status(self.host.context, if (std.mem.eql(u8, group_id, "index")) "The repository does not have any staged changes." else "The repository does not have any changes.");
+            return;
+        }
+        const title = try std.fmt.allocPrint(self.allocator, "{s}: {s}", .{ repository.interface().label, group.label });
+        defer self.allocator.free(title);
+        const uri = try @import("uri.zig").fileUriString(self.allocator, repository.root);
+        defer self.allocator.free(uri);
+        const action = @import("../../../vs/workbench/contrib/multiDiffEditor/browser/scmMultiDiffSourceResolver.zig").OpenScmGroupAction;
+        try action.openMultiFileDiffEditor(self.allocator, self.editors.*, .{ .title = title, .repositoryUri = try std.Uri.parse(uri), .resourceGroupId = group.id });
+    }
+
+    fn viewChanges(context: *anyopaque, _: ServicesAccessor) !void {
+        const self: *CommandContribution = @ptrCast(@alignCast(context));
+        try self.viewResourceGroupChanges("working");
+    }
+    fn viewStagedChanges(context: *anyopaque, _: ServicesAccessor) !void {
+        const self: *CommandContribution = @ptrCast(@alignCast(context));
+        try self.viewResourceGroupChanges("index");
+    }
+
+    const view_changes_visible = Expr{ .And = @constCast(&[_]*const Expr{ &git_enabled, &git_available }) };
+    const working_group = Expr{ .Equals = .{ .key = "scmResourceGroup", .value = .{ .string = "working" } } };
+    const staged_group = Expr{ .Equals = .{ .key = "scmResourceGroup", .value = .{ .string = "index" } } };
+    const git_provider = Expr{ .Equals = .{ .key = "scmProvider", .value = .{ .string = "git" } } };
+    const working_group_visible = Expr{ .And = @constCast(&[_]*const Expr{ &git_provider, &working_group }) };
+    const staged_group_visible = Expr{ .And = @constCast(&[_]*const Expr{ &git_provider, &staged_group }) };
+
+    pub fn multiDiffActions(self: *CommandContribution) [2]platform_actions.Action2 {
+        return .{
+            .{
+                .command = .{ .id = "git.viewChanges", .title = "View Changes", .category = "Git", .icon = "diff-multiple", .precondition = &not_operation },
+                .menus = &.{
+                    .{ .id = platform_actions.menu_ids.CommandPalette, .when = &view_changes_visible },
+                    .{ .id = platform_actions.menu_ids.SCMResourceGroupContext, .group = "inline", .order = 1, .when = &working_group_visible },
+                },
+                .context = self,
+                .run_fn = viewChanges,
+            },
+            .{
+                .command = .{ .id = "git.viewStagedChanges", .title = "View Staged Changes", .category = "Git", .icon = "diff-multiple", .precondition = &not_operation },
+                .menus = &.{
+                    .{ .id = platform_actions.menu_ids.CommandPalette, .when = &view_changes_visible },
+                    .{ .id = platform_actions.menu_ids.SCMResourceGroupContext, .group = "inline", .order = 1, .when = &staged_group_visible },
+                },
+                .context = self,
+                .run_fn = viewStagedChanges,
+            },
+        };
     }
 
     pub fn diffActions(self: *CommandContribution) [5]platform_actions.Action2 {

@@ -164,6 +164,7 @@ pub const Config = struct {
 pub const Host = struct {
     context: *anyopaque,
     open_change: *const fn (context: *anyopaque, resource: *ISCMResource) anyerror!void,
+    open_group_changes: ?*const fn (*anyopaque, *const ISCMResourceGroup) anyerror!void = null,
     resource_action: ?*const fn (context: *anyopaque, action: ResourceAction, resource: *ISCMResource) anyerror!void = null,
     refresh: *const fn (context: *anyopaque) void,
     focus_editor: *const fn (context: *anyopaque) void,
@@ -1094,6 +1095,12 @@ pub const SCMViewPane = struct {
                     self.selection = null;
                     return changed;
                 };
+                if (self.groupActionColumn(row_index, list_width)) |start| {
+                    if (col >= start and col < start + css.inline_action_width) {
+                        if (self.host.open_group_changes) |open| try open(self.host.context, self.rows.items[row_index].group.?);
+                        return true;
+                    }
+                }
                 if (self.inlineActions(row_index, list_width).hit(col)) |action| {
                     if (resolveResource(&self.rows.items[row_index])) |resource| {
                         self.selection = row_index;
@@ -1123,6 +1130,19 @@ pub const SCMViewPane = struct {
             if (self.host.resource_action) |run| return run(self.host.context, .open_file, resource);
         }
         try self.host.open_change(self.host.context, resource);
+    }
+
+    pub const open_group_changes_glyph: u21 = '▤';
+
+    fn groupActionColumn(self: *const SCMViewPane, index: usize, width: usize) ?usize {
+        const row = self.rows.items[index];
+        if (row.kind != .group or self.host.open_group_changes == null) return null;
+        if (!row.group.?.multi_diff_editor_enable_view_changes) return null;
+        if (!self.config.always_show_actions and self.hovered_row != index and !(self.list_focused and self.selection == index)) return null;
+        const badge = countBadgeStart(0, width, row.count orelse 0) orelse return null;
+        const start = badge -| (1 + css.inline_action_width);
+        if (start <= 3 + row.depth * 2) return null;
+        return start;
     }
 
     const InlineActions = struct {
@@ -1180,7 +1200,10 @@ pub const SCMViewPane = struct {
             return if (row == 0 and self.inputVisible()) .text else .default;
         }
         if (self.hovered_row) |index| {
-            if (index < self.rows.items.len and self.inlineActions(index, list_width).hit(col) != null) return .pointer;
+            if (index < self.rows.items.len) {
+                if (self.inlineActions(index, list_width).hit(col) != null) return .pointer;
+                if (self.groupActionColumn(index, list_width)) |start| if (col >= start and col < start + css.inline_action_width) return .pointer;
+            }
         }
         return .default;
     }
@@ -1661,8 +1684,14 @@ pub const SCMViewPane = struct {
                 drawTwistie(grid, x, y, row.depth, row.collapsed, background, palette.dim);
                 const count = row.count orelse 0;
                 const badge_start = countBadgeStart(x, width, count) orelse (x + width -| 2);
-                if (label_col < badge_start -| 1) {
-                    _ = drawTextEllipsis(grid, label_col, y, (badge_start -| 1) - label_col, row.label, text_style);
+                const action = self.groupActionColumn(row_index, width);
+                const right = if (action) |start| x + start else badge_start -| 1;
+                if (label_col < right) _ = drawTextEllipsis(grid, label_col, y, right - label_col, row.label, text_style);
+                if (action) |start| {
+                    const hovered = self.hovered_row == row_index and if (self.hovered_col) |col| col >= start and col < start + css.inline_action_width else false;
+                    const bg = ui.cell.packColor(if (hovered) palette.toolbar_hover else background);
+                    if (hovered) grid.fillRect(@floatFromInt(x + start), @floatFromInt(y), css.inline_action_width, 1, .{ .bg = bg });
+                    grid.putCodepoint(x + start + css.inline_action_width / 2, y, open_group_changes_glyph, 1, .{ .fg = ui.cell.packColor(palette.icon_foreground), .bg = bg });
                 }
                 drawCountBadge(grid, x, y, width, count, palette);
             },

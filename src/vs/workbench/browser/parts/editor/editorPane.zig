@@ -530,6 +530,7 @@ pub const Tab = struct {
     /// pane was first mounted. Release them before window service teardown.
     pub fn detachMultiDiffControls(self: *Tab) void {
         const multi = self.multi_diff orelse return;
+        multi.input.detachSource();
         if (self.multi_diff_listener) |id| multi.widget.on_did_change_layout.unlisten(id);
         self.multi_diff_listener = null;
         multi.widget.setViewModel(null, .{}) catch {};

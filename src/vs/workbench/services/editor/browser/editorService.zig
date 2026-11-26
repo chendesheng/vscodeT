@@ -330,6 +330,14 @@ pub const EditorService = struct {
                     try opening.openPathWithOptions(resource, options);
                 }
             }.open,
+            .open_multi_diff_source_fn = struct {
+                fn open(context: *anyopaque, source_uri: []const u8, label: []const u8) !void {
+                    const service: *EditorService = @ptrCast(@alignCast(context));
+                    const opening = service.opening orelse return error.EditorOpeningUnavailable;
+                    const sources = opening.multi_diff_source_services orelse return error.MultiDiffUnavailable;
+                    try opening.openMultiDiffSource(if (sources.configuration) |configuration| configuration.* else null, sources.resolver, sources.provider, source_uri, label);
+                }
+            }.open,
             .request_open_editor = struct {
                 fn open(context: *anyopaque, resource: []const u8, options: OpenOptions, target: EditorTarget) !void {
                     const service: *EditorService = @ptrCast(@alignCast(context));
@@ -445,12 +453,18 @@ pub const EditorOpening = struct {
         configure_diff_widget: ?*const fn (*anyopaque, *editor_pane.DiffWidget) anyerror!void = null,
         dispose_diff_widget: ?*const fn (*anyopaque, *editor_pane.DiffWidget) void = null,
         register_working_copy: *const fn (*anyopaque, *Tab) void,
+        change_working_copy: ?*const fn (*anyopaque, *Editor, bool) void = null,
         discard_tab: *const fn (*anyopaque, *Tab) void,
         focus_editor: *const fn (*anyopaque) void,
         request_frame: *const fn (*anyopaque) void,
         show_status: *const fn (*anyopaque, []const u8) void,
         image_dimensions: *const fn (*anyopaque) ImageDimensions,
     },
+    multi_diff_source_services: ?struct {
+        configuration: ?*const IConfigurationService,
+        resolver: multi_source.IMultiDiffSourceResolverService,
+        provider: multi_source.ResourceSnapshotProvider,
+    } = null,
     pending_open: ?struct { read: *TextFileRead, options: OpenOptions } = null,
     diff_worker: ?*DiffWorker = null,
     diff_cache: diff_provider.Cache = .{},
@@ -462,14 +476,6 @@ pub const EditorOpening = struct {
         group: GroupIdentifier,
     } = null,
     diff_progress: WindowTask = .{},
-    pending_multi_diff: ?struct {
-        request: *multi_source.SnapshotBatchRequest,
-        source_uri: []u8,
-        label: []u8,
-        group: GroupIdentifier,
-        configuration: ?IConfigurationService,
-    } = null,
-    multi_diff_progress: WindowTask = .{},
     reload_jobs: std.array_list.Managed(*TextFileRead),
 
     pub fn cancel(self: *EditorOpening) void {
@@ -593,6 +599,38 @@ pub const EditorOpening = struct {
 
     fn openMultiDiffFile(context: *anyopaque, uri: std.Uri) !void {
         const self: *EditorOpening = @ptrCast(@alignCast(context));
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var target = uri;
+        var label: ?[]const u8 = null;
+        var selection: ?@import("../../../../editor/common/core/selection.zig").Selection = null;
+        const current = (EditorService{ .part = self.part }).activeEditorPane();
+        if (current) |tab| if (tab.multi_diff) |multi| {
+            if (try multi.input.findDocumentDiffItem(uri)) |found| {
+                if (found.entry.go_to_file_uri) |encoded| target = try std.Uri.parse(try a.dupe(u8, encoded));
+                if (found.entry.go_to_file_title) |title| label = try a.dupe(u8, title);
+                if (multi.widget.getViewModel()) |vm| for (vm.items) |item| {
+                    if (item.documentDiffItem != found.entry.item) continue;
+                    if (multi.widget.impl.bindingFor(item)) |binding| if (binding.editor) |widget| {
+                        const editor = if (found.is_original) widget.original_editor else widget.modified_editor;
+                        const selections = try editor.getSelections();
+                        defer editor.allocator.free(selections);
+                        if (selections.len != 0) selection = selections[0];
+                    };
+                    break;
+                };
+            }
+        };
+        try self.openMultiDiffTarget(target, label);
+        if (selection) |value| {
+            const tab = (EditorService{ .part = self.part }).activeEditorPane() orelse return;
+            try tab.editor.setSelections(&.{value});
+            _ = tab.editor.revealRange(.init(value.startLineNumber, value.startColumn, value.endLineNumber, value.endColumn), .CenterIfOutsideViewport);
+        }
+    }
+
+    fn openMultiDiffTarget(self: *EditorOpening, uri: std.Uri, label: ?[]const u8) !void {
         const std_uri = @import("../../../../base/common/stdUri.zig");
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
@@ -603,7 +641,10 @@ pub const EditorOpening = struct {
                 if (tab.multi_diff) |multi| for (multi.input.entries) |entry| {
                     for ([_]?text_diff_editor_mod.SideInput{ entry.original, entry.modified }) |side| {
                         if (side) |source| {
-                            if (source == .resource and std.mem.eql(u8, source.resource.key, key)) return self.openTextResourceInput(source.resource);
+                            if (source == .resource and std.mem.eql(u8, source.resource.key, key)) {
+                                if (label) |name| try source.resource.setPreferredName(name);
+                                return self.openTextResourceInput(source.resource);
+                            }
                         }
                     }
                 };
@@ -619,70 +660,122 @@ pub const EditorOpening = struct {
         self.setStatusHint("No binary comparison editor for this resource", .{});
     }
 
-    /// Resolve the whole multi-file source on the native worker. No child
-    /// diff is computed from snapshot strings here; the item model owns that
-    /// computation after the real editor documents have been resolved.
-    pub fn requestOpenMultiSnapshotDiff(self: *EditorOpening, configuration: ?IConfigurationService, source_uri: []const u8, label: []const u8, batch: multi_source.SnapshotBatch) !void {
-        var owned = true;
-        defer if (owned) batch.deinit();
+    /// Source resolution belongs to the input, not the transient open-editor
+    /// request. A late SCM provider or a changed group can update the same
+    /// pane even after another editor is opened.
+    pub fn openMultiDiffSource(self: *EditorOpening, configuration: ?IConfigurationService, resolver: multi_source.IMultiDiffSourceResolverService, provider: multi_source.ResourceSnapshotProvider, source_uri: []const u8, label: []const u8) !void {
         self.cancelPendingOpen();
         self.cancelPendingDiff();
         if (self.findMultiDiffTab(source_uri)) |existing| {
-            try existing.pane.activateTab(existing.tab);
-            self.part.service.activateGroup(existing.pane.group);
-            existing.tab.focusEditor();
-            self.host.focus_editor(self.host.context);
+            try self.openMultiDiffInput(existing.tab.multi_diff.?.input, existing.pane.group.id, false);
             return;
         }
-        const worker = try self.ensureDiffWorker();
-        const source_copy = try self.allocator.dupe(u8, source_uri);
-        errdefer self.allocator.free(source_copy);
-        const label_copy = try self.allocator.dupe(u8, label);
-        errdefer self.allocator.free(label_copy);
-        const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp();
-        owned = false;
-        const request = try multi_source.SnapshotBatchRequest.submit(self.allocator, worker, batch, .{ .context = self, .run = multiDiffResolved }, now);
-        self.pending_multi_diff = .{ .request = request, .source_uri = source_copy, .label = label_copy, .group = self.part.service.activeGroup().id, .configuration = configuration };
-        self.multi_diff_progress = .{ .queue = self.window_events, .context = self, .run = showMultiDiffProgress };
-        self.multi_diff_progress.schedule(now + 1000);
+        const input = try multi_diff_input.MultiDiffEditorInput.create(self.allocator, source_uri, label, false);
+        defer input.destroy();
+        const source = (try resolver.resolve(try std.Uri.parse(source_uri))) orelse return error.UnknownMultiDiffSource;
+        _ = try SourceBinding.create(self, input, source, provider, configuration);
+        try self.openMultiDiffInput(input, null, false);
     }
-    fn showMultiDiffProgress(context: *anyopaque, _: i64, _: bool) bool {
-        const self: *EditorOpening = @ptrCast(@alignCast(context));
-        if (self.pending_multi_diff == null) return false;
-        self.setStatusHint("Resolving changed files...", .{});
-        return true;
-    }
-    fn cancelPendingMultiDiff(self: *EditorOpening) void {
-        const pending = self.pending_multi_diff orelse return;
-        self.pending_multi_diff = null;
-        pending.request.cancel();
-        self.multi_diff_progress.schedule(null);
-        self.allocator.free(pending.source_uri);
-        self.allocator.free(pending.label);
-    }
-    fn multiDiffResolved(context: *anyopaque, request: *multi_source.SnapshotBatchRequest) bool {
-        const self: *EditorOpening = @ptrCast(@alignCast(context));
-        const pending = self.pending_multi_diff orelse return false;
-        if (pending.request != request) return false;
-        self.pending_multi_diff = null;
-        self.multi_diff_progress.schedule(null);
-        defer {
-            self.allocator.free(pending.source_uri);
-            self.allocator.free(pending.label);
+
+    const SourceBinding = struct {
+        opening: *EditorOpening,
+        input: *multi_diff_input.MultiDiffEditorInput,
+        source: multi_source.IResolvedMultiDiffSource,
+        provider: multi_source.ResourceSnapshotProvider,
+        configuration: ?IConfigurationService,
+        subscription: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
+        request: ?*multi_source.SnapshotBatchRequest = null,
+
+        fn create(opening: *EditorOpening, input: *multi_diff_input.MultiDiffEditorInput, source: multi_source.IResolvedMultiDiffSource, provider: multi_source.ResourceSnapshotProvider, configuration: ?IConfigurationService) !*SourceBinding {
+            const binding = opening.allocator.create(SourceBinding) catch |err| {
+                source.dispose(source.context);
+                return err;
+            };
+            binding.* = .{ .opening = opening, .input = input, .source = source, .provider = provider, .configuration = configuration };
+            errdefer dispose(binding);
+            binding.subscription = try source.on_did_change_resources.listenDisposable(binding, onChanged);
+            try binding.refresh();
+            input.source_binding = .{ .context = binding, .dispose = dispose };
+            return binding;
         }
-        if (self.part.service.getGroup(pending.group) == null) return false;
-        if (request.failure) |failure| {
-            self.setStatusHint("Open changes failed: {s}", .{@errorName(failure)});
+        fn onChanged(_: void, self: *SourceBinding) !void {
+            self.refresh() catch |err| self.opening.setStatusHint("Open changes failed: {s}", .{@errorName(err)});
+        }
+        fn refresh(self: *SourceBinding) !void {
+            if (!self.source.isReady()) return;
+            if (self.request) |request| request.cancel();
+            self.request = null;
+            if (self.source.failure()) |failure| return failure;
+            const worker = try self.opening.ensureDiffWorker();
+            const batch = try self.provider.captureBatch(self.opening.allocator, self.source.resources(self.source.context));
+            const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp();
+            self.request = try multi_source.SnapshotBatchRequest.submit(self.opening.allocator, worker, batch, .{ .context = self, .run = resolved }, now);
+        }
+        fn resolved(context: *anyopaque, request: *multi_source.SnapshotBatchRequest) bool {
+            const self: *SourceBinding = @ptrCast(@alignCast(context));
+            if (self.request != request) return false;
+            self.request = null;
+            const opening = self.opening;
+            if (request.failure) |failure| {
+                opening.setStatusHint("Open changes failed: {s}", .{@errorName(failure)});
+                return true;
+            }
+            self.applyResolved(request.result) catch |err| {
+                opening.setStatusHint("Open changes failed: {s}", .{@errorName(err)});
+                return true;
+            };
+            opening.clearStatusHint();
+            opening.host.request_frame(opening.host.context);
             return true;
         }
-        self.openResolvedMultiDiff(pending.configuration, pending.source_uri, pending.label, pending.group, request.result) catch |err| {
-            self.setStatusHint("Open changes failed: {s}", .{@errorName(err)});
-            return true;
-        };
-        self.clearStatusHint();
-        return true;
-    }
-    fn resolveMultiDiffSide(self: *EditorOpening, resource: diff_provider.SnapshotSource.Resource, text: []const u8, binary: bool, label: []const u8) !multi_diff_input.ResolvedSide {
+        fn applyResolved(self: *SourceBinding, snapshots: []const multi_source.ResolvedSnapshot) !void {
+            const opening = self.opening;
+            const change = opening.host.change_working_copy orelse return opening.resolveSnapshotsInto(self.configuration, self.input, snapshots);
+            // Retain the old file inputs until their registration delta is
+            // applied. Unchanged file identities do not unregister/re-register.
+            var previous: std.ArrayList(*FileEditorInput) = .empty;
+            defer {
+                for (previous.items) |file| file.deinit();
+                previous.deinit(opening.allocator);
+            }
+            for (self.input.entries) |entry| for ([_]?text_diff_editor_mod.SideInput{ entry.original, entry.modified }) |side| {
+                if (side) |value| if (value.fileInput()) |file| {
+                    try previous.append(opening.allocator, file);
+                    _ = file.retain();
+                };
+            };
+            var delta: std.AutoHashMap(*Editor, isize) = .init(opening.allocator);
+            defer delta.deinit();
+            for (previous.items) |file| {
+                const entry = try delta.getOrPut(file.editor);
+                if (!entry.found_existing) entry.value_ptr.* = 0;
+                entry.value_ptr.* -= 1;
+            }
+            const result = opening.resolveSnapshotsInto(self.configuration, self.input, snapshots);
+            for (self.input.entries) |entry| for ([_]?text_diff_editor_mod.SideInput{ entry.original, entry.modified }) |side| {
+                if (side) |value| if (value.fileInput()) |file| {
+                    const counter = try delta.getOrPut(file.editor);
+                    if (!counter.found_existing) counter.value_ptr.* = 0;
+                    counter.value_ptr.* += 1;
+                };
+            };
+            var iterator = delta.iterator();
+            while (iterator.next()) |entry| {
+                const count = entry.value_ptr.*;
+                for (0..@abs(count)) |_| change(opening.host.context, entry.key_ptr.*, count > 0);
+            }
+            try result;
+        }
+        fn dispose(context: *anyopaque) void {
+            const self: *SourceBinding = @ptrCast(@alignCast(context));
+            if (self.request) |request| request.cancel();
+            if (self.subscription) |subscription| subscription.dispose();
+            self.source.dispose(self.source.context);
+            self.opening.allocator.destroy(self);
+        }
+    };
+
+    fn resolveMultiDiffSide(self: *EditorOpening, existing_resources: *const std.StringHashMap(*text_diff_editor_mod.TextResourceEditorInput), resource: diff_provider.SnapshotSource.Resource, text: []const u8, binary: bool, label: []const u8) !multi_diff_input.ResolvedSide {
         if (binary) return .{ .uri = resource.uri };
         if (resource.is_working_file) {
             if (self.findOpenInput(resource.path)) |file| return .{ .uri = resource.uri, .input = .{ .file = file.retain() } };
@@ -695,15 +788,26 @@ pub const EditorOpening = struct {
             const input = try FileEditorInput.init(self.allocator, editor);
             return .{ .uri = resource.uri, .input = .{ .file = input } };
         }
+        const key = try @import("../../../../base/common/stdUri.zig").resourceKey(self.allocator, resource.uri);
+        defer self.allocator.free(key);
+        if (existing_resources.get(key)) |input| {
+            try input.updateContents(text);
+            return .{ .uri = resource.uri, .input = .{ .resource = input.retain() } };
+        }
         const input = try text_diff_editor_mod.TextResourceEditorInput.init(self.allocator, self.io, resource.path, label, text, resource.uri);
         return .{ .uri = resource.uri, .input = .{ .resource = input } };
     }
     fn releaseMultiDiffResolvedSide(side: ?multi_diff_input.ResolvedSide) void {
         if (side) |value| if (value.input) |input| input.destroy();
     }
-    fn openResolvedMultiDiff(self: *EditorOpening, configuration: ?IConfigurationService, source_uri: []const u8, label: []const u8, group: GroupIdentifier, snapshots: []const multi_source.ResolvedSnapshot) !void {
-        const input = try multi_diff_input.MultiDiffEditorInput.create(self.allocator, source_uri, label, false);
-        defer input.destroy();
+    fn resolveSnapshotsInto(self: *EditorOpening, configuration: ?IConfigurationService, input: *multi_diff_input.MultiDiffEditorInput, snapshots: []const multi_source.ResolvedSnapshot) !void {
+        var existing_resources: std.StringHashMap(*text_diff_editor_mod.TextResourceEditorInput) = .init(self.allocator);
+        defer existing_resources.deinit();
+        for (input.entries) |entry| {
+            for ([_]?text_diff_editor_mod.SideInput{ entry.original, entry.modified }) |side| {
+                if (side) |value| if (value == .resource) try existing_resources.put(value.resource.key, value.resource);
+            }
+        }
         var items: std.ArrayList(multi_diff_input.ResolvedItem) = .empty;
         defer {
             for (items.items) |item| {
@@ -718,17 +822,17 @@ pub const EditorOpening = struct {
             const b = if (snapshot.modified_exists) texts.modified_resource else null;
             if (a == null and b == null) continue;
             const binary = (a != null and !texts.original_available) or (b != null and !texts.modified_available);
-            const original = if (a) |resource| try self.resolveMultiDiffSide(resource, texts.original, binary, "Original") else null;
+            const original = if (a) |resource| try self.resolveMultiDiffSide(&existing_resources, resource, texts.original, binary, "Original") else null;
             errdefer releaseMultiDiffResolvedSide(original);
-            const modified = if (b) |resource| try self.resolveMultiDiffSide(resource, texts.modified, binary, "Modified") else null;
+            const modified = if (b) |resource| try self.resolveMultiDiffSide(&existing_resources, resource, texts.modified, binary, "Modified") else null;
             errdefer releaseMultiDiffResolvedSide(modified);
             const resource = b orelse a.?;
             const language = if (modified) |side| if (side.input) |value| value.resolve().model.getLanguageId() else null else null;
             const options = text_diff_editor_mod.computeConfigurationForResource(configuration, .{ .resource = resource.path, .override_identifier = language });
-            try items.append(self.allocator, .{ .original = original, .modified = modified, .go_to_file_uri = resource.uri, .options = options });
+            const go_to_uri = if (snapshot.go_to_file_uri) |encoded| try std.Uri.parse(encoded) else resource.uri;
+            try items.append(self.allocator, .{ .original = original, .modified = modified, .go_to_file_uri = go_to_uri, .go_to_file_title = snapshot.go_to_file_title, .options = options });
         }
         try input.setResolvedItems(items.items);
-        try self.openMultiDiffInput(input, group, false);
     }
 
     /// Consumes the provider's virtual document source on all outcomes.
@@ -770,7 +874,6 @@ pub const EditorOpening = struct {
     }
 
     fn cancelPendingDiff(self: *EditorOpening) void {
-        self.cancelPendingMultiDiff();
         const pending = self.pending_diff orelse return;
         self.pending_diff = null;
         pending.request.cancel();

@@ -10922,3 +10922,95 @@ test "Workbench: git scm integration opens Graph Open Changes as a real virtuali
     try std.testing.expectEqual(tab, wb.activeTab().?);
     try std.testing.expectEqual(@as(usize, 1), wb.tabCount());
 }
+
+test "Workbench: git scm integration opens live Changes group and retains surviving multi-diff documents" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+    if (!try runGitTest(allocator, root, &.{"init"})) return error.SkipZigTest;
+    try std.testing.expect(try runGitTest(allocator, root, &.{ "config", "core.autocrlf", "false" }));
+    _ = try runGitTest(allocator, root, &.{ "config", "user.name", "Test User" });
+    _ = try runGitTest(allocator, root, &.{ "config", "user.email", "test@example.com" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "a old\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.txt", .data = "b old\n" });
+    try std.testing.expect(try runGitTest(allocator, root, &.{ "add", "a.txt", "b.txt" }));
+    try std.testing.expect(try runGitTest(allocator, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "initial" }));
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "a new\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.txt", .data = "b new\n" });
+    const window = try TestWindow.init(allocator, io, &.{}, 120, 25);
+    defer window.deinit();
+    const wb = window.workbench;
+    const settings_path = try std.fs.path.join(allocator, &.{ root, ".git", "test-settings.json" });
+    defer allocator.free(settings_path);
+    try wb.setUserSettingsPaths(&.{settings_path});
+    try wb.initSidebar(root);
+    pumpSidebarForTests(wb);
+    try wb.initGit();
+    const changes = wb.scm.changes orelse return error.TestExpectedChangesView;
+    changes.config.always_show_actions = true;
+    var frame = try ui.Frame.init(allocator, 60, 20);
+    defer frame.deinit();
+    frame.begin();
+    const rect: ui.Rect = .{ .x = 0, .y = 0, .w = 60, .h = 20 };
+    try changes.render(&frame.next, rect, true, .{});
+    const glyph = @import("../vs/workbench/contrib/scm/browser/scmViewPane.zig").SCMViewPane.open_group_changes_glyph;
+    const action = for (frame.next.cluster, 0..) |cp, index| {
+        if (cp == glyph) break index;
+    } else return error.TestExpectedScmGroupAction;
+    var mouse: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = action % 60, .y = action / 60 };
+    try std.testing.expect(try changes.handleMouse(&mouse, rect));
+    for (0..6000) |_| {
+        if (wb.activeTab()) |tab| if (tab.multi_diff) |multi| {
+            if (!multi.widget.getViewModel().?.isLoading and multi.input.entries.len == 2) break;
+        };
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+    const tab = wb.activeTab() orelse return error.TestExpectedMultiDiffTab;
+    const multi = tab.multi_diff orelse return error.TestExpectedMultiDiffTab;
+    try std.testing.expect(multi.input.source_binding != null);
+    try std.testing.expect(std.mem.startsWith(u8, multi.input.source_uri, "scm-multi-diff-source:"));
+    try std.testing.expectEqual(@as(usize, 2), multi.input.entries.len);
+    const a_path = try std.fs.path.join(allocator, &.{ root, "a.txt" });
+    defer allocator.free(a_path);
+    const b_path = try std.fs.path.join(allocator, &.{ root, "b.txt" });
+    defer allocator.free(b_path);
+    try std.testing.expect(wb.workingCopyService().hasResource(a_path));
+    try std.testing.expect(wb.workingCopyService().hasResource(b_path));
+    const surviving = multi.input.entries[1].item;
+    const b_document = surviving.modified.?.textModel.?;
+    try std.testing.expectEqualStrings("b.txt", std.fs.path.basename(b_document.path));
+    try std.testing.expectEqualStrings("b new", try b_document.model.borrowLineContent(1));
+    try std.testing.expectEqualStrings("b old", try surviving.original.?.textModel.?.model.borrowLineContent(1));
+    try std.testing.expect(try runGitTest(allocator, root, &.{ "add", "a.txt" }));
+    wb.refreshGitStatus();
+    for (0..6000) |_| {
+        if (multi.input.entries.len == 1 and !multi.widget.getViewModel().?.isLoading) break;
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+    try std.testing.expectEqual(tab, wb.activeTab().?);
+    try std.testing.expectEqual(@as(usize, 1), multi.input.entries.len);
+    try std.testing.expectEqual(surviving, multi.input.entries[0].item);
+    try std.testing.expectEqual(b_document, multi.input.entries[0].item.modified.?.textModel.?);
+    try std.testing.expect(!wb.workingCopyService().hasResource(a_path));
+    try std.testing.expect(wb.workingCopyService().hasResource(b_path));
+    try wb.commands.execute("git.viewStagedChanges");
+    for (0..6000) |_| {
+        if (wb.activeTab()) |active| if (active != tab and active.multi_diff != null) {
+            if (!active.multi_diff.?.widget.getViewModel().?.isLoading) break;
+        };
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+    const staged = (wb.activeTab() orelse return error.TestExpectedMultiDiffTab).multi_diff orelse return error.TestExpectedMultiDiffTab;
+    try std.testing.expect(staged != multi);
+    try std.testing.expectEqual(@as(usize, 1), staged.input.entries.len);
+    try std.testing.expectEqualStrings("a old", try staged.input.entries[0].item.original.?.textModel.?.model.borrowLineContent(1));
+    try std.testing.expectEqualStrings("a new", try staged.input.entries[0].item.modified.?.textModel.?.model.borrowLineContent(1));
+    try std.testing.expect(staged.input.entries[0].item.options.read_only);
+}

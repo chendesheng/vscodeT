@@ -26,6 +26,7 @@ pub const ResolvedItem = struct {
     original: ?ResolvedSide = null,
     modified: ?ResolvedSide = null,
     go_to_file_uri: ?std.Uri = null,
+    go_to_file_title: ?[]const u8 = null,
     options: DiffOptions = .{},
 };
 
@@ -40,12 +41,25 @@ pub const MultiDiffEditorInput = struct {
     vm: ?*view_model.MultiDiffEditorViewModel = null,
     entries: []Entry = &.{},
     refs: usize = 1,
+    source_binding: ?SourceBinding = null,
+
+    pub const SourceBinding = struct {
+        context: *anyopaque,
+        dispose: *const fn (*anyopaque) void,
+    };
+    pub fn detachSource(self: *MultiDiffEditorInput) void {
+        if (self.source_binding) |binding| {
+            self.source_binding = null;
+            binding.dispose(binding.context);
+        }
+    }
 
     pub const Entry = struct {
         item: *model.IDocumentDiffItem,
         original: ?SideInput = null,
         modified: ?SideInput = null,
-        go_to_file_key: ?[]u8 = null,
+        go_to_file_uri: ?[]u8 = null,
+        go_to_file_title: ?[]u8 = null,
         original_dirty: ?SignalSubscription = null,
         modified_dirty: ?SignalSubscription = null,
 
@@ -55,7 +69,8 @@ pub const MultiDiffEditorInput = struct {
             self.item.release();
             if (self.original) |input| input.destroy();
             if (self.modified) |input| input.destroy();
-            if (self.go_to_file_key) |key| allocator.free(key);
+            if (self.go_to_file_uri) |key| allocator.free(key);
+            if (self.go_to_file_title) |title| allocator.free(title);
         }
     };
     pub fn create(allocator: Allocator, source_uri: []const u8, label: ?[]const u8, transient: bool) !*MultiDiffEditorInput {
@@ -96,6 +111,7 @@ pub const MultiDiffEditorInput = struct {
         std.debug.assert(self.refs != 0);
         self.refs -= 1;
         if (self.refs != 0) return;
+        self.detachSource();
         self.base.dispose();
         if (self.vm) |value| value.destroy();
         self.document_set.deinit();
@@ -161,15 +177,32 @@ pub const MultiDiffEditorInput = struct {
         options.read_only = if (b) |input| input.interface().isReadonly() else true;
         const item = if (existing) |previous| previous.retain() else try model.IDocumentDiffItem.create(self.allocator, diffSource(value.original), diffSource(value.modified), options);
         errdefer item.release();
-        const go_to = if (value.go_to_file_uri) |uri| try std_uri.resourceKey(self.allocator, uri) else null;
+        const go_to = if (value.go_to_file_uri) |uri| try std.fmt.allocPrint(self.allocator, "{f}", .{uri}) else null;
         errdefer if (go_to) |key| self.allocator.free(key);
+        const title = if (value.go_to_file_title) |name| try self.allocator.dupe(u8, name) else null;
+        errdefer if (title) |name| self.allocator.free(name);
         const original_dirty = if (a) |input| try input.interface().on_did_change_dirty.listenDisposable(self, onSideDirty) else null;
         errdefer if (original_dirty) |subscription| subscription.dispose();
         const modified_dirty = if (b) |input| try input.interface().on_did_change_dirty.listenDisposable(self, onSideDirty) else null;
         errdefer if (modified_dirty) |subscription| subscription.dispose();
         if (existing != null) try item.updateOptions(options);
-        return .{ .item = item, .original = a, .modified = b, .go_to_file_key = go_to, .original_dirty = original_dirty, .modified_dirty = modified_dirty };
+        return .{ .item = item, .original = a, .modified = b, .go_to_file_uri = go_to, .go_to_file_title = title, .original_dirty = original_dirty, .modified_dirty = modified_dirty };
     }
+    pub const FoundItem = struct { entry: *const Entry, is_original: bool };
+    pub fn findDocumentDiffItem(self: *const MultiDiffEditorInput, uri: std.Uri) !?FoundItem {
+        const key = try std_uri.resourceKey(self.allocator, uri);
+        defer self.allocator.free(key);
+        for (self.entries) |*entry| {
+            for ([_]?model.DiffItemSource{ entry.item.modified, entry.item.original }, 0..) |maybe_side, index| {
+                const side = maybe_side orelse continue;
+                const side_key = try std_uri.resourceKey(self.allocator, side.uri);
+                defer self.allocator.free(side_key);
+                if (std.mem.eql(u8, key, side_key)) return .{ .entry = entry, .is_original = index == 1 };
+            }
+        }
+        return null;
+    }
+
     fn releaseEntries(self: *MultiDiffEditorInput, entries: []Entry) void {
         for (entries) |*entry| entry.release(self.allocator);
         self.allocator.free(entries);

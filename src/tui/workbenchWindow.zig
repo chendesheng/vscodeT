@@ -341,6 +341,9 @@ pub const TerminalWorkbench = struct {
     pointer_state: ui.pointer.State = .{},
     pointer_shapes: bool = false,
     media_status: ?*MediaPreviewStatus = null,
+    multi_diff_sources: @import("../vs/workbench/contrib/multiDiffEditor/browser/multiDiffSourceResolverService.zig").MultiDiffSourceResolverService,
+    multi_diff_sources_api: @import("../vs/workbench/contrib/multiDiffEditor/browser/multiDiffSourceResolverService.zig").IMultiDiffSourceResolverService,
+    scm_multi_diff_resolvers: *@import("../vs/workbench/contrib/multiDiffEditor/browser/scmMultiDiffSourceResolver.zig").ScmMultiDiffSourceResolverContribution,
     activity_service: ActivityService,
     editor_status: ?*EditorStatus = null,
     status_hint_accessor: ?EntryAccessor = null,
@@ -787,12 +790,6 @@ pub const TerminalWorkbench = struct {
                         try host.openSnapshotDiff(path, source, left, right);
                     }
                 }.open,
-                .open_multi_snapshot = struct {
-                    fn open(context: *anyopaque, source_uri: []const u8, label: []const u8, batch: @import("../vs/workbench/contrib/multiDiffEditor/browser/multiDiffSourceResolverService.zig").SnapshotBatch) !void {
-                        const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                        try host.editor_opening.requestOpenMultiSnapshotDiff(if (host.configuration) |configuration| configuration.interface() else null, source_uri, label, batch);
-                    }
-                }.open,
                 .refresh = struct {
                     fn refresh(context: *anyopaque) void {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
@@ -840,6 +837,11 @@ pub const TerminalWorkbench = struct {
             .json_client = &self.json_client,
             .language_features = &self.language_features,
             .reload_jobs = .init(allocator),
+            .multi_diff_source_services = .{
+                .configuration = &self.configuration_api,
+                .resolver = self.multi_diff_sources_api,
+                .provider = .{ .context = &self.git_commands, .capture = @import("../extensions/git/src/commands.zig").CommandContribution.captureMultiDiffResource },
+            },
             .host = .{
                 .context = self,
                 .configure_editor = struct {
@@ -903,6 +905,12 @@ pub const TerminalWorkbench = struct {
                         host.registerWorkingCopy(tab);
                     }
                 }.register,
+                .change_working_copy = struct {
+                    fn change(context: *anyopaque, editor: *Editor, add: bool) void {
+                        const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                        if (add) host.acquireWorkingEditor(editor) else host.releaseWorkingEditor(editor);
+                    }
+                }.change,
                 .discard_tab = discardTransferPane,
                 .focus_editor = focusWindowEditor,
                 .request_frame = requestWorkbenchFrame,
@@ -1198,6 +1206,7 @@ pub const TerminalWorkbench = struct {
         self.editors = .{ .part = self.part, .opening = &self.editor_opening };
         self.editor_api = self.editors.interface();
         _ = try self.services.set(@import("../vs/workbench/services/editor/common/editorService.zig").editor_service_id, &self.editor_api);
+        _ = try self.services.set(@import("../vs/workbench/contrib/multiDiffEditor/browser/multiDiffSourceResolverService.zig").multi_diff_source_resolver_service_id, &self.multi_diff_sources_api);
         self.diff_commands = .{
             .editor_service = &self.editors,
             .snapshot_provider = .{ .context = &self.git_commands, .refresh = @import("../extensions/git/src/commands.zig").CommandContribution.refreshSnapshot },
@@ -1323,6 +1332,14 @@ pub const TerminalWorkbench = struct {
         try self.statusbar.main_part.base.register(layout_service);
         self.activity_service = ActivityService.init(self.allocator);
         errdefer self.activity_service.deinit();
+        const scm_api = try self.scm.ensureService();
+        errdefer self.scm.deinit();
+        const sources = @import("../vs/workbench/contrib/multiDiffEditor/browser/multiDiffSourceResolverService.zig");
+        self.multi_diff_sources = sources.MultiDiffSourceResolverService.init(self.allocator);
+        errdefer self.multi_diff_sources.deinit();
+        self.multi_diff_sources_api = self.multi_diff_sources.interface();
+        self.scm_multi_diff_resolvers = try @import("../vs/workbench/contrib/multiDiffEditor/browser/scmMultiDiffSourceResolver.zig").ScmMultiDiffSourceResolverContribution.create(self.allocator, scm_api.*, &self.activity_service, self.multi_diff_sources_api);
+        errdefer self.scm_multi_diff_resolvers.dispose();
 
         try self.layout.setSize(.sidebar, 28);
 
@@ -1488,6 +1505,9 @@ pub const TerminalWorkbench = struct {
             self.allocator.free(panes);
             self.explorer_panes = null;
         }
+        self.scm_multi_diff_resolvers.dispose();
+        self.multi_diff_sources.deinit();
+        self.scm.deinit();
         self.activity_service.deinit();
         self.core.disposeNotifications();
         self.host_service.deinit();
@@ -1585,7 +1605,7 @@ pub const TerminalWorkbench = struct {
             .git_refresh = &self.git_commands.refreshActions(),
             .git_remote = &self.git_commands.remoteActions(),
             .git_open = &self.git_commands.openActions(),
-            .git_diff = &self.git_commands.diffActions(),
+            .git_diff = &(self.git_commands.diffActions() ++ self.git_commands.multiDiffActions()),
             .markdown = &self.markdown_previews.actionDescriptors(),
         });
         try self.builtin_host.registerPortActions();
@@ -2061,21 +2081,29 @@ pub const TerminalWorkbench = struct {
         return &self.working_copy_service;
     }
 
+    fn acquireWorkingEditor(self: *TerminalWorkbench, editor: *Editor) void {
+        editor.undo_redo.setNotificationService(self.notification_api);
+        if (!self.working_copy_service.hasResource(editor.path)) {
+            if (self.search_window.view) |view| view.model.result.onModelAdded(editor.path, editor.model) catch {};
+        }
+        self.working_copy_service.acquireWorkingCopy(tui_editor_mod.workingCopyInterface(editor)) catch {};
+    }
+
+    fn releaseWorkingEditor(self: *TerminalWorkbench, editor: *Editor) void {
+        _ = self.working_copy_service.releaseWorkingCopy(tui_editor_mod.workingCopyInterface(editor));
+    }
+
     fn registerWorkingCopy(self: *TerminalWorkbench, tab: *Tab) void {
         for (0..tab.workingCopyCount()) |index| {
             const editor = tab.workingCopyAt(index) orelse continue;
-            editor.undo_redo.setNotificationService(self.notification_api);
-            if (!self.working_copy_service.hasResource(editor.path)) {
-                if (self.search_window.view) |view| view.model.result.onModelAdded(editor.path, editor.model) catch {};
-            }
-            self.working_copy_service.acquireWorkingCopy(tui_editor_mod.workingCopyInterface(editor)) catch {};
+            self.acquireWorkingEditor(editor);
         }
     }
 
     fn unregisterWorkingCopy(self: *TerminalWorkbench, tab: *Tab) void {
         for (0..tab.workingCopyCount()) |index| {
             const editor = tab.workingCopyAt(index) orelse continue;
-            _ = self.working_copy_service.releaseWorkingCopy(tui_editor_mod.workingCopyInterface(editor));
+            self.releaseWorkingEditor(editor);
         }
     }
 
@@ -2795,7 +2823,7 @@ pub const TerminalWorkbench = struct {
     // --- begin git / source control
 
     fn deinitGit(self: *TerminalWorkbench) void {
-        self.scm.deinit();
+        self.scm.detachProvider();
         self.git_model.deinit();
     }
 
@@ -2828,6 +2856,13 @@ pub const TerminalWorkbench = struct {
             .changes_host = .{
                 .context = self,
                 .open_change = scmViewOpen,
+                .open_group_changes = struct {
+                    fn run(context: *anyopaque, group: *const @import("../vs/workbench/contrib/scm/common/scm.zig").ISCMResourceGroup) !void {
+                        const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                        const command = @import("../extensions/git/src/commands.zig").CommandContribution.multiDiffGroupCommandId(group) orelse return;
+                        try host.commands.execute(command);
+                    }
+                }.run,
                 .resource_action = scmViewResourceAction,
                 .refresh = scmRefresh,
                 .focus_editor = scmFocusEditor,
