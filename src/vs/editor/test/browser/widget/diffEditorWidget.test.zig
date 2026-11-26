@@ -1402,6 +1402,82 @@ pub fn Tests(comptime View: type) type {
             return null;
         }
 
+        test "diffEditorWidget: code editor state restores only matching folded content" {
+            const a = testing.allocator;
+            const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+            const Position = @import("../../../common/core/position.zig").Position;
+            const text = "outer\n  😀 content\n  inner\nlast";
+            const editor = try Editor.createFromText(a, testing.io, text, "test.txt", 40, 8);
+            defer {
+                editor.deinit();
+                a.destroy(editor);
+            }
+            try editor.setCursorPosition(Position.init(1, 1));
+            try editor.foldAtCursor();
+            try testing.expect(!editor.isModelLineVisible(2));
+            var saved = try editor.saveViewState(a);
+            defer saved.deinit(a);
+            try testing.expectEqual(1, saved.contributionsState.@"editor.contrib.folding".?.collapsedRegions.len);
+            try editor.unfoldAtCursor();
+            try testing.expect(editor.isModelLineVisible(2));
+            try editor.restoreViewState(saved);
+            try testing.expect(!editor.isModelLineVisible(2));
+            const altered = try Editor.createFromText(a, testing.io, "outer\n  other content\n  inner\nlast", "test.txt", 40, 8);
+            defer {
+                altered.deinit();
+                a.destroy(altered);
+            }
+            try altered.restoreViewState(saved);
+            try testing.expect(altered.isModelLineVisible(2));
+        }
+
+        test "diffEditorWidget: view state restores both cursor selections and model anchored scrolling" {
+            const allocator = testing.allocator;
+            const Selection = @import("../../../common/core/selection.zig").Selection;
+            var original: std.ArrayList(u8) = .empty;
+            defer original.deinit(allocator);
+            var modified: std.ArrayList(u8) = .empty;
+            defer modified.deinit(allocator);
+            try original.appendSlice(allocator, "old\n");
+            try modified.appendSlice(allocator, "new\n");
+            for (0..38) |index| {
+                var line: [32]u8 = undefined;
+                const text = try std.fmt.bufPrint(&line, "unchanged {d}\n", .{index});
+                try original.appendSlice(allocator, text);
+                try modified.appendSlice(allocator, text);
+            }
+            try original.appendSlice(allocator, "old end");
+            try modified.appendSlice(allocator, "new end");
+            const options: widget_mod.Options = .{ .hide_unchanged_regions = true, .use_inline_view_when_space_is_limited = false };
+            const widget = try DiffEditorWidget.create(View.init, allocator, testing.io, "a.txt", "b.txt", original.items, modified.items, "Original", "Modified", 120, 8, options);
+            defer widget.destroy();
+            widget.view_model.unchangedRegions()[0].showMoreBelow(7);
+            try widget.view_model.notifyUnchangedRegions();
+            const original_selection = Selection.init(39, 4, 39, 2);
+            const modified_selection = Selection.init(38, 1, 38, 4);
+            const secondary_selection = Selection.init(40, 1, 40, 2);
+            try widget.original_editor.setSelections(&.{original_selection});
+            try widget.modified_editor.setSelections(&.{ modified_selection, secondary_selection });
+            _ = widget.modified_editor.setScrollTop(5);
+            var saved = try widget.saveViewState(allocator);
+            defer saved.deinit(allocator);
+            const hidden = widget.view_model.unchangedRegions()[0].getHiddenModifiedRange();
+            const restored = try DiffEditorWidget.create(View.init, allocator, testing.io, "a.txt", "b.txt", original.items, modified.items, "Original", "Modified", 100, 8, options);
+            defer restored.destroy();
+            try restored.restoreViewState(saved);
+            const original_selections = try restored.original_editor.getSelections();
+            defer allocator.free(original_selections);
+            const modified_selections = try restored.modified_editor.getSelections();
+            defer allocator.free(modified_selections);
+            try testing.expectEqualSlices(Selection, &.{original_selection}, original_selections);
+            try testing.expectEqualSlices(Selection, &.{ modified_selection, secondary_selection }, modified_selections);
+            try testing.expectEqual(hidden, restored.view_model.unchangedRegions()[0].getHiddenModifiedRange());
+            var result = try restored.saveViewState(allocator);
+            defer result.deinit(allocator);
+            try testing.expectEqual(saved.modified.viewState.firstPosition, result.modified.viewState.firstPosition);
+            try testing.expectEqual(saved.modified.viewState.firstPositionDeltaTop, result.modified.viewState.firstPositionDeltaTop);
+        }
+
         test "diffEditorWidget: actual symbol breadcrumbs reveal hidden modified lines from the bottom" {
             const allocator = testing.allocator;
             const Features = @import("../../../common/services/languageFeaturesService.zig").LanguageFeaturesService;

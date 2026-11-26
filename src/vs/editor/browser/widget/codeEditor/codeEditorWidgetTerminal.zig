@@ -555,6 +555,23 @@ pub const EditorDocument = struct {
     }
 };
 
+/// The serializable CodeEditorWidget view state. The contribution map is
+/// typed for the currently implemented stateful editor contribution.
+pub const ICodeEditorViewState = struct {
+    cursorState: []editor_common.ICursorState,
+    viewState: editor_common.IViewState,
+    contributionsState: struct {
+        @"editor.contrib.folding": ?folding.FoldingStateMemento = null,
+    } = .{},
+
+    pub fn deinit(self: *ICodeEditorViewState, allocator: Allocator) void {
+        allocator.free(self.cursorState);
+        self.cursorState = &.{};
+        if (self.contributionsState.@"editor.contrib.folding") |*state| state.deinit(allocator);
+        self.contributionsState.@"editor.contrib.folding" = null;
+    }
+};
+
 pub const Editor = struct {
     allocator: Allocator,
     io: Io,
@@ -4512,6 +4529,48 @@ pub const Editor = struct {
 
     fn getSelectionsCopy(self: *Editor) ![]Selection {
         return self.getModelSelections();
+    }
+
+    pub fn saveViewState(self: *Editor, allocator: Allocator) !ICodeEditorViewState {
+        const selections = try self.getSelections();
+        defer self.allocator.free(selections);
+        const cursor_state = try allocator.alloc(editor_common.ICursorState, selections.len);
+        errdefer allocator.free(cursor_state);
+        for (cursor_state, selections) |*state, selection| state.* = .{
+            .inSelectionMode = !selection.isEmpty(),
+            .selectionStart = selection.getSelectionStart(),
+            .position = selection.getPosition(),
+        };
+        const state = @import("../../../common/viewModel/viewModelImpl.zig").saveState(&self.view_lines, self.converter.interface(), &self.view_layout);
+        return .{
+            .cursorState = cursor_state,
+            .viewState = state,
+            .contributionsState = .{ .@"editor.contrib.folding" = if (self.folding_override == false) null else try self.folding.saveViewState(allocator) },
+        };
+    }
+
+    pub fn restoreViewState(self: *Editor, state: ICodeEditorViewState) !void {
+        if (state.cursorState.len > 0) {
+            const selections = try self.allocator.alloc(Selection, state.cursorState.len);
+            defer self.allocator.free(selections);
+            for (selections, state.cursorState) |*selection, cursor_state| {
+                const position = self.model.validatePosition(cursor_state.position);
+                const start = self.model.validatePosition(cursor_state.selectionStart);
+                selection.* = Selection.fromPositions(start, position);
+            }
+            try self.setSelections(selections);
+        }
+        if (self.folding_override != false) if (state.contributionsState.@"editor.contrib.folding") |folding_state| {
+            if (self.folding_dirty) try self.refreshFolding();
+            try self.folding.restoreViewState(folding_state);
+            try self.applyFoldingVisibility();
+        };
+        self.restoreScrollState(state.viewState);
+    }
+
+    pub fn restoreScrollState(self: *Editor, state: editor_common.IViewState) void {
+        const reduced = @import("../../../common/viewModel/viewModelImpl.zig").reduceRestoreState(self.model, self.converter.interface(), &self.view_layout, state);
+        self.view_layout.setScrollPositionNow(.{ .scrollTop = reduced.scrollTop, .scrollLeft = reduced.scrollLeft });
     }
 
     /// Model selections, allocated with the editor allocator. The caller owns

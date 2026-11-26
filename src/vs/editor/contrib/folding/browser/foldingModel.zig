@@ -17,6 +17,16 @@ const FoldRange = folding_ranges.FoldRange;
 const FoldSource = folding_ranges.FoldSource;
 const SelectedLines = folding_ranges.SelectedLines;
 
+/// Portable representation of the upstream CollapseMemento. Checksums are
+/// optional for older persisted data; a missing checksum restores by range.
+pub const ILineMemento = struct {
+    startLineNumber: usize,
+    endLineNumber: usize,
+    isCollapsed: bool = true,
+    source: FoldSource = .provider,
+    checksum: ?i32 = null,
+};
+
 pub const FoldingRegion = struct {
     regionIndex: usize,
     startLineNumber: usize,
@@ -334,6 +344,60 @@ pub const FoldingModel = struct {
         }
         const merged = try FoldingRegions.fromFoldRanges(self.allocator, kept.items);
         self.updatePost(merged);
+    }
+
+    pub fn getMemento(self: *FoldingModel, allocator: Allocator) ![]ILineMemento {
+        var result: std.ArrayList(ILineMemento) = .empty;
+        errdefer result.deinit(allocator);
+        if (self.regions) |*regions| for (0..regions.length()) |index| {
+            const range = regions.toFoldRange(index);
+            if (!range.isCollapsed and range.source == .provider) continue;
+            if (range.startLineNumber < 1 or range.startLineNumber >= range.endLineNumber or range.endLineNumber > self.text_model.getLineCount()) continue;
+            try result.append(allocator, .{
+                .startLineNumber = range.startLineNumber,
+                .endLineNumber = range.endLineNumber,
+                .isCollapsed = range.isCollapsed,
+                .source = range.source,
+                .checksum = try self.getLinesChecksum(range.startLineNumber + 1, range.endLineNumber),
+            });
+        };
+        return result.toOwnedSlice(allocator);
+    }
+
+    pub fn applyMemento(self: *FoldingModel, state: []const ILineMemento) !void {
+        var ranges: std.ArrayList(FoldRange) = .empty;
+        defer ranges.deinit(self.allocator);
+        const max_line = self.text_model.getLineCount();
+        for (state) |range| {
+            if (range.startLineNumber < 1 or range.startLineNumber >= range.endLineNumber or range.endLineNumber > max_line) continue;
+            const checksum = try self.getLinesChecksum(range.startLineNumber + 1, range.endLineNumber);
+            if (range.checksum) |stored| if (stored != 0 and stored != checksum) continue;
+            try ranges.append(self.allocator, .{ .startLineNumber = range.startLineNumber, .endLineNumber = range.endLineNumber, .isCollapsed = range.isCollapsed, .source = range.source });
+        }
+        const existing: folding_ranges.RangeInput = if (self.regions) |*regions| .{ .regions = regions } else .{ .ranges = &.{} };
+        const merged = try folding_ranges.sanitizeAndMerge(self.allocator, existing, .{ .ranges = ranges.items }, max_line, null);
+        defer self.allocator.free(merged);
+        self.updatePost(try FoldingRegions.fromFoldRanges(self.allocator, merged));
+    }
+
+    fn getLinesChecksum(self: *FoldingModel, first: usize, last: usize) !i32 {
+        const hash = @import("../../../../base/common/hash.zig");
+        // JS hashes UTF-16 code units, while the text model stores UTF-8.
+        var value = hash.numberHash(149417, 0);
+        for ([_]usize{ first, last }) |line| {
+            var content = try self.text_model.getLineContent(line);
+            defer content.deinit();
+            var iter = std.unicode.Utf8View.initUnchecked(content.items).iterator();
+            while (iter.nextCodepoint()) |cp| {
+                if (cp <= 0xffff) {
+                    value = hash.numberHash(@intCast(cp), value);
+                } else {
+                    value = hash.numberHash(@intCast(0xd800 + ((cp - 0x10000) >> 10)), value);
+                    value = hash.numberHash(@intCast(0xdc00 + ((cp - 0x10000) & 0x3ff)), value);
+                }
+            }
+        }
+        return @rem(value, 1000000);
     }
 
     pub fn toggleCollapseState(self: *FoldingModel, indexes: []const usize) void {

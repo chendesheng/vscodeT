@@ -29,6 +29,17 @@ pub const FoldState = enum {
 
 pub const Direction = enum { up, down };
 
+pub const FoldingStateMemento = struct {
+    collapsedRegions: []@import("./foldingModel.zig").ILineMemento = &.{},
+    lineCount: usize = 0,
+    foldedImports: bool = false,
+
+    pub fn deinit(self: *FoldingStateMemento, allocator: Allocator) void {
+        allocator.free(self.collapsedRegions);
+        self.collapsedRegions = &.{};
+    }
+};
+
 pub const Controller = struct {
     allocator: Allocator,
     model: *TextModel,
@@ -72,6 +83,17 @@ pub const Controller = struct {
         self.folding_model.deinit();
         self.allocator.destroy(self.folding_model);
         self.allocator.destroy(self);
+    }
+
+    pub fn saveViewState(self: *Controller, allocator: Allocator) !FoldingStateMemento {
+        return .{ .collapsedRegions = try self.folding_model.getMemento(allocator), .lineCount = self.model.getLineCount() };
+    }
+
+    pub fn restoreViewState(self: *Controller, state: FoldingStateMemento) !void {
+        if (state.collapsedRegions.len != 0) {
+            try self.folding_model.applyMemento(state.collapsedRegions);
+            self.hidden_model.updateHiddenRanges();
+        }
     }
 
     pub fn setFoldingRules(self: *Controller, rules: FoldingRules) void {

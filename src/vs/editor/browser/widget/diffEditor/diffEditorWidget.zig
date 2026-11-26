@@ -138,6 +138,21 @@ const SmoothResize = struct {
 
 /// Terminal adapter type is supplied by the editor composition root. The
 /// diff widget owns both editors and their upstream layout/selection flow.
+const CodeEditorViewState = @import("../codeEditor/codeEditorWidgetTerminal.zig").ICodeEditorViewState;
+
+pub const IDiffEditorViewState = struct {
+    original: CodeEditorViewState,
+    modified: CodeEditorViewState,
+    modelState: ?DiffEditorViewModel.SerializedState = null,
+
+    pub fn deinit(self: *IDiffEditorViewState, allocator: Allocator) void {
+        self.original.deinit(allocator);
+        self.modified.deinit(allocator);
+        if (self.modelState) |*state| state.deinit(allocator);
+        self.modelState = null;
+    }
+};
+
 pub fn DiffEditorWidget(comptime View: type) type {
     return struct {
         const Self = @This();
@@ -692,6 +707,29 @@ pub fn DiffEditorWidget(comptime View: type) type {
         /// Synchronize the two editors on the common vertical layout axis.
         pub fn syncTopLines(self: *Self) void {
             self.syncScrollFromPane(self.focused);
+            self.original_view.invalidate();
+            self.modified_view.invalidate();
+        }
+
+        pub fn saveViewState(self: *Self, allocator: Allocator) !IDiffEditorViewState {
+            var original = try self.original_editor.saveViewState(allocator);
+            errdefer original.deinit(allocator);
+            var modified = try self.modified_editor.saveViewState(allocator);
+            errdefer modified.deinit(allocator);
+            return .{ .original = original, .modified = modified, .modelState = try self.view_model.serializeState(allocator) };
+        }
+
+        pub fn restoreViewState(self: *Self, saved: IDiffEditorViewState) !void {
+            try self.original_editor.restoreViewState(saved.original);
+            try self.modified_editor.restoreViewState(saved.modified);
+            if (saved.modelState) |model_state| {
+                try self.view_model.restoreSerializedState(model_state);
+                // Collapsed view zones may have changed while restoring the
+                // model state. Re-evaluate the saved model position against
+                // the final layout rather than retaining a projected offset.
+                self.original_editor.restoreScrollState(saved.original.viewState);
+                self.modified_editor.restoreScrollState(saved.modified.viewState);
+            }
             self.original_view.invalidate();
             self.modified_view.invalidate();
         }

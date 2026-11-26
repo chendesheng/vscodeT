@@ -6,6 +6,22 @@ const Selection = @import("./core/selection.zig").Selection;
 const ValidEditOperation = @import("./model.zig").ValidEditOperation;
 const TextModel = @import("./model/textModel.zig").TextModel;
 
+const Position = @import("./core/position.zig").Position;
+
+/// Serializable cursor and view state from editorCommon.ts. Positions remain
+/// model coordinates, so restoring works across wrapping and view-zone changes.
+pub const ICursorState = struct {
+    inSelectionMode: bool,
+    selectionStart: Position,
+    position: Position,
+};
+
+pub const IViewState = struct {
+    scrollLeft: f64,
+    firstPosition: Position,
+    firstPositionDeltaTop: f64,
+};
+
 pub const ScrollType = enum(u8) {
     Smooth = 0,
     Immediate = 1,

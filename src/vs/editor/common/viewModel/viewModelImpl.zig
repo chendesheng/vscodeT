@@ -101,6 +101,31 @@ fn overviewRulerLaneFromModel(lane: @import("../model.zig").OverviewRulerLane) v
     };
 }
 
+const IViewState = @import("../editorCommon.zig").IViewState;
+const ViewLayout = @import("../viewLayout/viewLayout.zig").ViewLayout;
+
+/// ViewModelImpl.saveState/reduceRestoreState. This is shared by the terminal
+/// code editor, whose concrete layout and projected lines are separately owned.
+pub fn saveState(lines: *view_model_lines.ProjectedViewModelLines, converter: ICoordinatesConverter, layout: *ViewLayout) IViewState {
+    const scroll_top = layout.getCurrentScrollTop();
+    const first_view_line = layout.getLineNumberAtVerticalOffset(scroll_top);
+    const first_position = converter.convertViewPositionToModelPosition(converter.context, Position.init(first_view_line, lines.getLineMinColumn(first_view_line)));
+    return .{
+        .scrollLeft = layout.getCurrentScrollLeft(),
+        .firstPosition = first_position,
+        .firstPositionDeltaTop = layout.getVerticalOffsetForLineNumber(first_view_line, false) - scroll_top,
+    };
+}
+
+pub fn reduceRestoreState(model: *text_model.TextModel, converter: ICoordinatesConverter, layout: *ViewLayout, state: IViewState) @import("../editorCommon.zig").INewScrollPosition {
+    const model_position = model.validatePosition(state.firstPosition);
+    const view_position = converter.convertModelPositionToViewPosition(converter.context, model_position, .None, false, false);
+    return .{
+        .scrollLeft = state.scrollLeft,
+        .scrollTop = layout.getVerticalOffsetForLineNumber(view_position.lineNumber, false) - state.firstPositionDeltaTop,
+    };
+}
+
 pub const ViewModel = struct {
     allocator: Allocator,
     model: *text_model.TextModel,
