@@ -1058,3 +1058,36 @@ test "event: a blur handler may install the pending target itself" {
     try std.testing.expectEqual(@as(usize, 1), b_log.focus_count);
     try std.testing.expectEqual(@as(usize, 1), b_log.focus_in_count);
 }
+
+test "focus scope yields at both boundaries without wrapping into another native container" {
+    var doc = try ui.Document.init(std.testing.allocator, .{ .cols = 10, .rows = 5 });
+    defer doc.deinit();
+    const root = try doc.createElement(.div);
+    const scope = try doc.createElement(.div);
+    const first = try doc.createElement(.div);
+    const last = try doc.createElement(.div);
+    const adjacent = try doc.createElement(.div);
+    for ([_]*ui.Node{ first, last, adjacent }) |node| node.asElement().focusable = true;
+    _ = try scope.appendChild(first);
+    _ = try scope.appendChild(last);
+    _ = try root.appendChild(scope);
+    _ = try root.appendChild(adjacent);
+    doc.setRoot(root);
+    try std.testing.expect(doc.moveFocusWithin(scope, .forward));
+    try std.testing.expectEqual(first, doc.activeElement().?);
+    var forward: ui.KeyEvent = .{ .key = .tab };
+    try std.testing.expect(doc.dispatchEventInFocusScope(&forward, scope));
+    try std.testing.expectEqual(last, doc.activeElement().?);
+    try std.testing.expect(!doc.dispatchEventInFocusScope(&forward, scope));
+    try std.testing.expectEqual(last, doc.activeElement().?);
+    // The enclosing owner can now advance to the adjacent container.
+    try std.testing.expect(doc.moveFocus(.forward));
+    try std.testing.expectEqual(adjacent, doc.activeElement().?);
+    try std.testing.expect(doc.moveFocusWithin(scope, .backward));
+    try std.testing.expectEqual(last, doc.activeElement().?);
+    var backward: ui.KeyEvent = .{ .key = .backtab };
+    try std.testing.expect(doc.dispatchEventInFocusScope(&backward, scope));
+    try std.testing.expectEqual(first, doc.activeElement().?);
+    try std.testing.expect(!doc.dispatchEventInFocusScope(&backward, scope));
+    try std.testing.expectEqual(first, doc.activeElement().?);
+}

@@ -253,6 +253,13 @@ pub fn dispatchKey(document: *dom.Document, key: Key, mods: Modifiers) KeyEvent 
 /// how a host forwards a decoded terminal event and can inspect the flags the
 /// listeners set. The propagation flags are reset before the dispatch.
 pub fn dispatchEvent(document: *dom.Document, event: *KeyEvent) void {
+    _ = dispatchEventInFocusScope(document, event, null);
+}
+
+/// The same event dispatch, with a native focus-scope boundary. Like WebKit's
+/// focus controller, a scope without a next stop yields to its outer owner
+/// before wrapping. TermDOM likewise lets focus leave a completed sequence.
+pub fn dispatchEventInFocusScope(document: *dom.Document, event: *KeyEvent, scope: ?*dom.Node) bool {
     event.target = activeElement(document);
     event.current_target = null;
     event.phase = .target;
@@ -260,11 +267,23 @@ pub fn dispatchEvent(document: *dom.Document, event: *KeyEvent) void {
     event.propagation_stopped = false;
     event.immediate_stopped = false;
 
-    const target = event.target orelse return;
+    const target = event.target orelse return false;
+    if (scope) |root| {
+        if (!isWithinScope(target, root)) return false;
+    }
     dispatchCapture(target, event);
     if (!event.propagation_stopped) dispatchAtTarget(target, event);
     if (!event.propagation_stopped) dispatchBubble(target, event);
-    if (!event.default_prevented) runDefaultAction(document, event);
+    const default_handled = if (!event.default_prevented) runDefaultAction(document, event, scope) else false;
+    return event.default_prevented or event.propagation_stopped or default_handled;
+}
+
+fn isWithinScope(node: *dom.Node, scope: *dom.Node) bool {
+    var current: ?*dom.Node = node;
+    while (current) |candidate| : (current = candidate.parent) {
+        if (candidate == scope) return true;
+    }
+    return false;
 }
 
 fn dispatchCapture(node: *dom.Node, event: *KeyEvent) void {
@@ -311,16 +330,14 @@ fn invokeKeyListeners(node: *dom.Node, event: *KeyEvent, capture: bool) void {
     }
 }
 
-fn runDefaultAction(document: *dom.Document, event: *KeyEvent) void {
-    if (event.mods.ctrl or event.mods.alt) return;
-    switch (event.key) {
-        .tab => {
-            const direction: FocusDirection = if (event.mods.shift) .backward else .forward;
-            _ = moveFocus(document, direction);
-        },
-        .backtab => _ = moveFocus(document, .backward),
-        else => {},
-    }
+fn runDefaultAction(document: *dom.Document, event: *KeyEvent, scope: ?*dom.Node) bool {
+    if (event.mods.ctrl or event.mods.alt) return false;
+    const direction: FocusDirection = switch (event.key) {
+        .tab => if (event.mods.shift) .backward else .forward,
+        .backtab => .backward,
+        else => return false,
+    };
+    return if (scope) |root| moveFocusWithin(document, root, direction) else moveFocus(document, direction);
 }
 
 /// Dispatches a mouse event at `target`, the element hit-tested for the cell.
@@ -531,16 +548,32 @@ pub fn canFocus(document: *const dom.Document, node: *const dom.Node) bool {
 /// stop, the HTML algorithm switches to DOM order and picks the nearest tab
 /// stop after/before it in tree order. Navigation wraps around.
 pub fn moveFocus(document: *dom.Document, direction: FocusDirection) bool {
-    const root = document.root orelse return false;
+    return moveFocusInScope(document, document.root orelse return false, direction, true, true);
+}
+
+/// Search only the native container's own focus stops, without wrapping at
+/// its boundary. A caller can then advance focus to the adjacent container.
+pub fn moveFocusWithin(document: *dom.Document, root: *dom.Node, direction: FocusDirection) bool {
+    if (!isConnected(document, root)) return false;
+    return moveFocusInScope(document, root, direction, false, true);
+}
+
+pub fn focusScopeEdge(document: *dom.Document, root: *dom.Node, direction: FocusDirection) bool {
+    if (!isConnected(document, root)) return false;
+    return moveFocusInScope(document, root, direction, false, false);
+}
+
+fn moveFocusInScope(document: *dom.Document, root: *dom.Node, direction: FocusDirection, wrap: bool, use_start: bool) bool {
     const current = document.active_element;
-    const start_node = current orelse document.focus_start;
-    const start = findFocusStart(document, start_node);
+    const start_node = if (use_start) current orelse document.focus_start else null;
+    const start = findFocusStart(document, root, start_node);
 
     var search = FocusSearch{
         .document = document,
         .forward = direction == .forward,
         .active = current,
         .start = start,
+        .wrap = wrap,
     };
     search.walk(root, false);
 
@@ -566,9 +599,8 @@ const FocusStart = struct {
     is_stop: bool,
 };
 
-fn findFocusStart(document: *dom.Document, target: ?*dom.Node) ?FocusStart {
+fn findFocusStart(document: *dom.Document, root: *dom.Node, target: ?*dom.Node) ?FocusStart {
     const wanted = target orelse return null;
-    const root = document.root orelse return null;
     var order: usize = 0;
     return findFocusStartWalk(document, root, wanted, &order);
 }
@@ -606,6 +638,7 @@ const FocusSearch = struct {
     forward: bool,
     active: ?*dom.Node,
     start: ?FocusStart = null,
+    wrap: bool = true,
     order: usize = 0,
     edge: ?*dom.Node = null,
     edge_stop: FocusStop = .{ .tab_index = 0, .order = 0 },
@@ -659,10 +692,9 @@ const FocusSearch = struct {
     }
 
     fn target(self: *const FocusSearch) ?*dom.Node {
-        if (self.start) |start| {
-            if (!start.is_stop) return self.dom_chosen orelse self.edge;
-        }
-        return self.chosen orelse self.edge;
+        const start = self.start orelse return self.edge;
+        const chosen = if (start.is_stop) self.chosen else self.dom_chosen;
+        return chosen orelse if (self.wrap) self.edge else null;
     }
 
     fn beforeEdge(self: *const FocusSearch, candidate: FocusStop) bool {

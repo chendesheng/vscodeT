@@ -404,6 +404,25 @@ pub const Document = struct {
         return event.moveFocus(self, direction);
     }
 
+    /// Move within a host-owned native focus scope; unlike isolated document
+    /// navigation, reaching an edge yields to the enclosing focus owner.
+    pub fn moveFocusWithin(self: *Document, scope: *Node, direction: FocusDirection) bool {
+        return event.moveFocusWithin(self, scope, direction);
+    }
+
+    /// Enter a native scope from an adjacent container at its first or last
+    /// sequential focus stop, ignoring the previous mouse starting point.
+    pub fn focusScopeEdge(self: *Document, scope: *Node, direction: FocusDirection) bool {
+        return event.focusScopeEdge(self, scope, direction);
+    }
+
+    /// Dispatch a decoded key to the active element with a non-wrapping
+    /// scope for the Tab default action. Explicit listener handling is
+    /// unchanged; false means the enclosing host may advance focus.
+    pub fn dispatchEventInFocusScope(self: *Document, key_event: *KeyEvent, scope: *Node) bool {
+        return event.dispatchEventInFocusScope(self, key_event, scope);
+    }
+
     /// Dispatches a synthetic key event. The target is `activeElement()`.
     pub fn dispatchKey(self: *Document, key: Key, mods: Modifiers) KeyEvent {
         return event.dispatchKey(self, key, mods);

@@ -304,6 +304,13 @@ Lightpanda's `EventTarget`/`EventManager` and TermDOM's browser layer:
   navigation algorithm does. A mouse press records a sequential focus starting
   point, so Tab after a press on non-focusable content continues from that
   position instead of restarting at the first stop.
+- Native editor containers use a non-wrapping focus scope. The same DOM key
+  dispatch honors widget listeners first; if no next tab stop exists in that
+  scope, the outer native owner advances focus to an adjacent pane or part.
+  Isolated documents retain the existing wrapped fallback when no outer owner
+  participates, corresponding to WebKit's focus handoff before wrap. This
+  follows the sequential stop order in [TermDOM's input layer](https://github.com/bikeshaving/termdom/blob/99fbec00d1607bb59f3895be86ffbbe137b8c3c1/src/internal/input.ts)
+  and [WebKit's FocusController](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/page/FocusController.cpp).
 - A focus move dispatches `blur` then `focusout` on the old element and `focus`
   then `focusin` on the new one, with `related_target` pointing at the other
   element. `focus`/`blur` do not bubble or capture; `focusin`/`focusout` do
