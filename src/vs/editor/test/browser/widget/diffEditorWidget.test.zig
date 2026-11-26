@@ -145,6 +145,76 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(layout.renderSideBySide(options, false, false));
         }
 
+        test "View: diff tab focus traverses widget controls then yields to the adjacent editor" {
+            const a = testing.allocator;
+            const widget = try DiffEditorWidget.create(View.init, a, testing.io, "a.txt", "b.txt", "old", "new", "Original", "Modified", 100, 8, .{});
+            defer widget.destroy();
+            const browser = @import("../../../browser/editorBrowser.zig");
+            const Control = struct {
+                node: ?*ui.Node = null,
+                focused: bool = false,
+                fn id(_: *anyopaque) []const u8 {
+                    return "focus-test";
+                }
+                fn position(_: *anyopaque) browser.OverlayWidgetPositionPreference {
+                    return .top_right_corner;
+                }
+                fn width(_: *anyopaque, _: usize) usize {
+                    return 2;
+                }
+                fn height(_: *anyopaque) usize {
+                    return 1;
+                }
+                fn build(context: *anyopaque, doc: *ui.Document) !*ui.Node {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    const node = try doc.createElement(.div);
+                    node.asElement().focusable = true;
+                    try node.addEventListener(.{ .context = self, .focus = focus, .blur = blur });
+                    self.node = node;
+                    return node;
+                }
+                fn focus(context: ?*anyopaque, _: *ui.FocusEvent) void {
+                    const self: *@This() = @ptrCast(@alignCast(context.?));
+                    self.focused = true;
+                }
+                fn blur(context: ?*anyopaque, _: *ui.FocusEvent) void {
+                    const self: *@This() = @ptrCast(@alignCast(context.?));
+                    self.focused = false;
+                }
+                fn focusNode(context: *anyopaque) ?*ui.Node {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    return self.node;
+                }
+                fn isFocused(context: *anyopaque) bool {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    return self.focused;
+                }
+                fn interface(self: *@This()) browser.IOverlayWidget {
+                    return .{ .context = self, .get_id = id, .get_position = position, .width = width, .height = height, .build = build, .focus_node = focusNode, .is_focused = isFocused };
+                }
+            };
+            var control: Control = .{};
+            try widget.original_view.addOverlayWidget(control.interface());
+            defer widget.original_view.removeOverlayWidget("focus-test") catch {};
+            widget.setFocus(.original);
+            widget.setEditorFocused(true);
+            var key: ui.KeyEvent = .{ .key = .tab };
+            try testing.expect(widget.dispatchTabFocus(&key, .forward));
+            try testing.expectEqual(.original, widget.focused);
+            try testing.expect(control.focused);
+            key = .{ .key = .tab };
+            try testing.expect(widget.dispatchTabFocus(&key, .forward));
+            try testing.expectEqual(.modified, widget.focused);
+            key = .{ .key = .backtab };
+            try testing.expect(widget.dispatchTabFocus(&key, .backward));
+            try testing.expectEqual(.original, widget.focused);
+            try testing.expect(control.focused);
+            key = .{ .key = .backtab };
+            try testing.expect(widget.dispatchTabFocus(&key, .backward));
+            try testing.expect(!control.focused);
+            try testing.expect(!widget.dispatchTabFocus(&key, .backward));
+        }
+
         test "diffEditorWidget: window events recognize continuous resize and dispose the scheduler" {
             const dispatch = @import("../../../../base/common/windowDispatch.zig");
             const allocator = testing.allocator;

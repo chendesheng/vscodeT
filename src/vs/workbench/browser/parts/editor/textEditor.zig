@@ -108,6 +108,7 @@ pub const TextEditorConfiguration = struct {
     part: *EditorPart,
     configuration: *ConfigurationServiceBinding,
     theme: *const ?*ThemeColors,
+    tab_focus: ?*@import("../../../../editor/browser/config/tabFocus.zig").TabFocus = null,
     listener: ?SignalSubscription = null,
     zen_hide_line_numbers: bool = false,
 
@@ -140,6 +141,7 @@ pub const TextEditorConfiguration = struct {
     pub fn applyToDiffWidget(self: *TextEditorConfiguration, widget: *@import("editorPane.zig").DiffWidget) void {
         const settings = self.reader();
         for ([_]*@import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor{ widget.original_editor, widget.modified_editor }, [_]@TypeOf(widget.original_view){ widget.original_view, widget.modified_view }) |control, view| {
+            if (self.tab_focus) |mode| view.bindTabFocus(mode) catch {};
             _ = control.applyEditorSettings(settings, control.languageId(), control.path) catch false;
             _ = view.applyEditorSettings(settings, control.languageId(), control.path) catch false;
             control.setLineDecorationsWidth(if (widget.options.render_indicators) 1 else 0);
@@ -177,6 +179,7 @@ pub const TextEditorConfiguration = struct {
             }
             const settings = self.reader();
             for ([_]*@import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor{ diff.widget.original_editor, diff.widget.modified_editor }, [_]@TypeOf(tab.view){ diff.widget.original_view, diff.widget.modified_view }) |control, view| {
+                if (self.tab_focus) |mode| view.bindTabFocus(mode) catch {};
                 _ = control.applyEditorSettings(settings, control.languageId(), control.path) catch false;
                 _ = view.applyEditorSettings(settings, control.languageId(), control.path) catch false;
                 control.setLineDecorationsWidth(if (diff.widget.options.render_indicators) 1 else 0);
@@ -188,6 +191,7 @@ pub const TextEditorConfiguration = struct {
         const settings = self.reader();
         const language_id = tab.editor.languageId();
         const resource = tab.editor.path;
+        if (self.tab_focus) |mode| tab.view.bindTabFocus(mode) catch {};
         _ = tab.editor.applyEditorSettings(settings, language_id, resource) catch false;
         _ = tab.view.applyEditorSettings(settings, language_id, resource) catch false;
         if (tab.search_editor_input) |input| {

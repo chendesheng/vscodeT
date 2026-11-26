@@ -618,7 +618,7 @@ pub const TerminalWorkbench = struct {
         self.configured_languages = .{ .allocator = allocator, .part = self.part, .configuration = &self.configuration_binding };
         try self.configured_languages.attach();
         errdefer self.configured_languages.deinit();
-        self.editor_configuration = .{ .part = self.part, .configuration = &self.configuration_binding, .theme = &self.theme_palette };
+        self.editor_configuration = .{ .part = self.part, .configuration = &self.configuration_binding, .theme = &self.theme_palette, .tab_focus = &self.tab_focus };
         try self.editor_configuration.attach();
         errdefer self.editor_configuration.deinit();
         self.markdown_previews = .{
@@ -1789,7 +1789,6 @@ pub const TerminalWorkbench = struct {
             status.deinit();
             self.editor_status = null;
         }
-        self.tab_focus.deinit();
         self.git_commands.deinit();
         self.deinitGit();
         self.git_file_provider.deinit();
@@ -1840,6 +1839,7 @@ pub const TerminalWorkbench = struct {
         self.workspace.deinit();
         // The part owns the group views; disposing it disposes the tab views.
         self.part.deinit();
+        self.tab_focus.deinit();
         self.text_model_resolver.deinit();
         self.resource_file_service.deinit();
         self.window_events.deinitWindowEvents();
@@ -2300,7 +2300,10 @@ pub const TerminalWorkbench = struct {
     /// have independent focus surfaces, so move between their registered
     /// layout containers only when the focused control has no next stop.
     pub fn handleTabFocus(self: *TerminalWorkbench, event: *ui.KeyEvent) bool {
-        if (!self.tab_focus.getTabFocusMode() or event.mods.ctrl or event.mods.alt or self.isDialogOpen() or self.quick_access.isOpen() or self.accessible_view.visible()) return false;
+        if (event.mods.ctrl or event.mods.alt or self.isDialogOpen() or self.quick_access.isOpen() or self.accessible_view.visible()) return false;
+        const target = self.code_editor_api.getFocusedCodeEditor() orelse self.code_editor_api.getActiveCodeEditor();
+        const configured = self.focus == .editor and if (target) |editor| editor.getTabFocusMode() else false;
+        if (!self.tab_focus.getTabFocusMode() and !configured) return false;
         if (event.key != .tab and event.key != .backtab) return false;
         const direction: ui.dom.FocusDirection = if (event.key == .backtab or event.mods.shift) .backward else .forward;
         const layout_api = self.layout.interface();
@@ -3782,7 +3785,7 @@ pub const TerminalWorkbench = struct {
             .language_id = if (target) |editor| editor.languageId() else "",
             .custom_editor_id = if (markdown_preview and active.?.file_input != null) "vscode.markdown.preview.editor" else "",
             .editor_focused = self.focus == .editor,
-            .editor_tab_moves_focus = self.tab_focus.getTabFocusMode(),
+            .editor_tab_moves_focus = if (target) |editor| editor.getTabFocusMode() or self.tab_focus.getTabFocusMode() else self.tab_focus.getTabFocusMode(),
             .editor_text_focused = self.focus == .editor and !(if (multi_diff) |multi| multi.fileListFocused() else false) and !terminal_editor and !markdown_preview and !self.isDialogOpen() and !self.quick_access.isOpen() and !self.accessible_view.visible() and !(if (active_diff_widget) |widget| widget.accessible_viewer.visible() else false),
             .sidebar_focused = self.focus == .sidebar and geometry_value.sidebarShown(),
             .sidebar_visible = geometry_value.sidebarShown(),

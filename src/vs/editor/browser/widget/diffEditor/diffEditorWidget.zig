@@ -1472,19 +1472,18 @@ pub fn DiffEditorWidget(comptime View: type) type {
         /// crosses that native boundary explicitly.
         pub fn focusTabEdge(self: *Self, direction: ui.dom.FocusDirection) void {
             self.setFocus(if (direction == .forward and self.sideBySide()) .original else .modified);
-            self.focusedView().focusEditor();
+            self.focusedView().focusTabEdge(direction);
         }
 
         pub fn dispatchTabFocus(self: *Self, event: *ui.KeyEvent, direction: ui.dom.FocusDirection) bool {
             if (self.accessible_viewer.visible()) return self.dispatchAccessibleKey(event);
             const view = self.focusedView();
-            if (!view.hasEditorFocus()) {
-                if (view.dispatchKey(event) or !view.hasEditorFocus()) return true;
-            }
+            if (view.dispatchTabFocus(event, direction)) return true;
             if (!self.sideBySide()) return false;
             const next: Side = if (direction == .forward) .modified else .original;
             if (self.focused == next) return false;
             self.setFocus(next);
+            self.focusedView().focusTabEdge(direction);
             return true;
         }
 

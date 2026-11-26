@@ -549,6 +549,8 @@ pub const View = struct {
     last_bracket_generation: ?usize = null,
     /// Contribution callbacks notified after `editor.*` view settings change.
     configuration_listeners: std.array_list.Managed(ConfigurationListener),
+    tab_focus: ?*@import("../vs/editor/browser/config/tabFocus.zig").TabFocus = null,
+    tab_focus_listener: ?usize = null,
     /// Bridges the terminal editor to the ported `ViewLines` stack. The
     /// renderer below consumes its rendered line records.
     terminal_view_host: *TerminalViewHost,
@@ -610,6 +612,7 @@ pub const View = struct {
     }
 
     pub fn deinit(self: *View) void {
+        if (self.tab_focus) |mode| if (self.tab_focus_listener) |id| mode.on_did_change_tab_focus.unlisten(id);
         self.ghost_text.clear();
         self.block_nodes.deinit();
         self.clearPaintStyles();
@@ -954,6 +957,36 @@ pub const View = struct {
         const doc = self.renderSurface().document();
         doc.dispatchEvent(event);
         return event.default_prevented or event.propagation_stopped;
+    }
+
+    /// The editor's terminal text area is the first virtual tab stop. DOM
+    /// widgets follow it, and the focus scope yields to the outer editor or
+    /// workbench when the last stop is reached.
+    pub fn dispatchTabFocus(self: *View, event: *ui.KeyEvent, direction: ui.dom.FocusDirection) bool {
+        self.ensureRendered() catch return false;
+        const root = self.root_node orelse return false;
+        const doc = self.renderSurface().document();
+        if (self.focusedElement() != null) {
+            if (self.editor.on_did_key_down.hasListeners()) {
+                self.editor.on_did_key_down.fire(event) catch {};
+                if (event.default_prevented or event.propagation_stopped) return true;
+            }
+            if (doc.dispatchEventInFocusScope(event, root)) return true;
+            if (direction == .backward) {
+                self.focusEditor();
+                return true;
+            }
+            return false;
+        }
+        return direction == .forward and doc.focusScopeEdge(root, .forward);
+    }
+
+    pub fn focusTabEdge(self: *View, direction: ui.dom.FocusDirection) void {
+        self.ensureRendered() catch return;
+        if (direction == .backward) if (self.root_node) |root| {
+            if (self.renderSurface().document().focusScopeEdge(root, .backward)) return;
+        };
+        self.focusEditor();
     }
 
     /// Hit-tests and dispatches a mouse event, then applies the editor's own
@@ -1509,6 +1542,30 @@ pub const View = struct {
     /// Applies `editor.*` view settings to the ported options and dispatches a
     /// configuration-change view event, then schedules a rebuild. Model-level
     /// settings are applied by the owning editor.
+    /// Each mounted editor configuration listens to the global TabFocus
+    /// event, in addition to its validated resource/language option.
+    pub fn bindTabFocus(self: *View, mode: *@import("../vs/editor/browser/config/tabFocus.zig").TabFocus) !void {
+        if (self.tab_focus == mode and self.tab_focus_listener != null) return;
+        if (self.tab_focus) |old| if (self.tab_focus_listener) |id| old.on_did_change_tab_focus.unlisten(id);
+        self.tab_focus = mode;
+        self.tab_focus_listener = null;
+        self.editor.tab_focus = mode;
+        self.tab_focus_listener = try mode.on_did_change_tab_focus.listen(self, onTabFocusChanged);
+        try onTabFocusChanged(mode.getTabFocusMode(), self);
+    }
+
+    fn onTabFocusChanged(_: bool, self: *View) !void {
+        const effective = self.editor.getTabFocusMode();
+        if (self.terminal_view_host.options.get(.tabFocusMode) == effective) return;
+        self.terminal_view_host.options.set(.tabFocusMode, effective);
+        var changed: terminal_editor_config.ChangeSet = @splat(false);
+        changed[@backingInt(editor_options.EditorOption.tabFocusMode)] = true;
+        const source = editor_options.ConfigurationChangedEvent.init(&changed);
+        self.editor.emitViewEvent(.{ .ViewConfigurationChanged = view_events.ViewConfigurationChangedEvent.init(source) });
+        for (self.configuration_listeners.items) |listener| listener.notify(listener.context, source);
+        self.invalidate();
+    }
+
     pub fn applyEditorSettings(
         self: *View,
         reader: terminal_editor_config.Reader,
@@ -1545,6 +1602,7 @@ pub const View = struct {
     }
 
     pub fn inheritEmbeddedOptions(self: *View, parent: *const TerminalViewHost) void {
+        if (parent.editor.tab_focus) |mode| self.bindTabFocus(mode) catch {};
         var changed: terminal_editor_config.ChangeSet = undefined;
         self.terminal_view_host.inheritEmbeddedOptions(parent, &changed);
         const source = editor_options.ConfigurationChangedEvent.init(&changed);

@@ -240,6 +240,7 @@ pub const TerminalViewHost = struct {
         };
 
         self.options.set(.lineHeight, 1);
+        self.options.set(.tabFocusMode, editor.getTabFocusMode());
         // The shared line renderer owns whitespace rendering (the browser's
         // SVG whitespace layer is not ported), so keep
         // `experimentalWhitespaceRendering` off and retain the upstream
@@ -333,10 +334,14 @@ pub const TerminalViewHost = struct {
         const previous_glyph = self.options.get(.glyphMargin);
         const previous_sticky = self.options.get(.stickyScroll);
         const previous_code_lens = self.options.get(.codeLens);
+        const previous_tab_focus = self.options.get(.tabFocusMode);
         self.options.set(.codeLens, self.configured_code_lens);
         self.options.set(.glyphMargin, self.configured_glyph_margin);
         self.options.set(.stickyScroll, self.configured_sticky_scroll);
         _ = terminal_editor_config.applyViewSettings(&self.options, reader, language_id, resource, changed);
+        self.editor.tab_focus_mode_configured = terminal_editor_config.tabFocusModeSetting(reader, language_id, resource);
+        self.options.set(.tabFocusMode, self.editor.getTabFocusMode());
+        changed[@backingInt(editor_options.EditorOption.tabFocusMode)] = previous_tab_focus != self.options.get(.tabFocusMode);
         self.configured_glyph_margin = self.options.get(.glyphMargin);
         self.configured_sticky_scroll = self.options.get(.stickyScroll);
         self.configured_code_lens = self.options.get(.codeLens);
@@ -365,6 +370,8 @@ pub const TerminalViewHost = struct {
     /// then applies its own diff/peek overrides. Geometry and read-only state
     /// belong to the child and are not copied from the parent.
     pub fn inheritEmbeddedOptions(self: *TerminalViewHost, parent: *const TerminalViewHost, changed: *terminal_editor_config.ChangeSet) void {
+        self.editor.tab_focus_mode_configured = parent.editor.tab_focus_mode_configured;
+        self.editor.tab_focus = parent.editor.tab_focus;
         const layout_info = self.options.layout_info;
         const wrapping_info = self.options.wrapping_info;
         self.options = parent.options;

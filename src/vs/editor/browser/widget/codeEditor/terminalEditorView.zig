@@ -55,6 +55,8 @@ pub const IEditorView = struct {
         invalidate: *const fn (*anyopaque) void,
         dispatchMouse: *const fn (*anyopaque, *ui.MouseEvent) anyerror!bool,
         dispatchKey: *const fn (*anyopaque, *ui.KeyEvent) bool,
+        dispatchTabFocus: *const fn (*anyopaque, *ui.KeyEvent, ui.dom.FocusDirection) bool,
+        focusTabEdge: *const fn (*anyopaque, ui.dom.FocusDirection) void,
         focusEditor: *const fn (*anyopaque) void,
         isFocused: *const fn (*anyopaque) bool,
         setFocused: *const fn (*anyopaque, bool) bool,
@@ -68,6 +70,7 @@ pub const IEditorView = struct {
         clearGlyphHover: *const fn (*anyopaque) void,
         setTopInset: *const fn (*anyopaque, usize) void,
         applyEditorSettings: *const fn (*anyopaque, terminal_editor_config.Reader, ?[]const u8, ?[]const u8) anyerror!bool,
+        bindTabFocus: *const fn (*anyopaque, *@import("../../config/tabFocus.zig").TabFocus) anyerror!void,
         applySubEditorOptionOverrides: *const fn (*anyopaque, ?bool, ?bool, ?bool) void,
         inheritEmbeddedOptions: *const fn (*anyopaque, *const TerminalViewHost) void,
         applyLineNumbersOverride: *const fn (*anyopaque, editor_options.RenderLineNumbersType) anyerror!void,
@@ -145,6 +148,14 @@ pub const IEditorView = struct {
         return self.vtable.dispatchKey(self.context, event);
     }
 
+    pub fn dispatchTabFocus(self: *IEditorView, event: *ui.KeyEvent, direction: ui.dom.FocusDirection) bool {
+        return self.vtable.dispatchTabFocus(self.context, event, direction);
+    }
+
+    pub fn focusTabEdge(self: *IEditorView, direction: ui.dom.FocusDirection) void {
+        self.vtable.focusTabEdge(self.context, direction);
+    }
+
     pub fn focusEditor(self: *IEditorView) void {
         return self.vtable.focusEditor(self.context);
     }
@@ -191,6 +202,10 @@ pub const IEditorView = struct {
 
     pub fn setTopInset(self: *IEditorView, rows: usize) void {
         return self.vtable.setTopInset(self.context, rows);
+    }
+
+    pub fn bindTabFocus(self: *IEditorView, mode: *@import("../../config/tabFocus.zig").TabFocus) anyerror!void {
+        return self.vtable.bindTabFocus(self.context, mode);
     }
 
     pub fn applyEditorSettings(self: *IEditorView, reader: terminal_editor_config.Reader, language_id: ?[]const u8, resource: ?[]const u8) anyerror!bool {
@@ -322,6 +337,14 @@ pub const IEditorView = struct {
                 const view: *Native = @ptrCast(@alignCast(context));
                 return view.dispatchKey(event);
             }
+            fn dispatchTabFocus(context: *anyopaque, event: *ui.KeyEvent, direction: ui.dom.FocusDirection) bool {
+                const view: *Native = @ptrCast(@alignCast(context));
+                return view.dispatchTabFocus(event, direction);
+            }
+            fn focusTabEdge(context: *anyopaque, direction: ui.dom.FocusDirection) void {
+                const view: *Native = @ptrCast(@alignCast(context));
+                view.focusTabEdge(direction);
+            }
             fn focusEditor(context: *anyopaque) void {
                 const view: *Native = @ptrCast(@alignCast(context));
                 return view.focusEditor();
@@ -369,6 +392,10 @@ pub const IEditorView = struct {
             fn setTopInset(context: *anyopaque, rows: usize) void {
                 const view: *Native = @ptrCast(@alignCast(context));
                 return view.setTopInset(rows);
+            }
+            fn bindTabFocus(context: *anyopaque, mode: *@import("../../config/tabFocus.zig").TabFocus) anyerror!void {
+                const view: *Native = @ptrCast(@alignCast(context));
+                return view.bindTabFocus(mode);
             }
             fn applyEditorSettings(context: *anyopaque, reader: terminal_editor_config.Reader, language_id: ?[]const u8, resource: ?[]const u8) anyerror!bool {
                 const view: *Native = @ptrCast(@alignCast(context));
@@ -450,6 +477,8 @@ pub const IEditorView = struct {
                 .invalidate = @This().invalidate,
                 .dispatchMouse = @This().dispatchMouse,
                 .dispatchKey = @This().dispatchKey,
+                .dispatchTabFocus = @This().dispatchTabFocus,
+                .focusTabEdge = @This().focusTabEdge,
                 .focusEditor = @This().focusEditor,
                 .isFocused = @This().isFocused,
                 .setFocused = @This().setFocused,
@@ -463,6 +492,7 @@ pub const IEditorView = struct {
                 .clearGlyphHover = @This().clearGlyphHover,
                 .setTopInset = @This().setTopInset,
                 .applyEditorSettings = @This().applyEditorSettings,
+                .bindTabFocus = @This().bindTabFocus,
                 .applySubEditorOptionOverrides = @This().applySubEditorOptionOverrides,
                 .inheritEmbeddedOptions = @This().inheritEmbeddedOptions,
                 .applyLineNumbersOverride = @This().applyLineNumbersOverride,

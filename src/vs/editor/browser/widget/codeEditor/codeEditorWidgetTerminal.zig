@@ -783,6 +783,8 @@ pub const Editor = struct {
     /// but every text mutation and save is rejected with `error.ReadOnly`.
     read_only: bool,
     on_did_change_read_only: Emitter(bool),
+    tab_focus_mode_configured: bool = false,
+    tab_focus: ?*@import("../../config/tabFocus.zig").TabFocus = null,
     contributions: @import("codeEditorContributions.zig").CodeEditorContributions = .{},
     /// Rightmost columns reserved by the view for the overview ruler and
     /// scrollbar. Zero for the read-only preview and for editors used without
@@ -2407,6 +2409,10 @@ pub const Editor = struct {
 
     pub fn unregisterContribution(self: *Editor, comptime Contribution: type, value: *Contribution) void {
         self.contributions.unregister(Contribution, value);
+    }
+
+    pub fn getTabFocusMode(self: *const Editor) bool {
+        return self.tab_focus_mode_configured or (if (self.tab_focus) |mode| mode.getTabFocusMode() else false);
     }
 
     pub fn setQuickDiffDecorationCount(self: *Editor, count: usize) void {

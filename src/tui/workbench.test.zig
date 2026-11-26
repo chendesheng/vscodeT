@@ -390,6 +390,39 @@ test "Workbench: declarative markdown configuration applies to open tabs" {
     try std.testing.expect(config.folding.?.offSide orelse false);
 }
 
+test "Workbench: resource tab focus option is ORed with the global toggle" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(a, io, &tmp, "tab-focus.txt", "alpha\nbeta");
+    defer a.free(path);
+    const settings = try seedFile(a, io, &tmp, "tab-focus-settings.json", "{\"editor.tabFocusMode\":false,\"[plaintext]\":{\"editor.tabFocusMode\":true}}");
+    defer a.free(settings);
+    const window = try TestWindow.init(a, io, &.{path}, 80, 20);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.setUserSettingsPaths(&.{settings});
+    wb.ensureConfigurationReady();
+    const tab = wb.activeTab().?;
+    try std.testing.expectEqualStrings("plaintext", tab.editor.languageId());
+    try std.testing.expect(!wb.tab_focus.getTabFocusMode());
+    try std.testing.expect(tab.editor.getTabFocusMode());
+    try std.testing.expect(tab.view.terminal_view_host.options.get(.tabFocusMode));
+    const keys = try wb.ensureContextKeys();
+    try std.testing.expect(keys.getValue("editorTabMovesFocus").boolean);
+    try wb.commands.execute("editor.action.toggleTabFocusMode");
+    try std.testing.expect(wb.tab_focus.getTabFocusMode());
+    try wb.commands.execute("editor.action.toggleTabFocusMode");
+    try std.testing.expect(!wb.tab_focus.getTabFocusMode());
+    try std.testing.expect(tab.view.terminal_view_host.options.get(.tabFocusMode));
+    try std.testing.expect(keys.getValue("editorTabMovesFocus").boolean);
+    const version = tab.editor.model.getVersionId();
+    var key: ui.KeyEvent = .{ .key = .tab };
+    try std.testing.expect(wb.handleTabFocus(&key));
+    try std.testing.expectEqual(version, tab.editor.model.getVersionId());
+}
+
 test "Workbench: opens two files, switches tabs and closes them" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();

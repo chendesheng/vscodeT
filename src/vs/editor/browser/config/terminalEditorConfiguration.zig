@@ -110,6 +110,12 @@ fn readFindOptions(reader: Reader, language_id: ?[]const u8, resource: ?[]const 
     };
 }
 
+/// Upstream's validated per-resource tabFocusMode option. The global
+/// TabFocus service is ORed with this value by the editor configuration.
+pub fn tabFocusModeSetting(reader: Reader, language_id: ?[]const u8, resource: ?[]const u8) bool {
+    return readBool(reader, "editor.tabFocusMode", language_id, resource) orelse false;
+}
+
 /// Resolves `editor.lineNumbers` for one editor. Zen mode calls this after
 /// clearing its temporary override to restore the configured value, matching
 /// upstream `setLineNumbers()` reading the setting per visible editor.

@@ -901,13 +901,16 @@ pub const Tab = struct {
             _ = multi.focusTabEdge(direction) catch false;
         } else if (self.diff) |diff| {
             diff.widget.focusTabEdge(direction);
-        } else self.focusEditor();
+        } else {
+            self.focusEditor();
+            self.view.focusTabEdge(direction);
+        }
     }
 
     pub fn dispatchTabFocus(self: *Tab, event: *ui.KeyEvent, direction: ui.dom.FocusDirection) bool {
         if (self.multi_diff) |multi| return multi.dispatchTabFocus(event, direction) catch false;
         if (self.diff) |diff| return diff.widget.dispatchTabFocus(event, direction);
-        return !self.view.hasEditorFocus() and (self.view.dispatchKey(event) or !self.view.hasEditorFocus());
+        return self.view.dispatchTabFocus(event, direction);
     }
 
     pub fn handleDiffKey(self: *Tab, event: *ui.KeyEvent) bool {
