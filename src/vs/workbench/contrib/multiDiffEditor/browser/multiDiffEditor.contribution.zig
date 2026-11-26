@@ -5,4 +5,5 @@ const InstantiationService = @import("../../../../platform/instantiation/common/
 
 pub fn registerActions(commands: *CommandRegistry, instantiation: *InstantiationService) !void {
     for (@import("actions.zig").editor_actions) |action| try commands.registerAction(instantiation, action);
+    try commands.registerAction(instantiation, @import("scmMultiDiffSourceResolver.zig").OpenScmGroupAction.action);
 }

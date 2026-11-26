@@ -35,6 +35,7 @@ pub const SCMContribution = struct {
     view_descriptors: ?*ViewDescriptorService = null,
     service: ?*SCMService = null,
     service_api: ?*scm.ISCMService = null,
+    repository: ?*scm.ISCMRepository = null,
     storage: ?*Storage = null,
     quick_diff_service: ?*quick_diff.QuickDiffService = null,
     quick_diff_controller: ?*QuickDiffWorkbenchController = null,
@@ -48,6 +49,21 @@ pub const SCMContribution = struct {
 
     pub fn init(allocator: Allocator) SCMContribution {
         return .{ .allocator = allocator };
+    }
+
+    /// The SCM service has window lifetime, including before any provider is
+    /// registered. Source resolvers can subscribe while extensions activate.
+    pub fn ensureService(self: *SCMContribution) !*scm.ISCMService {
+        if (self.service_api) |api| return api;
+        const service = try self.allocator.create(SCMService);
+        errdefer self.allocator.destroy(service);
+        service.* = SCMService.init(self.allocator);
+        errdefer service.deinit();
+        const api = try self.allocator.create(scm.ISCMService);
+        api.* = service.interface();
+        self.service = service;
+        self.service_api = api;
+        return api;
     }
 
     pub const Options = struct {
@@ -87,12 +103,10 @@ pub const SCMContribution = struct {
 
     pub fn attachProvider(self: *SCMContribution, provider: *scm.ISCMProvider, quick_providers: []const *quick_diff.QuickDiffProvider, options: Options) !void {
         const allocator = self.allocator;
-        if (self.service != null) return error.ProviderAlreadyExists;
-        errdefer self.deinit();
-        const service = try allocator.create(SCMService);
-        service.* = SCMService.init(allocator);
-        self.service = service;
-        _ = try service.registerSCMProvider(provider);
+        if (self.repository != null) return error.ProviderAlreadyExists;
+        errdefer self.detachProvider();
+        const api = try self.ensureService();
+        self.repository = try api.registerSCMProvider(provider);
         self.activity = try SCMActiveRepositoryController.create(allocator, provider, options.activity_service, options.statusbar_service, options.configuration);
 
         const storage = try allocator.create(Storage);
@@ -114,9 +128,6 @@ pub const SCMContribution = struct {
         controller.menu_host = options.quick_diff_menu;
         try controller.start(options.editors, options.configuration);
 
-        const api = try allocator.create(scm.ISCMService);
-        api.* = service.interface();
-        self.service_api = api;
         const view = try allocator.create(scm_view.SCMViewPane);
         view.* = scm_view.SCMViewPane.init(allocator, api, options.changes_host);
         self.changes = view;
@@ -195,7 +206,7 @@ pub const SCMContribution = struct {
 
     /// The attached providers are borrowed. Tear down their listeners and
     /// destroy all views and services before the extension releases them.
-    pub fn deinit(self: *SCMContribution) void {
+    pub fn detachProvider(self: *SCMContribution) void {
         const allocator = self.allocator;
         if (self.container) |container| self.sidebar.?.disposeViewPaneContainer(self.view_descriptors.?, container);
         if (self.view_model) |model| {
@@ -223,20 +234,31 @@ pub const SCMContribution = struct {
             view.deinit();
             allocator.destroy(view);
         }
-        if (self.service_api) |api| allocator.destroy(api);
         if (self.quick_diff_service) |service| {
             service.deinit();
             allocator.destroy(service);
         }
-        if (self.service) |service| {
-            service.deinit();
-            allocator.destroy(service);
-        }
+        if (self.repository) |repository| repository.dispose();
         if (self.storage) |storage| {
             storage.deinit();
             allocator.destroy(storage);
         }
+        const service = self.service;
+        const api = self.service_api;
         self.* = init(allocator);
+        self.service = service;
+        self.service_api = api;
+    }
+
+    pub fn deinit(self: *SCMContribution) void {
+        self.detachProvider();
+        if (self.service_api) |api| self.allocator.destroy(api);
+        if (self.service) |service| {
+            service.deinit();
+            self.allocator.destroy(service);
+        }
+        self.service = null;
+        self.service_api = null;
     }
 };
 

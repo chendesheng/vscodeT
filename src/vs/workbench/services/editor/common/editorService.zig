@@ -39,6 +39,7 @@ pub const IEditorService = struct {
     active_editor_pane_fn: *const fn (*anyopaque) ?editor.IVisibleEditorPane,
     active_editor_fn: *const fn (*anyopaque) ?*EditorInput,
     open_editor_fn: *const fn (*anyopaque, []const u8, OpenOptions) anyerror!void,
+    open_multi_diff_source_fn: ?*const fn (*anyopaque, []const u8, []const u8) anyerror!void = null,
     request_open_editor: *const fn (*anyopaque, []const u8, OpenOptions, EditorTarget) anyerror!void,
     get_editors: *const fn (*anyopaque, std.mem.Allocator) anyerror![]IEditorIdentifier,
     replace_editors: *const fn (*anyopaque, []const EditorReplacement, editor.GroupIdentifier) anyerror!void,
@@ -48,6 +49,11 @@ pub const IEditorService = struct {
 
     pub fn openEditor(self: IEditorService, resource: []const u8, options: OpenOptions) !void {
         try self.open_editor_fn(self.context, resource, options);
+    }
+
+    pub fn openMultiDiffSource(self: IEditorService, source_uri: []const u8, label: []const u8) !void {
+        const open = self.open_multi_diff_source_fn orelse return error.MultiDiffUnavailable;
+        try open(self.context, source_uri, label);
     }
 
     pub fn requestOpenEditor(self: IEditorService, resource: []const u8, options: OpenOptions, target: EditorTarget) !void {

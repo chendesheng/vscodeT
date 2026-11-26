@@ -380,3 +380,59 @@ const ScmResolvedHistorySource = struct {
         return .{ .context = self, .resources = getItems, .on_did_change_resources = &self.changed, .is_ready = getReady, .get_failure = getFailure, .dispose = dispose };
     }
 };
+
+/// Port of ScmMultiDiffSourceResolverContribution: registrations have
+/// workbench lifetime, independent of the currently active SCM repository.
+pub const ScmMultiDiffSourceResolverContribution = struct {
+    allocator: Allocator,
+    group: ScmMultiDiffSourceResolver,
+    history: ScmHistoryItemResolver,
+    group_registration: source.Registration,
+    history_registration: source.Registration,
+
+    pub fn create(allocator: Allocator, scm_service: scm.ISCMService, activities: *activity.ActivityService, service: source.IMultiDiffSourceResolverService) !*ScmMultiDiffSourceResolverContribution {
+        const self = try allocator.create(ScmMultiDiffSourceResolverContribution);
+        errdefer allocator.destroy(self);
+        self.allocator = allocator;
+        self.group = .{ .allocator = allocator, .scm_service = scm_service, .activity_service = activities };
+        self.history = .{ .allocator = allocator, .scm_service = scm_service };
+        self.history_registration = try service.registerResolver(self.history.interface());
+        errdefer self.history_registration.dispose();
+        self.group_registration = try service.registerResolver(self.group.interface());
+        return self;
+    }
+    pub fn dispose(self: *ScmMultiDiffSourceResolverContribution) void {
+        self.group_registration.dispose();
+        self.history_registration.dispose();
+        self.allocator.destroy(self);
+    }
+};
+
+pub const OpenScmGroupAction = struct {
+    pub const Options = struct { title: []const u8, repositoryUri: std.Uri, resourceGroupId: []const u8 };
+    const actions = @import("../../../../platform/actions/common/actions.zig");
+    const ServicesAccessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
+    const editor_service = @import("../../../services/editor/common/editorService.zig");
+    const Argument = @import("../../../../platform/commands/common/commands.zig").CommandArgument;
+    pub const action: actions.Action2 = .{
+        .command = .{ .id = "_workbench.openScmMultiDiffEditor", .title = "Open Changes" },
+        .context = @constCast(&{}),
+        .run_fn = runWithoutArgument,
+        .run_with_argument_fn = run,
+    };
+    fn runWithoutArgument(_: *anyopaque, _: ServicesAccessor) !void {
+        return error.InvalidArgument;
+    }
+    fn run(_: *anyopaque, accessor: ServicesAccessor, argument: Argument) !void {
+        const options = argument.as(Options) orelse return error.InvalidArgument;
+        const service = try accessor.get(editor_service.editor_service_id);
+        try openMultiFileDiffEditor(std.heap.page_allocator, service.*, options.*);
+    }
+    pub fn openMultiFileDiffEditor(allocator: Allocator, service: editor_service.IEditorService, options: Options) !void {
+        const repository = try std.fmt.allocPrint(allocator, "{f}", .{options.repositoryUri});
+        defer allocator.free(repository);
+        const uri = try ScmMultiDiffSourceResolver.getMultiDiffSourceUri(allocator, repository, options.resourceGroupId);
+        defer allocator.free(uri);
+        try service.openMultiDiffSource(uri, options.title);
+    }
+};
