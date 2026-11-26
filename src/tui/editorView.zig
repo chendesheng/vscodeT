@@ -661,6 +661,7 @@ pub const View = struct {
             self.terminal_view_host.viewRef().view_zones.prepareNodeReset();
             self.terminal_view_host.viewRef().view_zones.releaseRetiredNodes(null);
             self.terminal_view_host.viewRef().getViewLines().flushWindow();
+            self.terminal_view_host.viewRef().overlayWidgets().prepareNodeReset(true);
             self.surface.deinit();
             self.owns_surface = false;
             self.root_node = null;
@@ -690,6 +691,7 @@ pub const View = struct {
         self.terminal_view_host.viewRef().view_zones.prepareNodeReset();
         self.terminal_view_host.viewRef().view_zones.releaseRetiredNodes(null);
         self.terminal_view_host.viewRef().getViewLines().flushWindow();
+        self.terminal_view_host.viewRef().overlayWidgets().prepareNodeReset(true);
         if (self.root_node) |root| mounted.surface.document().destroy(root);
         self.mount = null;
         self.root_node = null;
@@ -2028,6 +2030,7 @@ pub const View = struct {
 
         const doc = self.renderSurface().document();
         if (!self.document_ready) {
+            self.terminal_view_host.viewRef().overlayWidgets().prepareNodeReset(true);
             self.terminal_view_host.viewRef().view_zones.prepareNodeReset();
             self.terminal_view_host.viewRef().view_zones.releaseRetiredNodes(null);
             self.line_scroll_ready = false;

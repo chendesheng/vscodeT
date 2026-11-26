@@ -220,6 +220,7 @@ pub const View = struct {
             host,
         );
 
+        self.overlay_widgets.prepareNodeReset(false);
         clearPartRoot(options.doc, options.overlay_widgets_root, host);
         try self.overlay_widgets.render(
             options.doc,

@@ -41,6 +41,7 @@ pub const ViewOverlayWidgets = struct {
     }
 
     pub fn deinit(self: *ViewOverlayWidgets) void {
+        self.prepareNodeReset(true);
         self.widgets.deinit();
         self.entries.deinit();
     }
@@ -52,11 +53,18 @@ pub const ViewOverlayWidgets = struct {
     pub fn remove(self: *ViewOverlayWidgets, id: []const u8) bool {
         for (self.widgets.items, 0..) |widget, index| {
             if (std.mem.eql(u8, widget.get_id(widget.context), id)) {
+                if (widget.on_before_node_removed) |callback| callback(widget.context, true);
                 _ = self.widgets.orderedRemove(index);
                 return true;
             }
         }
         return false;
+    }
+
+    pub fn prepareNodeReset(self: *ViewOverlayWidgets, leaving_document: bool) void {
+        for (self.widgets.items) |widget| {
+            if (widget.on_before_node_removed) |callback| callback(widget.context, leaving_document);
+        }
     }
 
     /// Port of `ViewOverlayWidgets.render`. Builds the widget subtree into the

@@ -242,6 +242,9 @@ pub const IOverlayWidget = struct {
     /// Whether the widget currently owns focus. The host re-focuses
     /// `focus_node` after each rebuild so focus survives the new tree.
     is_focused: *const fn (context: *anyopaque) bool,
+    /// Terminal DOM adaptation: widget state survives discarded paint nodes.
+    /// When leaving the document, detach document-level listeners as well.
+    on_before_node_removed: ?*const fn (*anyopaque, bool) void = null,
 };
 
 /// Exact widgets start at the anchor cell. Popups may move to fit.

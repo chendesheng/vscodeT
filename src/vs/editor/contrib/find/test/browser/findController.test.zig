@@ -54,6 +54,7 @@ pub fn Tests(comptime ViewType: type) type {
             controller.setSeedSearchStringFromSelection(.never);
             defer controller.deinit();
             try view.addOverlayWidget(controller.widget().interface());
+            defer view.removeOverlayWidget("editor.widget.findWidget") catch {};
 
             try controller.open(false);
             try view.refresh();
@@ -124,6 +125,7 @@ pub fn Tests(comptime ViewType: type) type {
             controller.setSeedSearchStringFromSelection(.never);
             defer controller.deinit();
             try view.addOverlayWidget(controller.widget().interface());
+            defer view.removeOverlayWidget("editor.widget.findWidget") catch {};
 
             try controller.open(false);
             try view.refresh();
@@ -183,6 +185,7 @@ pub fn Tests(comptime ViewType: type) type {
             controller.setSeedSearchStringFromSelection(.never);
             defer controller.deinit();
             try view.addOverlayWidget(controller.widget().interface());
+            defer view.removeOverlayWidget("editor.widget.findWidget") catch {};
 
             try controller.open(false);
             try view.refresh();
@@ -227,6 +230,7 @@ pub fn Tests(comptime ViewType: type) type {
             controller.setSeedSearchStringFromSelection(.never);
             defer controller.deinit();
             try view.addOverlayWidget(controller.widget().interface());
+            defer view.removeOverlayWidget("editor.widget.findWidget") catch {};
 
             try controller.open(false);
             try view.refresh();
@@ -274,6 +278,7 @@ pub fn Tests(comptime ViewType: type) type {
             controller.setSeedSearchStringFromSelection(.never);
             defer controller.deinit();
             try view.addOverlayWidget(controller.widget().interface());
+            defer view.removeOverlayWidget("editor.widget.findWidget") catch {};
 
             try controller.open(false);
             try view.refresh();
@@ -315,6 +320,7 @@ pub fn Tests(comptime ViewType: type) type {
             controller.setSeedSearchStringFromSelection(.never);
             defer controller.deinit();
             try view.addOverlayWidget(controller.widget().interface());
+            defer view.removeOverlayWidget("editor.widget.findWidget") catch {};
 
             try controller.open(false);
             try view.refresh();
@@ -374,6 +380,7 @@ pub fn Tests(comptime ViewType: type) type {
             controller.setSeedSearchStringFromSelection(.never);
             defer controller.deinit();
             try view.addOverlayWidget(controller.widget().interface());
+            defer view.removeOverlayWidget("editor.widget.findWidget") catch {};
 
             try controller.open(false);
             try view.refresh();
@@ -442,6 +449,7 @@ pub fn Tests(comptime ViewType: type) type {
             controller.setSeedSearchStringFromSelection(.never);
             defer controller.deinit();
             try view.addOverlayWidget(controller.widget().interface());
+            defer view.removeOverlayWidget("editor.widget.findWidget") catch {};
 
             try controller.open(false);
             try view.refresh();
@@ -488,6 +496,7 @@ pub fn Tests(comptime ViewType: type) type {
             controller.setSeedSearchStringFromSelection(.never);
             defer controller.deinit();
             try view.addOverlayWidget(controller.widget().interface());
+            defer view.removeOverlayWidget("editor.widget.findWidget") catch {};
 
             const theme = FindWidgetTheme{
                 .background = ui.Color{ .r = 1, .g = 2, .b = 3 },
@@ -527,6 +536,7 @@ pub fn Tests(comptime ViewType: type) type {
             controller.setSeedSearchStringFromSelection(.never);
             defer controller.deinit();
             try view.addOverlayWidget(controller.widget().interface());
+            defer view.removeOverlayWidget("editor.widget.findWidget") catch {};
 
             try controller.open(false);
             try view.refresh();
@@ -575,6 +585,7 @@ pub fn Tests(comptime ViewType: type) type {
             controller.setSeedSearchStringFromSelection(.never);
             defer controller.deinit();
             try view.addOverlayWidget(controller.widget().interface());
+            defer view.removeOverlayWidget("editor.widget.findWidget") catch {};
 
             try controller.open(false);
             try view.refresh();
@@ -652,6 +663,7 @@ pub fn Tests(comptime ViewType: type) type {
             controller.setSeedSearchStringFromSelection(.never);
             defer controller.deinit();
             try view.addOverlayWidget(controller.widget().interface());
+            defer view.removeOverlayWidget("editor.widget.findWidget") catch {};
             try controller.open(false);
 
             var alpha = ui.KeyEvent{ .key = .{ .text = "alpha" } };
@@ -694,6 +706,7 @@ pub fn Tests(comptime ViewType: type) type {
             controller.setSeedSearchStringFromSelection(.never);
             defer controller.deinit();
             try view.addOverlayWidget(controller.widget().interface());
+            defer view.removeOverlayWidget("editor.widget.findWidget") catch {};
 
             controller.widget().openReplace();
             try view.refresh();
@@ -728,6 +741,7 @@ pub fn Tests(comptime ViewType: type) type {
             controller.setSeedSearchStringFromSelection(.never);
             defer controller.deinit();
             try view.addOverlayWidget(controller.widget().interface());
+            defer view.removeOverlayWidget("editor.widget.findWidget") catch {};
             try controller.open(false);
 
             const widget = controller.widget();
@@ -832,6 +846,7 @@ pub fn Tests(comptime ViewType: type) type {
             defer controller.deinit();
             controller.setSeedSearchStringFromSelection(.never);
             try view.addOverlayWidget(controller.widget().interface());
+            defer view.removeOverlayWidget("editor.widget.findWidget") catch {};
             controller.widget().setHistorySettings(false, false);
             try controller.open(false);
 
@@ -862,6 +877,7 @@ pub fn Tests(comptime ViewType: type) type {
             defer controller.deinit();
             controller.setSeedSearchStringFromSelection(.never);
             try view.addOverlayWidget(controller.widget().interface());
+            defer view.removeOverlayWidget("editor.widget.findWidget") catch {};
             try controller.open(false);
             try view.refresh();
             var out: std.Io.Writer.Allocating = .init(allocator);

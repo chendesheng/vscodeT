@@ -89,7 +89,7 @@ const control_count = 11;
 pub const FindWidget = struct {
     allocator: Allocator,
     state: *FindReplaceState,
-    model: *FindModel,
+    model: ?*FindModel,
 
     find_input: ui.InputBox,
     replace_input: ui.InputBox,
@@ -119,6 +119,7 @@ pub const FindWidget = struct {
     /// This frame's bar and control nodes, used to resolve pointer targets. They
     /// are rebuilt every frame and never retained across `build`.
     bar_root: ?*ui.Node = null,
+    document_root: ?*ui.Node = null,
     control_nodes: [control_count]?*ui.Node = @splat(null),
 
     close_context: ?*anyopaque = null,
@@ -233,6 +234,7 @@ pub const FindWidget = struct {
             .build = build,
             .focus_node = focusNode,
             .is_focused = isFocused,
+            .on_before_node_removed = prepareNodeReset,
         };
     }
 
@@ -243,14 +245,16 @@ pub const FindWidget = struct {
     }
 
     pub fn openReplace(self: *FindWidget) void {
-        if (self.model.editor.isReadOnly()) return self.open();
+        const model = self.model orelse return;
+        if (model.editor.isReadOnly()) return self.open();
         self.focused = true;
         self.focus_field = .replace;
         self.state.change(.{ .is_revealed = true, .is_replace_revealed = true }, false, true);
     }
 
     pub fn toggleReplace(self: *FindWidget) void {
-        if (self.model.editor.isReadOnly()) return;
+        const model = self.model orelse return;
+        if (model.editor.isReadOnly()) return;
         self.focused = true;
         self.state.change(.{
             .is_revealed = true,
@@ -345,7 +349,8 @@ pub const FindWidget = struct {
     }
 
     fn navigateNext(self: *FindWidget) void {
-        self.model.moveToNextMatch() catch |err| {
+        const model = self.model orelse return;
+        model.moveToNextMatch() catch |err| {
             self.report(err);
             return;
         };
@@ -353,7 +358,8 @@ pub const FindWidget = struct {
     }
 
     fn navigatePrevious(self: *FindWidget) void {
-        self.model.moveToPrevMatch() catch |err| {
+        const model = self.model orelse return;
+        model.moveToPrevMatch() catch |err| {
             self.report(err);
             return;
         };
@@ -401,6 +407,27 @@ pub const FindWidget = struct {
         return self.focus_node_value;
     }
 
+    fn documentListener(self: *FindWidget) ui.Listener {
+        return .{ .context = self, .capture = true, .mouse_move = onDocumentMove, .mouse_up = onDocumentUp };
+    }
+
+    fn prepareNodeReset(context: *anyopaque, leaving_document: bool) void {
+        const self: *FindWidget = @ptrCast(@alignCast(context));
+        self.bar_root = null;
+        self.focus_node_value = null;
+        self.control_nodes = @splat(null);
+        self.find_input.node = null;
+        self.find_input.node_document = null;
+        self.replace_input.node = null;
+        self.replace_input.node_document = null;
+        if (leaving_document) {
+            if (self.document_root) |root| _ = root.removeEventListener(self.documentListener());
+            self.document_root = null;
+            self.resizing = false;
+            self.hover_control = null;
+        }
+    }
+
     fn build(context: *anyopaque, doc: *ui.Document) !*ui.Node {
         const self: *FindWidget = @ptrCast(@alignCast(context));
         return self.buildBar(doc);
@@ -433,12 +460,10 @@ pub const FindWidget = struct {
         // Motion outside the bar never reaches a bar listener; the document
         // root clears the stale hover so a control does not stay highlighted.
         if (doc.root) |doc_root| {
-            try doc_root.addEventListener(.{
-                .context = self,
-                .capture = true,
-                .mouse_move = onDocumentMove,
-                .mouse_up = onDocumentUp,
-            });
+            if (self.document_root == null) {
+                try doc_root.addEventListener(self.documentListener());
+                self.document_root = doc_root;
+            }
         }
 
         // The find row mirrors upstream's `.find-part`: replace toggle, find
@@ -633,6 +658,7 @@ pub const FindWidget = struct {
     }
 
     fn activateControl(self: *FindWidget, control: Control) void {
+        const model = self.model orelse return;
         switch (control) {
             .toggle_replace => self.toggleReplace(),
             .match_case => self.state.change(.{ .match_case = !self.state.matchCase() }, true, true),
@@ -643,19 +669,20 @@ pub const FindWidget = struct {
             .next => self.navigateNext(),
             .close => self.close(),
             .preserve_case => self.state.change(.{ .preserve_case = !self.state.preserveCase() }, true, true),
-            .replace_one => self.model.replace() catch |err| self.report(err),
-            .replace_all => self.model.replaceAll() catch |err| self.report(err),
+            .replace_one => model.replace() catch |err| self.report(err),
+            .replace_all => model.replaceAll() catch |err| self.report(err),
         }
     }
 
     fn handleKey(self: *FindWidget, event: *ui.KeyEvent) bool {
+        const model = self.model orelse return false;
         switch (event.key) {
             .escape => {
                 self.close();
                 return true;
             },
             .tab, .backtab => {
-                if (self.model.editor.isReadOnly()) return false;
+                if (model.editor.isReadOnly()) return false;
                 self.focus_field = if (self.focus_field == .find) .replace else .find;
                 if (self.focus_field == .replace and !self.state.is_replace_revealed) {
                     self.state.change(.{ .is_replace_revealed = true }, false, true);
@@ -669,15 +696,15 @@ pub const FindWidget = struct {
                     self.state.change(.{ .search_string = self.find_input.getValue() }, true, true);
                 }
                 if (event.mods.ctrl and event.mods.alt) {
-                    self.model.replaceAll() catch |err| self.report(err);
+                    model.replaceAll() catch |err| self.report(err);
                 } else if (event.mods.alt) {
-                    self.model.selectAllMatches() catch |err| self.report(err);
+                    model.selectAllMatches() catch |err| self.report(err);
                 } else if (event.mods.ctrl) {
-                    self.model.replace() catch |err| self.report(err);
+                    model.replace() catch |err| self.report(err);
                 } else if (event.mods.shift) {
                     self.navigatePrevious();
                 } else if (self.focus_field == .replace) {
-                    self.model.replace() catch |err| self.report(err);
+                    model.replace() catch |err| self.report(err);
                 } else {
                     self.navigateNext();
                 }
@@ -737,7 +764,8 @@ pub const FindWidget = struct {
             return;
         }
 
-        const selections = self.model.editor.getSelections() catch return;
+        const model = self.model orelse return;
+        const selections = model.editor.getSelections() catch return;
         defer self.allocator.free(selections);
         if (selections.len == 0) return;
 
@@ -760,7 +788,8 @@ pub const FindWidget = struct {
     }
 
     fn report(self: *FindWidget, err: anyerror) void {
-        self.model.editor.setMessage("find failed: {s}", .{@errorName(err)});
+        const model = self.model orelse return;
+        model.editor.setMessage("find failed: {s}", .{@errorName(err)});
     }
 };
 

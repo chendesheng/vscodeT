@@ -1431,6 +1431,7 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
     find.setSeedSearchStringFromSelection(.never);
     editor.setFindController(find, FindController.startFromContext);
     try view.addOverlayWidget(find.widget().interface());
+    defer view.removeOverlayWidget("editor.widget.findWidget") catch {};
 
     const hover = try ContentHoverController.init(allocator, editor.model, &.{}, .{}, .{
         .context = view,
@@ -1949,6 +1950,7 @@ test "app: decoded clicks, drags and wheel reach the editor" {
     });
     defer find.deinit();
     try view.addOverlayWidget(find.widget().interface());
+    defer view.removeOverlayWidget("editor.widget.findWidget") catch {};
 
     const hover = try ContentHoverController.init(allocator, editor.model, &.{}, .{}, .{
         .context = view,
