@@ -109,6 +109,7 @@ pub const Tab = struct {
     /// The group-model input (a `FileEditorInput` or a `DiffEditorInput`).
     input: *EditorInput,
     controllers: ?*Controllers = null,
+    original_controllers: ?*Controllers = null,
     diff: ?*DiffView = null,
     control_change_service: ?*groups.EditorGroupsService = null,
     markdown_preview: ?*MarkdownPreview = null,
@@ -320,22 +321,27 @@ pub const Tab = struct {
         self.window = window;
         self.editor.attachWindow(window);
         if (self.controllers) |controllers| controllers.attachWindow(window);
+        if (self.original_controllers) |controllers| controllers.attachWindow(window);
         if (self.diff) |diff| diff.widget.original_editor.attachWindow(window);
     }
 
     pub fn ensureControllers(self: *Tab) !void {
-        if (self.controllers != null or self.markdown_preview != null or self.diff != null or self.image_preview != null or self.terminal_input != null) return;
+        if (self.markdown_preview != null or self.image_preview != null or self.terminal_input != null) return;
+        if (self.controllers == null) {
+            self.controllers = try self.createControllers(self.editor, self.view);
+        }
+        if (self.diff) |diff| {
+            if (self.original_controllers == null) self.original_controllers = try self.createControllers(diff.widget.original_editor, diff.widget.original_view);
+        }
+    }
 
-        const controllers = try Controllers.init(self.allocator, self.editor, self.view);
+    fn createControllers(self: *Tab, control: *Editor, view: *View) !*Controllers {
+        const controllers = try Controllers.init(self.allocator, control, view);
         errdefer controllers.deinit();
-
-        try self.view.addOverlayWidget(controllers.sticky.widget.interface());
-        try self.view.addOverlayWidget(controllers.find.widget().interface());
-        try self.view.addContentWidget(controllers.hover.widget().contentWidget());
-        try self.view.addContentWidget(controllers.suggest.widgetInterface());
-
-        self.controllers = controllers;
+        try controllers.attachWidgets();
+        if (self.diff != null) controllers.attachDiffFindZone();
         if (self.window) |window| controllers.attachWindow(window);
+        return controllers;
     }
 
     pub fn handleEditorKey(self: *Tab, event: *ui.KeyEvent, is_pasting: *bool, now_ms: i64, fallback: ?ui.KeyEvent) !bool {
@@ -358,6 +364,8 @@ pub const Tab = struct {
         if (self.diff) |diff| {
             diff.setThemeColors(palette);
         } else self.view.setThemeColors(palette);
+        if (self.controllers) |controllers| controllers.setThemeColors(palette);
+        if (self.original_controllers) |controllers| controllers.setThemeColors(palette);
     }
 
     pub fn refresh(self: *Tab) !void {
@@ -406,6 +414,17 @@ pub const Tab = struct {
     pub fn syncDiffViews(self: *Tab) void {
         const diff = self.diff orelse return;
         const changed = self.editor != diff.widget.modified_editor;
+        const had_controllers = self.controllers != null or self.original_controllers != null;
+        if (changed) {
+            if (self.editor == diff.widget.original_editor) {
+                std.mem.swap(?*Controllers, &self.controllers, &self.original_controllers);
+            } else {
+                if (self.controllers) |controllers| controllers.deinit();
+                if (self.original_controllers) |controllers| controllers.deinit();
+                self.controllers = null;
+                self.original_controllers = null;
+            }
+        }
         if (changed and self.selection_handler_added) self.editor.removeViewEventHandler(&self.selection_handler);
         self.editor = diff.widget.modified_editor;
         self.view = diff.widget.modified_view;
@@ -414,6 +433,7 @@ pub const Tab = struct {
             self.editor.attachWindow(window);
             diff.widget.original_editor.attachWindow(window);
         }
+        if (changed and had_controllers) self.ensureControllers() catch {};
         if (changed) if (self.control_change_service) |service| {
             service.on_did_visible_editors_change.fire({}) catch {};
         };
@@ -527,12 +547,47 @@ pub const Tab = struct {
 
     pub fn handleDiffMouse(self: *Tab, event: *ui.MouseEvent) !bool {
         const diff = self.diff orelse return false;
-        return diff.handleMouse(event);
+        try self.ensureControllers();
+        return diff.widget.dispatchMouseWith(event, .{ .context = self, .dispatch = dispatchDiffPaneMouse });
+    }
+
+    fn dispatchDiffPaneMouse(context: *anyopaque, side: @import("../../../../editor/browser/widget/diffEditor/diffEditorWidget.zig").Side, view: *View, event: *ui.MouseEvent) !bool {
+        const self: *Tab = @ptrCast(@alignCast(context));
+        const controllers = (if (side == .original) self.original_controllers else self.controllers) orelse return view.dispatchMouse(event);
+        if (event.kind == .move) {
+            const other = if (side == .original) self.controllers else self.original_controllers;
+            if (other) |inactive| inactive.hover.hideContentHover();
+        }
+        return editor_input_dispatch.handleMouseEvent(view, controllers.hover, controllers.suggest, controllers.editor, event);
+    }
+
+    pub fn focusedControllers(self: *Tab) ?*Controllers {
+        if (self.diff) |diff| if (diff.widget.focused == .original) return self.original_controllers;
+        return self.controllers;
+    }
+
+    pub fn hideEditorHovers(self: *Tab) void {
+        if (self.controllers) |controllers| controllers.hover.hideContentHover();
+        if (self.original_controllers) |controllers| controllers.hover.hideContentHover();
+    }
+
+    pub fn cancelEditorPopups(self: *Tab) void {
+        self.hideEditorHovers();
+        if (self.controllers) |controllers| controllers.suggest.cancel();
+        if (self.original_controllers) |controllers| controllers.suggest.cancel();
     }
 
     pub fn handleDiffKey(self: *Tab, event: *ui.KeyEvent) bool {
         const diff = self.diff orelse return false;
-        return diff.handleKey(event);
+        self.ensureControllers() catch return diff.handleKey(event);
+        const controllers = (if (diff.widget.focused == .original) self.original_controllers else self.controllers) orelse return diff.handleKey(event);
+        _ = editor_input_dispatch.handleKeyEvent(controllers.view.interface(), controllers.hover, controllers.word_highlighter, controllers.suggest, controllers.editor, event, &diff.widget.is_pasting, time_compat.milliTimestamp(), null) catch return false;
+        diff.widget.syncScrollAfterInput();
+        return true;
+    }
+
+    pub fn setEditorFocused(self: *Tab, focused: bool) void {
+        if (self.diff) |diff| diff.widget.setEditorFocused(focused) else _ = self.view.setFocused(focused);
     }
 
     /// The tab's entry in the ported `EditorGroupModel`; the group view maps
@@ -624,6 +679,7 @@ pub const Tab = struct {
     }
 
     fn editorTopInset(self: *Tab) usize {
+        if (self.diff != null) return 0;
         const find_rows = if (self.controllers) |controllers| controllers.find.viewZoneRows() else 0;
         const query_rows = if (self.search_editor_input) |input| input.search_editor.headerRows() else 0;
         return find_rows + query_rows;
@@ -842,6 +898,10 @@ pub const Tab = struct {
             controllers.deinit();
             self.controllers = null;
         }
+        if (self.original_controllers) |controllers| {
+            controllers.deinit();
+            self.original_controllers = null;
+        }
         if (self.diff) |diff| {
             self.diff = null;
             diff.destroy();
@@ -913,6 +973,9 @@ pub const Controllers = struct {
     completion_count: usize = 1,
     hover_registration: ?IDisposable = null,
     suggest: *SuggestController,
+    widgets_attached: bool = false,
+    diff_find_zone: bool = false,
+    diff_find_handler: ViewEventHandler = .{},
 
     /// Applies the palette-derived hover code-block background and the find
     /// bar theme. Upstream resolves these through CSS variables and the
@@ -975,6 +1038,9 @@ pub const Controllers = struct {
         self.allocator = allocator;
         self.editor = editor;
         self.hover_registration = null;
+        self.widgets_attached = false;
+        self.diff_find_zone = false;
+        self.diff_find_handler = .{};
 
         self.find_sink = .{ .model = editor.model, .owner = 1 };
         self.search_highlight_sink = ModelDecorationSink.incrementalSearch(editor.model);
@@ -991,6 +1057,7 @@ pub const Controllers = struct {
         self.find.widget().layout_context = view;
         self.find.widget().on_layout = requestViewRender;
         editor.setFindController(self.find, FindController.startFromContext);
+        errdefer editor.setFindController(null, null);
 
         self.view = view;
         self.sticky_host = view.stickyScrollHost();
@@ -1087,6 +1154,42 @@ pub const Controllers = struct {
         return self;
     }
 
+    pub fn attachWidgets(self: *Controllers) !void {
+        const sticky = self.sticky.widget.interface();
+        const find = self.find.widget().interface();
+        const hover = self.hover.widget().contentWidget();
+        const suggest = self.suggest.widgetInterface();
+        try self.view.addOverlayWidget(sticky);
+        errdefer self.view.removeOverlayWidget(sticky.get_id(sticky.context)) catch {};
+        try self.view.addOverlayWidget(find);
+        errdefer self.view.removeOverlayWidget(find.get_id(find.context)) catch {};
+        try self.view.addContentWidget(hover);
+        errdefer self.view.removeContentWidget(hover.get_id(hover.context)) catch {};
+        try self.view.addContentWidget(suggest);
+        self.widgets_attached = true;
+    }
+
+    fn attachDiffFindZone(self: *Controllers) void {
+        self.diff_find_zone = true;
+        self.find.widget().layout_context = self;
+        self.find.widget().on_layout = onDiffFindLayout;
+        self.diff_find_handler = ViewEventHandler.init(self, .{ .onScrollChanged = onDiffFindScroll });
+        self.editor.addViewEventHandler(&self.diff_find_handler);
+    }
+
+    fn onDiffFindLayout(context: ?*anyopaque) void {
+        const self: *Controllers = @ptrCast(@alignCast(context orelse return));
+        const rows = self.find.viewZoneRows();
+        self.editor.setTopInset(rows);
+        self.view.setTopInset(rows);
+        self.view.invalidate();
+    }
+
+    fn onDiffFindScroll(context: *anyopaque, event: *const view_events.ViewScrollChangedEvent) bool {
+        if (event.scrollTopChanged) onDiffFindLayout(context);
+        return false;
+    }
+
     pub fn attachLanguageRegistry(self: *Controllers, features: *LanguageFeaturesService) void {
         self.hover_participant.registry = &features.hover_provider;
         self.marker_hover_participant.marker_decorations = self.view.editor.marker_decorations;
@@ -1107,6 +1210,18 @@ pub const Controllers = struct {
         self.suggest.attachWindow(window);
     }
     pub fn deinit(self: *Controllers) void {
+        if (self.diff_find_zone) self.editor.removeViewEventHandler(&self.diff_find_handler);
+        if (self.widgets_attached) {
+            const sticky = self.sticky.widget.interface();
+            const find = self.find.widget().interface();
+            const hover = self.hover.widget().contentWidget();
+            const suggest = self.suggest.widgetInterface();
+            self.view.removeOverlayWidget(sticky.get_id(sticky.context)) catch {};
+            self.view.removeOverlayWidget(find.get_id(find.context)) catch {};
+            self.view.removeContentWidget(hover.get_id(hover.context)) catch {};
+            self.view.removeContentWidget(suggest.get_id(suggest.context)) catch {};
+        }
+        self.editor.setFindController(null, null);
         self.editor.unregisterContribution(FindController, self.find);
         self.editor.unregisterContribution(StickyScrollController, self.sticky);
         self.editor.unregisterContribution(WordHighlighterContribution, self.word_highlighter);

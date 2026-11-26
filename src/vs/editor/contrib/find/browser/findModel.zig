@@ -456,6 +456,7 @@ pub const FindModel = struct {
     }
 
     pub fn replace(self: *FindModel) !void {
+        if (self.editor.isReadOnly()) return error.ReadOnly;
         if (!self.hasMatches()) return;
 
         var pattern = try self.getReplacePattern();
@@ -501,6 +502,7 @@ pub const FindModel = struct {
     }
 
     pub fn replaceAll(self: *FindModel) !void {
+        if (self.editor.isReadOnly()) return error.ReadOnly;
         if (!self.hasMatches()) return;
 
         var pattern = try self.getReplacePattern();

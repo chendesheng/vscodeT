@@ -1008,8 +1008,8 @@ pub const Editor = struct {
     /// Installs the find/replace callbacks used by the editor keybindings.
     pub fn setFindController(
         self: *Editor,
-        context: *anyopaque,
-        start_fn: *const fn (context: *anyopaque, replace: bool) anyerror!void,
+        context: ?*anyopaque,
+        start_fn: ?*const fn (context: *anyopaque, replace: bool) anyerror!void,
     ) void {
         self.find_context = context;
         self.find_start_fn = start_fn;

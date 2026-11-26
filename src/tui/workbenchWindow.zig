@@ -3054,9 +3054,9 @@ pub const TerminalWorkbench = struct {
     /// `editor.action.showHover`.
     pub fn showHover(self: *TerminalWorkbench) !bool {
         const tab = self.activeTab() orelse return false;
-        if (tab.isDiff()) return false;
         try tab.ensureControllers();
-        return hover_actions.showOrFocusHover(tab.editor, .FocusIfVisible);
+        const controllers = tab.focusedControllers() orelse return false;
+        return hover_actions.showOrFocusHover(controllers.editor, .FocusIfVisible);
     }
 
     pub fn activateIndex(self: *TerminalWorkbench, index: usize) !void {
@@ -3694,7 +3694,7 @@ pub const TerminalWorkbench = struct {
 
     pub fn leaveEditorHover(self: *TerminalWorkbench) void {
         if (self.activeTab()) |tab| {
-            if (tab.controllers) |controllers| controllers.hover.hideContentHover();
+            tab.hideEditorHovers();
         }
     }
 
@@ -4140,10 +4140,7 @@ fn quickReportError(context: *anyopaque, message: []const u8) void {
 fn quickCancelPopups(context: *anyopaque) void {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     if (self.activeTab()) |tab| {
-        if (tab.controllers) |controllers| {
-            controllers.suggest.cancel();
-            controllers.hover.hideContentHover();
-        }
+        tab.cancelEditorPopups();
     }
 }
 

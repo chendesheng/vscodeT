@@ -13,6 +13,7 @@ const input = @import("ui").input;
 const IEditorKeyTarget = @import("../../editorBrowser.zig").IEditorKeyTarget;
 const ContentHoverController = @import("../../../contrib/hover/browser/contentHoverController.zig").ContentHoverController;
 const WordHighlighterContribution = @import("../../../contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
+const hoverTypes = @import("../../../contrib/hover/browser/hoverTypes.zig");
 const SuggestController = @import("../../../contrib/suggest/browser/suggestController.zig").SuggestController;
 
 /// Host shortcut identity; the host alone decides whether to quit.
@@ -187,4 +188,53 @@ pub fn handleKeyEvent(
     if (word_highlighter.handleKey(event)) return false;
     if (view.dispatchKey(event)) return false;
     return dispatch(editor, fallback orelse event.*, is_pasting);
+}
+
+pub fn handleMouseEvent(
+    view: anytype,
+    hover: *ContentHoverController,
+    suggest: ?*SuggestController,
+    editor: *Editor,
+    event: *input.MouseEvent,
+) !bool {
+    if (event.kind != .move) {
+        editor.clearMessage();
+    }
+
+    const target = try view.mouseTargetAt(event.x, event.y);
+    if (event.kind == .move) {
+        view.setGlyphHover(target);
+    } else {
+        view.clearGlyphHover();
+    }
+    const hover_event = hoverTypes.EditorMouseEvent{
+        .target = target,
+        .x = event.x,
+        .y = event.y,
+        .mods = event.mods,
+        .button = event.button,
+    };
+    switch (event.kind) {
+        .down => hover.onMouseDown(hover_event),
+        .up => hover.onMouseUp(),
+        .move => switch (target.type) {
+            // The gutter and overlay widgets are inside the editor area in
+            // VS Code, so they produce a mouse move (with no anchor) and the
+            // sticky hover gets its grace period. The status row is outside
+            // the editor, so it is a mouse leave.
+            .content_text, .content_empty, .content_widget, .gutter_line_numbers, .gutter_glyph_margin, .gutter_line_decorations, .gutter_view_zone, .content_view_zone, .scrollbar, .overview_ruler, .overlay_widget => hover.onMouseMove(hover_event),
+            .status, .unknown, .textarea, .outside_editor => hover.onEditorMouseLeave(hover_event),
+        },
+        .wheel, .click => {},
+    }
+
+    if (event.kind == .down and target.type != .content_widget) {
+        if (suggest) |controller| controller.cancel();
+    }
+    const top_before = editor.topViewLine();
+    const handled = try view.dispatchMouse(event);
+    if (event.kind == .wheel and !event.default_prevented) {
+        hover.onEditorScrollChanged(editor.topViewLine() != top_before);
+    }
+    return handled;
 }

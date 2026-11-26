@@ -567,8 +567,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.inline_mode = inline_mode;
             self.modified_editor.setLineNumberMap(if (inline_mode) self.inline_line_numbers else self.aligned.modified);
             if (inline_mode) {
+                self.setFocus(.modified);
                 self.original_view.detach();
-                self.focused = .modified;
                 try self.applyInlineDecorations();
                 if (self.options.hide_unchanged_regions) try self.applyInlineHideUnchanged();
             } else {
@@ -640,15 +640,27 @@ pub fn DiffEditorWidget(comptime View: type) type {
             return if (self.focused == .original) self.original_editor else self.modified_editor;
         }
 
-        fn focusedView(self: *Self) *View {
+        pub fn focusedView(self: *Self) *View {
             return if (self.focused == .original) self.original_view else self.modified_view;
         }
 
         pub fn setFocus(self: *Self, side: Side) void {
             if (side == .original and !self.sideBySide()) return;
             if (self.focused == side) return;
+            const was_focused = self.focusedView().isFocused();
+            _ = self.focusedView().setFocused(false);
             self.focused = side;
             self.focusedView().focusEditor();
+            if (was_focused) _ = self.focusedView().setFocused(true);
+        }
+
+        pub fn setEditorFocused(self: *Self, focused: bool) void {
+            _ = self.original_view.setFocused(focused and self.focused == .original and self.sideBySide());
+            _ = self.modified_view.setFocused(focused and (self.focused == .modified or !self.sideBySide()));
+        }
+
+        pub fn syncScrollAfterInput(self: *Self) void {
+            if (self.sideBySide()) self.syncScrollFromPane(self.focused);
         }
 
         fn selectInitialChange(self: *Self) void {
@@ -872,7 +884,16 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         /// Routes a mouse event to the correct pane, handles the split drag and
         /// keeps both panes aligned after a wheel scroll.
+        pub const MouseTarget = struct {
+            context: *anyopaque,
+            dispatch: *const fn (*anyopaque, Side, *View, *ui.MouseEvent) anyerror!bool,
+        };
+
         pub fn dispatchMouse(self: *Self, event: *ui.MouseEvent) !bool {
+            return self.dispatchMouseWith(event, null);
+        }
+
+        pub fn dispatchMouseWith(self: *Self, event: *ui.MouseEvent, target: ?MouseTarget) !bool {
             const widths = self.paneWidths();
             if (self.overview.drag != null or (widths.overview > 0 and event.x >= self.width - widths.overview and self.sash.drag == null)) {
                 if (self.overview.dispatchMouse(self.modified_editor, event, self.height)) {
@@ -898,12 +919,12 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 const view = if (side == .original) self.original_view else self.modified_view;
                 var adjusted = event.*;
                 if (side == .modified) adjusted.x -|= widths.original + widths.gutter;
-                const handled = try view.dispatchMouse(&adjusted);
+                const handled = if (target) |handler| try handler.dispatch(handler.context, side, view, &adjusted) else try view.dispatchMouse(&adjusted);
                 self.syncScrollFromPane(side);
                 return handled;
             }
             if (event.kind == .down) self.setFocus(.modified);
-            const handled = try self.modified_view.dispatchMouse(event);
+            const handled = if (target) |handler| try handler.dispatch(handler.context, .modified, self.modified_view, event) else try self.modified_view.dispatchMouse(event);
             return handled;
         }
 

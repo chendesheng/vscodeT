@@ -22,9 +22,10 @@ pub const CodeEditorService = struct {
         const self: *CodeEditorService = @ptrCast(@alignCast(context));
         for (self.part.group_views.items) |group| {
             const tab = group.activeTab() orelse continue;
-            if (!hasTextControl(tab) or !tab.view.isFocused()) continue;
-            if (tab.diff) |diff| return diff.widget.focusedEditor();
-            return tab.editor;
+            if (!hasTextControl(tab)) continue;
+            if (tab.diff) |diff| {
+                if (diff.widget.focusedView().isFocused()) return diff.widget.focusedEditor();
+            } else if (tab.view.isFocused()) return tab.editor;
         }
         return null;
     }

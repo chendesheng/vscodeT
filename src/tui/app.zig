@@ -925,8 +925,7 @@ pub fn main(init: std.process.Init) !void {
                         continue;
                     }
                     if (current.isDiff()) {
-                        _ = current.handleDiffMouse(adjusted) catch false;
-                        if (event.kind == .down) needs_render = true;
+                        if (current.handleDiffMouse(adjusted) catch false) needs_render = true;
                         continue;
                     }
                     const tab_controllers = current.controllers orelse blk: {
@@ -989,52 +988,8 @@ fn dispatchExtensionKey(workbench: *Workbench, host: anytype, event: *ui.KeyEven
 
 /// Routes one mouse event through the view. The view owns hit testing, focus,
 /// caret placement, drag selection, click synthesis and wheel scrolling.
-fn handleMouseEvent(
-    view: *View,
-    hover: *ContentHoverController,
-    suggest: ?*SuggestController,
-    editor: *Editor,
-    event: *input.MouseEvent,
-) !void {
-    if (event.kind != .move) {
-        editor.clearMessage();
-    }
-
-    const target = try view.mouseTargetAt(event.x, event.y);
-    if (event.kind == .move) {
-        view.setGlyphHover(target);
-    } else {
-        view.clearGlyphHover();
-    }
-    const hover_event = hoverTypes.EditorMouseEvent{
-        .target = target,
-        .x = event.x,
-        .y = event.y,
-        .mods = event.mods,
-        .button = event.button,
-    };
-    switch (event.kind) {
-        .down => hover.onMouseDown(hover_event),
-        .up => hover.onMouseUp(),
-        .move => switch (target.type) {
-            // The gutter and overlay widgets are inside the editor area in
-            // VS Code, so they produce a mouse move (with no anchor) and the
-            // sticky hover gets its grace period. The status row is outside
-            // the editor, so it is a mouse leave.
-            .content_text, .content_empty, .content_widget, .gutter_line_numbers, .gutter_glyph_margin, .gutter_line_decorations, .gutter_view_zone, .content_view_zone, .scrollbar, .overview_ruler, .overlay_widget => hover.onMouseMove(hover_event),
-            .status, .unknown, .textarea, .outside_editor => hover.onEditorMouseLeave(hover_event),
-        },
-        .wheel, .click => {},
-    }
-
-    if (event.kind == .down and target.type != .content_widget) {
-        if (suggest) |controller| controller.cancel();
-    }
-    const top_before = editor.topViewLine();
-    _ = try view.dispatchMouse(event);
-    if (event.kind == .wheel and !event.default_prevented) {
-        hover.onEditorScrollChanged(editor.topViewLine() != top_before);
-    }
+fn handleMouseEvent(view: *View, hover: *ContentHoverController, suggest: ?*SuggestController, editor: *Editor, event: *input.MouseEvent) !void {
+    _ = try editorInputDispatch.handleMouseEvent(view, hover, suggest, editor, event);
 }
 
 fn viewTextHeight(context: *anyopaque) usize {

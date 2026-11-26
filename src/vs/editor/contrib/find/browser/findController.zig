@@ -118,6 +118,7 @@ pub const FindController = struct {
     }
 
     pub fn startReplace(self: *FindController) !void {
+        if (self.editor.isReadOnly()) return self.startFind();
         if (!self.state.is_revealed) {
             try self.open(true);
         } else {
@@ -142,7 +143,8 @@ pub const FindController = struct {
         return self.find_widget.viewZoneRows();
     }
 
-    pub fn open(self: *FindController, replace: bool) !void {
+    pub fn open(self: *FindController, requested_replace: bool) !void {
+        const replace = requested_replace and !self.editor.isReadOnly();
         if (self.state.is_revealed) {
             if (replace) {
                 self.find_widget.toggleReplace();

@@ -243,12 +243,14 @@ pub const FindWidget = struct {
     }
 
     pub fn openReplace(self: *FindWidget) void {
+        if (self.model.editor.isReadOnly()) return self.open();
         self.focused = true;
         self.focus_field = .replace;
         self.state.change(.{ .is_revealed = true, .is_replace_revealed = true }, false, true);
     }
 
     pub fn toggleReplace(self: *FindWidget) void {
+        if (self.model.editor.isReadOnly()) return;
         self.focused = true;
         self.state.change(.{
             .is_revealed = true,
@@ -653,6 +655,7 @@ pub const FindWidget = struct {
                 return true;
             },
             .tab, .backtab => {
+                if (self.model.editor.isReadOnly()) return false;
                 self.focus_field = if (self.focus_field == .find) .replace else .find;
                 if (self.focus_field == .replace and !self.state.is_replace_revealed) {
                     self.state.change(.{ .is_replace_revealed = true }, false, true);

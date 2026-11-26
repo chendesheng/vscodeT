@@ -9816,8 +9816,18 @@ test "Diff editor commands resolve the active snapshot pane through their servic
     try std.testing.expectEqual(tab, wb.activeTab().?);
     try wb.commands.execute("workbench.action.compareEditor.focusSecondarySide");
     try std.testing.expectEqual(widget.original_editor, widget.focusedEditor());
+    // Each inner editor owns its own find controller, including on read-only snapshots.
+    var find_key = ui.KeyEvent{ .key = .{ .char = 'f' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(tab.handleDiffKey(&find_key));
+    try std.testing.expect(tab.original_controllers.?.find.isOpen());
+    try std.testing.expect(!tab.controllers.?.find.isOpen());
+    try tab.original_controllers.?.find.startReplace();
+    try std.testing.expect(!tab.original_controllers.?.find.state.is_replace_revealed);
     try wb.commands.execute("workbench.action.compareEditor.focusOtherSide");
     try std.testing.expectEqual(widget.modified_editor, widget.focusedEditor());
+    find_key = .{ .key = .{ .char = 'f' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(tab.handleDiffKey(&find_key));
+    try std.testing.expect(tab.controllers.?.find.isOpen());
     try wb.commands.execute("diffEditor.setViewMode.inline");
     try std.testing.expect(tab.diff.?.widget.inline_mode);
     try wb.commands.execute("diffEditor.setViewMode.sideBySide");

@@ -55,6 +55,11 @@ pub const IEditorView = struct {
         hasEditorFocus: *const fn (*anyopaque) bool,
         addOverlayWidget: *const fn (*anyopaque, editorBrowser.IOverlayWidget) anyerror!void,
         addContentWidget: *const fn (*anyopaque, editorBrowser.IContentWidget) anyerror!void,
+        removeOverlayWidget: *const fn (*anyopaque, []const u8) anyerror!void,
+        removeContentWidget: *const fn (*anyopaque, []const u8) anyerror!void,
+        mouseTargetAt: *const fn (*anyopaque, usize, usize) anyerror!editorBrowser.MouseTarget,
+        setGlyphHover: *const fn (*anyopaque, editorBrowser.MouseTarget) void,
+        clearGlyphHover: *const fn (*anyopaque) void,
         setTopInset: *const fn (*anyopaque, usize) void,
         applyEditorSettings: *const fn (*anyopaque, terminal_editor_config.Reader, ?[]const u8, ?[]const u8) anyerror!bool,
         applyLineNumbersOverride: *const fn (*anyopaque, editor_options.RenderLineNumbersType) anyerror!void,
@@ -143,6 +148,22 @@ pub const IEditorView = struct {
 
     pub fn addContentWidget(self: *IEditorView, widget: editorBrowser.IContentWidget) anyerror!void {
         return self.vtable.addContentWidget(self.context, widget);
+    }
+
+    pub fn removeOverlayWidget(self: *IEditorView, id: []const u8) !void {
+        return self.vtable.removeOverlayWidget(self.context, id);
+    }
+    pub fn removeContentWidget(self: *IEditorView, id: []const u8) !void {
+        return self.vtable.removeContentWidget(self.context, id);
+    }
+    pub fn mouseTargetAt(self: *IEditorView, x: usize, y: usize) !editorBrowser.MouseTarget {
+        return self.vtable.mouseTargetAt(self.context, x, y);
+    }
+    pub fn setGlyphHover(self: *IEditorView, target: editorBrowser.MouseTarget) void {
+        self.vtable.setGlyphHover(self.context, target);
+    }
+    pub fn clearGlyphHover(self: *IEditorView) void {
+        self.vtable.clearGlyphHover(self.context);
     }
 
     pub fn setTopInset(self: *IEditorView, rows: usize) void {
@@ -274,6 +295,26 @@ pub const IEditorView = struct {
                 const view: *Native = @ptrCast(@alignCast(context));
                 return view.addContentWidget(widget);
             }
+            fn removeOverlayWidget(context: *anyopaque, id: []const u8) anyerror!void {
+                const view: *Native = @ptrCast(@alignCast(context));
+                return view.removeOverlayWidget(id);
+            }
+            fn removeContentWidget(context: *anyopaque, id: []const u8) anyerror!void {
+                const view: *Native = @ptrCast(@alignCast(context));
+                return view.removeContentWidget(id);
+            }
+            fn mouseTargetAt(context: *anyopaque, x: usize, y: usize) anyerror!editorBrowser.MouseTarget {
+                const view: *Native = @ptrCast(@alignCast(context));
+                return view.mouseTargetAt(x, y);
+            }
+            fn setGlyphHover(context: *anyopaque, target: editorBrowser.MouseTarget) void {
+                const view: *Native = @ptrCast(@alignCast(context));
+                view.setGlyphHover(target);
+            }
+            fn clearGlyphHover(context: *anyopaque) void {
+                const view: *Native = @ptrCast(@alignCast(context));
+                view.clearGlyphHover();
+            }
             fn setTopInset(context: *anyopaque, rows: usize) void {
                 const view: *Native = @ptrCast(@alignCast(context));
                 return view.setTopInset(rows);
@@ -342,6 +383,11 @@ pub const IEditorView = struct {
                 .hasEditorFocus = @This().hasEditorFocus,
                 .addOverlayWidget = @This().addOverlayWidget,
                 .addContentWidget = @This().addContentWidget,
+                .removeOverlayWidget = @This().removeOverlayWidget,
+                .removeContentWidget = @This().removeContentWidget,
+                .mouseTargetAt = @This().mouseTargetAt,
+                .setGlyphHover = @This().setGlyphHover,
+                .clearGlyphHover = @This().clearGlyphHover,
                 .setTopInset = @This().setTopInset,
                 .applyEditorSettings = @This().applyEditorSettings,
                 .applyLineNumbersOverride = @This().applyLineNumbersOverride,

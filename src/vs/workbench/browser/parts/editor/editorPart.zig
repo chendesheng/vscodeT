@@ -210,7 +210,7 @@ pub fn EditorPart(comptime GroupView: type) type {
                     const desired = group_focused and pane.activeTab() == tab and
                         tab.terminal_input == null and tab.markdown_preview == null and
                         (tab.search_editor_input == null or !tab.search_editor_input.?.search_editor.query_focused);
-                    _ = tab.view.setFocused(desired);
+                    if (@hasDecl(@typeInfo(@TypeOf(tab)).pointer.child, "setEditorFocused")) tab.setEditorFocused(desired) else _ = tab.view.setFocused(desired);
                 }
             }
         }
