@@ -906,6 +906,81 @@ pub const Git = struct {
         if (!result.term.success()) return error.GitFailed;
     }
 
+    /// Repository.stage in upstream: hash the supplied content with the
+    /// path's Git filters, then put that blob (not the working-tree file) in
+    /// the index while preserving the existing tree/index mode.
+    pub fn stage(self: *Git, root: []const u8, path: []const u8, data: []const u8) !void {
+        if (!isSafeRelativePath(path)) return error.InvalidPath;
+        const result = try self.runWithInput(&.{ self.exe, "hash-object", "--stdin", "-w", "--path", path }, root, data);
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+        if (!result.term.success()) return error.GitFailed;
+        const hash = std.mem.trim(u8, result.stdout, " \t\r\n");
+        if (hash.len != 40 and hash.len != 64) return error.GitFailed;
+        for (hash) |c| if (!std.ascii.isHex(c)) return error.GitFailed;
+
+        const head = try self.run(&.{ self.exe, "rev-parse", "--verify", "HEAD" }, root, 1024);
+        defer self.allocator.free(head.stdout);
+        defer self.allocator.free(head.stderr);
+        const details = try self.run(if (head.term.success())
+            &.{ self.exe, "--literal-pathspecs", "ls-tree", "-z", "HEAD", "--", path }
+        else
+            &.{ self.exe, "--literal-pathspecs", "ls-files", "--stage", "-z", "--", path }, root, discovery_output_limit);
+        defer self.allocator.free(details.stdout);
+        defer self.allocator.free(details.stderr);
+        if (!details.term.success()) return error.GitFailed;
+        const add = details.stdout.len == 0;
+        const mode = if (add) "100644" else blk: {
+            const end = std.mem.indexOfScalar(u8, details.stdout, ' ') orelse return error.GitFailed;
+            break :blk details.stdout[0..end];
+        };
+        var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(self.allocator);
+        try argv.appendSlice(self.allocator, &.{ self.exe, "update-index" });
+        if (add) try argv.append(self.allocator, "--add");
+        try argv.appendSlice(self.allocator, &.{ "--cacheinfo", mode, hash, path });
+        const update = try self.run(argv.items, root, discovery_output_limit);
+        defer self.allocator.free(update.stdout);
+        defer self.allocator.free(update.stderr);
+        if (!update.term.success()) return error.GitFailed;
+        self.cache.invalidate();
+    }
+
+    fn writeChildInput(io: std.Io, input: std.Io.File, data: []const u8) !void {
+        defer input.close(io);
+        try input.writeStreamingAll(io, data);
+    }
+
+    /// std.process.run does not accept stdin. Keep the same bounded output
+    /// and deadline, delivering input concurrently so filters cannot deadlock
+    /// a full pipe. Only argv arrays are passed to the child.
+    fn runWithInput(self: *Git, argv: []const []const u8, cwd: []const u8, data: []const u8) !std.process.RunResult {
+        if (self.disabled) return error.NoGit;
+        var child = try std.process.spawn(self.io, .{ .argv = argv, .cwd = .{ .path = cwd }, .stdin = .pipe, .stdout = .pipe, .stderr = .pipe });
+        defer child.kill(self.io);
+        var writer = try self.io.concurrent(writeChildInput, .{ self.io, child.stdin.?, data });
+        child.stdin = null; // writer owns and closes its end
+        defer writer.cancel(self.io) catch {};
+        errdefer child.kill(self.io);
+        var buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
+        var reader: std.Io.File.MultiReader = undefined;
+        reader.init(self.allocator, self.io, buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
+        defer reader.deinit();
+        while (reader.fill(4096, self.timeout)) |_| {
+            if (reader.reader(0).buffered().len > discovery_output_limit or reader.reader(1).buffered().len > stderr_limit) return error.OutputTooLarge;
+        } else |err| switch (err) {
+            error.EndOfStream => {},
+            else => return err,
+        }
+        try reader.checkAnyError();
+        try writer.await(self.io);
+        const term = try child.wait(self.io);
+        const stdout = try reader.toOwnedSlice(0);
+        errdefer self.allocator.free(stdout);
+        const stderr = try reader.toOwnedSlice(1);
+        return .{ .term = term, .stdout = stdout, .stderr = stderr };
+    }
+
     pub const RemoteAction = enum { fetch, pull, push, publish };
 
     pub fn runRemoteAction(self: *Git, root: []const u8, action: RemoteAction, remote: ?[]const u8) !void {
@@ -2539,6 +2614,41 @@ fn gitOk(allocator: Allocator, cwd: []const u8, args: []const []const u8) !bool 
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
     return result.term.success();
+}
+
+test "integration: stage supplied contents without changing the working file or executable mode" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(std.testing.io, &root_buffer);
+    const root = root_buffer[0..root_len];
+    if (!try gitOk(allocator, root, &.{"init"})) return error.SkipZigTest;
+    _ = try gitOk(allocator, root, &.{ "config", "core.autocrlf", "false" });
+    _ = try gitOk(allocator, root, &.{ "config", "user.name", "Test User" });
+    _ = try gitOk(allocator, root, &.{ "config", "user.email", "test@example.com" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "script.txt", .data = "first\nsecond\n" });
+    if (!try gitOk(allocator, root, &.{ "add", "script.txt" })) return error.SkipZigTest;
+    if (!try gitOk(allocator, root, &.{ "update-index", "--chmod=+x", "script.txt" })) return error.SkipZigTest;
+    if (!try gitOk(allocator, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "initial" })) return error.SkipZigTest;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "script.txt", .data = "FIRST\nSECOND\n" });
+    var cli = try Git.init(allocator, .{ .io = std.testing.io, .timeout_ms = 20_000 });
+    defer cli.deinit();
+    try cli.stage(root, "script.txt", "FIRST\nsecond\n");
+    const index = (try cli.readRef(root, "script.txt", .index)).?;
+    defer allocator.free(index);
+    try std.testing.expectEqualStrings("FIRST\nsecond\n", index);
+    const working = (try cli.readRef(root, "script.txt", .working)).?;
+    defer allocator.free(working);
+    try std.testing.expectEqualStrings("FIRST\nSECOND\n", working);
+    const mode = try runTestGit(allocator, root, &.{ "ls-files", "--stage", "--", "script.txt" });
+    defer allocator.free(mode.stdout);
+    defer allocator.free(mode.stderr);
+    try std.testing.expect(std.mem.startsWith(u8, mode.stdout, "100755 "));
+    try cli.stage(root, "new.txt", "new\n");
+    const added = (try cli.readRef(root, "new.txt", .index)).?;
+    defer allocator.free(added);
+    try std.testing.expectEqualStrings("new\n", added);
 }
 
 test "integration: temp repository status and readRef" {
