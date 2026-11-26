@@ -27,9 +27,9 @@ test "input: printable runs and control keys" {
 
 test "input: named keys and modifiers" {
     const allocator = std.testing.allocator;
-    var events = try decodeKeys(allocator, "\x1b[A\x1b[3~\x1b[1;5C\x1b[5~\x1b[Z\x1b[24~\x1b[18~\x1b[18;2~");
+    var events = try decodeKeys(allocator, "\x1b[A\x1b[3~\x1b[1;5C\x1b[5~\x1b[Z\x1b[24~\x1b[18~\x1b[18;2~\x1b[15;3~\x1b[15;4~");
     defer events.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 8), events.items.len);
+    try std.testing.expectEqual(@as(usize, 10), events.items.len);
     try std.testing.expect(events.items[0].key == .up);
     try std.testing.expect(events.items[1].key == .delete);
     try std.testing.expect(events.items[2].key == .right);
@@ -39,6 +39,8 @@ test "input: named keys and modifiers" {
     try std.testing.expect(events.items[5].key == .f12);
     try std.testing.expect(events.items[6].key == .f7);
     try std.testing.expect(events.items[7].key == .f7 and events.items[7].mods.shift);
+    try std.testing.expect(events.items[8].key == .f5 and events.items[8].mods.alt and !events.items[8].mods.shift);
+    try std.testing.expect(events.items[9].key == .f5 and events.items[9].mods.alt and events.items[9].mods.shift);
     for ([_]usize{ 1, 3, 5 }) |i| try std.testing.expectEqual(Modifiers{}, events.items[i].mods);
 }
 

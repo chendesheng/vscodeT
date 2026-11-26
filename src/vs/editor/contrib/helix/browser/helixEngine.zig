@@ -912,7 +912,7 @@ pub const HelixEngine = struct {
                 try self.page(true, self.extendMode());
                 return true;
             },
-            .insert, .f1, .f7, .f12, .tab, .backtab, .paste_start, .paste_end => return false,
+            .insert, .f1, .f5, .f7, .f12, .tab, .backtab, .paste_start, .paste_end => return false,
         }
     }
 
@@ -1876,7 +1876,7 @@ pub const HelixEngine = struct {
                 try self.deleteWordForward();
                 return true;
             },
-            .insert, .f1, .f7, .f12, .paste_start, .paste_end => return false,
+            .insert, .f1, .f5, .f7, .f12, .paste_start, .paste_end => return false,
             else => {},
         }
         self.editor.dispatchEditorKey(event);

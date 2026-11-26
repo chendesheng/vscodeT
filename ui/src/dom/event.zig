@@ -59,6 +59,7 @@ pub const Key = union(enum) {
     page_up,
     page_down,
     f1,
+    f5,
     f7,
     f12,
     paste_start,

@@ -416,6 +416,7 @@ fn decodeCsi(
                 5 => try result.append(allocator, .{ .key = .{ .key = .page_up, .mods = mods } }),
                 6 => try result.append(allocator, .{ .key = .{ .key = .page_down, .mods = mods } }),
                 11 => try result.append(allocator, .{ .key = .{ .key = .f1, .mods = mods } }),
+                15 => try result.append(allocator, .{ .key = .{ .key = .f5, .mods = mods } }),
                 18 => try result.append(allocator, .{ .key = .{ .key = .f7, .mods = mods } }),
                 24 => try result.append(allocator, .{ .key = .{ .key = .f12, .mods = mods } }),
                 200 => try result.append(allocator, .{ .key = .{ .key = .paste_start } }),
