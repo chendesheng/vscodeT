@@ -2054,17 +2054,18 @@ Terminal substitutions and their reasons:
   results. The native worker receives owned text snapshots.
 
 Limitations are documented in `README.md` and `docs/diff-view-audit.md`.
-The aligned snapshot substitution still materializes rows rather than
-using view zones. Contiguous filler ranges now share a decoration, and the
-gutter looks up aligned mappings with binary search. Both panes support
-read-only keyboard commands and synchronize scrolling; narrow layouts switch to
-interleaved inline text. Hidden unchanged regions now use the upstream range
-model but still project onto folding; moved blocks use side-by-side model
-decorations. Both pane controllers are attached and disposed with their editor
-views. The actual disclosure widgets, moved-block connectors, accessible viewer,
-diff-tab session restore, and contributions over real snapshot models remain
-unported. Explicit diff wrapping is applied, but unequal wrapped rows still
-require alignment view zones. Git snapshot
+Both panes retain their real text models. The retained ViewZones part aligns
+changed ranges, wrapped lines and other zone heights. Inline mode inserts
+deleted original code above the modified model, using the shared token and
+line-decoration rendering pipeline and building only visible zone rows. The
+gutter looks up real vertical-layout hunk bounds by binary search. Unchanged
+regions own direct hidden areas and model-anchored disclosure controls; the
+compact disclosure keeps its keyboard target across expand/collapse. The
+terminal collapses browser disclosure geometry to a single cell row.
+Moved blocks use side-by-side model decorations. Both pane controllers attach
+and dispose with their editor views. Moved connectors, true-inline word
+presentation, disclosure breadcrumbs, accessible viewer and session restore
+remain unported. Git snapshot
 resolution and the initial diff computation now run in the editor worker;
 the window receives completion events and obsolete replies are detached.
 

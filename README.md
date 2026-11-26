@@ -1238,11 +1238,11 @@ console API for raw mode, sizing and input polling.
   (TUI-specific because a normal terminal cannot deliver F5/F7).
 - The diff editor view (`src/vs/editor/browser/widget/diffEditor/` plus
   `src/vs/workbench/browser/parts/editor/textDiffEditor.zig`) opens a read-only
-  side-by-side comparison from a changed SCM resource. Both sides are
-  **aligned display snapshots**: `diffEditorViewZones.zig` pads changed blocks
-  with `diff-filler` rows so the two panes have equal line counts and scroll in
-  lockstep; `diffEditorDecorations.zig` paints `line-insert`/`line-delete`,
-  `char-insert`/`char-delete` and the fillers; the center gutter shows
+  side-by-side comparison from a changed SCM resource. Both sides retain
+  their real snapshot text models: `diffEditorViewZones.zig` inserts
+  model-anchored whitespace to align changed blocks, wrapped lines and other
+  view zones; `diffEditorDecorations.zig` paints `line-insert`/`line-delete`
+  and `char-insert`/`char-delete`; the center gutter shows
   `│`/`+`/`~`/`-` and highlights the current block; dragging it resizes the
   panes. Diffs cover `HEAD ↔ working tree`, `HEAD ↔ index` and
   `index ↔ working tree` (untracked = empty ↔ working, deleted = working side
@@ -1256,10 +1256,10 @@ console API for raw mode, sizing and input polling.
   the untouched file tab. Remaining portable gaps include quick-diff peek,
   multi-diff editor, accessible diff viewer, and editing either side. Moved
   blocks are surfaced as model decorations in side-by-side mode only.
-  Hide-unchanged uses the upstream unchanged-region range model, projected
-  onto folding ranges until disclosure view zones are available.
-  `renderSideBySide: false` uses interleaved inline changes and inner-character
-  decorations. Both panes share editor input dispatch and own independent
+  Hide-unchanged uses the upstream unchanged-region range model, direct model
+  hidden areas, and model-anchored disclosures with keyboard support.
+  `renderSideBySide: false` inserts original deleted code in view zones above
+  the real modified model, with token and inner-character decorations. Both panes share editor input dispatch and own independent
   find, hover and other editor contribution controllers. Scrolling the focused
   pane synchronizes the other pane. The default 900px side-by-side
   breakpoint maps to 53 terminal cells using the workbench width scale;
@@ -1272,11 +1272,9 @@ console API for raw mode, sizing and input polling.
   viewport slider; the split sash supports double-click reset. `diffEditor.wordWrap`
   overrides the configured editor wrap mode, with the hidden original always
   unwrapped. The editor renderer supports layout whitespace, including scroll
-  and hit-testing; diff-specific zone delegates and alignment are still
-  missing (including wrapped-row alignment), as are disclosure widgets for
-  unchanged regions, moved-block connectors, additional diff commands, and
-  contribution behavior on real rather
-  than materialized snapshot models.
+  and hit-testing; diff-specific delegates and alignment use that same view
+  layer. Remaining gaps include true-inline word presentation, moved-block
+  connectors, additional diff commands, disclosure breadcrumbs and code lens.
   See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
   Only one repository per workspace folder is shown.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and
