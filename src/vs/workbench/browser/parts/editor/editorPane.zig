@@ -1549,6 +1549,89 @@ pub const Controllers = struct {
     }
 };
 
+/// The same editor contributions used by single diff tabs, but lifetime is
+/// that of a virtualized diff binding rather than the composite Tab.
+pub const MultiDiffBindingServices = struct {
+    allocator: Allocator,
+    widget: *DiffWidget,
+    original: *Controllers,
+    modified: *Controllers,
+    original_lens: ?*@import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution = null,
+    modified_lens: ?*@import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution = null,
+
+    pub fn create(allocator: Allocator, widget: *DiffWidget, window: *@import("../../../../base/common/windowDispatch.zig").Queue) !DiffWidget.NativeInputServices {
+        const self = try allocator.create(MultiDiffBindingServices);
+        errdefer allocator.destroy(self);
+        const original = try Controllers.init(allocator, widget.original_editor, widget.original_view);
+        errdefer original.deinit();
+        try original.attachWidgets();
+        original.attachDiffFindZone();
+        original.attachWindow(window);
+        const modified = try Controllers.init(allocator, widget.modified_editor, widget.modified_view);
+        errdefer modified.deinit();
+        try modified.attachWidgets();
+        modified.attachDiffFindZone();
+        modified.attachWindow(window);
+        self.* = .{ .allocator = allocator, .widget = widget, .original = original, .modified = modified };
+        return self.interface();
+    }
+    pub fn interface(self: *MultiDiffBindingServices) DiffWidget.NativeInputServices {
+        return .{
+            .context = self,
+            .handle_key = handleKey,
+            .mouse_target = .{ .context = self, .dispatch = handleMouse },
+            .set_theme = setTheme,
+            .attach_language = attachLanguage,
+            .dispose = dispose,
+        };
+    }
+    fn handleKey(context: *anyopaque, event: *ui.KeyEvent) !bool {
+        const self: *MultiDiffBindingServices = @ptrCast(@alignCast(context));
+        const controllers = if (self.widget.focused == .original) self.original else self.modified;
+        _ = try editor_input_dispatch.handleKeyEvent(controllers.view.interface(), controllers.hover, controllers.word_highlighter, controllers.suggest, controllers.editor, event, &self.widget.is_pasting, time_compat.milliTimestamp(), null);
+        return true;
+    }
+    fn handleMouse(context: *anyopaque, side: @import("../../../../editor/browser/widget/diffEditor/diffEditorWidget.zig").Side, view: *View, event: *ui.MouseEvent) !bool {
+        const self: *MultiDiffBindingServices = @ptrCast(@alignCast(context));
+        const controllers = if (side == .original) self.original else self.modified;
+        const other = if (side == .original) self.modified else self.original;
+        if (event.kind == .move) other.hover.hideContentHover();
+        return editor_input_dispatch.handleMouseEvent(view, controllers.hover, controllers.suggest, controllers.editor, event);
+    }
+    fn setTheme(context: *anyopaque, palette: ?*const theme_colors_mod.ThemeColors) void {
+        const self: *MultiDiffBindingServices = @ptrCast(@alignCast(context));
+        self.original.setThemeColors(palette);
+        self.modified.setThemeColors(palette);
+        if (self.original_lens) |lens| lens.setColors(Tab.codeLensColors(palette));
+        if (self.modified_lens) |lens| lens.setColors(Tab.codeLensColors(palette));
+    }
+    fn attachLanguage(context: *anyopaque, host: DiffWidget.NativeInputServices.LanguageHost) void {
+        const self: *MultiDiffBindingServices = @ptrCast(@alignCast(context));
+        self.original.attachLanguageRegistry(host.features);
+        self.modified.attachLanguageRegistry(host.features);
+        const cache = host.cache orelse return;
+        const commands = host.commands orelse return;
+        const Lens = @import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution;
+        if (self.original_lens == null) {
+            const view = self.widget.original_view;
+            self.original_lens = Lens.create(self.allocator, self.widget.original_editor, view.terminal_view_host, view.viewZones(), host.features.interface(), cache, commands, host.window) catch null;
+        }
+        if (self.modified_lens == null) {
+            const view = self.widget.modified_view;
+            self.modified_lens = Lens.create(self.allocator, self.widget.modified_editor, view.terminal_view_host, view.viewZones(), host.features.interface(), cache, commands, host.window) catch null;
+        }
+        setTheme(context, self.widget.modified_view.themeColors());
+    }
+    fn dispose(context: *anyopaque) void {
+        const self: *MultiDiffBindingServices = @ptrCast(@alignCast(context));
+        if (self.original_lens) |lens| lens.dispose();
+        if (self.modified_lens) |lens| lens.dispose();
+        self.original.deinit();
+        self.modified.deinit();
+        self.allocator.destroy(self);
+    }
+};
+
 fn onConfigurationChanged(context: *anyopaque, event: @import("../../../../editor/common/config/editorOptions.zig").ConfigurationChangedEvent) void {
     const self: *Controllers = @ptrCast(@alignCast(context));
     if (event.hasChanged(.find)) self.find.applyConfiguration(self.view.terminal_view_host.options.get(.find));

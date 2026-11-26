@@ -867,6 +867,10 @@ pub const TerminalWorkbench = struct {
                     fn configure(context: *anyopaque, widget: *@import("../vs/workbench/browser/parts/editor/editorPane.zig").DiffWidget) !void {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
                         host.editor_configuration.applyToDiffWidget(widget);
+                        if (widget.native_input_services == null) {
+                            widget.attachNativeInputServices(try @import("../vs/workbench/browser/parts/editor/editorPane.zig").MultiDiffBindingServices.create(host.allocator, widget, &host.window_events));
+                        }
+                        host.attachMultiDiffLanguageServices(widget);
                         try host.instantiation.invokeFunction(@import("../vs/workbench/workbench.common.main.zig").attachDiffWidgetContributions, .{widget});
                         widget.attachActionServices(host.clipboard_api, host.context_menu_api);
                         try widget.attachGutterServices(&host.menu_service, host.core.context_keys.getContext(), host.context_menu_api);
@@ -2648,6 +2652,16 @@ pub const TerminalWorkbench = struct {
 
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
+                if (tab.multi_diff) |multi| {
+                    for (multi.widget.impl.manager.items) |managed| if (managed.binding()) |binding| if (binding.editor) |widget| {
+                        self.attachMultiDiffLanguageServices(widget);
+                        if (widget.breadcrumbs_factory == null) {
+                            const factory = @import("../vs/editor/contrib/diffEditorBreadcrumbs/browser/contribution.zig").Factory.create(self.allocator, features.interface(), self.outline_creator.?.models) catch continue;
+                            widget.attachBreadcrumbs(factory) catch {};
+                        }
+                    };
+                    continue;
+                }
                 tab.editor.attachLanguageServices(features, marker_service, marker_decorations);
                 if (tab.diff) |diff| {
                     diff.widget.original_editor.attachLanguageServices(features, marker_service, marker_decorations);
@@ -2659,10 +2673,8 @@ pub const TerminalWorkbench = struct {
         }
     }
 
-    fn attachCodeLensServices(self: *TerminalWorkbench, tab: *Tab) void {
-        const features = self.language_features orelse return;
-        const cache = self.code_lens_cache orelse return;
-        tab.attachCodeLensServices(features, cache, .{ .context = self, .execute = struct {
+    fn codeLensCommandHost(self: *TerminalWorkbench) @import("../vs/editor/contrib/codelens/browser/codelensWidget.zig").CommandHost {
+        return .{ .context = self, .execute = struct {
             fn execute(context: *anyopaque, command: @import("../vs/editor/common/languages.zig").Command) !void {
                 const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
                 const registered = host.commands.get(command.id) orelse return error.CommandNotFound;
@@ -2670,7 +2682,20 @@ pub const TerminalWorkbench = struct {
                     try registered.executeWithArgument(@import("../vs/platform/commands/common/commands.zig").CommandArgument.from(std.json.Value, &args));
                 } else try registered.execute();
             }
-        }.execute }, &self.window_events);
+        }.execute };
+    }
+
+    fn attachCodeLensServices(self: *TerminalWorkbench, tab: *Tab) void {
+        const features = self.language_features orelse return;
+        const cache = self.code_lens_cache orelse return;
+        tab.attachCodeLensServices(features, cache, self.codeLensCommandHost(), &self.window_events);
+    }
+
+    fn attachMultiDiffLanguageServices(self: *TerminalWorkbench, widget: *@import("../vs/workbench/browser/parts/editor/editorPane.zig").DiffWidget) void {
+        const features = self.language_features orelse return;
+        widget.original_editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
+        widget.modified_editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
+        widget.attachNativeLanguageServices(.{ .features = features, .cache = self.code_lens_cache, .commands = self.codeLensCommandHost(), .window = &self.window_events });
     }
 
     fn onMarkersChanged(_: MarkerChangeEvent, self: *TerminalWorkbench) !void {

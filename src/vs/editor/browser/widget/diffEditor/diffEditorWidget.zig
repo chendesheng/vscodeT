@@ -189,6 +189,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
         on_did_change_focused_side: Emitter(Side),
         on_did_update_diff: Emitter(void),
         contributions: std.ArrayList(@import("../../editorExtensions.zig").DiffEditorContribution) = .empty,
+        native_input_services: ?NativeInputServices = null,
+
         laying_out: bool = false,
         layout_pending: bool = false,
 
@@ -207,6 +209,21 @@ pub fn DiffEditorWidget(comptime View: type) type {
         is_pasting: bool = false,
         width: usize = 0,
         height: usize = 0,
+
+        pub const NativeInputServices = struct {
+            context: *anyopaque,
+            handle_key: *const fn (*anyopaque, *ui.KeyEvent) anyerror!bool,
+            mouse_target: MouseTarget,
+            set_theme: *const fn (*anyopaque, ?*const @import("../../../../workbench/browser/themeColors.zig").ThemeColors) void,
+            attach_language: *const fn (*anyopaque, LanguageHost) void,
+            dispose: *const fn (*anyopaque) void,
+            pub const LanguageHost = struct {
+                features: *@import("../../../common/services/languageFeaturesService.zig").LanguageFeaturesService,
+                cache: ?*@import("../../../contrib/codelens/browser/codeLensCache.zig").CodeLensCache = null,
+                commands: ?@import("../../../contrib/codelens/browser/codelensWidget.zig").CommandHost = null,
+                window: *window_dispatch.Queue,
+            };
+        };
 
         pub fn interface(self: *Self) @import("../../editorBrowser.zig").IDiffEditor {
             return .{
@@ -533,6 +550,10 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         pub fn destroy(self: *Self) void {
             const allocator = self.allocator;
+            if (self.native_input_services) |services| {
+                self.native_input_services = null;
+                services.dispose(services.context);
+            }
             self.detachContributions();
             self.contributions.deinit(allocator);
             self.smooth_resize.deinit();
@@ -998,7 +1019,18 @@ pub fn DiffEditorWidget(comptime View: type) type {
             } else self.zones.setColors(.{});
         }
 
+        pub fn attachNativeInputServices(self: *Self, services: NativeInputServices) void {
+            if (self.native_input_services) |old| old.dispose(old.context);
+            self.native_input_services = services;
+            services.set_theme(services.context, self.modified_view.themeColors());
+        }
+
+        pub fn attachNativeLanguageServices(self: *Self, host: NativeInputServices.LanguageHost) void {
+            if (self.native_input_services) |services| services.attach_language(services.context, host);
+        }
+
         pub fn setThemeColors(self: *Self, palette: ?*const @import("../../../../workbench/browser/themeColors.zig").ThemeColors) void {
+            if (self.native_input_services) |services| services.set_theme(services.context, palette);
             self.original_view.setThemeColors(palette);
             self.modified_view.setThemeColors(palette);
             self.applyZoneTheme(palette);
@@ -1196,6 +1228,11 @@ pub fn DiffEditorWidget(comptime View: type) type {
         pub fn dispatchKey(self: *Self, event: *ui.KeyEvent) bool {
             if (self.accessible_viewer.visible()) return self.dispatchAccessibleKey(event);
             if (self.handleDeletedSelectionKey(event)) return true;
+            if (self.native_input_services) |services| {
+                const handled = services.handle_key(services.context, event) catch false;
+                self.syncScrollAfterInput();
+                return handled;
+            }
             if (self.focusedView().dispatchKey(event)) return true;
             _ = terminal_input.dispatch(self.focusedEditor(), event.*, &self.is_pasting);
             if (self.sideBySide()) self.syncScrollFromPane(self.focused);
@@ -1226,7 +1263,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         };
 
         pub fn dispatchMouse(self: *Self, event: *ui.MouseEvent) !bool {
-            return self.dispatchMouseWith(event, null);
+            return self.dispatchMouseWith(event, if (self.native_input_services) |services| services.mouse_target else null);
         }
 
         pub fn dispatchMouseWith(self: *Self, event: *ui.MouseEvent, target: ?MouseTarget) !bool {
