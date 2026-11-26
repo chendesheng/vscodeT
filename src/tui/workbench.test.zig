@@ -10681,6 +10681,11 @@ test "Workbench: git scm integration peek actions stage and revert only the sele
     try Harness.button(tab, controller.widget.?, "git.stageChange");
     try std.testing.expect(controller.widget == null);
     try std.testing.expectEqual(tab, workbench.activeTab().?);
+    // The original resource event starts a targeted resolver refresh now,
+    // before the repository's 1,100 ms general change deadline.
+    const original_key = try @import("../vs/base/common/stdUri.zig").resourceKey(a, retained_original.model.uri());
+    defer a.free(original_key);
+    try std.testing.expect(workbench.text_model_resolver.pending.contains(original_key));
     const index = (try provider.git.?.readRef(root, "a.txt", .index)).?;
     defer a.free(index);
     try std.testing.expectEqualStrings(partial, index);

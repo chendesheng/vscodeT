@@ -14,18 +14,20 @@ const IHostService = @import("../../../vs/workbench/services/host/browser/host.z
 const time = @import("../../../vs/base/common/timeCompat.zig");
 
 pub const GitFileSystemProvider = struct {
+    allocator: std.mem.Allocator,
     model: *Model,
     io: std.Io,
     registration: ?resolver.ContentProviderRegistration = null,
     on_did_change: event.Emitter(resolver.ContentChange),
     repository_listener: ?event.SignalSubscription = null,
+    original_listener: ?event.SignalSubscription = null,
     focus_listener: ?event.SignalSubscription = null,
     change_deadline: dispatch.Task = .{},
     focused: bool = true,
     waiting_for_focus: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, model: *Model, io: std.Io) GitFileSystemProvider {
-        return .{ .model = model, .io = io, .on_did_change = .init(allocator) };
+        return .{ .allocator = allocator, .model = model, .io = io, .on_did_change = .init(allocator) };
     }
 
     pub fn attachRepository(self: *GitFileSystemProvider, repository: *Repository, window: *dispatch.Queue, host: IHostService) !void {
@@ -34,13 +36,16 @@ pub const GitFileSystemProvider = struct {
         self.focused = host.hasFocus();
         self.repository_listener = try repository.on_change.listenDisposable(self, onRepositoryChanged);
         errdefer self.detachRepository();
+        self.original_listener = try repository.on_did_change_original_resource.listenDisposable(self, onOriginalResourceChanged);
         self.focus_listener = try host.on_did_change_focus.listenDisposable(self, onFocusChanged);
     }
 
     pub fn detachRepository(self: *GitFileSystemProvider) void {
         if (self.repository_listener) |listener| listener.dispose();
+        if (self.original_listener) |listener| listener.dispose();
         if (self.focus_listener) |listener| listener.dispose();
         self.repository_listener = null;
+        self.original_listener = null;
         self.focus_listener = null;
         self.change_deadline.schedule(null);
         self.waiting_for_focus = false;
@@ -48,6 +53,20 @@ pub const GitFileSystemProvider = struct {
 
     fn onRepositoryChanged(_: void, self: *GitFileSystemProvider) !void {
         self.change_deadline.schedule(time.milliTimestamp() + 1100);
+    }
+
+    fn onOriginalResourceChanged(resource: std.Uri, self: *GitFileSystemProvider) !void {
+        if (!std.mem.eql(u8, resource.scheme, "file")) return;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const path = try @import("../../../vs/base/common/stdUri.zig").fsPath(resource, a);
+        const uri = @import("uri.zig");
+        const originals = [_]std.Uri{
+            try uri.toGitUri(a, path, "~"),
+            try uri.toGitUriWithOptions(a, path, "", .{ .replace_file_extension = true }),
+        };
+        try self.on_did_change.fire(.{ .resources = &originals });
     }
 
     fn onFocusChanged(focused: bool, self: *GitFileSystemProvider) !void {

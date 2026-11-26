@@ -79,7 +79,6 @@ pub const Commands = struct {
             },
             .open_change => try self.openChange(git_resource),
             .stage, .unstage => {
-                const git = provider.git orelse return error.NoGit;
                 const head = provider.repository.stateRef().head;
                 const has_head = if (head) |branch| branch.ref.commit != null else false;
                 const operation: git_mod.Git.ResourceAction = if (action == .stage) .stage else if (has_head) .unstage else .unstage_unborn;
@@ -91,7 +90,7 @@ pub const Commands = struct {
                         count += 1;
                     }
                 }
-                try git.runResourceAction(provider.root, operation, paths[0..count]);
+                try provider.runResourceAction(operation, paths[0..count]);
                 host.refresh(self.host.context);
             },
             .discard => try self.confirmDiscard(git_resource),

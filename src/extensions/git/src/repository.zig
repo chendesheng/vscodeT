@@ -112,6 +112,7 @@ pub const Repository = struct {
     base: scm.ISCMProvider,
     on_resources: Emitter(void),
     on_change: Emitter(void),
+    on_did_change_original_resource: Emitter(std.Uri),
     input_placeholder_buffer: [160]u8 = undefined,
     configuration_service: ?*ConfigurationService = null,
     configuration_listener: ?usize = null,
@@ -171,6 +172,7 @@ pub const Repository = struct {
             .base = undefined,
             .on_resources = Emitter(void).init(allocator),
             .on_change = Emitter(void).init(allocator),
+            .on_did_change_original_resource = Emitter(std.Uri).init(allocator),
             .on_groups = Emitter(void).init(allocator),
             .primary_quick_diff = undefined,
             .secondary_quick_diff = undefined,
@@ -178,6 +180,7 @@ pub const Repository = struct {
         errdefer {
             self.on_resources.deinit();
             self.on_change.deinit();
+            self.on_did_change_original_resource.deinit();
             self.on_groups.deinit();
         }
 
@@ -361,6 +364,7 @@ pub const Repository = struct {
         }
         self.on_resources.deinit();
         self.on_change.deinit();
+        self.on_did_change_original_resource.deinit();
         self.on_groups.deinit();
         if (self.branch) |branch| allocator.free(branch);
         allocator.free(self.root);
@@ -450,6 +454,23 @@ pub const Repository = struct {
         const bytes = try codec.encode(self.allocator, contents, encoding);
         defer self.allocator.free(bytes);
         try (self.git orelse return error.NoGit).stage(self.root, relative, bytes);
+        self.notifyOriginalResourceChanged(path);
+    }
+
+    fn notifyOriginalResourceChanged(self: *Repository, path: []const u8) void {
+        self.on_did_change_original_resource.fire(.{ .scheme = "file", .path = .{ .raw = path } }) catch {};
+    }
+
+    // Upstream Repository.revert invalidates the specific original resources
+    // as soon as the index operation completes, before the debounced status.
+    pub fn runResourceAction(self: *Repository, operation: Git.ResourceAction, paths: []const []const u8) !void {
+        try (self.git orelse return error.NoGit).runResourceAction(self.root, operation, paths);
+        if (operation != .unstage and operation != .unstage_unborn) return;
+        for (paths) |relative| {
+            const absolute = std.fs.path.join(self.allocator, &.{ self.root, relative }) catch continue;
+            defer self.allocator.free(absolute);
+            self.notifyOriginalResourceChanged(absolute);
+        }
     }
 
     pub fn count(self: *const Repository) usize {
