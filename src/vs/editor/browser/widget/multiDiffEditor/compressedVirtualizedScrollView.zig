@@ -91,17 +91,22 @@ pub const CompressedVirtualizedScrollView = struct {
     }
     pub fn destroy(self: *CompressedVirtualizedScrollView) void {
         self.clear_direction.schedule(null);
-        for (self.items) |entry| {
-            entry.item.on_did_change.unlisten(entry.listener);
-            entry.item.hide(entry.item.context);
-        }
-        self.allocator.free(self.items);
+        self.detachItems();
         self.allocator.free(self.previous_items);
         self.allocator.free(self.previous_heights);
         self.layout.deinit();
         self.clearGeometryEdit();
         self.on_did_change_layout.deinit();
         self.allocator.destroy(self);
+    }
+
+    /// Detach model listeners and hide all items without allocating during disposal.
+    pub fn detachItems(self: *CompressedVirtualizedScrollView) void {
+        const items = self.items;
+        self.items = &.{};
+        for (items) |entry| entry.item.on_did_change.unlisten(entry.listener);
+        for (items) |entry| entry.item.hide(entry.item.context);
+        self.allocator.free(items);
     }
 
     pub fn setItems(self: *CompressedVirtualizedScrollView, items: []const ICompressedVirtualizedScrollItem) !void {
