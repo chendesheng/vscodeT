@@ -1,11 +1,38 @@
-// Port of the history-related helpers in `vscode/extensions/git/src/util.ts`.
+// Port of the history and resource-path helpers in `vscode/extensions/git/src/util.ts`.
 //
-// Only the functions used by the terminal history provider are ported:
-// `deltaHistoryItemRefs`, `subject` and `truncate`. Clone/remote/operation
-// helpers are outside the ported extension subset.
+// Clone/remote/operation helpers are outside the ported extension subset.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const history = @import("../../../vs/workbench/contrib/scm/common/history.zig");
+const builtin = @import("builtin");
+
+fn normalizePath(allocator: Allocator, path: []const u8) ![]u8 {
+    const trimmed = if (path.len > 1 and (path[path.len - 1] == '/' or path[path.len - 1] == '\\')) path[0 .. path.len - 1] else path;
+    const normalized = try std.fs.path.resolve(allocator, &.{trimmed});
+    if (builtin.os.tag == .windows or builtin.os.tag == .macos) {
+        for (normalized) |*byte| byte.* = std.ascii.toLower(byte.*);
+    }
+    return normalized;
+}
+
+pub fn pathEquals(allocator: Allocator, left: []const u8, right: []const u8) !bool {
+    if (std.mem.eql(u8, left, right)) return true;
+    const a = try normalizePath(allocator, left);
+    defer allocator.free(a);
+    const b = try normalizePath(allocator, right);
+    defer allocator.free(b);
+    return std.mem.eql(u8, a, b);
+}
+
+pub fn isDescendant(allocator: Allocator, parent: []const u8, descendant: []const u8) !bool {
+    if (std.mem.eql(u8, parent, descendant)) return true;
+    const a = try normalizePath(allocator, parent);
+    defer allocator.free(a);
+    const b = try normalizePath(allocator, descendant);
+    defer allocator.free(b);
+    if (a.len == 0 or b.len <= a.len or !std.mem.startsWith(u8, b, a)) return false;
+    return a[a.len - 1] == std.fs.path.sep or b[a.len] == std.fs.path.sep;
+}
 
 pub const HistoryItemRefDelta = struct {
     added: std.array_list.Managed(history.ISCMHistoryItemRef),

@@ -487,6 +487,38 @@ pub const Repository = struct {
         }
     }
 
+    pub fn isSubmoduleResource(self: *const Repository, path: []const u8) bool {
+        for (self.repository.stateRef().submodules) |module| {
+            const absolute = std.fs.path.join(self.allocator, &.{ self.root, module.path }) catch continue;
+            defer self.allocator.free(absolute);
+            if (@import("util.zig").pathEquals(self.allocator, absolute, path) catch false) return true;
+        }
+        return false;
+    }
+
+    /// Upstream Model.getOpenRepository excludes a parent's submodule tree
+    /// even when the submodule has no current status entry.
+    pub fn containsSubmodule(self: *const Repository, path: []const u8) bool {
+        const util = @import("util.zig");
+        const state = self.repository.stateRef();
+        for (state.submodules) |module| {
+            const absolute = std.fs.path.join(self.allocator, &.{ self.root, module.path }) catch continue;
+            defer self.allocator.free(absolute);
+            if ((util.pathEquals(self.allocator, absolute, path) catch false) or (util.isDescendant(self.allocator, absolute, path) catch false)) return true;
+        }
+        // Porcelain can identify a Gitlink before its .gitmodules entry is
+        // written (including a freshly staged submodule).
+        for ([_][]const GitChange{ state.index_changes, state.working_tree_changes, state.merge_changes }) |changes| {
+            for (changes) |change| {
+                if (!change.submodule) continue;
+                const absolute = std.fs.path.join(self.allocator, &.{ self.root, change.path }) catch continue;
+                defer self.allocator.free(absolute);
+                if ((util.pathEquals(self.allocator, absolute, path) catch false) or (util.isDescendant(self.allocator, absolute, path) catch false)) return true;
+            }
+        }
+        return false;
+    }
+
     pub fn count(self: *const Repository) usize {
         var total: usize = 0;
         for (&self.groups) |*group| total += group.resources.items.len;
@@ -576,10 +608,11 @@ pub const Repository = struct {
         const tooltip = try self.allocator.dupe(u8, info.tooltip);
         errdefer self.allocator.free(tooltip);
 
+        const submodule = change.submodule or self.isSubmoduleResource(absolute);
         const uris = @import("uri.zig");
         const previous_absolute = if (original) |path| try std.fs.path.join(self.allocator, &.{ self.root, path }) else null;
         defer if (previous_absolute) |value| self.allocator.free(value);
-        const original_uri = if (change.submodule) null else switch (kind) {
+        const original_uri = if (submodule) null else switch (kind) {
             .merge => if (change.conflict) |xy|
                 if ((xy[0] == 'D' and xy[1] == 'U') or (xy[0] == 'U' and xy[1] == 'D')) try uris.gitUriString(self.allocator, absolute, "~1") else null
             else
@@ -599,7 +632,7 @@ pub const Repository = struct {
         // Upstream Repository.getResources represents a submodule change
         // as one virtual patch in the parent repository, not the checked-out
         // directory or a pair of Gitlink object IDs.
-        const modified_uri = if (change.submodule)
+        const modified_uri = if (submodule)
             try uris.gitUriStringWithOptions(self.allocator, absolute, if (kind == .index) "index" else "wt", .{ .submodule_of = self.root })
         else if (kind == .merge)
             if (change.conflict) |xy|
@@ -621,7 +654,7 @@ pub const Repository = struct {
             .absolute_path = absolute,
             .kind = kind,
             .status = status,
-            .submodule = change.submodule,
+            .submodule = submodule,
             .conflict = change.conflict,
             .letter = .{info.letter},
             .decorations = .{

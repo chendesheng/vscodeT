@@ -2,8 +2,8 @@
 // The native provider returns an owned URI descriptor immediately. The
 // read-only Git text model provider resolves blob contents asynchronously;
 // an ignored/missing index blob is rejected there rather than starting a
-// second synchronous Git process on the window thread. The repository port
-// currently owns one visible repository per workspace.
+// second synchronous Git process on the window thread. Each registered
+// repository rejects resources in its own submodule trees.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Repository = @import("repository.zig").Repository;
@@ -35,6 +35,7 @@ pub const GitQuickDiffProvider = struct {
         defer arena.deinit();
         const path = try std_uri.fsPath(uri, arena.allocator());
         const repository: *Repository = @ptrCast(@alignCast(context));
+        if (repository.containsSubmodule(path)) return null;
         const relative = paths.relativeToRoot(path, repository.root) orelse return null;
         if (std.mem.eql(u8, relative, ".git") or paths.relativeToRoot(relative, ".git") != null) return null;
         if (repository.dot_git) |dot| {
@@ -75,6 +76,7 @@ pub const StagedResourceQuickDiffProvider = struct {
         defer arena.deinit();
         const path = try std_uri.fsPath(uri, arena.allocator());
         const repository: *Repository = @ptrCast(@alignCast(context));
+        if (repository.containsSubmodule(path)) return null;
         if (!isRegularResource(repository, path)) return null;
         for (repository.groups[1].resources.items) |resource| {
             if (std.mem.eql(u8, resource.absolute_path, path)) return try originalResource(allocator, path, "HEAD", "HEAD");

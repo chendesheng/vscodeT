@@ -8,9 +8,9 @@
 // unported. The primary repository is retained as the selection used by the
 // existing SCM view while the model owns the full opened repository list.
 const std = @import("std");
-const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const extpath = @import("../../../vs/base/common/extpath.zig");
+const git_util = @import("util.zig");
 const Git = @import("git.zig").Git;
 const git = @import("git.zig");
 const repository_mod = @import("repository.zig");
@@ -317,15 +317,9 @@ pub const Model = struct {
 
     pub fn repositoryForRoot(self: *const Model, path: []const u8) ?*Repository {
         for (self.open_repositories.items) |provider| {
-            if (sameRoot(path, provider.root)) return provider;
+            if (git_util.pathEquals(self.allocator, path, provider.root) catch false) return provider;
         }
         return null;
-    }
-
-    fn sameRoot(left: []const u8, right: []const u8) bool {
-        const a = std.mem.trimEnd(u8, left, "/\\");
-        const b = std.mem.trimEnd(u8, right, "/\\");
-        return if (builtin.os.tag == .windows) std.ascii.eqlIgnoreCase(a, b) else std.mem.eql(u8, a, b);
     }
 
     /// Upstream getOpenRepository prefers the most deeply nested open root.
@@ -334,7 +328,8 @@ pub const Model = struct {
         if (!std.fs.path.isAbsolute(path)) return self.repository;
         var result: ?*Repository = null;
         for (self.open_repositories.items) |provider| {
-            if (!sameRoot(path, provider.root) and extpath.relativeToRoot(path, provider.root) == null) continue;
+            if (!(git_util.pathEquals(self.allocator, path, provider.root) catch false) and !(git_util.isDescendant(self.allocator, provider.root, path) catch false)) continue;
+            if (provider.containsSubmodule(path)) continue;
             if (result == null or provider.root.len > result.?.root.len) result = provider;
         }
         return result;

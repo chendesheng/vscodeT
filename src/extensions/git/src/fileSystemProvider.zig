@@ -221,7 +221,7 @@ pub const GitFileSystemProvider = struct {
         while (iterator.next()) |entry| {
             var roots = self.changed_roots.keyIterator();
             const affected = while (roots.next()) |repository| {
-                if (@import("../../../vs/base/common/extpath.zig").relativeToRoot(entry.value_ptr.path, repository.*.root) != null) break true;
+                if (@import("util.zig").isDescendant(self.allocator, repository.*.root, entry.value_ptr.path) catch false) break true;
             } else false;
             if (!affected) continue;
             changes.append(self.allocator, .{ .type = .UPDATED, .resource = entry.key_ptr.* }) catch return false;
