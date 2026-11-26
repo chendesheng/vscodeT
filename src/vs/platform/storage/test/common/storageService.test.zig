@@ -24,12 +24,16 @@ const Events = struct {
     }
 
     fn deinit(self: *Events) void {
+        self.reset();
         self.values.deinit();
         self.targets.deinit();
     }
 
     fn onValue(event: IStorageValueChangeEvent, context: *Events) anyerror!void {
-        try context.values.append(event);
+        var owned = event;
+        owned.key = try context.values.allocator.dupe(u8, event.key);
+        errdefer context.values.allocator.free(owned.key);
+        try context.values.append(owned);
     }
 
     fn onTarget(event: IStorageTargetChangeEvent, context: *Events) anyerror!void {
@@ -60,6 +64,7 @@ const Events = struct {
     }
 
     fn reset(self: *Events) void {
+        for (self.values.items) |event| self.values.allocator.free(event.key);
         self.values.clearRetainingCapacity();
         self.targets.clearRetainingCapacity();
     }
@@ -308,5 +313,45 @@ test "Keys (in-memory)" {
             defer allocator.free(zero);
             try std.testing.expectEqual(@as(usize, 0), zero.len);
         }
+    }
+}
+
+test "Storage persists profile values and targets across instances" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/profile.json", .{tmp.sub_path});
+    defer a.free(path);
+    {
+        var storage = InMemoryStorageService.init(a);
+        defer storage.deinit();
+        try storage.attachProfileStorage(io, path);
+        const key = try a.dupe(u8, "dynamic");
+        try storage.store(key, .{ .string = "value" }, .profile, .machine);
+        a.free(key);
+        try storage.store("other", .{ .boolean = false }, .profile, .user);
+        try storage.store("unpersisted", .{ .string = "workspace only" }, .workspace, .machine);
+        try storage.flush(.shutdown);
+    }
+    {
+        var storage = InMemoryStorageService.init(a);
+        defer storage.deinit();
+        try storage.attachProfileStorage(io, path);
+        try std.testing.expectEqualStrings("value", storage.get("dynamic", .profile, null).?);
+        try std.testing.expectEqual(false, storage.getBoolean("other", .profile, null).?);
+        try std.testing.expect(storage.get("unpersisted", .workspace, null) == null);
+        const keys = try storage.keys(a, .profile, .machine);
+        defer a.free(keys);
+        try std.testing.expectEqual(@as(usize, 1), keys.len);
+        try std.testing.expectEqualStrings("dynamic", keys[0]);
+        storage.remove("dynamic", .profile);
+    }
+    {
+        var storage = InMemoryStorageService.init(a);
+        defer storage.deinit();
+        try storage.attachProfileStorage(io, path);
+        try std.testing.expect(storage.get("dynamic", .profile, null) == null);
+        try std.testing.expectEqual(false, storage.getBoolean("other", .profile, null).?);
     }
 }

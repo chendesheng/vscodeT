@@ -1,10 +1,9 @@
 // Port of `src/vs/platform/storage/common/storage.ts` (in-memory subset).
 //
-// Terminal adaptation: there is no SQLite/IndexedDB-backed `Storage`, async
-// initialization, flush scheduling, profile/workspace switching or cross-window
-// propagation. `InMemoryStorageService` keeps the same scopes, targets, value
-// stringification, key/target bookkeeping and change-event semantics in memory
-// for the session. Values are stored as strings exactly like the upstream
+// Terminal adaptation: the cache uses an optional atomic JSON profile file
+// instead of SQLite/IndexedDB. Workspace switching and cross-window
+// propagation remain unported. Scopes, targets and change events are kept
+// in memory. Values are stored as strings exactly like the upstream
 // `Storage` cache; numbers/booleans/objects are stringified on write.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -74,6 +73,7 @@ pub const IStorageEntry = struct {
 
 pub const IStorageValueChangeEvent = struct {
     scope: StorageScope,
+    /// Borrowed for the duration of the change callback.
     key: []const u8,
     target: ?StorageTarget,
     external: bool,
@@ -132,7 +132,10 @@ const ScopeData = struct {
 
     fn deinit(self: *ScopeData, allocator: Allocator) void {
         var iterator = self.values.iterator();
-        while (iterator.next()) |entry| allocator.free(entry.value_ptr.*);
+        while (iterator.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
         self.values.deinit();
         self.targets.deinit();
     }
@@ -149,6 +152,37 @@ pub const InMemoryStorageService = struct {
     onWillSaveState: Emitter(IWillSaveStateEvent),
     filters: std.array_list.Managed(*ValueFilter),
     filter_ids: std.AutoHashMap(usize, FilterHandle),
+    profile_storage: ?struct { io: std.Io, path: []u8, dirty: bool = false } = null,
+
+    const StoredProfileEntry = struct { key: []const u8, value: []const u8, target: StorageTarget };
+
+    /// Install machine-local persistence before contributions start. Profile
+    /// values use the normal storage cache and event path after loading.
+    pub fn attachProfileStorage(self: *InMemoryStorageService, io: std.Io, path: []const u8) !void {
+        if (self.profile_storage != null) return error.ProfileStorageAlreadyAttached;
+        const owned_path = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(owned_path);
+        if (try readStateFile([]StoredProfileEntry, self.allocator, io, path)) |parsed| {
+            defer parsed.deinit();
+            for (parsed.value) |entry| try self.storeInternal(entry.key, .{ .string = entry.value }, .profile, entry.target, true);
+        }
+        self.profile_storage = .{ .io = io, .path = owned_path };
+    }
+    fn flushProfile(self: *InMemoryStorageService) !void {
+        const profile = if (self.profile_storage) |*value| value else return;
+        if (!profile.dirty) return;
+        const entries = try self.allocator.alloc(StoredProfileEntry, self.profile.values.count());
+        defer self.allocator.free(entries);
+        var iterator = self.profile.values.iterator();
+        var index: usize = 0;
+        while (iterator.next()) |entry| : (index += 1) entries[index] = .{
+            .key = entry.key_ptr.*,
+            .value = entry.value_ptr.*,
+            .target = self.profile.targets.get(entry.key_ptr.*) orelse .user,
+        };
+        try writeStateFile(self.allocator, profile.io, profile.path, entries);
+        profile.dirty = false;
+    }
 
     pub fn init(allocator: Allocator) InMemoryStorageService {
         return .{
@@ -166,6 +200,8 @@ pub const InMemoryStorageService = struct {
     }
 
     pub fn deinit(self: *InMemoryStorageService) void {
+        self.flushProfile() catch {};
+        if (self.profile_storage) |value| self.allocator.free(value.path);
         self.application_shared.deinit(self.allocator);
         self.application.deinit(self.allocator);
         self.profile.deinit(self.allocator);
@@ -237,27 +273,31 @@ pub const InMemoryStorageService = struct {
             else => {},
         }
         const scope_data = self.data(scope);
+        // A target listener can remove the key before the value event fires.
+        // Keep the event payload independent of the mutable storage cache.
+        const event_key = try self.allocator.dupe(u8, key);
+        defer self.allocator.free(event_key);
         const serialized = try serializeValue(self.allocator, value);
-        errdefer self.allocator.free(serialized);
-
-        const existing_target = scope_data.targets.get(key);
-        if (existing_target == null or existing_target.? != target) {
-            try scope_data.targets.put(key, target);
-            try self.onDidChangeTarget.fire(.{ .scope = scope });
-        }
-
-        const result = try scope_data.values.getOrPut(key);
-        if (result.found_existing) {
-            self.allocator.free(result.value_ptr.*);
-        }
-        result.value_ptr.* = serialized;
-
-        try self.onDidChangeValue.fire(.{
-            .scope = scope,
-            .key = key,
-            .target = target,
-            .external = external,
-        });
+        var value_owned = false;
+        errdefer if (!value_owned) self.allocator.free(serialized);
+        const existing = scope_data.values.getEntry(key);
+        const owned_key = if (existing) |entry| entry.key_ptr.* else try self.allocator.dupe(u8, key);
+        var key_owned = existing != null;
+        errdefer if (!key_owned) self.allocator.free(owned_key);
+        try scope_data.values.ensureUnusedCapacity(1);
+        try scope_data.targets.ensureUnusedCapacity(1);
+        const previous = scope_data.values.fetchPutAssumeCapacity(owned_key, serialized);
+        key_owned = true;
+        value_owned = true;
+        if (previous) |entry| self.allocator.free(entry.value);
+        const existing_target = scope_data.targets.get(owned_key);
+        const target_changed = existing_target == null or existing_target.? != target;
+        if (target_changed) scope_data.targets.putAssumeCapacity(owned_key, target);
+        if (scope == .profile) if (self.profile_storage) |*profile| {
+            profile.dirty = true;
+        };
+        if (target_changed) try self.onDidChangeTarget.fire(.{ .scope = scope });
+        try self.onDidChangeValue.fire(.{ .scope = scope, .key = event_key, .target = target, .external = external });
     }
 
     pub fn remove(self: *InMemoryStorageService, key: []const u8, scope: StorageScope) void {
@@ -267,17 +307,16 @@ pub const InMemoryStorageService = struct {
     fn removeInternal(self: *InMemoryStorageService, key: []const u8, scope: StorageScope, external: bool) void {
         const scope_data = self.data(scope);
         const removed = scope_data.values.fetchRemove(key);
-        if (removed) |entry| self.allocator.free(entry.value);
+        defer if (removed) |entry| {
+            self.allocator.free(entry.value);
+            self.allocator.free(entry.key);
+        };
         const had_target = scope_data.targets.remove(key);
-        if (had_target) {
-            self.onDidChangeTarget.fire(.{ .scope = scope }) catch {};
-        }
-        self.onDidChangeValue.fire(.{
-            .scope = scope,
-            .key = key,
-            .target = null,
-            .external = external,
-        }) catch {};
+        if (removed != null and scope == .profile) if (self.profile_storage) |*profile| {
+            profile.dirty = true;
+        };
+        if (had_target) self.onDidChangeTarget.fire(.{ .scope = scope }) catch {};
+        self.onDidChangeValue.fire(.{ .scope = scope, .key = if (removed) |entry| entry.key else key, .target = null, .external = external }) catch {};
     }
 
     /// Returns keys with the given target; the caller frees the returned slice.
@@ -390,6 +429,7 @@ pub const InMemoryStorageService = struct {
 
     pub fn flush(self: *InMemoryStorageService, reason: WillSaveStateReason) !void {
         try self.onWillSaveState.fire(.{ .reason = reason });
+        try self.flushProfile();
     }
 };
 
