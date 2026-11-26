@@ -1,10 +1,11 @@
 # AGENTS.md — porting rules for vscodeT
 
-This repository is a Zig 0.17 port of VS Code editor internals. The upstream
-checkout is expected at `vscode/`. Upstream source paths therefore start with:
+This repository is a Zig 0.17 port of VS Code's editor, platform and workbench.
+The upstream checkout is expected at `vscode/`. Upstream source paths start with:
 
 ```
-vscode/src/vs/editor/...
+vscode/src/vs/...
+vscode/extensions/...
 ```
 
 Do not edit upstream files. Port behavior into this repository instead.
@@ -19,11 +20,12 @@ inventory are tied to the `vscode` commit.
 
 ## Source layout
 
-- Mirror the upstream file and folder structure exactly under
-  `src/vs/editor/...`: same directory names, same basenames, only changing
-  `.ts` to `.zig`.
-- TUI-only integration belongs in `src/tui/`; portable editor logic belongs in
-  `src/vs/editor/...`.
+- Mirror the upstream file and folder structure exactly throughout `src/vs/`
+  (including `base`, `platform`, `editor` and `workbench`), and mirror built-in
+  extensions from `vscode/extensions/` under `src/extensions/`: same directory
+  names, same basenames, only changing `.ts` to `.zig`.
+- TUI-only integration belongs in `src/tui/`; portable logic belongs in its
+  corresponding upstream owner under `src/vs/` or `src/extensions/`.
 - Tests are part of that structure. Keep the upstream `test/...` folder and the
   upstream `.test.ts` basename, e.g.
   `src/vs/editor/contrib/lineSelection/test/browser/lineSelection.test.ts`
@@ -38,6 +40,85 @@ inventory are tied to the `vscode` commit.
 
 When a file contains a deliberate Zig adaptation rather than a literal port,
 state that in the comment and keep the behavioral contract intact.
+
+## Architecture of a faithful port
+
+Fidelity means preserving how VS Code is built, not just making the terminal
+behave similarly. The workbench refactor is a reference for this approach
+(`docs/workbench-audit.md`). Its original 23,356-line shell supported many
+features but mixed their ownership, lifecycle and native I/O in one place.
+Moving the same monolith to a different file is not an architectural port.
+
+- **Port the architecture before accumulating features.** Trace the upstream
+  entry point through its services, registries, contributions, parts, models
+  and events. If a prerequisite contract is missing, port that contract first
+  rather than bypassing it with a special case in the application shell. Use
+  the upstream owner even if implementing it takes more than one commit.
+- **Preserve composition and dependency direction.** The portable
+  `src/vs/workbench/browser/workbench.zig` corresponds to `workbench.ts`: it
+  owns workbench startup, Layout, registries, context keys, listeners, parts,
+  notifications and restoration, not individual feature implementations.
+  `layout.zig` and the registered parts own layout policy; features live in
+  their upstream contribution, service or extension. The shared
+  `workbench.common.main.zig` assembles contribution registrations. Neither
+  feature modules nor extensions depend on the concrete Workbench or native
+  window. `src/vs/` must not import `src/tui/`.
+- **Separate the host from the application architecture.** `src/tui/app.zig`
+  runs the terminal event loop; `src/tui/workbench.zig` handles native rendering,
+  input and pointer routing; `src/tui/workbenchWindow.zig` and
+  `workbenchServices.zig` supply concrete instances and native bindings. Keep
+  feature policy and state out of these adapters. Pass a narrow interface or
+  explicit callback for a real host capability; do not turn `IWorkbenchHost`
+  or the native window into a general-purpose feature service locator.
+- **Port service, registration and lifecycle semantics.** Use the upstream
+  `I*Service` contracts and owner lifetimes, `ServiceCollection`,
+  `InstantiationService`, `ServicesAccessor` and contribution/part registries.
+  Explicit Zig factories replace TypeScript decorators, not the dependency
+  graph. Resolve dependencies at the composition or action boundary and give
+  consumers the services they actually use. Preserve startup ordering and
+  lifecycle barriers (`Ready`, `Restored`, `Eventually`), and dispose services,
+  registrations, subscriptions and pending work with their owners. Fresh and
+  restored windows should use the same construction and mounting path.
+- **Register features where upstream registers them.** Preserve command IDs,
+  labels, categories, preconditions, context key expressions, keybindings,
+  palette visibility, menu group/order and enablement. Use `Action2`,
+  `MenuRegistry`, `MenuService`, the view registries and editor registries
+  instead of central command tables, per-feature menu switches or direct
+  shell calls from extension API adapters. Context keys are updated by the
+  services/events that own their state, not by the renderer.
+- **Keep async behavior and ownership intact across the terminal boundary.**
+  Preserve the upstream trigger, delay or debounce, cancellation, result
+  ordering and consumer event. A worker, native file watcher or terminal
+  process delivers a completion/readiness event to the window dispatcher;
+  the owning service consumes it. A deadline queue replaces browser timers.
+  The host may wait for I/O and deadlines, but never scan a list of models,
+  contributions or views looking for work. Closing an owner must cancel or
+  detach pending callbacks before releasing their state. Rendering consumes
+  already-updated state; it is not where feature updates are discovered.
+- **Keep platform adaptations at a shared boundary.** Use existing URI/path
+  identity, encoding, filesystem and UI abstractions rather than comparing
+  their terminal string representations or duplicating conversions in feature
+  code. Isolate platform-specific behavior where upstream does, and make
+  test fixtures independent of incidental OS defaults (for example line
+  endings or Git configuration) without overriding the user's settings in
+  the application. Tests must exercise the same contract on Linux, macOS
+  and Windows.
+- **Migrate without discarding behavior.** For an established deviation, split
+  the work into reviewable steps that move ownership and callers together.
+  Preserve existing tests, commands and observable behavior during extraction;
+  add upstream cases and regressions for event ordering and disposal. When
+  needed, snapshot the existing command metadata or other observable contracts
+  before migration. Shrink temporary import exceptions and monolith budgets
+  as the debt is removed. `zig build check-workbench` enforces the current
+  Workbench import boundary and native window size ratchet; do not enlarge the
+  native budget to accommodate new feature logic.
+
+The upstream pin is the specification, not the existing Zig shortcut. A
+similar-looking terminal UI, a passing test suite, or a smaller shell file
+alone does not prove fidelity. Record exact unavoidable adaptations and
+remaining portable gaps separately; do not call an unported portable layer a
+terminal limitation or claim the entire upstream feature is ported when only
+part of it is present.
 
 ## Standalone vscode-textmate port
 
@@ -402,6 +483,12 @@ git diff --check
 Also verify:
 
 - [ ] The portable upstream behavior and tests are present.
+- [ ] The upstream owner, service dependencies, registration and lifecycle
+      structure are preserved; new feature logic has not accumulated in the
+      portable composition root or native host.
+- [ ] Upstream events and asynchronous completion/cancellation drive state
+      changes without a render-time or host-loop scan. Tests verify important
+      transitions before a render or input event when applicable.
 - [ ] View-side behavior is ported through the upstream-shaped layers, not only
       the model/controller; any terminal/browser-infrastructure exception is
       documented in the file header and `README.md`.
