@@ -750,18 +750,15 @@ pub fn DiffEditorWidget(comptime View: type) type {
             const cursor_line = self.focusedEditor().modelCursorPosition().lineNumber;
             const current_mapping = gutter_feature.mappingIndexAtModelLine(mappings, self.focused == .original, cursor_line) orelse self.current_change;
             const scroll_top = self.modified_editor.scrollTop();
-            var row: usize = 0;
-            while (row < height) : (row += 1) {
-                const offset = scroll_top + row;
-                var glyph: u21 = '│';
-                var style = normal;
-                if (gutter_feature.mappingIndexAtVerticalOffset(mappings, self.original_editor, self.modified_editor, offset)) |index| {
-                    const mapping = mappings[index].line_range_mapping;
-                    if (current_mapping == index) style = current;
-                    const bounds = gutter_feature.hunkBounds(mapping, self.original_editor, self.modified_editor);
-                    if (offset == bounds.startLineNumber) glyph = gutter_feature.markerForMapping(mapping);
+            for (0..height) |row| frame.next.putCodepoint(x, y + row, '│', 1, normal);
+            const provider: gutter_feature.DiffEditorGutter = .{ .mappings = mappings, .original = self.original_editor, .modified = self.modified_editor };
+            var items = provider.render(scroll_top, height);
+            while (items.next()) |item| {
+                const style = if (current_mapping == item.index) current else normal;
+                for (item.visible.startLineNumber..item.visible.endLineNumberExclusive) |offset| {
+                    const glyph = if (offset == item.bounds.startLineNumber) gutter_feature.markerForMapping(mappings[item.index].line_range_mapping) else '│';
+                    frame.next.putCodepoint(x, y + offset - scroll_top, glyph, 1, style);
                 }
-                frame.next.putCodepoint(x, y + row, glyph, 1, style);
             }
         }
 

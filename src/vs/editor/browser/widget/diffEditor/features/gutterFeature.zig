@@ -64,6 +64,27 @@ pub fn hunkBounds(mapping: view_model.DetailedLineRangeMapping, original: *Edito
     return right orelse LineRange.init(0, 0);
 }
 
+const EditorGutter = @import("../utils/editorGutter.zig").EditorGutter;
+const IGutterItemProvider = @import("../utils/editorGutter.zig").IGutterItemProvider;
+
+/// The diff gutter supplies the hunk items and their common-axis geometry to
+/// the shared gutter layout. The view owns the viewport clipping.
+pub const DiffEditorGutter = struct {
+    mappings: []const view_model.DiffMapping,
+    original: *Editor,
+    modified: *Editor,
+
+    fn bounds(context: *const anyopaque, index: usize) LineRange {
+        const self: *const DiffEditorGutter = @ptrCast(@alignCast(context));
+        return hunkBounds(self.mappings[index].line_range_mapping, self.original, self.modified);
+    }
+
+    pub fn render(self: *const DiffEditorGutter, top: usize, height: usize) EditorGutter {
+        const provider: IGutterItemProvider = .{ .context = self, .item_count = self.mappings.len, .bounds = bounds };
+        return EditorGutter.render(provider, LineRange.ofLength(top, height));
+    }
+};
+
 pub fn mappingIndexAtVerticalOffset(mappings: []const view_model.DiffMapping, original: *Editor, modified: *Editor, offset: usize) ?usize {
     var low: usize = 0;
     var high = mappings.len;
@@ -154,5 +175,23 @@ test "gutterFeature: benchmark 1k and 10k real-layout hunks" {
             }
         }
         std.debug.print("[bench] diff real-layout gutter: {d} hunks, 40000 lookups, {d} ms, checksum {d}\n", .{ count, time.milliTimestamp() - start, sum });
+        const provider: DiffEditorGutter = .{ .mappings = mappings, .original = original, .modified = modified };
+        const item_start = time.milliTimestamp();
+        var item_sum: usize = 0;
+        for (0..1000) |frame| {
+            const top = (frame * 31) % (count * 2);
+            const first_height = @min(40, count * 2 - top);
+            var items = provider.render(top, first_height);
+            while (items.next()) |item| {
+                try std.testing.expectEqual(item.index * 2, item.bounds.startLineNumber);
+                item_sum += item.index;
+            }
+            if (first_height < 40) {
+                items = provider.render(0, 40 - first_height);
+                while (items.next()) |item| item_sum += item.index;
+            }
+        }
+        try std.testing.expectEqual(sum, item_sum);
+        std.debug.print("[bench] diff visible gutter items: {d} hunks, 1000 frames, {d} ms, checksum {d}\n", .{ count, time.milliTimestamp() - item_start, item_sum });
     }
 }
