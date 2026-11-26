@@ -123,7 +123,7 @@ pub fn VirtualizedItemManager(comptime Item: type, comptime Binding: type, compt
                 return if (self.binding()) |bound| bound.maxScroll() else 0;
             }
             fn onUnboundChanged(_: void, self: *@This()) !void {
-                if (self.binding() == null) try self.change.fire({});
+                if (!self.clearing) try self.change.fire({});
             }
             fn notifyBindingChanged(context: *anyopaque) !void {
                 const self: *@This() = @ptrCast(@alignCast(context));

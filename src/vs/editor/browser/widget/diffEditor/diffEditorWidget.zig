@@ -521,6 +521,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.layout(width, height);
             self.selectInitialChange();
             if (normalized_options.only_show_accessible_diff_viewer) try self.accessibleDiffViewerNext();
+            self.view_model.mounted_view_count += 1;
             return self;
         }
 
@@ -548,6 +549,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.overview.deinit(self.original_editor, self.modified_editor);
             self.decorations.deinit();
             allocator.destroy(self.decorations);
+            self.view_model.mounted_view_count -= 1;
             if (self.owns_view_model) {
                 self.view_model.deinit();
                 allocator.destroy(self.view_model);

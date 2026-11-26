@@ -198,6 +198,8 @@ pub const UnchangedRegion = struct {
     }
 };
 
+pub const UnchangedRegionOptions = struct { enabled: bool, minimum: usize, context: usize };
+
 pub const DiffEditorViewModel = struct {
     allocator: Allocator,
     model: struct { original: *doc_diff.TextModel, modified: *doc_diff.TextModel },
@@ -224,6 +226,10 @@ pub const DiffEditorViewModel = struct {
     original_content_listener: ?usize = null,
     modified_content_listener: ?usize = null,
     last_compute_error: ?anyerror = null,
+    // A virtualized diff item retains its model with no mounted widget.
+    // Track the same region ranges in that interval as when a view is bound.
+    persistent_region_options: ?UnchangedRegionOptions = null,
+    mounted_view_count: usize = 0,
 
     pub fn init(
         allocator: Allocator,
@@ -367,6 +373,18 @@ pub const DiffEditorViewModel = struct {
         try self.applyComputedDiff(result);
     }
 
+    /// The multi-diff loading deadline may elapse before the first result.
+    /// The editors can mount real text immediately while the worker is pending.
+    pub fn initializeEmptyState(self: *DiffEditorViewModel) void {
+        if (self.state == null) self.state = .{ .mappings = &.{}, .moved_texts = &.{}, .identical = false, .quit_early = false };
+    }
+
+    pub fn setPersistentUnchangedRegionOptions(self: *DiffEditorViewModel, options: UnchangedRegionOptions) !void {
+        const changed = self.persistent_region_options == null or !std.meta.eql(self.persistent_region_options.?, options);
+        self.persistent_region_options = options;
+        if (changed and self.mounted_view_count == 0) try self.initializeUnchangedRegions(options.enabled, options.minimum, options.context);
+    }
+
     pub fn applyComputedDiff(self: *DiffEditorViewModel, result: IDocumentDiff) !void {
         const normalized = try self.normalizeDocumentDiff(result);
         var previous = self.state;
@@ -389,6 +407,9 @@ pub const DiffEditorViewModel = struct {
                     break;
                 }
             }
+        }
+        if (self.mounted_view_count == 0) {
+            if (self.persistent_region_options) |options| try self.initializeUnchangedRegions(options.enabled, options.minimum, options.context);
         }
         // Keep the old mapping allocation alive until the synchronous
         // derived consumers have installed the new state.
