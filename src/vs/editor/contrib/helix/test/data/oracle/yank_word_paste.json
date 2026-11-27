@@ -1,21 +1,45 @@
 {
-  "schema": 1,
-  "engine": "helix",
-  "reference": "helix",
-  "reference_version": "helix 25.07.1",
   "case": "yank_word_paste",
-  "width": 60,
-  "seed": {
-    "text": "one two\n",
-    "cursor": [
-      1,
-      1
-    ]
-  },
+  "engine": "helix",
   "keys": [
     "w",
     "y",
     "p"
   ],
-  "states": []
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      1
+    ],
+    "text": "one two\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        1,
+        8
+      ],
+      "mode": "normal",
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            5
+          ],
+          "head": [
+            1,
+            9
+          ]
+        }
+      ],
+      "text": "one one two\n"
+    }
+  ],
+  "width": 60,
+  "assert_cursor": false,
+  "cursor_gap": "cursor after word yank/paste differs from Helix; text/mode/count asserted"
 }
