@@ -738,6 +738,7 @@ comptime {
     _ = @import("./vs/workbench/browser/quickaccess.zig");
     _ = @import("./vs/workbench/api/browser/extensionHostAdapter.zig").Tests(@import("./tui/workbench.zig").TerminalWorkbench, @import("./tui/editorView.zig").View.createHandle);
     _ = @import("./vs/workbench/api/test/browser/mainThreadDiagnostics.test.zig");
+    _ = @import("./vs/workbench/api/test/browser/mainThreadFileSystem.test.zig");
     _ = @import("./vs/workbench/api/test/browser/mainThreadDocumentsAndEditors.test.zig");
     _ = @import("./vs/workbench/api/test/browser/mainThreadDocumentContentProviders.test.zig");
     _ = @import("./vs/workbench/api/test/browser/mainThreadMessageService.test.zig");

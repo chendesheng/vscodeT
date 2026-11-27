@@ -435,6 +435,8 @@ pub const Extensions = struct {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeDocumentContentProviders });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadQuickDiff)) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeQuickDiff });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadFileSystem)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeFileSystem });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadStorage)) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeStorage });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadStatusBar)) {
@@ -606,6 +608,12 @@ pub const Extensions = struct {
         const self: *Extensions = @ptrCast(@alignCast(context));
         if (self.diagnostics_actor) |actor| return actor.invoke(method, args, arena);
         return .empty;
+    }
+
+    fn invokeFileSystem(context: *anyopaque, method: []const u8, args: []const rpc.Arg, _: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        const actor = @import("mainThreadFileSystem.zig").MainThreadFileSystem{ .service = self.services.file_service };
+        return actor.invoke(method, args, arena);
     }
 
     fn invokeStorage(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
@@ -1122,6 +1130,12 @@ pub const Extensions = struct {
         });
         try self.host.sendInitData(init_data);
         try self.host.expectControl(1, manager.startup_timeout_ms);
+
+        const file_resource: std.Uri = .{ .scheme = "file", .path = .{ .raw = "/dummy" } };
+        try self.host.notify(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostFileSystemInfo), "$acceptProviderInfos", &.{
+            .{ .json = try std_uri.jsonComponents(arena, file_resource) },
+            .{ .json = .{ .integer = self.services.file_service.getCapabilities(file_resource) } },
+        });
 
         var workspace_args = std.array_list.Managed(rpc.Arg).init(arena);
         var workspace_data: std.json.ObjectMap = .empty;

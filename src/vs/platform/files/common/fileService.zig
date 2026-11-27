@@ -424,6 +424,10 @@ pub const ProviderFileService = struct {
                 const service: *ProviderFileService = @ptrCast(@alignCast(context));
                 return service.readFileUri(allocator, resource);
             }
+            fn readDirectory(context: *anyopaque, allocator: Allocator, resource: std.Uri) ![]files.DirectoryEntry {
+                const service: *ProviderFileService = @ptrCast(@alignCast(context));
+                return service.readDirectoryUri(allocator, resource);
+            }
             fn write(context: *anyopaque, resource: std.Uri, contents: []const u8, options: files.IFileWriteOptions) !void {
                 const service: *ProviderFileService = @ptrCast(@alignCast(context));
                 try service.writeFileUri(resource, contents, options);
@@ -453,6 +457,7 @@ pub const ProviderFileService = struct {
             .capture_read = Adapter.capture,
             .stat_uri = Adapter.stat,
             .read_uri = Adapter.read,
+            .read_directory_uri = Adapter.readDirectory,
             .write_uri = Adapter.write,
             .create_folder_uri = Adapter.createFolder,
             .delete_uri = Adapter.del,
@@ -496,6 +501,24 @@ pub const ProviderFileService = struct {
         const data = try provider.readFile(path);
         defer self.allocator.free(data);
         return allocator.dupe(u8, data);
+    }
+
+    pub fn readDirectoryUri(self: *ProviderFileService, allocator: Allocator, resource: std.Uri) ![]files.DirectoryEntry {
+        const provider = self.providers.get(resource.scheme) orelse return error.ProviderUnavailable;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const path = try uri_util.fsPath(resource, arena.allocator());
+        const entries = try provider.getDirectoryEntries(path);
+        defer self.allocator.free(entries);
+        const result = try allocator.alloc(files.DirectoryEntry, entries.len);
+        errdefer allocator.free(result);
+        var count: usize = 0;
+        errdefer for (result[0..count]) |entry| allocator.free(entry.name);
+        for (entries, result) |entry, *target| {
+            target.* = .{ .name = try allocator.dupe(u8, entry.name), .type = entry.type };
+            count += 1;
+        }
+        return result;
     }
 
     fn mkdirp(provider: files.IFileSystemProvider, path: []const u8) !void {

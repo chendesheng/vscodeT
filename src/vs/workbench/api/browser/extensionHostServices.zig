@@ -19,6 +19,7 @@ const WindowQueue = @import("../../../base/common/windowDispatch.zig").Queue;
 pub const Services = struct {
     common: common.Services,
     window: *WindowQueue,
+    file_service: @import("../../../platform/files/common/files.zig").IFileService,
     text_files: *@import("../../services/textfile/common/textFileService.zig").TextFileService,
     quick_access: *QuickAccessService,
     notification: INotificationService,

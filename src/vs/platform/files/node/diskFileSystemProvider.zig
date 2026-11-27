@@ -104,7 +104,7 @@ pub const DiskFileSystemProvider = struct {
             FileSystemProviderCapabilities.FileOpenReadWriteClose |
             FileSystemProviderCapabilities.FileFolderCopy |
             FileSystemProviderCapabilities.FileAppend |
-            FileSystemProviderCapabilities.PathCaseSensitive;
+            (if (@import("builtin").os.tag == .linux) FileSystemProviderCapabilities.PathCaseSensitive else 0);
     }
 
     pub fn stat(self: *DiskFileSystemProvider, resource: []const u8) FileSystemProviderError!IStat {

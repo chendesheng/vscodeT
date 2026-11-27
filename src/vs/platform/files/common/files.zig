@@ -490,6 +490,7 @@ pub const IFileService = struct {
     capture_read: *const fn (*anyopaque, std.Uri) anyerror!?FileReadRequest,
     stat_uri: *const fn (*anyopaque, std.Uri) anyerror!IStat,
     read_uri: *const fn (*anyopaque, Allocator, std.Uri) anyerror![]u8,
+    read_directory_uri: ?*const fn (*anyopaque, Allocator, std.Uri) anyerror![]DirectoryEntry = null,
     write_uri: *const fn (*anyopaque, std.Uri, []const u8, IFileWriteOptions) anyerror!void,
     create_folder_uri: *const fn (*anyopaque, std.Uri) anyerror!void,
     delete_uri: *const fn (*anyopaque, std.Uri, IFileDeleteOptions) anyerror!void,
@@ -505,9 +506,13 @@ pub const IFileService = struct {
         return self.has_provider(self.context, resource);
     }
 
+    pub fn getCapabilities(self: IFileService, resource: std.Uri) u32 {
+        const callback = self.capabilities orelse return 0;
+        return callback(self.context, resource);
+    }
+
     pub fn hasCapability(self: IFileService, resource: std.Uri, value: u32) bool {
-        const callback = self.capabilities orelse return false;
-        return callback(self.context, resource) & value != 0;
+        return self.getCapabilities(resource) & value != 0;
     }
 
     pub fn captureRead(self: IFileService, resource: std.Uri) !?FileReadRequest {
@@ -521,6 +526,12 @@ pub const IFileService = struct {
     pub fn readFile(self: IFileService, allocator: Allocator, resource: std.Uri) ![]u8 {
         return self.read_uri(self.context, allocator, resource);
     }
+    /// Caller owns the entries and their names.
+    pub fn readDirectory(self: IFileService, allocator: Allocator, resource: std.Uri) ![]DirectoryEntry {
+        const callback = self.read_directory_uri orelse return error.ProviderUnavailable;
+        return callback(self.context, allocator, resource);
+    }
+
     pub fn writeFile(self: IFileService, resource: std.Uri, content: []const u8, options: IFileWriteOptions) !void {
         try self.write_uri(self.context, resource, content, options);
     }
