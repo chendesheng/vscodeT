@@ -107,11 +107,11 @@ fn findDiffEditor(service: code_editors.ICodeEditorService, original_uri: std.Ur
     const modified_key = try uri.resourceKey(allocator, modified_uri);
     defer allocator.free(modified_key);
     for (service.listDiffEditors()) |diff| {
-        const original = diff.getOriginalEditor() orelse continue;
-        const modified = diff.getModifiedEditor() orelse continue;
-        const left = try uri.resourceKey(allocator, original.model.uri());
+        const original = (diff.getOriginalEditor() orelse continue).getModel() orelse continue;
+        const modified = (diff.getModifiedEditor() orelse continue).getModel() orelse continue;
+        const left = try uri.resourceKey(allocator, original.uri());
         defer allocator.free(left);
-        const right = try uri.resourceKey(allocator, modified.model.uri());
+        const right = try uri.resourceKey(allocator, modified.uri());
         defer allocator.free(right);
         if (std.mem.eql(u8, left, original_key) and std.mem.eql(u8, right, modified_key)) return diff;
     }

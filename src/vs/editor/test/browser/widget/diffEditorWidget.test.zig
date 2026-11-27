@@ -26,6 +26,9 @@ pub fn Tests(comptime View: type) type {
             defer widget.destroy();
             const original_control = widget.original_editor;
             const modified_control = widget.modified_editor;
+            try testing.expectEqual(original_control, widget.interface().getOriginalEditor().?);
+            try testing.expectEqual(modified_control, widget.interface().getModifiedEditor().?);
+            try testing.expect(widget.interface().getDiffComputationResult() == null);
             var binding: DiffEditorWidget.ModelBinding = .{
                 .original = original,
                 .modified = first,
@@ -98,6 +101,9 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(widget.state() == null and widget.getViewModel() == null);
             try testing.expect(!widget.accessible_viewer.visible());
             try testing.expect(!original_control.hasModel() and !modified_control.hasModel());
+            try testing.expectEqual(original_control, widget.interface().getOriginalEditor().?);
+            try testing.expectEqual(modified_control, widget.interface().getModifiedEditor().?);
+            try testing.expect(widget.interface().getDiffComputationResult() == null);
             try testing.expectEqual(@as(usize, 3), changes.diff);
         }
 

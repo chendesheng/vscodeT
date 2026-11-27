@@ -264,11 +264,11 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         fn getOriginalEditor(context: *anyopaque) ?*Editor {
             const self: *Self = @ptrCast(@alignCast(context));
-            return if (self.hasModel()) self.original_editor else null;
+            return self.original_editor;
         }
         fn getModifiedEditor(context: *anyopaque) ?*Editor {
             const self: *Self = @ptrCast(@alignCast(context));
-            return if (self.hasModel()) self.modified_editor else null;
+            return self.modified_editor;
         }
         fn mapSelectionToOtherSide(context: *anyopaque) ?Range {
             const self: *Self = @ptrCast(@alignCast(context));
