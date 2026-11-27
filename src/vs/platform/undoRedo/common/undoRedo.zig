@@ -117,6 +117,11 @@ pub const UriComparisonKeyComputer = struct {
     }
 };
 
-pub const Disposable = struct {
-    dispose: *const fn () void,
+/// A preparation callback transfers ownership of the model references (or
+/// another cleanup) to the undo operation, which must dispose them on
+/// successful execution, verification failure or cancellation.
+pub const IDisposable = @import("../../../base/common/lifecycle.zig").IDisposable;
+pub const PrepareUndoRedoListener = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, IDisposable) void,
 };

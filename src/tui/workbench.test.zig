@@ -10660,6 +10660,150 @@ test "Diff editor commands: multi-resource text edit installs one labeled worksp
     try std.testing.expectEqualStrings("replaced second", try right.borrowLineContent(1));
 }
 
+test "Diff editor commands: workspace undo and redo asynchronously reopen a closed affected model" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
+    const bulk = @import("../vs/editor/browser/services/bulkEditService.zig");
+    const models = @import("../vs/workbench/services/textmodelResolver/common/textModelResolverService.zig");
+    const Probe = struct {
+        result: ?bulk.IBulkEditResult = null,
+        failure: ?anyerror = null,
+        fn complete(context: *anyopaque, reply: anyerror!bulk.IBulkEditResult) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (reply) |value| self.result = value else |err| self.failure = err;
+        }
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const first_path = try seedFile(a, io, &tmp, "first.txt", "first");
+    defer a.free(first_path);
+    const second_path = try seedFile(a, io, &tmp, "second.txt", "second");
+    defer a.free(second_path);
+    const window = try TestWindow.init(a, io, &.{ first_path, second_path }, 100, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    const pane = wb.activePane().?;
+    const first_tab = pane.tabs.items[0];
+    const second_tab = pane.tabs.items[1];
+    try pane.activateTab(first_tab);
+    const first = first_tab.editor;
+    const second = second_tab.editor;
+    try first.setSelections(&.{Selection.init(1, 3, 1, 3)});
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const second_uri = try @import("../vs/base/common/stdUri.zig").clone(arena.allocator(), second.model.uri());
+    const edits = [_]languages.WorkspaceResourceEdit{
+        .{ .text = .{ .resource = first.model.uri(), .text = "new first" } },
+        .{ .text = .{ .resource = second_uri, .text = "new second" } },
+    };
+    var probe: Probe = .{};
+    _ = try wb.bulk_edit_api.apply(.{ .edits = &edits }, .{ .editor = first, .label = "Edit Both" }, .{ .context = &probe, .complete = Probe.complete });
+    for (0..5000) |_| {
+        if (probe.result != null or probe.failure != null) break;
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        time_compat.sleepMillis(1);
+    }
+    if (probe.failure) |err| return err;
+    try std.testing.expect(probe.result.?.is_applied);
+    try second.save();
+    try pane.activateTab(second_tab);
+    try wb.commands.execute("workbench.action.closeActiveEditor");
+    for (0..5000) |_| {
+        if (wb.model_service_api.getModel(second_uri) == null) break;
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        time_compat.sleepMillis(1);
+    }
+    try std.testing.expect(wb.model_service_api.getModel(second_uri) == null);
+    try pane.activateTab(first_tab);
+    const undo_service = first.model.getUndoRedoService();
+    try first.undo();
+    try std.testing.expectEqual(@as(usize, 1), undo_service.pending_workspace_preparations.count());
+    try std.testing.expectEqualStrings("new first", try first.model.borrowLineContent(1));
+    // Grow the resource stack map while preparation is pending; the
+    // continuation must relookup stack keys instead of retaining map pointers.
+    const unrelated = try arena.allocator().alloc(std.Uri, 128);
+    for (unrelated, 0..) |*resource, index| {
+        resource.* = try std.Uri.parse(try std.fmt.allocPrint(arena.allocator(), "file:///unrelated-{d}.txt", .{index}));
+    }
+    const NoOp = struct {
+        fn invoke(_: *anyopaque) !void {}
+        fn dispose(_: *anyopaque) void {}
+    };
+    const EditStackElement = @import("../vs/editor/common/model/editStack.zig").EditStackElement;
+    const unrelated_element = try a.create(EditStackElement);
+    unrelated_element.* = .{ .workspace = .{ .allocator = a, .context = @constCast(&{}), .resources = unrelated, .label = "Unrelated history", .code = "test", .undo_fn = NoOp.invoke, .redo_fn = NoOp.invoke, .dispose_fn = NoOp.dispose } };
+    try undo_service.pushElement(unrelated_element, null, null);
+    for (0..5000) |_| {
+        if (undo_service.pending_workspace_preparations.count() == 0) break;
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        time_compat.sleepMillis(1);
+    }
+    try std.testing.expectEqual(@as(usize, 0), undo_service.pending_workspace_preparations.count());
+    try std.testing.expectEqualStrings("first", try first.model.borrowLineContent(1));
+    try std.testing.expectEqual(Selection.init(1, 3, 1, 3), first.modelSelection());
+    {
+        var reopened = try wb.text_model_api.acquireModelReference(second_uri);
+        defer reopened.dispose();
+        try std.testing.expectEqualStrings("second", try reopened.object.textEditorModel.borrowLineContent(1));
+        // Save the unmounted undo result, allowing the resolver to release
+        // that working copy again before the reverse operation.
+        try models.TextModelResolverService.documentOf(reopened).save();
+    }
+    for (0..5000) |_| {
+        if (wb.model_service_api.getModel(second_uri) == null) break;
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        time_compat.sleepMillis(1);
+    }
+    try std.testing.expect(wb.model_service_api.getModel(second_uri) == null);
+    try first.redo();
+    try std.testing.expectEqual(@as(usize, 1), undo_service.pending_workspace_preparations.count());
+    for (0..5000) |_| {
+        if (undo_service.pending_workspace_preparations.count() == 0) break;
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        time_compat.sleepMillis(1);
+    }
+    try std.testing.expectEqualStrings("new first", try first.model.borrowLineContent(1));
+    {
+        var reopened = try wb.text_model_api.acquireModelReference(second_uri);
+        defer reopened.dispose();
+        try std.testing.expectEqualStrings("new second", try reopened.object.textEditorModel.borrowLineContent(1));
+        try models.TextModelResolverService.documentOf(reopened).save();
+    }
+    for (0..5000) |_| {
+        if (wb.model_service_api.getModel(second_uri) == null) break;
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        time_compat.sleepMillis(1);
+    }
+    try std.testing.expect(wb.model_service_api.getModel(second_uri) == null);
+
+    // Closing an owner detaches a preparation, even if the worker's result
+    // is already queued. It must not apply an edit after cancellation.
+    try first.undo();
+    try std.testing.expectEqual(@as(usize, 1), undo_service.pending_workspace_preparations.count());
+    undo_service.cancelPendingPreparations();
+    try std.testing.expectEqual(@as(usize, 0), undo_service.pending_workspace_preparations.count());
+    for (0..20) |_| {
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        time_compat.sleepMillis(1);
+    }
+    try std.testing.expectEqualStrings("new first", try first.model.borrowLineContent(1));
+    try std.testing.expect(wb.model_service_api.getModel(second_uri) == null);
+
+    // If the closed resource can no longer be resolved, upstream splits the
+    // workspace element and undoes only the initiating file.
+    try tmp.dir.deleteFile(io, "second.txt");
+    try first.undo();
+    for (0..5000) |_| {
+        if (undo_service.pending_workspace_preparations.count() == 0) break;
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        time_compat.sleepMillis(1);
+    }
+    try std.testing.expectEqual(@as(usize, 0), undo_service.pending_workspace_preparations.count());
+    try std.testing.expectEqualStrings("first", try first.model.borrowLineContent(1));
+    try std.testing.expect(wb.model_service_api.getModel(second_uri) == null);
+}
+
 test "Diff editor commands: active workspace snippet edits preserve tabstops and one workspace undo element" {
     const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
     const a = std.testing.allocator;

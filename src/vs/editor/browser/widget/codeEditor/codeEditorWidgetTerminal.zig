@@ -2295,6 +2295,20 @@ pub const Editor = struct {
     /// An initiating command publishes its computed cursor state instead.
     fn recoverCursorFromModel(self: *Editor, event: InternalModelContentChangeEvent) void {
         if (!self.cursor_tracking or self.cursor_is_handling) return;
+        const raw_change = event.rawContentChangedEvent;
+        if (raw_change.isUndoing or raw_change.isRedoing) {
+            // Async workspace preparation may deliver the undo result after
+            // the original editor command returned. Like CursorsController,
+            // the focused pane consumes the resulting selection on the event.
+            const focused = if (self.code_editor_service) |service| service.getFocusedCodeEditor() == self else true;
+            if (focused) if (raw_change.resultingSelection) |selections| {
+                if (selections.len != 0) {
+                    self.updateSelectionsWithReason(selections, if (raw_change.isUndoing) .Undo else .Redo) catch {};
+                    self.ensureCursorVisible();
+                    return;
+                }
+            };
+        }
         var flushed = false;
         for (event.rawContentChangedEvent.changes.items) |change| {
             if (change == .flush) {

@@ -29,6 +29,7 @@ pub const TextModelResolverService = struct {
     window: *dispatch.Queue,
     collection: ResourceModelCollection,
     undo_store: ?*ModelUndoRedoStore = null,
+    undo_participant: ?*@import("../../../../editor/common/services/modelUndoRedoParticipant.zig").ModelUndoRedoParticipant = null,
     file_service: ?files.IFileService = null,
     file_listener: ?event_mod.SignalSubscription = null,
     providers: std.ArrayList(*ProviderEntry) = .empty,
@@ -63,7 +64,13 @@ pub const TextModelResolverService = struct {
     }
 
     pub fn undoRedoStore(self: *TextModelResolverService) !*ModelUndoRedoStore {
-        if (self.undo_store == null) self.undo_store = try ModelUndoRedoStore.create(self.allocator);
+        if (self.undo_store == null) {
+            const store = try ModelUndoRedoStore.create(self.allocator);
+            errdefer store.releaseOwner();
+            const Participant = @import("../../../../editor/common/services/modelUndoRedoParticipant.zig").ModelUndoRedoParticipant;
+            self.undo_participant = try Participant.create(self.allocator, self.modelService(), self.interface(), &store.service);
+            self.undo_store = store;
+        }
         return self.undo_store.?;
     }
 
@@ -97,6 +104,8 @@ pub const TextModelResolverService = struct {
     }
 
     pub fn deinit(self: *TextModelResolverService) void {
+        if (self.undo_participant) |participant| participant.dispose();
+        self.undo_participant = null;
         if (self.file_listener) |listener| listener.dispose();
         self.file_listener = null;
         self.file_service = null;

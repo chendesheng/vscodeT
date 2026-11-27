@@ -9,7 +9,7 @@ const UriContext = @import("../../../editor/common/model/editStack.zig").UriCont
 const PastFutureElements = @import("./undoRedo.zig").PastFutureElements;
 const ResourceEditStackSnapshot = @import("./undoRedo.zig").ResourceEditStackSnapshot;
 const UriComparisonKeyComputer = @import("./undoRedo.zig").UriComparisonKeyComputer;
-const Disposable = @import("./undoRedo.zig").Disposable;
+const Disposable = @import("./undoRedo.zig").IDisposable;
 const uri_util = @import("../../../base/common/stdUri.zig");
 const UndoRedoSourceOrUri = @import("./undoRedo.zig").UndoRedoSourceOrUri;
 const Pair = @import("../../../base/common/utils.zig").Pair;
@@ -714,6 +714,7 @@ pub const UndoRedoService = struct {
     _editStacks: std.StringHashMap(ResourceEditStack),
     _uriComparisonKeyComputers: ArrayList(KeyComputerPair),
     _notificationService: ?INotificationService = null,
+    pending_workspace_preparations: std.AutoHashMapUnmanaged(*WorkspacePreparation, void) = .empty,
 
     pub fn init(allocator: Allocator) UndoRedoService {
         return UndoRedoService{
@@ -731,6 +732,8 @@ pub const UndoRedoService = struct {
     }
 
     pub fn deinit(self: *UndoRedoService) void {
+        self.cancelPendingPreparations();
+        self.pending_workspace_preparations.deinit(self._editStacks.allocator);
         var valueIter = self._editStacks.valueIterator();
         while (valueIter.next()) |value| {
             value.deinit();
@@ -1111,9 +1114,11 @@ pub const UndoRedoService = struct {
         return true;
     }
 
-    fn _releaseLocks(editStackSnapshot: EditStackSnapshot) void {
-        for (editStackSnapshot.editStacks.items) |editStack| {
-            editStack.locked = false;
+    fn _releaseWorkspaceLocks(self: *UndoRedoService, element: *const WorkspaceStackElement) void {
+        // Model-edit notifications can open/close other resources, growing
+        // the map during the synchronous operation as well.
+        for (element.strResources.items) |resource| {
+            if (self._editStacks.getPtr(resource.items())) |stack| stack.locked = false;
         }
     }
 
@@ -1148,37 +1153,106 @@ pub const UndoRedoService = struct {
     //     }
     // }
 
-    fn _invokeWorkspacePrepare(self: *UndoRedoService, element: *const WorkspaceStackElement) ?Disposable {
-        _ = self;
-        _ = element;
-        return null;
+    /// Preparing a workspace edit may load models on the window dispatcher.
+    /// Retain the element and stack versions, never hash-map entry pointers,
+    /// across that asynchronous boundary (the model resolver can add stacks).
+    const WorkspacePreparation = struct {
+        service: *UndoRedoService,
+        element: *WorkspaceStackElement,
+        resource: []u8,
+        versions: []u64,
+        direction: enum { undo, redo },
+        undo_confirmed: bool,
+        starting: bool = true,
+        pending: ?Disposable = null,
+        cleanup: ?Disposable = null,
 
-        // if (element.actual.prepareUndoRedo == null) {
-        //     return;
-        // }
-        // element.actual.prepareUndoRedo();
+        fn prepared(context: *anyopaque, cleanup: Disposable) void {
+            const self: *WorkspacePreparation = @ptrCast(@alignCast(context));
+            self.pending = null;
+            self.cleanup = cleanup;
+            if (!self.starting) {
+                const service = self.service;
+                self.finish() catch service.notifyWarning("Could not complete workspace undo or redo.");
+            }
+        }
+
+        fn finish(self: *WorkspacePreparation) !void {
+            const service = self.service;
+            _ = service.pending_workspace_preparations.remove(self);
+            defer self.destroy();
+            var snapshot = try service._getAffectedEditStacks(self.element);
+            defer snapshot.deinit();
+            // The retained element owns the ordered resource keys. The fresh
+            // stack lookups are compared with the versions from before await.
+            @memcpy(snapshot._versionIds.items, self.versions);
+            const cleanup = self.cleanup orelse Disposable.none;
+            self.cleanup = null; // the execution owns cleanup from here
+            switch (self.direction) {
+                .undo => try service._executePreparedWorkspaceUndo(self.resource, self.element, snapshot, self.undo_confirmed, cleanup),
+                .redo => try service._executePreparedWorkspaceRedo(self.resource, self.element, snapshot, cleanup),
+            }
+        }
+
+        fn destroy(self: *WorkspacePreparation) void {
+            const a = self.service._editStacks.allocator;
+            if (self.pending) |pending| pending.dispose();
+            if (self.cleanup) |cleanup| cleanup.dispose();
+            self.element.release();
+            a.free(self.resource);
+            a.free(self.versions);
+            a.destroy(self);
+        }
+    };
+
+    fn _invokeWorkspacePrepare(self: *UndoRedoService, strResource: []const u8, element: *WorkspaceStackElement, editStackSnapshot: EditStackSnapshot, direction: @FieldType(WorkspacePreparation, "direction"), undo_confirmed: bool) !bool {
+        if (element.actual.* != .multiModel or !element.actual.multiModel.hasPrepareDelegate()) return false;
+        const a = self._editStacks.allocator;
+        const preparation = try a.create(WorkspacePreparation);
+        errdefer a.destroy(preparation);
+        const resource = try a.dupe(u8, strResource);
+        errdefer a.free(resource);
+        const versions = try a.dupe(u64, editStackSnapshot._versionIds.items);
+        errdefer a.free(versions);
+        preparation.* = .{ .service = self, .element = element, .resource = resource, .versions = versions, .direction = direction, .undo_confirmed = undo_confirmed };
+        try self.pending_workspace_preparations.put(a, preparation, {});
+        errdefer _ = self.pending_workspace_preparations.remove(preparation);
+        element.retain();
+        errdefer element.release();
+
+        const pending = try element.actual.multiModel.prepareUndoRedo(.{ .context = preparation, .complete = WorkspacePreparation.prepared });
+        preparation.starting = false;
+        if (preparation.cleanup != null) {
+            // finish owns the preparation even if verification or undo fails.
+            preparation.finish() catch |err| self.notifyWarning(@errorName(err));
+        } else {
+            preparation.pending = pending orelse unreachable; // delegate promises one completion
+        }
+        return true;
     }
 
-    // fn _invokeResourcePrepare(self: *UndoRedoService, element: ResourceStackElement, callback: fn (disposable: IDisposable) void) void {
-    //     if (element.actual.type != UndoRedoElementType.Workspace or element.actual.prepareUndoRedo == null) {
-    //         // no preparation needed
-    //         return callback(IDisposable.None);
-    //     }
+    pub fn cancelPendingPreparations(self: *UndoRedoService) void {
+        while (self.pending_workspace_preparations.count() > 0) {
+            var iterator = self.pending_workspace_preparations.keyIterator();
+            const request = iterator.next().?.*;
+            _ = self.pending_workspace_preparations.remove(request);
+            request.destroy();
+        }
+    }
 
-    //     const r = element.actual.prepareUndoRedo();
-    //     if (r == null) {
-    //         // nothing to clean up
-    //         return callback(IDisposable.None);
-    //     }
-
-    //     if (r.isDisposable()) {
-    //         return callback(r);
-    //     }
-
-    //     return r.then((disposable) => {
-    //         return callback(disposable);
-    //     });
-    // }
+    /// The resolver can be disposed before externally retained models lose
+    /// their undo store. Detach all delegate references to its participant.
+    pub fn clearPrepareDelegate(self: *UndoRedoService, context: *anyopaque) void {
+        var iterator = self._editStacks.valueIterator();
+        while (iterator.next()) |stack| {
+            for ([_][]const StackElement{ stack._past.items, stack._future.items }) |items| {
+                for (items) |item| {
+                    const actual = item.actual();
+                    if (actual.* == .multiModel) actual.multiModel.clearDelegate(context);
+                }
+            }
+        }
+    }
 
     fn _getAffectedEditStacks(self: *UndoRedoService, element: *const WorkspaceStackElement) !EditStackSnapshot {
         var affectedEditStacks = ArrayList(*ResourceEditStack).init(self._uriComparisonKeyComputers.allocator);
@@ -1336,32 +1410,31 @@ pub const UndoRedoService = struct {
             undoConfirmed = true;
         }
 
-        // prepare
-        const cleanup: ?Disposable = self._invokeWorkspacePrepare(element);
+        if (try self._invokeWorkspacePrepare(strResource, element, editStackSnapshot, .undo, undoConfirmed)) return;
+        try self._executePreparedWorkspaceUndo(strResource, element, editStackSnapshot, undoConfirmed, .none);
+    }
 
-        // At this point, it is possible that the element has been made invalid in the meantime (due to the prepare await)
-        const verificationError2 = try self._checkWorkspaceUndo(strResource, element, editStackSnapshot, true); // now also check that there are no more invalidated resources
-        if (verificationError2 != null) {
-            if (cleanup) |c| {
-                c.dispose();
-            }
-            return;
-        }
-
-        defer if (cleanup) |c| c.dispose();
+    fn _executePreparedWorkspaceUndo(self: *UndoRedoService, strResource: []const u8, element: *WorkspaceStackElement, editStackSnapshot: EditStackSnapshot, undoConfirmed: bool, cleanup: Disposable) !void {
+        var cleanup_owned = true;
+        defer if (cleanup_owned) cleanup.dispose();
+        // Recheck invalidated resources and version/stack membership after
+        // model acquisition, before mutating any one of the workspace models.
+        if (try self._checkWorkspaceUndo(strResource, element, editStackSnapshot, true) != null) return;
         if (!self._acquireLocks(editStackSnapshot)) return;
         for (editStackSnapshot.editStacks.items) |editStack| {
             editStack.moveBackward(.{ .workspaceStackElement = element }) catch |err| {
-                _releaseLocks(editStackSnapshot);
+                self._releaseWorkspaceLocks(element);
                 return err;
             };
         }
         element.actual.undo() catch |err| {
-            _releaseLocks(editStackSnapshot);
+            self._releaseWorkspaceLocks(element);
             self._onError(err, .{ .workspaceStackElement = element });
             return err;
         };
-        _releaseLocks(editStackSnapshot);
+        self._releaseWorkspaceLocks(element);
+        cleanup.dispose();
+        cleanup_owned = false;
         try self._continueUndoInGroup(element.groupId, undoConfirmed);
     }
 
@@ -1629,34 +1702,29 @@ pub const UndoRedoService = struct {
     }
 
     fn _executeWorkspaceRedo(self: *UndoRedoService, strResource: []const u8, element: *WorkspaceStackElement, editStackSnapshot: EditStackSnapshot) !void {
-        // prepare
-        const cleanup = self._invokeWorkspacePrepare(element);
+        if (try self._invokeWorkspacePrepare(strResource, element, editStackSnapshot, .redo, false)) return;
+        try self._executePreparedWorkspaceRedo(strResource, element, editStackSnapshot, .none);
+    }
 
-        // At this point, it is possible that the element has been made invalid in the meantime (due to the prepare await)
-        // now also check that there are no more invalidated resources
-        const verificationError = try self._checkWorkspaceRedo(strResource, element, editStackSnapshot, true);
-        if (verificationError) |err| {
-            if (cleanup) |c| {
-                c.dispose();
-            }
-            _ = err;
-            return;
-        }
-
-        defer if (cleanup) |c| c.dispose();
+    fn _executePreparedWorkspaceRedo(self: *UndoRedoService, strResource: []const u8, element: *WorkspaceStackElement, editStackSnapshot: EditStackSnapshot, cleanup: Disposable) !void {
+        var cleanup_owned = true;
+        defer if (cleanup_owned) cleanup.dispose();
+        if (try self._checkWorkspaceRedo(strResource, element, editStackSnapshot, true) != null) return;
         if (!self._acquireLocks(editStackSnapshot)) return;
         for (editStackSnapshot.editStacks.items) |editStack| {
             editStack.moveForward(.{ .workspaceStackElement = element }) catch |err| {
-                _releaseLocks(editStackSnapshot);
+                self._releaseWorkspaceLocks(element);
                 return err;
             };
         }
         element.actual.redo() catch |err| {
-            _releaseLocks(editStackSnapshot);
+            self._releaseWorkspaceLocks(element);
             self._onError(err, .{ .workspaceStackElement = element });
             return err;
         };
-        _releaseLocks(editStackSnapshot);
+        self._releaseWorkspaceLocks(element);
+        cleanup.dispose();
+        cleanup_owned = false;
         try self._continueRedoInGroup(element.groupId);
         // return self._safeInvokeWithLocks(element, () => element.actual.redo(), editStackSnapshot, cleanup, () => self._continueRedoInGroup(element.groupId));
     }

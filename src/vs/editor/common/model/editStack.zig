@@ -18,7 +18,8 @@ const compressConsecutiveTextChanges = @import("../core/textChange.zig").compres
 const String = @import("../../../base/common/strings.zig").String;
 const UndoRedoGroup = @import("../../../platform/undoRedo/common/undoRedo.zig").UndoRedoGroup;
 const ValidEditOperation = @import("../model.zig").ValidEditOperation;
-const Disposable = @import("../../../platform/undoRedo/common/undoRedo.zig").Disposable;
+const undo_redo = @import("../../../platform/undoRedo/common/undoRedo.zig");
+const Disposable = undo_redo.IDisposable;
 const uriToString = @import("../model.zig").uriToString;
 const uri_util = @import("../../../base/common/stdUri.zig");
 const TextModelCreationOptions = @import("../model.zig").TextModelCreationOptions;
@@ -790,15 +791,25 @@ pub const MultiModelEditStackElement = struct {
         self._delegate = delegate;
     }
 
-    pub fn prepareUndoRedo(self: *MultiModelEditStackElement) ?Disposable {
-        if (self._delegate) |delegate| {
-            return delegate.prepareUndoRedo(self);
-        }
+    pub fn prepareUndoRedo(self: *MultiModelEditStackElement, listener: undo_redo.PrepareUndoRedoListener) !?Disposable {
+        if (self._delegate) |delegate| return delegate.prepareUndoRedo(self, listener);
+        listener.complete(listener.context, .none);
         return null;
+    }
+
+    pub fn hasPrepareDelegate(self: *const MultiModelEditStackElement) bool {
+        return self._delegate != null;
+    }
+
+    pub fn clearDelegate(self: *MultiModelEditStackElement, context: *anyopaque) void {
+        if (self._delegate) |delegate| if (delegate.context == context) {
+            self._delegate = null;
+        };
     }
 
     pub fn getMissingModels(self: *MultiModelEditStackElement) !ArrayList(Uri) {
         var result = ArrayList(Uri).init(self.allocator);
+        errdefer result.deinit();
         for (self._editStackElementsArr.items) |editStackElement| {
             switch (editStackElement.model) {
                 .model => {},
@@ -998,8 +1009,13 @@ pub const CursorStateComputer = struct {
     compute: *const fn (context: *anyopaque, inverseEditOperations: []ValidEditOperation) ?[]Selection,
 };
 
-const UndoRedoDelegate = struct {
-    prepareUndoRedo: *const fn (self: *UndoRedoDelegate, element: *const MultiModelEditStackElement) ?Disposable,
+pub const UndoRedoDelegate = struct {
+    context: *anyopaque,
+    prepare_fn: *const fn (*anyopaque, *MultiModelEditStackElement, undo_redo.PrepareUndoRedoListener) anyerror!?Disposable,
+
+    pub fn prepareUndoRedo(self: UndoRedoDelegate, element: *MultiModelEditStackElement, listener: undo_redo.PrepareUndoRedoListener) !?Disposable {
+        return self.prepare_fn(self.context, element, listener);
+    }
 };
 
 fn lessThanTextChangeWithIndex(_: void, a: Pair(*TextChange, usize), b: Pair(*TextChange, usize)) bool {
