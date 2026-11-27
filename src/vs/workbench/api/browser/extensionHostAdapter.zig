@@ -508,6 +508,7 @@ pub const Extensions = struct {
             .notify = languageFeaturesNotify,
             .request_async = languageFeaturesRequestAsync,
         });
+        self.language_features_actor.?.workspace_symbol_registry = &self.services.quick_access.workspace_symbols.registry;
         try self.inline_completions.start(&self.language_features_actor.?);
         self.diagnostics_actor = try MainThreadDiagnostics.init(self.allocator, marker_service, .{
             .context = self,
@@ -2583,6 +2584,29 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqualStrings("fixture hover verbosity 2: fixture hover", verbose.contents[0].value);
             try std.testing.expect(verbose.can_decrease_verbosity.?);
 
+            // Workspace symbols use a debounced # provider and resolve the
+            // selected URI-only symbol before opening its UTF-16 location.
+            try workbench.commands.execute("workbench.action.showAllSymbols");
+            const workspace_picker = workbench.quick_access.controller.pickerRef();
+            try workspace_picker.setValue("#unused");
+            try workspace_picker.setValue("#WorkspaceFixture");
+            const symbols_deadline = time_compat.milliTimestamp() + 5000;
+            while (time_compat.milliTimestamp() < symbols_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                if (workspace_picker.items.items.len == 1 and std.mem.eql(u8, workspace_picker.items.items[0].item.label, "WorkspaceFixture")) break;
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expectEqual(1, workspace_picker.items.items.len);
+            try std.testing.expectEqualStrings("WorkspaceFixture", workspace_picker.items.items[0].item.label);
+            workspace_picker.accept();
+            const workspace_resolve_deadline = time_compat.milliTimestamp() + 5000;
+            while (workbench.quick_access.isOpen() and time_compat.milliTimestamp() < workspace_resolve_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(!workbench.quick_access.isOpen());
+            try std.testing.expectEqual(Position.init(2, 3), workbench.activeTab().?.editor.modelCursorPosition());
+
             const action_model = @import("../../../editor/contrib/codeAction/browser/codeAction.zig");
             const action_types = @import("../../../editor/contrib/codeAction/common/types.zig");
             const ActionReceiver = struct {
@@ -3629,9 +3653,19 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{});
             try std.Io.Dir.cwd().access(io, zig_path, .{});
             try std.Io.Dir.cwd().access(io, zls_path, .{});
-            var tmp = std.testing.tmpDir(.{});
-            defer tmp.cleanup();
-            const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+            // ZLS excludes all hidden/zig-cache path components from workspace
+            // symbol indexing. std.testing.tmpDir lives under .zig-cache, so
+            // use a normal directory in the platform's temporary directory.
+            const temp_root = if (std.c.getenv("TMPDIR") orelse std.c.getenv("TEMP") orelse std.c.getenv("TMP")) |value| std.mem.span(value) else if (@import("builtin").os.tag == .windows) return error.TempDirectoryUnavailable else "/tmp";
+            const parent = try std.Io.Dir.openDirAbsolute(io, temp_root, .{});
+            defer parent.close(io);
+            var random: [12]u8 = undefined;
+            io.random(&random);
+            const name = std.fmt.bytesToHex(random, .lower);
+            const directory = try parent.createDirPathOpen(io, &name, .{});
+            defer parent.deleteTree(io, &name) catch {};
+            defer directory.close(io);
+            const root = try directory.realPathFileAlloc(io, ".", allocator);
             defer allocator.free(root);
             const settings = try std.json.Stringify.valueAlloc(allocator, .{
                 .@"zig.path" = zig_path,
@@ -3640,10 +3674,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                 .@"zig.zls.trace.server" = "verbose",
             }, .{});
             defer allocator.free(settings);
-            try tmp.dir.writeFile(io, .{ .sub_path = "settings.json", .data = settings });
+            try directory.writeFile(io, .{ .sub_path = "settings.json", .data = settings });
             const settings_path = try std.fs.path.join(allocator, &.{ root, "settings.json" });
             defer allocator.free(settings_path);
-            try tmp.dir.writeFile(io, .{ .sub_path = "sample.zig", .data = "/// Returns the answer.\npub fn answer() u32 { return 42; }\npub fn example() u32 { return answer(); }\n" });
+            try directory.writeFile(io, .{ .sub_path = "sample.zig", .data = "/// Returns the answer.\npub fn answer() u32 { return 42; }\npub fn example() u32 { return answer(); }\n" });
             const document_path = try std.fs.path.join(allocator, &.{ root, "sample.zig" });
             defer allocator.free(document_path);
             var catalog = try @import("../../services/extensions/common/extensionsRegistry.zig").scan(allocator, &.{extension_path});
@@ -3653,7 +3687,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const workbench = window.workbench;
             workbench.setDeclarativeExtensions(&catalog);
             if (workspace_activation) {
-                try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = "const std = @import(\"std\");\npub fn build(b: *std.Build) void { _ = b; }\n" });
+                try directory.writeFile(io, .{ .sub_path = "build.zig", .data = "const std = @import(\"std\");\npub fn build(b: *std.Build) void { _ = b; }\n" });
                 try workbench.setWorkspaceFolders(&.{root});
             } else {
                 try workbench.openPath(document_path);
@@ -3721,6 +3755,29 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                         try std.testing.expect(std.mem.indexOf(u8, output_channel.model.content, "Received response 'initialize") != null);
                         try workbench.views_api.closeView(output_id);
                         try std.testing.expect(!workbench.views_api.isViewVisible(output_id));
+                        if (workspace_activation) {
+                            try workbench.commands.execute("workbench.action.showAllSymbols");
+                            const picker = workbench.quick_access.controller.pickerRef();
+                            try picker.setValue("#answer");
+                            const symbols_deadline = time_compat.milliTimestamp() + 30_000;
+                            var found = false;
+                            while (time_compat.milliTimestamp() < symbols_deadline) {
+                                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                                for (picker.items.items, 0..) |item, index| {
+                                    if (item == .item and std.mem.eql(u8, item.item.label, "answer")) {
+                                        picker.setActiveIndex(index);
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                if (found) break;
+                                time_compat.sleepMillis(20);
+                            }
+                            try std.testing.expect(found);
+                            picker.accept();
+                            try std.testing.expect(!workbench.quick_access.isOpen());
+                            try std.testing.expectEqual(@as(usize, 2), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
+                        }
                         model.setLanguage("plaintext");
                         try std.testing.expect(workbench.statusbar.model().findEntry("status.languageStatus") == null);
                         return;

@@ -1,9 +1,8 @@
 // Port of the portable subset of
 // `src/vs/workbench/contrib/search/common/search.ts`.
 //
-// The terminal workbench has no context-key service, so `SearchStateKey` is
-// exposed as the upstream key name and `SearchUIState` is carried by the search
-// view controller. Workspace-symbol providers, notebook priority helpers and
+// `SearchStateKey` is exposed as the upstream key name and `SearchUIState`
+// is carried by the search view controller. Notebook priority helpers and
 // configuration-registry nodes are not ported.
 
 const std = @import("std");
@@ -118,3 +117,188 @@ fn parseNumber(text: []const u8, cursor: *usize) ?usize {
 fn isSeparator(character: u8) bool {
     return character == ':' or character == '#' or character == ',';
 }
+
+const lifecycle = @import("../../../../base/common/lifecycle.zig");
+const Emitter = @import("../../../../base/common/event.zig").Emitter;
+const IDisposable = lifecycle.IDisposable;
+
+/// Editor ranges in workspace symbols use the protocol's one-based UTF-16
+/// positions until the target model is opened.
+pub const IWorkspaceSymbol = struct {
+    name: []const u8,
+    kind: i64,
+    container_name: []const u8 = "",
+    resource: []const u8,
+    range: ?Range = null,
+    cache_id: ?[2]i64 = null,
+};
+
+pub const WorkspaceSymbolsCallback = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, anyerror![]const IWorkspaceSymbol) void,
+};
+
+pub const ResolveWorkspaceSymbolCallback = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, anyerror!?IWorkspaceSymbol) void,
+};
+
+pub const IWorkspaceSymbolProvider = struct {
+    context: *anyopaque,
+    provide: *const fn (*anyopaque, Allocator, []const u8, WorkspaceSymbolsCallback) anyerror!IDisposable,
+    resolve: ?*const fn (*anyopaque, Allocator, IWorkspaceSymbol, ResolveWorkspaceSymbolCallback) anyerror!IDisposable = null,
+};
+
+pub const WorkspaceSymbolItem = struct {
+    symbol: IWorkspaceSymbol,
+    provider: IWorkspaceSymbolProvider,
+};
+
+/// Window-owned counterpart of upstream's WorkspaceSymbolProviderRegistry.
+pub const WorkspaceSymbolProviderRegistry = struct {
+    allocator: Allocator,
+    registrations: std.ArrayList(*Registration) = .empty,
+    on_did_change: Emitter(void),
+
+    const Registration = struct {
+        owner: *WorkspaceSymbolProviderRegistry,
+        provider: IWorkspaceSymbolProvider,
+
+        fn dispose(context: *anyopaque) void {
+            const self: *Registration = @ptrCast(@alignCast(context));
+            const owner = self.owner;
+            for (owner.registrations.items, 0..) |entry, index| {
+                if (entry != self) continue;
+                _ = owner.registrations.orderedRemove(index);
+                break;
+            }
+            // Consumers detach pending callbacks before the actor frees the
+            // provider's registration context.
+            owner.on_did_change.fire({}) catch {};
+            owner.allocator.destroy(self);
+        }
+    };
+
+    pub fn init(allocator: Allocator) WorkspaceSymbolProviderRegistry {
+        return .{ .allocator = allocator, .on_did_change = .init(allocator) };
+    }
+
+    pub fn deinit(self: *WorkspaceSymbolProviderRegistry) void {
+        for (self.registrations.items) |entry| self.allocator.destroy(entry);
+        self.registrations.deinit(self.allocator);
+        self.on_did_change.deinit();
+    }
+
+    pub fn register(self: *WorkspaceSymbolProviderRegistry, provider: IWorkspaceSymbolProvider) !IDisposable {
+        const registration = try self.allocator.create(Registration);
+        errdefer self.allocator.destroy(registration);
+        registration.* = .{ .owner = self, .provider = provider };
+        try self.registrations.append(self.allocator, registration);
+        self.on_did_change.fire({}) catch {};
+        return .{ .context = registration, .disposeFn = Registration.dispose };
+    }
+
+    pub fn all(self: *WorkspaceSymbolProviderRegistry, allocator: Allocator) ![]IWorkspaceSymbolProvider {
+        const result = try allocator.alloc(IWorkspaceSymbolProvider, self.registrations.items.len);
+        for (self.registrations.items, result) |entry, *dest| dest.* = entry.provider;
+        return result;
+    }
+};
+
+/// The provider requests run independently and finish in any order. The
+/// caller owns Request and must cancel it before dropping its arena.
+pub const WorkspaceSymbolsRequest = struct {
+    allocator: Allocator,
+    arena: std.heap.ArenaAllocator,
+    pending: []Pending = &.{},
+    remaining: usize = 0,
+    items: std.ArrayList(WorkspaceSymbolItem) = .empty,
+    callback: Callback,
+
+    pub const Callback = struct {
+        context: *anyopaque,
+        complete: *const fn (*anyopaque, []const WorkspaceSymbolItem) void,
+    };
+
+    const Pending = struct {
+        request: *WorkspaceSymbolsRequest,
+        provider: IWorkspaceSymbolProvider,
+        disposable: ?IDisposable = null,
+
+        fn ready(context: *anyopaque, result: anyerror![]const IWorkspaceSymbol) void {
+            const self: *Pending = @ptrCast(@alignCast(context));
+            const request = self.request;
+            self.disposable = null;
+            if (result) |symbols| {
+                for (symbols) |symbol| request.items.append(request.arena.allocator(), .{ .symbol = symbol, .provider = self.provider }) catch break;
+            } else |_| {}
+            request.remaining -= 1;
+            if (request.remaining == 0) request.complete();
+        }
+    };
+
+    pub fn init(allocator: Allocator, callback: Callback) !*WorkspaceSymbolsRequest {
+        const self = try allocator.create(WorkspaceSymbolsRequest);
+        self.* = .{ .allocator = allocator, .arena = .init(allocator), .callback = callback };
+        return self;
+    }
+
+    pub fn getWorkspaceSymbols(self: *WorkspaceSymbolsRequest, registry: *WorkspaceSymbolProviderRegistry, query: []const u8) !void {
+        const a = self.arena.allocator();
+        const providers = try registry.all(a);
+        self.pending = try a.alloc(Pending, providers.len);
+        self.remaining = providers.len + 1; // synchronous failures cannot finish during setup
+        for (providers, self.pending) |provider, *pending| {
+            pending.* = .{ .request = self, .provider = provider };
+            pending.disposable = provider.provide(provider.context, a, query, .{ .context = pending, .complete = Pending.ready }) catch {
+                self.remaining -= 1;
+                continue;
+            };
+        }
+        self.remaining -= 1;
+        if (self.remaining == 0) self.complete();
+    }
+
+    pub fn deinit(self: *WorkspaceSymbolsRequest) void {
+        for (self.pending) |pending| if (pending.disposable) |disposable| disposable.dispose();
+        self.arena.deinit();
+        self.allocator.destroy(self);
+    }
+
+    fn complete(self: *WorkspaceSymbolsRequest) void {
+        // Upstream groups by name, kind, URI, intersecting range, and
+        // container, preferring resolvable entries over unresolved duplicates.
+        std.mem.sort(WorkspaceSymbolItem, self.items.items, {}, lessThan);
+        var count: usize = 0;
+        for (self.items.items) |item| {
+            if (count > 0 and compare(self.items.items[count - 1], item) == .eq) continue;
+            self.items.items[count] = item;
+            count += 1;
+        }
+        self.items.items.len = count;
+        self.callback.complete(self.callback.context, self.items.items);
+    }
+
+    fn lessThan(_: void, a: WorkspaceSymbolItem, b: WorkspaceSymbolItem) bool {
+        return compare(a, b) == .lt;
+    }
+
+    fn compare(a: WorkspaceSymbolItem, b: WorkspaceSymbolItem) std.math.Order {
+        var order = std.mem.order(u8, a.symbol.name, b.symbol.name);
+        if (order != .eq) return order;
+        order = std.math.order(a.symbol.kind, b.symbol.kind);
+        if (order != .eq) return order;
+        order = std.mem.order(u8, a.symbol.resource, b.symbol.resource);
+        if (order != .eq) return order;
+        if (a.symbol.range != null and b.symbol.range != null) {
+            const x = a.symbol.range.?;
+            const y = b.symbol.range.?;
+            if (!@import("../../../../editor/common/core/range.zig").areIntersecting(&x, &y)) {
+                order = std.math.order(x.startLineNumber, y.startLineNumber);
+                if (order == .eq) order = std.math.order(x.startColumn, y.startColumn);
+                if (order != .eq) return order;
+            }
+        } else if ((a.provider.resolve != null) != (b.provider.resolve != null)) return if (a.provider.resolve != null) .lt else .gt;
+        return std.mem.order(u8, a.symbol.container_name, b.symbol.container_name);
+    }
+};

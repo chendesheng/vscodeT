@@ -107,6 +107,7 @@ pub const QuickAccessService = struct {
     widget: *QuickPickWidget,
     files_provider: *AnythingQuickAccessProvider,
     commands_provider: *CommandsQuickAccessProvider,
+    workspace_symbols: *@import("../contrib/search/browser/symbolsQuickAccess.zig").SymbolsQuickAccessProvider,
     input: *QuickInputService,
     on_show: @import("../../base/common/event.zig").Emitter(void),
     on_hide: @import("../../base/common/event.zig").Emitter(void),
@@ -189,6 +190,13 @@ pub const QuickAccessService = struct {
         );
         self.registry.register(self.commands_provider.interface()) catch |err| {
             if (self.commands_provider.interface().dispose) |dispose| dispose(self.commands_provider);
+            return err;
+        };
+
+        self.workspace_symbols = try @import("../contrib/search/browser/symbolsQuickAccess.zig").SymbolsQuickAccessProvider.create(allocator, host.window, host.editor_service);
+        const symbols_provider = self.workspace_symbols.interface();
+        self.registry.register(symbols_provider) catch |err| {
+            symbols_provider.dispose.?(symbols_provider.context);
             return err;
         };
 

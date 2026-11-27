@@ -216,6 +216,17 @@ function activate(context) {
       ];
     }
   }));
+  context.subscriptions.push(vscode.languages.registerWorkspaceSymbolProvider({
+    async provideWorkspaceSymbols(query, token) {
+      if (query !== 'WorkspaceFixture' || token.isCancellationRequested) return [];
+      const uri = vscode.window.activeTextEditor.document.uri;
+      return [{ name: 'WorkspaceFixture', kind: vscode.SymbolKind.Function, containerName: 'fixture', location: { uri } }];
+    },
+    resolveWorkspaceSymbol(symbol) {
+      symbol.location = new vscode.Location(symbol.location.uri, new vscode.Range(1, 2, 1, 5));
+      return symbol;
+    }
+  }));
   context.subscriptions.push(vscode.languages.registerDocumentSymbolProvider({ language: 'json' }, {
     provideDocumentSymbols() {
       return [new vscode.DocumentSymbol(

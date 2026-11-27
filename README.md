@@ -497,7 +497,9 @@ verified to activate from a standalone Zig file and a workspace containing
 `build.zig`, return hover content from ZLS, and publish both Zig language
 status items to the status bar. Incremental document edits are reflected in
 subsequent ZLS hover responses. The Zig extension’s ZLS output command opens
-the real file-backed Output panel. The negotiated capabilities are recorded in
+the real file-backed Output panel. Go to Symbol in Workspace (`Ctrl-T` or
+type `#` in Quick Access) queries real ZLS workspace symbols and opens their
+source locations. The negotiated capabilities are recorded in
 [the reference capture](docs/zig-zls-reference-capabilities.json). The full LSP capability matrix
 is still in progress; see [the integration plan](docs/zig-extension-lsp-plan.md).
 

@@ -2513,3 +2513,13 @@ existing notifications and status-bar entry, uses a dispatcher deadline for
 the upstream delayed window display, and routes Cancel back to the extension.
 Named views, other pane/container locations and dialog progress are not yet
 ported.
+
+### Workspace symbol quick access
+
+Go to Symbol in Workspace uses the `#` Quick Access provider (the upstream
+Ctrl/Cmd-T command registration). Typing debounces a query for 200 ms; changing
+the query or dismissing the picker cancels outstanding provider calls. A selected
+symbol resolves its optional location before opening the target UTF-16 position.
+The terminal picker currently shows names and container/file descriptions;
+symbol-kind icons, background/side-by-side acceptance, richer highlights and
+preview configuration remain portable view gaps.

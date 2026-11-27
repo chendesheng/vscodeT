@@ -6,6 +6,7 @@ const replace = @import("searchActionsRemoveReplace.zig");
 const toolbar = @import("searchActionsTopBar.zig");
 
 pub const search_actions = [_]@import("../../../../platform/actions/common/actions.zig").Action2{
+    @import("searchActionsSymbol.zig").show_all_symbols,
     base.find_in_files,
     base.replace_in_files,
     nav.toggle_case_sensitive,

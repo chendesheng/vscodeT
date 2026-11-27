@@ -2,7 +2,7 @@
 // `src/vs/workbench/api/browser/mainThreadLanguageFeatures.ts`.
 //
 // Ported features: hover, completion, definition, declaration,
-// implementation, type definition, references, document symbols, single- and
+// implementation, type definition, references, document/workspace symbols, single- and
 // multi-document highlights, CodeLens, code actions
 // and document/range/on-type formatting. The actor stores providers by handle
 // in `LanguageFeaturesService`, converts the extension-host DTOs into editor
@@ -31,6 +31,7 @@ const completion = @import("../../../editor/common/languages/completion.zig");
 const parseSelector = @import("../common/extHostTypeConverters.zig").parseSelector;
 const std_uri = @import("../../../base/common/stdUri.zig");
 const position_converter = @import("../common/positionConverter.zig");
+const workspace_symbols = @import("../../contrib/search/common/search.zig");
 const features_mod = @import("../../../editor/common/services/languageFeaturesService.zig");
 
 pub const ProviderError = error{
@@ -65,6 +66,7 @@ const Registration = struct {
     disposable: ?IDisposable = null,
     hover_arena: ?*std.heap.ArenaAllocator = null,
     code_lens_state: ?*CodeLensState = null,
+    workspace_symbol_state: ?*WorkspaceSymbolState = null,
 };
 
 const HoverState = struct {
@@ -581,6 +583,7 @@ pub const MainThreadLanguageFeatures = struct {
     allocator: Allocator,
     features: *features_mod.LanguageFeaturesService,
     proxy: HostProxy,
+    workspace_symbol_registry: ?*workspace_symbols.WorkspaceSymbolProviderRegistry = null,
     registrations: std.AutoHashMap(u32, *Registration),
     code_lens_events: std.AutoHashMap(u32, *CodeLensState),
     code_lens_commands: std.ArrayList(*CodeLensCommandRequest) = .empty,
@@ -670,6 +673,7 @@ pub const MainThreadLanguageFeatures = struct {
             }
         }
         if (registration.disposable) |disposable| disposable.dispose();
+        if (registration.workspace_symbol_state) |state| state.releaseLastResult();
         if (registration.code_lens_state) |state| {
             if (state.event_handle) |handle| _ = self.code_lens_events.remove(handle);
             state.changed.deinit();
@@ -725,6 +729,7 @@ pub const MainThreadLanguageFeatures = struct {
         if (std.mem.eql(u8, method, "$registerImplementationSupport")) return self.registerLocationProvider(args, arena, .implementation);
         if (std.mem.eql(u8, method, "$registerTypeDefinitionSupport")) return self.registerLocationProvider(args, arena, .type_definition);
         if (std.mem.eql(u8, method, "$registerReferenceSupport")) return self.registerReference(args, arena);
+        if (std.mem.eql(u8, method, "$registerNavigateTypeSupport")) return self.registerWorkspaceSymbol(args, arena);
         if (std.mem.eql(u8, method, "$registerDocumentSymbolProvider")) return self.registerDocumentSymbol(args, arena);
         if (std.mem.eql(u8, method, "$registerDocumentHighlightProvider")) return self.registerDocumentHighlights(args, arena, false);
         if (std.mem.eql(u8, method, "$registerMultiDocumentHighlightProvider")) return self.registerDocumentHighlights(args, arena, true);
@@ -830,6 +835,25 @@ pub const MainThreadLanguageFeatures = struct {
             .context = state,
             .requires_window_fiber = self.proxy.request_async != null,
             .provide_references = provideReferences,
+        });
+        return .empty;
+    }
+
+    fn registerWorkspaceSymbol(self: *MainThreadLanguageFeatures, args: []const rpc.Arg, arena: Allocator) !rpc.HandlerReply {
+        const registry = self.workspace_symbol_registry orelse return .{ .err = .{ .name = "Unavailable", .message = "Workspace symbols" } };
+        const handle = handleArg(args) orelse return error.InvalidArguments;
+        const registration = try self.createRegistration(arena, handle);
+        errdefer {
+            _ = self.registrations.remove(handle);
+            self.destroyRegistration(registration);
+        }
+        const state = try registration.arena.allocator().create(WorkspaceSymbolState);
+        state.* = .{ .registration = registration };
+        registration.workspace_symbol_state = state;
+        registration.disposable = try registry.register(.{
+            .context = state,
+            .provide = WorkspaceSymbolState.provide,
+            .resolve = if (boolArg(args, 1)) WorkspaceSymbolState.resolve else null,
         });
         return .empty;
     }
@@ -2101,4 +2125,139 @@ fn parseDocumentSymbol(allocator: Allocator, object: std.json.ObjectMap, model: 
         .selection_range = if (object.get("selectionRange")) |value| rangeFromJson(model, value) orelse Range.init(1, 1, 1, 1) else Range.init(1, 1, 1, 1),
         .children = try children.toOwnedSlice(),
     };
+}
+
+const WorkspaceSymbolState = struct {
+    registration: *Registration,
+    last_result_id: ?i64 = null,
+
+    fn releaseLastResult(self: *WorkspaceSymbolState) void {
+        if (self.last_result_id) |id| {
+            const proxy = self.registration.owner.proxy;
+            proxy.notify(proxy.context, "$releaseWorkspaceSymbols", &.{
+                .{ .json = .{ .integer = self.registration.handle } },
+                .{ .json = .{ .integer = id } },
+            }) catch {};
+            self.last_result_id = null;
+        }
+    }
+
+    const Request = struct {
+        state: *WorkspaceSymbolState,
+        allocator: Allocator,
+        callback: workspace_symbols.WorkspaceSymbolsCallback,
+
+        fn ready(context: *anyopaque, reply: rpc.Reply) void {
+            const self: *Request = @ptrCast(@alignCast(context));
+            const result = switch (reply) {
+                .json => |value| self.parse(value),
+                .err => error.RequestFailed,
+                else => @as([]const workspace_symbols.IWorkspaceSymbol, &.{}),
+            };
+            self.callback.complete(self.callback.context, result);
+        }
+
+        fn parse(self: *Request, value: std.json.Value) ![]const workspace_symbols.IWorkspaceSymbol {
+            if (value != .object) return error.InvalidResult;
+            self.state.releaseLastResult();
+            if (value.object.get("cacheId")) |id| if (id == .integer) {
+                self.state.last_result_id = id.integer;
+            };
+            const symbols = value.object.get("symbols") orelse return &.{};
+            if (symbols != .array) return error.InvalidResult;
+            var output: std.ArrayList(workspace_symbols.IWorkspaceSymbol) = .empty;
+            for (symbols.array.items) |symbol| {
+                const parsed = try parseWorkspaceSymbol(self.allocator, symbol) orelse continue;
+                try output.append(self.allocator, parsed);
+            }
+            return output.items;
+        }
+    };
+
+    fn provide(context: *anyopaque, allocator: Allocator, query: []const u8, callback: workspace_symbols.WorkspaceSymbolsCallback) !IDisposable {
+        const self: *WorkspaceSymbolState = @ptrCast(@alignCast(context));
+        const proxy = self.registration.owner.proxy;
+        const pending = try allocator.create(Request);
+        pending.* = .{ .state = self, .allocator = allocator, .callback = callback };
+        const args: []const rpc.Arg = &.{ .{ .json = .{ .integer = self.registration.handle } }, .{ .json = .{ .string = query } } };
+        if (proxy.request_async) |request| return request(proxy.context, "$provideWorkspaceSymbols", args, .{ .context = pending, .callback = Request.ready });
+        const value = try proxy.request(proxy.context, allocator, "$provideWorkspaceSymbols", args, null, timeout_default_ms);
+        callback.complete(callback.context, pending.parse(value));
+        return IDisposable.none;
+    }
+
+    const ResolveRequest = struct {
+        allocator: Allocator,
+        callback: workspace_symbols.ResolveWorkspaceSymbolCallback,
+
+        fn ready(context: *anyopaque, reply: rpc.Reply) void {
+            const self: *ResolveRequest = @ptrCast(@alignCast(context));
+            const result = switch (reply) {
+                .json => |value| parseWorkspaceSymbol(self.allocator, value),
+                .err => error.RequestFailed,
+                else => @as(?workspace_symbols.IWorkspaceSymbol, null),
+            };
+            self.callback.complete(self.callback.context, result);
+        }
+    };
+
+    fn resolve(context: *anyopaque, allocator: Allocator, symbol: workspace_symbols.IWorkspaceSymbol, callback: workspace_symbols.ResolveWorkspaceSymbolCallback) !IDisposable {
+        const self: *WorkspaceSymbolState = @ptrCast(@alignCast(context));
+        const proxy = self.registration.owner.proxy;
+        const pending = try allocator.create(ResolveRequest);
+        pending.* = .{ .allocator = allocator, .callback = callback };
+        var location: std.json.ObjectMap = .empty;
+        try location.put(allocator, "uri", try std_uri.jsonComponents(allocator, try std.Uri.parse(symbol.resource)));
+        if (symbol.range) |range| {
+            var object: std.json.ObjectMap = .empty;
+            try object.put(allocator, "startLineNumber", .{ .integer = @intCast(range.startLineNumber) });
+            try object.put(allocator, "startColumn", .{ .integer = @intCast(range.startColumn) });
+            try object.put(allocator, "endLineNumber", .{ .integer = @intCast(range.endLineNumber) });
+            try object.put(allocator, "endColumn", .{ .integer = @intCast(range.endColumn) });
+            try location.put(allocator, "range", .{ .object = object });
+        }
+        var dto: std.json.ObjectMap = .empty;
+        try dto.put(allocator, "name", .{ .string = symbol.name });
+        try dto.put(allocator, "kind", .{ .integer = symbol.kind });
+        try dto.put(allocator, "containerName", .{ .string = symbol.container_name });
+        try dto.put(allocator, "location", .{ .object = location });
+        if (symbol.cache_id) |cache_id| {
+            var array = std.json.Array.init(allocator);
+            for (cache_id) |id| try array.append(.{ .integer = id });
+            try dto.put(allocator, "cacheId", .{ .array = array });
+        }
+        const args: []const rpc.Arg = &.{ .{ .json = .{ .integer = self.registration.handle } }, .{ .json = .{ .object = dto } } };
+        if (proxy.request_async) |request| return request(proxy.context, "$resolveWorkspaceSymbol", args, .{ .context = pending, .callback = ResolveRequest.ready });
+        const value = try proxy.request(proxy.context, allocator, "$resolveWorkspaceSymbol", args, null, timeout_default_ms);
+        callback.complete(callback.context, parseWorkspaceSymbol(allocator, value));
+        return IDisposable.none;
+    }
+};
+
+fn parseWorkspaceSymbol(allocator: Allocator, value: std.json.Value) !?workspace_symbols.IWorkspaceSymbol {
+    if (value != .object) return null;
+    const object = value.object;
+    const name = object.get("name") orelse return null;
+    const kind = object.get("kind") orelse return null;
+    const location = object.get("location") orelse return null;
+    if (name != .string or name.string.len == 0 or kind != .integer or location != .object) return null;
+    const resource = location.object.get("uri") orelse return null;
+    var symbol: workspace_symbols.IWorkspaceSymbol = .{
+        .name = try allocator.dupe(u8, name.string),
+        .kind = kind.integer,
+        .container_name = try dupJsonString(allocator, object.get("containerName")),
+        .resource = try std_uri.encodedResourceFromJson(allocator, resource),
+    };
+    if (location.object.get("range")) |range| if (range == .object) {
+        symbol.range = .init(
+            intField(range.object, "startLineNumber") orelse return null,
+            intField(range.object, "startColumn") orelse return null,
+            intField(range.object, "endLineNumber") orelse return null,
+            intField(range.object, "endColumn") orelse return null,
+        );
+    };
+    if (object.get("cacheId")) |id| if (id == .array and id.array.items.len == 2 and id.array.items[0] == .integer and id.array.items[1] == .integer) {
+        symbol.cache_id = .{ id.array.items[0].integer, id.array.items[1].integer };
+    };
+    return symbol;
 }

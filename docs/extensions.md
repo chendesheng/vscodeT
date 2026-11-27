@@ -1981,6 +1981,26 @@ active-editor mirror and terminal command switch. The logger/output/progress/
 file-system actors and the `$getTools`/`$ensureActivation` stubs remain in the
 generic fallback.
 
+### 15.8 Zig/ZLS language features (in progress)
+
+The local Node host receives the enabled scanner inventory, including user
+extensions and declarative-only descriptions. Install `ziglang.vscode-zig` in
+the effective VS Code extensions directory and use the same settings profile
+with explicit `zig.path`, `zig.zls.path` and `zig.zls.enabled: "on"`. The
+opt-in real-extension test uses Zig extension 0.7.0, Zig 0.17.0 and ZLS 0.17.0.
+It verifies both standalone and workspace activation, the actual initialize
+exchange, incremental hover, language status, the ZLS Output command and a
+workspace-symbol query/navigation. See the [implementation record and remaining
+capabilities](zig-extension-lsp-plan.md) and the
+[captured negotiation](zig-zls-reference-capabilities.json).
+
+The transport fixtures also exercise local filesystem RPC, asynchronous
+background document resolution, watcher registration and disposal, output
+channel lifecycle, progress reporting and cancellation, and optional workspace
+symbol resolution. Remaining portable gaps include signature help, rename,
+semantic tokens, inlay hints, folding and selection-range providers; the
+full advertised ZLS capability matrix is not yet verified.
+
 ## 16. Deferred / explicit limitations
 
 - Electron transport, `PersistentProtocol`, socket reconnection.

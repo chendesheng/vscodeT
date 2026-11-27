@@ -253,6 +253,7 @@
 ["imagePreview.zoomOut","Zoom Out","Image Preview","",true,true,false,false,true]
 ["imagePreview.selectZoomLevel","Select Zoom Level","Image Preview","",true,true,false,false,true]
 ["imagePreview.openInTextEditor","Open in Text Editor","Image Preview","",true,true,false,false,true]
+["workbench.action.showAllSymbols","Go to Symbol in Workspace...","","",true,false,false,true,true]
 ["workbench.action.findInFiles","Find in Files","Search","",true,false,false,true,true]
 ["workbench.action.replaceInFiles","Replace in Files","Search","",true,false,false,true,true]
 ["toggleSearchCaseSensitive","Toggle Case Sensitive","Search","",true,false,false,true,true]
