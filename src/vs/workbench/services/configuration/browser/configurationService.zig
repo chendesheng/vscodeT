@@ -1005,7 +1005,7 @@ const AsyncReloadJob = struct {
 fn runAsyncReload(job: *AsyncReloadJob) AsyncReloadResult {
     defer job.watcher.reload_ready.post();
     const service = job.watcher.configuration_service;
-    return .{ .sources = service.readSources(job.watcher.allocator, job.io) catch |err| return .{ .err = err } };
+    return .{ .sources = dispatch.workerCall(job.io, ConfigurationService.readSources, .{ service, job.watcher.allocator, dispatch.backingIo(job.io) }) catch |err| return .{ .err = err } };
 }
 
 pub const SettingsWatcher = struct {

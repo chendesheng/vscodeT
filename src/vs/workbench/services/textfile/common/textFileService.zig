@@ -3,6 +3,7 @@
 // to filesystem paths. Browser streams and charset guessing are omitted.
 const std = @import("std");
 const Io = std.Io;
+const dispatch = @import("../../../../base/common/windowDispatch.zig");
 const Allocator = std.mem.Allocator;
 const file_service = @import("../../../../platform/files/common/fileService.zig");
 const buffer_mod = @import("../../../../base/common/buffer.zig");
@@ -156,13 +157,14 @@ pub const TextFileService = struct {
     }
 };
 
-/// Worker-side file read for a terminal with blocking filesystem calls. The
-/// caller consumes the result or cancels the read before releasing the path.
+/// The window owns the async read; the blocking read and decode remain one
+/// detached operation. The caller joins/cancels it before releasing the path.
 pub const TextFileRead = struct {
     allocator: Allocator,
     service: *TextFileService,
     path: []u8,
     allow_missing: bool,
+    executor: Io,
     future: Io.Future(anyerror!ResolvedTextFile),
     completion: @import("../../../../base/common/windowDispatch.zig").Task,
     listener: ?Listener,
@@ -181,14 +183,15 @@ pub const TextFileRead = struct {
         const allocator = service.allocator;
         const self = try allocator.create(TextFileRead);
         errdefer allocator.destroy(self);
-        self.* = .{ .allocator = allocator, .service = service, .path = try allocator.dupe(u8, path), .allow_missing = allow_missing, .future = undefined, .listener = listener, .completion = .{ .queue = if (listener) |l| l.queue else null, .context = self, .run = complete, .progress = true } };
-        self.future = service.files.io.async(run, .{self});
+        const executor = if (listener) |l| if (l.queue.scheduler != null) l.queue.io else service.files.io else service.files.io;
+        self.* = .{ .allocator = allocator, .service = service, .executor = executor, .path = try allocator.dupe(u8, path), .allow_missing = allow_missing, .future = undefined, .listener = listener, .completion = .{ .queue = if (listener) |l| l.queue else null, .context = self, .run = complete, .progress = true } };
+        self.future = executor.async(run, .{self});
         return self;
     }
 
     fn run(self: *TextFileRead) anyerror!ResolvedTextFile {
         defer self.completion.post();
-        return self.service.resolve(self.path, self.allow_missing);
+        return dispatch.workerCall(self.executor, TextFileService.resolve, .{ self.service, self.path, self.allow_missing });
     }
 
     fn complete(context: *anyopaque, _: i64, _: bool) bool {
@@ -198,7 +201,7 @@ pub const TextFileRead = struct {
     }
 
     pub fn awaitResult(self: *TextFileRead) !ResolvedTextFile {
-        return self.future.await(self.service.files.io);
+        return self.future.await(self.executor);
     }
 
     pub fn destroy(self: *TextFileRead) void {
@@ -208,7 +211,7 @@ pub const TextFileRead = struct {
     }
 
     pub fn cancel(self: *TextFileRead) void {
-        if (self.future.cancel(self.service.files.io)) |value| {
+        if (self.future.cancel(self.executor)) |value| {
             var loaded = value;
             loaded.deinit(self.allocator);
         } else |_| {}

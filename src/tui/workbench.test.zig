@@ -5430,6 +5430,11 @@ test "Workbench: interactive open reads on the async Io" {
 
     workbench.requestOpenPath(path);
     try std.testing.expect(workbench.editor_opening.pending_open != null);
+    const read = workbench.editor_opening.pending_open.?.read;
+    try std.testing.expectEqual(workbench.asyncIo().vtable, read.executor.vtable);
+    try std.testing.expectEqual(workbench.asyncIo().userdata, read.executor.userdata);
+    try std.testing.expect(workbench.asyncIo().vtable != workbench.worker_io.vtable);
+    try std.testing.expectEqual(@as(i32, 0), workbench.window_events.nextTimeout(time_compat.milliTimestamp(), 250));
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
 
     var waited: usize = 0;
@@ -5454,6 +5459,8 @@ test "Workbench: cancelling an in-flight open leaves no tab and no pending job" 
     const workbench_window = try TestWindow.init(allocator, io, &.{}, 40, 10);
     const workbench = workbench_window.workbench;
     workbench.requestOpenPath(path);
+    _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+    try std.testing.expect(workbench.editor_opening.pending_open != null);
     workbench_window.deinit();
 }
 
@@ -5516,11 +5523,10 @@ test "Workbench: Explorer expands a directory symlink and opens a file inside" {
     };
     try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &link_click));
     try std.testing.expect(sidebar.hasPendingLoad());
-    var load_waited: usize = 0;
-    while (!sidebar.pollLoad() and load_waited < 2000) : (load_waited += 1) {
-        std.Io.sleep(io, .fromMilliseconds(1), .awake) catch {};
-    }
-    try std.testing.expect(load_waited < 2000);
+    // Drive the same window scheduler and completion event as the running
+    // workbench rather than waiting on the old detached worker directly.
+    pumpSidebarForTests(workbench);
+    try std.testing.expect(!sidebar.hasPendingLoad());
     try std.testing.expect(sidebar.isExpanded(link));
     const inner_item = link.getChild("inner.txt") orelse return error.TestUnexpectedResult;
 
@@ -14091,4 +14097,47 @@ test "Workbench: extensions panel lists, filters, opens and disables" {
     const active = workbench.activeTab() orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, active.editor.path, "user-ext") != null);
     try std.testing.expect(std.mem.endsWith(u8, active.editor.path, "package.json"));
+}
+
+test "Workbench: window Io yields through the native dispatcher and resumes on the window thread" {
+    const allocator = std.testing.allocator;
+    const workbench_window = try TestWindow.init(allocator, std.testing.io, &.{}, 40, 10);
+    defer workbench_window.deinit();
+    const wb = workbench_window.workbench;
+    const io = wb.asyncIo();
+    const Probe = struct {
+        owner: std.Thread.Id,
+        phase: u8 = 0,
+        reply: Io.Event = .unset,
+        complete: bool = false,
+        fn request(self: *@This(), serial: Io) !void {
+            try std.testing.expectEqual(self.owner, std.Thread.getCurrentId());
+            self.phase = 1;
+            try self.reply.wait(serial);
+            try std.testing.expectEqual(self.owner, std.Thread.getCurrentId());
+            try std.testing.expectEqual(@as(u8, 2), self.phase);
+            self.complete = true;
+        }
+        fn respond(self: *@This(), serial: Io) !void {
+            try std.testing.expectEqual(self.owner, std.Thread.getCurrentId());
+            try std.testing.expectEqual(@as(u8, 1), self.phase);
+            self.phase = 2;
+            self.reply.set(serial);
+        }
+    };
+    var probe: Probe = .{ .owner = std.Thread.getCurrentId() };
+    var request = try io.concurrent(Probe.request, .{ &probe, io });
+    defer request.cancel(io) catch {};
+    _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+    try std.testing.expectEqual(@as(u8, 1), probe.phase);
+    var response = try io.concurrent(Probe.respond, .{ &probe, io });
+    defer response.cancel(io) catch {};
+    const deadline = time_compat.milliTimestamp() + 3000;
+    while (!probe.complete and time_compat.milliTimestamp() < deadline) {
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        if (!probe.complete) try wb.worker_io.sleep(.fromMilliseconds(1), .awake);
+    }
+    try std.testing.expect(probe.complete);
+    try request.await(io);
+    try response.await(io);
 }

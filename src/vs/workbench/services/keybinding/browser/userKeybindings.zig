@@ -329,7 +329,7 @@ pub const UserKeybindingsLoader = struct {
 
     fn runReload(job: *ReloadJob) Outcome {
         defer job.completion.post();
-        const bindings = UserKeybindings.load(job.allocator, job.io, job.paths) catch |err| return .{ .err = err };
+        const bindings = dispatch.workerCall(job.io, UserKeybindings.load, .{ job.allocator, dispatch.backingIo(job.io), job.paths }) catch |err| return .{ .err = err };
         return .{ .bindings = bindings };
     }
 

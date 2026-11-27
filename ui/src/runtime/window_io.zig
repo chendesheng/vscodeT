@@ -45,6 +45,13 @@ pub const WindowIo = struct {
         return .{ .userdata = self, .vtable = &vtable };
     }
 
+    /// Whether an event-loop turn can run a fiber without blocking.
+    pub fn hasReady(self: *Self) bool {
+        self.mutex.lockUncancelable(self.worker);
+        defer self.mutex.unlock(self.worker);
+        return self.head != null;
+    }
+
     /// The callback may be invoked on a worker thread and must only signal
     /// readiness; it must not dispatch work or call back into WindowIo.
     pub fn setWake(self: *Self, wake: ?Wake) void {
@@ -110,6 +117,8 @@ pub const WindowIo = struct {
     fn resumeTask(self: *Self, task: *Task) void {
         std.debug.assert(self.current == null and !task.done);
         self.current = task;
+        const owns_root = native.enterRoot(&self.root);
+        defer native.leaveRoot(owns_root);
         native.switchTo(&self.root, &task.fiber.context);
         self.current = null;
         if (task.done and task.group != null) self.finishGroupTask(task);
@@ -367,31 +376,47 @@ pub const WindowIo = struct {
         return old;
     }
 
+    /// Returns the detached I/O backend for work that must run off-window.
+    /// Non-WindowIo callers (standalone services/tests) retain their supplied Io.
+    pub fn backingIo(serial: Io) Io {
+        if (serial.vtable == &vtable) return fromOpaque(serial.userdata).worker;
+        return serial;
+    }
+
+    /// Run a detached operation while suspending the calling window fiber.
+    /// The function must only touch its owned/captured data and the backing Io;
+    /// callers install results on the window after this returns. On ordinary
+    /// Io this runs inline (the caller may already be a background job).
+    pub fn workerCall(serial: Io, comptime function: anytype, args: std.meta.ArgsTuple(@TypeOf(function))) @typeInfo(@TypeOf(function)).@"fn".return_type.? {
+        if (serial.vtable != &vtable) return @call(.auto, function, args);
+        return fromOpaque(serial.userdata).executeWorker(@TypeOf(function), function, args);
+    }
+
     /// Use the worker backend for blocking operations. A fiber retains its
-    /// arguments/results until the worker has fully joined. Completion wakes
-    /// the window; cancellation itself is also dispatched to a worker.
+    /// arguments/results until the worker has fully joined.
     fn forward(self: *Self, comptime name: []const u8, args: std.meta.ArgsTuple(@typeInfo(@FieldType(Io.VTable, name)).pointer.child)) @typeInfo(@typeInfo(@FieldType(Io.VTable, name)).pointer.child).@"fn".return_type.? {
         const Fn = @typeInfo(@FieldType(Io.VTable, name)).pointer.child;
-        const Result = @typeInfo(Fn).@"fn".return_type.?;
         var worker_args = args;
         worker_args[0] = self.worker.userdata;
         const function = @field(self.worker.vtable.*, name);
-        // Some operations are immediate, or rely on the calling thread (such
-        // as the stderr lock). Never move these onto a different worker.
+        // Some operations are immediate, or rely on the calling thread.
         if (comptime immediate(name)) return @call(.auto, function, worker_args);
-        // Forwarding from a worker (e.g. an Io.Reader inside a write) stays on
-        // that worker. Root-level blocking operations enter a structured fiber
-        // scope so std.Io.Select and Event.wait can also make progress. The
-        // interactive host instead dispatches fibers without waiting at root.
-        if (self.owner != std.Thread.getCurrentId()) return @call(.auto, function, worker_args);
+        return self.executeWorker(Fn, function, worker_args);
+    }
+
+    fn executeWorker(self: *Self, comptime Fn: type, function: *const Fn, args: std.meta.ArgsTuple(Fn)) @typeInfo(Fn).@"fn".return_type.? {
+        const Result = @typeInfo(Fn).@"fn".return_type.?;
+        // Forwarding from an existing worker stays on it. Root-level waits
+        // enter a structured scope rather than block the scheduler.
+        if (self.owner != std.Thread.getCurrentId()) return @call(.auto, function, args);
         const current = self.current orelse {
             const RootCall = struct {
-                fn run(runtime: *Self, original_args: @TypeOf(args)) Result {
-                    return runtime.forward(name, original_args);
+                fn run(runtime: *Self, run_function: *const Fn, original_args: std.meta.ArgsTuple(Fn)) Result {
+                    return runtime.executeWorker(Fn, run_function, original_args);
                 }
             };
             const serial = self.io();
-            var future = serial.concurrent(RootCall.run, .{ self, args }) catch return @call(.auto, function, worker_args);
+            var future = serial.concurrent(RootCall.run, .{ self, function, args }) catch return @call(.auto, function, args);
             return future.await(serial);
         };
         if (comptime canCancel(Result)) {
@@ -400,7 +425,8 @@ pub const WindowIo = struct {
         const Work = struct {
             scheduler: *Self,
             task: *Task,
-            args: @TypeOf(worker_args),
+            function: *const Fn,
+            args: std.meta.ArgsTuple(Fn),
             result: Result = undefined,
             future: Io.Future(void) = undefined,
             cancellation: ?Io.Future(void) = null,
@@ -408,7 +434,7 @@ pub const WindowIo = struct {
             canceling: bool = false,
 
             fn run(work: *@This()) void {
-                work.result = @call(.auto, @field(work.scheduler.worker.vtable.*, name), work.args);
+                work.result = @call(.auto, work.function, work.args);
                 const scheduler = work.scheduler;
                 scheduler.mutex.lockUncancelable(scheduler.worker);
                 work.done = true;
@@ -438,9 +464,10 @@ pub const WindowIo = struct {
                 };
             }
         };
-        var work: Work = .{ .scheduler = self, .task = current, .args = worker_args };
-        work.future = self.worker.concurrent(Work.run, .{&work}) catch return @call(.auto, function, worker_args);
+        var work: Work = .{ .scheduler = self, .task = current, .function = function, .args = args };
+        work.future = self.worker.concurrent(Work.run, .{&work}) catch return @call(.auto, function, args);
         current.waiting = .{ .worker = .{ .context = &work, .cancel = Work.cancel } };
+        if (current.canceled and current.cancel_protection == .unblocked) Work.cancel(&work);
         self.suspendFiber();
         current.waiting = .none;
         if (work.cancellation) |*cancellation| {

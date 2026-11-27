@@ -3,6 +3,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
+const dispatch = @import("../../../../base/common/windowDispatch.zig");
 
 pub const Renderer = struct {
     allocator: Allocator,
@@ -59,10 +60,10 @@ pub const Renderer = struct {
         const io = self.io orelse return null;
         if (!self.executable_checked) {
             self.executable_checked = true;
-            const dir = std.process.executableDirPathAlloc(io, self.allocator) catch return null;
+            const dir = std.process.executableDirPathAlloc(dispatch.backingIo(io), self.allocator) catch return null;
             defer self.allocator.free(dir);
             const script = std.fs.path.resolveAlloc(self.allocator, &.{ dir, "../lib/vscode-textbuffer", self.script_name }) catch return null;
-            Io.Dir.cwd().access(io, script, .{}) catch {
+            Io.Dir.cwd().access(dispatch.backingIo(io), script, .{}) catch {
                 self.allocator.free(script);
                 return null;
             };
@@ -100,11 +101,11 @@ pub const Renderer = struct {
     fn render(job: *Job) ?[]u8 {
         defer if (job.delivery) |delivery| delivery.post();
         defer job.done.store(true, .release);
-        return run(job) catch null;
+        return dispatch.workerCall(job.io, run, .{job}) catch null;
     }
 
     fn run(job: *Job) !?[]u8 {
-        const io = job.io;
+        const io = dispatch.backingIo(job.io);
         var child = try std.process.spawn(io, .{
             .argv = &.{ "node", job.script },
             .stdin = .pipe,

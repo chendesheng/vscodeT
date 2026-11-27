@@ -95,8 +95,8 @@ fn runMarkdownImageJob(job: *MarkdownImageJob) MarkdownImageResult {
     defer job.done.store(true, .release);
     const async_io = job.preview.async_io orelse return .failed;
     return switch (job.source) {
-        .file => |path| loadMarkdownLocalImage(job.preview.allocator, async_io, path),
-        .url => |url| loadMarkdownRemoteImage(job.preview, url),
+        .file => |path| dispatch.workerCall(async_io, loadMarkdownLocalImage, .{ job.preview.allocator, dispatch.backingIo(async_io), path }),
+        .url => |url| dispatch.workerCall(async_io, loadMarkdownRemoteImage, .{ job.preview, url }),
     };
 }
 
@@ -241,7 +241,7 @@ pub const MarkdownPreview = struct {
         self.async_io = io;
         self.mermaid.io = io;
         self.math.io = io;
-        self.request_service = RequestService.init(self.allocator, io);
+        self.request_service = RequestService.init(self.allocator, dispatch.backingIo(io));
     }
 
     pub fn setThemeColors(self: *MarkdownPreview, palette: ?*const theme_colors_mod.ThemeColors) void {

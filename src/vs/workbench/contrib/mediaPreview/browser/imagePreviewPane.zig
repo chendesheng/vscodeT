@@ -57,7 +57,8 @@ const ImageLoadJob = struct {
 
 fn runImageLoad(job: *ImageLoadJob) image_preview_editor.LoadedImage {
     defer job.completion.post();
-    return ImagePreviewEditor.loadContent(job.pane.allocator, job.pane.window.?.io, job.path);
+    const io = job.pane.window.?.io;
+    return dispatch.workerCall(io, ImagePreviewEditor.loadContent, .{ job.pane.allocator, dispatch.backingIo(io), job.path });
 }
 
 pub const ImagePreviewPane = struct {

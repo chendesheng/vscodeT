@@ -112,9 +112,10 @@ keeps its immutable text while edits invalidate the tree’s reference.
   ports. `main.log`
   records `startup:` stage timings (`workbench-init`, `themes`,
   `workspace-git`, `first-frame`, `after-restored`) for diagnosing them.
-- Interactive file and directory reads run off the TUI thread. `Workbench`
-  owns a dedicated `std.Io.Threaded` instance (passed explicitly as `async_io`)
-  and starts work with `Io.async`: opening a file (read + BOM decode +
+- Interactive file and directory workflows use the window-owned `ui.WindowIo`
+  instance (`async_io`) and start with `Io.async`. The fiber stays on the
+  window thread and awaits detached work on the backing `Io.Threaded` pool:
+  opening a file (read + BOM decode +
   canonical path), expanding an explorer directory, loading image tabs and
   Markdown images, and fetching remote Markdown images. File opens, external file
   reloads, image tabs, themes and keybindings wake the window on completion.
@@ -776,12 +777,12 @@ console API for raw mode, sizing and input polling.
 
 ## Terminal UI library
 
-- `ui.WindowIo` is an opt-in, thread-affine implementation of Zig 0.17's
-  `std.Io` for window-owned asynchronous tasks. Its fibers yield on waits and
-  resume on the window thread; blocking I/O belongs to a separate concurrent
-  backend. The runtime has a native wake callback and structured future/group
-  cancellation. Existing workbench services still use their current dispatcher
-  and worker-I/O paths; adopting `WindowIo` for save/providers is separate work.
+- `ui.WindowIo` is the workbench's thread-affine implementation of Zig 0.17's
+  `std.Io` for window-owned async tasks. Its fibers yield on waits and resume
+  on the window thread; detached reads, decodes and process work use its
+  concurrent backing pool. The native wake callback integrates with the
+  existing window dispatcher. Save-participant and provider lifecycle
+  migration remains separate work.
 - `ui/` is a standalone Zig package outside `src/`: a DOM-like tree with
   authored `Style` declarations that cascade into `ComputedStyle` (inherited
   properties from the parent, initial values otherwise), integer class IDs into

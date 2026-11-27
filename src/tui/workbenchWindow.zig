@@ -296,12 +296,12 @@ pub const TerminalWorkbench = struct {
     allocator: Allocator,
     view_factory: @import("../vs/workbench/browser/parts/editor/editorPane.zig").EditorViewFactory,
     io: Io,
-    /// Io used to run interactive file/dir/network work off the TUI thread.
-    /// It is a separate instance from `io` with `async_limit = .unlimited` so
-    /// `Io.async` never falls back to running a blocking read inline on the
-    /// TUI thread just because the default pool is busy. `io` remains the
-    /// terminal/synchronous-startup instance.
-    async_io_state: Io.Threaded,
+    /// Window-owned async workflows suspend on the serial WindowIo runtime.
+    /// Its separate threaded backend handles detached file/process/CPU work;
+    /// the terminal's synchronous/startup Io is borrowed from the host.
+    worker_io_state: Io.Threaded,
+    worker_io: Io,
+    async_io_state: ui.WindowIo,
     async_io: Io,
     disk_files: @import("../vs/platform/files/common/fileService.zig").DiskFileService,
     text_file_service: text_files.TextFileService,
@@ -513,13 +513,16 @@ pub const TerminalWorkbench = struct {
         self.allocator = allocator;
         self.view_factory = view_factory;
         self.io = io;
-        self.async_io_state = Io.Threaded.init(allocator, .{
+        self.worker_io_state = Io.Threaded.init(allocator, .{
             .async_limit = .unlimited,
             .environ = asyncEnviron(),
         });
+        errdefer self.worker_io_state.deinit();
+        self.worker_io = self.worker_io_state.io();
+        self.async_io_state = try ui.WindowIo.init(allocator, self.worker_io);
         errdefer self.async_io_state.deinit();
         self.async_io = self.async_io_state.io();
-        self.disk_files = .init(allocator, self.async_io);
+        self.disk_files = .init(allocator, self.worker_io);
         errdefer self.disk_files.deinit();
         self.text_file_service = .init(allocator, &self.disk_files);
         errdefer self.text_file_service.deinit();
@@ -561,19 +564,19 @@ pub const TerminalWorkbench = struct {
         self.extensions_service = null;
         self.extensions_view = null;
         self.extensions_list = null;
-        self.window_events = .{ .io = self.async_io, .window_events = .init(allocator) };
+        self.window_events = .{ .io = self.async_io, .scheduler = &self.async_io_state, .window_events = .init(allocator) };
         errdefer self.window_events.deinitWindowEvents();
         self.resource_file_service = .init(allocator);
         errdefer self.resource_file_service.deinit();
         self.file_service_api = self.resource_file_service.interface();
-        self.disk_resource_provider = .init(allocator, self.async_io);
+        self.disk_resource_provider = .init(allocator, self.worker_io);
         errdefer self.disk_resource_provider.deinit();
         self.disk_resource_registration = try self.file_service_api.registerProvider("file", self.disk_resource_provider.interface());
         errdefer self.disk_resource_registration.dispose();
         self.working_copy_file_service = .init(allocator, self.file_service_api, &self.working_copy_service);
         errdefer self.working_copy_file_service.deinit();
         self.working_copy_file_api = self.working_copy_file_service.interface();
-        self.text_model_resolver = .init(allocator, self.async_io, &self.window_events);
+        self.text_model_resolver = .init(allocator, self.worker_io, &self.window_events);
         errdefer self.text_model_resolver.deinit();
         try self.text_model_resolver.bindFileService(self.file_service_api);
         _ = try self.text_model_resolver.undoRedoStore();
@@ -585,7 +588,7 @@ pub const TerminalWorkbench = struct {
         self.bulk_edit_service = .{ .allocator = allocator, .resolver_service = self.text_model_api, .working_copy_service = &self.working_copy_service, .undo_redo_service = &self.text_model_resolver.undo_store.?.service, .file_services = .{ .files = self.file_service_api, .working_copies = self.working_copy_file_api, .undo_redo = &self.text_model_resolver.undo_store.?.service } };
         self.bulk_edit_api = self.bulk_edit_service.interface();
         self.model_service_api = self.text_model_resolver.modelService();
-        self.git_file_provider = .init(allocator, &self.git_model, self.async_io);
+        self.git_file_provider = .init(allocator, &self.git_model, self.worker_io);
         errdefer self.git_file_provider.deinit();
         self.git_file_provider.setRepositoryDiscovery(.{ .context = self, .open = discoverGitResourceRepository, .capture = captureGitResourceRepository, .publish = publishGitResourceRepository });
         try self.git_file_provider.register(self.file_service_api, .{
@@ -841,7 +844,7 @@ pub const TerminalWorkbench = struct {
             .allocator = allocator,
             .model = &self.git_model,
             .io = self.io,
-            .snapshot_io = self.async_io,
+            .snapshot_io = self.worker_io,
             .quick_input = self.quick_access.inputService(),
             .configuration = &self.configuration_api,
             .editors = &self.editor_api,
@@ -1993,6 +1996,7 @@ pub const TerminalWorkbench = struct {
         self.text_file_service.deinit();
         self.disk_files.deinit();
         self.async_io_state.deinit();
+        self.worker_io_state.deinit();
         self.allocator.destroy(self);
     }
 
@@ -3454,9 +3458,8 @@ pub const TerminalWorkbench = struct {
         try self.editor_opening.openPathWithOptions(path, options);
     }
 
-    /// The Io used for interactive reads and network work. Callers pass this
-    /// explicitly to `io.async`; it is deliberately separate from `io` so the
-    /// async pool does not fall back to inline execution on the TUI thread.
+    /// Window-owned asynchronous execution. Detached reads/decodes are sent
+    /// to the backing worker without moving editor state off the window thread.
     pub fn asyncIo(self: *const TerminalWorkbench) Io {
         return self.async_io;
     }
@@ -3482,6 +3485,7 @@ pub const TerminalWorkbench = struct {
         self.editor_opening.cancel();
         if (self.theme_service) |service| service.cancelColorThemeLoad();
         self.user_keybindings.cancelReload();
+        if (self.settings_watcher) |watcher| watcher.cancelReload();
         if (self.sidebar) |sidebar| sidebar.cancelLoad();
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {

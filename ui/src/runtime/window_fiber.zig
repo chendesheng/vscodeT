@@ -9,6 +9,7 @@ const stack_size = 1024 * 1024;
 const fiber_flag_float_switch = 1;
 
 extern "kernel32" fn ConvertThreadToFiberEx(?*anyopaque, u32) callconv(.winapi) ?*anyopaque;
+extern "kernel32" fn IsThreadAFiber() callconv(.winapi) std.os.windows.BOOL;
 extern "kernel32" fn ConvertFiberToThread() callconv(.winapi) std.os.windows.BOOL;
 extern "kernel32" fn CreateFiberEx(usize, usize, u32, *const fn (?*anyopaque) callconv(.winapi) void, ?*anyopaque) callconv(.winapi) ?*anyopaque;
 extern "kernel32" fn SwitchToFiber(*anyopaque) callconv(.winapi) void;
@@ -17,12 +18,26 @@ extern "kernel32" fn DeleteFiber(*anyopaque) callconv(.winapi) void;
 pub const Context = if (windows) *anyopaque else std.Io.fiber.Context;
 
 pub fn initRoot() !Context {
-    if (windows) return ConvertThreadToFiberEx(null, fiber_flag_float_switch) orelse error.FiberInitializationFailed;
+    // Windows converts only around a dispatch, not for the entire window
+    // lifetime. Multiple windows can therefore share a native thread.
+    if (windows) return undefined;
     return std.mem.zeroes(Context);
 }
 
-pub fn deinitRoot(_: *Context) void {
-    if (windows) {
+pub fn deinitRoot(_: *Context) void {}
+
+pub fn enterRoot(context: *Context) bool {
+    if (!windows) return false;
+    if (IsThreadAFiber() != .FALSE) {
+        context.* = std.os.windows.teb().NtTib.DUMMYUNIONNAME.FiberData;
+        return false;
+    }
+    context.* = ConvertThreadToFiberEx(null, fiber_flag_float_switch) orelse @panic("Could not convert the window thread to a fiber");
+    return true;
+}
+
+pub fn leaveRoot(owns_conversion: bool) void {
+    if (windows and owns_conversion) {
         if (ConvertFiberToThread() == .FALSE) @panic("Could not convert the window fiber back to a thread");
     }
 }

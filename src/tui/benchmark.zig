@@ -608,7 +608,7 @@ fn benchDiffText(a: Allocator, n: usize, pattern: BenchPattern, modified: bool) 
 
 fn benchNativeDiffOpen(wb: *terminal_workbench.TerminalWorkbench, io: Io, path: []const u8, refresh: bool, timings: *BenchDiffTimes, out: *std.Io.Writer.Allocating) !*Tab {
     const start = nowUs(io);
-    const inner = try wb.git_model.snapshotSource(wb.async_io, path, null, .head, .working, refresh);
+    const inner = try wb.git_model.snapshotSource(wb.worker_io, path, null, .head, .working, refresh);
     const source = try TimedBenchSource.wrap(inner, io, timings);
     try wb.editor_opening.requestOpenSnapshotDiff(wb.configuration_api, path, source, "HEAD", "Working Tree");
     timings.submit_us = nowUs(io) - start;

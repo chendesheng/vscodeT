@@ -202,3 +202,35 @@ test "WindowIo root can select a result while sibling fibers are pending" {
         .slow => return error.SlowTaskCompletedFirst,
     }
 }
+
+test "WindowIo detached jobs run on the worker and resume the owning window" {
+    var first = try WindowIo.init(std.testing.allocator, std.testing.io);
+    defer first.deinit();
+    var second = try WindowIo.init(std.testing.allocator, std.testing.io);
+    defer second.deinit();
+    const Probe = struct {
+        fn detached(worker: Io) !std.Thread.Id {
+            try worker.sleep(.fromMilliseconds(1), .awake);
+            return std.Thread.getCurrentId();
+        }
+        fn editor(serial: Io) !std.Thread.Id {
+            const owner = std.Thread.getCurrentId();
+            const worker = WindowIo.backingIo(serial);
+            try std.testing.expect(worker.vtable != serial.vtable);
+            const id = try WindowIo.workerCall(serial, detached, .{worker});
+            try std.testing.expect(owner != id);
+            try std.testing.expectEqual(owner, std.Thread.getCurrentId());
+            return owner;
+        }
+    };
+    const a = first.io();
+    const b = second.io();
+    var f = try a.concurrent(Probe.editor, .{a});
+    defer _ = f.cancel(a) catch 0;
+    var g = try b.concurrent(Probe.editor, .{b});
+    defer _ = g.cancel(b) catch 0;
+    try std.testing.expect(first.dispatch());
+    try std.testing.expect(second.dispatch());
+    try std.testing.expectEqual(std.Thread.getCurrentId(), try f.await(a));
+    try std.testing.expectEqual(std.Thread.getCurrentId(), try g.await(b));
+}

@@ -20,7 +20,8 @@ const storage_mod = @import("../../../../platform/storage/common/storage.zig");
 const color_theme = @import("../common/colorThemeData.zig");
 const configuration_mod = @import("../../../../platform/configuration/common/configuration.zig");
 const scheme_service = @import("../common/hostColorSchemeService.zig");
-const WindowQueue = @import("../../../../base/common/windowDispatch.zig").Queue;
+const dispatch = @import("../../../../base/common/windowDispatch.zig");
+const WindowQueue = dispatch.Queue;
 const time_compat = @import("../../../../base/common/timeCompat.zig");
 
 const FileIconThemeData = @import("fileIconThemeData.zig").FileIconThemeData;
@@ -91,12 +92,9 @@ const ThemeLoadJob = struct {
 
 fn runThemeLoadJob(job: *ThemeLoadJob) ThemeLoadOutcome {
     defer job.completion.post();
-    const theme = ThemeService.prepareTheme(
-        job.allocator,
-        job.service.colors,
-        &job.request,
-        job.io,
-    ) catch |err| return .{ .err = err };
+    const theme = dispatch.workerCall(job.io, ThemeService.prepareTheme, .{
+        job.allocator, job.service.colors, &job.request, dispatch.backingIo(job.io),
+    }) catch |err| return .{ .err = err };
     return .{ .theme = theme };
 }
 

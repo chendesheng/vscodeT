@@ -27,6 +27,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
+const dispatch = @import("../../../../../base/common/windowDispatch.zig");
 
 const glob = @import("../../../../../base/common/glob.zig");
 const tree = @import("../../../../../base/browser/ui/tree/tree.zig");
@@ -525,14 +526,18 @@ pub const ExplorerDataSource = struct {
     fn runLoad(job: *LoadJob) LoadResult {
         defer job.owner.delivery.post();
         defer job.done.store(true, .release);
+        return dispatch.workerCall(job.io, loadDetached, .{ dispatch.backingIo(job.io), job.path });
+    }
+
+    fn loadDetached(io: Io, directory_path: []const u8) LoadResult {
         const allocator = std.heap.smp_allocator;
-        var dir = Io.Dir.cwd().openDir(job.io, job.path, .{ .iterate = true }) catch |err| return .{ .err = err };
-        defer dir.close(job.io);
+        var dir = Io.Dir.cwd().openDir(io, directory_path, .{ .iterate = true }) catch |err| return .{ .err = err };
+        defer dir.close(io);
 
         var entries: std.array_list.Managed(Entry) = .init(allocator);
         var iterator = dir.iterate();
         while (true) {
-            const next = iterator.next(job.io) catch |err| {
+            const next = iterator.next(io) catch |err| {
                 freeEntryList(allocator, &entries);
                 return .{ .err = err };
             };
@@ -544,7 +549,7 @@ pub const ExplorerDataSource = struct {
             };
             entries.append(.{
                 .name = name,
-                .file_type = explorer.entryFileType(job.io, allocator, job.path, entry),
+                .file_type = explorer.entryFileType(io, allocator, directory_path, entry),
             }) catch |err| {
                 allocator.free(name);
                 freeEntryList(allocator, &entries);
@@ -563,10 +568,10 @@ pub const ExplorerDataSource = struct {
             ignore_files.deinit();
         }
         for (ignore_file_module.ignore_file_names) |name| {
-            const path = std.fs.path.join(allocator, &.{ job.path, name }) catch continue;
+            const path = std.fs.path.join(allocator, &.{ directory_path, name }) catch continue;
             defer allocator.free(path);
             const contents = Io.Dir.cwd().readFileAlloc(
-                job.io,
+                io,
                 path,
                 allocator,
                 .limited(max_ignore_file_size),

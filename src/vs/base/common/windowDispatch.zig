@@ -1,6 +1,17 @@
 // Worker completion and timer delivery for the terminal window. This adapts
 // the browser event loop used by promises and RunOnceScheduler.
 const std = @import("std");
+const WindowIo = @import("ui").WindowIo;
+
+/// Window tasks may await detached work without moving their continuation or
+/// editor state to the worker thread. Standalone owners keep their supplied Io.
+pub fn workerCall(io: std.Io, comptime function: anytype, args: std.meta.ArgsTuple(@TypeOf(function))) @typeInfo(@TypeOf(function)).@"fn".return_type.? {
+    return WindowIo.workerCall(io, function, args);
+}
+
+pub fn backingIo(io: std.Io) std.Io {
+    return WindowIo.backingIo(io);
+}
 
 pub const Wake = struct {
     context: *anyopaque,
@@ -27,6 +38,9 @@ pub const PointerCapture = struct {
 
 pub const Queue = struct {
     io: std.Io,
+    /// The native window supplies its serial executor. Standalone callers
+    /// retain their original Io and callback-only dispatch.
+    scheduler: ?*WindowIo = null,
     mutex: std.Io.Mutex = .init,
     scheduled: std.DoublyLinkedList = .{},
     idle: std.DoublyLinkedList = .{},
@@ -78,6 +92,7 @@ pub const Queue = struct {
     }
 
     pub fn deinitWindowEvents(self: *Queue) void {
+        self.setWake(null);
         if (self.pointer_capture) |capture| {
             self.pointer_capture = null;
             capture.cancel(capture.context);
@@ -87,15 +102,25 @@ pub const Queue = struct {
         self.window_events = null;
     }
 
+    /// Queue synchronization is also called from true background workers;
+    /// it must never suspend a window fiber while holding the queue lock.
+    pub fn workerIo(self: *const Queue) std.Io {
+        return if (self.scheduler) |scheduler| scheduler.worker else self.io;
+    }
+
     pub fn setWake(self: *Queue, wake: ?Wake) void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
+        const worker = self.workerIo();
+        self.mutex.lockUncancelable(worker);
         self.wake = wake;
+        self.mutex.unlock(worker);
+        if (self.scheduler) |scheduler| scheduler.setWake(if (wake) |w| .{ .context = w.context, .notify = w.signal } else null);
     }
 
     pub fn nextTimeout(self: *Queue, now: i64, maximum: i32) i32 {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
+        if (self.scheduler) |scheduler| if (scheduler.hasReady()) return 0;
+        const worker = self.workerIo();
+        self.mutex.lockUncancelable(worker);
+        defer self.mutex.unlock(worker);
         if (self.idle.first != null) return 0;
         const node = self.scheduled.first orelse return maximum;
         const task: *Task = @alignCast(@fieldParentPtr("node", node));
@@ -106,19 +131,24 @@ pub const Queue = struct {
     /// Due work (including an idle callback's timeout) precedes idle work;
     /// otherwise the next idle callback runs in registration order.
     pub fn dispatch(self: *Queue, now: i64) bool {
-        self.mutex.lockUncancelable(self.io);
+        // One runnable fiber per turn; its owner posts a completed result or
+        // requests a frame through the existing events. Merely starting an
+        // I/O wait is not a redraw.
+        if (self.scheduler) |scheduler| _ = scheduler.dispatch();
+        const worker = self.workerIo();
+        self.mutex.lockUncancelable(worker);
         const due: ?*Task = if (self.scheduled.first) |node| blk: {
             const task: *Task = @alignCast(@fieldParentPtr("node", node));
             break :blk if (task.at.? <= now) task else null;
         } else null;
         const task = due orelse if (self.idle.first) |node| @as(*Task, @alignCast(@fieldParentPtr("idle_node", node))) else {
-            self.mutex.unlock(self.io);
+            self.mutex.unlock(worker);
             return false;
         };
         self.scheduled.remove(&task.node);
         if (task.idle) self.idle.remove(&task.idle_node);
         task.at = null;
-        self.mutex.unlock(self.io);
+        self.mutex.unlock(worker);
         return task.run(task.context, now, task.progress);
     }
 };
@@ -143,8 +173,9 @@ pub const Task = struct {
 
     pub fn schedule(self: *Task, at: ?i64) void {
         const queue = self.queue orelse return;
-        queue.mutex.lockUncancelable(queue.io);
-        defer queue.mutex.unlock(queue.io);
+        const worker = queue.workerIo();
+        queue.mutex.lockUncancelable(worker);
+        defer queue.mutex.unlock(worker);
         if (self.at == at or (self.progress and self.at != null and at != null)) return;
         const was_scheduled = self.at != null;
         if (was_scheduled) {

@@ -66,7 +66,7 @@ terminal cells (ANSI)
        layout/           # box tree, layout solver and text wrapping
        render/           # painting, cell grid and frame buffers
        terminal/         # terminal input decoding and output protocols
-       runtime/          # opt-in window-thread async Io and native fibers
+       runtime/          # window-thread async Io and native fibers
        widgets/          # controls, scrolling and drag interactions
      tests/              # unit and stress tests, fixtures, test entry point
      examples/           # runnable examples and gallery
@@ -1920,7 +1920,7 @@ approximated by the cursor position and block/inverse paint.
 
 ### 8.1.1 Async I/O and the event loop
 
-The standalone UI library additionally provides the opt-in `ui.WindowIo`
+The standalone UI library provides `ui.WindowIo`, the native workbench async executor
 (`ui/src/runtime/window_io.zig`). It implements Zig 0.17's `std.Io` vtable, so
 window-owned tasks can use ordinary `io.async`, `io.concurrent`, futures and
 `Io.Group` without splitting their call stack into application callbacks. Each
@@ -1929,16 +1929,18 @@ fiber context switch with a guarded stack, and Windows uses native Windows
 fibers. Other application work can still run on other threads. The UI library
 has no editor or workbench dependencies.
 
-The host supplies a concurrent worker backend (normally `Io.Threaded`), a wake
-callback and calls `WindowIo.dispatch()` on its window thread. It runs one ready
-fiber to its next wait or completion, then returns to the terminal event loop.
+The workbench owns one `WindowIo` and a separate concurrent `Io.Threaded`
+backing pool. `windowDispatch.Queue` links the runtime's native wake callback
+and dispatches one ready fiber per event-loop turn. This shares the existing
+POSIX pipe or Windows event; no additional polling loop or scheduler thread
+is required. The terminal input/paint loop stays on its original thread.
 Blocking I/O, timers and futex waits within a fiber are forwarded to the worker
 backend; completion schedules the waiting fiber and wakes the native input
 wait. Cancellation joins the underlying worker before releasing the fiber's
-stack or its borrowed buffers. Root-level blocking waits (including `Future.await` and `Io.Select.await`)
-can drain the runtime for standalone structured scopes, but interactive event
-handling should spawn
-window fibers and return to the host loop, not await from the root. The host
+stack or its borrowed buffers. Root-level blocking waits (including
+`Future.await` and `Io.Select.await`) can drain the runtime for standalone
+structured scopes, but interactive event handling spawns window fibers and
+returns to the host loop, rather than awaiting from the root. The host
 must join/cancel every outstanding future/group before destroying the runtime.
 
 `WindowIo` is intentionally a window-thread handle, not an unrestricted shared
@@ -1951,18 +1953,21 @@ the worker backend runs out of concurrency, forwarded operations fall back to
 its synchronous path. POSIX consumers of this runtime link libc for guarded
 stack allocation. These are runtime boundaries, not editor-specific shortcuts.
 
-The runtime is covered by the UI package tests (nested request/reply, thread
-affinity, worker I/O, timers, cancellation, groups and wake ordering). It is not
-yet the default workbench runtime. Migrating save and provider contracts to
-window fibers requires wiring their RPC readiness into the native event loop
-and preserving the upstream owner lifetimes and cancellation semantics. The
-separate Windows extension-host transport remains unported.
+The runtime is covered by UI and workbench integration tests (nested
+request/reply, thread affinity, detached worker bodies, timers, cancellation,
+groups, wake ordering and real file opens). Save and remaining synchronous
+provider contracts still need their upstream asynchronous lifecycle ports;
+providing the executor does not by itself make extension RPC asynchronous.
+The separate Windows extension-host transport remains unported.
 
-Interactive file, directory and network work uses Zig's `Io.async` directly; no
-Promise/Task framework is introduced. `Workbench` owns a dedicated
-`std.Io.Threaded` instance (passed as `async_io`) configured with an unlimited
-async limit, separate from the terminal/synchronous-startup `io`. Features that
-can block read from it:
+`Workbench.async_io` is now `WindowIo`. Its existing service-owned jobs keep
+their completion/cancellation contracts, but execute the continuation on the
+window thread. `windowDispatch.workerCall` suspends that fiber while the
+whole detached operation runs on `WindowIo.backingIo`, including CPU-heavy
+text/image decoding and JSON/theme preparation. The native disk provider,
+Git snapshot source, and independently spawned workers use the backing Io
+directly, as does the thread-safe completion queue's lock. The terminal and
+synchronous startup paths retain their original host Io. Workflows include:
 
 - `Workbench.requestOpenPath` reads, BOM-detects, decodes and canonicalizes the
   file in a job; the TUI thread only builds the editor from `LoadedText` when
@@ -1978,16 +1983,17 @@ can block read from it:
   never touch the TUI thread. Remote jobs have a 30 s deadline scheduled by
   the preview.
 - `platform/request/node/requestService.zig` is a synchronous `std.http`
-  request layer; callers wrap it in `Io.async` when they need the TUI thread
-  free.
+  request layer; callers schedule a window fiber and use the detached worker boundary when
+  they need the TUI thread free.
 
 File reads, image tab decodes, keybindings and color themes post a completion
 callback to the window queue. A POSIX pipe or Windows event wakes terminal
 input waiting on another thread. The window thread consumes the completed
 future. Explorer listings and workspace file changes also wake the window.
 Markdown image, math and diagram completions wake the window as well; the preview schedules its scroll and refresh deadlines.
-Shutdown cancels and joins every job before the async `Io.Threaded` and the
-services/panes that own the results are freed. Background workers (search,
+Shutdown cancels and joins every owner job before destroying `WindowIo`, then
+joins its backing `Io.Threaded` pool. Services/panes release their data only
+after the job and its detached worker have finished. Background workers (search,
 watcher JSON server, extension host) continue to use dedicated threads, which
 is the terminal counterpart of upstream's worker processes.
 
