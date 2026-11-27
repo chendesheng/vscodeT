@@ -18,9 +18,10 @@ feature wiring and service adapters to extract.
 | Files in src/vs directly importing src/tui | 12 |
 | Zig layout / pinned layout.ts / pinned workbench.ts lines | 228 / 3,269 / 442 |
 
-`zig build check-workbench` resolves relative Zig imports, rejects inline
-tests and direct contribution imports from the portable Workbench, and
-ratchets the remaining native window size. Each existing exception in `scripts/workbench-imports.txt` names both
+`zig build check-workbench` resolves relative Zig imports and rejects inline
+tests and direct contribution imports from the portable Workbench. The former
+native-window line-count ratchet has been retired; line counts are audit
+measurements, not build limits. Each existing exception in `scripts/workbench-imports.txt` names both
 ends of the edge. Delete an exception in the commit that removes its import.
 The original test names and platform skip conditions are recorded by the baseline
 commit. Preserve discovery through `src/tests.zig` when moving cases.
@@ -29,13 +30,13 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 | Milestone | Local result |
 | --- | --- |
-| M0 containment | Baseline recorded; CI runs the import boundary and native size ratchet. |
+| M0 containment | Baseline recorded; CI runs the import boundary. The initial size ratchet has since been retired. |
 | M1 construction and tests | Single native constructor; editor restoration is staged at the editor service/part. All 151 baseline tests are retained (150 terminal integrations, one owner test). |
 | M2 feature seams | Menus, themes/icons, extension adapters, sidebar descriptors, outline, Markdown, quick input and terminal contributions own their behavior. Native window callbacks furnish services and host I/O/focus. |
 | M3 layout | `Layout` is 1,316 lines with registered parts, visibility, position/alignment, snap/Alt sash behavior, persistence, zen/centered mode, maximization and events. Browser-only geometry omissions are documented. |
 | M4 older features and actions | The legacy command table/wrappers are replaced by Action2, MenuRegistry and owner services, with a command-palette fixture preserving the prior metadata. The shared registration lives in `workbench.common.main.zig`. |
 | M5 composition | `browser/workbench.zig` is 297 lines: startup, both registries, context keys, listeners, parts, notifications, layout, restoration and lifecycle. The terminal host is `src/tui/workbench.zig` (2,415 lines), with native composition in `workbenchWindow.zig` (4,322) and factory bindings in `workbenchServices.zig` (225). |
-| M6 event flow and boundary | No state-scanning poll/tick methods in Workbench or TerminalWorkbench; the host dispatches readiness/completion events and deadlines. The portable size cap is retired; its direct contribution imports and inline tests are rejected, and the native window remains ratcheted. |
+| M6 event flow and boundary | No state-scanning poll/tick methods in Workbench or TerminalWorkbench; the host dispatches readiness/completion events and deadlines. Direct contribution imports and inline tests in the portable Workbench are rejected. Both line-count caps are now retired. |
 
 Only `src/tui/workbenchWindow.zig` and the generic owner test fixture import
 `browser/workbench.zig`. The portable-to-native import allowlist has no entries.
@@ -73,9 +74,9 @@ host focus and dialog visibility events, and creates notifications before
 attaching the workbench container. Git and notifications subscribe to the
 same host focus event; storage flush saves layout, history and session on
 focus loss. Search toolbar state updates on query and tree/result events,
-not on frame painting. The portable budget grew by 12 lines solely to
-restore missing upstream composition behavior; the native budget shrank
-by 14, so the combined ratchet still decreases.
+not on frame painting. During extraction, the portable Workbench grew by 12
+lines to restore missing upstream composition behavior and the native window
+shrank by 14 lines.
 Close All/Close Other Editors now use the AbstractCloseAllAction owner:
 collect editors in reverse grid appearance, exclude sticky editors for command
 operations, confirm all dirty editors together, retain cancel semantics and
@@ -148,7 +149,7 @@ The Git extension CommandContribution now constructs its own repository-targeted
 
 ViewsRegistry now owns the Explorer, Outline and SCM descriptor registrations at their upstream contribution paths. ViewDescriptorService feeds them into the mounted models, delivers availability/deregistration events and restores default models for workspace state. The SCM contribution creates its own container model; the native window no longer assembles feature-specific view descriptors or mutates SCM availability flags. Open Editors, separate EmptyView, SCM Repositories and extension-generated containers remain portable gaps.
 
-The portable browser Workbench is 297 lines and has no inline tests. The native TerminalWorkbench window is 4,322 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. The portable line cap is retired now that the composition boundary is stable; the native window retains its ratchet. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
+At the end of the original extraction, the portable browser Workbench was 297 lines with no inline tests and the native TerminalWorkbench window was 4,322 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. These counts record the extraction result, not limits on future changes. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and

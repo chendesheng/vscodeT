@@ -36,12 +36,7 @@ pub fn main(init: std.process.Init) !void {
         const is_shell = std.mem.eql(u8, path, shell);
         const is_native = std.mem.eql(u8, path, native_window);
         if (is_shell) saw_shell = true;
-        if (is_native) {
-            // Line counts are diagnostic, not acceptance criteria. This check
-            // only tracks that the native window still exists for the import
-            // boundary walk below.
-            saw_native = true;
-        }
+        if (is_native) saw_native = true;
 
         var tokens = std.zig.Tokenizer.init(source);
         while (true) {

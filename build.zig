@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) void {
     });
     const check = b.addRunArtifact(boundary_check);
     check.setCwd(b.path("."));
-    b.step("check-workbench", "Check workbench size and import boundaries").dependOn(&check.step);
+    b.step("check-workbench", "Check workbench composition and import boundaries").dependOn(&check.step);
 
     // Standard target options allows the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
