@@ -545,7 +545,13 @@ pub const Model = struct {
                     .float => |number| number,
                     else => 50,
                 };
-                if (megabytes > 0 and megabytes < 1024) options.max_file_size_kb = @intFromFloat(megabytes * 1024);
+                if (std.math.isFinite(megabytes)) {
+                    // diffEditor.maxFileSize is a non-negative MB value;
+                    // zero means unlimited. Saturate before converting to a
+                    // process-output byte limit on the native platform.
+                    const bounded = std.math.clamp(megabytes, 0, @as(f64, 1 << 30));
+                    options.max_file_size_kb = @intFromFloat(@min(@floor(bounded) * 1024, @as(f64, @floatFromInt(std.math.maxInt(usize) / 1024))));
+                }
             }
         }
         const cli = self.git orelse blk: {

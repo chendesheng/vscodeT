@@ -120,7 +120,7 @@ pub const Options = struct {
     /// `git.enabled` gate. When false the provider is disabled immediately.
     enabled: bool = true,
     /// `diffEditor.maxFileSize` equivalent, in KiB. Oversized blobs are
-    /// skipped by `readRef`.
+    /// skipped by `readRef`; zero means no size limit.
     max_file_size_kb: usize = 50 * 1024,
     /// Deadline for every git invocation, in milliseconds.
     timeout_ms: i64 = 5000,
@@ -237,7 +237,7 @@ pub const Git = struct {
             owns_io = true;
         }
 
-        const max_file_size = if (options.max_file_size_kb > std.math.maxInt(usize) / 1024)
+        const max_file_size = if (options.max_file_size_kb == 0 or options.max_file_size_kb > std.math.maxInt(usize) / 1024)
             std.math.maxInt(usize)
         else
             options.max_file_size_kb * 1024;
@@ -2859,6 +2859,13 @@ test "readRef: binary, invalid UTF-8 and oversized files are skipped" {
     const exact = (try cli.readRef(root, "exact.txt", .working)).?;
     defer allocator.free(exact);
     try std.testing.expectEqual(@as(usize, 1024), exact.len);
+
+    var unlimited = try Git.init(allocator, .{ .io = std.testing.io, .max_file_size_kb = 0 });
+    defer unlimited.deinit();
+    const larger = (try unlimited.readRef(root, "oversized.txt", .working)).?;
+    defer allocator.free(larger);
+    try std.testing.expectEqual(@as(usize, oversized_data.len), larger.len);
+    try std.testing.expect((try unlimited.readRef(root, "binary.dat", .working)) == null);
 }
 
 fn createExternalTempDir(allocator: Allocator) ![]u8 {
