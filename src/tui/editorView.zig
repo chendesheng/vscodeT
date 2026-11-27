@@ -73,7 +73,6 @@ const terminal_decorations = @import("../vs/editor/browser/widget/codeEditor/ter
 const editor_view = @import("../vs/editor/browser/widget/codeEditor/terminalEditorView.zig");
 const TerminalViewHost = @import("../vs/editor/browser/widget/codeEditor/terminalViewHost.zig").TerminalViewHost;
 const tokenization = @import("../vs/editor/common/tokenizationRegistry.zig");
-const CursorColumns = @import("../vs/editor/common/core/cursorColumns.zig").CursorColumns;
 const CursorState = @import("../vs/editor/common/cursorCommon.zig").CursorState;
 const Position = @import("../vs/editor/common/core/position.zig").Position;
 const Range = @import("../vs/editor/common/core/range.zig").Range;
@@ -2222,35 +2221,17 @@ pub const View = struct {
         };
         const chrome_host_ptr: ?*editorBrowser.RetainedViewPartHost =
             if (self.needs_full_box_rebuild) null else &chrome_host;
-        const states = try editor.viewCursorStates();
-        defer editor.allocator.free(states);
-        const cursor_render_data = self.terminal_view_host.getCursorRenderData();
-        const cursor = if (cursor_render_data.len > 0)
-            cursor_render_data[0].position
-        else
-            states[0].viewState.position;
-
+        const cursor = editor.viewCursorPosition();
         self.cursor_row = null;
-        if (editor.visibleRowOfViewLine(cursor.lineNumber)) |cursor_row| {
-            const cursor_data = editor.viewLineData(cursor.lineNumber) catch null;
-            if (cursor_data) |data| {
-                const cursor_model_line = editor.modelLineNumber(cursor.lineNumber);
-                var content = editor.model.getLineContent(cursor_model_line) catch null;
-                if (content) |*owned| {
-                    defer owned.deinit();
-                    const visible = visibleOffset(
-                        owned.items,
-                        cursor.column,
-                        tab_size,
-                        data.startVisibleColumn,
-                        data.minColumn - 1,
-                    );
-                    if (visible >= scroll_left and visible < scroll_left + text_width) {
-                        self.cursor_row = cursor_row;
-                        self.cursor_col = gutter + (visible - scroll_left);
-                    }
+        for (self.terminal_view_host.getCursorRenderData()) |data| {
+            if (data.plurality == .multi_secondary) continue;
+            if (editor.visibleRowOfViewLine(data.position.lineNumber)) |cursor_row| {
+                if (data.left >= scroll_left and data.left < scroll_left + text_width) {
+                    self.cursor_row = cursor_row;
+                    self.cursor_col = gutter + (data.left - scroll_left);
                 }
             }
+            break;
         }
 
         var paint_guides = std.array_list.Managed(TerminalViewHost.PaintGuide).init(self.allocator);
@@ -2289,10 +2270,8 @@ pub const View = struct {
             .top_row = 0,
             .guides = paint_guides.items,
             .top = top,
-            .tab_size = tab_size,
             .text_width = text_width,
             .cursor = cursor,
-            .states = states,
             .style_fn = .{ .context = self, .apply = paintStyleThunk },
             .decoration_bits_fn = decorationBits,
             .line_backgrounds = line_backgrounds,
@@ -2785,17 +2764,6 @@ fn applyFlagPaint(style: *ui.style.PaintStyle, flag: u32, palette: ?*const theme
     }
 }
 
-fn visibleOffset(
-    model_content: []const u8,
-    column: usize,
-    tab_size: usize,
-    start_visible_column: usize,
-    indent_cells: usize,
-) usize {
-    const visible = CursorColumns.visibleColumnFromColumn(model_content, column, tab_size);
-    return (visible -| start_visible_column) + indent_cells;
-}
-
 fn paintOfPart(part: line_renderer.RenderedPart) ui.style.PaintStyle {
     var paint = ui.style.PaintStyle{
         .bold = part.bold,
@@ -3037,6 +3005,10 @@ test "View: CJK and tab runs keep the caret on the right cell" {
     // The caret is at column 1, on the first cell after the gutter.
     const cursor = view.cursorCell().?;
     try std.testing.expectEqual(editor.gutterWidth(), cursor.col);
+
+    try editor.setCursorPosition(Position.init(1, 5));
+    try view.refresh();
+    try std.testing.expectEqual(Cell{ .row = 0, .col = editor.gutterWidth() + 4 }, view.cursorCell().?);
 }
 
 test "View: wordWrap off scrolls long lines through the UI scroll view" {
@@ -3105,6 +3077,7 @@ test "View: wordWrap off scrolls long lines through the UI scroll view" {
     try view.renderAnsi(&out.writer);
     const tail = view.surface.grid();
     try std.testing.expectEqual(@as(u32, 'o'), tail.cluster[tail.index(gutter, 0)]);
+    try std.testing.expectEqual(Cell{ .row = 0, .col = gutter + 35 - editor.scrollLeft() }, view.cursorCell().?);
 
     try editor.setCursorPosition(Position.init(1, 1));
     try view.refresh();
@@ -3147,6 +3120,86 @@ test "View: wrapped continuation gets a gutter arrow" {
         }
     }
     try std.testing.expect(found_arrow);
+}
+
+test "View: primary caret follows clicks and movement across wrapped rows" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    // Five text cells per view line: abcde / fghij / klmno.
+    const editor = try Editor.createFromText(allocator, io, "abcdefghijklmno", "test.txt", 13, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    const gutter = editor.gutterWidth();
+    try std.testing.expectEqual(@as(usize, 3), editor.viewLineCount());
+
+    var click = testMouse(.down, gutter + 2, 1);
+    try std.testing.expect(try view.dispatchMouse(&click));
+    try std.testing.expectEqual(Position.init(1, 8), editor.modelCursorPosition());
+    try std.testing.expectEqual(Position.init(2, 3), editor.viewCursorPosition());
+    try std.testing.expectEqual(Cell{ .row = 1, .col = gutter + 2 }, view.cursorCell().?);
+
+    try editor.moveRight(false);
+    try std.testing.expectEqual(Position.init(1, 9), editor.modelCursorPosition());
+    try std.testing.expectEqual(Cell{ .row = 1, .col = gutter + 3 }, view.cursorCell().?);
+
+    try editor.setCursorPosition(Position.init(1, 13));
+    try std.testing.expectEqual(Position.init(3, 3), editor.viewCursorPosition());
+    try std.testing.expectEqual(Cell{ .row = 2, .col = gutter + 2 }, view.cursorCell().?);
+}
+
+test "View: secondary caret uses its wrapped view column" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 13, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try editor.setSelections(&.{ Selection.init(1, 2, 1, 2), Selection.init(1, 8, 1, 8) });
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const gutter = editor.gutterWidth();
+    const grid = view.surface.grid();
+    try std.testing.expectEqual(Cell{ .row = 0, .col = gutter + 1 }, view.cursorCell().?);
+    try std.testing.expect(grid.attrs[grid.index(gutter + 2, 1)] & ui.cell.Attr.inverse != 0);
+    try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(gutter, 1)] & ui.cell.Attr.inverse);
+}
+
+test "View: wrapped caret follows painted indentation tabs and wide characters" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const text = "    abcdefghijklmnop 中\tQ";
+    const editor = try Editor.createFromText(allocator, io, text, "test.txt", 20, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    editor.setWordWrapOptions(.on, 80, .Same, false);
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    // Q follows a wide character and a tab on an indented continuation.
+    try editor.setCursorPosition(Position.init(1, text.len));
+    const position = editor.viewCursorPosition();
+    try std.testing.expect(position.lineNumber > 1);
+    const data = try editor.viewLineData(position.lineNumber);
+    try std.testing.expect(data.minColumn > 1);
+    try std.testing.expect(std.mem.indexOf(u8, data.content, "中\tQ") != null);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+    const cursor = view.cursorCell().?;
+    try std.testing.expect(cursor.col > editor.gutterWidth() + data.minColumn - 1);
+    const grid = view.surface.grid();
+    try std.testing.expectEqual(@as(u32, 'Q'), grid.cluster[grid.index(cursor.col, cursor.row)]);
 }
 
 test "View: selection paints the theme background and dims covered text" {

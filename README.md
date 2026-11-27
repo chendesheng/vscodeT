@@ -2481,8 +2481,9 @@ Editor contributions:
   cell backgrounds or one-cell borders and maps `movedOriginal`/
   `movedModified`/`currentMove` to `diffEditor.move*.border`), and the view
   cursors part the
-  plural/visibility/blinking decisions and per-cursor viewport data (the
-  terminal host owns the hardware cursor cell and blink timer), and the view-line
+  plural/visibility/blinking decisions and per-cursor viewport data, including
+  the horizontal cell measured by `ViewLines` for both wrapped and unwrapped
+  lines (the terminal host owns the hardware cursor cell and blink timer), and the view-line
   wrapper renders tab-expanded line text through the shared renderer for
   `VisibleLinesCollection`, and the `viewLines` host drains that collection into
   a `StringBuilder` and exposes `IViewLines` cell-column ranges (DOM measurement

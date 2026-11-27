@@ -540,5 +540,6 @@ test "view cursors: render data skips cursors outside the viewport" {
     harness.renderNow();
     try testing.expectEqual(@as(usize, 1), harness.cursors.getLastRenderData().len);
     try testing.expectEqual(@as(usize, 2), harness.cursors.getLastRenderData()[0].position.lineNumber);
+    try testing.expectEqual(@as(usize, 5), harness.cursors.getLastRenderData()[0].left);
     try testing.expect(harness.cursors.getLastRenderData()[0].visible);
 }

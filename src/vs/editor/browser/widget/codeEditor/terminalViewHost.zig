@@ -73,8 +73,6 @@ const DecorationsOverlay = decorations_overlay_mod.DecorationsOverlay;
 const BlockDecorations = block_decorations_mod.BlockDecorations;
 const GlyphMarginWidgets = glyph_margin_mod.GlyphMarginWidgets;
 const GlyphMarginLanesModel = @import("../../../common/viewModel/glyphLanesModel.zig").GlyphMarginLanesModel;
-const CursorState = @import("../../../common/cursorCommon.zig").CursorState;
-const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
 const ViewLine = @import("../../viewParts/viewLines/viewLine.zig").ViewLine;
 const ViewCursorRenderData = @import("../../viewParts/viewCursors/viewCursor.zig").ViewCursorRenderData;
 const RestrictedRenderingContext = restricted_context.RestrictedRenderingContext;
@@ -783,10 +781,8 @@ pub const TerminalViewHost = struct {
         top_row: usize,
         guides: []const PaintGuide,
         top: usize,
-        tab_size: usize,
         text_width: usize,
         cursor: Position,
-        states: []const CursorState,
         style_fn: ViewLine.PartStyleFn,
         decoration_bits_fn: ?*const fn (classes: []const u8) u32,
         /// Per-visible-row whole-line backgrounds, indexed by `view_line - top`.
@@ -880,18 +876,11 @@ pub const TerminalViewHost = struct {
             }
         }
 
-        const data = try editor.viewLineData(view_line);
         const model_line = editor.modelLineNumber(view_line);
         const output_index = editor.outputLineIndex(view_line);
-        const model_content = try editor.model.acquireLineContent(model_line);
-        defer model_content.release();
         markSecondaryCursors(
-            args.states,
+            self.getCursorRenderData(),
             view_line,
-            model_content.text.items,
-            args.tab_size,
-            data.startVisibleColumn,
-            data.minColumn - 1,
             flags,
             args.secondary_cursor_flag,
         );
@@ -935,34 +924,15 @@ pub const TerminalViewHost = struct {
     }
 
     fn markSecondaryCursors(
-        states: []const CursorState,
+        cursors: []const ViewCursorRenderData,
         view_line: usize,
-        model_content: []const u8,
-        tab_size: usize,
-        start_visible_column: usize,
-        indent_cells: usize,
         flags: []u32,
         secondary_flag: u32,
     ) void {
-        if (states.len > 1) {
-            for (states[1..]) |state| {
-                const position = state.viewState.position;
-                if (position.lineNumber != view_line) continue;
-                const cell = visibleOffset(model_content, position.column, tab_size, start_visible_column, indent_cells);
-                if (cell < flags.len) flags[cell] |= secondary_flag;
-            }
+        for (cursors) |cursor| {
+            if (cursor.plurality != .multi_secondary or cursor.position.lineNumber != view_line) continue;
+            if (cursor.left < flags.len) flags[cursor.left] |= secondary_flag;
         }
-    }
-
-    pub fn visibleOffset(
-        model_content: []const u8,
-        column: usize,
-        tab_size: usize,
-        start_visible_column: usize,
-        indent_cells: usize,
-    ) usize {
-        const visible = CursorColumns.visibleColumnFromColumn(model_content, column, tab_size);
-        return (visible -| start_visible_column) + indent_cells;
     }
 
     pub fn getMaxLineWidth(self: *const TerminalViewHost) f64 {

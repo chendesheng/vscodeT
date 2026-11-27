@@ -2,7 +2,8 @@
 //
 // Terminal adaptation: a cell grid has no pixel cursor geometry, so the port
 // keeps the upstream configuration/plurality/visibility state and produces a
-// `ViewCursorRenderData` with the view position, style and visibility. The
+// `ViewCursorRenderData` with the view position, measured horizontal cell,
+// style and visibility. The
 // terminal host owns the hardware cursor cell, the block-cursor glyph and the
 // blinking animation. Grapheme-aware positioning (which needs the line content)
 // and the token class name are not part of the terminal data.
@@ -20,6 +21,8 @@ pub const CursorPlurality = enum { single, multi_primary, multi_secondary };
 /// The terminal cursor data for one cursor.
 pub const ViewCursorRenderData = struct {
     position: Position,
+    /// Cell offset from the start of the rendered view line, before scrolling.
+    left: usize,
     plurality: CursorPlurality,
     style: TextEditorCursorStyle,
     visible: bool,
@@ -99,6 +102,7 @@ pub const ViewCursor = struct {
         }
         self.render_data = .{
             .position = self.position,
+            .left = @intCast(@max(visible_range.left, 0)),
             .plurality = self.plurality,
             .style = self.cursor_style,
             .visible = self.is_visible,
