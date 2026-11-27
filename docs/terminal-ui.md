@@ -1482,9 +1482,13 @@ Library constraints:
   query. The status row shows the delayed checking/empty state and transfers
   the returned set to the shared action widget anchored to the action node;
   status actions wrap to remain reachable in narrower terminal panes. The
-  View Problem navigation widget and menu-contributed hover actions are still
-  portable gaps. Hovering a
-  squiggle and the keyboard `gh` command both show the marker message.
+  View Problem navigation reuses the shared PeekView zone with the active
+  marker message, related locations, title menu and live ordered marker list.
+  Marker-hover actions resolve against the owning editor's scoped context.
+  The accessible hover view consumes live rendered part text and verbosity
+  commands, preserving the original editor for focus restoration. Native
+  screen-reader announcement APIs are not exposed by the terminal. Hovering
+  a squiggle and the keyboard `gh` command both show the marker message.
 - `ui/src/widgets/inputbox.zig` is the terminal single-line input: UTF-8 buffer,
   `(anchor, cursor)` selection with keyboard/mouse extension and selection
   paint, shell-like word movement/deletion, Ctrl+A, clipboard hooks

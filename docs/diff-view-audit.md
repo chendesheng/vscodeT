@@ -412,6 +412,30 @@ quick fixes passed 508/508. The full suite passed 3,741/3,767 (26 skipped;
 edits, closed-resource multi-model undo preparation, marker-hover contributed
 menus and the View Problem widget, accessible hover and preview refinements.
 
+### Hover accessibility and marker navigation checkpoint (2026-11-27)
+
+* The registered hover accessible view and help consume the live focused
+  editor's rendered parts, react to content replacement and model detachment,
+  execute per-part verbosity changes, and return focus to the originating
+  pane. Terminal output has no native screen-reader announcement API.
+* The marker-hover status menu is resolved against the actual owning
+  editor's context, not the currently focused diff side. Activation hides
+  the hover, selects the diagnostic range and executes the contributed
+  action; the AI action suppresses the redundant menu entry.
+* The marker navigation service tracks severity/position ordering and live
+  marker changes. The registered View Problem and next/previous commands
+  open a retained PeekView/ZoneWidget on the actual model, with message,
+  code and related-resource links, title menu, wrapping and stale-marker
+  handling. Cross-file navigation continues after the resolved editor is
+  mounted through the shared editor service.
+
+The native view suite passed 511/511 including the marker-navigation title
+action and cross-file regressions. The full suite at the earlier marker
+model checkpoint passed 3,743/3,770 (26 skipped and one timing-sensitive
+Quick Access responsiveness failure); the final suite must reverify that
+case. Active-editor snippet edits, closed-resource workspace undo
+preparation and preview refinements remain in progress.
+
 ### Native performance measurements (2026-11-27)
 
 The opt-in `zig build bench-open --summary all` benchmark exercises native

@@ -624,8 +624,12 @@ related locations in the content-hover popup. Related locations open the actual
 resource and reveal their UTF-16 position; the terminal's status actions can be
 activated by mouse or keyboard. Editable markers query their full diagnostic
 range for quick fixes and transfer the resolved provider set to the shared
-action widget without a second query. The separate View Problem navigation
-widget and marker-hover contributed action menu remain unported.
+action widget without a second query. The View Problem command and F8 /
+Shift+F8 navigation use the live marker list and the shared PeekView widget,
+including cross-file problem navigation and the registered title menu.
+Contributed marker-hover actions use the owning editor's context. The hover
+accessible view exposes the current rendered parts, supports verbosity
+adjustment and restores focus to its originating editor.
 Selecting a problem highlights its code range
 in the editor while the Problems view owns focus. Hover, completion, the
 navigation actions, breadcrumb symbols and document formatting are wired to the
