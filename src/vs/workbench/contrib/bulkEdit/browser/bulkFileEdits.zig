@@ -215,6 +215,10 @@ const FileUndoRedoElement = struct {
 
 pub const BulkFileEdits = struct {
     pub fn apply(allocator: Allocator, services: Services, edits: []const bulk.ResourceEdit, options: bulk.IBulkEditOptions, group: *undo.UndoRedoGroup) !bulk.IBulkEditResult {
+        return applyWithReporting(allocator, services, edits, options, group, null);
+    }
+
+    pub fn applyWithReporting(allocator: Allocator, services: Services, edits: []const bulk.ResourceEdit, options: bulk.IBulkEditOptions, group: *undo.UndoRedoGroup, reporter: ?bulk.ResourceReporter) !bulk.IBulkEditResult {
         var scratch = std.heap.ArenaAllocator.init(allocator);
         defer scratch.deinit();
         const a = scratch.allocator();
@@ -248,6 +252,7 @@ pub const BulkFileEdits = struct {
         stack_entry.* = .{ .workspace = element.interface() };
         const resource_count = element.resources.items.len;
         try services.undo_redo.pushElement(stack_entry, group, options.undo_redo_source);
+        if (resource_count != 0) if (reporter) |value| value.report(value.context, element.resources.items);
         return .{ .is_applied = count != 0, .edited_resources = resource_count, .edit_count = count };
     }
 };

@@ -110,6 +110,7 @@ pub const BulkTextEdits = struct {
     resolver_service: resolver.ITextModelService,
     tasks: std.ArrayList(*ModelEditTask) = .empty,
     listener: bulk.EditListener,
+    reporter: bulk.ResourceReporter,
     undo_group: *UndoRedoGroup,
     undo_service: *UndoRedoService,
     undo_source: ?*UndoRedoSource,
@@ -127,10 +128,10 @@ pub const BulkTextEdits = struct {
     cancel_notify: bool = false,
     detached: bool = false,
 
-    pub fn start(allocator: Allocator, service: resolver.ITextModelService, undo_service: *UndoRedoService, edits: []const bulk.ResourceEdit, options: bulk.IBulkEditOptions, group: *UndoRedoGroup, selection: ?SelectionSnapshot, listener: bulk.EditListener) !?Disposable {
+    pub fn start(allocator: Allocator, service: resolver.ITextModelService, undo_service: *UndoRedoService, edits: []const bulk.ResourceEdit, options: bulk.IBulkEditOptions, group: *UndoRedoGroup, selection: ?SelectionSnapshot, reporter: bulk.ResourceReporter, listener: bulk.EditListener) !?Disposable {
         try options.token.throwIfCancellationRequested();
         const self = try allocator.create(BulkTextEdits);
-        self.* = .{ .allocator = allocator, .arena = .init(allocator), .resolver_service = service, .listener = listener, .undo_group = group, .undo_service = undo_service, .undo_source = options.undo_redo_source, .label = options.label orelse "Workspace Edit", .code = options.code orelse "undoredo.workspaceEdit" };
+        self.* = .{ .allocator = allocator, .arena = .init(allocator), .resolver_service = service, .listener = listener, .reporter = reporter, .undo_group = group, .undo_service = undo_service, .undo_source = options.undo_redo_source, .label = options.label orelse "Workspace Edit", .code = options.code orelse "undoredo.workspaceEdit" };
         errdefer self.destroy();
         const a = self.arena.allocator();
         if (selection) |snapshot| {
@@ -234,6 +235,7 @@ pub const BulkTextEdits = struct {
         // close it only after every model belongs to the same operation.
         defer element.close() catch {};
         for (self.tasks.items) |task| try task.apply(self.undo_group);
+        for (self.tasks.items) |task| self.reporter.report(self.reporter.context, &.{task.reference.?.object.textEditorModel.uri()});
         return .{ .is_applied = true, .edited_resources = self.tasks.items.len, .edit_count = self.edit_count };
     }
 

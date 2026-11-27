@@ -22,6 +22,11 @@ pub const IBulkEditOptions = struct {
     undo_redo_source: ?*@import("../../../platform/undoRedo/common/undoRedo.zig").UndoRedoSource = null,
 };
 pub const IBulkEditResult = struct { is_applied: bool, edited_resources: usize = 0, edit_count: usize = 0 };
+/// Internal resource enumeration consumed synchronously by the bulk-edit owner.
+pub const ResourceReporter = struct {
+    context: *anyopaque,
+    report: *const fn (*anyopaque, []const @import("std").Uri) void,
+};
 pub const EditListener = struct { context: *anyopaque, complete: *const fn (*anyopaque, anyerror!IBulkEditResult) void };
 pub const PreviewListener = struct { context: *anyopaque, complete: *const fn (*anyopaque, anyerror![]const ResourceEdit) void };
 pub const IBulkEditPreviewHandler = struct {

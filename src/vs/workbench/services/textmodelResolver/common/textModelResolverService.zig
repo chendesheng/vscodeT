@@ -743,6 +743,10 @@ pub const TextModelResolverService = struct {
         return .{ .context = self, .create_model_reference = Adapter.reference, .acquire_model_reference = Adapter.acquireReference, .refresh_model_reference = Adapter.refresh, .create_model_from_text = Adapter.fromText, .create_synthetic_document = Adapter.synthetic, .can_handle_resource = Adapter.canHandle, .register_provider = Adapter.register, .update_virtual_content = Adapter.updateVirtualContent };
     }
 
+    pub fn bindWorkingCopyService(self: *TextModelResolverService, service: ?*WorkingCopyService) !void {
+        try self.collection.bindWorkingCopyService(service);
+    }
+
     pub fn modelService(self: *TextModelResolverService) @import("../../../../editor/common/services/modelService.zig").IModelService {
         return self.collection.interface();
     }
@@ -817,10 +821,13 @@ pub const TextModelResolverService = struct {
     }
 };
 
+const WorkingCopyService = @import("../../workingCopy/common/workingCopyService.zig").WorkingCopyService;
+
 const ResourceModelCollection = struct {
     allocator: Allocator,
     window: *dispatch.Queue,
     entries: std.StringHashMap(*Entry),
+    working_copies: ?*WorkingCopyService = null,
     on_model_added: @import("../../../../base/common/event.zig").Emitter(resolver.IResolvedTextEditorModel),
     on_model_removed: @import("../../../../base/common/event.zig").Emitter(resolver.IResolvedTextEditorModel),
 
@@ -855,6 +862,15 @@ const ResourceModelCollection = struct {
         };
     }
 
+    fn bindWorkingCopyService(self: *ResourceModelCollection, service: ?*WorkingCopyService) !void {
+        if (self.working_copies == service) return;
+        var iterator = self.entries.valueIterator();
+        while (iterator.next()) |entry| entry.*.unregisterWorkingCopy();
+        self.working_copies = service;
+        iterator = self.entries.valueIterator();
+        while (iterator.next()) |entry| try entry.*.registerWorkingCopy();
+    }
+
     fn register(self: *ResourceModelCollection, document: *EditorDocument, readonly: bool) !*Entry {
         const key = try uri_util.resourceKey(self.allocator, document.model.uri());
         errdefer self.allocator.free(key);
@@ -870,6 +886,8 @@ const ResourceModelCollection = struct {
         entry.dispose_listener = try document.on_will_dispose.listen(entry, Entry.onDocumentDisposed);
         errdefer document.on_will_dispose.unlisten(entry.dispose_listener.?);
         try self.entries.put(key, entry);
+        errdefer _ = self.entries.remove(key);
+        try entry.registerWorkingCopy();
         self.on_model_added.fire(entry.modelInterface()) catch {};
         return entry;
     }
@@ -905,7 +923,25 @@ const ResourceModelCollection = struct {
         held: bool = false,
         dispose_listener: ?usize = null,
         dirty_listener: bool = false,
+        working_copy_registered: bool = false,
         disposal_task: dispatch.Task = .{},
+
+        fn registerWorkingCopy(self: *Entry) !void {
+            if (self.working_copy_registered or self.readonly) return;
+            if (!std.mem.eql(u8, self.document.model.uri().scheme, "file")) return;
+            const collection = self.collection orelse return;
+            const service = collection.working_copies orelse return;
+            try service.acquireWorkingCopy(self.document.interface());
+            self.working_copy_registered = true;
+        }
+
+        fn unregisterWorkingCopy(self: *Entry) void {
+            if (!self.working_copy_registered) return;
+            self.working_copy_registered = false;
+            if (self.collection) |collection| {
+                if (collection.working_copies) |service| _ = service.releaseWorkingCopy(self.document.interface());
+            }
+        }
 
         fn modelInterface(self: *Entry) resolver.IResolvedTextEditorModel {
             return .{ .context = self.document, .textEditorModel = self.document.model, .onWillDispose = &self.document.on_will_dispose, .readonly = self.readonly };
@@ -973,6 +1009,7 @@ const ResourceModelCollection = struct {
         fn onDocumentDisposed(_: void, self: *Entry) !void {
             std.debug.assert(!self.held and self.refs == 0);
             self.disposal_task.schedule(null);
+            self.unregisterWorkingCopy();
             if (self.collection) |collection| {
                 _ = collection.entries.remove(self.key);
                 collection.on_model_removed.fire(self.modelInterface()) catch {};
@@ -981,6 +1018,7 @@ const ResourceModelCollection = struct {
         }
 
         fn detach(self: *Entry) void {
+            self.unregisterWorkingCopy();
             self.disposal_task.schedule(null);
             self.stopWaitingForClean();
             if (self.dispose_listener) |listener| self.document.on_will_dispose.unlisten(listener);

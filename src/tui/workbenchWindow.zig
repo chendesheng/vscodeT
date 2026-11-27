@@ -567,7 +567,7 @@ pub const TerminalWorkbench = struct {
         self.text_file_model_manager = .init(allocator, self.file_service_api, (FileModelAccessAdapter{ .service = &self.text_model_resolver }).interface());
         errdefer self.text_file_model_manager.deinit();
         try self.text_file_model_manager.bind(self.working_copy_file_api);
-        self.bulk_edit_service = .{ .allocator = allocator, .resolver_service = self.text_model_api, .undo_redo_service = &self.text_model_resolver.undo_store.?.service, .file_services = .{ .files = self.file_service_api, .working_copies = self.working_copy_file_api, .undo_redo = &self.text_model_resolver.undo_store.?.service } };
+        self.bulk_edit_service = .{ .allocator = allocator, .resolver_service = self.text_model_api, .working_copy_service = &self.working_copy_service, .undo_redo_service = &self.text_model_resolver.undo_store.?.service, .file_services = .{ .files = self.file_service_api, .working_copies = self.working_copy_file_api, .undo_redo = &self.text_model_resolver.undo_store.?.service } };
         self.bulk_edit_api = self.bulk_edit_service.interface();
         self.model_service_api = self.text_model_resolver.modelService();
         self.git_file_provider = .init(allocator, &self.git_model, self.async_io);
@@ -818,6 +818,8 @@ pub const TerminalWorkbench = struct {
         std.mem.swap(ServiceCollection, services, &self.services);
         errdefer self.services.deinit();
         try self.initQuickAccess();
+        errdefer self.text_model_resolver.bindWorkingCopyService(null) catch {};
+        try self.text_model_resolver.bindWorkingCopyService(&self.working_copy_service);
         self.git_commands = .{
             .allocator = allocator,
             .model = &self.git_model,
@@ -1895,6 +1897,7 @@ pub const TerminalWorkbench = struct {
         if (self.syntax_theme_ready) self.syntax_theme.deinit();
         if (self.theme_service) |service| service.deinit();
         self.quick_access.deinit();
+        self.text_model_resolver.bindWorkingCopyService(null) catch {};
         self.working_copy_service.deinit();
         self.menu_service.deinit();
         self.commands.deinit();

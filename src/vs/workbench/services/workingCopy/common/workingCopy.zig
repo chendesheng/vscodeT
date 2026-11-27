@@ -17,10 +17,12 @@ pub const WorkingCopyListener = struct {
 pub const IWorkingCopy = struct {
     context: *anyopaque,
     resource: *const fn (context: *anyopaque) []const u8,
+    resource_uri: ?*const fn (context: *anyopaque) std.Uri = null,
     type_id: *const fn (context: *anyopaque) []const u8,
     name: *const fn (context: *anyopaque) []const u8,
     is_dirty: *const fn (context: *anyopaque) bool,
     is_modified: *const fn (context: *anyopaque) bool,
+    save_fn: ?*const fn (context: *anyopaque) anyerror!void = null,
     add_dirty_listener: *const fn (context: *anyopaque, listener: WorkingCopyListener) void,
     remove_dirty_listener: *const fn (context: *anyopaque, listener: WorkingCopyListener) void,
     add_content_listener: *const fn (context: *anyopaque, listener: WorkingCopyListener) void,
@@ -31,6 +33,10 @@ pub const IWorkingCopy = struct {
     pub fn getResource(self: IWorkingCopy) []const u8 {
         return self.resource(self.context);
     }
+    pub fn getResourceUri(self: IWorkingCopy) std.Uri {
+        if (self.resource_uri) |callback| return callback(self.context);
+        return .{ .scheme = "file", .path = .{ .raw = self.getResource() } };
+    }
     pub fn getTypeId(self: IWorkingCopy) []const u8 {
         return self.type_id(self.context);
     }
@@ -39,6 +45,10 @@ pub const IWorkingCopy = struct {
     }
     pub fn getDirty(self: IWorkingCopy) bool {
         return self.is_dirty(self.context);
+    }
+    pub fn save(self: IWorkingCopy) !void {
+        const callback = self.save_fn orelse return error.SaveUnsupported;
+        try callback(self.context);
     }
     pub fn getModified(self: IWorkingCopy) bool {
         return self.is_modified(self.context);

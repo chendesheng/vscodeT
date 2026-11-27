@@ -504,10 +504,12 @@ pub const EditorDocument = struct {
         return .{
             .context = self,
             .resource = wcResource,
+            .resource_uri = wcResourceUri,
             .type_id = wcTypeId,
             .name = wcName,
             .is_dirty = wcIsDirty,
             .is_modified = wcIsModified,
+            .save_fn = wcSave,
             .add_dirty_listener = wcAddDirty,
             .remove_dirty_listener = wcRemoveDirty,
             .add_content_listener = wcAddContent,
@@ -576,6 +578,43 @@ pub const EditorDocument = struct {
 
     pub fn isDirty(self: *const EditorDocument) bool {
         return self.model.getAlternativeVersionId() != self.saved_version;
+    }
+
+    pub fn save(self: *EditorDocument) !void {
+        const value = try self.model.getValue(.TextDefined, true);
+        defer value.deinit();
+
+        const path = self.path;
+        const cwd = Io.Dir.cwd();
+        var exists = true;
+        const maybe_file = cwd.openFile(self.io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound => blk: {
+                exists = false;
+                break :blk null;
+            },
+            else => return err,
+        };
+        if (maybe_file) |file| file.close(self.io);
+
+        var atomic = try cwd.createFileAtomic(self.io, path, .{ .replace = exists });
+        defer atomic.deinit(self.io);
+        const encoded = try encoding_mod.encode(self.allocator, value.items, self.encoding);
+        defer self.allocator.free(encoded);
+        try atomic.file.writeStreamingAll(self.io, encoded);
+        if (exists) {
+            try atomic.replace(self.io);
+        } else {
+            try atomic.link(self.io);
+        }
+
+        self.saved_version = self.model.getAlternativeVersionId();
+        self.clearConflict();
+        self.refreshDirtyState();
+        for (self.working_copy_save_listeners.items) |listener| listener.callback(listener.context);
+        for (self.editors.items) |editor| {
+            for (editor.working_copy_save_listeners.items) |listener| listener.callback(listener.context);
+            editor.setMessage("Saved {s}", .{path});
+        }
     }
 
     /// The text-file model owner uses a soft revert during move/delete:
@@ -5553,40 +5592,7 @@ pub const Editor = struct {
 
     pub fn save(self: *Editor) !void {
         if (self.read_only) return error.ReadOnly;
-        const value = try self.model.getValue(.TextDefined, true);
-        defer value.deinit();
-
-        const path = self.document.path;
-        const cwd = Io.Dir.cwd();
-        var exists = true;
-        const maybe_file = cwd.openFile(self.io, path, .{}) catch |err| switch (err) {
-            error.FileNotFound => blk: {
-                exists = false;
-                break :blk null;
-            },
-            else => return err,
-        };
-        if (maybe_file) |file| file.close(self.io);
-
-        var atomic = try cwd.createFileAtomic(self.io, path, .{ .replace = exists });
-        defer atomic.deinit(self.io);
-        const encoded = try encoding_mod.encode(self.allocator, value.items, self.document.encoding);
-        defer self.allocator.free(encoded);
-        try atomic.file.writeStreamingAll(self.io, encoded);
-        if (exists) {
-            try atomic.replace(self.io);
-        } else {
-            try atomic.link(self.io);
-        }
-
-        self.document.saved_version = self.model.getAlternativeVersionId();
-        self.clearConflict();
-        self.document.refreshDirtyState();
-        for (self.document.working_copy_save_listeners.items) |listener| listener.callback(listener.context);
-        for (self.document.editors.items) |editor| {
-            for (editor.working_copy_save_listeners.items) |listener| listener.callback(listener.context);
-            editor.setMessage("Saved {s}", .{path});
-        }
+        try self.document.save();
     }
 
     /// Escape behavior: drop secondary cursors first, otherwise cancel the
@@ -7192,6 +7198,10 @@ fn wcResource(context: *anyopaque) []const u8 {
     const document: *EditorDocument = @ptrCast(@alignCast(context));
     return document.path;
 }
+fn wcResourceUri(context: *anyopaque) std.Uri {
+    const document: *EditorDocument = @ptrCast(@alignCast(context));
+    return document.model.uri();
+}
 fn wcTypeId(_: *anyopaque) []const u8 {
     return TYPE_ID;
 }
@@ -7202,6 +7212,10 @@ fn wcName(context: *anyopaque) []const u8 {
 fn wcIsDirty(context: *anyopaque) bool {
     const document: *EditorDocument = @ptrCast(@alignCast(context));
     return document.isDirty();
+}
+fn wcSave(context: *anyopaque) !void {
+    const document: *EditorDocument = @ptrCast(@alignCast(context));
+    try document.save();
 }
 fn wcIsModified(context: *anyopaque) bool {
     return wcIsDirty(context);

@@ -10660,6 +10660,85 @@ test "Diff editor commands: multi-resource text edit installs one labeled worksp
     try std.testing.expectEqualStrings("replaced second", try right.borrowLineContent(1));
 }
 
+test "Diff editor commands: refactor auto-save saves only affected mounted and unmounted working copies" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const bulk = @import("../vs/editor/browser/services/bulkEditService.zig");
+    const Probe = struct {
+        result: ?bulk.IBulkEditResult = null,
+        failure: ?anyerror = null,
+        fn complete(context: *anyopaque, reply: anyerror!bulk.IBulkEditResult) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (reply) |value| self.result = value else |err| self.failure = err;
+        }
+        fn apply(self: *@This(), wb: *Workbench, edits: []const languages.WorkspaceResourceEdit) !void {
+            self.* = .{};
+            _ = try wb.bulk_edit_api.apply(.{ .edits = edits }, .{ .respect_auto_save_config = true }, .{ .context = self, .complete = complete });
+            for (0..5000) |_| {
+                if (self.result != null or self.failure != null) break;
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(1);
+            }
+            if (self.failure) |err| return err;
+            try std.testing.expect(self.result.?.is_applied);
+        }
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const first_path = try seedFile(a, io, &tmp, "first.txt", "first");
+    defer a.free(first_path);
+    const second_path = try seedFile(a, io, &tmp, "second.txt", "second");
+    defer a.free(second_path);
+    const unrelated_path = try seedFile(a, io, &tmp, "unrelated.txt", "unrelated");
+    defer a.free(unrelated_path);
+    const settings_path = try seedFile(a, io, &tmp, "refactor-settings.json", "{}");
+    defer a.free(settings_path);
+    const absolute_second = try @import("../vs/workbench/services/textfile/common/textFileService.zig").absolutePath(a, io, second_path);
+    defer a.free(absolute_second);
+    const window = try TestWindow.init(a, io, &.{ first_path, unrelated_path }, 100, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.setUserSettingsPaths(&.{settings_path});
+    wb.ensureConfigurationReady();
+    const Model = @import("../vs/editor/common/model/textModel.zig").TextModel;
+    var first: ?*Model = null;
+    var unrelated: ?*Editor = null;
+    for (wb.part.group_views.items) |pane| for (pane.tabs.items) |tab| {
+        if (std.mem.eql(u8, std.fs.path.basename(tab.editor.path), "first.txt")) first = tab.editor.model;
+        if (std.mem.eql(u8, std.fs.path.basename(tab.editor.path), "unrelated.txt")) unrelated = tab.editor;
+    };
+    const mounted = first orelse return error.FirstEditorMissing;
+    const other_editor = unrelated orelse return error.UnrelatedEditorMissing;
+    var changes = [_]@import("../vs/editor/common/model.zig").IdentifiedSingleEditOperation{.init(Range.init(1, 1, 1, 1), @import("../vs/base/common/strings.zig").String.initBorrowed("dirty "))};
+    _ = try other_editor.model.pushEditOperations(null, &changes, null, null);
+    const second: std.Uri = .{ .scheme = "file", .path = .{ .raw = absolute_second } };
+    const edits = [_]languages.WorkspaceResourceEdit{
+        .{ .text = .{ .resource = mounted.uri(), .text = "saved first" } },
+        .{ .text = .{ .resource = second, .text = "saved second" } },
+    };
+    var probe: Probe = .{};
+    try probe.apply(wb, &edits);
+    for ([_]std.Uri{ mounted.uri(), second }, [_][]const u8{ "saved first", "saved second" }) |uri, expected| {
+        const bytes = try wb.file_service_api.readFile(a, uri);
+        defer a.free(bytes);
+        try std.testing.expectEqualStrings(expected, bytes);
+    }
+    try std.testing.expect(other_editor.isDirty());
+    const bytes = try wb.file_service_api.readFile(a, other_editor.model.uri());
+    defer a.free(bytes);
+    try std.testing.expectEqualStrings("unrelated", bytes);
+    try wb.setUserConfigurationValue("files.refactoring.autoSave", .{ .bool = false });
+    const next = [_]languages.WorkspaceResourceEdit{
+        .{ .text = .{ .resource = mounted.uri(), .text = "not saved" } },
+        .{ .text = .{ .resource = second, .text = "not saved" } },
+    };
+    try probe.apply(wb, &next);
+    const unchanged = try wb.file_service_api.readFile(a, second);
+    defer a.free(unchanged);
+    try std.testing.expectEqualStrings("saved second", unchanged);
+    try std.testing.expect(wb.working_copy_service.isDirty(absolute_second, null));
+}
+
 test "Diff editor commands: renaming a dirty file preserves contents and view state through workspace undo" {
     const a = std.testing.allocator;
     const io = std.testing.io;

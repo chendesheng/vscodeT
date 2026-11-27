@@ -13,11 +13,17 @@ const file_edits = @import("bulkFileEdits.zig");
 const group_mod = @import("../../../../platform/undoRedo/common/undoRedo.zig");
 const uri_util = @import("../../../../base/common/stdUri.zig");
 
+pub const auto_save_setting = "files.refactoring.autoSave";
+pub const properties = [_]@import("../../../../platform/configuration/common/configurationRegistry.zig").PropertySchema{
+    .{ .key = auto_save_setting, .value_type = "boolean", .default = .{ .bool = true } },
+};
+
 pub const BulkEditService = struct {
     allocator: std.mem.Allocator,
     resolver_service: resolver.ITextModelService,
     undo_redo_service: *@import("../../../../platform/undoRedo/common/undoRedoService.zig").UndoRedoService,
     file_services: ?file_edits.Services = null,
+    working_copy_service: ?*@import("../../../services/workingCopy/common/workingCopyService.zig").WorkingCopyService = null,
     active_groups: std.ArrayList(*ActiveGroup) = .empty,
     preview_handler: ?*PreviewRegistration = null,
 
@@ -114,6 +120,8 @@ const BulkApplyRequest = struct {
     selection: ?SelectionSnapshot = null,
     next: usize = 0,
     result: bulk.IBulkEditResult = .{ .is_applied = false },
+    resources: std.StringHashMapUnmanaged(void) = .empty,
+    resources_complete: bool = true,
     completion: ?anyerror!bulk.IBulkEditResult = null,
     pending: ?Disposable = null,
     cancellation_listener: ?Disposable = null,
@@ -183,6 +191,32 @@ const BulkApplyRequest = struct {
         self.result.edited_resources += result.edited_resources;
         self.result.edit_count += result.edit_count;
     }
+    fn reportResources(context: *anyopaque, resources: []const std.Uri) void {
+        const self: *BulkApplyRequest = @ptrCast(@alignCast(context));
+        const a = self.arena.allocator();
+        for (resources) |resource| {
+            const key = uri_util.resourceKey(a, resource) catch {
+                self.resources_complete = false;
+                continue;
+            };
+            self.resources.put(a, key, {}) catch {
+                self.resources_complete = false;
+            };
+        }
+    }
+    fn maybeAutoSave(self: *BulkApplyRequest) void {
+        if (!self.options.respect_auto_save_config or self.result.edited_resources <= 1 or !self.resources_complete) return;
+        const copies = self.service.working_copy_service orelse return;
+        const config = if (self.service.file_services) |services| services.configuration_service else null;
+        if (config) |settings| if (!settings.getBool(auto_save_setting, true)) return;
+        const a = self.arena.allocator();
+        const dirty = copies.dirtyWorkingCopies(a) catch return;
+        for (dirty) |copy| {
+            const key = uri_util.resourceKey(a, copy.getResourceUri()) catch continue;
+            if (self.resources.contains(key)) copy.save() catch {};
+        }
+    }
+
     fn advance(self: *BulkApplyRequest) void {
         if (self.completion != null or self.advancing) return;
         self.advancing = true;
@@ -194,6 +228,7 @@ const BulkApplyRequest = struct {
             }
             if (self.next == self.edits.len) {
                 self.result.is_applied = self.edits.len != 0;
+                self.maybeAutoSave();
                 self.finish(self.result);
                 return;
             }
@@ -207,7 +242,7 @@ const BulkApplyRequest = struct {
                         self.finish(error.UnsupportedResourceEdit);
                         return;
                     };
-                    const result = file_edits.BulkFileEdits.apply(self.service.allocator, services, edits, self.options, &self.group.value) catch |err| {
+                    const result = file_edits.BulkFileEdits.applyWithReporting(self.service.allocator, services, edits, self.options, &self.group.value, .{ .context = self, .report = reportResources }) catch |err| {
                         self.finish(err);
                         return;
                     };
@@ -215,7 +250,7 @@ const BulkApplyRequest = struct {
                 },
                 .text => {
                     self.waiting = true;
-                    const request = BulkTextEdits.start(self.service.allocator, self.service.resolver_service, self.service.undo_redo_service, edits, self.options, &self.group.value, self.selection, .{ .context = self, .complete = completedTextGroup }) catch |err| {
+                    const request = BulkTextEdits.start(self.service.allocator, self.service.resolver_service, self.service.undo_redo_service, edits, self.options, &self.group.value, self.selection, .{ .context = self, .report = reportResources }, .{ .context = self, .complete = completedTextGroup }) catch |err| {
                         self.waiting = false;
                         self.finish(err);
                         return;

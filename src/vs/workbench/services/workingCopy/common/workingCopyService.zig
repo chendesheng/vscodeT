@@ -82,9 +82,10 @@ pub const WorkingCopyService = struct {
         copy.add_dirty_listener(copy.context, registration.dirty_listener);
         copy.add_content_listener(copy.context, registration.content_listener);
         copy.add_save_listener(copy.context, registration.save_listener);
+        errdefer self.unsubscribe(registration);
         try self.registrations.append(registration);
-        try self.on_did_register.fire(&registration.copy);
-        if (copy.getDirty()) try self.on_did_change_dirty.fire(&registration.copy);
+        self.on_did_register.fire(&registration.copy) catch {};
+        if (copy.getDirty()) self.on_did_change_dirty.fire(&registration.copy) catch {};
     }
 
     /// Terminal panes are independent references to a single registered
