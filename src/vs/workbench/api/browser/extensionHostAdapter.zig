@@ -1228,6 +1228,13 @@ pub const Extensions = struct {
             error.InitializeConfigurationRejected,
         );
 
+        // MainThreadDocumentsAndEditors publishes existing model state before
+        // extension activation. Otherwise provider registration during startup
+        // can reenter outline/code-action consumers before the host knows the
+        // document URI. The active-editor delta and language activation follow
+        // the host-start barrier below.
+        try self.syncDocumentModels();
+
         var delta: std.json.ObjectMap = .empty;
         try delta.put(arena, "versionId", .{ .integer = 1 });
         try delta.put(arena, "toRemove", .{ .array = std.json.Array.init(arena) });
