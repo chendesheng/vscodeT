@@ -429,7 +429,11 @@ test "ComputedEditorOptions exposes the supported options" {
         _ = options.read(option);
         _ = view.get(option);
     }
-    try std.testing.expectEqual(@as(usize, 81), supported_options.len);
+    try std.testing.expectEqual(@as(usize, 85), supported_options.len);
+    try std.testing.expectEqual(editorOptions.FoldingStrategy.auto, options.get(.foldingStrategy));
+    try std.testing.expect(options.get(.foldingHighlight));
+    try std.testing.expect(!options.get(.foldingImportsByDefault));
+    try std.testing.expectEqual(@as(i32, 5000), options.get(.foldingMaximumRegions));
     try std.testing.expect(options.get(.codeLens));
     try std.testing.expect(!options.get(.formatOnType));
     try std.testing.expectEqual(editorOptions.OccurrencesHighlight.single_file, options.get(.occurrencesHighlight));
