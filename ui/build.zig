@@ -12,6 +12,7 @@ pub fn build(b: *std.Build) void {
 
     const test_module = b.addModule("ui_tests", .{
         .root_source_file = b.path("tests/tests.zig"),
+        .link_libc = true,
         .target = target,
         .optimize = optimize,
     });

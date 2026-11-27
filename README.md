@@ -776,6 +776,12 @@ console API for raw mode, sizing and input polling.
 
 ## Terminal UI library
 
+- `ui.WindowIo` is an opt-in, thread-affine implementation of Zig 0.17's
+  `std.Io` for window-owned asynchronous tasks. Its fibers yield on waits and
+  resume on the window thread; blocking I/O belongs to a separate concurrent
+  backend. The runtime has a native wake callback and structured future/group
+  cancellation. Existing workbench services still use their current dispatcher
+  and worker-I/O paths; adopting `WindowIo` for save/providers is separate work.
 - `ui/` is a standalone Zig package outside `src/`: a DOM-like tree with
   authored `Style` declarations that cascade into `ComputedStyle` (inherited
   properties from the parent, initial values otherwise), integer class IDs into

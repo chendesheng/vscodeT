@@ -99,3 +99,6 @@ pub const UnderlineStyle = style.UnderlineStyle;
 pub const WhiteSpace = style.WhiteSpace;
 pub const WordBreak = style.WordBreak;
 pub const Surface = surface.Surface;
+
+/// Thread-affine async execution for window event loops.
+pub const WindowIo = @import("runtime/window_io.zig").WindowIo;

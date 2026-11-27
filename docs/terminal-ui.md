@@ -66,6 +66,7 @@ terminal cells (ANSI)
        layout/           # box tree, layout solver and text wrapping
        render/           # painting, cell grid and frame buffers
        terminal/         # terminal input decoding and output protocols
+       runtime/          # opt-in window-thread async Io and native fibers
        widgets/          # controls, scrolling and drag interactions
      tests/              # unit and stress tests, fixtures, test entry point
      examples/           # runnable examples and gallery
@@ -1918,6 +1919,44 @@ Markdown/image previews use them. Cursor shape is the outer terminal's; bar/unde
 approximated by the cursor position and block/inverse paint.
 
 ### 8.1.1 Async I/O and the event loop
+
+The standalone UI library additionally provides the opt-in `ui.WindowIo`
+(`ui/src/runtime/window_io.zig`). It implements Zig 0.17's `std.Io` vtable, so
+window-owned tasks can use ordinary `io.async`, `io.concurrent`, futures and
+`Io.Group` without splitting their call stack into application callbacks. Each
+fiber is confined to the thread that initialized the runtime: Unix uses Zig's
+fiber context switch with a guarded stack, and Windows uses native Windows
+fibers. Other application work can still run on other threads. The UI library
+has no editor or workbench dependencies.
+
+The host supplies a concurrent worker backend (normally `Io.Threaded`), a wake
+callback and calls `WindowIo.dispatch()` on its window thread. It runs one ready
+fiber to its next wait or completion, then returns to the terminal event loop.
+Blocking I/O, timers and futex waits within a fiber are forwarded to the worker
+backend; completion schedules the waiting fiber and wakes the native input
+wait. Cancellation joins the underlying worker before releasing the fiber's
+stack or its borrowed buffers. Root-level blocking waits (including `Future.await` and `Io.Select.await`)
+can drain the runtime for standalone structured scopes, but interactive event
+handling should spawn
+window fibers and return to the host loop, not await from the root. The host
+must join/cancel every outstanding future/group before destroying the runtime.
+
+`WindowIo` is intentionally a window-thread handle, not an unrestricted shared
+scheduler: worker jobs receive the separate worker Io, use detached data, and
+must not access editor/UI state concurrently. As with JavaScript `await`, the
+owner must leave state consistent at suspension points. The wake callback may
+run on a worker and must only signal readiness. Immediate/thread-affine OS
+operations (e.g. stderr locks) are still synchronous; if
+the worker backend runs out of concurrency, forwarded operations fall back to
+its synchronous path. POSIX consumers of this runtime link libc for guarded
+stack allocation. These are runtime boundaries, not editor-specific shortcuts.
+
+The runtime is covered by the UI package tests (nested request/reply, thread
+affinity, worker I/O, timers, cancellation, groups and wake ordering). It is not
+yet the default workbench runtime. Migrating save and provider contracts to
+window fibers requires wiring their RPC readiness into the native event loop
+and preserving the upstream owner lifetimes and cancellation semantics. The
+separate Windows extension-host transport remains unported.
 
 Interactive file, directory and network work uses Zig's `Io.async` directly; no
 Promise/Task framework is introduced. `Workbench` owns a dedicated
