@@ -125,13 +125,14 @@ pub const IHoverPart = struct {
 };
 
 /// Port of the status bar contract. The terminal implementation renders action
-/// labels as a bottom row; there is no keybinding registry, so actions are
-/// mouse-clickable only.
+/// labels and transient messages as a bottom row. Native pointer and focused
+/// keyboard activation carry the actual action node to the handler.
 pub const HoverActionOptions = struct {
     label: []const u8,
     command_id: []const u8 = "",
     run: ?*const fn (context: ?*anyopaque) void = null,
     run_context: ?*anyopaque = null,
+    run_at: ?*const fn (context: ?*anyopaque, target: *ui.Node) void = null,
 };
 
 pub const IEditorHoverAction = struct {
@@ -144,11 +145,11 @@ pub const IEditorHoverStatusBar = struct {
     add_action: *const fn (context: *anyopaque, options: HoverActionOptions) IEditorHoverAction,
     has_content: *const fn (context: *anyopaque) bool,
     append: *const fn (context: *anyopaque, node: *ui.Node) void,
+    set_message: ?*const fn (context: *anyopaque, message: ?[]const u8) void = null,
 };
 
-/// Port of `IEditorHoverRenderContext`. Rendering is synchronous in the
-/// terminal, so these callbacks forward state changes to the hover widget and
-/// are normally not used while a participant renders.
+/// Port of `IEditorHoverRenderContext`. Participants can initiate cancellable
+/// asynchronous work while rendering; each rendered result owns its disposables.
 pub const IEditorHoverRenderContext = struct {
     context: *anyopaque,
     /// Container for rendered hover parts. The terminal builds the parts in a
@@ -159,6 +160,7 @@ pub const IEditorHoverRenderContext = struct {
     on_contents_changed: *const fn (context: *anyopaque) void,
     set_minimum_dimensions: *const fn (context: *anyopaque, width: usize, height: usize) void,
     focus: *const fn (context: *anyopaque) void,
+    add_disposable: ?*const fn (context: *anyopaque, disposable: @import("../../../../base/common/cancellation.zig").IDisposable) anyerror!void = null,
 
     pub fn callHide(self: IEditorHoverRenderContext) void {
         self.hide(self.context);

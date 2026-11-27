@@ -26,6 +26,7 @@ const IEditorHoverParticipant = hoverTypes.IEditorHoverParticipant;
 const IEditorHoverRenderContext = hoverTypes.IEditorHoverRenderContext;
 const ContentHoverResult = @import("./contentHoverTypes.zig").ContentHoverResult;
 const EditorHoverStatusBar = @import("./contentHoverStatusBar.zig").EditorHoverStatusBar;
+const IDisposable = @import("../../../../base/common/cancellation.zig").IDisposable;
 
 /// Coordinates conversion used by `computeHoverPositions`. Upstream asks the
 /// editor's view model for the model column at the start of the anchor's view
@@ -56,6 +57,8 @@ pub const RenderedContentHover = struct {
     allocator: Allocator,
     parts: []const IRenderedHoverPart,
     status_bar: *EditorHoverStatusBar,
+    status_bar_interface: hoverTypes.IEditorHoverStatusBar,
+    disposables: std.ArrayList(IDisposable) = .empty,
     show_at_position: Position,
     show_at_secondary_position: Position,
     should_focus: bool,
@@ -79,16 +82,18 @@ pub const RenderedContentHover = struct {
         host: RenderHost,
     ) !*RenderedContentHover {
         const status_bar = try allocator.create(EditorHoverStatusBar);
-        errdefer allocator.destroy(status_bar);
         status_bar.* = EditorHoverStatusBar.init(allocator);
-        errdefer status_bar.deinit();
-
-        const self = try allocator.create(RenderedContentHover);
+        const self = allocator.create(RenderedContentHover) catch |err| {
+            status_bar.deinit();
+            allocator.destroy(status_bar);
+            return err;
+        };
         errdefer allocator.destroy(self);
         self.* = .{
             .allocator = allocator,
             .parts = &.{},
             .status_bar = status_bar,
+            .status_bar_interface = status_bar.interface(),
             .show_at_position = result.options.anchor.getRange().getStartPosition(),
             .show_at_secondary_position = result.options.anchor.getRange().getStartPosition(),
             .should_focus = result.options.should_focus,
@@ -104,15 +109,15 @@ pub const RenderedContentHover = struct {
 
         var rendered = ArrayList(IRenderedHoverPart).init(allocator);
         errdefer rendered.deinit();
-        const status_bar_interface = status_bar.interface();
         const render_context = IEditorHoverRenderContext{
             .context = self,
             .fragment = null,
-            .status_bar = &status_bar_interface,
+            .status_bar = &self.status_bar_interface,
             .hide = renderHide,
             .on_contents_changed = renderOnContentsChanged,
             .set_minimum_dimensions = renderSetMinimumDimensions,
             .focus = renderFocus,
+            .add_disposable = addDisposable,
         };
 
         for (participants) |participant| {
@@ -153,6 +158,8 @@ pub const RenderedContentHover = struct {
     }
 
     fn deinitParts(self: *RenderedContentHover) void {
+        for (self.disposables.items) |disposable| disposable.dispose();
+        self.disposables.deinit(self.allocator);
         if (self.parts.len > 0) self.allocator.free(self.parts);
         self.parts = &.{};
         if (self.accessible_text.len > 0) self.allocator.free(self.accessible_text);
@@ -180,7 +187,7 @@ pub const RenderedContentHover = struct {
             const actions_width = verbosityWidth(part, max_width);
             width = @max(width, part.measure(part.context, max_width -| actions_width) + actions_width);
         }
-        return @min(width, max_width);
+        return @min(@max(width, self.status_bar.measureWidth()), max_width);
     }
 
     pub fn heightAt(self: *const RenderedContentHover, width: usize) usize {
@@ -190,7 +197,7 @@ pub const RenderedContentHover = struct {
             const actions_width = verbosityWidth(part, width);
             rows += @max(part.height(part.context, width -| actions_width), if (actions_width > 0) @as(usize, 2) else 1);
         }
-        if (self.status_bar.hasContent()) rows += 1;
+        rows += self.status_bar.heightAt(width);
         return @max(rows, 1);
     }
 
@@ -243,6 +250,11 @@ pub const RenderedContentHover = struct {
         const self: *RenderedContentHover = @ptrCast(@alignCast(context));
         self.hide_requested = true;
         if (self.host.hide) |hide| hide(self.host.context);
+    }
+
+    fn addDisposable(context: *anyopaque, disposable: IDisposable) !void {
+        const self: *RenderedContentHover = @ptrCast(@alignCast(context));
+        try self.disposables.append(self.allocator, disposable);
     }
 
     fn renderOnContentsChanged(context: *anyopaque) void {

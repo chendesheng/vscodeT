@@ -55,6 +55,8 @@ pub const ContentHoverWidget = struct {
     focused: bool = false,
     focused_part: isize = -1,
     focused_action: ?HoverVerbosityAction = null,
+    focused_status_action: ?usize = null,
+    focused_marker_link: ?usize = null,
     root: ?*ui.Node = null,
 
     last_cols: usize = 0,
@@ -108,6 +110,8 @@ pub const ContentHoverWidget = struct {
         const was_focused = self.focused;
         const previous_part = self.focused_part;
         const previous_action = self.focused_action;
+        const previous_status_action = self.focused_status_action;
+        const previous_marker_link = self.focused_marker_link;
         self.clearRendered();
         self.rendered = rendered;
         self.scroll_top = 0;
@@ -115,7 +119,9 @@ pub const ContentHoverWidget = struct {
         if (previous_part >= 0 and previous_part < rendered.parts.len) {
             self.focused_part = previous_part;
             self.focused_action = previous_action;
+            self.focused_marker_link = previous_marker_link;
         }
+        self.focused_status_action = previous_status_action;
         self.minimum_width = 1;
         self.minimum_height = 1;
         self.publishState();
@@ -226,6 +232,8 @@ pub const ContentHoverWidget = struct {
         self.focused = false;
         self.focused_part = -1;
         self.focused_action = null;
+        self.focused_status_action = null;
+        self.focused_marker_link = null;
         self.scroll_top = 0;
     }
 
@@ -342,9 +350,11 @@ pub const ContentHoverWidget = struct {
     fn focusNode(context: *anyopaque) ?*ui.Node {
         const self: *ContentHoverWidget = @ptrCast(@alignCast(context));
         const root = self.root orelse return null;
+        if (self.focused_status_action) |index| if (findIndexedTarget(root, "data-hover-status-action", index)) |button| return button;
         if (self.focused_part >= 0) {
             if (findPart(root, self.focused_part)) |part| {
                 if (self.focused_action) |action| if (findAction(part, action)) |button| return button;
+                if (self.focused_marker_link) |index| if (findIndexedTarget(part, "data-marker-hover-link", index)) |link| return link;
                 return part;
             }
         }
@@ -369,6 +379,28 @@ pub const ContentHoverWidget = struct {
         if (actionAt(root) == action) return root;
         var child = root.firstChild();
         while (child) |node| : (child = node.nextSibling()) if (findAction(node, action)) |button| return button;
+        return null;
+    }
+
+    fn indexedTarget(node: *ui.Node, attribute: []const u8) ?usize {
+        const value = node.getAttribute(attribute) orelse return null;
+        if (std.mem.eql(u8, value, "code")) return std.math.maxInt(usize);
+        return std.fmt.parseInt(usize, value, 10) catch null;
+    }
+
+    fn findIndexedTarget(root: *ui.Node, attribute: []const u8, index: usize) ?*ui.Node {
+        if (indexedTarget(root, attribute) == index) return root;
+        var child = root.firstChild();
+        while (child) |node| : (child = node.nextSibling()) if (findIndexedTarget(node, attribute, index)) |target| return target;
+        return null;
+    }
+
+    fn targetIndex(self: *const ContentHoverWidget, target: ?*ui.Node, attribute: []const u8) ?usize {
+        var current = target;
+        while (current) |node| : (current = node.parent) {
+            if (node == self.root) break;
+            if (indexedTarget(node, attribute)) |index| return index;
+        }
         return null;
     }
 
@@ -472,6 +504,8 @@ pub const ContentHoverWidget = struct {
                 self.focused = false;
                 self.focused_part = -1;
                 self.focused_action = null;
+                self.focused_status_action = null;
+                self.focused_marker_link = null;
                 self.publishState();
                 self.host.focus_editor(self.host.context);
             },
@@ -502,6 +536,8 @@ pub const ContentHoverWidget = struct {
         self.focused = true;
         self.focused_part = selected.index;
         self.focused_action = selected.action;
+        self.focused_status_action = self.targetIndex(event.target, "data-hover-status-action");
+        self.focused_marker_link = self.targetIndex(event.target, "data-marker-hover-link");
         self.publishState();
         self.host.request_frame(self.host.context);
     }
@@ -513,6 +549,8 @@ pub const ContentHoverWidget = struct {
         self.focused = false;
         self.focused_part = -1;
         self.focused_action = null;
+        self.focused_status_action = null;
+        self.focused_marker_link = null;
         self.publishState();
         self.host.request_frame(self.host.context);
     }
