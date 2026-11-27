@@ -800,6 +800,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.modified_label = &.{};
             self.view_model = undefined;
             self.owns_view_model = false;
+            self.width_based_layout.modelChanged();
             self.original_scroll_anchor = null;
             self.modified_scroll_anchor = null;
             self.accessible_viewer.can_close = true;
@@ -1069,13 +1070,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.on_did_change_context.fire({}) catch {};
         }
 
-        fn isSimpleDiff(self: *const Self) bool {
-            const state_ = self.state() orelse return false;
-            for (state_.mappings) |mapping| {
-                const change = mapping.line_range_mapping;
-                if (!change.original.isEmpty() and !change.modified.isEmpty() and !(self.options.use_true_inline_view and view_zones.allowsTrueInlineDiffRendering(change))) return false;
-            }
-            return true;
+        fn isSimpleDiff(self: *Self) bool {
+            return self.width_based_layout.shouldRenderInlineViewInSmartMode(self.options, self.state());
         }
 
         pub fn resetWidthBasedLayout(self: *Self) void {

@@ -96,6 +96,26 @@ pub const Options = struct {
 pub const WidthBasedLayout = struct {
     width: usize = 0,
     mode: enum { auto, inline_view } = .auto,
+    /// Upstream derivedConstOnceDefined: the first defined smart-mode value
+    /// remains stable for that attached diff model.
+    smart_inline: ?bool = null,
+
+    pub fn modelChanged(self: *WidthBasedLayout) void {
+        self.smart_inline = null;
+    }
+
+    pub fn shouldRenderInlineViewInSmartMode(self: *WidthBasedLayout, options: Options, state: ?*const @import("diffEditorViewModel.zig").DiffState) bool {
+        if (!options.compact_mode) return false;
+        if (self.smart_inline) |value| return value;
+        const diff = state orelse return false;
+        const zones = @import("components/diffEditorViewZones/diffEditorViewZones.zig");
+        self.smart_inline = for (diff.mappings) |mapping| {
+            const change = mapping.line_range_mapping;
+            if (!change.original.isEmpty() and !change.modified.isEmpty() and
+                !(options.use_true_inline_view and zones.allowsTrueInlineDiffRendering(change))) break false;
+        } else true;
+        return self.smart_inline.?;
+    }
 
     pub fn setWidth(self: *WidthBasedLayout, options: Options, width: usize, smooth_resize_start_width: ?usize, screen_reader: bool, smart_inline: bool) void {
         self.width = width;

@@ -363,6 +363,27 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(!(try widget.updateOptions(options)));
         }
 
+        test "diffEditorWidget: compact smart-mode choice survives edits to the attached diff model" {
+            const widget = try DiffEditorWidget.create(View.init, testing.allocator, testing.io, "a.txt", "b.txt", "one\ntwo", "one\ninserted\ntwo", "Original", "Modified", 80, 8, .{ .compact_mode = true });
+            defer widget.destroy();
+            try testing.expect(!widget.sideBySide());
+            try testing.expectEqual(@as(?bool, true), widget.width_based_layout.smart_inline);
+            widget.modified_editor.setReadOnly(false);
+            try widget.modified_editor.setCursorPosition(.{ .lineNumber = 1, .column = 4 });
+            try widget.modified_editor.insertText(" changed");
+            try testing.expect(widget.view_model.is_diff_up_to_date);
+            try testing.expect(!widget.state().?.mappings[0].line_range_mapping.original.isEmpty());
+            try testing.expect(!widget.state().?.mappings[0].line_range_mapping.modified.isEmpty());
+            try testing.expect(!widget.sideBySide());
+            var options = widget.options;
+            options.compact_mode = false;
+            _ = try widget.updateOptions(options);
+            try testing.expect(widget.sideBySide());
+            options.compact_mode = true;
+            _ = try widget.updateOptions(options);
+            try testing.expect(!widget.sideBySide());
+        }
+
         test "diffEditorWidget: content events recompute the real model diff" {
             const widget = try DiffEditorWidget.create(View.init, testing.allocator, testing.io, "a.txt", "b.txt", "a", "a", "Original", "Modified", 80, 8, .{});
             defer widget.destroy();
