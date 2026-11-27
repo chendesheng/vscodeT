@@ -79,9 +79,13 @@ test "file watcher service: identical requests share one watch" {
     const second = try service.watch(root, .{});
     try std.testing.expectEqual(@as(usize, 1), service.watchedCount());
 
+    const flat = try service.watch(root, .{ .recursive = false, .includes = &.{.{ .string = "*.txt" }} });
+    try std.testing.expectEqual(@as(usize, 2), service.watchedCount());
     first.dispose();
-    try std.testing.expectEqual(@as(usize, 1), service.watchedCount());
+    try std.testing.expectEqual(@as(usize, 2), service.watchedCount());
     second.dispose();
+    try std.testing.expectEqual(@as(usize, 1), service.watchedCount());
+    flat.dispose();
     try std.testing.expectEqual(@as(usize, 0), service.watchedCount());
 }
 

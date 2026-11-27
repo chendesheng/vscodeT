@@ -23,12 +23,13 @@ const WatcherError = client_mod.WatcherError;
 pub const WatchOptions = struct {
     recursive: bool = true,
     excludes: []const []const u8 = &.{},
+    includes: []const common.PatternSource = &.{},
+    correlation_id: ?u32 = null,
+    filter: ?u8 = null,
 };
 
 const Entry = struct {
-    key: []u8,
-    recursive: bool,
-    excludes: []const []const u8,
+    owned: *common.OwnedRequests,
     count: usize,
 };
 
@@ -36,9 +37,11 @@ pub const WatchHandle = struct {
     allocator: Allocator,
     service: *FileWatcherService,
     path: []u8,
+    key: []u8,
 
     pub fn dispose(self: *WatchHandle) void {
-        self.service.unwatch(self.path);
+        self.service.unwatch(self.key);
+        self.allocator.free(self.key);
         self.allocator.free(self.path);
         self.allocator.destroy(self);
     }
@@ -82,8 +85,8 @@ pub const FileWatcherService = struct {
         self.client.stop();
         var iterator = self.active.iterator();
         while (iterator.next()) |entry| {
-            freeExcludes(self.allocator, entry.value_ptr.excludes);
-            self.allocator.free(entry.value_ptr.key);
+            entry.value_ptr.owned.deinit();
+            self.allocator.free(entry.key_ptr.*);
         }
         self.active.deinit();
         self.client.deinit();
@@ -95,64 +98,46 @@ pub const FileWatcherService = struct {
     /// Upstream `FileService.watch` subset. The returned handle must be
     /// disposed by its owner; disposing a handle decrements the request count.
     pub fn watch(self: *FileWatcherService, path: []const u8, options: WatchOptions) !*WatchHandle {
-        if (self.active.getPtr(path)) |entry| {
+        const request: WatchRequest = .{
+            .path = path,
+            .recursive = options.recursive,
+            .excludes = options.excludes,
+            .includes = options.includes,
+            .correlationId = options.correlation_id,
+            .filter = options.filter,
+        };
+        // Like FileService.doWatch, deduplicate the complete request, not just
+        // its resource. Flat and recursive requests can have distinct filters.
+        const key = try std.json.Stringify.valueAlloc(self.allocator, request, .{});
+        errdefer self.allocator.free(key);
+        const handle = try self.allocator.create(WatchHandle);
+        errdefer self.allocator.destroy(handle);
+        const owned_path = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(owned_path);
+        if (self.active.getPtr(key)) |entry| {
             entry.count += 1;
         } else {
-            const key = try self.allocator.dupe(u8, path);
-            var key_owned = true;
-            errdefer if (key_owned) self.allocator.free(key);
-            const excludes = try copyExcludes(self.allocator, options.excludes);
-            var excludes_owned = true;
-            errdefer if (excludes_owned) freeExcludes(self.allocator, excludes);
-            try self.active.put(key, .{
-                .key = key,
-                .recursive = options.recursive,
-                .excludes = excludes,
-                .count = 1,
-            });
-            key_owned = false;
-            excludes_owned = false;
-            self.rebuildRequests() catch |err| {
-                if (self.active.fetchRemove(path)) |removed| {
-                    freeExcludes(self.allocator, removed.value.excludes);
-                    self.allocator.free(removed.value.key);
-                }
-                return err;
-            };
+            const entry_key = try self.allocator.dupe(u8, key);
+            errdefer self.allocator.free(entry_key);
+            const owned = try common.copyRequests(self.allocator, &.{request});
+            errdefer owned.deinit();
+            try self.active.put(entry_key, .{ .owned = owned, .count = 1 });
+            errdefer _ = self.active.remove(entry_key);
+            try self.rebuildRequests();
         }
-
-        const handle = self.allocator.create(WatchHandle) catch |err| {
-            if (self.active.getPtr(path)) |entry| {
-                if (entry.count == 1) {
-                    const removed = self.active.fetchRemove(path) orelse return err;
-                    freeExcludes(self.allocator, removed.value.excludes);
-                    self.allocator.free(removed.value.key);
-                    self.rebuildRequests() catch {};
-                } else {
-                    entry.count -= 1;
-                }
-            }
-            return err;
-        };
-        errdefer self.allocator.destroy(handle);
-        errdefer self.unwatch(path);
-        handle.* = .{
-            .allocator = self.allocator,
-            .service = self,
-            .path = try self.allocator.dupe(u8, path),
-        };
+        handle.* = .{ .allocator = self.allocator, .service = self, .path = owned_path, .key = key };
         return handle;
     }
 
-    fn unwatch(self: *FileWatcherService, path: []const u8) void {
-        const entry = self.active.getPtr(path) orelse return;
+    fn unwatch(self: *FileWatcherService, key: []const u8) void {
+        const entry = self.active.getPtr(key) orelse return;
         if (entry.count > 1) {
             entry.count -= 1;
             return;
         }
-        const removed = self.active.fetchRemove(path) orelse return;
-        freeExcludes(self.allocator, removed.value.excludes);
-        self.allocator.free(removed.value.key);
+        const removed = self.active.fetchRemove(key) orelse return;
+        removed.value.owned.deinit();
+        self.allocator.free(removed.key);
         self.rebuildRequests() catch |err| {
             std.log.scoped(.file_watcher).err("failed to update watch requests: {s}", .{@errorName(err)});
         };
@@ -162,13 +147,7 @@ pub const FileWatcherService = struct {
         var requests = std.array_list.Managed(WatchRequest).init(self.allocator);
         defer requests.deinit();
         var iterator = self.active.valueIterator();
-        while (iterator.next()) |entry| {
-            try requests.append(.{
-                .path = entry.key,
-                .recursive = entry.recursive,
-                .excludes = entry.excludes,
-            });
-        }
+        while (iterator.next()) |entry| try requests.append(entry.owned.requests[0]);
         try self.client.watch(requests.items);
     }
 
@@ -197,10 +176,10 @@ pub const FileWatcherService = struct {
     /// Test/diagnostic accessor; the returned slice stays valid until the next
     /// watch/unwatch call.
     pub fn watchedPathAt(self: *const FileWatcherService, index: usize) ?[]const u8 {
-        var iterator = self.active.keyIterator();
+        var iterator = self.active.valueIterator();
         var current: usize = 0;
-        while (iterator.next()) |key| {
-            if (current == index) return key.*;
+        while (iterator.next()) |entry| {
+            if (current == index) return entry.owned.requests[0].path;
             current += 1;
         }
         return null;
@@ -210,7 +189,7 @@ pub const FileWatcherService = struct {
         var iterator = self.active.valueIterator();
         var current: usize = 0;
         while (iterator.next()) |entry| {
-            if (current == index) return entry.excludes;
+            if (current == index) return entry.owned.requests[0].excludes;
             current += 1;
         }
         return null;
@@ -233,23 +212,3 @@ pub const FileWatcherService = struct {
         }
     }
 };
-
-fn copyExcludes(allocator: Allocator, excludes: []const []const u8) ![]const []const u8 {
-    if (excludes.len == 0) return &.{};
-    const copy = try allocator.alloc([]const u8, excludes.len);
-    var copied: usize = 0;
-    while (copied < excludes.len) : (copied += 1) {
-        copy[copied] = allocator.dupe(u8, excludes[copied]) catch |err| {
-            for (copy[0..copied]) |value| allocator.free(value);
-            allocator.free(copy);
-            return err;
-        };
-    }
-    return copy;
-}
-
-fn freeExcludes(allocator: Allocator, excludes: []const []const u8) void {
-    if (excludes.len == 0) return;
-    for (excludes) |value| allocator.free(value);
-    allocator.free(excludes);
-}
