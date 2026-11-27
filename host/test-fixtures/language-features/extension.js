@@ -216,6 +216,27 @@ function activate(context) {
       ];
     }
   }));
+  const inlayChanges = new vscode.EventEmitter();
+  context.subscriptions.push(inlayChanges,
+    vscode.commands.registerCommand('fixture.changeInlayHints', () => inlayChanges.fire()),
+    vscode.languages.registerInlayHintsProvider({ language: 'json' }, {
+      onDidChangeInlayHints: inlayChanges.event,
+      provideInlayHints(document) {
+        const part = new vscode.InlayHintLabelPart('fixtureHint');
+        part.tooltip = 'Part tooltip';
+        part.location = new vscode.Location(document.uri, new vscode.Range(1, 0, 1, 1));
+        part.command = { title: 'Fixture Command', command: 'fixture.changeInlayHints' };
+        const hint = new vscode.InlayHint(new vscode.Position(1, 2), [part], vscode.InlayHintKind.Type);
+        hint.paddingLeft = true;
+        hint.paddingRight = true;
+        return [hint];
+      },
+      resolveInlayHint(hint) {
+        hint.tooltip = 'Resolved inlay tooltip';
+        hint.textEdits = [vscode.TextEdit.insert(hint.position, 'resolved')];
+        return hint;
+      }
+    }));
   const semanticLegend = new vscode.SemanticTokensLegend(['variable'], ['declaration']);
   const semanticChanges = new vscode.EventEmitter();
   context.subscriptions.push(semanticChanges,

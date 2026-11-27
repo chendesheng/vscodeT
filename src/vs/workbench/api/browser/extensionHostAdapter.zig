@@ -2801,6 +2801,62 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             }
             try std.testing.expect(semantic_probe.changed);
 
+            const inlay_languages = @import("../../../editor/common/languages.zig");
+            const InlayProbe = struct {
+                list: ?inlay_languages.InlayHintList = null,
+                resolved: ?inlay_languages.InlayHint = null,
+                failure: ?anyerror = null,
+                changed: bool = false,
+                fn ready(context: *anyopaque, value: anyerror!?inlay_languages.InlayHintList) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    if (value) |list| self.list = list else |err| self.failure = err;
+                }
+                fn resolve(context: *anyopaque, value: anyerror!?inlay_languages.InlayHint) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    if (value) |hint| self.resolved = hint else |err| self.failure = err;
+                }
+                fn change(_: void, self: *@This()) !void {
+                    self.changed = true;
+                }
+            };
+            var inlay_probe: InlayProbe = .{};
+            var inlay_arena = std.heap.ArenaAllocator.init(allocator);
+            defer inlay_arena.deinit();
+            const inlay_a = inlay_arena.allocator();
+            const inlay_providers = try features.inlay_hints_provider.ordered(inlay_a, model, false);
+            try std.testing.expectEqual(@as(usize, 1), inlay_providers.len);
+            const inlay_provider = inlay_providers[0];
+            const inlay_listener = try inlay_provider.on_did_change.?.listen(&inlay_probe, InlayProbe.change);
+            defer inlay_provider.on_did_change.?.unlisten(inlay_listener);
+            _ = try inlay_provider.request_inlay_hints(inlay_provider.context, inlay_a, model, model.getFullModelRange(), .{ .context = &inlay_probe, .complete = InlayProbe.ready });
+            const inlay_deadline = time_compat.milliTimestamp() + 5000;
+            while (inlay_probe.list == null and inlay_probe.failure == null and time_compat.milliTimestamp() < inlay_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            var inlay_list = inlay_probe.list orelse return error.InlayHintsUnavailable;
+            defer inlay_list.dispose();
+            try std.testing.expectEqual(@as(usize, 1), inlay_list.hints.len);
+            const inlay_hint = inlay_list.hints[0];
+            try std.testing.expectEqualStrings("fixtureHint", inlay_hint.label[0].label);
+            try std.testing.expect(inlay_hint.padding_left and inlay_hint.padding_right and inlay_hint.label[0].location != null and inlay_hint.label[0].command != null);
+            _ = try inlay_provider.resolve_inlay_hint.?(inlay_provider.context, inlay_a, model, inlay_hint, .{ .context = &inlay_probe, .complete = InlayProbe.resolve });
+            const inlay_resolve_deadline = time_compat.milliTimestamp() + 5000;
+            while (inlay_probe.resolved == null and inlay_probe.failure == null and time_compat.milliTimestamp() < inlay_resolve_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            const resolved_hint = inlay_probe.resolved orelse return error.InlayResolveUnavailable;
+            try std.testing.expectEqualStrings("Resolved inlay tooltip", resolved_hint.tooltip.?);
+            try std.testing.expectEqualStrings("resolved", resolved_hint.text_edits[0].text);
+            try extension_host.host.executeContributedCommand("fixture.changeInlayHints", &.{});
+            const inlay_event_deadline = time_compat.milliTimestamp() + 5000;
+            while (!inlay_probe.changed and time_compat.milliTimestamp() < inlay_event_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(inlay_probe.changed);
+
             const action_model = @import("../../../editor/contrib/codeAction/browser/codeAction.zig");
             const action_types = @import("../../../editor/contrib/codeAction/common/types.zig");
             const ActionReceiver = struct {

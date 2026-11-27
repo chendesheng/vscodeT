@@ -477,6 +477,42 @@ pub const MultiDocumentHighlightProvider = struct {
     provide_multi_document_highlights: *const fn (*anyopaque, Allocator, *TextModel, Position, []const *TextModel, CancellationToken) anyerror!?[]const MultiDocumentHighlight,
 };
 
+pub const InlayHintKind = enum(u8) { Type = 1, Parameter = 2 };
+pub const InlayHintLabelPart = struct {
+    label: []const u8,
+    tooltip: ?[]const u8 = null,
+    // A cross-resource location retains its one-based UTF-16 range until opened.
+    location: ?Location = null,
+    command: ?Command = null,
+};
+pub const InlayHint = struct {
+    position: Position,
+    label: []const InlayHintLabelPart,
+    kind: ?InlayHintKind = null,
+    tooltip: ?[]const u8 = null,
+    padding_left: bool = false,
+    padding_right: bool = false,
+    text_edits: []const TextEdit = &.{},
+    cache_id: ?[2]u32 = null,
+};
+pub const InlayHintList = struct {
+    hints: []const InlayHint = &.{},
+    release: @import("../../base/common/lifecycle.zig").IDisposable = .none,
+    pub fn dispose(self: *InlayHintList) void {
+        self.release.dispose();
+        self.release = .none;
+    }
+};
+pub const InlayHintsCallback = struct { context: *anyopaque, complete: *const fn (*anyopaque, anyerror!?InlayHintList) void };
+pub const ResolveInlayHintCallback = struct { context: *anyopaque, complete: *const fn (*anyopaque, anyerror!?InlayHint) void };
+pub const InlayHintsProvider = struct {
+    context: *anyopaque,
+    display_name: []const u8 = "",
+    on_did_change: ?*@import("../../base/common/event.zig").Emitter(void) = null,
+    request_inlay_hints: *const fn (*anyopaque, Allocator, *TextModel, Range, InlayHintsCallback) anyerror!@import("../../base/common/lifecycle.zig").IDisposable,
+    resolve_inlay_hint: ?*const fn (*anyopaque, Allocator, *TextModel, InlayHint, ResolveInlayHintCallback) anyerror!@import("../../base/common/lifecycle.zig").IDisposable = null,
+};
+
 pub const SemanticTokensLegend = struct {
     token_types: []const []const u8,
     token_modifiers: []const []const u8,

@@ -14,6 +14,7 @@ const features = @import("languageFeatures.zig");
 
 pub const LanguageFeaturesService = struct {
     allocator: Allocator,
+    inlay_hints_provider: registry.LanguageFeatureRegistry(languages.InlayHintsProvider),
     document_semantic_tokens_provider: registry.LanguageFeatureRegistry(languages.DocumentSemanticTokensProvider),
     document_range_semantic_tokens_provider: registry.LanguageFeatureRegistry(languages.DocumentRangeSemanticTokensProvider),
     rename_provider: registry.LanguageFeatureRegistry(languages.RenameProvider),
@@ -39,6 +40,7 @@ pub const LanguageFeaturesService = struct {
     pub fn init(allocator: Allocator) LanguageFeaturesService {
         return .{
             .allocator = allocator,
+            .inlay_hints_provider = .init(allocator),
             .document_semantic_tokens_provider = .init(allocator),
             .document_range_semantic_tokens_provider = .init(allocator),
             .rename_provider = .init(allocator),
@@ -64,6 +66,7 @@ pub const LanguageFeaturesService = struct {
     }
 
     pub fn deinit(self: *LanguageFeaturesService) void {
+        self.inlay_hints_provider.deinit();
         self.document_semantic_tokens_provider.deinit();
         self.document_range_semantic_tokens_provider.deinit();
         self.rename_provider.deinit();
@@ -89,6 +92,7 @@ pub const LanguageFeaturesService = struct {
 
     pub fn interface(self: *LanguageFeaturesService) features.ILanguageFeaturesService {
         return .{
+            .inlay_hints_provider = &self.inlay_hints_provider,
             .document_semantic_tokens_provider = &self.document_semantic_tokens_provider,
             .document_range_semantic_tokens_provider = &self.document_range_semantic_tokens_provider,
             .rename_provider = &self.rename_provider,

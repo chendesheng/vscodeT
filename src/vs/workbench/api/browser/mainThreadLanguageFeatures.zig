@@ -3,7 +3,7 @@
 //
 // Ported features: hover, completion, definition, declaration,
 // implementation, type definition, references, document/workspace symbols, single- and
-// multi-document highlights, folding/selection ranges, signature help, rename, semantic tokens, CodeLens, code actions
+// multi-document highlights, folding/selection ranges, signature help, rename, semantic tokens, inlay hints, CodeLens, code actions
 // and document/range/on-type formatting. The actor stores providers by handle
 // in `LanguageFeaturesService`, converts the extension-host DTOs into editor
 // types and forwards provider calls back to `ExtHostLanguageFeatures`.
@@ -69,6 +69,7 @@ const Registration = struct {
     workspace_symbol_state: ?*WorkspaceSymbolState = null,
     folding_state: ?*FoldingState = null,
     semantic_state: ?*SemanticState = null,
+    inlay_state: ?*InlayState = null,
 };
 
 const HoverState = struct {
@@ -590,6 +591,7 @@ pub const MainThreadLanguageFeatures = struct {
     code_lens_events: std.AutoHashMap(u32, *CodeLensState),
     folding_events: std.AutoHashMap(u32, *FoldingState),
     semantic_events: std.AutoHashMap(u32, *SemanticState),
+    inlay_events: std.AutoHashMap(u32, *InlayState),
     code_lens_commands: std.ArrayList(*CodeLensCommandRequest) = .empty,
     model_position_commands: std.ArrayList(*ModelPositionCommandRequest) = .empty,
     code_action_commands: std.ArrayList(*CodeActionCommandRequest) = .empty,
@@ -605,6 +607,7 @@ pub const MainThreadLanguageFeatures = struct {
             .code_lens_events = std.AutoHashMap(u32, *CodeLensState).init(allocator),
             .folding_events = .init(allocator),
             .semantic_events = .init(allocator),
+            .inlay_events = .init(allocator),
         };
     }
 
@@ -621,6 +624,7 @@ pub const MainThreadLanguageFeatures = struct {
         self.code_lens_events.deinit();
         self.folding_events.deinit();
         self.semantic_events.deinit();
+        self.inlay_events.deinit();
         self.inline_providers.deinit();
     }
 
@@ -682,6 +686,10 @@ pub const MainThreadLanguageFeatures = struct {
         }
         if (registration.disposable) |disposable| disposable.dispose();
         if (registration.workspace_symbol_state) |state| state.releaseLastResult();
+        if (registration.inlay_state) |state| {
+            if (state.event_handle) |handle| _ = self.inlay_events.remove(handle);
+            state.changed.deinit();
+        }
         if (registration.semantic_state) |state| {
             if (state.event_handle) |handle| _ = self.semantic_events.remove(handle);
             state.changed.deinit();
@@ -731,6 +739,7 @@ pub const MainThreadLanguageFeatures = struct {
             if (self.code_lens_events.fetchRemove(handle)) |entry| entry.value.event_handle = null;
             if (self.folding_events.fetchRemove(handle)) |entry| entry.value.event_handle = null;
             if (self.semantic_events.fetchRemove(handle)) |entry| entry.value.event_handle = null;
+            if (self.inlay_events.fetchRemove(handle)) |entry| entry.value.event_handle = null;
             return .empty;
         }
         if (std.mem.eql(u8, method, "$registerInlineCompletionsSupport")) {
@@ -747,6 +756,12 @@ pub const MainThreadLanguageFeatures = struct {
         if (std.mem.eql(u8, method, "$registerImplementationSupport")) return self.registerLocationProvider(args, arena, .implementation);
         if (std.mem.eql(u8, method, "$registerTypeDefinitionSupport")) return self.registerLocationProvider(args, arena, .type_definition);
         if (std.mem.eql(u8, method, "$registerReferenceSupport")) return self.registerReference(args, arena);
+        if (std.mem.eql(u8, method, "$registerInlayHintsProvider")) return self.registerInlayHints(args, arena);
+        if (std.mem.eql(u8, method, "$emitInlayHintsEvent")) {
+            const handle = handleArg(args) orelse return error.InvalidArguments;
+            if (self.inlay_events.get(handle)) |state| try state.changed.fire({});
+            return .empty;
+        }
         if (std.mem.eql(u8, method, "$registerDocumentSemanticTokensProvider")) return self.registerSemanticTokens(args, arena, false);
         if (std.mem.eql(u8, method, "$registerDocumentRangeSemanticTokensProvider")) return self.registerSemanticTokens(args, arena, true);
         if (std.mem.eql(u8, method, "$emitDocumentSemanticTokensEvent") or std.mem.eql(u8, method, "$emitDocumentRangeSemanticTokensEvent")) {
@@ -869,6 +884,33 @@ pub const MainThreadLanguageFeatures = struct {
             .context = state,
             .requires_window_fiber = self.proxy.request_async != null,
             .provide_references = provideReferences,
+        });
+        return .empty;
+    }
+
+    fn registerInlayHints(self: *MainThreadLanguageFeatures, args: []const rpc.Arg, arena: Allocator) !rpc.HandlerReply {
+        const handle = handleArg(args) orelse return error.InvalidArguments;
+        const selector_value = jsonArg(args, 1) orelse return error.InvalidArguments;
+        const registration = try self.createRegistration(arena, handle);
+        errdefer {
+            _ = self.registrations.remove(handle);
+            self.destroyRegistration(registration);
+        }
+        const a = registration.arena.allocator();
+        const state = try a.create(InlayState);
+        state.* = .{ .registration = registration, .changed = .init(self.allocator) };
+        registration.inlay_state = state;
+        if (jsonArg(args, 3)) |event| if (event == .integer) {
+            state.event_handle = std.math.cast(u32, event.integer);
+        };
+        if (state.event_handle) |event| try self.inlay_events.put(event, state);
+        const selector = try parseSelector(a, selector_value);
+        registration.disposable = try self.features.inlay_hints_provider.register(selector, .{
+            .context = state,
+            .display_name = try dupJsonString(a, jsonArg(args, 4)),
+            .on_did_change = if (state.event_handle != null) &state.changed else null,
+            .request_inlay_hints = InlayState.request,
+            .resolve_inlay_hint = if (boolArg(args, 2)) InlayState.resolve else null,
         });
         return .empty;
     }
@@ -2536,6 +2578,149 @@ fn signatureCharacters(a: Allocator, value: ?std.json.Value) ![]const []const u8
     };
     return chars.items;
 }
+
+const InlayState = struct {
+    registration: *Registration,
+    changed: @import("../../../base/common/event.zig").Emitter(void),
+    event_handle: ?u32 = null,
+    const Release = struct {
+        proxy: HostProxy,
+        handle: u32,
+        id: i64,
+        fn dispose(context: *anyopaque) void {
+            const self: *Release = @ptrCast(@alignCast(context));
+            self.proxy.notify(self.proxy.context, "$releaseInlayHints", &.{ .{ .json = .{ .integer = self.handle } }, .{ .json = .{ .integer = self.id } } }) catch {};
+        }
+    };
+    fn parsePart(a: Allocator, value: std.json.Value) !?languages.InlayHintLabelPart {
+        if (value == .string) return .{ .label = try a.dupe(u8, value.string) };
+        if (value != .object) return null;
+        const label = try optionalJsonString(a, value.object.get("label")) orelse return null;
+        var part: languages.InlayHintLabelPart = .{ .label = label, .tooltip = try SignatureHelpState.documentation(a, value.object.get("tooltip")), .command = try MainThreadLanguageFeatures.parseActionCommand(a, value.object.get("command")) };
+        if (value.object.get("location")) |location| if (location == .object) {
+            const resource = location.object.get("uri") orelse return part;
+            const range = location.object.get("range") orelse return part;
+            if (range == .object) part.location = .{
+                .uri = try std_uri.encodedResourceFromJson(a, resource),
+                .range = .init(intField(range.object, "startLineNumber") orelse return part, intField(range.object, "startColumn") orelse return part, intField(range.object, "endLineNumber") orelse return part, intField(range.object, "endColumn") orelse return part),
+            };
+        };
+        return part;
+    }
+    fn parseHint(a: Allocator, model: *TextModel, value: std.json.Value) !?languages.InlayHint {
+        if (value != .object) return null;
+        const pos = value.object.get("position") orelse return null;
+        if (pos != .object) return null;
+        const line = intField(pos.object, "lineNumber") orelse return null;
+        if (line == 0 or line > model.getLineCount()) return null;
+        const column = intField(pos.object, "column") orelse return null;
+        const label = value.object.get("label") orelse return null;
+        var parts: std.ArrayList(languages.InlayHintLabelPart) = .empty;
+        if (label == .array) {
+            for (label.array.items) |item| if (try parsePart(a, item)) |part| try parts.append(a, part);
+        } else if (try parsePart(a, label)) |part| try parts.append(a, part);
+        if (parts.items.len == 0) return null;
+        var edits: std.ArrayList(languages.TextEdit) = .empty;
+        if (value.object.get("textEdits")) |text_edits| if (text_edits == .array) {
+            for (text_edits.array.items) |item| {
+                if (item != .object) continue;
+                const range = rangeFromJson(model, item.object.get("range") orelse continue) orelse continue;
+                try edits.append(a, .{ .range = range, .text = try dupJsonString(a, item.object.get("text")) });
+            }
+        };
+        var hint: languages.InlayHint = .{
+            .position = Position.init(line, columnForModel(model, line, column)),
+            .label = parts.items,
+            .kind = if (intField(value.object, "kind")) |kind| switch (kind) {
+                1 => .Type,
+                2 => .Parameter,
+                else => null,
+            } else null,
+            .tooltip = try SignatureHelpState.documentation(a, value.object.get("tooltip")),
+            .padding_left = if (value.object.get("paddingLeft")) |p| p == .bool and p.bool else false,
+            .padding_right = if (value.object.get("paddingRight")) |p| p == .bool and p.bool else false,
+            .text_edits = edits.items,
+        };
+        if (value.object.get("cacheId")) |cache| if (cache == .array and cache.array.items.len == 2) {
+            const ids = cache.array.items;
+            if (ids[0] == .integer and ids[1] == .integer) hint.cache_id = .{ std.math.cast(u32, ids[0].integer) orelse return hint, std.math.cast(u32, ids[1].integer) orelse return hint };
+        };
+        return hint;
+    }
+    fn parseList(a: Allocator, model: *TextModel, proxy: HostProxy, handle: u32, value: std.json.Value) !?languages.InlayHintList {
+        if (value != .object) return null;
+        var release: IDisposable = .none;
+        if (value.object.get("cacheId")) |id| if (id == .integer) {
+            const owned = try a.create(Release);
+            owned.* = .{ .proxy = proxy, .handle = handle, .id = id.integer };
+            release = .{ .context = owned, .disposeFn = Release.dispose };
+        };
+        errdefer release.dispose();
+        const hints = value.object.get("hints") orelse return error.InvalidResult;
+        if (hints != .array) return error.InvalidResult;
+        var result: std.ArrayList(languages.InlayHint) = .empty;
+        for (hints.array.items) |item| if (try parseHint(a, model, item)) |hint| try result.append(a, hint);
+        return .{ .hints = result.items, .release = release };
+    }
+    const ListPending = struct {
+        allocator: Allocator,
+        model: *TextModel,
+        proxy: HostProxy,
+        handle: u32,
+        callback: languages.InlayHintsCallback,
+        fn ready(context: *anyopaque, reply: rpc.Reply) void {
+            const self: *ListPending = @ptrCast(@alignCast(context));
+            self.callback.complete(self.callback.context, switch (reply) {
+                .json => |value| parseList(self.allocator, self.model, self.proxy, self.handle, value),
+                .err => error.RequestFailed,
+                else => @as(?languages.InlayHintList, null),
+            });
+        }
+    };
+    const ResolvePending = struct {
+        allocator: Allocator,
+        model: *TextModel,
+        hint: languages.InlayHint,
+        callback: languages.ResolveInlayHintCallback,
+        fn ready(context: *anyopaque, reply: rpc.Reply) void {
+            const self: *ResolvePending = @ptrCast(@alignCast(context));
+            if (reply == .err) return self.callback.complete(self.callback.context, error.RequestFailed);
+            var hint = self.hint;
+            if (reply == .json) {
+                const resolved = parseHint(self.allocator, self.model, reply.json) catch |err| return self.callback.complete(self.callback.context, err);
+                if (resolved) |value| {
+                    hint.label = value.label;
+                    hint.tooltip = value.tooltip orelse hint.tooltip;
+                    if (value.text_edits.len > 0) hint.text_edits = value.text_edits;
+                }
+            }
+            self.callback.complete(self.callback.context, hint);
+        }
+    };
+    fn request(context: *anyopaque, a: Allocator, model: *TextModel, range: Range, callback: languages.InlayHintsCallback) !IDisposable {
+        const self: *InlayState = @ptrCast(@alignCast(context));
+        const proxy = self.registration.owner.proxy;
+        const send = proxy.request_async orelse return error.RequestFailed;
+        const pending = try a.create(ListPending);
+        pending.* = .{ .allocator = a, .model = model, .proxy = proxy, .handle = self.registration.handle, .callback = callback };
+        return send(proxy.context, "$provideInlayHints", &.{ .{ .json = .{ .integer = self.registration.handle } }, .{ .json = try std_uri.jsonComponents(a, model.uri()) }, .{ .json = try rangeJson(a, model, range) } }, .{ .context = pending, .callback = ListPending.ready });
+    }
+    fn resolve(context: *anyopaque, a: Allocator, model: *TextModel, hint: languages.InlayHint, callback: languages.ResolveInlayHintCallback) !IDisposable {
+        const self: *InlayState = @ptrCast(@alignCast(context));
+        const cache = hint.cache_id orelse {
+            callback.complete(callback.context, hint);
+            return .none;
+        };
+        const proxy = self.registration.owner.proxy;
+        const send = proxy.request_async orelse return error.RequestFailed;
+        const pending = try a.create(ResolvePending);
+        pending.* = .{ .allocator = a, .model = model, .hint = hint, .callback = callback };
+        var id = std.json.Array.init(a);
+        try id.append(.{ .integer = cache[0] });
+        try id.append(.{ .integer = cache[1] });
+        return send(proxy.context, "$resolveInlayHint", &.{ .{ .json = .{ .integer = self.registration.handle } }, .{ .json = .{ .array = id } } }, .{ .context = pending, .callback = ResolvePending.ready });
+    }
+};
 
 const SemanticState = struct {
     registration: *Registration,
