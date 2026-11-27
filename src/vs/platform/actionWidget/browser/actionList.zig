@@ -14,4 +14,5 @@ pub const IActionListDelegate = struct {
     context: *anyopaque,
     on_select: *const fn (*anyopaque, usize, bool) anyerror!void,
     on_hide: *const fn (*anyopaque, bool) void,
+    on_focus: ?*const fn (*anyopaque, ?usize) void = null,
 };

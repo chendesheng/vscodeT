@@ -10,6 +10,7 @@ pub const IContextMenuService = struct {
     context: *anyopaque,
     show: *const fn (*anyopaque, *Menu, Anchor) anyerror!void,
     hide: *const fn (*anyopaque) void,
+    handle_key: *const fn (*anyopaque, *const ui.KeyEvent) bool,
     on_did_show_context_menu: *Emitter(void),
     on_did_hide_context_menu: *Emitter(void),
 
@@ -19,6 +20,10 @@ pub const IContextMenuService = struct {
 
     pub fn hideContextMenu(self: IContextMenuService) void {
         self.hide(self.context);
+    }
+
+    pub fn handleKey(self: IContextMenuService, event: *const ui.KeyEvent) bool {
+        return self.handle_key(self.context, event);
     }
 };
 
@@ -41,6 +46,7 @@ pub const ContextMenuService = struct {
             .context = self,
             .show = showContextMenuContext,
             .hide = hideContextMenuContext,
+            .handle_key = handleKeyContext,
             .on_did_show_context_menu = &self.on_did_show_context_menu,
             .on_did_hide_context_menu = &self.on_did_hide_context_menu,
         };
@@ -54,6 +60,11 @@ pub const ContextMenuService = struct {
     fn hideContextMenuContext(context: *anyopaque) void {
         const self: *ContextMenuService = @ptrCast(@alignCast(context));
         self.hideContextMenu();
+    }
+
+    fn handleKeyContext(context: *anyopaque, event: *const ui.KeyEvent) bool {
+        const self: *ContextMenuService = @ptrCast(@alignCast(context));
+        return self.handleKey(event);
     }
 
     pub fn deinit(self: *ContextMenuService) void {
@@ -79,6 +90,8 @@ pub const ContextMenuService = struct {
             return;
         }
         self.current = menu;
+        menu.notifyFocus();
+        if (self.current != menu) return;
         self.on_did_show_context_menu.fire({}) catch |err| self.errors.report(self.errors.context, err);
     }
 
@@ -97,7 +110,9 @@ pub const ContextMenuService = struct {
 
     pub fn handleKey(self: *ContextMenuService, event: *const ui.KeyEvent) bool {
         const menu = self.current orelse return false;
-        if (menu.popup.?.handleKey(event) == .closed) self.finish(true);
+        const mapped = if (menu.map_key) |map_key| map_key(menu.context, event.*) else event.*;
+        menu.preview_activation = mapped.key == .enter and mapped.mods.ctrl;
+        if (menu.popup.?.handleKey(&mapped) == .closed) self.finish(true) else menu.notifyFocus();
         return true;
     }
 
@@ -109,7 +124,8 @@ pub const ContextMenuService = struct {
             return true;
         }
         pointer.* = menu.popup.?.pointerAt(event.x, event.y);
-        if (menu.popup.?.handleMouse(event) == .closed) self.finish(true);
+        menu.preview_activation = false;
+        if (menu.popup.?.handleMouse(event) == .closed) self.finish(true) else menu.notifyFocus();
         return true;
     }
 };

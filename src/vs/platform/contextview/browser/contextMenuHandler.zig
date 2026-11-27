@@ -27,6 +27,10 @@ pub const Menu = struct {
     run: *const fn (*anyopaque, []const u8) anyerror!void,
     selected: ?*Entry = null,
     on_hide: ?*const fn (*anyopaque) void = null,
+    on_focus: ?*const fn (*anyopaque, ?[]const u8) void = null,
+    focused_entry: ?*Entry = null,
+    preview_activation: bool = false,
+    map_key: ?*const fn (*anyopaque, ui.KeyEvent) ui.KeyEvent = null,
 
     const Entry = struct {
         owner: *Menu,
@@ -163,6 +167,22 @@ pub const Menu = struct {
         const radio = if (registered) |item| if (item.item.toggled) |expr| expr.* == .Equals else false else false;
         const shortcut = if (registered) |item| item.keybindingLabel() else null;
         return self.clickable(.{ .registered = action }, .{ .label = try self.nativeLabel(action.label()), .enabled = action.enabled(), .type = if (radio) .radio else if (checked != null) .checkbox else .normal, .checked = checked orelse false, .accelerator = shortcut orelse "" });
+    }
+
+    pub fn notifyFocus(self: *Menu) void {
+        const on_focus = self.on_focus orelse return;
+        const entry: ?*Entry = blk: {
+            const item = self.popup.?.focusedItem() orelse break :blk null;
+            const handler = item.click orelse break :blk null;
+            if (handler.callback != Entry.click) break :blk null;
+            break :blk @ptrCast(@alignCast(handler.context.?));
+        };
+        if (entry == self.focused_entry) return;
+        self.focused_entry = entry;
+        on_focus(self.context, if (entry) |value| switch (value.action) {
+            .command => |id| id,
+            .registered => |action| action.id(),
+        } else null);
     }
 
     pub fn runSelected(self: *Menu) !void {
