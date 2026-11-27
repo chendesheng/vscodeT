@@ -3054,6 +3054,27 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             var undone = try model.getLineContent(1);
             defer undone.deinit();
             try std.testing.expectEqualStrings(before_inline.items, undone.items);
+
+            // Range-only providers paint visible lines without marking the
+            // document as completely colored. Exercise this independently of
+            // the full/delta provider and through actual theme metadata.
+            try tmp.dir.writeFile(io, .{ .sub_path = "semantic-test-theme.json", .data = "{\"semanticHighlighting\":true,\"semanticTokenColors\":{\"*\":{\"foreground\":\"#12ab34\",\"bold\":true}}}" });
+            try tmp.dir.writeFile(io, .{ .sub_path = "semantic-test-settings.json", .data = "{\"workbench.colorTheme\":\"Range Semantic Fixture\",\"editor.semanticHighlighting.enabled\":true}" });
+            const theme_root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+            defer allocator.free(theme_root);
+            const semantic_settings = try std.fs.path.join(allocator, &.{ theme_root, "semantic-test-settings.json" });
+            defer allocator.free(semantic_settings);
+            try workbench.registerThemeSources(&.{.{ .root = theme_root, .id = "Range Semantic Fixture", .settings_id = "Range Semantic Fixture", .label = "Range Semantic Fixture", .ui_theme = "vs-dark", .path = "semantic-test-theme.json" }});
+            try workbench.setUserSettingsPaths(&.{semantic_settings});
+            workbench.applyThemeSettings();
+            model.setLanguage("plaintext");
+            const viewport_deadline = time_compat.milliTimestamp() + 5000;
+            while (!model.hasSomeSemanticTokens() and time_compat.milliTimestamp() < viewport_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(model.hasSomeSemanticTokens());
+            try std.testing.expect(!model.hasCompleteSemanticTokens());
         }
 
         test "Extensions: relative paths mirror the model URI language features use" {
@@ -3866,9 +3887,12 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                 .@"zig.zls.path" = zls_path,
                 .@"zig.zls.enabled" = "on",
                 .@"zig.zls.trace.server" = "verbose",
+                .@"editor.semanticHighlighting.enabled" = true,
+                .@"workbench.colorTheme" = "LSP Semantic Fixture",
             }, .{});
             defer allocator.free(settings);
             try directory.writeFile(io, .{ .sub_path = "settings.json", .data = settings });
+            try directory.writeFile(io, .{ .sub_path = "theme.json", .data = "{\"semanticHighlighting\":true,\"colors\":{\"editor.background\":\"#1e1e1e\",\"editor.foreground\":\"#cccccc\"},\"semanticTokenColors\":{\"*\":{\"foreground\":\"#12ab34\",\"bold\":true}}}" });
             const settings_path = try std.fs.path.join(allocator, &.{ root, "settings.json" });
             defer allocator.free(settings_path);
             try directory.writeFile(io, .{ .sub_path = "sample.zig", .data = "/// Returns the answer.\npub fn answer() u32 { return 42; }\npub fn example() u32 { return answer(); }\npub fn multiline() void {\n    const x = 1;\n    _ = x;\n}\npub fn add(value: u32, other: u32) u32 { return value + other; }\npub fn callAdd() u32 { return add(1, 2); }\n" });
@@ -3887,6 +3911,8 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                 try workbench.openPath(document_path);
             }
             try workbench.enableLanguageFeatures();
+            try workbench.registerThemeSources(&.{.{ .root = root, .id = "LSP Semantic Fixture", .settings_id = "LSP Semantic Fixture", .label = "LSP Semantic Fixture", .ui_theme = "vs-dark", .path = "theme.json" }});
+            workbench.applyThemeSettings();
             const extension_host = try Extensions.init(allocator, io, workbench.extensionHostServices(), &.{.{ .path = extension_path }}, if (workspace_activation) ".cache-ext/data-zig-workspace-test" else ".cache-ext/data-zig-test", "host/dist");
             defer extension_host.deinit();
             try std.testing.expectEqualStrings("ziglang.vscode-zig", extension_host.descriptions[0].identifier);
@@ -4004,6 +4030,24 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                         try std.testing.expect(std.mem.indexOf(u8, signature_help.signatures[0].label, "value") != null);
                         try std.testing.expect(selection_editor.parameter_hints_visible);
                         try workbench.commands.execute("closeParameterHints");
+                        const semantic_deadline = time_compat.milliTimestamp() + 5000;
+                        while (!model.hasCompleteSemanticTokens() and time_compat.milliTimestamp() < semantic_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                            time_compat.sleepMillis(10);
+                        }
+                        try std.testing.expect(model.hasCompleteSemanticTokens());
+                        try std.testing.expect(model.hasSomeSemanticTokens());
+                        var semantic_line = try model.tokenization().getLineTokens(8);
+                        defer semantic_line.deinit();
+                        const registry = @import("../../../editor/common/tokenizationRegistry.zig").TokenizationRegistry;
+                        var color_found = false;
+                        for (0..semantic_line.getCount()) |i| {
+                            const metadata = semantic_line.getMetadata(i);
+                            if (registry.instance.getColorForToken(metadata.foreground)) |color| {
+                                if (metadata.fontStyle.bold and color.r == 0x12 and color.g == 0xab and color.b == 0x34) color_found = true;
+                            }
+                        }
+                        try std.testing.expect(color_found);
                         const RenameController = @import("../../../editor/contrib/rename/browser/rename.zig").RenameController;
                         try selection_editor.setCursorPosition(Position.init(8, 9));
                         try workbench.commands.execute("editor.action.rename");

@@ -470,6 +470,7 @@ pub const TerminalWorkbench = struct {
     declarative: ?*const extensions_registry.Registry = null,
     json_client: ?*json_language.Client = null,
     language_features: ?*LanguageFeaturesService = null,
+    document_semantic_tokens: ?*@import("../vs/editor/contrib/semanticTokens/browser/documentSemanticTokens.zig").DocumentSemanticTokensFeature = null,
     marker_service: ?*MarkerService = null,
     marker_decorations: ?*MarkerDecorationsService = null,
     marker_navigation: ?@import("../vs/editor/contrib/gotoError/browser/markerNavigationService.zig").MarkerNavigationService = null,
@@ -644,6 +645,7 @@ pub const TerminalWorkbench = struct {
         self.declarative = null;
         self.json_client = null;
         self.language_features = null;
+        self.document_semantic_tokens = null;
         self.marker_service = null;
         self.marker_decorations = null;
         self.marker_navigation = null;
@@ -1961,6 +1963,7 @@ pub const TerminalWorkbench = struct {
             self.allocator.destroy(service);
         }
         if (self.theme_palette) |palette| self.allocator.destroy(palette);
+        if (self.document_semantic_tokens) |feature| feature.shutdown();
         if (self.syntax_theme_ready) self.syntax_theme.deinit();
         if (self.theme_service) |service| service.deinit();
         self.quick_access.deinit();
@@ -1995,6 +1998,8 @@ pub const TerminalWorkbench = struct {
         self.workspace.deinit();
         // The part owns the group views; disposing it disposes the tab views.
         self.part.deinit();
+        if (self.document_semantic_tokens) |feature| feature.dispose();
+        self.document_semantic_tokens = null;
         self.tab_focus.deinit();
         self.text_model_resolver.deinit();
         self.word_highlight_session.deinit();
@@ -2971,6 +2976,8 @@ pub const TerminalWorkbench = struct {
         try self.outline_creator.?.register(&self.outline_service);
         self.outline_creator.?.models.attachWindow(&self.window_events);
         self.code_lens_cache = try self.instantiation.invokeFunction(@import("../vs/editor/contrib/codelens/browser/codeLensCache.zig").getCodeLensCache, .{});
+        const DocumentSemanticTokensFeature = @import("../vs/editor/contrib/semanticTokens/browser/documentSemanticTokens.zig").DocumentSemanticTokensFeature;
+        self.document_semantic_tokens = try DocumentSemanticTokensFeature.create(self.allocator, self.model_service_api, &features.document_semantic_tokens_provider, &self.window_events, self.textResourceConfiguration(), self.configuration_api.on_did_change_configuration, if (self.theme_service) |service| service.getActiveTheme().interface() else null);
         self.language_features = features;
         self.marker_service = marker_service;
         self.marker_decorations = marker_decorations;
@@ -3021,6 +3028,10 @@ pub const TerminalWorkbench = struct {
         }.execute };
     }
 
+    fn semanticTokensServices(self: *TerminalWorkbench, features: *LanguageFeaturesService) ?@import("../vs/editor/contrib/semanticTokens/browser/viewportSemanticTokens.zig").Services {
+        return .{ .registry = &features.document_range_semantic_tokens_provider, .document = self.document_semantic_tokens orelse return null, .window = &self.window_events };
+    }
+
     fn renameServices(self: *TerminalWorkbench, features: *LanguageFeaturesService) @import("../vs/editor/contrib/rename/browser/rename.zig").Services {
         return .{ .registry = &features.rename_provider, .bulk_edit = self.bulk_edit_api, .configuration = self.textResourceConfiguration() };
     }
@@ -3043,6 +3054,7 @@ pub const TerminalWorkbench = struct {
         const features = self.language_features orelse return;
         tab.attachCodeActionServices(self.codeActionServices(features));
         tab.attachRenameServices(self.renameServices(features));
+        if (self.semanticTokensServices(features)) |services| tab.attachSemanticTokensServices(services);
         if (self.markerNavigationServices()) |services| tab.attachMarkerNavigationServices(services);
         const cache = self.code_lens_cache orelse return;
         tab.attachCodeLensServices(features, cache, self.providerCommandHost(), &self.window_events);
@@ -3052,7 +3064,7 @@ pub const TerminalWorkbench = struct {
         const features = self.language_features orelse return;
         widget.original_editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
         widget.modified_editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
-        widget.attachNativeLanguageServices(.{ .features = features, .cache = self.code_lens_cache, .commands = self.providerCommandHost(), .code_actions = self.codeActionServices(features), .rename = self.renameServices(features), .opener = (editor_service_mod.EditorOpening.OpenerAdapter{ .opening = &self.editor_opening }).interface(), .hover_menus = .{ .menus = &self.menu_service, .parent_context = self.core.context_keys.getContext() }, .marker_navigation = self.markerNavigationServices(), .window = &self.window_events });
+        widget.attachNativeLanguageServices(.{ .features = features, .cache = self.code_lens_cache, .commands = self.providerCommandHost(), .code_actions = self.codeActionServices(features), .rename = self.renameServices(features), .semantic_tokens = self.semanticTokensServices(features), .opener = (editor_service_mod.EditorOpening.OpenerAdapter{ .opening = &self.editor_opening }).interface(), .hover_menus = .{ .menus = &self.menu_service, .parent_context = self.core.context_keys.getContext() }, .marker_navigation = self.markerNavigationServices(), .window = &self.window_events });
     }
 
     fn markerNavigationServices(self: *TerminalWorkbench) ?@import("../vs/editor/contrib/gotoError/browser/gotoError.zig").Services {
@@ -4160,6 +4172,7 @@ pub const TerminalWorkbench = struct {
     fn onColorThemeChanged(_: void, self: *TerminalWorkbench) !void {
         const service = self.theme_service orelse return;
         self.refreshSyntaxTheme(true);
+        if (self.document_semantic_tokens) |feature| feature.setTheme(service.getActiveTheme().interface());
         const palette = try self.allocator.create(theme_colors_mod.ThemeColors);
         palette.* = theme_colors_mod.ThemeColors.init(service.getActiveTheme());
         const previous = self.theme_palette;
@@ -4204,8 +4217,9 @@ pub const TerminalWorkbench = struct {
             self.syntax_theme_ready = false;
         }
         if (loaded and service.getActiveTheme().is_loaded) {
-            self.syntax_theme.initFromColorThemeData(self.allocator, service.getActiveTheme()) catch {};
-            self.syntax_theme_ready = true;
+            if (self.syntax_theme.initFromColorThemeData(self.allocator, service.getActiveTheme())) |_| {
+                self.syntax_theme_ready = true;
+            } else |_| {}
         }
         if (!self.syntax_theme_ready) {
             self.syntax_theme.init(self.allocator) catch return;

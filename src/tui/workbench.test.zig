@@ -14248,3 +14248,47 @@ test "Workbench: JSON completion and formatting use the window dispatcher" {
     }
     try std.testing.expect(probe.done);
 }
+
+test "Workbench: semantic token foreground and font style reach terminal cells" {
+    const a = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "semantic.txt", .data = "semanticX" });
+    const path = try tmp.dir.realPathFileAlloc(io, "semantic.txt", a);
+    defer a.free(path);
+    const window = try TestWindow.init(a, io, &.{path}, 80, 24);
+    defer window.deinit();
+    const workbench = window.workbench;
+    const model = workbench.activeTab().?.editor.model;
+    const registry = @import("../vs/editor/common/tokenizationRegistry.zig").TokenizationRegistry;
+    const Color = @import("../vs/base/common/color.zig").Color;
+    const attributes = @import("../vs/editor/common/encodedTokenAttributes.zig");
+    const sparse = @import("../vs/editor/common/tokens/sparseMultilineTokens.zig");
+    const old = registry.instance.getColorMap();
+    defer if (old) |map| registry.instance.setColorMap(map) else registry.instance.clearColorMap();
+    const semantic_color: Color = .{ .r = 0x12, .g = 0xab, .b = 0x34, .a = 255 };
+    const palette = [_]Color{ .black, .{ .r = 204, .g = 204, .b = 204, .a = 255 }, semantic_color };
+    registry.instance.setColorMap(&palette);
+    var metadata: attributes.TokenMetadata = @bitCast(@as(u32, 0));
+    var control: attributes.SemanticMetadata = @bitCast(@as(u8, 0));
+    control.useForeground = true;
+    control.useBold = true;
+    metadata.languageId = @bitCast(control);
+    metadata.foreground = 2;
+    metadata.fontStyle.bold = true;
+    var tokens = std.array_list.Managed(sparse.SparseToken).init(a);
+    try tokens.append(.init(0, 8, 9, metadata));
+    var pieces = [_]sparse.SparseMultilineTokens{.create(1, tokens)};
+    try model.setSemanticTokens(&pieces, true);
+    var output: std.Io.Writer.Allocating = .init(a);
+    defer output.deinit();
+    try renderFrame(workbench, &output.writer);
+    const grid = &workbench.frame.prev;
+    const wanted = ui.cell.packColor(.{ .r = semantic_color.r, .g = semantic_color.g, .b = semantic_color.b });
+    var found = false;
+    for (grid.cluster, 0..) |glyph, index| {
+        if (glyph == 'X' and grid.fg[index] == wanted and (grid.attrs[index] & ui.cell.Attr.bold) != 0) found = true;
+    }
+    try std.testing.expect(found);
+}

@@ -232,6 +232,9 @@ function activate(context) {
     }, semanticLegend),
     vscode.languages.registerDocumentRangeSemanticTokensProvider({ language: 'json' }, {
       provideDocumentRangeSemanticTokens() { return new vscode.SemanticTokens(new Uint32Array([1, 0, 1, 0, 0])); }
+    }, semanticLegend),
+    vscode.languages.registerDocumentRangeSemanticTokensProvider({ language: 'plaintext' }, {
+      provideDocumentRangeSemanticTokens() { return new vscode.SemanticTokens(new Uint32Array([1, 2, 1, 0, 1])); }
     }, semanticLegend));
   context.subscriptions.push(vscode.languages.registerRenameProvider({ language: 'json' }, {
     prepareRename(document, position) {

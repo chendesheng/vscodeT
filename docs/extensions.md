@@ -2002,8 +2002,10 @@ labels). Signature help supports real ZLS responses; rich documentation and
 scrolling remain gaps. Rename Symbol now prepares and applies real ZLS edits
 through the shared bulk-edit service, including the fixture’s refactoring
 preview and discard flow. New-symbol-name suggestions and full upstream rename
-controller behavior remain outstanding. Remaining portable gaps include semantic
-tokens and inlay hints; the
+controller behavior remain outstanding. Document/range semantic tokens now
+use the existing sparse token store, shared theme palette, version cancellation,
+provider changes and binary deltas. Remaining portable gaps include inlay hints
+and full upstream semantic-token controller fidelity; the
 full advertised ZLS capability matrix is not yet verified.
 
 ## 16. Deferred / explicit limitations

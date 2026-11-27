@@ -210,6 +210,7 @@ pub const Tab = struct {
     code_lens_services: ?CodeLensServices = null,
     code_action_services: ?CodeActionServices = null,
     rename_services: ?RenameServices = null,
+    semantic_tokens_services: ?SemanticTokensServices = null,
     hover_opener: ?MarkerHoverParticipantOpener = null,
     hover_menus: ?MarkerHoverMenuServices = null,
     marker_navigation_services: ?MarkerNavigationServices = null,
@@ -537,6 +538,14 @@ pub const Tab = struct {
         if (self.original_controllers) |controllers| controllers.attachCodeLensServices(services) catch {};
     }
 
+    pub fn attachSemanticTokensServices(self: *Tab, services: SemanticTokensServices) void {
+        if (self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
+        self.semantic_tokens_services = services;
+        self.ensureControllers() catch return;
+        if (self.controllers) |controllers| controllers.attachSemanticTokensServices(services) catch {};
+        if (self.original_controllers) |controllers| controllers.attachSemanticTokensServices(services) catch {};
+    }
+
     pub fn attachRenameServices(self: *Tab, services: RenameServices) void {
         if (self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
         self.rename_services = services;
@@ -621,6 +630,7 @@ pub const Tab = struct {
         if (self.code_lens_services) |services| try controllers.attachCodeLensServices(services);
         if (self.code_action_services) |services| try controllers.attachCodeActionServices(services);
         if (self.rename_services) |services| try controllers.attachRenameServices(services);
+        if (self.semantic_tokens_services) |services| try controllers.attachSemanticTokensServices(services);
         if (self.hover_opener) |opener| if (self.hover_menus) |menus| controllers.attachHoverServices(opener, menus);
         if (self.marker_navigation_services) |services| try controllers.attachMarkerNavigationServices(services);
         return controllers;
@@ -1357,6 +1367,8 @@ fn SuggestControllerHostForView(view: *View) @import("../../../../editor/contrib
 }
 
 const CodeActionController = @import("../../../../editor/contrib/codeAction/browser/codeActionController.zig").CodeActionController;
+const SemanticTokensServices = @import("../../../../editor/contrib/semanticTokens/browser/viewportSemanticTokens.zig").Services;
+const ViewportSemanticTokensContribution = @import("../../../../editor/contrib/semanticTokens/browser/viewportSemanticTokens.zig").ViewportSemanticTokensContribution;
 const RenameServices = @import("../../../../editor/contrib/rename/browser/rename.zig").Services;
 const RenameController = @import("../../../../editor/contrib/rename/browser/rename.zig").RenameController;
 const CodeActionServices = @import("../../../../editor/contrib/codeAction/browser/codeActionController.zig").Services;
@@ -1403,6 +1415,7 @@ pub const Controllers = struct {
     code_lens_services: ?CodeLensServices,
     code_action: ?*CodeActionController,
     rename: ?*RenameController,
+    viewport_semantic_tokens: ?*ViewportSemanticTokensContribution,
     code_action_services: ?CodeActionServices,
     hover_opener: ?MarkerHoverParticipantOpener,
     hover_menus: ?MarkerHoverMenuServices,
@@ -1485,6 +1498,7 @@ pub const Controllers = struct {
         self.code_lens_services = null;
         self.code_action = null;
         self.rename = null;
+        self.viewport_semantic_tokens = null;
         self.code_action_services = null;
         self.hover_opener = null;
         self.hover_menus = null;
@@ -1665,6 +1679,11 @@ pub const Controllers = struct {
         self.setThemeColors(view.themeColors());
     }
 
+    pub fn attachSemanticTokensServices(self: *Controllers, services: SemanticTokensServices) !void {
+        if (self.viewport_semantic_tokens != null) return;
+        self.viewport_semantic_tokens = try ViewportSemanticTokensContribution.getOrCreate(self.editor, services);
+    }
+
     pub fn attachRenameServices(self: *Controllers, services: RenameServices) !void {
         if (self.rename != null) return;
         self.rename = try RenameController.getOrCreate(self.editor, self.view, services);
@@ -1840,6 +1859,8 @@ pub const Controllers = struct {
     }
 
     pub fn deinit(self: *Controllers) void {
+        if (self.viewport_semantic_tokens) |contribution| contribution.unbind();
+        self.viewport_semantic_tokens = null;
         if (self.rename) |rename| rename.unbind();
         self.rename = null;
         self.detachCodeActionServices();
@@ -1928,6 +1949,10 @@ pub const MultiDiffBindingServices = struct {
         if (host.marker_navigation) |services| {
             self.original.attachMarkerNavigationServices(services) catch {};
             self.modified.attachMarkerNavigationServices(services) catch {};
+        }
+        if (host.semantic_tokens) |services| {
+            self.original.attachSemanticTokensServices(services) catch {};
+            self.modified.attachSemanticTokensServices(services) catch {};
         }
         if (host.rename) |services| {
             self.original.attachRenameServices(services) catch {};
