@@ -13,6 +13,9 @@ const Range = range_mod.Range;
 const Selection = @import("../../../../editor/common/core/selection.zig").Selection;
 const String = @import("../../../../base/common/strings.zig").String;
 const UndoRedoGroup = @import("../../../../platform/undoRedo/common/undoRedo.zig").UndoRedoGroup;
+const UndoRedoService = @import("../../../../platform/undoRedo/common/undoRedoService.zig").UndoRedoService;
+const UndoRedoSource = @import("../../../../platform/undoRedo/common/undoRedo.zig").UndoRedoSource;
+const edit_stack = @import("../../../../editor/common/model/editStack.zig");
 const cancellation = @import("../../../../base/common/cancellation.zig");
 const Disposable = cancellation.IDisposable;
 const resolver = @import("../../../../editor/common/services/resolverService.zig");
@@ -55,12 +58,12 @@ pub const ModelEditTask = struct {
         for (self.edits.items) |edit| {
             if (edit.version_id) |version| if (model.getVersionId() != version) return error.ModelVersionMismatch;
             if (edit.eol) |eol| self.eol = eol;
-            if (edit.range) |range| {
-                const converted = if (edit.column_encoding == .utf16) try convertRange(model, range) else range;
-                const normalized = model.validateRange(converted);
-                const text = if (edit.insert_as_snippet) try SnippetParser.asInsertText(a, edit.text) else edit.text;
-                try operations.append(a, .init(normalized, String.initBorrowed(text)));
-            }
+            if (edit.range == null and edit.text.len == 0) continue;
+            const range = if (edit.range) |value| if (edit.column_encoding == .utf16) try convertRange(model, value) else value else model.getFullModelRange();
+            const normalized = model.validateRange(range);
+            if (normalized.startLineNumber == normalized.endLineNumber and normalized.startColumn == normalized.endColumn and edit.text.len == 0) continue;
+            const text = if (edit.insert_as_snippet) try SnippetParser.asInsertText(a, edit.text) else edit.text;
+            try operations.append(a, .init(normalized, String.initBorrowed(text)));
         }
         std.mem.sort(model_types.IdentifiedSingleEditOperation, operations.items, {}, struct {
             fn less(_: void, left: model_types.IdentifiedSingleEditOperation, right: model_types.IdentifiedSingleEditOperation) bool {
@@ -73,14 +76,17 @@ pub const ModelEditTask = struct {
         self.operations = operations.items;
     }
 
+    fn getBeforeCursorState(self: *ModelEditTask) ?[]Selection {
+        return if (self.owner.selection_key) |key| if (std.mem.eql(u8, key, self.key)) self.owner.before_selections else null else null;
+    }
+
+    fn isNoOp(self: *ModelEditTask) bool {
+        return self.operations.len == 0 and (self.eol == null or self.eol.? == self.reference.?.object.textEditorModel.getEOL());
+    }
+
     fn apply(self: *ModelEditTask, group: *UndoRedoGroup) !void {
         const model = self.reference.?.object.textEditorModel;
-        model.pushStackElement();
-        defer model.pushStackElement();
-        if (self.operations.len > 0) {
-            const selection = if (self.owner.selection_key) |key| if (std.mem.eql(u8, key, self.key)) self.owner.before_selections else null else null;
-            _ = try model.pushEditOperations(selection, self.operations, null, group);
-        }
+        if (self.operations.len > 0) _ = try model.pushEditOperations(self.getBeforeCursorState(), self.operations, null, group);
         if (self.eol) |eol| try model.pushEOLWithGroup(eol, group);
     }
 };
@@ -105,6 +111,10 @@ pub const BulkTextEdits = struct {
     tasks: std.ArrayList(*ModelEditTask) = .empty,
     listener: bulk.EditListener,
     undo_group: *UndoRedoGroup,
+    undo_service: *UndoRedoService,
+    undo_source: ?*UndoRedoSource,
+    label: []const u8,
+    code: []const u8,
     selection_key: ?[]const u8 = null,
     before_selections: ?[]Selection = null,
     remaining: usize = 0,
@@ -117,10 +127,10 @@ pub const BulkTextEdits = struct {
     cancel_notify: bool = false,
     detached: bool = false,
 
-    pub fn start(allocator: Allocator, service: resolver.ITextModelService, edits: []const bulk.ResourceEdit, options: bulk.IBulkEditOptions, group: *UndoRedoGroup, selection: ?SelectionSnapshot, listener: bulk.EditListener) !?Disposable {
+    pub fn start(allocator: Allocator, service: resolver.ITextModelService, undo_service: *UndoRedoService, edits: []const bulk.ResourceEdit, options: bulk.IBulkEditOptions, group: *UndoRedoGroup, selection: ?SelectionSnapshot, listener: bulk.EditListener) !?Disposable {
         try options.token.throwIfCancellationRequested();
         const self = try allocator.create(BulkTextEdits);
-        self.* = .{ .allocator = allocator, .arena = .init(allocator), .resolver_service = service, .listener = listener, .undo_group = group };
+        self.* = .{ .allocator = allocator, .arena = .init(allocator), .resolver_service = service, .listener = listener, .undo_group = group, .undo_service = undo_service, .undo_source = options.undo_redo_source, .label = options.label orelse "Workspace Edit", .code = options.code orelse "undoredo.workspaceEdit" };
         errdefer self.destroy();
         const a = self.arena.allocator();
         if (selection) |snapshot| {
@@ -192,6 +202,37 @@ pub const BulkTextEdits = struct {
         if (self.failure) |err| return err;
         if (self.tasks.items.len == 0) return .{ .is_applied = false };
         for (self.tasks.items) |task| try task.prepare();
+        if (self.tasks.items.len == 1 and self.tasks.items[0].isNoOp()) return .{ .is_applied = true };
+        const a = self.allocator;
+        var singles = std.ArrayList(edit_stack.SingleModelEditStackElement).empty;
+        defer singles.deinit(a);
+        var singles_owned = true;
+        defer if (singles_owned) for (singles.items) |*element| element.deinit();
+        try singles.ensureTotalCapacity(a, self.tasks.items.len);
+        for (self.tasks.items) |task| {
+            const model = task.reference.?.object.textEditorModel;
+            if (model.getUndoRedoService() != self.undo_service) return error.MismatchedUndoRedoService;
+            model.pushStackElement();
+            try model.ensureInitialUndoRedoSnapshot();
+            singles.appendAssumeCapacity(try edit_stack.SingleModelEditStackElement.init(a, self.label, self.code, model, task.getBeforeCursorState()));
+        }
+        const element = try a.create(edit_stack.EditStackElement);
+        var stack_owned = false;
+        errdefer if (!stack_owned) a.destroy(element);
+        if (singles.items.len == 1) {
+            element.* = .{ .singleModel = singles.items[0] };
+        } else {
+            element.* = .{ .multiModel = try edit_stack.MultiModelEditStackElement.init(a, self.label, self.code, singles.items) };
+        }
+        singles_owned = false;
+        self.undo_service.pushElement(element, self.undo_group, self.undo_source) catch |err| {
+            element.deinit();
+            return err;
+        };
+        stack_owned = true;
+        // ModelEditTask appends to the pre-installed shared undo element;
+        // close it only after every model belongs to the same operation.
+        defer element.close() catch {};
         for (self.tasks.items) |task| try task.apply(self.undo_group);
         return .{ .is_applied = true, .edited_resources = self.tasks.items.len, .edit_count = self.edit_count };
     }

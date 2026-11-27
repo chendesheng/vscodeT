@@ -508,6 +508,8 @@ pub const SingleModelEditStackElement = struct {
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
         const owned_uri = try uri_util.clone(arena.allocator(), model.uri());
+        const owned_label = try arena.allocator().dupe(u8, label);
+        const owned_code = try arena.allocator().dupe(u8, code);
         return SingleModelEditStackElement{
             .allocator = allocator,
             .model = .{ .model = model },
@@ -521,8 +523,8 @@ pub const SingleModelEditStackElement = struct {
                     beforeCursorState,
                 ),
             },
-            .label = label,
-            .code = code,
+            .label = owned_label,
+            .code = owned_code,
             .confirmBeforeUndo = null,
         };
     }
@@ -536,6 +538,8 @@ pub const SingleModelEditStackElement = struct {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         errdefer arena.deinit();
         const owned_uri = try uri_util.clone(arena.allocator(), self.resource());
+        const owned_label = try arena.allocator().dupe(u8, self.label);
+        const owned_code = try arena.allocator().dupe(u8, self.code);
         const data: SingleModelEditStackData = switch (self._data) {
             .unserialized => |*data| .{ .unserialized = try data.clone(self.allocator) },
             .serialized => |serialized| blk: {
@@ -551,8 +555,8 @@ pub const SingleModelEditStackElement = struct {
             .resource_arena = arena,
             .retained_resource = owned_uri,
             ._data = data,
-            .label = self.label,
-            .code = self.code,
+            .label = owned_label,
+            .code = owned_code,
             .confirmBeforeUndo = self.confirmBeforeUndo,
         };
     }
@@ -739,6 +743,7 @@ pub const MultiModelEditStackElement = struct {
     allocator: Allocator,
     label: []const u8,
     code: []const u8,
+    metadata_arena: ?std.heap.ArenaAllocator = null,
 
     _isOpen: bool,
     _editStackElementsArr: ArrayList(SingleModelEditStackElement),
@@ -748,16 +753,23 @@ pub const MultiModelEditStackElement = struct {
     _delegate: ?UndoRedoDelegate,
 
     pub fn init(allocator: Allocator, label: []const u8, code: []const u8, editStackElements: []SingleModelEditStackElement) !MultiModelEditStackElement {
-        const editStackElementsMap = UriHashMap(*SingleModelEditStackElement).init(allocator);
-        const arr = ArrayList(SingleModelEditStackElement).init(allocator);
+        var metadata = std.heap.ArenaAllocator.init(allocator);
+        errdefer metadata.deinit();
+        const owned_label = try metadata.allocator().dupe(u8, label);
+        const owned_code = try metadata.allocator().dupe(u8, code);
+        var editStackElementsMap = UriHashMap(*SingleModelEditStackElement).init(allocator);
+        errdefer editStackElementsMap.deinit();
+        var arr = ArrayList(SingleModelEditStackElement).init(allocator);
+        errdefer arr.deinit();
         try arr.appendSlice(editStackElements);
         for (arr.items) |*item| {
             try editStackElementsMap.put(item.resource(), item);
         }
         return MultiModelEditStackElement{
             .allocator = allocator,
-            .label = label,
-            .code = code,
+            .label = owned_label,
+            .code = owned_code,
+            .metadata_arena = metadata,
             ._isOpen = true,
             ._editStackElementsArr = arr,
             ._editStackElementsMap = editStackElementsMap,
@@ -771,6 +783,7 @@ pub const MultiModelEditStackElement = struct {
             element.deinit();
         }
         self._editStackElementsArr.deinit();
+        if (self.metadata_arena) |*arena| arena.deinit();
     }
 
     pub fn setDelegate(self: *MultiModelEditStackElement, delegate: UndoRedoDelegate) void {
@@ -818,18 +831,24 @@ pub const MultiModelEditStackElement = struct {
         };
     }
 
+    fn findModelElement(self: *const MultiModelEditStackElement, resource_uri: Uri) ?*SingleModelEditStackElement {
+        if (self._editStackElementsMap.get(resource_uri)) |element| return element;
+        for (self._editStackElementsArr.items) |*element| if (element.matchesResource(resource_uri)) return element;
+        return null;
+    }
+
     pub fn canAppend(self: *const MultiModelEditStackElement, model: *const TextModel) bool {
         if (!self._isOpen) {
             return false;
         }
-        if (self._editStackElementsMap.get(model.uri())) |editStackElement| {
+        if (self.findModelElement(model.uri())) |editStackElement| {
             return editStackElement.canAppend(model);
         }
         return false;
     }
 
     pub fn append(self: *MultiModelEditStackElement, model: *const TextModel, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
-        if (self._editStackElementsMap.get(model.uri())) |editStackElement| {
+        if (self.findModelElement(model.uri())) |editStackElement| {
             try editStackElement.append(textChanges, afterEOL, afterVersionId, afterCursorState);
         }
     }
@@ -853,7 +872,7 @@ pub const MultiModelEditStackElement = struct {
     }
 
     pub fn heapSize(self: *const MultiModelEditStackElement, resourceUri: Uri) !usize {
-        if (self._editStackElementsMap.get(resourceUri)) |editStackElement| {
+        if (self.findModelElement(resourceUri)) |editStackElement| {
             return try editStackElement.heapSize();
         }
         return 0;

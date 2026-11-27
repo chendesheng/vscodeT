@@ -16,6 +16,7 @@ const uri_util = @import("../../../../base/common/stdUri.zig");
 pub const BulkEditService = struct {
     allocator: std.mem.Allocator,
     resolver_service: resolver.ITextModelService,
+    undo_redo_service: *@import("../../../../platform/undoRedo/common/undoRedoService.zig").UndoRedoService,
     file_services: ?file_edits.Services = null,
     active_groups: std.ArrayList(*ActiveGroup) = .empty,
     preview_handler: ?*PreviewRegistration = null,
@@ -192,6 +193,7 @@ const BulkApplyRequest = struct {
                 return;
             }
             if (self.next == self.edits.len) {
+                self.result.is_applied = self.edits.len != 0;
                 self.finish(self.result);
                 return;
             }
@@ -213,7 +215,7 @@ const BulkApplyRequest = struct {
                 },
                 .text => {
                     self.waiting = true;
-                    const request = BulkTextEdits.start(self.service.allocator, self.service.resolver_service, edits, self.options, &self.group.value, self.selection, .{ .context = self, .complete = completedTextGroup }) catch |err| {
+                    const request = BulkTextEdits.start(self.service.allocator, self.service.resolver_service, self.service.undo_redo_service, edits, self.options, &self.group.value, self.selection, .{ .context = self, .complete = completedTextGroup }) catch |err| {
                         self.waiting = false;
                         self.finish(err);
                         return;

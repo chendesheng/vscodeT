@@ -728,6 +728,16 @@ pub const TextModel = struct {
         return self._alternativeVersionId;
     }
 
+    pub fn getUndoRedoService(self: *const TextModel) *UndoRedoService {
+        return self._undoRedoService;
+    }
+
+    /// Capture the stack before a producer installs an explicit undo element.
+    /// The model/stack own this snapshot rather than the workspace edit task.
+    pub fn ensureInitialUndoRedoSnapshot(self: *TextModel) !void {
+        if (self._initialUndoRedoSnapshot == null) self._initialUndoRedoSnapshot = try self._undoRedoService.createSnapshot(self.uri());
+    }
+
     pub fn getInitialUndoRedoSnapshot(self: *const TextModel) ?ResourceEditStackSnapshot {
         return self._initialUndoRedoSnapshot;
     }
@@ -1210,9 +1220,7 @@ pub const TextModel = struct {
         // before decorations, matching upstream's `finally` order.
         defer self._onDidChangeDecorations.endDeferredEmit();
         defer self._eventEmitter.endDeferredEmit(null);
-        if (self._initialUndoRedoSnapshot == null) {
-            self._initialUndoRedoSnapshot = try self._undoRedoService.createSnapshot(self.uri());
-        }
+        try self.ensureInitialUndoRedoSnapshot();
         try self._commandManager.pushEOL(eol, group);
     }
 
@@ -1351,9 +1359,7 @@ pub const TextModel = struct {
 
             self._trimAutoWhitespaceLines = null;
         }
-        if (self._initialUndoRedoSnapshot == null) {
-            self._initialUndoRedoSnapshot = try self._undoRedoService.createSnapshot(self.uri());
-        }
+        try self.ensureInitialUndoRedoSnapshot();
         return try self._commandManager.pushEditOperation(beforeCursorState, editOperations.items, cursorStateComputer, group);
     }
 

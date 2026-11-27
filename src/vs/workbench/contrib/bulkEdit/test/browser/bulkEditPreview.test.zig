@@ -201,7 +201,7 @@ test "BulkEditPreview: the registered preview handler owns acceptance before app
     var reference = try model_resolver.createResolvedModelReference(target, "preview.txt", "old", false);
     defer reference.dispose();
     const model = reference.object.textEditorModel;
-    var service: BulkService = .{ .allocator = a, .resolver_service = model_resolver.interface() };
+    var service: BulkService = .{ .allocator = a, .resolver_service = model_resolver.interface(), .undo_redo_service = &(try model_resolver.undoRedoStore()).service };
     const api = service.interface();
     var probe: Probe = .{};
     const first = try api.setPreviewHandler(.{ .context = &probe, .preview = Probe.preview });

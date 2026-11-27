@@ -10602,6 +10602,64 @@ test "Diff editor commands: workspace text and file edit groups share real model
     try std.testing.expectEqualStrings("created", redone);
 }
 
+test "Diff editor commands: multi-resource text edit installs one labeled workspace element" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const bulk = @import("../vs/editor/browser/services/bulkEditService.zig");
+    const Probe = struct {
+        result: ?bulk.IBulkEditResult = null,
+        failure: ?anyerror = null,
+        fn complete(context: *anyopaque, reply: anyerror!bulk.IBulkEditResult) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (reply) |value| self.result = value else |err| self.failure = err;
+        }
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const first_path = try seedFile(a, io, &tmp, "first.txt", "first");
+    defer a.free(first_path);
+    const second_path = try seedFile(a, io, &tmp, "second.txt", "second");
+    defer a.free(second_path);
+    const window = try TestWindow.init(a, io, &.{ first_path, second_path }, 100, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    const Model = @import("../vs/editor/common/model/textModel.zig").TextModel;
+    var first: ?*Model = null;
+    var second: ?*Model = null;
+    for (wb.part.group_views.items) |pane| for (pane.tabs.items) |tab| {
+        if (std.mem.eql(u8, std.fs.path.basename(tab.editor.path), "first.txt")) first = tab.editor.model;
+        if (std.mem.eql(u8, std.fs.path.basename(tab.editor.path), "second.txt")) second = tab.editor.model;
+    };
+    const left = first orelse return error.FirstEditorMissing;
+    const right = second orelse return error.SecondEditorMissing;
+    const edits = [_]languages.WorkspaceResourceEdit{
+        .{ .text = .{ .resource = left.uri(), .text = "replaced first" } },
+        .{ .text = .{ .resource = right.uri(), .range = Range.init(1, 1, 1, 1), .text = "replaced " } },
+    };
+    var probe: Probe = .{};
+    _ = try wb.bulk_edit_api.apply(.{ .edits = &edits }, .{ .label = "Refactor Both", .code = "test.refactor" }, .{ .context = &probe, .complete = Probe.complete });
+    for (0..5000) |_| {
+        if (probe.result != null or probe.failure != null) break;
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        time_compat.sleepMillis(1);
+    }
+    if (probe.failure) |err| return err;
+    try std.testing.expect(probe.result.?.is_applied);
+    const service = left.getUndoRedoService();
+    const entry = (try service.getLastElement(left.uri())).?;
+    try std.testing.expect(entry.* == .multiModel);
+    try std.testing.expectEqual(entry, (try service.getLastElement(right.uri())).?);
+    try std.testing.expectEqualStrings("Refactor Both", entry.label());
+    try std.testing.expectEqualStrings("replaced first", try left.borrowLineContent(1));
+    try std.testing.expectEqualStrings("replaced second", try right.borrowLineContent(1));
+    try left.undo();
+    try std.testing.expectEqualStrings("first", try left.borrowLineContent(1));
+    try std.testing.expectEqualStrings("second", try right.borrowLineContent(1));
+    try right.redo();
+    try std.testing.expectEqualStrings("replaced first", try left.borrowLineContent(1));
+    try std.testing.expectEqualStrings("replaced second", try right.borrowLineContent(1));
+}
+
 test "Diff editor commands: renaming a dirty file preserves contents and view state through workspace undo" {
     const a = std.testing.allocator;
     const io = std.testing.io;
