@@ -1,5 +1,6 @@
 {
   "assert_cursor": false,
+  "assert_cursors": false,
   "case": "tutor_register",
   "cursor_gap": "cursor after register paste differs; text/mode/count asserted",
   "engine": "helix",
@@ -51,6 +52,5 @@
       "text": "one\none\ntwo\n"
     }
   ],
-  "width": 60,
-  "assert_cursors": false
+  "width": 60
 }

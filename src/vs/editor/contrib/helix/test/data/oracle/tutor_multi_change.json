@@ -1,5 +1,6 @@
 {
   "assert_cursor": false,
+  "assert_cursors": false,
   "case": "tutor_multi_change",
   "cursor_gap": "multi-cursor primary cursor is not asserted; cursor set is",
   "engine": "helix",
@@ -89,6 +90,5 @@
       "text": "Xbc Xbc Xbc\n"
     }
   ],
-  "width": 60,
-  "assert_cursors": false
+  "width": 60
 }

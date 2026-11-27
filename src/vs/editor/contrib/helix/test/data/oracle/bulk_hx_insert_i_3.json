@@ -1,5 +1,6 @@
 {
   "assert_cursor": false,
+  "assert_cursors": false,
   "case": "bulk_hx_insert_i_3",
   "cursor_gap": "bulk-generated case asserts text/mode/selection count; cursor is asserted by the curated corpus",
   "engine": "helix",
@@ -47,6 +48,5 @@
       "text": "Xalpha beta\n"
     }
   ],
-  "width": 60,
-  "assert_cursors": false
+  "width": 60
 }
