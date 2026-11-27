@@ -116,6 +116,8 @@
 ["workbench.extensions.action.clearExtensionsSearchResults","Clear Extensions Search Results","Extensions","",true,false,false,true,true]
 ["workbench.actions.view.problems","View: Show Problems","View","",true,false,false,true,true]
 ["workbench.actions.view.toggleProblems","View: Toggle Problems","View","",true,false,false,true,true]
+["workbench.action.output.toggleOutput","View: Toggle Output","View","",true,false,false,true,true]
+["workbench.output.action.clearOutput","Clear Output","","",true,false,false,true,true]
 ["workbench.action.togglePanel","View: Toggle Panel Visibility","View","",true,false,false,true,true]
 ["workbench.action.toggleZenMode","Toggle Zen Mode","View","",true,false,true,true,true]
 ["workbench.action.exitZenMode","Exit Zen Mode","View","",false,false,false,false,false]
