@@ -1,0 +1,49 @@
+{
+  "case": "bulk_hx_line_j_2",
+  "engine": "helix",
+  "keys": [
+    "j",
+    "x",
+    "d"
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      1
+    ],
+    "text": "alpha\nbeta\ngamma\ndelta\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        2,
+        1
+      ],
+      "cursors": [
+        [
+          2,
+          1
+        ]
+      ],
+      "mode": "normal",
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            2,
+            1
+          ],
+          "head": [
+            2,
+            2
+          ]
+        }
+      ],
+      "text": "alpha\ngamma\ndelta\n"
+    }
+  ],
+  "width": 60
+}

@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_cw_5",
+  "width": 60,
+  "seed": {
+    "text": "red green blue\n",
+    "cursor": [
+      1,
+      5
+    ]
+  },
+  "keys": [
+    "c",
+    "w",
+    "X",
+    "<Esc>"
+  ],
+  "states": [
+    {
+      "text": "red X blue\n",
+      "cursor": [
+        1,
+        5
+      ],
+      "mode": "normal"
+    }
+  ]
+}

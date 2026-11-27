@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_search_1",
+  "width": 60,
+  "seed": {
+    "text": "x foo y foo\n",
+    "cursor": [
+      1,
+      1
+    ]
+  },
+  "keys": [
+    "/",
+    "f",
+    "o",
+    "o",
+    "<CR>",
+    "n"
+  ],
+  "states": [
+    {
+      "text": "x foo y foo\n",
+      "cursor": [
+        1,
+        9
+      ],
+      "mode": "normal"
+    }
+  ]
+}

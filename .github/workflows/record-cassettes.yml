@@ -1,0 +1,114 @@
+name: Record cassettes
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'check compares the committed cassettes; record uploads refreshed cassettes'
+        type: choice
+        options: [check, record]
+        default: check
+      target:
+        description: 'Which reference recorder to run'
+        type: choice
+        options: [both, vim, helix]
+        default: both
+  push:
+    paths:
+      - 'scripts/oracle/**'
+      - '.github/workflows/record-cassettes.yml'
+      - 'src/vs/editor/contrib/vim/test/data/oracle/**'
+      - 'src/vs/editor/contrib/helix/test/data/oracle/**'
+      - 'helix'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: record-cassettes-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vim:
+    name: Neovim cassettes
+    if: github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'vim'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: scripts/oracle/requirements.txt
+      - name: Install pinned Neovim
+        shell: bash
+        run: |
+          set -euo pipefail
+          . scripts/oracle/nvim/PIN
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o "$NEOVIM_TARBALL" "$NEOVIM_URL"
+          curl -fsSL -o "$NEOVIM_TARBALL.sha256sum" "$NEOVIM_URL.sha256sum"
+          sha256sum -c "$NEOVIM_TARBALL.sha256sum"
+          tar xzf "$NEOVIM_TARBALL"
+          echo "NVIM=$RUNNER_TEMP/nvim-linux-x86_64/bin/nvim" >> "$GITHUB_ENV"
+      - name: Install recorder dependencies
+        run: pip install -r scripts/oracle/requirements.txt
+      - name: Record against the pinned Neovim
+        run: |
+          python scripts/oracle/record_nvim.py --all --force \
+            --out "$RUNNER_TEMP/vim-cassettes" --nvim "$NVIM"
+      - name: Verify committed cassettes
+        if: github.event_name == 'push' || inputs.mode == 'check'
+        run: diff -ru --exclude=README.md src/vs/editor/contrib/vim/test/data/oracle "$RUNNER_TEMP/vim-cassettes"
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'record'
+        with:
+          name: vim-cassettes
+          path: ${{ runner.temp }}/vim-cassettes
+          if-no-files-found: error
+          retention-days: 7
+
+  helix:
+    name: Helix cassettes
+    if: github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'helix'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Initialize the pinned Helix submodule
+        run: git submodule update --init --depth 1 helix
+      - name: Verify the pin and apply the recorder patch
+        run: |
+          set -euo pipefail
+          . scripts/oracle/helix/PIN
+          test "$(git -C helix rev-parse HEAD)" = "$HELIX_COMMIT"
+          git -C helix apply "$GITHUB_WORKSPACE/scripts/oracle/helix/record.patch"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.82.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: helix -> target
+          key: ${{ hashFiles('scripts/oracle/helix/record.patch', 'scripts/oracle/helix/PIN') }}
+      - name: Record from the patched Helix harness
+        env:
+          HELIX_DISABLE_AUTO_GRAMMAR_BUILD: '1'
+          HELIX_ORACLE_IN: ${{ github.workspace }}/src/vs/editor/contrib/helix/test/data/oracle
+          HELIX_ORACLE_OUT: ${{ runner.temp }}/helix-cassettes
+        working-directory: helix
+        run: |
+          cargo test -p helix-term --features integration --test integration \
+            -- record_cassettes --nocapture
+      - name: Verify committed cassettes
+        if: github.event_name == 'push' || inputs.mode == 'check'
+        run: diff -ru --exclude=README.md src/vs/editor/contrib/helix/test/data/oracle "$RUNNER_TEMP/helix-cassettes"
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'record'
+        with:
+          name: helix-cassettes
+          path: ${{ runner.temp }}/helix-cassettes
+          if-no-files-found: error
+          retention-days: 7

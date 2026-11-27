@@ -1,0 +1,49 @@
+{
+  "case": "bulk_hx_open_o_3",
+  "engine": "helix",
+  "keys": [
+    "o",
+    "X",
+    "<Esc>"
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      1
+    ],
+    "text": "alpha beta\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        2,
+        2
+      ],
+      "cursors": [
+        [
+          2,
+          2
+        ]
+      ],
+      "mode": "normal",
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            2,
+            2
+          ],
+          "head": [
+            3,
+            1
+          ]
+        }
+      ],
+      "text": "alpha beta\nX\n"
+    }
+  ],
+  "width": 60
+}

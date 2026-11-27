@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_replace_9",
+  "width": 60,
+  "seed": {
+    "text": "lorem ipsum dolor\n",
+    "cursor": [
+      1,
+      7
+    ]
+  },
+  "keys": [
+    "r",
+    "X"
+  ],
+  "states": [
+    {
+      "text": "lorem Xpsum dolor\n",
+      "cursor": [
+        1,
+        7
+      ],
+      "mode": "normal"
+    }
+  ]
+}

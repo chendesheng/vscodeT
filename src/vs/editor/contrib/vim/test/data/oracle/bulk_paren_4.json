@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_paren_4",
+  "width": 60,
+  "seed": {
+    "text": "pair(a, (b))\n",
+    "cursor": [
+      1,
+      6
+    ]
+  },
+  "keys": [
+    "d",
+    "i",
+    "("
+  ],
+  "states": [
+    {
+      "text": "pair()\n",
+      "cursor": [
+        1,
+        6
+      ],
+      "mode": "normal"
+    }
+  ]
+}

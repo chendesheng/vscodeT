@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_yw_P_7",
+  "width": 60,
+  "seed": {
+    "text": "  indented text\n",
+    "cursor": [
+      1,
+      3
+    ]
+  },
+  "keys": [
+    "y",
+    "w",
+    "P"
+  ],
+  "states": [
+    {
+      "text": "  indented indented text\n",
+      "cursor": [
+        1,
+        11
+      ],
+      "mode": "normal"
+    }
+  ]
+}

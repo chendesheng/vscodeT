@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_iW_0",
+  "width": 60,
+  "seed": {
+    "text": "alpha beta gamma\n",
+    "cursor": [
+      1,
+      1
+    ]
+  },
+  "keys": [
+    "d",
+    "i",
+    "W"
+  ],
+  "states": [
+    {
+      "text": " beta gamma\n",
+      "cursor": [
+        1,
+        1
+      ],
+      "mode": "normal"
+    }
+  ]
+}

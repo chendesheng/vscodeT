@@ -10,3 +10,7 @@
 	path = third_party/oniguruma
 	url = https://github.com/kkos/oniguruma.git
 	shallow = true
+[submodule "helix"]
+	path = helix
+	url = https://github.com/helix-editor/helix
+	shallow = true

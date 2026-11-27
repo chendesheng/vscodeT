@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_join_3",
+  "width": 60,
+  "seed": {
+    "text": "one\ntwo\nthree\nfour\n",
+    "cursor": [
+      2,
+      1
+    ]
+  },
+  "keys": [
+    "J"
+  ],
+  "states": [
+    {
+      "text": "one\ntwo three\nfour\n",
+      "cursor": [
+        2,
+        4
+      ],
+      "mode": "normal"
+    }
+  ]
+}

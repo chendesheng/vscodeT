@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_visualiw_1",
+  "width": 60,
+  "seed": {
+    "text": "one two three\n",
+    "cursor": [
+      1,
+      1
+    ]
+  },
+  "keys": [
+    "v",
+    "i",
+    "w",
+    "d"
+  ],
+  "states": [
+    {
+      "text": " two three\n",
+      "cursor": [
+        1,
+        1
+      ],
+      "mode": "normal"
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "case": "line_extend_delete",
+  "engine": "helix",
+  "keys": [
+    "x",
+    "j",
+    "d"
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      1
+    ],
+    "text": "one\ntwo\nthree\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        2,
+        4
+      ],
+      "cursors": [
+        [
+          2,
+          4
+        ]
+      ],
+      "mode": "normal",
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            2,
+            4
+          ],
+          "head": [
+            2,
+            5
+          ]
+        }
+      ],
+      "text": "one\ntwothree\n"
+    }
+  ],
+  "width": 60
+}

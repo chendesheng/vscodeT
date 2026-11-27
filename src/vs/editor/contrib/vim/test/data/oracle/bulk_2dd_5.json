@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_2dd_5",
+  "width": 60,
+  "seed": {
+    "text": "alpha\nbeta\ngamma\n",
+    "cursor": [
+      3,
+      1
+    ]
+  },
+  "keys": [
+    "2",
+    "d",
+    "d"
+  ],
+  "states": [
+    {
+      "text": "alpha\nbeta",
+      "cursor": [
+        2,
+        1
+      ],
+      "mode": "normal"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "replace_backspace",
+  "width": 60,
+  "seed": {
+    "text": "abc\n",
+    "cursor": [
+      1,
+      1
+    ]
+  },
+  "keys": [
+    "R",
+    "X",
+    "Y",
+    "<BS>",
+    "<Esc>"
+  ],
+  "states": [
+    {
+      "text": "Xbc\n",
+      "cursor": [
+        1,
+        1
+      ],
+      "mode": "normal"
+    }
+  ]
+}

@@ -16,8 +16,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 1
+      - name: Initialize upstream submodules
+        run: git submodule update --init --depth 1 vscode vscode-textmate third_party/oniguruma
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1

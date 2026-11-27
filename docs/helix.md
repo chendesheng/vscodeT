@@ -206,9 +206,43 @@ Tests:
 - `src/vs/editor/contrib/helix/test/browser/helixEngine.test.zig`
 - `src/vs/workbench/contrib/helix/test/browser/helixExtension.test.zig`
 - `src/vs/workbench/contrib/helix/test/browser/helixRuntime.test.zig`
+- `src/vs/editor/contrib/helix/test/browser/helixCassette.test.zig`
 
 Run the focused suite with:
 
 ```sh
 zig build test-helix
 ```
+
+## Reference cassettes
+
+Unlike Neovim, Helix has no embeddable RPC. The cassettes in
+`test/data/oracle/` are therefore generated **only in GitHub Actions** from the
+pinned `helix/` submodule: `.github/workflows/record-cassettes.yml` applies
+`scripts/oracle/helix/record.patch`, runs Helix's own integration harness, and
+uploads the JSON artifact for review and commit. Helix is never built on a
+developer machine.
+
+`helixCassette.test.zig` replays the committed data against the native engine
+via `zig build test` / `zig build test-oracle`. The first corpus covers ASCII
+documents, a single starting cursor, final normal mode, and the selection
+count. Helix selection ranges and registers are recorded raw but not asserted
+yet. See [scripts/oracle/README.md](../scripts/oracle/README.md) for the
+`check`/`record` workflow and artifact flow.
+
+The cassette suite is strict: every recorded cursor and, when present, every
+cursor position in a multi-cursor set is asserted. `zig build test-oracle` is a
+separate test binary from `zig build test`; its CI job is allowed to fail until
+the native engine divergences it exposes are fixed. No cases or cursor
+assertions are excluded. Helix selection ranges and registers are recorded raw
+but not asserted yet.
+
+Tutor coverage is tracked explicitly. Covered: basic `hjkl`, character and
+multi-cursor deletion, insert/append/open variants, line selection/delete,
+change, replace, text objects, registers, surround, search selection, and
+multi-cursor edits. Still uncovered or known-divergent: select/extend and
+collapse mode, counts with cursor assertions, undo cursor restoration, copy
+selection to next line (`C`), split selections on lines, regex selection,
+join/indent/increment, macros, match mode, comments, and the window/split
+chapters. Those are engine gaps or UI-only features, not silently skipped
+requirements.

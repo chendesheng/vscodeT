@@ -1,0 +1,48 @@
+{
+  "case": "bulk_hx_line_x_5",
+  "engine": "helix",
+  "keys": [
+    "x",
+    "d"
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      1
+    ],
+    "text": "red\ngreen\nblue\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        1,
+        1
+      ],
+      "cursors": [
+        [
+          1,
+          1
+        ]
+      ],
+      "mode": "normal",
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            1
+          ],
+          "head": [
+            1,
+            2
+          ]
+        }
+      ],
+      "text": "green\nblue\n"
+    }
+  ],
+  "width": 60
+}

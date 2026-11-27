@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_insertA_3",
+  "width": 60,
+  "seed": {
+    "text": "foo bar baz\n",
+    "cursor": [
+      1,
+      1
+    ]
+  },
+  "keys": [
+    "A",
+    "X",
+    "<Esc>"
+  ],
+  "states": [
+    {
+      "text": "foo bar bazX\n",
+      "cursor": [
+        1,
+        12
+      ],
+      "mode": "normal"
+    }
+  ]
+}

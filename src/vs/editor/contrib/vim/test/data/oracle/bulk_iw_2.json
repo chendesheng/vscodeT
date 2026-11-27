@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_iw_2",
+  "width": 60,
+  "seed": {
+    "text": "a b c d e\n",
+    "cursor": [
+      1,
+      1
+    ]
+  },
+  "keys": [
+    "d",
+    "i",
+    "w"
+  ],
+  "states": [
+    {
+      "text": " b c d e\n",
+      "cursor": [
+        1,
+        1
+      ],
+      "mode": "normal"
+    }
+  ]
+}

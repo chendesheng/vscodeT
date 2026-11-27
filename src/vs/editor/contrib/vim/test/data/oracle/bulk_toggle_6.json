@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_toggle_6",
+  "width": 60,
+  "seed": {
+    "text": "x y z\n",
+    "cursor": [
+      1,
+      3
+    ]
+  },
+  "keys": [
+    "~"
+  ],
+  "states": [
+    {
+      "text": "x Y z\n",
+      "cursor": [
+        1,
+        4
+      ],
+      "mode": "normal"
+    }
+  ]
+}

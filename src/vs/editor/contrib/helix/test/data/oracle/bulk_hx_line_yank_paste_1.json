@@ -1,0 +1,49 @@
+{
+  "case": "bulk_hx_line_yank_paste_1",
+  "engine": "helix",
+  "keys": [
+    "x",
+    "y",
+    "p"
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      1
+    ],
+    "text": "one\ntwo\nthree\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        2,
+        4
+      ],
+      "cursors": [
+        [
+          2,
+          4
+        ]
+      ],
+      "mode": "normal",
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            2,
+            1
+          ],
+          "head": [
+            3,
+            1
+          ]
+        }
+      ],
+      "text": "one\none\ntwo\nthree\n"
+    }
+  ],
+  "width": 60
+}

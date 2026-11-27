@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "insert_i",
+  "width": 60,
+  "seed": {
+    "text": "abc\n",
+    "cursor": [
+      1,
+      1
+    ]
+  },
+  "keys": [
+    "i",
+    "X",
+    "<Esc>"
+  ],
+  "states": [
+    {
+      "text": "Xabc\n",
+      "cursor": [
+        1,
+        1
+      ],
+      "mode": "normal"
+    }
+  ]
+}

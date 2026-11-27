@@ -1,0 +1,209 @@
+diff --git a/helix-term/tests/integration.rs b/helix-term/tests/integration.rs
+index 469242e..cb03f2c 100644
+--- a/helix-term/tests/integration.rs
++++ b/helix-term/tests/integration.rs
+@@ -21,5 +21,6 @@ async fn hello_world() -> anyhow::Result<()> {
+     mod commands;
+     mod languages;
+     mod movement;
++    mod record;
+     mod splits;
+ }
+diff --git a/helix-term/tests/test/record.rs b/helix-term/tests/test/record.rs
+new file mode 100644
+index 0000000..433289c
+--- /dev/null
++++ b/helix-term/tests/test/record.rs
+@@ -0,0 +1,192 @@
++// CI-only cassette recorder for the vscodeT Helix oracle.
++//
++// This file is added by scripts/oracle/helix/record.patch and is never part of
++// a normal Helix build. The GitHub workflow points HELIX_ORACLE_IN at the
++// committed scenario JSON and HELIX_ORACLE_OUT at an artifact directory.
++
++use std::env;
++use std::fs;
++use std::path::{Path, PathBuf};
++
++use anyhow::{bail, Context, Result};
++use helix_core::{Range, Rope, Selection, Transaction};
++use helix_term::application::Application;
++use helix_view::{current, current_ref};
++use serde_json::{json, Value};
++
++use super::helpers::{test_key_sequence, AppBuilder};
++
++/// Byte offset of a 1-based line/byte-column position.
++fn char_offset(text: &str, line: usize, byte_column: usize) -> Result<usize> {
++    if line == 0 || byte_column == 0 {
++        bail!("cursor positions are 1-based");
++    }
++    let mut offset = 0usize;
++    for (index, current) in text.split_inclusive('\n').enumerate() {
++        if index + 1 == line {
++            let line_bytes = current.strip_suffix('\n').unwrap_or(current);
++            let byte_in_line = byte_column - 1;
++            if byte_in_line > line_bytes.len() {
++                bail!("cursor column {byte_column} is past line {line}");
++            }
++            if !line_bytes.is_char_boundary(byte_in_line) {
++                bail!("cursor column {byte_column} is not a character boundary");
++            }
++            return Ok(offset + byte_in_line);
++        }
++        offset += current.len();
++    }
++    bail!("cursor line {line} is past the end of the document")
++}
++
++/// Replaces the document and seeds one Helix one-grapheme selection per
++/// cursor position. `cursors` are 1-based line/byte-column pairs.
++fn seed_editor(app: &mut Application, text: &str, cursors: &[(usize, usize)]) -> Result<()> {
++    if cursors.is_empty() {
++        bail!("seed has no cursors");
++    }
++    let char_count = text.chars().count();
++    let mut ranges = Vec::with_capacity(cursors.len());
++    for (line, column) in cursors {
++        let byte_offset = char_offset(text, *line, *column)?;
++        let char_index = text[..byte_offset].chars().count();
++        ranges.push(if char_index < char_count {
++            Range::new(char_index, char_index + 1)
++        } else {
++            Range::point(char_index)
++        });
++    }
++    let selection = Selection::new(ranges.into(), 0);
++
++    let (view, doc) = helix_view::current!(app.editor);
++    let transaction = Transaction::change_by_selection(doc.text(), doc.selection(view.id), |_| {
++        (0, doc.text().len_chars(), Some(text.into()))
++    })
++    .with_selection(selection);
++    doc.apply(&transaction, view.id);
++    Ok(())
++}
++
++fn helix_keys(tokens: &[String]) -> Result<String> {
++    let mut keys = String::new();
++    for token in tokens {
++        match token.as_str() {
++            "<Esc>" | "<Escape>" => keys.push_str("<esc>"),
++            "<CR>" | "<Enter>" => keys.push_str("<ret>"),
++            "<Tab>" => keys.push_str("<tab>"),
++            "<BS>" | "<Backspace>" => keys.push_str("<backspace>"),
++            "<Space>" => keys.push_str("<space>"),
++            "<lt>" => keys.push_str("<lt>"),
++            other if other.starts_with("<C-") || other.starts_with("<A-") => keys.push_str(other),
++            other if other.chars().count() == 1 => keys.push_str(other),
++            other => bail!("unsupported Helix cassette key token {other:?}"),
++        }
++    }
++    Ok(keys)
++}
++
++fn position_of(text: &Rope, char_idx: usize) -> Value {
++    let line = text.char_to_line(char_idx);
++    let line_start = text.line_to_char(line);
++    let column = text.char_to_byte(char_idx) - text.char_to_byte(line_start) + 1;
++    json!([line + 1, column])
++}
++
++fn state_of(app: &Application) -> Value {
++    let (view, doc) = current_ref!(app.editor);
++    let text = doc.text();
++    let selection = doc.selection(view.id);
++    let cursor = selection.primary().cursor(text.slice(..));
++    let cursors: Vec<Value> = selection
++        .ranges()
++        .iter()
++        .map(|range| position_of(text, range.cursor(text.slice(..))))
++        .collect();
++    let selections: Vec<Value> = selection
++        .ranges()
++        .iter()
++        .map(|range| {
++            json!({
++                "anchor": position_of(text, range.anchor),
++                "head": position_of(text, range.head),
++            })
++        })
++        .collect();
++    json!({
++        "text": text.to_string(),
++        "cursor": position_of(text, cursor),
++        "cursors": cursors,
++        "mode": app.editor.mode.to_string(),
++        "selection_count": selection.ranges().len(),
++        "selections": selections,
++    })
++}
++
++fn write_state(app: &Application, case: &Value, out_path: &Path) {
++    let mut recorded = case.clone();
++    recorded["reference_version"] = json!("helix 25.07.1");
++    recorded["states"] = json!([state_of(app)]);
++    let bytes = serde_json::to_string_pretty(&recorded).expect("serialize cassette");
++    fs::write(out_path, bytes + "\n").expect("write cassette");
++}
++
++#[tokio::test(flavor = "multi_thread")]
++async fn record_cassettes() -> Result<()> {
++    let (Ok(input_dir), Ok(output_dir)) = (env::var("HELIX_ORACLE_IN"), env::var("HELIX_ORACLE_OUT")) else {
++        eprintln!("HELIX_ORACLE_IN/HELIX_ORACLE_OUT unset; skipping cassette recording");
++        return Ok(());
++    };
++    let input_dir = PathBuf::from(input_dir);
++    let output_dir = PathBuf::from(output_dir);
++    fs::create_dir_all(&output_dir)?;
++
++    let mut paths: Vec<_> = fs::read_dir(&input_dir)?
++        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
++        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
++        .collect();
++    paths.sort();
++
++    for path in paths {
++        let case: Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
++        let case_name = case["case"].as_str().context("cassette is missing 'case'")?;
++        let text = case["seed"]["text"].as_str().context("cassette is missing seed.text")?;
++        let cursor = case["seed"]["cursor"].as_array().context("cassette is missing seed.cursor")?;
++        let line = cursor.first().and_then(Value::as_u64).context("invalid seed.cursor line")? as usize;
++        let column = cursor.get(1).and_then(Value::as_u64).context("invalid seed.cursor column")? as usize;
++        let cursors: Vec<(usize, usize)> = if let Some(values) = case["seed"]["cursors"].as_array() {
++            values
++                .iter()
++                .map(|value| {
++                    let pair = value.as_array().context("invalid seed.cursors entry")?;
++                    let line = pair.first().and_then(Value::as_u64).context("invalid seed.cursors line")? as usize;
++                    let column = pair.get(1).and_then(Value::as_u64).context("invalid seed.cursors column")? as usize;
++                    Ok((line, column))
++                })
++                .collect::<Result<_>>()?
++        } else {
++            vec![(line, column)]
++        };
++        let tokens: Vec<String> = case["keys"]
++            .as_array()
++            .context("cassette is missing keys")?
++            .iter()
++            .map(|value| value.as_str().map(str::to_owned).context("invalid key token"))
++            .collect::<Result<_>>()?;
++
++        let keys = helix_keys(&tokens)?;
++        let out_path = output_dir.join(path.file_name().context("cassette has no filename")?);
++        let mut app = AppBuilder::default().build()?;
++        seed_editor(&mut app, text, &cursors)?;
++        test_key_sequence(
++            &mut app,
++            Some(&keys),
++            Some(&|app: &Application| write_state(app, &case, &out_path)),
++            false,
++        )
++        .await
++        .with_context(|| format!("recording {case_name}"))?;
++        eprintln!("recorded {case_name}");
++    }
++
++    Ok(())
++}

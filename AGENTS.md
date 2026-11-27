@@ -18,6 +18,15 @@ with `git submodule update --init --depth 1`. Do not bump either pin in an
 unrelated change: the generated extension-host protocol table and the port
 inventory are tied to the `vscode` commit.
 
+`helix/` is a third shallow submodule, pinned to Helix 25.07.1 at commit
+`a05c151bb6e8e9c65ec390b0ae2afe7a5efd619b`. It is an oracle source for the
+Helix reference cassette recordings: not a port target, never edited in this
+repository, and not built locally. Initialize it only for cassette work
+(`git submodule update --init --depth 1 helix`); normal CI must initialize only
+the upstream submodules it needs. The Helix pin is tied to
+`scripts/oracle/helix/record.patch` and the committed cassettes; bump all three
+together.
+
 ## Source layout
 
 - Mirror the upstream file and folder structure exactly throughout `src/vs/`

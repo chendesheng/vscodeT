@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_de_11",
+  "width": 60,
+  "seed": {
+    "text": "jump over lazy\n",
+    "cursor": [
+      1,
+      6
+    ]
+  },
+  "keys": [
+    "d",
+    "e"
+  ],
+  "states": [
+    {
+      "text": "jump  lazy\n",
+      "cursor": [
+        1,
+        6
+      ],
+      "mode": "normal"
+    }
+  ]
+}

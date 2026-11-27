@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_paren_0",
+  "width": 60,
+  "seed": {
+    "text": "f(a, b)\n",
+    "cursor": [
+      1,
+      3
+    ]
+  },
+  "keys": [
+    "d",
+    "i",
+    "("
+  ],
+  "states": [
+    {
+      "text": "f()\n",
+      "cursor": [
+        1,
+        3
+      ],
+      "mode": "normal"
+    }
+  ]
+}

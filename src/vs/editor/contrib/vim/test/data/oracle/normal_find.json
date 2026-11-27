@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "normal_find",
+  "width": 60,
+  "seed": {
+    "text": "abcabc\n",
+    "cursor": [
+      1,
+      1
+    ]
+  },
+  "keys": [
+    "f",
+    "b",
+    ";",
+    ","
+  ],
+  "states": [
+    {
+      "text": "abcabc\n",
+      "cursor": [
+        1,
+        2
+      ],
+      "mode": "normal"
+    }
+  ]
+}

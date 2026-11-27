@@ -1,0 +1,4 @@
+# Pinned Neovim used by the local recorder and the record-cassettes workflow.
+NEOVIM_VERSION=v0.10.4
+NEOVIM_TARBALL=nvim-linux-x86_64.tar.gz
+NEOVIM_URL=https://github.com/neovim/neovim/releases/download/v0.10.4/nvim-linux-x86_64.tar.gz

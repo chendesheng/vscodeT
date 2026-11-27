@@ -1,0 +1,49 @@
+{
+  "case": "open_O",
+  "engine": "helix",
+  "keys": [
+    "O",
+    "X",
+    "<Esc>"
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      1
+    ],
+    "text": "abc\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        1,
+        2
+      ],
+      "cursors": [
+        [
+          1,
+          2
+        ]
+      ],
+      "mode": "normal",
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            2
+          ],
+          "head": [
+            2,
+            1
+          ]
+        }
+      ],
+      "text": "X\nabc\n"
+    }
+  ],
+  "width": 60
+}

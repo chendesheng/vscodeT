@@ -1,0 +1,51 @@
+{
+  "case": "textobj_word_second",
+  "engine": "helix",
+  "keys": [
+    "w",
+    "m",
+    "i",
+    "w",
+    "d"
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      1
+    ],
+    "text": "one two\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        1,
+        4
+      ],
+      "cursors": [
+        [
+          1,
+          4
+        ]
+      ],
+      "mode": "normal",
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            4
+          ],
+          "head": [
+            1,
+            5
+          ]
+        }
+      ],
+      "text": "onetwo\n"
+    }
+  ],
+  "width": 60
+}

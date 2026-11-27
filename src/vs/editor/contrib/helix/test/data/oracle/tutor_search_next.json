@@ -1,0 +1,52 @@
+{
+  "case": "tutor_search_next",
+  "engine": "helix",
+  "keys": [
+    "/",
+    "t",
+    "w",
+    "o",
+    "<CR>",
+    "n"
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      1
+    ],
+    "text": "one two one\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        1,
+        7
+      ],
+      "cursors": [
+        [
+          1,
+          7
+        ]
+      ],
+      "mode": "normal",
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            5
+          ],
+          "head": [
+            1,
+            8
+          ]
+        }
+      ],
+      "text": "one two one\n"
+    }
+  ],
+  "width": 60
+}

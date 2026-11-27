@@ -1,0 +1,49 @@
+{
+  "case": "normal_motions",
+  "engine": "helix",
+  "keys": [
+    "w",
+    "b",
+    "e"
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      1
+    ],
+    "text": "one two three\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        1,
+        3
+      ],
+      "cursors": [
+        [
+          1,
+          3
+        ]
+      ],
+      "mode": "normal",
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            1
+          ],
+          "head": [
+            1,
+            4
+          ]
+        }
+      ],
+      "text": "one two three\n"
+    }
+  ],
+  "width": 60
+}

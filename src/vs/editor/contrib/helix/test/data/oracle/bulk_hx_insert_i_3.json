@@ -1,0 +1,49 @@
+{
+  "case": "bulk_hx_insert_i_3",
+  "engine": "helix",
+  "keys": [
+    "i",
+    "X",
+    "<Esc>"
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      1
+    ],
+    "text": "alpha beta\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        1,
+        2
+      ],
+      "cursors": [
+        [
+          1,
+          2
+        ]
+      ],
+      "mode": "normal",
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            3
+          ],
+          "head": [
+            1,
+            2
+          ]
+        }
+      ],
+      "text": "Xalpha beta\n"
+    }
+  ],
+  "width": 60
+}

@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_insertA_7",
+  "width": 60,
+  "seed": {
+    "text": "  indented text\n",
+    "cursor": [
+      1,
+      3
+    ]
+  },
+  "keys": [
+    "A",
+    "X",
+    "<Esc>"
+  ],
+  "states": [
+    {
+      "text": "  indented textX\n",
+      "cursor": [
+        1,
+        16
+      ],
+      "mode": "normal"
+    }
+  ]
+}
