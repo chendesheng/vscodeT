@@ -2487,3 +2487,13 @@ Workbench focus changes are delivered from the active editor/group, quick-input
 show/hide, modal dialog, search-input focus and terminal active-instance events.
 EditorPart forwards these to the mounted editor views and TerminalInstance owns
 encoding its PTY focus report; frame painting does not synchronize focus.
+
+
+### Extension language status
+
+The portable language-status service uses the existing language-feature registry
+and selector scoring. The `status.languageStatus` contribution follows the active
+text editor and model language, with severity ordering and a progress indicator
+for busy items. The terminal's status bar exposes the combined tooltip as plain
+text rather than browser DOM/animated codicons. Dedicated status pinning and
+interactive tooltip links/commands remain portable work, not terminal limits.

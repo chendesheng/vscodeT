@@ -352,6 +352,9 @@ pub const TerminalWorkbench = struct {
     views_registry: views_mod.ViewsRegistry,
     view_descriptor_service: ViewDescriptorService,
     statusbar: StatusbarService,
+    language_status: @import("../vs/workbench/services/languageStatus/common/languageStatusService.zig").LanguageStatusService,
+    language_status_api: @import("../vs/workbench/services/languageStatus/common/languageStatusService.zig").ILanguageStatusService,
+    language_status_contribution: ?*@import("../vs/workbench/contrib/languageStatus/browser/languageStatus.zig").LanguageStatusContribution,
     statusbar_api: statusbar_types.IStatusbarService,
     notification_storage: storage_mod.InMemoryStorageService,
     notification_service: *@import("../vs/workbench/services/notification/common/notificationService.zig").NotificationService,
@@ -1327,6 +1330,13 @@ pub const TerminalWorkbench = struct {
         self.editors = .{ .part = self.part, .opening = &self.editor_opening };
         self.code_editors.opening = .{ .context = &self.editor_opening, .open = editor_service_mod.EditorOpening.requestOpenCodeEditor };
         self.editor_api = self.editors.interface();
+        self.language_status_api = self.language_status.interface();
+        _ = try self.services.set(@import("../vs/workbench/services/languageStatus/common/languageStatusService.zig").language_status_service_id, &self.language_status_api);
+        self.language_status_contribution = try @import("../vs/workbench/contrib/languageStatus/browser/languageStatus.zig").LanguageStatusContribution.create(self.allocator, self.language_status_api, &self.statusbar, self.editors);
+        errdefer {
+            self.language_status_contribution.?.deinit();
+            self.language_status_contribution = null;
+        }
         _ = try self.services.set(@import("../vs/workbench/services/editor/common/editorService.zig").editor_service_id, &self.editor_api);
         const scm_view = try self.scm.ensureViewService(self.editor_api);
         _ = try self.services.set(@import("../vs/workbench/contrib/scm/common/scm.zig").scm_view_service_id, scm_view);
@@ -1484,6 +1494,9 @@ pub const TerminalWorkbench = struct {
         self.layout.notification_service = self.notification_api;
         self.statusbar = try StatusbarService.init(self.allocator);
         errdefer self.statusbar.deinit();
+        self.language_status = .init(self.allocator);
+        errdefer self.language_status.deinit();
+        self.language_status_contribution = null;
         try self.statusbar.main_part.base.register(layout_service);
         self.activity_service = ActivityService.init(self.allocator);
         errdefer self.activity_service.deinit();
@@ -1676,6 +1689,7 @@ pub const TerminalWorkbench = struct {
         self.activity_service.deinit();
         self.core.disposeNotifications();
         self.host_service.deinit();
+        self.language_status.deinit();
         self.statusbar.deinit();
         self.notification_service.deinit();
         self.notification_storage.deinit();
@@ -1842,6 +1856,8 @@ pub const TerminalWorkbench = struct {
     }
 
     pub fn deinit(self: *TerminalWorkbench) void {
+        if (self.language_status_contribution) |contribution| contribution.deinit();
+        self.language_status_contribution = null;
         if (self.json_client) |client| client.attachWindow(null);
         self.text_model_resolver.cancelPendingSaves();
         self.deinitBulkEditPreview();

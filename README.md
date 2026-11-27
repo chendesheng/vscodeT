@@ -494,7 +494,8 @@ Node host. With Zig and ZLS installed locally, set `"zig.path"`,
 `"zig.zls.path"` and `"zig.zls.enabled": "on"` in the VS Code settings used
 by the editor. The real Zig extension 0.7.0 with Zig/ZLS 0.17.0 has been
 verified to activate from a standalone Zig file and a workspace containing
-`build.zig`, and return hover content from ZLS. The full LSP capability matrix
+`build.zig`, return hover content from ZLS, and publish both Zig language
+status items to the status bar. The full LSP capability matrix
 is still in progress; see [the integration plan](docs/zig-extension-lsp-plan.md).
 
 `zig build json-server` builds and installs the optional standalone JSON server.

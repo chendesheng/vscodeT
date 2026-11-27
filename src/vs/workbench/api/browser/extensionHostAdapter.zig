@@ -153,6 +153,7 @@ pub const Extensions = struct {
     scroll_listener_editor: ?*Editor = null,
     inline_completions: @import("inlineCompletionSession.zig").Session = undefined,
     language_features_actor: ?MainThreadLanguageFeatures = null,
+    languages_actor: ?@import("mainThreadLanguages.zig").MainThreadLanguages = null,
     quick_diff_actor: ?MainThreadQuickDiff = null,
     document_content_actor: ?MainThreadDocumentContentProviders = null,
     bulk_edit_actor: ?@import("mainThreadBulkEdits.zig").MainThreadBulkEdits = null,
@@ -345,6 +346,8 @@ pub const Extensions = struct {
         errdefer self.document_content_actor.?.deinit();
         self.bulk_edit_actor = .{ .allocator = allocator, .service = services.bulk_edit };
         errdefer self.bulk_edit_actor.?.deinit();
+        self.languages_actor = .init(allocator, services.language_status);
+        errdefer self.languages_actor.?.deinit();
         self.registerActors();
         self.initLanguageActors() catch |err| {
             std.log.warn("language feature actors unavailable: {s}", .{@errorName(err)});
@@ -397,6 +400,7 @@ pub const Extensions = struct {
             self.diagnostics_actor = null;
         }
         if (self.language_features_actor) |*actor| actor.deinit();
+        if (self.languages_actor) |*actor| actor.deinit();
         if (self.storage_actor) |*actor| actor.deinit();
         if (self.statusbar_actor) |*actor| actor.deinit();
         if (self.commands_actor) |*actor| actor.deinit();
@@ -436,6 +440,8 @@ pub const Extensions = struct {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeDocumentContentProviders });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadQuickDiff)) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeQuickDiff });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadLanguages)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeLanguages });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadFileSystem)) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeFileSystem });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadStorage)) {
@@ -609,6 +615,16 @@ pub const Extensions = struct {
         const self: *Extensions = @ptrCast(@alignCast(context));
         if (self.diagnostics_actor) |actor| return actor.invoke(method, args, arena);
         return .empty;
+    }
+
+    fn invokeLanguages(context: *anyopaque, method: []const u8, args: []const rpc.Arg, _: ?@import("../../../base/common/cancellation.zig").CancellationToken, _: Allocator) anyerror!rpc.HandlerReply {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        if (self.languages_actor) |*actor| {
+            const reply = try actor.invoke(method, args);
+            self.requestRender();
+            return reply;
+        }
+        return .{ .err = .{ .name = "Unavailable", .message = method } };
     }
 
     fn invokeFileSystem(context: *anyopaque, method: []const u8, args: []const rpc.Arg, _: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
@@ -3594,19 +3610,34 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const features = workbench.language_features.?;
             const token = @import("../../../base/common/cancellation.zig").CancellationToken.None;
             const deadline = time_compat.milliTimestamp() + 30_000;
+            var hover_received = false;
             while (time_compat.milliTimestamp() < deadline) {
                 _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                const statuses = try workbench.language_status.getLanguageStatus(allocator, model);
+                defer allocator.free(statuses);
+                var zig_status = false;
+                var zls_status = false;
+                for (statuses) |status| {
+                    zig_status = zig_status or std.mem.endsWith(u8, status.id, "/zig.status");
+                    zls_status = zls_status or std.mem.endsWith(u8, status.id, "/zig.zls.status");
+                }
+                if (hover_received and zig_status and zls_status) {
+                    try std.testing.expect(workbench.statusbar.model().findEntry("status.languageStatus") != null);
+                    model.setLanguage("plaintext");
+                    try std.testing.expect(workbench.statusbar.model().findEntry("status.languageStatus") == null);
+                    return;
+                }
                 const providers = try features.hover_provider.ordered(allocator, model, false);
                 defer allocator.free(providers);
                 for (providers) |provider| {
                     const result = provider.provide_hover(provider.context, model, Position.init(3, 32), token, null) catch continue;
                     if (result) |hover| for (hover.contents) |contents| {
-                        if (std.mem.indexOf(u8, contents.value, "answer") != null) return;
+                        if (std.mem.indexOf(u8, contents.value, "answer") != null) hover_received = true;
                     };
                 }
                 time_compat.sleepMillis(20);
             }
-            return error.ZlsHoverNotReceived;
+            return if (hover_received) error.ZigLanguageStatusNotReceived else error.ZlsHoverNotReceived;
         }
 
         test "Extensions: real TypeScript extension drives the language features" {
