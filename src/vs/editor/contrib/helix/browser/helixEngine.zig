@@ -11,6 +11,7 @@ const ArrayList = std.array_list.Managed;
 const Position = @import("../../../common/core/position.zig").Position;
 const Range = @import("../../../common/core/range.zig").Range;
 const Selection = @import("../../../common/core/selection.zig").Selection;
+const helixSelection = @import("./helixSelection.zig");
 const bracket_text_objects = @import("../../../common/model/bracketPairsTextModelPart/bracketTextObjects.zig");
 const InternalModelContentChangeEvent = @import("../../../common/textModelEvents.zig").InternalModelContentChangeEvent;
 const extension_api = @import("../../../../workbench/api/common/extensionApi.zig");
@@ -165,6 +166,10 @@ pub const HelixEngine = struct {
     search_is_regex: bool = true,
     case_mode: CaseMode = .smart,
     last_search_match: ?Range = null,
+    /// Remembered target column for repeated vertical moves. Mirrors Helix's
+    /// per-range `old_visual_position`: crossing a shorter line clamps the
+    /// caret but keeps the column for the next vertical move.
+    desired_column: ?usize = null,
     /// Selections when the `/` or `?` prompt opened. Incremental previews
     /// always search from this head, and Escape restores these selections.
     search_origin: ?[]Selection = null,
@@ -172,6 +177,13 @@ pub const HelixEngine = struct {
     last_insert_text: ArrayList(u8),
     insert_buffer: ArrayList(u8),
     insert_segment: ?InsertSegment = null,
+    /// Helix insert-mode ranges while an insert session is active. They are
+    /// mapped through the typed edits so Esc can produce the same selection
+    /// the reference produces (Helix `Document::selections`).
+    insert_ranges: ArrayList(helixSelection.Range),
+    /// Whether Esc restores the cursor one grapheme to the left. Only
+    /// Helix's `append_mode` (`a`) does that.
+    insert_restore_cursor: bool = false,
     insert_group: bool = false,
     registers: *Registers,
     owns_registers: bool = false,
@@ -212,6 +224,7 @@ pub const HelixEngine = struct {
             .last_selections = ArrayList(Selection).init(allocator),
             .last_insert_text = ArrayList(u8).init(allocator),
             .insert_buffer = ArrayList(u8).init(allocator),
+            .insert_ranges = ArrayList(helixSelection.Range).init(allocator),
             .registers = registers,
             .owns_registers = shared_registers == null,
         };
@@ -229,6 +242,7 @@ pub const HelixEngine = struct {
         self.last_selections.deinit();
         self.last_insert_text.deinit();
         self.insert_buffer.deinit();
+        self.insert_ranges.deinit();
         for (&self.macros) |*macro| {
             if (macro.*) |*list| {
                 clearRecordedKeys(self.allocator, list);
@@ -245,6 +259,33 @@ pub const HelixEngine = struct {
 
     pub fn setHistoryService(self: *HelixEngine, history: extension_api.IHistoryService) void {
         self.history = history;
+    }
+
+    /// Helix-visible selections. While an insert session is active the editor
+    /// only holds the insertion points; the recorded Helix ranges are the
+    /// mapped insert ranges.
+    pub fn activeSelections(self: *HelixEngine, allocator: Allocator) ![]Selection {
+        if (self.mode == .insert and self.insert_ranges.items.len > 0) {
+            const result = try allocator.alloc(Selection, self.insert_ranges.items.len);
+            for (self.insert_ranges.items, 0..) |range, index| {
+                result[index] = self.selectionFromRange(range);
+            }
+            return result;
+        }
+        return self.editor.getSelections(allocator);
+    }
+
+    /// Primary Helix-visible selection (index 0, matching the editor's primary
+    /// cursor ordering).
+    pub fn activePrimarySelection(self: *HelixEngine) Selection {
+        if (self.mode == .insert and self.insert_ranges.items.len > 0) {
+            return self.selectionFromRange(self.insert_ranges.items[0]);
+        }
+        const selections = self.editor.getSelections(self.allocator) catch
+            return Selection.init(1, 1, 1, 1);
+        defer self.allocator.free(selections);
+        if (selections.len == 0) return Selection.init(1, 1, 1, 1);
+        return selections[0];
     }
 
     pub fn statusText(self: *HelixEngine) []const u8 {
@@ -313,6 +354,10 @@ pub const HelixEngine = struct {
             }
         }
         const consumed = try self.dispatchKey(event);
+        // The reference commits pending changes to history after each
+        // non-insert key event; this is what makes `d u` undo the seeded edit
+        // together with the delete while `x d u` undoes only the delete.
+        if (self.mode != .insert) self.editor.commitUndoGroup();
         return consumed;
     }
 
@@ -343,6 +388,36 @@ pub const HelixEngine = struct {
     fn rememberSelections(self: *HelixEngine, selections: []const Selection) !void {
         self.last_selections.clearRetainingCapacity();
         try self.last_selections.appendSlice(selections);
+    }
+
+    /// Byte length of the model text used by the Helix offset helpers.
+    fn modelLength(self: *HelixEngine) usize {
+        return self.editor.model.getValueLength(.LF, false);
+    }
+
+    fn selectionRange(self: *HelixEngine, selection: Selection) helixSelection.Range {
+        return .{
+            .anchor = self.editor.model.getOffsetAt(selection.getSelectionStart()),
+            .head = self.editor.model.getOffsetAt(selection.getPosition()),
+        };
+    }
+
+    fn selectionFromRange(self: *HelixEngine, range: helixSelection.Range) Selection {
+        const length = self.modelLength();
+        const anchor = self.editor.model.getPositionAt(@min(range.anchor, length));
+        const head = self.editor.model.getPositionAt(@min(range.head, length));
+        return Selection.init(anchor.lineNumber, anchor.column, head.lineNumber, head.column);
+    }
+
+    fn ensureSelection(self: *HelixEngine, text: []const u8, selection: Selection) Selection {
+        return self.selectionFromRange(helixSelection.ensureInvariants(text, self.selectionRange(selection)));
+    }
+
+    /// Helix `Range::cursor()`: the block-cursor position of a selection.
+    fn selectionCursor(self: *HelixEngine, selection: Selection) Position {
+        var text = self.modelValue() catch return selection.getPosition();
+        defer text.deinit();
+        return self.editor.model.getPositionAt(self.selectionRange(selection).cursor(text.items));
     }
 
     fn clampPosition(self: *HelixEngine, position: Position) Position {
@@ -497,23 +572,23 @@ pub const HelixEngine = struct {
     }
 
     fn normalizeSelections(self: *HelixEngine, selections: []const Selection) ![]Selection {
+        var text = try self.modelValue();
+        defer text.deinit();
+
         const copy = try self.allocator.alloc(Selection, selections.len);
-        errdefer self.allocator.free(copy);
+        defer self.allocator.free(copy);
         for (selections, 0..) |selection, index| {
-            const start = self.clampPosition(selection.getSelectionStart());
-            const end = self.clampPosition(selection.getPosition());
-            copy[index] = Selection.init(start.lineNumber, start.column, end.lineNumber, end.column);
+            copy[index] = self.ensureSelection(text.items, selection);
         }
+
         const Context = struct {
             engine: *HelixEngine,
             fn lessThan(context: @This(), a: Selection, b: Selection) bool {
-                const a_offset = context.engine.editor.model.getOffsetAt(a.getStartPosition());
-                const b_offset = context.engine.editor.model.getOffsetAt(b.getStartPosition());
-                if (a_offset == b_offset) {
-                    return context.engine.editor.model.getOffsetAt(a.getEndPosition()) <
-                        context.engine.editor.model.getOffsetAt(b.getEndPosition());
-                }
-                return a_offset < b_offset;
+                const a_range = context.engine.selectionRange(a);
+                const b_range = context.engine.selectionRange(b);
+                if (a_range.from() != b_range.from()) return a_range.from() < b_range.from();
+                if (a_range.upper() != b_range.upper()) return a_range.upper() < b_range.upper();
+                return a_range.anchor < b_range.anchor;
             }
         };
         std.mem.sort(Selection, copy, Context{ .engine = self }, Context.lessThan);
@@ -521,23 +596,17 @@ pub const HelixEngine = struct {
         var output = ArrayList(Selection).init(self.allocator);
         errdefer output.deinit();
         for (copy) |selection| {
-            const start_offset = self.editor.model.getOffsetAt(selection.getStartPosition());
-            const end_offset = self.editor.model.getOffsetAt(selection.getEndPosition());
             if (output.items.len > 0) {
-                var previous = &output.items[output.items.len - 1];
-                const previous_start = self.editor.model.getOffsetAt(previous.getStartPosition());
-                const previous_end = self.editor.model.getOffsetAt(previous.getEndPosition());
-                if (start_offset == previous_start and end_offset == previous_end) continue;
-                if (start_offset < previous_end) {
-                    const start = if (previous_start <= start_offset) previous.getStartPosition() else selection.getStartPosition();
-                    const end = if (previous_end >= end_offset) previous.getEndPosition() else selection.getEndPosition();
-                    previous.* = Selection.init(start.lineNumber, start.column, end.lineNumber, end.column);
+                const previous = &output.items[output.items.len - 1];
+                const previous_range = self.selectionRange(previous.*);
+                const range = self.selectionRange(selection);
+                if (helixSelection.overlaps(previous_range, range)) {
+                    previous.* = self.selectionFromRange(helixSelection.merge(previous_range, range));
                     continue;
                 }
             }
             try output.append(selection);
         }
-        self.allocator.free(copy);
         if (output.items.len == 0) {
             try output.append(Selection.init(1, 1, 1, 1));
         }
@@ -588,54 +657,147 @@ pub const HelixEngine = struct {
         return index;
     }
 
-    fn nextWordStart(text: []const u8, start: usize, count: usize, big: bool) usize {
-        var offset = @min(start, text.len);
-        var remaining = @max(count, 1);
-        while (remaining > 0) : (remaining -= 1) {
-            if (offset >= text.len) break;
-            const class: *const fn ([]const u8, usize) u8 = if (big) wordClassBigAt else wordClassAt;
-            const current = class(text, offset);
-            while (offset < text.len and class(text, offset) == current) offset = nextCodepointOffset(text, offset);
-            while (offset < text.len and class(text, offset) == 0) offset = nextCodepointOffset(text, offset);
-        }
-        return offset;
+    const CharCategory = enum { eol, whitespace, word, punctuation, unknown };
+
+    fn isLineEndingCp(ch: u21) bool {
+        return ch == '\n' or ch == '\r';
     }
 
-    fn prevWordStart(text: []const u8, start: usize, count: usize, big: bool) usize {
-        var offset = @min(start, text.len);
-        var remaining = @max(count, 1);
-        const class: *const fn ([]const u8, usize) u8 = if (big) wordClassBigAt else wordClassAt;
-        while (remaining > 0) : (remaining -= 1) {
-            if (offset == 0) break;
-            offset = prevCodepointOffset(text, offset);
-            while (offset > 0 and class(text, offset) == 0) offset = prevCodepointOffset(text, offset);
-            const current = class(text, offset);
-            while (offset > 0) {
-                const previous = prevCodepointOffset(text, offset);
-                if (class(text, previous) != current) break;
-                offset = previous;
-            }
-        }
-        return offset;
+    fn isWhitespaceCp(ch: u21) bool {
+        return switch (ch) {
+            ' ', '\t', 0x0B, 0x0C, 0x00A0, 0x1680 => true,
+            else => false,
+        };
     }
 
-    fn nextWordEnd(text: []const u8, start: usize, count: usize, big: bool) usize {
-        var offset = @min(start, text.len);
+    fn isWordCp(ch: u21) bool {
+        if (ch < 128) return std.ascii.isAlphanumeric(@intCast(ch)) or ch == '_';
+        return true;
+    }
+
+    fn categoryOf(ch: u21) CharCategory {
+        if (isLineEndingCp(ch)) return .eol;
+        if (isWhitespaceCp(ch)) return .whitespace;
+        if (isWordCp(ch)) return .word;
+        if (ch < 128) return .punctuation;
+        return .unknown;
+    }
+
+    fn codepointAt(text: []const u8, offset: usize) ?u21 {
+        if (offset >= text.len) return null;
+        const len = std.unicode.utf8ByteSequenceLength(text[offset]) catch 1;
+        if (offset + len > text.len) return null;
+        return std.unicode.utf8Decode(text[offset .. offset + len]) catch null;
+    }
+
+    fn nextCharOffset(text: []const u8, offset: usize) usize {
+        if (offset >= text.len) return text.len;
+        return @min(offset + (std.unicode.utf8ByteSequenceLength(text[offset]) catch 1), text.len);
+    }
+
+    fn isWordBoundaryCp(a: u21, b: u21) bool {
+        return categoryOf(a) != categoryOf(b);
+    }
+
+    fn isLongWordBoundaryCp(a: u21, b: u21) bool {
+        const a_cat = categoryOf(a);
+        const b_cat = categoryOf(b);
+        return switch (a_cat) {
+            .word => b_cat == .punctuation or b_cat == .whitespace or b_cat == .eol,
+            .punctuation => b_cat == .whitespace or b_cat == .eol,
+            else => a_cat != b_cat,
+        };
+    }
+
+    fn reachedWordTarget(target: WordMotion, big: bool, prev_ch: u21, next_ch: u21) bool {
+        const boundary = if (big) isLongWordBoundaryCp(prev_ch, next_ch) else isWordBoundaryCp(prev_ch, next_ch);
+        return switch (target) {
+            .next_start, .prev_end => boundary and (isLineEndingCp(next_ch) or !isWhitespaceCp(next_ch)),
+            .next_end, .prev_start => boundary and (!isWhitespaceCp(prev_ch) or isLineEndingCp(next_ch)),
+        };
+    }
+
+    /// Helix `movement::word_move` / `range_to_target`.
+    fn wordMove(text: []const u8, range: helixSelection.Range, count: usize, target: WordMotion, big: bool) helixSelection.Range {
+        const is_prev = target == .prev_start or target == .prev_end;
+        if (is_prev and range.head == 0) return range;
+        if (!is_prev and range.head == text.len) return range;
+
+        var current = if (is_prev)
+            (if (range.anchor < range.head)
+                helixSelection.Range{ .anchor = range.head, .head = helixSelection.prevGraphemeBoundary(text, range.head) }
+            else
+                helixSelection.Range{ .anchor = helixSelection.nextGraphemeBoundary(text, range.head), .head = range.head })
+        else
+            (if (range.anchor < range.head)
+                helixSelection.Range{ .anchor = helixSelection.prevGraphemeBoundary(text, range.head), .head = range.head }
+            else
+                helixSelection.Range{ .anchor = range.head, .head = helixSelection.nextGraphemeBoundary(text, range.head) });
+
         var remaining = @max(count, 1);
-        const class: *const fn ([]const u8, usize) u8 = if (big) wordClassBigAt else wordClassAt;
         while (remaining > 0) : (remaining -= 1) {
-            if (offset < text.len) offset = nextCodepointOffset(text, offset);
-            while (offset < text.len and class(text, offset) == 0) offset = nextCodepointOffset(text, offset);
-            if (offset >= text.len) break;
-            const current = class(text, offset);
-            while (true) {
-                const next = nextCodepointOffset(text, offset);
-                if (next >= text.len or class(text, next) != current) break;
-                offset = next;
-            }
-            offset = nextCodepointOffset(text, offset);
+            const next = wordRangeToTarget(text, current, target, big);
+            if (next.anchor == current.anchor and next.head == current.head) break;
+            current = next;
         }
-        return offset;
+        return current;
+    }
+
+    fn wordRangeToTarget(text: []const u8, origin: helixSelection.Range, target: WordMotion, big: bool) helixSelection.Range {
+        const is_prev = target == .prev_start or target == .prev_end;
+        var anchor = origin.anchor;
+        var head = origin.head;
+
+        if (!is_prev) {
+            var prev_ch: ?u21 = if (head > 0) codepointAt(text, prevCodepointOffset(text, head)) else null;
+            while (head < text.len) {
+                const ch = codepointAt(text, head) orelse break;
+                if (!isLineEndingCp(ch)) break;
+                prev_ch = ch;
+                head = nextCharOffset(text, head);
+            }
+            if (prev_ch) |ch| {
+                if (isLineEndingCp(ch)) anchor = head;
+            }
+            const head_start = head;
+            while (head < text.len) {
+                const next_ch = codepointAt(text, head) orelse break;
+                const reached = if (prev_ch) |prev| reachedWordTarget(target, big, prev, next_ch) else true;
+                if (reached) {
+                    if (head == head_start) {
+                        anchor = head;
+                    } else break;
+                }
+                prev_ch = next_ch;
+                head = nextCharOffset(text, head);
+            }
+        } else {
+            var prev_ch: ?u21 = if (head < text.len) codepointAt(text, head) else null;
+            while (head > 0) {
+                const start = prevCodepointOffset(text, head);
+                const ch = codepointAt(text, start) orelse break;
+                if (!isLineEndingCp(ch)) break;
+                prev_ch = ch;
+                head = start;
+            }
+            if (prev_ch) |ch| {
+                if (isLineEndingCp(ch)) anchor = head;
+            }
+            const head_start = head;
+            while (head > 0) {
+                const start = prevCodepointOffset(text, head);
+                const next_ch = codepointAt(text, start) orelse break;
+                const reached = if (prev_ch) |prev| reachedWordTarget(target, big, prev, next_ch) else true;
+                if (reached) {
+                    if (head == head_start) {
+                        anchor = head;
+                    } else break;
+                }
+                prev_ch = next_ch;
+                head = start;
+            }
+        }
+        return .{ .anchor = anchor, .head = head };
     }
 
     fn findCharOffset(text: []const u8, start: usize, needle: []const u8, forward: bool) ?usize {
@@ -927,6 +1089,9 @@ pub const HelixEngine = struct {
             self.count = self.count * 10;
             return true;
         }
+        // Helix only preserves the vertical desired column across a run of
+        // vertical moves.
+        if (char != 'j' and char != 'k') self.desired_column = null;
 
         switch (char) {
             'v' => {
@@ -1108,20 +1273,28 @@ pub const HelixEngine = struct {
     }
 
     fn moveChar(self: *HelixEngine, forward: bool, extend: bool, count: usize) !void {
+        var text = try self.modelValue();
+        defer text.deinit();
         const selections = try self.getSelections();
         defer self.allocator.free(selections);
         const updated = try self.allocator.alloc(Selection, selections.len);
         defer self.allocator.free(updated);
+        const steps = @max(count, 1);
         for (selections, 0..) |selection, index| {
-            const anchor = selection.getSelectionStart();
-            const target = if (forward)
-                try self.rightPosition(selection.getPosition(), count)
-            else
-                try self.leftPosition(selection.getPosition(), count);
+            const range = self.selectionRange(selection);
+            // Helix `move_horizontally` starts from the block cursor, not the
+            // selection head.
+            var target = range.cursor(text.items);
+            for (0..steps) |_| {
+                target = if (forward)
+                    helixSelection.nextGraphemeBoundary(text.items, target)
+                else
+                    helixSelection.prevGraphemeBoundary(text.items, target);
+            }
             if (extend) {
-                updated[index] = Selection.init(anchor.lineNumber, anchor.column, target.lineNumber, target.column);
+                updated[index] = self.selectionFromRange(helixSelection.putCursor(text.items, range, target, true));
             } else {
-                updated[index] = Selection.init(target.lineNumber, target.column, target.lineNumber, target.column);
+                updated[index] = self.selectionFromRange(helixSelection.ensureInvariants(text.items, helixSelection.Range.point(target)));
             }
         }
         try self.setNormalizedSelections(updated);
@@ -1137,32 +1310,82 @@ pub const HelixEngine = struct {
     /// vertical motion cannot change the line, so it is a no-op there; calling
     /// the editor's wrapped-line move instead clamps to the first/last column
     /// and clears the remembered column.
+    /// Helix `move_vertically` for j/k (visual lines with soft wrap) and
+    /// gj/gk (logical lines). The cassette documents do not wrap, so both
+    /// forms move by model lines; the remembered desired column matches
+    /// Helix's `old_visual_position` behavior.
+    fn verticalMove(self: *HelixEngine, down: bool, extend: bool, count: usize) !void {
+        var text = try self.modelValue();
+        defer text.deinit();
+        const selections = try self.getSelections();
+        defer self.allocator.free(selections);
+        const updated = try self.allocator.alloc(Selection, selections.len);
+        defer self.allocator.free(updated);
+        const line_count = self.editor.model.getLineCount();
+        const steps = @max(count, 1);
+        var next_desired: ?usize = null;
+        for (selections, 0..) |selection, index| {
+            const range = self.selectionRange(selection);
+            const cursor = self.editor.model.getPositionAt(range.cursor(text.items));
+            const current_column = self.desired_column orelse cursor.column;
+            const target_line = if (down)
+                @min(cursor.lineNumber + steps, line_count)
+            else
+                @max(cursor.lineNumber -| steps, 1);
+            if (target_line == cursor.lineNumber) {
+                updated[index] = selection;
+            } else {
+                const target_column = @min(current_column, self.lineMaxColumn(target_line));
+                const target = self.editor.model.getOffsetAt(Position.init(target_line, target_column));
+                if (extend) {
+                    updated[index] = self.selectionFromRange(helixSelection.putCursor(text.items, range, target, true));
+                } else {
+                    updated[index] = self.selectionFromRange(helixSelection.ensureInvariants(text.items, helixSelection.Range.point(target)));
+                }
+            }
+            next_desired = if (selections.len == 1) current_column else null;
+        }
+        self.desired_column = next_desired;
+        try self.setNormalizedSelections(updated);
+    }
+
     fn visualLine(self: *HelixEngine, down: bool, extend: bool, count: usize) !void {
-        const view_line = self.editor.cursorViewLine();
-        const view_line_count = self.editor.viewLineCount();
-        if (down) {
-            if (view_line >= view_line_count) return;
-            try self.editor.moveWrappedLine(true, extend, @min(count, view_line_count - view_line));
-        } else {
-            if (view_line <= 1) return;
-            try self.editor.moveWrappedLine(false, extend, @min(count, view_line - 1));
+        const line_count = self.editor.model.getLineCount();
+        if (self.editor.viewLineCount() <= line_count) {
+            // No soft wrapping: model lines are visual lines.
+            try self.verticalMove(down, extend, count);
+            return;
+        }
+        // A wrapped document needs the editor's visual-line movement. Start it
+        // from the Helix block cursors and normalize the result.
+        if (!extend) {
+            const selections = try self.getSelections();
+            defer self.allocator.free(selections);
+            const points = try self.allocator.alloc(Selection, selections.len);
+            defer self.allocator.free(points);
+            for (selections, 0..) |selection, index| {
+                const cursor = self.selectionCursor(selection);
+                points[index] = Selection.init(cursor.lineNumber, cursor.column, cursor.lineNumber, cursor.column);
+            }
+            try self.setSelections(points);
+        }
+        try self.editor.moveWrappedLine(down, extend, count);
+        if (!extend) {
+            const moved = try self.getSelections();
+            defer self.allocator.free(moved);
+            try self.setNormalizedSelections(moved);
         }
     }
 
     fn lineUp(self: *HelixEngine, extend: bool, count: usize) !void {
-        const line_number = self.editor.cursorPosition().lineNumber;
-        if (line_number <= 1) return;
-        try self.editor.moveLogicalLine(false, extend, @min(count, line_number - 1));
+        try self.verticalMove(false, extend, count);
     }
 
     fn lineDown(self: *HelixEngine, extend: bool, count: usize) !void {
-        const line_number = self.editor.cursorPosition().lineNumber;
-        const line_count = self.editor.model.getLineCount();
-        if (line_number >= line_count) return;
-        try self.editor.moveLogicalLine(true, extend, @min(count, line_count - line_number));
+        try self.verticalMove(true, extend, count);
     }
 
-    const WordMotion = enum { next_start, prev_start, next_end };
+    const WordMotion = enum { next_start, prev_start, next_end, prev_end };
 
     fn wordMotion(self: *HelixEngine, motion: WordMotion, big: bool, extend: bool, count: usize) !void {
         var text = try self.modelValue();
@@ -1172,19 +1395,15 @@ pub const HelixEngine = struct {
         const updated = try self.allocator.alloc(Selection, selections.len);
         defer self.allocator.free(updated);
         for (selections, 0..) |selection, index| {
-            const anchor = selection.getSelectionStart();
-            const head = selection.getPosition();
-            const offset = self.editor.model.getOffsetAt(head);
-            const target_offset = switch (motion) {
-                .next_start => nextWordStart(text.items, offset, count, big),
-                .prev_start => prevWordStart(text.items, offset, count, big),
-                .next_end => nextWordEnd(text.items, offset, count, big),
-            };
-            const target = self.editor.model.getPositionAt(target_offset);
+            const range = self.selectionRange(selection);
+            const target = wordMove(text.items, range, @max(count, 1), motion, big);
             if (extend) {
-                updated[index] = Selection.init(anchor.lineNumber, anchor.column, target.lineNumber, target.column);
+                // Select-mode word motions extend to the result's cursor
+                // (Helix `extend_word_impl`).
+                const cursor = target.cursor(text.items);
+                updated[index] = self.selectionFromRange(helixSelection.putCursor(text.items, range, cursor, true));
             } else {
-                updated[index] = Selection.init(head.lineNumber, head.column, target.lineNumber, target.column);
+                updated[index] = self.selectionFromRange(target);
             }
         }
         try self.setNormalizedSelections(updated);
@@ -1278,17 +1497,39 @@ pub const HelixEngine = struct {
     }
 
     fn selectLines(self: *HelixEngine, count: usize) !void {
+        var text = try self.modelValue();
+        defer text.deinit();
         const selections = try self.getSelections();
         defer self.allocator.free(selections);
         const updated = try self.allocator.alloc(Selection, selections.len);
         defer self.allocator.free(updated);
+        const steps = @max(count, 1);
         for (selections, 0..) |selection, index| {
-            const start_line = selection.startLineNumber;
-            const line_count = if (isLinewiseRange(self, selection)) count + 1 else count;
-            const range = try self.linewiseRange(start_line, line_count);
-            updated[index] = Selection.init(range.startLineNumber, range.startColumn, range.endLineNumber, range.endColumn);
+            const range = self.selectionRange(selection);
+            const from_line = self.lineOfOffset(text.items, range.from());
+            const to_offset = if (range.isEmpty()) range.upper() else helixSelection.prevGraphemeBoundary(text.items, range.upper());
+            const to_line = self.lineOfOffset(text.items, to_offset);
+            const start = self.lineStartOffset(from_line);
+            const end = self.lineStartOffset(to_line + 1);
+            const bounds: [2]usize = if (range.from() == start and range.upper() == end)
+                .{ start, self.lineStartOffset(to_line + steps + 1) }
+            else
+                .{ start, self.lineStartOffset(to_line + steps) };
+            updated[index] = self.selectionFromRange(helixSelection.ensureInvariants(text.items, .{ .anchor = bounds[0], .head = bounds[1] }));
         }
         try self.setNormalizedSelections(updated);
+    }
+
+    fn lineOfOffset(self: *HelixEngine, text: []const u8, offset: usize) usize {
+        return self.editor.model.getPositionAt(@min(offset, text.len)).lineNumber;
+    }
+
+    /// Offset of the start of a 1-based model line; one past the last line is
+    /// the end of the document (Helix `line_to_char`).
+    fn lineStartOffset(self: *HelixEngine, line: usize) usize {
+        const line_count = self.editor.model.getLineCount();
+        if (line > line_count) return self.modelLength();
+        return self.editor.model.getOffsetAt(Position.init(line, 1));
     }
 
     fn extendToLineBounds(self: *HelixEngine, include_break: bool) !void {
@@ -1314,7 +1555,8 @@ pub const HelixEngine = struct {
         const updated = try self.allocator.alloc(Selection, selections.len);
         defer self.allocator.free(updated);
         for (selections, 0..) |selection, index| {
-            const position = selection.getPosition();
+            // Helix `collapse_selection` collapses to the block cursor.
+            const position = self.selectionCursor(selection);
             updated[index] = Selection.init(position.lineNumber, position.column, position.lineNumber, position.column);
         }
         try self.setNormalizedSelections(updated);
@@ -1441,10 +1683,18 @@ pub const HelixEngine = struct {
         if (yank) {
             _ = try self.setRegisterFromRanges(range_selections.items, ranges.items, &texts);
         }
-        if (edits.items.len == 0) return;
-        self.beginUndoGroup();
-        defer self.endUndoGroup();
-        try self.applyEditBatch(edits.items, .cursor_start);
+        if (edits.items.len > 0) {
+            self.beginUndoGroup();
+            defer self.endUndoGroup();
+            try self.applyEditBatch(edits.items, .cursor_start);
+        }
+        // Helix maps the deleted selection through the change and normalizes
+        // it; the block cursor becomes a one-grapheme selection.
+        const updated = try self.getSelections();
+        defer self.allocator.free(updated);
+        try self.setNormalizedSelections(updated);
+        if (self.mode == .select) self.mode = .normal;
+        self.minor_select = false;
     }
 
     fn changeSelections(self: *HelixEngine, yank: bool) !void {
@@ -1477,10 +1727,43 @@ pub const HelixEngine = struct {
             _ = try self.setRegisterFromRanges(range_selections.items, ranges.items, &texts);
         }
 
+        var all_linewise = normalized.len > 0;
+        for (normalized) |selection| {
+            if (!self.isLinewiseSelection(selection)) all_linewise = false;
+        }
+
         self.beginUndoGroup();
         var keep = false;
         defer if (!keep) self.endUndoGroup();
         if (edits.items.len > 0) try self.applyEditBatch(edits.items, .cursor_start);
+
+        // Helix `change_selection` on whole lines replaces the lines with a
+        // new empty line above the following content (`open(Above)`); other
+        // changes enter insert mode at the collapsed deletion point.
+        if (all_linewise) {
+            var open_edits = ArrayList(PendingEdit).init(self.allocator);
+            defer open_edits.deinit();
+            const after_delete = try self.getSelections();
+            defer self.allocator.free(after_delete);
+            for (after_delete) |selection| {
+                const position = Position.init(selection.getPosition().lineNumber, 1);
+                try open_edits.append(.{ .range = Range.fromPositions(position, position), .text = "\n" });
+            }
+            if (open_edits.items.len > 0) try self.applyEditBatch(open_edits.items, .cursor_start);
+        }
+
+        const opened = try self.getSelections();
+        defer self.allocator.free(opened);
+        var after_text = try self.modelValue();
+        defer after_text.deinit();
+        const insert_ranges = try self.allocator.alloc(helixSelection.Range, opened.len);
+        defer self.allocator.free(insert_ranges);
+        for (opened, 0..) |selection, index| {
+            const offset = self.editor.model.getOffsetAt(selection.getPosition());
+            insert_ranges[index] = helixSelection.ensureInvariants(after_text.items, helixSelection.Range.point(offset));
+        }
+        try self.beginInsertRanges(insert_ranges);
+        self.insert_restore_cursor = false;
         self.mode = .insert;
         self.insert_group = true;
         self.resetInsertRecording();
@@ -1696,32 +1979,60 @@ pub const HelixEngine = struct {
 
     const InsertKind = enum { before, after, line_start, line_end };
 
+    /// Enter insert mode with the given Helix insert-mode ranges: remember
+    /// them for the Esc transition and project the insert cursor to the editor
+    /// as point selections.
+    fn beginInsertRanges(self: *HelixEngine, ranges: []const helixSelection.Range) !void {
+        var text = try self.modelValue();
+        defer text.deinit();
+        self.insert_ranges.clearRetainingCapacity();
+        try self.insert_ranges.ensureTotalCapacity(ranges.len);
+        const points = try self.allocator.alloc(Selection, ranges.len);
+        defer self.allocator.free(points);
+        for (ranges, 0..) |range, index| {
+            const ensured = helixSelection.ensureInvariants(text.items, range);
+            self.insert_ranges.appendAssumeCapacity(ensured);
+            const cursor = self.editor.model.getPositionAt(ensured.cursor(text.items));
+            points[index] = Selection.init(cursor.lineNumber, cursor.column, cursor.lineNumber, cursor.column);
+        }
+        try self.setSelections(points);
+    }
+
     fn enterInsert(self: *HelixEngine, kind: InsertKind) !void {
+        var text = try self.modelValue();
+        defer text.deinit();
         const selections = try self.getSelections();
         defer self.allocator.free(selections);
         const normalized = try self.normalizeSelections(selections);
         defer self.allocator.free(normalized);
-        const targets = try self.allocator.alloc(Position, normalized.len);
-        defer self.allocator.free(targets);
+        const ranges = try self.allocator.alloc(helixSelection.Range, normalized.len);
+        defer self.allocator.free(ranges);
         for (normalized, 0..) |selection, index| {
-            targets[index] = switch (kind) {
-                .before => selection.getSelectionStart(),
-                .after => if (selection.isEmpty())
-                    try self.positionAfter(selection.getPosition())
-                else
-                    selection.getEndPosition(),
-                .line_start => self.firstNonBlank(selection.startLineNumber),
-                .line_end => self.lineEndPosition(selection.endLineNumber),
+            const range = self.selectionRange(selection);
+            ranges[index] = switch (kind) {
+                // Helix `insert_mode` reverses the selection.
+                .before => .{ .anchor = range.upper(), .head = range.from() },
+                // Helix `append_mode` extends the selection one grapheme
+                // forward; Esc later restores the cursor.
+                .after => .{ .anchor = range.from(), .head = helixSelection.nextGraphemeBoundary(text.items, range.upper()) },
+                // Helix `insert_with_indent` moves to the first non-blank
+                // (line start) or line end, then ensures invariants.
+                .line_start => blk: {
+                    const cursor = self.editor.model.getPositionAt(range.cursor(text.items));
+                    const offset = self.editor.model.getOffsetAt(self.firstNonBlank(cursor.lineNumber));
+                    break :blk helixSelection.ensureInvariants(text.items, helixSelection.Range.point(offset));
+                },
+                .line_end => blk: {
+                    const cursor = self.editor.model.getPositionAt(range.cursor(text.items));
+                    const offset = self.editor.model.getOffsetAt(self.lineEndPosition(cursor.lineNumber));
+                    break :blk helixSelection.ensureInvariants(text.items, helixSelection.Range.point(offset));
+                },
             };
         }
         self.beginUndoGroup();
         errdefer self.endUndoGroup();
-        const empty = try self.allocator.alloc(Selection, targets.len);
-        defer self.allocator.free(empty);
-        for (targets, 0..) |target, index| {
-            empty[index] = Selection.init(target.lineNumber, target.column, target.lineNumber, target.column);
-        }
-        try self.setSelections(empty);
+        try self.beginInsertRanges(ranges);
+        self.insert_restore_cursor = kind == .after;
         self.mode = .insert;
         self.insert_group = true;
         self.resetInsertRecording();
@@ -1760,6 +2071,20 @@ pub const HelixEngine = struct {
             try self.setSelections(empty);
             try self.editor.newline();
         }
+        // Helix `open` places a point selection on the new line; the insert
+        // range is that point's one-grapheme range.
+        const opened = try self.getSelections();
+        defer self.allocator.free(opened);
+        var after_text = try self.modelValue();
+        defer after_text.deinit();
+        const ranges = try self.allocator.alloc(helixSelection.Range, opened.len);
+        defer self.allocator.free(ranges);
+        for (opened, 0..) |selection, index| {
+            const offset = self.editor.model.getOffsetAt(selection.getPosition());
+            ranges[index] = helixSelection.ensureInvariants(after_text.items, helixSelection.Range.point(offset));
+        }
+        try self.beginInsertRanges(ranges);
+        self.insert_restore_cursor = false;
         self.mode = .insert;
         self.insert_group = true;
         self.resetInsertRecording();
@@ -1780,6 +2105,29 @@ pub const HelixEngine = struct {
         self.mode = .normal;
         self.minor_select = false;
         self.resetPending();
+
+        if (self.insert_ranges.items.len > 0) {
+            var text = try self.modelValue();
+            defer text.deinit();
+            const updated = try self.allocator.alloc(Selection, self.insert_ranges.items.len);
+            defer self.allocator.free(updated);
+            for (self.insert_ranges.items, 0..) |range, index| {
+                var final = range;
+                // Helix `enter_normal_mode`: only append mode (`restore_cursor`)
+                // moves the head one grapheme back.
+                if (self.insert_restore_cursor and range.head > range.anchor) {
+                    final = .{
+                        .anchor = range.from(),
+                        .head = helixSelection.prevGraphemeBoundary(text.items, range.upper()),
+                    };
+                }
+                updated[index] = self.selectionFromRange(helixSelection.ensureInvariants(text.items, final));
+            }
+            self.insert_ranges.clearRetainingCapacity();
+            self.insert_restore_cursor = false;
+            try self.setNormalizedSelections(updated);
+            return;
+        }
 
         const selections = try self.getSelections();
         defer self.allocator.free(selections);
@@ -1817,6 +2165,26 @@ pub const HelixEngine = struct {
     // pairs and completion replacements. Edits before it shift the segment
     // without adding text from secondary cursors or completion imports.
     fn recordInsertChanges(event: InternalModelContentChangeEvent, self: *HelixEngine) !void {
+        // Map the remembered insert-mode Helix ranges through the edit with
+        // the same sticky associations Helix uses.
+        if (self.insert_ranges.items.len > 0 and event.contentChangedEvent.changes.items.len > 0) {
+            const events = event.contentChangedEvent.changes.items;
+            const changes = try self.allocator.alloc(helixSelection.Change, events.len);
+            defer self.allocator.free(changes);
+            for (events, 0..) |change, index| {
+                // The event lists changes from the end of the document to the
+                // beginning; `mapOffset` wants ascending document order.
+                changes[events.len - 1 - index] = .{
+                    .start = change.rangeOffset,
+                    .end = change.rangeOffset + change.rangeLength,
+                    .inserted_len = change.text.items().len,
+                };
+            }
+            for (self.insert_ranges.items) |*range| {
+                range.* = helixSelection.mapRange(changes, range.*);
+            }
+        }
+
         var segment = self.insert_segment orelse return;
         defer self.insert_segment = segment;
         for (event.contentChangedEvent.changes.items) |change| {
@@ -1925,9 +2293,9 @@ pub const HelixEngine = struct {
         var edits = ArrayList(PendingEdit).init(self.allocator);
         defer edits.deinit();
         for (normalized) |selection| {
-            const head = selection.getPosition();
+            const head = self.selectionCursor(selection);
             const offset = self.editor.model.getOffsetAt(head);
-            const target_offset = prevWordStart(text.items, offset, 1, false);
+            const target_offset = wordMove(text.items, .{ .anchor = offset, .head = offset }, 1, .prev_start, false).from();
             const target = self.editor.model.getPositionAt(target_offset);
             if (target.equals(head)) continue;
             try edits.append(.{ .range = Range.fromPositions(target, head), .text = "" });
@@ -1946,9 +2314,9 @@ pub const HelixEngine = struct {
         var edits = ArrayList(PendingEdit).init(self.allocator);
         defer edits.deinit();
         for (normalized) |selection| {
-            const head = selection.getPosition();
+            const head = self.selectionCursor(selection);
             const offset = self.editor.model.getOffsetAt(head);
-            const target_offset = nextWordEnd(text.items, offset, 1, false);
+            const target_offset = wordMove(text.items, .{ .anchor = offset, .head = offset }, 1, .next_end, false).upper();
             const target = self.editor.model.getPositionAt(target_offset);
             if (target.equals(head)) continue;
             try edits.append(.{ .range = Range.fromPositions(head, target), .text = "" });
@@ -1965,7 +2333,7 @@ pub const HelixEngine = struct {
         var edits = ArrayList(PendingEdit).init(self.allocator);
         defer edits.deinit();
         for (normalized) |selection| {
-            const head = selection.getPosition();
+            const head = self.selectionCursor(selection);
             const start = Position.init(head.lineNumber, 1);
             if (start.equals(head)) continue;
             try edits.append(.{ .range = Range.fromPositions(start, head), .text = "" });
@@ -1982,7 +2350,7 @@ pub const HelixEngine = struct {
         var edits = ArrayList(PendingEdit).init(self.allocator);
         defer edits.deinit();
         for (normalized) |selection| {
-            const head = selection.getPosition();
+            const head = self.selectionCursor(selection);
             const end = self.lineEndPosition(head.lineNumber);
             if (end.equals(head)) continue;
             try edits.append(.{ .range = Range.fromPositions(head, end), .text = "" });
@@ -2018,7 +2386,7 @@ pub const HelixEngine = struct {
         var edits = ArrayList(PendingEdit).init(self.allocator);
         defer edits.deinit();
         for (normalized) |selection| {
-            const position = selection.getSelectionStart();
+            const position = self.selectionCursor(selection);
             try edits.append(.{ .range = Range.fromPositions(position, position), .text = text.items });
         }
         self.beginUndoGroup();
@@ -2788,7 +3156,8 @@ pub const HelixEngine = struct {
         defer self.allocator.free(updated);
         var found = false;
         for (normalized, 0..) |selection, index| {
-            const range = try self.textObjectRange(around, char, selection.getPosition()) orelse {
+            const cursor = self.selectionCursor(selection);
+            const range = try self.textObjectRange(around, char, cursor) orelse {
                 updated[index] = selection;
                 continue;
             };
@@ -2820,26 +3189,80 @@ pub const HelixEngine = struct {
     fn wordObject(self: *HelixEngine, around: bool, big: bool, cursor: Position) !?Range {
         var value = try self.modelValue();
         defer value.deinit();
-        if (value.items.len == 0) return null;
-        var offset = self.editor.model.getOffsetAt(cursor);
-        if (offset >= value.items.len) offset = value.items.len - 1;
-        const class: *const fn ([]const u8, usize) u8 = if (big) wordClassBigAt else wordClassAt;
-        const target = class(value.items, offset);
-        var start = offset;
-        while (start > 0 and class(value.items, prevCodepointOffset(value.items, start)) == target) {
-            start = prevCodepointOffset(value.items, start);
+        const text = value.items;
+        if (text.len == 0) return null;
+        const pos = @min(self.editor.model.getOffsetAt(cursor), text.len);
+
+        // Port of helix-core `textobject::textobject_word`.
+        const word_start = findWordBoundary(text, pos, .backward, big);
+        const word_end = blk: {
+            if (pos >= text.len) break :blk pos;
+            const ch = codepointAt(text, pos) orelse break :blk pos;
+            const category = categoryOf(ch);
+            if (category == .whitespace or category == .eol) break :blk pos;
+            break :blk findWordBoundary(text, nextCharOffset(text, pos), .forward, big);
+        };
+        if (word_start == word_end) {
+            return Range.fromPositions(self.editor.model.getPositionAt(word_start), self.editor.model.getPositionAt(word_end));
         }
-        var end = offset;
-        while (end < value.items.len and class(value.items, end) == target) {
-            end = nextCodepointOffset(value.items, end);
+        if (!around) {
+            return Range.fromPositions(self.editor.model.getPositionAt(word_start), self.editor.model.getPositionAt(word_end));
         }
-        if (around) {
-            while (end < value.items.len and class(value.items, end) == 0) {
-                end = nextCodepointOffset(value.items, end);
+
+        var trailing: usize = word_end;
+        while (trailing < text.len) {
+            const ch = codepointAt(text, trailing) orelse break;
+            if (isLineEndingCp(ch) or !isWhitespaceCp(ch)) break;
+            trailing = nextCharOffset(text, trailing);
+        }
+        if (trailing > word_end) {
+            return Range.fromPositions(self.editor.model.getPositionAt(word_start), self.editor.model.getPositionAt(trailing));
+        }
+        var leading = word_start;
+        while (leading > 0) {
+            const start = prevCodepointOffset(text, leading);
+            const ch = codepointAt(text, start) orelse break;
+            if (isLineEndingCp(ch) or !isWhitespaceCp(ch)) break;
+            leading = start;
+        }
+        return Range.fromPositions(self.editor.model.getPositionAt(leading), self.editor.model.getPositionAt(word_end));
+    }
+
+    const BoundaryDirection = enum { forward, backward };
+
+    /// Port of helix-core `textobject::find_word_boundary`.
+    fn findWordBoundary(text: []const u8, start: usize, direction: BoundaryDirection, big: bool) usize {
+        var pos = @min(start, text.len);
+        var previous_category: CharCategory = switch (direction) {
+            .forward => if (pos == 0) .whitespace else blk: {
+                const ch = codepointAt(text, prevCodepointOffset(text, pos)) orelse break :blk .whitespace;
+                break :blk categoryOf(ch);
+            },
+            .backward => if (pos == text.len) .whitespace else blk: {
+                const ch = codepointAt(text, pos) orelse break :blk .whitespace;
+                break :blk categoryOf(ch);
+            },
+        };
+        while (true) {
+            if (direction == .forward) {
+                if (pos >= text.len) return pos;
+                const ch = codepointAt(text, pos) orelse return pos;
+                const category = categoryOf(ch);
+                if (category == .eol or category == .whitespace) return pos;
+                if (!big and category != previous_category and pos != 0 and pos != text.len) return pos;
+                pos = nextCharOffset(text, pos);
+                previous_category = category;
+            } else {
+                if (pos == 0) return pos;
+                const next_pos = prevCodepointOffset(text, pos);
+                const ch = codepointAt(text, next_pos) orelse return pos;
+                const category = categoryOf(ch);
+                if (category == .eol or category == .whitespace) return pos;
+                if (!big and category != previous_category and pos != 0 and pos != text.len) return pos;
+                pos = next_pos;
+                previous_category = category;
             }
         }
-        if (start == end) return null;
-        return Range.fromPositions(self.editor.model.getPositionAt(start), self.editor.model.getPositionAt(end));
     }
 
     fn paragraphObject(self: *HelixEngine, around: bool, cursor: Position) !?Range {
@@ -3196,6 +3619,10 @@ pub const HelixEngine = struct {
     }
 
     fn joinSelections(self: *HelixEngine, select_space: bool) !void {
+        var text_value = try self.modelValue();
+        defer text_value.deinit();
+        const text = text_value.items;
+        const line_count = self.editor.model.getLineCount();
         const selections = try self.getSelections();
         defer self.allocator.free(selections);
         const normalized = try self.normalizeSelections(selections);
@@ -3204,34 +3631,62 @@ pub const HelixEngine = struct {
 
         var edits = ArrayList(PendingEdit).init(self.allocator);
         defer edits.deinit();
-        var owned = ArrayList([]u8).init(self.allocator);
-        defer {
-            for (owned.items) |text| self.allocator.free(text);
-            owned.deinit();
-        }
+        var changes = ArrayList(helixSelection.Change).init(self.allocator);
+        defer changes.deinit();
         for (normalized) |selection| {
-            var start_line = selection.startLineNumber;
-            var end_line = selection.endLineNumber;
+            const range = self.selectionRange(selection);
+            const start_line = self.lineOfOffset(text, range.from());
+            var end_line = self.lineOfOffset(text, if (range.isEmpty()) range.upper() else helixSelection.prevGraphemeBoundary(text, range.upper()));
             if (start_line == end_line) {
-                if (start_line >= self.editor.model.getLineCount()) continue;
-                end_line = start_line + 1;
+                end_line = @min(end_line + 1, line_count);
             }
-            const range = Range.init(start_line, self.lineMaxColumn(start_line), end_line, 1);
-            const breaks = end_line - start_line;
-            if (breaks == 0) continue;
-            var text = ArrayList(u8).init(self.allocator);
-            errdefer text.deinit();
-            var index: usize = 0;
-            while (index < breaks) : (index += 1) try text.append(' ');
-            const slice = try text.toOwnedSlice();
-            try owned.append(slice);
-            try edits.append(.{ .range = range, .text = slice });
-            start_line = end_line;
+            var line = start_line;
+            while (line < end_line) : (line += 1) {
+                const seg_start = self.lineEndOffset(line);
+                var seg_end = self.lineStartOffset(line + 1);
+                while (seg_end < text.len and (text[seg_end] == ' ' or text[seg_end] == '\t')) seg_end += 1;
+                const separator: []const u8 = if (seg_end == self.lineEndOffset(line + 1)) "" else " ";
+                try edits.append(.{
+                    .range = Range.fromPositions(
+                        self.editor.model.getPositionAt(seg_start),
+                        self.editor.model.getPositionAt(seg_end),
+                    ),
+                    .text = separator,
+                });
+                try changes.append(.{ .start = seg_start, .end = seg_end, .inserted_len = separator.len });
+            }
         }
         if (edits.items.len == 0) return;
+
         self.beginUndoGroup();
         defer self.endUndoGroup();
-        try self.applyEditBatch(edits.items, if (select_space) .inserted_range else .cursor_start);
+        try self.applyEditBatch(edits.items, .cursor_start);
+
+        // Map the join selection through the changes like Helix's `doc.apply`.
+        var after = try self.modelValue();
+        defer after.deinit();
+        const mapped = try self.allocator.alloc(Selection, normalized.len);
+        defer self.allocator.free(mapped);
+        for (normalized, 0..) |selection, index| {
+            var mapped_range = helixSelection.mapRange(changes.items, self.selectionRange(selection));
+            if (select_space) {
+                // Helix `join_selections_space` selects the inserted spaces.
+                for (changes.items) |change| {
+                    if (change.inserted_len == 1 and change.start >= mapped_range.from() and change.start < mapped_range.upper()) {
+                        mapped_range = .{ .anchor = change.start, .head = change.start + 1 };
+                        break;
+                    }
+                }
+            }
+            mapped[index] = self.selectionFromRange(helixSelection.ensureInvariants(after.items, mapped_range));
+        }
+        try self.setNormalizedSelections(mapped);
+    }
+
+    /// Offset of the newline ending a 1-based line (or the content end for the
+    /// last line without a line ending); Helix `line_end_char_index`.
+    fn lineEndOffset(self: *HelixEngine, line: usize) usize {
+        return self.lineStartOffset(line) + (self.lineMaxColumn(line) - 1);
     }
 
     const Number = struct { start: usize, end: usize, value: i64 };
@@ -3305,107 +3760,127 @@ pub const HelixEngine = struct {
     }
 
     fn copySelection(self: *HelixEngine, down: bool) !void {
+        // Helix `copy_selection_on_line`: add selections on adjacent lines at
+        // the same visual columns. It never edits text.
+        var text_value = try self.modelValue();
+        defer text_value.deinit();
+        const text = text_value.items;
+        const line_count = self.editor.model.getLineCount();
+        const count = @max(self.takeCount(), 1);
         const selections = try self.getSelections();
         defer self.allocator.free(selections);
         const normalized = try self.normalizeSelections(selections);
         defer self.allocator.free(normalized);
         try self.rememberSelections(normalized);
 
-        var edits = ArrayList(PendingEdit).init(self.allocator);
-        defer edits.deinit();
-        var owned = ArrayList([]u8).init(self.allocator);
-        defer {
-            for (owned.items) |text| self.allocator.free(text);
-            owned.deinit();
-        }
-        for (normalized) |selection| {
-            if (self.isLinewiseSelection(selection)) {
-                const line_start = selection.startLineNumber;
-                var line_end = selection.endLineNumber;
-                if (line_end > line_start and selection.endColumn == 1) line_end -= 1;
-                const line_count = line_end - line_start + 1;
-                const range = try self.linewiseRange(line_start, line_count);
-                const text = try self.rangeText(range);
-                defer self.allocator.free(text);
-                if (down) {
-                    if (line_end < self.editor.model.getLineCount()) {
-                        const copy = try self.withTrailingNewline(text, true, false);
-                        try owned.append(copy);
-                        try edits.append(.{ .range = Range.init(line_end + 1, 1, line_end + 1, 1), .text = copy });
-                    } else {
-                        const copy = try self.withTrailingNewline(text, true, true);
-                        try owned.append(copy);
-                        try edits.append(.{ .range = Range.init(line_end, self.lineMaxColumn(line_end), line_end, self.lineMaxColumn(line_end)), .text = copy });
-                    }
-                } else {
-                    const copy = try self.withTrailingNewline(text, true, false);
-                    try owned.append(copy);
-                    try edits.append(.{ .range = Range.init(line_start, 1, line_start, 1), .text = copy });
-                }
-                continue;
-            }
+        var result = ArrayList(Selection).init(self.allocator);
+        defer result.deinit();
+        try result.ensureTotalCapacity(normalized.len * (count + 1));
+        try result.appendSlice(normalized);
+        var primary_index: usize = 0;
+        var primary_selection: Selection = if (normalized.len > 0) normalized[0] else Selection.init(1, 1, 1, 1);
+        for (normalized, 0..) |selection, selection_index| {
+            const range = self.selectionRange(selection);
+            // Helix treats the range head as exclusive for this command.
+            const head = if (range.anchor < range.head)
+                helixSelection.prevGraphemeBoundary(text, range.head)
+            else
+                range.head;
+            const anchor = if (range.anchor < range.head)
+                range.anchor
+            else
+                helixSelection.prevGraphemeBoundary(text, range.anchor);
+            const head_position = self.editor.model.getPositionAt(head);
+            const anchor_position = self.editor.model.getPositionAt(anchor);
+            const height = @max(head_position.lineNumber, anchor_position.lineNumber) -
+                @min(head_position.lineNumber, anchor_position.lineNumber) + 1;
+            if (selection_index == 0) primary_index = result.items.len;
+            try result.append(selection);
 
-            const range = try self.effectiveRange(selection);
-            const text = try self.rangeText(range);
-            defer self.allocator.free(text);
-            if (down) {
-                if (selection.endLineNumber < self.editor.model.getLineCount()) {
-                    const target_line = selection.endLineNumber + 1;
-                    const column = @min(selection.startColumn, self.lineMaxColumn(target_line));
-                    const copy = try self.allocator.dupe(u8, text);
-                    try owned.append(copy);
-                    try edits.append(.{ .range = Range.init(target_line, column, target_line, column), .text = copy });
-                } else {
-                    var copy = ArrayList(u8).init(self.allocator);
-                    errdefer copy.deinit();
-                    try copy.append('\n');
-                    try copy.appendSlice(text);
-                    const slice = try copy.toOwnedSlice();
-                    try owned.append(slice);
-                    const position = Position.init(selection.endLineNumber, self.lineMaxColumn(selection.endLineNumber));
-                    try edits.append(.{ .range = Range.fromPositions(position, position), .text = slice });
+            var copies: usize = 0;
+            var i: usize = 0;
+            while (copies < count and i < line_count * 2 + 1) : (i += 1) {
+                const offset = (i + 1) * height;
+                const anchor_line = if (down)
+                    anchor_position.lineNumber + offset
+                else
+                    anchor_position.lineNumber -| offset;
+                const head_line = if (down)
+                    head_position.lineNumber + offset
+                else
+                    head_position.lineNumber -| offset;
+                if (anchor_line == 0 or head_line == 0) break;
+                if (anchor_line > line_count or head_line > line_count) break;
+                // Helix skips lines that are too short.
+                if (anchor_position.column > self.lineMaxColumn(anchor_line) or
+                    head_position.column > self.lineMaxColumn(head_line))
+                {
+                    continue;
                 }
-            } else {
-                if (selection.startLineNumber > 1) {
-                    const target_line = selection.startLineNumber - 1;
-                    const column = @min(selection.startColumn, self.lineMaxColumn(target_line));
-                    const copy = try self.allocator.dupe(u8, text);
-                    try owned.append(copy);
-                    try edits.append(.{ .range = Range.init(target_line, column, target_line, column), .text = copy });
-                } else {
-                    var copy = ArrayList(u8).init(self.allocator);
-                    errdefer copy.deinit();
-                    try copy.appendSlice(text);
-                    try copy.append('\n');
-                    const slice = try copy.toOwnedSlice();
-                    try owned.append(slice);
-                    try edits.append(.{ .range = Range.init(1, 1, 1, 1), .text = slice });
+                const anchor_offset = self.editor.model.getOffsetAt(Position.init(anchor_line, anchor_position.column));
+                const head_offset = self.editor.model.getOffsetAt(Position.init(head_line, head_position.column));
+                const copied = helixSelection.putCursor(text, helixSelection.Range.point(anchor_offset), head_offset, true);
+                if (selection_index == 0) {
+                    primary_index = result.items.len;
+                    primary_selection = self.selectionFromRange(helixSelection.ensureInvariants(text, copied));
+                }
+                try result.append(self.selectionFromRange(helixSelection.ensureInvariants(text, copied)));
+                copies += 1;
+            }
+        }
+        // Helix normalizes the new selection set (the duplicated originals
+        // merge) and keeps the copy of the primary range primary.
+        const normalized_result = try self.normalizeSelections(result.items);
+        defer self.allocator.free(normalized_result);
+        if (normalized_result.len > 1) {
+            for (normalized_result, 0..) |candidate, index| {
+                if (index == 0) continue;
+                if (candidate.selectionStartLineNumber == primary_selection.selectionStartLineNumber and
+                    candidate.selectionStartColumn == primary_selection.selectionStartColumn and
+                    candidate.positionLineNumber == primary_selection.positionLineNumber and
+                    candidate.positionColumn == primary_selection.positionColumn)
+                {
+                    const primary = normalized_result[index];
+                    std.mem.copyBackwards(Selection, normalized_result[1 .. index + 1], normalized_result[0..index]);
+                    normalized_result[0] = primary;
+                    break;
                 }
             }
         }
-        if (edits.items.len == 0) return;
-        self.beginUndoGroup();
-        defer self.endUndoGroup();
-        try self.applyEditBatch(edits.items, .inserted_range);
+        try self.setSelections(normalized_result);
     }
 
     fn splitSelectionsOnNewlines(self: *HelixEngine) !void {
+        var text_value = try self.modelValue();
+        defer text_value.deinit();
+        const text = text_value.items;
         const selections = try self.getSelections();
         defer self.allocator.free(selections);
         const normalized = try self.normalizeSelections(selections);
         defer self.allocator.free(normalized);
         try self.rememberSelections(normalized);
+
         var result = ArrayList(Selection).init(self.allocator);
         defer result.deinit();
         for (normalized) |selection| {
-            const start_line = selection.startLineNumber;
-            const end_line = selection.endLineNumber;
-            var line = start_line;
-            while (line <= end_line) : (line += 1) {
-                try result.append(Selection.init(line, 1, line, self.lineMaxColumn(line)));
+            const range = self.selectionRange(selection);
+            if (range.isEmpty()) {
+                try result.append(selection);
+                continue;
+            }
+            const sel_start = range.from();
+            const sel_end = range.upper();
+            var start = sel_start;
+            while (start < sel_end) {
+                const newline = std.mem.indexOfScalarPos(u8, text, start, '\n') orelse break;
+                if (newline >= sel_end) break;
+                try result.append(self.selectionFromRange(.{ .anchor = start, .head = newline }));
+                start = newline + 1;
+            }
+            if (start < sel_end) {
+                try result.append(self.selectionFromRange(.{ .anchor = start, .head = sel_end }));
             }
         }
-        if (result.items.len == 0) return;
         try self.setNormalizedSelections(result.items);
     }
 
@@ -3542,46 +4017,69 @@ pub const HelixEngine = struct {
                     try edits.append(.{ .range = range, .text = slice });
                 },
                 .delete, .replace => {
-                    const before_position = try self.leftPosition(range.startPosition(), 1);
-                    const before = self.charAt(before_position) orelse continue;
-                    const after = self.charAt(range.endPosition()) orelse continue;
-                    if (before > 0xFF or after > 0xFF or !isPair(@intCast(before), @intCast(after))) continue;
-                    const after_range = try self.charRangeAt(range.endPosition());
-                    const outer_range = Range.init(before_position.lineNumber, before_position.column, after_range.endLineNumber, after_range.endColumn);
-                    const inner = try self.rangeText(range);
-                    defer self.allocator.free(inner);
-                    var text = ArrayList(u8).init(self.allocator);
-                    errdefer text.deinit();
+                    var value = try self.modelValue();
+                    defer value.deinit();
+                    const text = value.items;
+                    const sel_from = self.editor.model.getOffsetAt(range.startPosition());
+                    const sel_to = self.editor.model.getOffsetAt(range.endPosition());
+                    var open_offset: ?usize = null;
+                    var close_offset: ?usize = null;
+
+                    // The selection may already include the pair characters
+                    // (for example after `ms(`), or the pair may surround it.
+                    const first = codepointAt(text, sel_from);
+                    const last_start = prevCodepointOffset(text, sel_to);
+                    const last = codepointAt(text, last_start);
+                    if (first != null and last != null and first.? <= 0xFF and last.? <= 0xFF and
+                        isPair(@intCast(first.?), @intCast(last.?)))
+                    {
+                        open_offset = sel_from;
+                        close_offset = last_start;
+                    } else {
+                        const before_offset = prevCodepointOffset(text, sel_from);
+                        const before = codepointAt(text, before_offset);
+                        const after = codepointAt(text, sel_to);
+                        if (before != null and after != null and before.? <= 0xFF and after.? <= 0xFF and
+                            isPair(@intCast(before.?), @intCast(after.?)))
+                        {
+                            open_offset = before_offset;
+                            close_offset = sel_to;
+                        }
+                    }
+                    const open_at = open_offset orelse continue;
+                    const close_at = close_offset orelse continue;
+                    if (open_at + 1 > close_at or close_at + 1 > text.len) continue;
+
+                    const inner = text[open_at + 1 .. close_at];
+                    var replacement = ArrayList(u8).init(self.allocator);
+                    errdefer replacement.deinit();
                     if (kind == .replace) {
                         const pair = surroundPair(to);
-                        try text.append(pair.open);
-                        try text.appendSlice(inner);
-                        try text.append(pair.close);
+                        try replacement.append(pair.open);
+                        try replacement.appendSlice(inner);
+                        try replacement.append(pair.close);
                     } else {
-                        try text.appendSlice(inner);
+                        try replacement.appendSlice(inner);
                     }
-                    const slice = try text.toOwnedSlice();
+                    const slice = try replacement.toOwnedSlice();
                     try owned.append(slice);
-                    try edits.append(.{ .range = outer_range, .text = slice });
+                    try edits.append(.{
+                        .range = Range.fromPositions(
+                            self.editor.model.getPositionAt(open_at),
+                            self.editor.model.getPositionAt(close_at + 1),
+                        ),
+                        .text = slice,
+                    });
                 },
             }
         }
         if (edits.items.len == 0) return;
         self.beginUndoGroup();
         defer self.endUndoGroup();
+        // `inserted_range` selects the replacement, which is exactly Helix's
+        // range for `surround_add` (the previously selected text plus both
+        // pair characters) and for `surround_delete` (the inner text).
         try self.applyEditBatch(edits.items, .inserted_range);
-        if (kind == .add) {
-            const applied = try self.getSelections();
-            defer self.allocator.free(applied);
-            const inner = try self.allocator.alloc(Selection, applied.len);
-            defer self.allocator.free(inner);
-            for (applied, 0..) |selection, index| {
-                const start = try self.rightPosition(selection.getStartPosition(), 1);
-                const end = try self.leftPosition(selection.getEndPosition(), 1);
-                inner[index] = Selection.init(start.lineNumber, start.column, end.lineNumber, end.column);
-            }
-            try self.setNormalizedSelections(inner);
-        }
     }
 
     fn charAt(self: *HelixEngine, position: Position) ?u21 {

@@ -61,6 +61,7 @@ pub const ITextEditor = struct {
     delete_right_fn: *const fn (context: *anyopaque) anyerror!void,
     begin_undo_group_fn: *const fn (context: *anyopaque) void,
     end_undo_group_fn: *const fn (context: *anyopaque) void,
+    commit_undo_group_fn: ?*const fn (context: *anyopaque) void = null,
     undo_fn: *const fn (context: *anyopaque) anyerror!void,
     redo_fn: *const fn (context: *anyopaque) anyerror!void,
     reveal_range_fn: *const fn (context: *anyopaque, range: Range) void,
@@ -142,6 +143,10 @@ pub const ITextEditor = struct {
     }
     pub fn endUndoGroup(self: ITextEditor) void {
         self.end_undo_group_fn(self.context);
+    }
+    /// Closes any open undo group (Helix's per-command history boundary).
+    pub fn commitUndoGroup(self: ITextEditor) void {
+        if (self.commit_undo_group_fn) |commit| commit(self.context);
     }
     pub fn undo(self: ITextEditor) !void {
         return self.undo_fn(self.context);

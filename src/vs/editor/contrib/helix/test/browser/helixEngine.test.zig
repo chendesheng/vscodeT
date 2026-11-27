@@ -70,7 +70,9 @@ test "Helix: select mode extends the selection" {
     try h.sendChar('l');
     try h.sendChar('l');
     try h.sendChar('d');
-    try h.expectValue("llo");
+    // The initial one-grapheme normal-mode selection plus two selects covers
+    // "hel" (Helix selections are ranges, not point cursors).
+    try h.expectValue("lo");
 }
 
 test "Helix: percent selects the whole file" {
@@ -360,7 +362,9 @@ test "Helix: count multiplies motions" {
     try h.sendChar('2');
     try h.sendChar('w');
     try h.sendChar('d');
-    try h.expectValue("three four");
+    // A repeated word motion re-anchors when it starts on a word boundary,
+    // so the second `w` selects from "two" to "three" (helix `word_move`).
+    try h.expectValue("one three four");
 }
 
 test "Helix: macro registers and absolute/relative line motions" {
@@ -583,7 +587,16 @@ test "Helix: C copies a line down" {
     defer h.deinit();
     try h.sendChar('x');
     try h.sendChar('C');
-    try h.expectValue("abc\nabc\ndef");
+    // Helix `copy_selection_on_next_line` adds selections; it never edits.
+    try h.expectValue("abc\ndef");
+    try std.testing.expectEqual(@as(usize, 2), try h.selectionCount());
+    const copied = try h.selections();
+    defer h.allocator.free(copied);
+    try std.testing.expectEqual(@as(usize, 2), copied.len);
+    var lines = [_]usize{ copied[0].startLineNumber, copied[1].startLineNumber };
+    std.mem.sort(usize, &lines, {}, std.sort.asc(usize));
+    try std.testing.expectEqual(@as(usize, 1), lines[0]);
+    try std.testing.expectEqual(@as(usize, 2), lines[1]);
 }
 
 test "Helix: rotation, merge and trim selections" {
@@ -698,7 +711,6 @@ test "Helix: mm matches brackets and surround works" {
     defer replace.deinit();
     try replace.editor.setCursorPosition(Position.init(1, 2));
     try replace.sendChar('v');
-    try replace.sendChar('l');
     try replace.sendChar('l');
     try replace.sendChar('l');
     try replace.sendChar('m');
@@ -1141,7 +1153,9 @@ test "Helix: select-mode j keeps the desired column" {
     try h.sendChar('j');
     const selection = try h.firstSelection();
     try std.testing.expectEqual(Position.init(1, 10), selection.getSelectionStart());
-    try std.testing.expectEqual(Position.init(3, 10), selection.getPosition());
+    // Select-mode heads are exclusive, so the head is one grapheme past the
+    // landing position (Helix `put_cursor` extend semantics).
+    try std.testing.expectEqual(Position.init(3, 11), selection.getPosition());
 }
 
 test "Helix: k on the first line keeps the desired column" {
@@ -1213,7 +1227,9 @@ test "Helix: j collapses the selection before moving" {
     try std.testing.expect(!word_selection.isEmpty());
 
     try h.sendChar('j');
+    // Helix collapses to the block cursor (a one-grapheme range) before
+    // moving and lands on the same visual column.
     const collapsed = try h.firstSelection();
-    try std.testing.expect(collapsed.isEmpty());
-    try std.testing.expectEqual(Position.init(2, 5), collapsed.getPosition());
+    try std.testing.expect(!collapsed.isEmpty());
+    try std.testing.expectEqual(Position.init(2, 4), h.cursor());
 }

@@ -38,17 +38,32 @@ The Helix engine keeps only Helix command state: pending prefix/count, the
 selected register, search pattern, macro recording and the last inserted text.
 Everything else belongs to the editor:
 
-- Selections, cursor state and desired columns are the editor's selections.
+- Cursor state is derived from the stored selections; the vertical desired
+  column is engine state (`desired_column`).
 - `u`/`U` call `Editor.undo()`/`Editor.redo()`. An insert session or a change
   command is one editor undo group; the engine brackets it with
-  `beginUndoGroup()`/`endUndoGroup()`.
-- `j`/`k` use the editor's visual-line movement and `gj`/`gk` its logical-line
-  movement, so wrapped lines and tabs keep their visible column. Repeated
-  vertical movement remembers the desired column, so crossing a shorter line
-  and moving on restores the original column instead of staying clamped. At the
-  first and last line the motion is a no-op and keeps the remembered column.
-- Insert mode uses the regular editor key dispatch for suggestions, snippet
-  navigation, auto-closing pairs, and auto-indent.
+  `beginUndoGroup()`/`endUndoGroup()`. After each normal-mode key the engine
+  closes any open undo group, matching the reference's per-key history
+  granularity (the recorder's seeded edit is committed together with the first
+  edit command, and a selection-only command commits it separately).
+- Selections are Helix ranges: `anchor`/`head` are stored verbatim and every
+  command restores the block-cursor invariant (`ensure_invariants`: grapheme
+  aligned, one grapheme wide, point only at the end of the document). Commands
+  that Helix defines in terms of the block cursor (`w`/`b`/`e`, text objects,
+  `r`, `~`, insert placement, dot repeat) read `Range::cursor()` rather than
+  the editor's selection head.
+- `j`/`k` move by visual line: model lines when the document does not wrap and
+  the editor's wrapped-line movement when it does. `gj`/`gk` move by logical
+  line. The engine remembers the desired column across repeated vertical moves,
+  so crossing a shorter line and moving on restores the original column instead
+  of staying clamped. At the first and last line the motion is a no-op and keeps
+  the remembered column.
+- Insert mode is tracked as a Helix insert session: the engine keeps the
+  insert-mode ranges, maps them through the typed edits with Helix's sticky
+  associations, and on Escape produces the same selection as the reference
+  (only `a` restores one grapheme left). Typing itself uses the regular editor
+  key dispatch for suggestions, snippet navigation, auto-closing pairs, and
+  auto-indent.
 - Search uses the model's regular-expression matcher. `/` and `?` preview
   matches while the prompt is edited: the selection moves to the match (or,
   in select mode, is extended with it) and every match is highlighted with the
@@ -203,15 +218,18 @@ These are documented gaps, not hidden behavior:
 
 Tests:
 
+- `src/vs/editor/contrib/helix/browser/helixSelection.zig` — Helix range,
+  cursor, grapheme-boundary and history-mapping primitives.
 - `src/vs/editor/contrib/helix/test/browser/helixEngine.test.zig`
 - `src/vs/workbench/contrib/helix/test/browser/helixExtension.test.zig`
 - `src/vs/workbench/contrib/helix/test/browser/helixRuntime.test.zig`
 - `src/vs/editor/contrib/helix/test/browser/helixCassette.test.zig`
 
-Run the focused suite with:
+Run the focused suites with:
 
 ```sh
-zig build test-helix
+zig build test-helix          # native engine unit tests
+zig build test-oracle-helix   # strict reference cassettes (162/162)
 ```
 
 ## Reference cassettes
@@ -224,25 +242,37 @@ uploads the JSON artifact for review and commit. Helix is never built on a
 developer machine.
 
 `helixCassette.test.zig` replays the committed data against the native engine
-via `zig build test` / `zig build test-oracle`. The first corpus covers ASCII
-documents, a single starting cursor, final normal mode, and the selection
-count. Helix selection ranges and registers are recorded raw but not asserted
-yet. See [scripts/oracle/README.md](../scripts/oracle/README.md) for the
+via `zig build test-oracle-helix` (Helix lane) or `zig build test-oracle`
+(both lanes). The replay reproduces the recorder protocol instead of inventing
+one:
+
+- The seed is one Helix selection per cursor (`Range::new(i, i + 1)`, or a
+  point at the end of the document), not a point cursor. The harness starts
+  from the reference's default blank line and replaces it with the seed inside
+  a still-open undo group, so the first command's history matches Helix's.
+- The recorded `cursor`/`cursors` are `Range::cursor()` values: the previous
+  grapheme boundary of a forward range's head, otherwise the head. The replay
+  derives them the same way instead of reading the editor's selection head.
+- Every recorded field is asserted: text, mode, `selection_count`, every raw
+  `selections` anchor/head range (direction included), and the cursor set.
+- The reference commits pending changes to history after each non-insert key
+  event; the engine does the same, which is why `d u` and `x d u` restore
+  different states in the corpus.
+
+The Helix lane is green (162/162) and is gated in CI by the
+`cassette-conformance` job. The Vim lane (`test-oracle`) is a separate,
+non-blocking job while its known divergences are fixed; no cases or assertions
+are excluded from either lane. See
+[scripts/oracle/README.md](../scripts/oracle/README.md) for the
 `check`/`record` workflow and artifact flow.
 
-The cassette suite is strict: every recorded cursor and, when present, every
-cursor position in a multi-cursor set is asserted. `zig build test-oracle` is a
-separate test binary from `zig build test`; its CI job is allowed to fail until
-the native engine divergences it exposes are fixed. No cases or cursor
-assertions are excluded. Helix selection ranges and registers are recorded raw
-but not asserted yet.
-
-Tutor coverage is tracked explicitly. Covered: basic `hjkl`, character and
-multi-cursor deletion, insert/append/open variants, line selection/delete,
-change, replace, text objects, registers, surround, search selection, and
-multi-cursor edits. Still uncovered or known-divergent: select/extend and
-collapse mode, counts with cursor assertions, undo cursor restoration, copy
-selection to next line (`C`), split selections on lines, regex selection,
-join/indent/increment, macros, match mode, comments, and the window/split
-chapters. Those are engine gaps or UI-only features, not silently skipped
+Tutor coverage is tracked explicitly. Covered: basic `hjkl`, word and WORD
+motions with counts, character and multi-cursor deletion, insert/append/open
+variants, line selection/delete/extend, change (including linewise change),
+replace, case toggling, text objects, registers, surround, search selection,
+join, split selections on lines, copy selection to the next line (`C`), macros,
+undo/redo, dot repeat, and multi-cursor edits. Remaining gaps are the
+documented non-goals below (tree-sitter objects, LSP pickers, shell
+integration, the window/split chapters that only dispatch existing workbench
+commands); they are engine gaps or UI-only features, not silently skipped
 requirements.

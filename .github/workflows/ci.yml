@@ -126,11 +126,30 @@ jobs:
         run: zig build test --summary all "-Donig-include=$env:ONIG_DIR\include" "-Donig-lib=$env:ONIG_DIR\lib"
 
   cassette-conformance:
-    name: Cassette conformance (strict; known failures allowed)
+    name: Helix cassette conformance
     runs-on: ubuntu-latest
-    # The reference cassette suite asserts every recorded cursor and selection
-    # set. It is expected to expose native-engine divergences until those are
-    # fixed, so this job reports failures without blocking the main CI.
+    # The Helix lane replays all 162 recorded cassettes and asserts every
+    # recorded field (text, mode, selection count, selections and cursors).
+    # It is expected to stay green, so this job gates the main CI.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+      - name: Install oniguruma
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libonig-dev
+      - name: Strict Helix cassette suite
+        run: zig build test-oracle-helix
+
+  vim-cassette-conformance:
+    name: Vim cassette conformance (known failures allowed)
+    runs-on: ubuntu-latest
+    # The Vim lane still exposes native-engine divergences (36/329 known
+    # failures). It reports without blocking until those are fixed.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -143,5 +162,5 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libonig-dev
-      - name: Strict cassette suite
+      - name: Strict cassette suite (both lanes; Helix is green)
         run: zig build test-oracle

@@ -217,6 +217,7 @@ pub fn editorInterface(editor: *Editor) ITextEditor {
         .delete_right_fn = editorDeleteRight,
         .begin_undo_group_fn = editorBeginUndoGroup,
         .end_undo_group_fn = editorEndUndoGroup,
+        .commit_undo_group_fn = editorCommitUndoGroup,
         .undo_fn = editorUndo,
         .redo_fn = editorRedo,
         .reveal_range_fn = editorRevealRange,
@@ -346,6 +347,10 @@ fn editorBeginUndoGroup(context: *anyopaque) void {
 
 fn editorEndUndoGroup(context: *anyopaque) void {
     editorFrom(context).endUndoGroup();
+}
+
+fn editorCommitUndoGroup(context: *anyopaque) void {
+    editorFrom(context).commitUndoGroup();
 }
 
 fn editorUndo(context: *anyopaque) anyerror!void {

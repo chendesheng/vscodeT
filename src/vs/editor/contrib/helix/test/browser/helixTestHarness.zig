@@ -6,6 +6,7 @@ const Editor = @import("../../../../browser/widget/codeEditor/codeEditorWidgetTe
 const extension_api = @import("../../../../../workbench/api/common/extensionApi.zig");
 const builtin_host = @import("../../../../../workbench/api/browser/builtinExtensionHost.zig");
 const HelixEngine = @import("../../browser/helixEngine.zig").HelixEngine;
+const helixSelection = @import("../../browser/helixSelection.zig");
 const Mode = @import("../../browser/helixEngine.zig").Mode;
 const Position = @import("../../../../common/core/position.zig").Position;
 const Range = @import("../../../../common/core/range.zig").Range;
@@ -109,30 +110,48 @@ pub const Harness = struct {
         try std.testing.expectEqualStrings(expected, text);
     }
 
+    /// Block-cursor position of the primary Helix selection
+    /// (`Range::cursor`), which is what the reference records.
     pub fn cursor(self: *Harness) Position {
-        return self.editor.modelCursorPosition();
+        const selection = self.primarySelection();
+        const text = self.value() catch return self.editor.modelCursorPosition();
+        defer self.allocator.free(text);
+        const anchor = self.editor.model.getOffsetAt(selection.getSelectionStart());
+        const head = self.editor.model.getOffsetAt(selection.getPosition());
+        const offset = if (head > anchor) helixSelection.prevGraphemeBoundary(text, head) else head;
+        return self.editor.model.getPositionAt(offset);
     }
 
     pub fn cursors(self: *Harness, allocator: std.mem.Allocator) ![]Position {
-        const selections = try self.editor.getSelections();
-        defer self.allocator.free(selections);
-        const result = try allocator.alloc(Position, selections.len);
-        for (selections, 0..) |selection, index| {
+        const items = try self.selections();
+        defer self.allocator.free(items);
+        const result = try allocator.alloc(Position, items.len);
+        for (items, 0..) |selection, index| {
             result[index] = selection.getPosition();
         }
         return result;
     }
 
+    /// Helix-visible selections: the mapped insert ranges while insert mode is
+    /// active, otherwise the editor selections.
+    pub fn selections(self: *Harness) ![]Selection {
+        return self.engine.activeSelections(self.allocator);
+    }
+
+    pub fn primarySelection(self: *Harness) Selection {
+        return self.engine.activePrimarySelection();
+    }
+
     pub fn selectionCount(self: *Harness) !usize {
-        const selections = try self.editor.getSelections();
-        defer self.allocator.free(selections);
-        return selections.len;
+        const items = try self.selections();
+        defer self.allocator.free(items);
+        return items.len;
     }
 
     pub fn firstSelection(self: *Harness) !Selection {
-        const selections = try self.editor.getSelections();
-        defer self.allocator.free(selections);
-        return selections[0];
+        const items = try self.selections();
+        defer self.allocator.free(items);
+        return items[0];
     }
     pub fn sendEvent(self: *Harness, event: ui.KeyEvent) !void {
         _ = try self.engine.handleKey(&event);

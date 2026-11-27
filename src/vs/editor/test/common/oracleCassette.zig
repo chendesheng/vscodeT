@@ -22,6 +22,11 @@ pub const Seed = struct {
     cursors: ?[]Cursor = null,
 };
 
+pub const RecordedSelection = struct {
+    anchor: Cursor,
+    head: Cursor,
+};
+
 pub const State = struct {
     text: []const u8,
     cursor: Cursor,
@@ -29,6 +34,8 @@ pub const State = struct {
     selection_count: ?usize = null,
     /// All selection/cursor positions, when the reference recorder emits them.
     cursors: ?[]Cursor = null,
+    /// Raw anchor/head ranges, when the reference recorder emits them.
+    selections: ?[]RecordedSelection = null,
 };
 
 pub const Case = struct {
@@ -198,4 +205,34 @@ test "oracle cassette parses a case" {
     try std.testing.expectEqualStrings("dw", try std.mem.concat(arena.allocator(), u8, loaded.case.keys));
     try std.testing.expectEqual(@as(usize, 1), loaded.case.states.len);
     try std.testing.expectEqual(@as(usize, 1), loaded.case.states[0].cursor[0]);
+}
+
+test "oracle cassette parses recorded selections" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const loaded = try parseCase(arena.allocator(), "insert_i.json",
+        \\{
+        \\  "schema": 1,
+        \\  "engine": "helix",
+        \\  "reference": "helix",
+        \\  "reference_version": "test",
+        \\  "case": "insert_i",
+        \\  "seed": { "text": "abc\n", "cursor": [1, 1] },
+        \\  "keys": ["i", "X", "<Esc>"],
+        \\  "states": [{
+        \\    "text": "Xabc\n",
+        \\    "cursor": [1, 2],
+        \\    "mode": "normal",
+        \\    "selection_count": 1,
+        \\    "selections": [{ "anchor": [1, 3], "head": [1, 2] }]
+        \\  }]
+        \\}
+    );
+    const state = loaded.case.states[0];
+    const selections = state.selections orelse return error.MissingSelections;
+    try std.testing.expectEqual(@as(usize, 1), selections.len);
+    try std.testing.expectEqual(@as(usize, 1), selections[0].anchor[0]);
+    try std.testing.expectEqual(@as(usize, 3), selections[0].anchor[1]);
+    try std.testing.expectEqual(@as(usize, 2), selections[0].head[1]);
 }

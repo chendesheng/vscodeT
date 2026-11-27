@@ -4341,6 +4341,12 @@ pub const Editor = struct {
         if (self.undo_group_depth == 0) self.model.pushStackElement();
     }
 
+    /// Closes every open undo group, making all edits made while it was open
+    /// one undo element. A no-op when no group is open.
+    pub fn commitUndoGroup(self: *Editor) void {
+        while (self.undo_group_depth > 0) self.endUndoGroup();
+    }
+
     fn closeTypingGroup(self: *Editor) void {
         self.pushUndoStop();
         self.prev_edit_operation_type = .Other;

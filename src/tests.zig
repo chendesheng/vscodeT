@@ -747,6 +747,7 @@ comptime {
     _ = @import("./vs/editor/contrib/helix/browser/helixEngine.zig");
     _ = @import("./vs/workbench/contrib/helix/browser/helixExtension.zig");
     _ = @import("./vs/workbench/contrib/helix/browser/helixRuntime.zig");
+    _ = @import("./vs/editor/contrib/helix/browser/helixSelection.zig");
     _ = @import("./vs/editor/contrib/helix/test/browser/helixEngine.test.zig");
     _ = @import("./vs/workbench/contrib/helix/test/browser/helixExtension.test.zig").Tests(@import("./tui/workbench.zig").TerminalWorkbench, @import("./tui/editorView.zig").View.createHandle);
     _ = @import("./vs/workbench/contrib/helix/test/browser/helixRuntime.test.zig").Tests(@import("./tui/workbench.zig").TerminalWorkbench, @import("./tui/editorView.zig").View.createHandle);

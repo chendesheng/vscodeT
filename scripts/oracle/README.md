@@ -59,12 +59,16 @@ Adding or removing a cassette requires regenerating the embedded index:
 python3 scripts/oracle/generate_cassette_index.py
 ```
 
-The corpus is a curated set plus generated coverage variants (400+ Vim and
-160+ Helix cassettes). `zig build test-oracle` is strict: every case asserts
-text, mode and cursor; Helix multi-cursor cases assert the full cursor set.
-It is a separate test binary from `zig build test`, and its CI job is allowed
-to fail while engine conformance gaps are fixed. Cases are not removed or
-weakened to make it green.
+The corpus is a curated set plus generated coverage variants (300+ Vim and 162
+Helix cassettes). `zig build test-oracle-helix` runs the strict Helix lane;
+`zig build test-oracle` runs both lanes.
+The replay asserts every recorded field: text, mode, selection count, the raw
+anchor/head `selections` ranges and the cursor set. The cursor is the
+reference's `Range::cursor()` value (previous grapheme of a forward head,
+otherwise the head), and seeds use the reference's one-grapheme ranges. The
+Helix lane (162/162) gates CI; the Vim lane keeps its CI job non-blocking while
+its known divergences are fixed. Cases are not removed or weakened to make
+either lane green.
 
 ## CI cost and limits
 
