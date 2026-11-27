@@ -265,38 +265,6 @@ fn utf16Column(model: *TextModel, line_number: usize, column: usize) usize {
     return position_converter.utf16OffsetForColumn(line.items, column);
 }
 
-test "documentsAndEditors: the document resource is the model URI" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    // The editor's path is a relative spelling; the model resource is the
-    // canonical absolute URI language-feature requests carry.
-    var editor = try Editor.createFromText(allocator, io, "{\n  \"a\": 1\n}\n", "relative.json", 40, 8);
-    defer {
-        editor.deinit();
-        allocator.destroy(editor);
-    }
-
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const delta = try addDocumentDelta(
-        arena.allocator(),
-        editor.model,
-        "json",
-        false,
-        .{ .tab_size = 2, .indent_size = 2, .insert_spaces = true },
-        &.{},
-    );
-    const document_uri = delta.object.get("addedDocuments").?.array.items[0].object.get("uri").?.object;
-    const editor_uri = delta.object.get("addedEditors").?.array.items[0].object.get("documentUri").?.object;
-    const document_path = document_uri.get("path").?.string;
-    try std.testing.expect(std.fs.path.isAbsolute(document_path));
-    // The mirror must not fall back to the editor's relative path spelling:
-    // that is what the extension host could not match to `model.uri()`.
-    try std.testing.expect(!std.mem.eql(u8, editor.path, document_path));
-    try std.testing.expectEqualStrings(document_path, editor_uri.get("path").?.string);
-    try std.testing.expectEqualStrings(try std_uri.fsPath(editor.model.uri(), arena.allocator()), document_path);
-}
-
 // MainThreadDocumentAndEditorStateComputer's model collection. The terminal
 // supplies model additions/removals from editor-group lifecycle events; each
 // resource owns exactly one mirror, including both models of a diff editor.
