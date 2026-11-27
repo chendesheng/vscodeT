@@ -227,7 +227,7 @@ developer machine.
 via `zig build test` / `zig build test-oracle`. The first corpus covers ASCII
 documents, a single starting cursor, final normal mode, and the selection
 count. Helix selection ranges and registers are recorded raw but not asserted
-yet. See [scripts/oracle/README.md](scripts/oracle/README.md) for the
+yet. See [scripts/oracle/README.md](../scripts/oracle/README.md) for the
 `check`/`record` workflow and artifact flow.
 
 Cassettes whose reference text/mode/count match but whose cursor placement does

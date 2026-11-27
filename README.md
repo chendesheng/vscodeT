@@ -257,9 +257,9 @@ The wasm demo additionally uses the `third_party/oniguruma` git submodule,
 pinned to Oniguruma **6.9.10** at commit
 `4ef89209a239c1aea328cf13c05a2807e5c146d1`. The submodule is left unmodified;
 the wasm-only `config.h` and provenance live in
-`third_party/oniguruma-config/`. The same `git submodule update --init
---depth 1` initializes it alongside `vscode/`; `zig build wasm` needs it, while
-the native `zig build` still uses the system libonig.
+`third_party/oniguruma-config/`. Initialize it with
+`git submodule update --init --depth 1 third_party/oniguruma`; `zig build wasm`
+needs it, while the native `zig build` still uses the system libonig.
 
 Without an initialized submodule, `zig build` still works with the vendored
 grammar and theme fallbacks in `src/support/` (Zig, TOML, YAML and Markdown,

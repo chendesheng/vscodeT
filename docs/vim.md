@@ -163,6 +163,6 @@ lives in `test/data/oracle/`. Replay is hermetic and runs in
 
 The first corpus covers ASCII documents, one cursor, and final normal, insert
 and replace modes. Vim visual ranges and registers are not asserted yet. To
-refresh or add recordings, see [scripts/oracle/README.md](scripts/oracle/README.md):
+refresh or add recordings, see [scripts/oracle/README.md](../scripts/oracle/README.md):
 install the pinned Neovim, run the recorder, and regenerate the embedded index.
 The same recording/check also runs in the `Record cassettes` GitHub workflow.
