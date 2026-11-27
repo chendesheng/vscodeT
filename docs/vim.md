@@ -159,10 +159,13 @@ Tests:
 cassettes recorded from a real Neovim by `scripts/oracle/record_nvim.py`
 (pinned release in `scripts/oracle/nvim/PIN`, currently `v0.10.4`). The data
 lives in `test/data/oracle/`. Replay is hermetic and runs in
-`zig build test` / `zig build test-oracle`; it needs no Neovim.
+`zig build test` / `zig build test-oracle`; `zig build test-oracle-vim` runs
+only this lane, and it needs no Neovim.
 
-The first corpus covers ASCII documents, one cursor, and final normal, insert
-and replace modes. Vim visual ranges and registers are not asserted yet. To
+The corpus covers ASCII documents, one cursor, and final normal, insert and
+replace modes; the 329 cases are green and gate CI. Visual selections are not a
+recorded final mode, and register contents are checked through their resulting
+text rather than as raw register state. To
 refresh or add recordings, see [scripts/oracle/README.md](../scripts/oracle/README.md):
 install the pinned Neovim, run the recorder, and regenerate the embedded index.
 The same recording/check also runs in the `Record cassettes` GitHub workflow.

@@ -56,9 +56,16 @@ test "Vim cassette: reference corpus" {
 }
 
 fn runCase(case: oracle.Case) !void {
-    const harness = try Harness.initWithWidth(std.testing.allocator, case.seed.text, case.width);
+    // Reproduce the reference recorder's seed protocol: Neovim starts from its
+    // default one-line buffer, writes the seed through the API, and feeds the
+    // whole key list as one `:normal!` batch. The seed change therefore stays
+    // in the same undo block as the replayed commands, and the batch stops at
+    // the first failed motion (`j`/`k` past the buffer edge).
+    const harness = try Harness.initWithWidth(std.testing.allocator, "", case.width);
     defer harness.deinit();
 
+    harness.editor.beginUndoGroup();
+    try harness.editor.replaceRange(harness.editor.model.getFullModelRange(), case.seed.text);
     try harness.editor.setCursorPosition(Position.init(case.seed.cursor[0], case.seed.cursor[1]));
 
     for (case.keys) |token| {
@@ -70,6 +77,7 @@ fn runCase(case: oracle.Case) !void {
             printContext(case, null, "key handling failed");
             return err;
         };
+        if (harness.engine.motion_failed) break;
     }
 
     const state = case.states[case.states.len - 1];

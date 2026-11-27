@@ -180,11 +180,11 @@ jobs:
         run: zig build test-oracle-helix
 
   vim-cassette-conformance:
-    name: Vim cassette conformance (known failures allowed)
+    name: Vim cassette conformance
     runs-on: ubuntu-latest
-    # The Vim lane still exposes native-engine divergences (36/329 known
-    # failures). It reports without blocking until those are fixed.
-    continue-on-error: true
+    # The Vim lane replays all 329 recorded cassettes and asserts every
+    # recorded field (text, mode and cursor). It is expected to stay green,
+    # so this job gates the main CI.
     steps:
       - uses: actions/checkout@v4
         with:
@@ -198,5 +198,5 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libonig-dev
-      - name: Strict cassette suite (both lanes; Helix is green)
-        run: zig build test-oracle
+      - name: Strict Vim cassette suite
+        run: zig build test-oracle-vim

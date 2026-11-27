@@ -71,14 +71,14 @@ The index check validates the Git index as well as the directory, so it rejects
 case aliases even if a case-insensitive checkout hides one of them.
 
 The corpus is a curated set plus generated coverage variants (329 Vim and 162
-Helix cassettes). `zig build test-oracle-helix` runs the strict Helix lane;
-`zig build test-oracle` runs both lanes. The replay asserts every recorded
-field: text, mode, selection count, the raw anchor/head `selections` ranges and
-the cursor set. The cursor is the reference's `Range::cursor()` value (previous
-grapheme of a forward head, otherwise the head), and seeds use the reference's
-one-grapheme ranges. The Helix lane (162/162) gates CI; the Vim lane keeps its
-CI job non-blocking while its known divergences are fixed. Cases are not
-removed or weakened to make either lane green.
+Helix cassettes). `zig build test-oracle-helix` and
+`zig build test-oracle-vim` run the per-engine lanes; `zig build test-oracle`
+runs both. The replay asserts every recorded field: text, mode, selection
+count, the raw anchor/head `selections` ranges and the cursor set. The cursor is
+the reference's `Range::cursor()` value (previous grapheme of a forward head,
+otherwise the head), and seeds use the reference's one-grapheme ranges. Both
+lanes are green (329 Vim and 162 Helix) and gate CI in their own jobs. Cases are
+not removed or weakened to make either lane green.
 
 ## CI cost and limits
 

@@ -260,9 +260,9 @@ one:
   different states in the corpus.
 
 The Helix lane is green (162/162) and is gated in CI by the
-`cassette-conformance` job. The Vim lane (`test-oracle`) is a separate,
-non-blocking job while its known divergences are fixed; no cases or assertions
-are excluded from either lane. See
+`cassette-conformance` job; the Vim lane is also green (329/329) and gated by
+`vim-cassette-conformance`. No cases or assertions are excluded from either
+lane. See
 [scripts/oracle/README.md](../scripts/oracle/README.md) for the
 `check`/`record` workflow and artifact flow.
 

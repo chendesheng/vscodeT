@@ -929,8 +929,8 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const oracle_test_step = b.step("test-oracle", "Run reference cassette tests");
     oracle_test_step.dependOn(&run_oracle_tests.step);
 
-    // Helix-only lane: the Helix cassette suite is expected to be green, so CI
-    // can gate it without waiting for the Vim lane's known divergences.
+    // Per-engine lanes so CI can gate each recorder independently. Both
+    // cassette suites are expected to stay green.
     const helix_oracle_tests = b.addTest(.{
         .name = "helix_oracle_tests",
         .root_module = oracle_module,
@@ -939,6 +939,15 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const run_helix_oracle_tests = b.addRunArtifact(helix_oracle_tests);
     const helix_oracle_test_step = b.step("test-oracle-helix", "Run Helix reference cassette tests");
     helix_oracle_test_step.dependOn(&run_helix_oracle_tests.step);
+
+    const vim_oracle_tests = b.addTest(.{
+        .name = "vim_oracle_tests",
+        .root_module = oracle_module,
+        .filters = &.{"Vim cassette:"},
+    });
+    const run_vim_oracle_tests = b.addRunArtifact(vim_oracle_tests);
+    const vim_oracle_test_step = b.step("test-oracle-vim", "Run Vim reference cassette tests");
+    vim_oracle_test_step.dependOn(&run_vim_oracle_tests.step);
 
     // Terminal-only test root: keeps the integrated-terminal tests runnable
     // without compiling the whole editor. `zig build test` covers them too.

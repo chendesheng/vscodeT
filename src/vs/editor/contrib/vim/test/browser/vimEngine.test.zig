@@ -5,6 +5,7 @@ const Editor = @import("../../../../browser/widget/codeEditor/codeEditorWidgetTe
 const extension_api = @import("../../../../../workbench/api/common/extensionApi.zig");
 const builtin_host = @import("../../../../../workbench/api/browser/builtinExtensionHost.zig");
 const VimEngine = @import("../../browser/vimEngine.zig").VimEngine;
+const Mode = @import("../../browser/vimEngine.zig").Mode;
 const Position = @import("../../../../common/core/position.zig").Position;
 const Range = @import("../../../../common/core/range.zig").Range;
 const Selection = @import("../../../../common/core/selection.zig").Selection;
@@ -440,7 +441,8 @@ test "Vim: shift operators indent and outdent lines" {
     try h.sendChar('>');
     const indented = try h.value();
     defer h.allocator.free(indented);
-    try std.testing.expect(std.mem.startsWith(u8, indented, "    one"));
+    // The reference uses Vim's default noexpandtab/shiftwidth=8.
+    try std.testing.expect(std.mem.startsWith(u8, indented, "\tone"));
     try h.sendChar('<');
     try h.sendChar('<');
     try h.expectValue("one\ntwo");
@@ -552,13 +554,20 @@ test "Vim: >j and visual > indent lines" {
     try motion.sendChar('j');
     const text = try motion.value();
     defer motion.allocator.free(text);
-    try std.testing.expect(std.mem.startsWith(u8, text, "    one\n    two"));
+    try std.testing.expect(std.mem.startsWith(u8, text, "\tone\n\ttwo"));
 
     const visual = try Harness.init(std.testing.allocator, "one\ntwo");
     defer visual.deinit();
     try visual.sendChar('V');
     try visual.sendChar('>');
-    try visual.expectValue("    one\ntwo");
+    try visual.expectValue("\tone\ntwo");
+
+    // Empty lines stay empty when shifted.
+    const blank = try Harness.init(std.testing.allocator, "\none");
+    defer blank.deinit();
+    try blank.sendChar('>');
+    try blank.sendChar('>');
+    try blank.expectValue("\none");
 }
 
 test "Vim: G goes to the last line, paragraphs and screen lines work" {
@@ -831,4 +840,133 @@ test "Vim: bracket and quote text objects, including b alias" {
     try visual.sendChar('(');
     try visual.sendChar('d');
     try visual.expectValue("f()");
+}
+
+test "Vim: named register prefix survives to the register command" {
+    const h = try Harness.init(std.testing.allocator, "one\ntwo\nthree");
+    defer h.deinit();
+    try h.editor.setCursorPosition(Position.init(2, 1));
+
+    try h.sendChar('"');
+    try h.sendChar('a');
+    try h.sendChar('y');
+    try h.sendChar('y');
+    try h.sendChar('k');
+    try h.sendChar('"');
+    try h.sendChar('a');
+    try h.sendChar('p');
+    try h.expectValue("one\ntwo\ntwo\nthree");
+    try std.testing.expectEqual(Position.init(2, 1), h.cursor());
+}
+
+test "Vim: blackhole register discards the deleted text" {
+    const h = try Harness.init(std.testing.allocator, "one\ntwo");
+    defer h.deinit();
+
+    try h.sendChar('"');
+    try h.sendChar('_');
+    try h.sendChar('d');
+    try h.sendChar('d');
+    try h.expectValue("two");
+
+    // The unnamed register was not overwritten, so `p` has nothing to paste.
+    try h.sendChar('p');
+    try h.expectValue("two");
+}
+
+test "Vim: ~ advances and visual ~ exits to the selection start" {
+    const h = try Harness.init(std.testing.allocator, "aBc");
+    defer h.deinit();
+    try h.sendChar('~');
+    try h.expectValue("ABc");
+    try std.testing.expectEqual(Position.init(1, 2), h.cursor());
+
+    const visual = try Harness.init(std.testing.allocator, "abc");
+    defer visual.deinit();
+    try visual.sendChar('v');
+    try visual.sendChar('l');
+    try visual.sendChar('~');
+    try visual.expectValue("ABc");
+    try std.testing.expectEqual(Mode.normal, visual.mode());
+    try std.testing.expectEqual(Position.init(1, 1), visual.cursor());
+}
+
+test "Vim: cw changes a one-character word without its following blank" {
+    const h = try Harness.init(std.testing.allocator, "a b c");
+    defer h.deinit();
+    try h.sendChar('c');
+    try h.sendChar('w');
+    try h.sendText("X");
+    try h.send(.escape);
+    try h.expectValue("X b c");
+
+    const blank = try Harness.init(std.testing.allocator, "a   b");
+    defer blank.deinit();
+    try blank.editor.setCursorPosition(Position.init(1, 2));
+    try blank.sendChar('c');
+    try blank.sendChar('w');
+    try blank.sendText("X");
+    try blank.send(.escape);
+    try blank.expectValue("aXb");
+}
+
+test "Vim: P leaves the cursor on the last pasted character" {
+    const charwise = try Harness.init(std.testing.allocator, "one two");
+    defer charwise.deinit();
+    try charwise.sendChar('y');
+    try charwise.sendChar('w');
+    try charwise.sendChar('P');
+    try charwise.expectValue("one one two");
+    try std.testing.expectEqual(Position.init(1, 4), charwise.cursor());
+
+    const linewise = try Harness.init(std.testing.allocator, "one\ntwo");
+    defer linewise.deinit();
+    try linewise.sendChar('y');
+    try linewise.sendChar('y');
+    try linewise.sendChar('p');
+    try linewise.expectValue("one\none\ntwo");
+    try std.testing.expectEqual(Position.init(2, 1), linewise.cursor());
+}
+
+test "Vim: replace-mode backspace restores the original character" {
+    const h = try Harness.init(std.testing.allocator, "abc");
+    defer h.deinit();
+    try h.sendChar('R');
+    try h.sendChar('X');
+    try h.sendChar('Y');
+    try h.send(.backspace);
+    try h.send(.escape);
+    try h.expectValue("Xbc");
+    try std.testing.expectEqual(Position.init(1, 1), h.cursor());
+}
+
+test "Vim: d% includes both matching brackets" {
+    const h = try Harness.init(std.testing.allocator, "a(b)c");
+    defer h.deinit();
+    try h.editor.setCursorPosition(Position.init(1, 2));
+    try h.sendChar('d');
+    try h.sendChar('%');
+    try h.expectValue("ac");
+    try std.testing.expectEqual(Position.init(1, 2), h.cursor());
+}
+
+test "Vim: 2dd at the end of the buffer keeps the cursor line" {
+    const h = try Harness.init(std.testing.allocator, "alpha\nbeta\ngamma\n");
+    defer h.deinit();
+    try h.editor.setCursorPosition(Position.init(3, 1));
+    try h.sendChar('2');
+    try h.sendChar('d');
+    try h.sendChar('d');
+    try h.expectValue("alpha\nbeta");
+    try std.testing.expectEqual(Position.init(2, 1), h.cursor());
+}
+
+test "Vim: gJ joining a trailing empty line clamps to its last character" {
+    const h = try Harness.init(std.testing.allocator, "alpha\nbeta\ngamma\n");
+    defer h.deinit();
+    try h.editor.setCursorPosition(Position.init(3, 1));
+    try h.sendChar('g');
+    try h.sendChar('J');
+    try h.expectValue("alpha\nbeta\ngamma");
+    try std.testing.expectEqual(Position.init(3, 5), h.cursor());
 }

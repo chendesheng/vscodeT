@@ -45,6 +45,15 @@ const LastVisual = struct { range: Range, linewise: bool };
 const BlockSelection = struct { anchor: Position, cursor: Position };
 const RecordedKey = struct { key: ui.Key, mods: ui.Modifiers };
 const LineUndo = struct { line: usize, text: []u8 };
+/// Vim's defaults used by the reference recordings: 'shiftwidth' and
+/// 'tabstop' are 8 and 'expandtab' is off. Shift operations rebuild the
+/// leading whitespace with tabs, as Vim does with noexpandtab.
+const VIM_SHIFT_WIDTH: usize = 8;
+const VIM_TAB_STOP: usize = 8;
+const IndentInfo = struct { width: usize, prefix_len: usize };
+/// One character replaced in Replace mode, with the text it replaced. `text`
+/// is empty when the typed character was appended at the end of the line.
+const ReplaceUndo = struct { position: Position, text: []u8 };
 
 const Register = struct {
     text: []u8,
@@ -73,6 +82,8 @@ pub const Registers = struct {
     }
 
     fn set(self: *Registers, name: u8, text: []const u8, linewise: bool) !void {
+        // The blackhole register discards writes and always reads back empty.
+        if (name == '_') return;
         if (name == 0 or name == '"') return self.setUnnamed(text, linewise);
         const entry = try self.named.getOrPut(name);
         if (entry.found_existing) self.allocator.free(entry.value_ptr.text);
@@ -80,6 +91,7 @@ pub const Registers = struct {
     }
 
     fn get(self: *Registers, name: u8) ?Register {
+        if (name == '_') return null;
         if (name == 0 or name == '"') return self.unnamed;
         return self.named.get(name);
     }
@@ -95,7 +107,12 @@ pub const VimEngine = struct {
     count_active: bool = false,
     operator: Operator = .none,
     operator_count: usize = 1,
+    /// Register selected with `"x`, consumed by the next register command.
     pending_register: ?u8 = null,
+    /// `"` was typed and the next key names the register.
+    pending_register_name: bool = false,
+    /// The current key named the register; keep it until the command follows.
+    register_name_this_key: bool = false,
     pending_text_object: ?bool = null,
     pending_visual_text_object: ?bool = null,
     pending_g: bool = false,
@@ -125,6 +142,15 @@ pub const VimEngine = struct {
     last_visual: ?LastVisual = null,
     last_insert_position: ?Position = null,
     line_undo: ?LineUndo = null,
+    /// Replace-mode characters that can be restored by <BS>, newest last.
+    replace_undo: ArrayList(ReplaceUndo),
+    /// Vim places the cursor at the start of the redone change; the editor's
+    /// redo restores its end-of-edit selection, so remember where undo left it.
+    redo_cursor: ?Position = null,
+    /// A normal-mode motion could not move. The cassette recorder feeds a whole
+    /// case as one `:normal!` batch, which stops at the first failed command;
+    /// replay uses this to reproduce that batch.
+    motion_failed: bool = false,
     visual_block: ?BlockSelection = null,
     block_insert: bool = false,
     marks: [26]?Position = std.mem.zeroes([26]?Position),
@@ -170,6 +196,7 @@ pub const VimEngine = struct {
             .last_search = ArrayList(u8).init(allocator),
             .pending_keys = ArrayList(RecordedKey).init(allocator),
             .last_change = ArrayList(RecordedKey).init(allocator),
+            .replace_undo = ArrayList(ReplaceUndo).init(allocator),
             .registers = registers,
             .owns_registers = shared_registers == null,
         };
@@ -194,6 +221,8 @@ pub const VimEngine = struct {
         self.pending_keys.deinit();
         self.last_change.deinit();
         if (self.line_undo) |*undo| self.allocator.free(undo.text);
+        for (self.replace_undo.items) |entry| self.allocator.free(entry.text);
+        self.replace_undo.deinit();
         if (self.owns_registers) {
             self.registers.deinit();
             self.allocator.destroy(self.registers);
@@ -242,6 +271,8 @@ pub const VimEngine = struct {
     }
 
     pub fn handleKey(self: *VimEngine, event: *const KeyInputEvent) !bool {
+        self.motion_failed = false;
+        self.register_name_this_key = false;
         if (!self.replaying) {
             if (self.macro_register != null and !isMacroStopKey(event, self.mode)) {
                 try self.recordMacroKey(event);
@@ -255,8 +286,25 @@ pub const VimEngine = struct {
             try self.recordKey(event);
         }
         const consumed = try self.dispatchKey(event);
+        self.dropUnusedRegister();
         if (!self.replaying) try self.finishRecording();
         return consumed;
+    }
+
+    /// A `"x` prefix applies only to the command that follows it. Keep it
+    /// while a count, operator or other multi-key command is still pending and
+    /// otherwise drop it, so it cannot attach to a later register command.
+    fn dropUnusedRegister(self: *VimEngine) void {
+        if (self.pending_register == null) return;
+        if (self.register_name_this_key) return;
+        if (self.mode == .operator_pending) return;
+        if (self.mode == .insert or self.mode == .replace) return;
+        if (self.count_active or self.pending_g or self.pending_z or self.pending_window or
+            self.pending_find != null or self.pending_replace or self.pending_text_object != null)
+        {
+            return;
+        }
+        self.pending_register = null;
     }
 
     fn dispatchKey(self: *VimEngine, event: *const KeyInputEvent) !bool {
@@ -490,6 +538,7 @@ pub const VimEngine = struct {
                 'y' => return self.applyVisualOperator(.yank),
                 '>' => return self.applyVisualOperator(.indent),
                 '<' => return self.applyVisualOperator(.outdent),
+                '~' => return self.toggleVisualCase(),
                 'i' => {
                     self.pending_visual_text_object = false;
                     return true;
@@ -548,7 +597,9 @@ pub const VimEngine = struct {
             }
             return true;
         }
-        if (self.pending_register != null) {
+        if (self.pending_register_name) {
+            self.pending_register_name = false;
+            self.register_name_this_key = true;
             self.pending_register = @intCast(char);
             return true;
         }
@@ -781,7 +832,12 @@ pub const VimEngine = struct {
             },
             'o' => try self.openLine(false),
             'O' => try self.openLine(true),
-            'u' => try self.editor.undo(),
+            'u' => {
+                try self.editor.undo();
+                // Vim puts the cursor at the start of the undone change, which
+                // is where redo must put it again.
+                self.redo_cursor = self.editor.cursorPosition();
+            },
             'r' => self.pending_replace = true,
             '~' => try self.toggleCase(self.takeCount()),
             'J' => try self.joinLines(self.takeCount(), " "),
@@ -810,7 +866,7 @@ pub const VimEngine = struct {
                 self.recordJump();
                 try self.searchAgain(self.takeCount(), !self.search_forward);
             },
-            '"' => self.pending_register = 0,
+            '"' => self.pending_register_name = true,
             else => return false,
         }
         return true;
@@ -818,7 +874,15 @@ pub const VimEngine = struct {
 
     fn handleCtrl(self: *VimEngine, char: u21) !bool {
         switch (char) {
-            'r' => try self.editor.redo(),
+            'r' => {
+                const version = self.editor.model.getVersionId();
+                const target = self.redo_cursor;
+                try self.editor.redo();
+                if (target) |position| {
+                    if (self.editor.model.getVersionId() != version) try self.editor.setCursor(position);
+                }
+                self.redo_cursor = null;
+            },
             'w' => self.pending_window = true,
             'd' => try self.scrollHalfPage(true),
             'u' => try self.scrollHalfPage(false),
@@ -901,16 +965,50 @@ pub const VimEngine = struct {
             }
             return true;
         }
-        // Vim's `cw`/`cW` change to the end of the word, not through the
-        // following whitespace like `dw`.
-        const motion_char = if (operator == .change and (char == 'w' or char == 'W'))
-            (if (char == 'w') @as(u21, 'e') else @as(u21, 'E'))
-        else
-            char;
-        const target = try self.motionTarget(motion_char, count);
+        if (operator == .change and (char == 'w' or char == 'W')) {
+            const target = try self.changeWordTarget(count, char == 'W');
+            if (target) |range| try self.applyOperator(operator, range, false);
+            return true;
+        }
+        const target = try self.motionTarget(char, count);
         if (target == null) return false;
         try self.applyOperator(operator, target.?, false);
         return true;
+    }
+
+    /// Vim's `cw`/`cW` special case. On a word it changes through the end of
+    /// the `count`-th word, without the trailing whitespace that plain `w`
+    /// would consume; on a blank it changes the blank run. `ce` is not the
+    /// same motion: on a one-character word it would cross into the next word.
+    fn changeWordTarget(self: *VimEngine, count: usize, big: bool) !?Range {
+        var value = try self.editor.model.getValue(.LF, false);
+        defer value.deinit();
+        const classifier: *const fn (u8) u8 = if (big) wordClassBig else wordClass;
+        const start = self.editor.model.getOffsetAt(self.editor.cursorPosition());
+        if (start >= value.items.len) return null;
+        var end = start;
+        var range_end_offset = start;
+        if (classifier(value.items[start]) == 0) {
+            while (end < value.items.len and value.items[end] != '\n' and classifier(value.items[end]) == 0) end += 1;
+            // `end` is the first non-blank after the blank run.
+            range_end_offset = end;
+        } else {
+            const cls = classifier(value.items[start]);
+            while (end + 1 < value.items.len and classifier(value.items[end + 1]) == cls) end += 1;
+            var remaining = @max(count, 1) - 1;
+            while (remaining > 0) : (remaining -= 1) {
+                var next = end + 1;
+                while (next < value.items.len and classifier(value.items[next]) == 0) next += 1;
+                if (next >= value.items.len) break;
+                const next_cls = classifier(value.items[next]);
+                end = next;
+                while (end + 1 < value.items.len and classifier(value.items[end + 1]) == next_cls) end += 1;
+            }
+            // `end` is the last character of the changed words.
+            range_end_offset = end + 1;
+        }
+        const range_end = self.editor.model.getPositionAt(@min(range_end_offset, value.items.len));
+        return Range.fromPositions(self.editor.model.getPositionAt(start), range_end);
     }
 
     fn motionTarget(self: *VimEngine, char: u21, count: usize) !?Range {
@@ -935,7 +1033,13 @@ pub const VimEngine = struct {
                 return @as(?Range, try self.linewiseRange(target, cursor.lineNumber - target + 1));
             },
             'w', 'W' => {
-                const position = try self.wordPosition(cursor, count, char == 'W', .start);
+                var position = try self.wordPosition(cursor, count, char == 'W', .start);
+                // Vim's exclusive-motion rule: when the word motion ends in
+                // column 1, the operator stops at the end of the previous line
+                // instead of taking the line break (`dw` on a last word).
+                if (position.lineNumber > cursor.lineNumber and position.column == 1) {
+                    position = Position.init(position.lineNumber - 1, self.lineMaxColumn(position.lineNumber - 1));
+                }
                 return Range.fromPositions(cursor, position);
             },
             'b', 'B' => {
@@ -957,7 +1061,11 @@ pub const VimEngine = struct {
             },
             '%' => {
                 const target = try self.matchBracketTarget() orelse return null;
-                return Range.fromPositions(cursor, target);
+                // `%` is inclusive: an operator takes the matched bracket too.
+                if (target.isBefore(cursor)) {
+                    return Range.fromPositions(target, try self.afterPosition(cursor));
+                }
+                return Range.fromPositions(cursor, try self.afterPosition(target));
             },
             '0' => return Range.fromPositions(Position.init(cursor.lineNumber, 1), cursor),
             '^' => return Range.fromPositions(self.firstNonBlank(cursor.lineNumber), cursor),
@@ -1179,19 +1287,19 @@ pub const VimEngine = struct {
 
     fn applyOperator(self: *VimEngine, operator: Operator, range: Range, linewise: bool) !void {
         if (operator == .indent or operator == .outdent) {
-            try self.rememberLine(range.startLineNumber);
-            self.did_change = true;
             const start_line = range.startLineNumber;
             var end_line = range.endLineNumber;
             if (end_line > start_line and range.endColumn == 1) end_line -= 1;
+            try self.rememberLine(start_line);
+            self.did_change = true;
             self.editor.beginUndoGroup();
             defer self.editor.endUndoGroup();
-            const selections = try self.allocator.alloc(Selection, 1);
-            defer self.allocator.free(selections);
-            selections[0] = Selection.init(start_line, 1, end_line, self.lineMaxColumn(end_line));
-            try self.editor.setSelections(selections);
-            if (operator == .indent) try self.editor.indentLines() else try self.editor.outdentLines();
-            try self.editor.setCursor(self.firstNonBlank(start_line));
+            var line = start_line;
+            while (line <= end_line) : (line += 1) {
+                try self.shiftLine(line, operator == .indent);
+            }
+            // Vim leaves the cursor in the first column of the first line.
+            try self.editor.setCursor(Position.init(start_line, 1));
             return;
         }
         if (operator == .yank) {
@@ -1218,6 +1326,23 @@ pub const VimEngine = struct {
         } else {
             try self.clampNormal();
         }
+    }
+
+    fn shiftLine(self: *VimEngine, line_number: usize, indent: bool) !void {
+        const content = try self.editor.model.getLineContent(line_number);
+        defer content.deinit();
+        // Vim leaves truly empty lines unchanged.
+        if (content.items.len == 0) return;
+        const info = indentInfo(content.items);
+        const target = if (indent) info.width + VIM_SHIFT_WIDTH else info.width -| VIM_SHIFT_WIDTH;
+        var prefix = ArrayList(u8).init(self.allocator);
+        defer prefix.deinit();
+        try prefix.appendNTimes('\t', target / VIM_TAB_STOP);
+        try prefix.appendNTimes(' ', target % VIM_TAB_STOP);
+        try self.editor.applyEdits(
+            &[_]extension_api.ITextEdit{.{ .range = Range.init(line_number, 1, line_number, 1 + info.prefix_len), .text = prefix.items }},
+            &[_]Position{Position.init(line_number, 1)},
+        );
     }
 
     fn changeChars(self: *VimEngine, count: usize) !void {
@@ -1277,9 +1402,15 @@ pub const VimEngine = struct {
     }
 
     fn deleteLines(self: *VimEngine, line: usize, count: usize) !void {
+        const cursor = self.editor.cursorPosition();
         const range = try self.linewiseRange(line, count);
         try self.applyOperator(.delete, range, true);
-        try self.clampNormal();
+        // Vim keeps the cursor line and column on the line that takes the
+        // deleted block's place; past EOF that is the new last line.
+        const line_count = self.editor.model.getLineCount();
+        const target_line = @min(@max(line, 1), line_count);
+        const last = self.lineEndPosition(target_line, true);
+        try self.editor.setCursor(Position.init(target_line, @min(cursor.column, last.column)));
     }
 
     fn yankLines(self: *VimEngine, line: usize, count: usize) !void {
@@ -1316,8 +1447,14 @@ pub const VimEngine = struct {
     }
 
     fn startReplaceMode(self: *VimEngine) !void {
+        self.clearReplaceUndo();
         try self.enterInsert(false);
         self.mode = .replace;
+    }
+
+    fn clearReplaceUndo(self: *VimEngine) void {
+        for (self.replace_undo.items) |entry| self.allocator.free(entry.text);
+        self.replace_undo.clearRetainingCapacity();
     }
 
     fn replaceAtCursor(self: *VimEngine, char: u21) !void {
@@ -1329,13 +1466,46 @@ pub const VimEngine = struct {
         const len = std.unicode.utf8Encode(char, &buffer) catch return;
         if (cursor.column <= line.items.len) {
             const end_column = try self.nextColumn(cursor.lineNumber, cursor.column);
+            const range = Range.init(cursor.lineNumber, cursor.column, cursor.lineNumber, end_column);
+            var original = try self.editor.model.getValueInRange(range, .LF);
+            defer original.deinit();
+            try self.replace_undo.append(.{
+                .position = cursor,
+                .text = try self.allocator.dupe(u8, original.items),
+            });
             try self.editor.applyEdits(
-                &[_]extension_api.ITextEdit{.{ .range = Range.init(cursor.lineNumber, cursor.column, cursor.lineNumber, end_column), .text = buffer[0..len] }},
+                &[_]extension_api.ITextEdit{.{ .range = range, .text = buffer[0..len] }},
                 &[_]Position{Position.init(cursor.lineNumber, cursor.column + len)},
             );
         } else {
+            try self.replace_undo.append(.{
+                .position = cursor,
+                .text = try self.allocator.dupe(u8, ""),
+            });
             try self.editor.insertText(buffer[0..len]);
         }
+    }
+
+    /// Replace-mode <BS> restores the character (or the appended position) it
+    /// replaced and leaves the cursor on the restored character.
+    fn replaceBackspace(self: *VimEngine) !void {
+        self.did_change = true;
+        if (self.replace_undo.pop()) |entry| {
+            defer self.allocator.free(entry.text);
+            const range = Range.init(
+                entry.position.lineNumber,
+                entry.position.column,
+                entry.position.lineNumber,
+                try self.nextColumn(entry.position.lineNumber, entry.position.column),
+            );
+            try self.editor.applyEdits(
+                &[_]extension_api.ITextEdit{.{ .range = range, .text = entry.text }},
+                &[_]Position{entry.position},
+            );
+            try self.editor.setCursor(entry.position);
+            return;
+        }
+        try self.editor.deleteLeft();
     }
 
     fn enterInsert(self: *VimEngine, group_active: bool) !void {
@@ -1365,6 +1535,7 @@ pub const VimEngine = struct {
 
     fn finishInsert(self: *VimEngine) !void {
         if (self.mode == .insert) self.editor.cancelEditorSuggestions();
+        if (self.mode == .replace) self.clearReplaceUndo();
         self.last_insert_position = self.editor.cursorPosition();
         if (self.block_insert) {
             self.block_insert = false;
@@ -1463,7 +1634,7 @@ pub const VimEngine = struct {
             },
             .backspace => {
                 self.did_change = true;
-                try self.editor.deleteLeft();
+                if (self.mode == .replace) try self.replaceBackspace() else try self.editor.deleteLeft();
             },
             .delete => {
                 self.did_change = true;
@@ -2208,12 +2379,21 @@ pub const VimEngine = struct {
             self.editor.beginUndoGroup();
             defer self.editor.endUndoGroup();
             try self.editor.applyEdits(&[_]extension_api.ITextEdit{.{ .range = Range.fromPositions(position, position), .text = text.items }}, &[_]Position{Position.init(line, 1)});
+            // Vim leaves the cursor on the first non-blank of the first
+            // pasted line.
+            try self.editor.setCursor(self.firstNonBlank(@min(line, self.editor.model.getLineCount())));
         } else {
             const position = if (before) cursor else try self.rightPosition(cursor, 1);
             try self.editor.setCursor(position);
             self.editor.beginUndoGroup();
             defer self.editor.endUndoGroup();
             try self.editor.applyEdits(&[_]extension_api.ITextEdit{.{ .range = Range.fromPositions(position, position), .text = text.items }}, &[_]Position{position});
+            // Vim leaves the cursor on the last character of the pasted text.
+            if (text.items.len > 0) {
+                const end_offset = self.editor.model.getOffsetAt(position) + text.items.len - 1;
+                try self.editor.setCursor(self.editor.model.getPositionAt(end_offset));
+                try self.clampNormal();
+            }
         }
     }
 
@@ -2229,22 +2409,59 @@ pub const VimEngine = struct {
         self.editor.beginUndoGroup();
         defer self.editor.endUndoGroup();
         try self.editor.applyEdits(&[_]extension_api.ITextEdit{.{ .range = Range.fromPositions(start, end), .text = separator }}, &[_]Position{start});
+        // The join point is the end of the first line; when the second line is
+        // empty that is the last character, not the position after it.
+        try self.clampNormal();
     }
 
     fn toggleCase(self: *VimEngine, count: usize) !void {
-        self.did_change = true;
         const cursor = self.editor.cursorPosition();
+        const end = try self.rightPositionOnLine(cursor, count);
+        if (cursor.equals(end)) return;
+        self.did_change = true;
         try self.rememberLine(cursor.lineNumber);
-        const end = try self.rightPosition(cursor, count);
         const range = Range.fromPositions(cursor, end);
         const text = try self.rangeText(range);
         defer self.allocator.free(text);
-        for (text) |*byte| {
-            if (std.ascii.isLower(byte.*)) byte.* = std.ascii.toUpper(byte.*) else if (std.ascii.isUpper(byte.*)) byte.* = std.ascii.toLower(byte.*);
-        }
+        toggleAsciiCase(text);
         self.editor.beginUndoGroup();
         defer self.editor.endUndoGroup();
         try self.editor.applyEdits(&[_]extension_api.ITextEdit{.{ .range = range, .text = text }}, &[_]Position{cursor});
+        // Vim advances over the toggled characters and stops on the last
+        // character when the count reaches the end of the line.
+        var next = end;
+        const last = self.lineEndPosition(cursor.lineNumber, true);
+        if (next.lineNumber == cursor.lineNumber and next.column > last.column) next = last;
+        try self.editor.setCursor(next);
+    }
+
+    fn toggleVisualCase(self: *VimEngine) !bool {
+        const selections = try self.editor.getSelections(self.allocator);
+        defer self.allocator.free(selections);
+        if (selections.len == 0) return true;
+        const selection = selections[0];
+        const linewise = self.mode == .visual_line;
+        var end_line = selection.endLineNumber;
+        if (linewise and end_line > selection.startLineNumber and selection.endColumn == 1) end_line -= 1;
+        const range = if (linewise)
+            try self.linewiseRange(selection.startLineNumber, end_line - selection.startLineNumber + 1)
+        else
+            Range.init(selection.startLineNumber, selection.startColumn, selection.endLineNumber, selection.endColumn);
+        self.last_visual = .{ .range = range, .linewise = linewise };
+        self.mode = .normal;
+        self.did_change = true;
+        try self.rememberLine(range.startLineNumber);
+        const text = try self.rangeText(range);
+        defer self.allocator.free(text);
+        toggleAsciiCase(text);
+        self.editor.beginUndoGroup();
+        defer self.editor.endUndoGroup();
+        try self.editor.applyEdits(
+            &[_]extension_api.ITextEdit{.{ .range = range, .text = text }},
+            &[_]Position{range.startPosition()},
+        );
+        try self.editor.setCursor(range.startPosition());
+        return true;
     }
 
     fn replaceChars(self: *VimEngine, char: u21, count: usize) !void {
@@ -2549,10 +2766,16 @@ pub const VimEngine = struct {
         const line_number = self.editor.cursorPosition().lineNumber;
         const line_count = self.editor.model.getLineCount();
         if (down) {
-            if (line_number >= line_count) return;
+            if (line_number >= line_count) {
+                self.motion_failed = true;
+                return;
+            }
             try self.editor.moveLogicalLine(true, select, @min(count, line_count - line_number));
         } else {
-            if (line_number <= 1) return;
+            if (line_number <= 1) {
+                self.motion_failed = true;
+                return;
+            }
             try self.editor.moveLogicalLine(false, select, @min(count, line_number - 1));
         }
     }
@@ -2580,6 +2803,7 @@ pub const VimEngine = struct {
         self.operator = .none;
         self.operator_count = 1;
         self.pending_register = null;
+        self.pending_register_name = false;
         self.pending_text_object = null;
         self.pending_visual_text_object = null;
         self.pending_g = false;
@@ -2598,6 +2822,29 @@ pub const VimEngine = struct {
         return count;
     }
 };
+
+fn indentInfo(line: []const u8) IndentInfo {
+    var width: usize = 0;
+    var index: usize = 0;
+    while (index < line.len) : (index += 1) {
+        if (line[index] == '\t') {
+            width = (width / VIM_TAB_STOP + 1) * VIM_TAB_STOP;
+        } else if (line[index] == ' ') {
+            width += 1;
+        } else break;
+    }
+    return .{ .width = width, .prefix_len = index };
+}
+
+fn toggleAsciiCase(bytes: []u8) void {
+    for (bytes) |*byte| {
+        if (std.ascii.isLower(byte.*)) {
+            byte.* = std.ascii.toUpper(byte.*);
+        } else if (std.ascii.isUpper(byte.*)) {
+            byte.* = std.ascii.toLower(byte.*);
+        }
+    }
+}
 
 /// Vim accepts any unambiguous prefix of `:nohlsearch`; `noh` is the
 /// shortest form users type, while `:nohl`, `:nohlse` and the full name are
