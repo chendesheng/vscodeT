@@ -2939,7 +2939,7 @@ pub const TerminalWorkbench = struct {
     }
 
     fn attachLanguageContributionServices(self: *TerminalWorkbench, tab: *Tab) void {
-        tab.attachHoverOpener((editor_service_mod.EditorOpening.OpenerAdapter{ .opening = &self.editor_opening }).interface());
+        tab.attachHoverServices((editor_service_mod.EditorOpening.OpenerAdapter{ .opening = &self.editor_opening }).interface(), .{ .menus = &self.menu_service, .parent_context = self.core.context_keys.getContext() });
         const features = self.language_features orelse return;
         tab.attachCodeActionServices(self.codeActionServices(features));
         const cache = self.code_lens_cache orelse return;
@@ -2950,7 +2950,7 @@ pub const TerminalWorkbench = struct {
         const features = self.language_features orelse return;
         widget.original_editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
         widget.modified_editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
-        widget.attachNativeLanguageServices(.{ .features = features, .cache = self.code_lens_cache, .commands = self.providerCommandHost(), .code_actions = self.codeActionServices(features), .opener = (editor_service_mod.EditorOpening.OpenerAdapter{ .opening = &self.editor_opening }).interface(), .window = &self.window_events });
+        widget.attachNativeLanguageServices(.{ .features = features, .cache = self.code_lens_cache, .commands = self.providerCommandHost(), .code_actions = self.codeActionServices(features), .opener = (editor_service_mod.EditorOpening.OpenerAdapter{ .opening = &self.editor_opening }).interface(), .hover_menus = .{ .menus = &self.menu_service, .parent_context = self.core.context_keys.getContext() }, .window = &self.window_events });
     }
 
     fn onMarkersChanged(_: MarkerChangeEvent, self: *TerminalWorkbench) !void {

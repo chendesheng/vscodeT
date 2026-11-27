@@ -13215,6 +13215,73 @@ test "Diff editor commands: marker hover queries the full diagnostic and transfe
     modified.hideContentHover();
 }
 
+test "Diff editor commands: marker hover menu actions inherit workbench context and select the owning pane range" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const marker_types = @import("../vs/platform/markers/common/markers.zig");
+    const action_types = @import("../vs/platform/actions/common/actions.zig");
+    const Expr = @import("../vs/platform/contextkey/common/contextkey.zig").Expr;
+    const HoverController = @import("../vs/editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
+    const Probe = struct {
+        calls: usize = 0,
+        fn run(context: *anyopaque) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+        }
+        fn find(node: *ui.Node) ?*ui.Node {
+            if (node.getAttribute("data-hover-status-action")) |id| if (std.mem.eql(u8, id, "0")) return node;
+            var child = node.firstChild();
+            while (child) |value| : (child = value.nextSibling()) if (find(value)) |found| return found;
+            return null;
+        }
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(a, io, &tmp, "marker-menu.txt", "original");
+    defer a.free(path);
+    const window = try TestWindow.init(a, io, &.{}, 120, 28);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.enableLanguageFeatures();
+    try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "original", "modified", "Original", "Modified");
+    const diff = wb.activeTab().?.diff.?.widget;
+    var options = diff.options;
+    options.read_only = false;
+    _ = try diff.updateOptions(options);
+    var probe: Probe = .{};
+    try wb.commands.registerCommand(.{ .id = "test.markerMenu", .context = &probe, .run = Probe.run }, .{ .id = "test.markerMenu", .title = "Marker Menu Action" }, .{ .show_in_palette = false });
+    defer wb.commands.unregister("test.markerMenu");
+    const readonly_when = Expr{ .Defined = "editorReadonly" };
+    const writable_when = Expr{ .Not = "editorReadonly" };
+    const readonly_item = try wb.commands.menus.appendMenuItemTracked(action_types.menu_ids.MarkerHoverStatusBar, .{ .command = .{ .id = "test.markerMenu", .title = "Read-only Diagnostic Action" }, .when = &readonly_when });
+    defer readonly_item.dispose();
+    const writable_item = try wb.commands.menus.appendMenuItemTracked(action_types.menu_ids.MarkerHoverStatusBar, .{ .command = .{ .id = "test.markerMenu", .title = "Writable Diagnostic Action" }, .when = &writable_when });
+    defer writable_item.dispose();
+    var frame: std.Io.Writer.Allocating = .init(a);
+    defer frame.deinit();
+    try renderFrame(wb, &frame.writer);
+    const range = Range.init(1, 2, 1, 5);
+    for ([_]*Editor{ diff.original_editor, diff.modified_editor }, [_][]const u8{ "Read-only Diagnostic Action", "Writable Diagnostic Action" }) |editor, label| {
+        var resource = try marker_types.Resource.fromUri(a, editor.model.uri());
+        defer resource.deinit(a);
+        try wb.marker_service.?.changeOne("menu-marker", resource, &.{.{ .message = "Diagnostic", .severity = marker_types.MarkerSeverity.Warning, .start_line_number = 1, .start_column = 2, .end_line_number = 1, .end_column = 5 }}, null);
+        const controller = editor.getContribution(HoverController).?;
+        controller.showContentHover(Range.init(1, 2, 1, 3), .immediate, .keyboard, false);
+        const bar = controller.widget().widget.rendered.?.status_bar;
+        try std.testing.expect(bar.message == null);
+        try std.testing.expectEqual(@as(usize, 1), bar.actions.items.len);
+        try std.testing.expectEqualStrings(label, bar.actions.items[0].label);
+        try renderFrame(wb, &frame.writer);
+        const node = Probe.find(controller.widget().widget.root.?) orelse return error.MissingMarkerMenuAction;
+        var event: ui.MouseEvent = .{ .kind = .click, .x = 0, .y = 0 };
+        node.document.dispatchMouse(node, &event);
+        try std.testing.expect(!controller.isVisible());
+        const selection = editor.modelSelection();
+        try std.testing.expectEqual(range, Range.init(selection.startLineNumber, selection.startColumn, selection.endLineNumber, selection.endColumn));
+    }
+    try std.testing.expectEqual(@as(usize, 2), probe.calls);
+}
+
 test "Diff editor commands: accessible hover uses the focused real pane and updates content through verbosity events" {
     const a = std.testing.allocator;
     const io = std.testing.io;

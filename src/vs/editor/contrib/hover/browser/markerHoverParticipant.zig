@@ -35,12 +35,39 @@ const action_types = @import("../../codeAction/common/types.zig");
 const CodeActionController = @import("../../codeAction/browser/codeActionController.zig").CodeActionController;
 const dispatch = @import("../../../../base/common/windowDispatch.zig");
 const Disposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
+const menu_api = @import("../../../../platform/actions/common/menuService.zig");
+const contextkey = @import("../../../../platform/contextkey/common/contextkey.zig");
+const IAction = @import("../../../../base/common/actions.zig").IAction;
 const markerCodeActionTrigger: action_types.CodeActionTrigger = .{ .type = .Invoke, .filter = .{ .include = action_types.CodeActionKind.QuickFix }, .trigger_action = .QuickFixHover };
 
 pub const CodeActionServices = struct {
     editor: *Editor,
     registry: *@import("../../../common/languageFeatureRegistry.zig").LanguageFeatureRegistry(@import("../../../common/languages.zig").CodeActionProvider),
     window: *dispatch.Queue,
+};
+
+pub const MenuServices = struct {
+    menus: *menu_api.MenuService,
+    parent_context: contextkey.IContext,
+};
+
+/// The terminal's window context represents its active code editor. For a
+/// mouse hover on the other diff pane, resolve the editor-dependent keys
+/// against the actual owning editor while inheriting workbench keys.
+const MarkerMenuContext = struct {
+    editor: *Editor,
+    parent: contextkey.IContext,
+    fn interface(self: *MarkerMenuContext) contextkey.IContext {
+        return .{ .context = self, .get_value = get };
+    }
+    fn get(context: *anyopaque, key: []const u8) contextkey.ContextKeyValue {
+        const self: *MarkerMenuContext = @ptrCast(@alignCast(context));
+        if (std.mem.eql(u8, key, "editorReadonly")) return .{ .boolean = self.editor.isReadOnly() };
+        if (std.mem.eql(u8, key, "editorHasCodeActionsProvider")) return .{ .boolean = self.editor.has_code_action_provider };
+        if (std.mem.eql(u8, key, "editorLangId")) return .{ .string = self.editor.model.getLanguageId() };
+        if (std.mem.eql(u8, key, "resourceScheme")) return .{ .string = self.editor.model.uri().scheme };
+        return self.parent.getValue(key);
+    }
 };
 
 /// Narrow adapter for IOpenerService. Related positions retain UTF-16 columns
@@ -67,6 +94,7 @@ pub const MarkerHoverParticipant = struct {
     marker_decorations: ?*MarkerDecorationsService,
     opener: ?Opener = null,
     code_actions: ?CodeActionServices = null,
+    menus: ?MenuServices = null,
     recent_marker_code_actions_info: ?struct { key: []u8, has_code_actions: bool } = null,
     /// Payloads of the current hover computation.
     parts_arena: std.heap.ArenaAllocator,
@@ -204,9 +232,7 @@ pub const MarkerHoverParticipant = struct {
         self.rendered = try rendered.toOwnedSlice();
         if (sorted.len > 0) {
             const hover: *const MarkerHover = @ptrCast(@alignCast(sorted[0].data orelse return self.rendered));
-            if (self.code_actions) |services| if (!services.editor.isReadOnly()) {
-                try MarkerStatus.start(self, services, render_context.*, hover);
-            };
+            if (self.code_actions) |services| try MarkerStatus.start(self, services, render_context.*, hover);
         }
         return self.rendered;
     }
@@ -242,10 +268,14 @@ const MarkerStatus = struct {
     pending: ?Disposable = null,
     actions: ?*codeAction.ManagedCodeActionSet = null,
     ai_index: ?usize = null,
+    menu_actions: ?menu_api.MenuActions = null,
+    menu_action_count: usize = 0,
+    hover_range: Range,
 
     fn start(participant: *MarkerHoverParticipant, services: CodeActionServices, context: IEditorHoverRenderContext, hover: *const MarkerHover) !void {
         const register = context.add_disposable orelse return;
         if (context.status_bar.set_message == null) return;
+        if (services.editor.isReadOnly() and participant.menus == null) return;
         const a = participant.allocator;
         const self = try a.create(MarkerStatus);
         errdefer a.destroy(self);
@@ -254,10 +284,22 @@ const MarkerStatus = struct {
         const code = hover.code orelse "";
         const key = try std.fmt.allocPrint(a, "{d}:{s}{d}:{s}{d}:{s}:{d}:{d}:{d}:{d}:{d}", .{ source.len, source, code.len, code, hover.message.len, hover.message, hover.severity, r.startLineNumber, r.startColumn, r.endLineNumber, r.endColumn });
         errdefer a.free(key);
-        self.* = .{ .participant = participant, .services = services, .context = context, .key = key };
+        self.* = .{ .participant = participant, .services = services, .context = context, .key = key, .hover_range = hover.range };
         self.timer = .{ .queue = services.window, .context = self, .run = showChecking };
+        if (participant.menus) |menus| {
+            var scoped = MarkerMenuContext{ .editor = services.editor, .parent = menus.parent_context };
+            self.menu_actions = try menus.menus.getMenuActions(a, @import("../../../../platform/actions/common/actions.zig").menu_ids.MarkerHoverStatusBar, scoped.interface());
+            for (self.menu_actions.?.groups) |group| for (group.actions) |action| {
+                if (menu_api.MenuItemAction.from(action) != null and action.enabled()) self.menu_action_count += 1;
+            };
+        }
+        errdefer if (self.menu_actions) |*actions| actions.deinit();
         try register(context.context, Disposable.from(MarkerStatus, self, dispose));
         // Once registered, the rendered owner is responsible for cleanup.
+        if (services.editor.isReadOnly()) {
+            self.renderMenuActions();
+            return;
+        }
         var recent_no_actions = false;
         if (participant.recent_marker_code_actions_info) |recent| {
             if (std.mem.eql(u8, recent.key, key)) {
@@ -267,7 +309,7 @@ const MarkerStatus = struct {
                 participant.recent_marker_code_actions_info = null;
             }
         }
-        self.setMessage(if (recent_no_actions) "No quick fixes available" else " ");
+        self.setMessage(if (recent_no_actions and self.menu_action_count == 0) "No quick fixes available" else " ");
         if (!recent_no_actions) self.timer.schedule(@import("../../../../base/common/timeCompat.zig").milliTimestamp() + 200);
         self.pending = codeAction.getCodeActions(a, services.registry, participant.model, r, markerCodeActionTrigger, .None, .{ .context = self, .complete = completed }) catch |err| blk: {
             completed(self, err);
@@ -292,6 +334,7 @@ const MarkerStatus = struct {
         self.timer.schedule(null);
         const set = reply catch {
             self.setMessage(null);
+            self.renderMenuActions();
             self.context.callOnContentsChanged();
             return;
         };
@@ -303,7 +346,8 @@ const MarkerStatus = struct {
         } else |_| {}
         if (!has_actions) {
             set.dispose();
-            self.setMessage("No quick fixes available");
+            self.setMessage(if (self.menu_action_count == 0) "No quick fixes available" else null);
+            self.renderMenuActions();
         } else {
             self.actions = set;
             self.setMessage(null);
@@ -314,9 +358,42 @@ const MarkerStatus = struct {
                 _ = status_bar.add_action(status_bar.context, .{ .label = item.action.title, .command_id = if (item.action.command) |cmd| cmd.id else "", .run_context = self, .run = applyAI });
                 break;
             };
+            if (self.ai_index == null) self.renderMenuActions();
         }
         self.context.callOnContentsChanged();
     }
+
+    fn renderMenuActions(self: *MarkerStatus) void {
+        const actions = if (self.menu_actions) |*snapshot| snapshot else return;
+        const status = self.context.status_bar;
+        for (actions.groups) |group| for (group.actions) |action| {
+            if (menu_api.MenuItemAction.from(action) == null or !action.enabled()) continue;
+            const item = actions.arena.allocator().create(MenuAction) catch continue;
+            item.* = .{ .owner = self, .action = action };
+            _ = status.add_action(status.context, .{ .label = action.label(), .command_id = action.id(), .run_context = item, .run = MenuAction.run });
+        };
+    }
+
+    const MenuAction = struct {
+        owner: *MarkerStatus,
+        action: IAction,
+        fn run(context: ?*anyopaque) void {
+            const self: *MenuAction = @ptrCast(@alignCast(context orelse return));
+            const owner = self.owner;
+            const editor = owner.services.editor;
+            const range = owner.hover_range;
+            const action = self.action;
+            var snapshot = owner.menu_actions orelse return;
+            owner.menu_actions = null;
+            defer snapshot.deinit();
+            // Hiding the hover disposes the rendered status owner; retain the
+            // selected menu snapshot until its registered command returns.
+            owner.context.callHide();
+            editor.setSelection(range) catch return;
+            if (editor.getContribution(CodeActionController)) |controller| if (controller.view) |view| view.focusEditor();
+            action.execute(null) catch {};
+        }
+    };
 
     fn showQuickFixes(context: ?*anyopaque, node: *ui.Node) void {
         const self: *MarkerStatus = @ptrCast(@alignCast(context orelse return));
@@ -338,6 +415,7 @@ const MarkerStatus = struct {
         self.timer.schedule(null);
         if (self.pending) |pending| pending.dispose();
         if (self.actions) |set| set.dispose();
+        if (self.menu_actions) |*actions| actions.deinit();
         const a = self.participant.allocator;
         a.free(self.key);
         a.destroy(self);
