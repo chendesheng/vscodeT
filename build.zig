@@ -899,7 +899,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const oracle_tests = b.addTest(.{
         .name = "oracle_tests",
         .root_module = tests.root_module,
-        .filters = &.{ "Vim cassette:", "Helix cassette:" },
+        .filters = &.{ "Vim cassette:", "Helix cassette:", "oracle cassette" },
     });
     const run_oracle_tests = b.addRunArtifact(oracle_tests);
     const oracle_test_step = b.step("test-oracle", "Run reference cassette tests");

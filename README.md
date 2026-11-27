@@ -57,6 +57,7 @@ zig build run -- <file>...   # open files in an empty workspace
 zig build run -- --session <file> [<folder>] [<file>...]  # restore/save the tab session
 zig build run -- --preview <file>   # read-only terminal UI preview
 zig build test   # run the editor and ui library tests
+zig build test-oracle   # replay the Neovim/Helix reference cassettes
 zig build test-watcher -Dwatcher-only=true   # run the file-watcher tests without the TUI
 zig build bench-open   # Debug open/edit benchmarks (skipped by zig build test)
 zig build bench-ui -Dbench-args="--runs 5 --markdown"   # UI library stress benchmarks
@@ -227,9 +228,30 @@ tip at depth 1; that tip is not checked out.
 
 ```sh
 git clone --recurse-submodules --shallow-submodules <repo-url>
-# or, in an existing checkout:
-git submodule update --init --depth 1
+# or, in an existing checkout (normal development):
+git submodule update --init --depth 1 vscode vscode-textmate
 ```
+
+`helix/` is a third, shallow submodule pinned to Helix **25.07.1** at commit
+`a05c151bb6e8e9c65ec390b0ae2afe7a5efd619b`. It is the source of the Helix
+reference cassettes only: it is not a port target, must not be edited, and is
+not built locally. Initialize it only when working on the cassette recorder:
+
+```sh
+git submodule update --init --depth 1 helix
+```
+
+The Helix recording runs in GitHub Actions
+(`.github/workflows/record-cassettes.yml`) from that submodule plus
+`scripts/oracle/helix/record.patch`. The Neovim cassette recorder is local and
+uses only a developer virtualenv. Replay is hermetic:
+
+```sh
+zig build test-oracle
+```
+
+See [scripts/oracle/README.md](scripts/oracle/README.md). The Helix pin is
+coupled to its patch and the committed cassettes; bump them together.
 
 The wasm demo additionally uses the `third_party/oniguruma` git submodule,
 pinned to Oniguruma **6.9.10** at commit

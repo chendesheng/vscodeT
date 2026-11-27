@@ -95,6 +95,7 @@ jobs:
           key: ${{ hashFiles('scripts/oracle/helix/record.patch', 'scripts/oracle/helix/PIN') }}
       - name: Record from the patched Helix harness
         env:
+          HELIX_DISABLE_AUTO_GRAMMAR_BUILD: '1'
           HELIX_ORACLE_IN: ${{ github.workspace }}/src/vs/editor/contrib/helix/test/data/oracle
           HELIX_ORACLE_OUT: ${{ runner.temp }}/helix-cassettes
         working-directory: helix

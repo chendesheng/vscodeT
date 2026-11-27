@@ -152,3 +152,17 @@ Tests:
 
 - `src/vs/editor/contrib/vim/test/browser/vimEngine.test.zig`
 - `src/vs/workbench/contrib/vim/test/browser/vimExtension.test.zig`
+
+## Reference cassettes
+
+`src/vs/editor/contrib/vim/test/browser/vimCassette.test.zig` replays JSON
+cassettes recorded from a real Neovim by `scripts/oracle/record_nvim.py`
+(pinned release in `scripts/oracle/nvim/PIN`, currently `v0.10.4`). The data
+lives in `test/data/oracle/`. Replay is hermetic and runs in
+`zig build test` / `zig build test-oracle`; it needs no Neovim.
+
+The first corpus covers ASCII documents, one cursor, and final normal, insert
+and replace modes. Vim visual ranges and registers are not asserted yet. To
+refresh or add recordings, see [scripts/oracle/README.md](scripts/oracle/README.md):
+install the pinned Neovim, run the recorder, and regenerate the embedded index.
+The same recording/check also runs in the `Record cassettes` GitHub workflow.

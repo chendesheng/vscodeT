@@ -172,13 +172,11 @@ test "oracle cassette key tokens" {
     try std.testing.expectError(error.EmptyKeyToken, keyEvent(""));
 }
 
-test "oracle cassette loads JSON files" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
+test "oracle cassette parses a case" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
 
-    try tmp.dir.writeFile(.{
-        .sub_path = "normal_dw.json",
-        .data =
+    const loaded = try parseCase(arena.allocator(), "normal_dw.json",
         \\{
         \\  "schema": 1,
         \\  "engine": "vim",
@@ -189,19 +187,10 @@ test "oracle cassette loads JSON files" {
         \\  "keys": ["d", "w"],
         \\  "states": [{ "text": "two\n", "cursor": [1, 1], "mode": "normal" }]
         \\}
-        ,
-    });
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(dir_path);
-
-    const loaded = try load(arena.allocator(), dir_path);
-    try std.testing.expectEqual(@as(usize, 1), loaded.len);
-    try std.testing.expectEqualStrings("normal_dw.json", loaded[0].name);
-    try std.testing.expectEqualStrings("vim", loaded[0].case.engine);
-    try std.testing.expectEqualStrings("dw", try std.mem.concat(arena.allocator(), u8, loaded[0].case.keys));
-    try std.testing.expectEqual(@as(usize, 1), loaded[0].case.states.len);
-    try std.testing.expectEqual(@as(usize, 1), loaded[0].case.states[0].cursor[0]);
+    );
+    try std.testing.expectEqualStrings("normal_dw.json", loaded.name);
+    try std.testing.expectEqualStrings("vim", loaded.case.engine);
+    try std.testing.expectEqualStrings("dw", try std.mem.concat(arena.allocator(), u8, loaded.case.keys));
+    try std.testing.expectEqual(@as(usize, 1), loaded.case.states.len);
+    try std.testing.expectEqual(@as(usize, 1), loaded.case.states[0].cursor[0]);
 }

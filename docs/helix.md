@@ -206,9 +206,26 @@ Tests:
 - `src/vs/editor/contrib/helix/test/browser/helixEngine.test.zig`
 - `src/vs/workbench/contrib/helix/test/browser/helixExtension.test.zig`
 - `src/vs/workbench/contrib/helix/test/browser/helixRuntime.test.zig`
+- `src/vs/editor/contrib/helix/test/browser/helixCassette.test.zig`
 
 Run the focused suite with:
 
 ```sh
 zig build test-helix
 ```
+
+## Reference cassettes
+
+Unlike Neovim, Helix has no embeddable RPC. The cassettes in
+`test/data/oracle/` are therefore generated **only in GitHub Actions** from the
+pinned `helix/` submodule: `.github/workflows/record-cassettes.yml` applies
+`scripts/oracle/helix/record.patch`, runs Helix's own integration harness, and
+uploads the JSON artifact for review and commit. Helix is never built on a
+developer machine.
+
+`helixCassette.test.zig` replays the committed data against the native engine
+via `zig build test` / `zig build test-oracle`. The first corpus covers ASCII
+documents, a single starting cursor, final normal mode, and the selection
+count. Helix selection ranges and registers are recorded raw but not asserted
+yet. See [scripts/oracle/README.md](scripts/oracle/README.md) for the
+`check`/`record` workflow and artifact flow.
