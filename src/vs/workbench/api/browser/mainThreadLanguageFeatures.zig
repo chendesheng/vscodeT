@@ -2305,8 +2305,10 @@ fn parseCompletionItem(allocator: Allocator, object: std.json.ObjectMap, default
     const range = if (object.get("j")) |value| completionRange(value, model) orelse defaultCompletionRange(default_range, model) else defaultCompletionRange(default_range, model);
     return .{
         .label = label,
+        .label_detail = detail,
+        .label_description = description,
         .kind = kind,
-        .detail = detail orelse (try optionalJsonString(allocator, object.get("c"))),
+        .detail = try optionalJsonString(allocator, object.get("c")),
         .documentation = try documentationText(allocator, object.get("d")),
         .sort_text = try optionalJsonString(allocator, object.get("e")),
         .filter_text = try optionalJsonString(allocator, object.get("f")),

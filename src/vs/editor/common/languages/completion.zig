@@ -30,6 +30,8 @@ pub const TextEdit = struct {
 
 pub const CompletionItem = struct {
     label: []const u8,
+    label_detail: ?[]const u8 = null,
+    label_description: ?[]const u8 = null,
     kind: CompletionItemKind = .Text,
     detail: ?[]const u8 = null,
     documentation: ?[]const u8 = null,

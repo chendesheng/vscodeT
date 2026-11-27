@@ -155,7 +155,7 @@ pub const SuggestWidget = struct {
         var longest: usize = 0;
         if (self.model.completionModel()) |model| {
             for (model.filtered.items) |item| {
-                longest = @max(longest, item.label.len + (if (item.detail) |detail| detail.len + 2 else 0));
+                longest = @max(longest, item.label.len + (if (item.label_detail) |detail| detail.len else 0) + (if (item.label_description orelse item.detail) |description| description.len + 2 else 0));
             }
         }
         const wanted = @max(min_width, longest + 5 + border_cells);
@@ -319,9 +319,14 @@ pub const SuggestWidget = struct {
             const label_text = try doc.createText(item.label);
             label_text.setStyle(.{ .color = if (selected) self.theme.selected_foreground else self.theme.foreground });
             _ = try label.appendChild(label_text);
+            if (item.label_detail) |detail| {
+                const suffix = try doc.createText(detail);
+                suffix.setStyle(.{ .color = self.theme.dim_foreground });
+                _ = try label.appendChild(suffix);
+            }
             _ = try row_node.appendChild(label);
 
-            if (item.detail) |detail| {
+            if (item.label_description orelse item.detail) |detail| {
                 const detail_node = try doc.createElement(.div);
                 detail_node.setStyle(.{
                     .width = .{ .cells = @floatFromInt(@max(list_width / 2, 1)) },
