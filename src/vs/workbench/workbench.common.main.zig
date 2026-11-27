@@ -48,6 +48,7 @@ pub fn registerViewContainers(registry: *@import("common/views.zig").ViewContain
     try @import("contrib/scm/browser/scm.contribution.zig").registerViewContainer(registry);
     try @import("contrib/markers/browser/markers.contribution.zig").registerViewContainer(registry);
     try @import("contrib/terminal/browser/terminal.contribution.zig").registerViewContainer(registry);
+    try @import("contrib/bulkEdit/browser/preview/bulkEdit.contribution.zig").registerViewContainer(registry);
 }
 
 pub fn registerViews(registry: *@import("common/views.zig").ViewsRegistry) !void {
@@ -156,6 +157,7 @@ pub fn registerActions(commands: *CommandRegistry, instantiation: *Instantiation
     for (quick_diff_widget.widget_actions) |action| try commands.registerAction(instantiation, action);
     try quick_diff_widget.registerGoMenu(&commands.menus);
     try @import("contrib/multiDiffEditor/browser/multiDiffEditor.contribution.zig").registerActions(commands, instantiation);
+    for (@import("contrib/bulkEdit/browser/preview/bulkEdit.contribution.zig").view_actions) |action| try commands.registerAction(instantiation, action);
     for (@import("browser/parts/editor/diffEditorCommands.zig").diff_actions) |action| try commands.registerAction(instantiation, action);
     for (@import("../editor/browser/widget/diffEditor/commands.zig").diff_actions) |action| try commands.registerAction(instantiation, action);
     try commands.registerAction(instantiation, @import("../editor/contrib/toggleTabFocusMode/browser/toggleTabFocusMode.zig").ToggleTabFocusModeAction.action);

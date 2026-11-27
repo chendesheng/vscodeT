@@ -10479,6 +10479,69 @@ test "Diff editor commands: Quick Fix queries the focused real model and execute
     try std.testing.expect(!wb.context_keys.?.interface().getContextKeyValue("messageVisible").boolean);
 }
 
+test "Diff editor commands: refactor preview shows real multi-diff models and applies only checked changes" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const bulk = @import("../vs/editor/browser/services/bulkEditService.zig");
+    const Pane = @import("../vs/workbench/contrib/bulkEdit/browser/preview/bulkEditPane.zig").BulkEditPane;
+    const Probe = struct {
+        result: ?bulk.IBulkEditResult = null,
+        failure: ?anyerror = null,
+        fn complete(context: *anyopaque, reply: anyerror!bulk.IBulkEditResult) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (reply) |value| self.result = value else |err| self.failure = err;
+        }
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(a, io, &tmp, "preview.txt", "old");
+    defer a.free(path);
+    const window = try TestWindow.init(a, io, &.{path}, 100, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    const original = wb.activeTab().?.editor.model;
+    const initial_panel = wb.geometry().panelShown();
+    try std.testing.expect(wb.bulk_edit_api.hasPreviewHandler());
+    const edits = [_]languages.WorkspaceResourceEdit{
+        .{ .text = .{ .resource = original.uri(), .range = Range.init(1, 1, 1, 2), .text = "b", .metadata = .{ .label = "Change first", .needs_confirmation = true } } },
+        .{ .text = .{ .resource = original.uri(), .range = Range.init(1, 2, 1, 3), .text = "a", .metadata = .{ .label = "Change second" } } },
+    };
+    var probe: Probe = .{};
+    const pending = try wb.bulk_edit_api.apply(.{ .edits = &edits }, .{ .show_preview = true }, .{ .context = &probe, .complete = Probe.complete });
+    try std.testing.expect(pending != null);
+    const pane = &wb.bulk_edit_preview.?;
+    try std.testing.expect(pane.hasInput());
+    try std.testing.expectEqualStrings(Pane.ID, wb.geometry().activePanelId());
+    for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp() + 1000);
+    const session = pane.session.?;
+    try std.testing.expect(session.provider.ready and session.tree_view != null);
+    try std.testing.expectEqualStrings("old", try original.borrowLineContent(1));
+    try std.testing.expectEqual(@as(usize, 1), session.operations.checked.checked_count);
+    // The pane's tree opens the registered transient multi-diff input.
+    try std.testing.expect(try terminal_workbench.handlePanelKey(wb, &.{ .key = .enter }));
+    for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp() + 1000);
+    const tab = wb.activeTab().?;
+    try std.testing.expect(tab.multi_diff != null);
+    try std.testing.expect(tab.multi_diff.?.input.is_transient);
+    const resources = try session.provider.resources(a);
+    defer a.free(resources);
+    const preview_model = wb.model_service_api.getModel(resources[0].modified.?).?.textEditorModel;
+    try std.testing.expectEqualStrings("oad", try preview_model.borrowLineContent(1));
+    session.operations.checked.updateChecked(0, true);
+    session.operations.checked.updateChecked(1, false);
+    for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp() + 1000);
+    try std.testing.expectEqualStrings("bld", try preview_model.borrowLineContent(1));
+    try std.testing.expectEqualStrings("old", try original.borrowLineContent(1));
+    try wb.commands.execute("refactorPreview.apply");
+    for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp() + 1000);
+    try std.testing.expect(probe.failure == null and probe.result.?.is_applied);
+    try std.testing.expectEqual(@as(usize, 1), probe.result.?.edit_count);
+    try std.testing.expectEqualStrings("bld", try original.borrowLineContent(1));
+    try std.testing.expect(!pane.hasInput());
+    try std.testing.expectEqual(initial_panel, wb.geometry().panelShown());
+    try std.testing.expect(wb.activeTab().?.multi_diff == null);
+}
+
 test "Diff editor commands: whitespace hint and timeout prompt use effective configuration" {
     const a = std.testing.allocator;
     const io = std.testing.io;

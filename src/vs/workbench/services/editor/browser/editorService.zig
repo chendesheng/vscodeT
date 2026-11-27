@@ -371,6 +371,14 @@ pub const EditorService = struct {
                     try opening.openMultiDiffResources(input);
                 }
             }.open,
+            .request_close_editor = struct {
+                fn close(context: *anyopaque, group: GroupIdentifier, input: *EditorInput, preserve_focus: bool) !void {
+                    const service: *EditorService = @ptrCast(@alignCast(context));
+                    const opening = service.opening orelse return error.EditorClosingUnavailable;
+                    const close_editor = opening.host.request_close_editor orelse return error.EditorClosingUnavailable;
+                    try close_editor(opening.host.context, group, input, preserve_focus);
+                }
+            }.close,
             .request_open_editor = struct {
                 fn open(context: *anyopaque, resource: []const u8, options: OpenOptions, target: EditorTarget) !void {
                     const service: *EditorService = @ptrCast(@alignCast(context));
@@ -513,6 +521,7 @@ pub const EditorOpening = struct {
         register_working_copy: *const fn (*anyopaque, *Tab) void,
         change_working_copy: ?*const fn (*anyopaque, *Editor, bool) void = null,
         discard_tab: *const fn (*anyopaque, *Tab) void,
+        request_close_editor: ?*const fn (*anyopaque, GroupIdentifier, *EditorInput, bool) anyerror!void = null,
         focus_editor: *const fn (*anyopaque) void,
         request_frame: *const fn (*anyopaque) void,
         show_status: *const fn (*anyopaque, []const u8) void,

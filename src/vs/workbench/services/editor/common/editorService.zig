@@ -45,6 +45,7 @@ pub const IEditorService = struct {
     request_open_resource_uri_fn: ?*const fn (*anyopaque, std.Uri, []const u8) anyerror!void = null,
     open_multi_diff_source_fn: ?*const fn (*anyopaque, []const u8, []const u8) anyerror!void = null,
     open_multi_diff_resources_fn: ?*const fn (*anyopaque, editor.IResourceMultiDiffEditorInput) anyerror!void = null,
+    request_close_editor: ?*const fn (*anyopaque, editor.GroupIdentifier, *EditorInput, bool) anyerror!void = null,
     request_open_editor: *const fn (*anyopaque, []const u8, OpenOptions, EditorTarget) anyerror!void,
     get_editors: *const fn (*anyopaque, std.mem.Allocator) anyerror![]IEditorIdentifier,
     get_visible_text_resources: ?*const fn (*anyopaque, std.mem.Allocator) anyerror![]std.Uri = null,
@@ -79,6 +80,11 @@ pub const IEditorService = struct {
 
     pub fn requestOpenEditor(self: IEditorService, resource: []const u8, options: OpenOptions, target: EditorTarget) !void {
         try self.request_open_editor(self.context, resource, options, target);
+    }
+
+    pub fn requestCloseEditor(self: IEditorService, group: editor.GroupIdentifier, input: *EditorInput, preserve_focus: bool) !void {
+        const close = self.request_close_editor orelse return error.EditorClosingUnavailable;
+        try close(self.context, group, input, preserve_focus);
     }
 
     /// Sequential editors in grid appearance order. Caller owns the slice.

@@ -138,6 +138,8 @@ const pane_composite_mod = @import("../vs/workbench/browser/parts/paneCompositeP
 
 /// Upstream `Markers.MARKERS_CONTAINER_ID` and `TERMINAL_VIEW_ID`.
 const PROBLEMS_CONTAINER_ID = markers_common.Markers.MARKERS_CONTAINER_ID;
+const BulkEditPane = @import("../vs/workbench/contrib/bulkEdit/browser/preview/bulkEditPane.zig").BulkEditPane;
+const BulkEditPreviewContribution = @import("../vs/workbench/contrib/bulkEdit/browser/preview/bulkEdit.contribution.zig").BulkEditPreviewContribution;
 const TERMINAL_CONTAINER_ID = "terminal";
 const MarkersView = @import("../vs/workbench/contrib/markers/browser/markersView.zig").MarkersView;
 const panel_part_mod = @import("../vs/workbench/browser/parts/panel/panelPart.zig");
@@ -215,7 +217,7 @@ pub const SplitDirection = grid_mod.Orientation;
 /// Target selector shared by the move/copy editor and group commands, port of
 /// upstream `SelectedEditorsMoveCopyArguments.to`.
 pub const GroupLocation = editor_groups.GroupLocation;
-pub const Focus = enum { editor, sidebar, statusbar, breadcrumbs, terminal, problems };
+pub const Focus = enum { editor, sidebar, statusbar, breadcrumbs, terminal, problems, bulk_edit };
 
 /// Handles for the context keys the workbench maintains. User keybindings use
 /// them in `when` clauses; keys the terminal cannot know stay undefined, which
@@ -361,6 +363,8 @@ pub const TerminalWorkbench = struct {
     /// Branch-aware placeholder for the Source Control commit input.
     markers_status: ?*MarkersStatusBar = null,
     problems_view: ?MarkersView = null,
+    bulk_edit_preview: ?BulkEditPane = null,
+    bulk_edit_preview_contribution: ?BulkEditPreviewContribution = null,
     marker_listener: ?Emitter(MarkerChangeEvent).ListenerId = null,
     range_highlights: ?*RangeHighlightDecorations = null,
     workspace: *WorkspaceContextService,
@@ -971,6 +975,15 @@ pub const TerminalWorkbench = struct {
                     }
                 }.change,
                 .discard_tab = discardTransferPane,
+                .request_close_editor = struct {
+                    fn close(context: *anyopaque, group_id: editor_mod.GroupIdentifier, input: *EditorInput, preserve_focus: bool) !void {
+                        const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                        const group = host.service.getGroup(group_id) orelse return;
+                        const pane = host.part.viewForGroup(group) orelse return;
+                        const tab = pane.tabForInput(input) orelse return;
+                        try pane.closeEditorsWithOptions(&.{tab}, host.dialog_api, host.closeEditorHost(), .{ .preserve_focus = preserve_focus });
+                    }
+                }.close,
                 .focus_editor = focusWindowEditor,
                 .request_frame = requestWorkbenchFrame,
                 .show_status = struct {
@@ -1254,6 +1267,7 @@ pub const TerminalWorkbench = struct {
         self.window_views.attach(self.pane_composite_api, self.layout_api);
         for ([_]ViewRegistration{
             ViewRegistration.valueSlot(MarkersView, &self.problems_view, .{ .container = PROBLEMS_CONTAINER_ID }),
+            ViewRegistration.valueSlot(BulkEditPane, &self.bulk_edit_preview, .{ .container = BulkEditPane.ID }),
             ViewRegistration.pointerSlot(SearchView, &self.search_window.view, .{ .container = "search" }),
             ViewRegistration.pointerSlot(OutlinePane, &self.outline_view, .{ .descriptor = "outline" }),
             ViewRegistration.pointerSlot(scm_view_mod.SCMViewPane, &self.scm.changes, .{ .descriptor = "changes" }),
@@ -1298,6 +1312,14 @@ pub const TerminalWorkbench = struct {
         self.storage_api = self.notification_storage.interface();
         _ = try self.services.set(@import("../vs/workbench/services/host/browser/host.zig").host_service_id, &self.host_api);
         _ = try self.services.set(storage_mod.storage_service_id, &self.storage_api);
+        self.bulk_edit_preview_contribution = .{ .allocator = self.allocator, .views_service = self.views_api, .panes = self.pane_composite_api, .layout = self.layout_api, .editors = self.editor_api, .dialogs = self.dialog_api };
+        self.bulk_edit_preview = BulkEditPane.init(self.allocator, .{ .files = self.file_service_api, .models = self.model_service_api, .text = self.text_model_api, .editors = self.editor_api, .window = &self.window_events, .dialogs = self.dialog_api, .storage = self.storage_api }, .{ .context = self, .changed = requestWorkbenchFrame, .finished = struct {
+            fn finish(context: *anyopaque) void {
+                const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                if (host.bulk_edit_preview_contribution) |*contribution| contribution.onPaneFinished();
+            }
+        }.finish });
+        try self.bulk_edit_preview_contribution.?.register(self.bulk_edit_api);
         self.terminal_action_services = @import("workbenchServices.zig").terminalActionServices(self);
         self.github_publish = .{
             .allocator = self.allocator,
@@ -1360,6 +1382,8 @@ pub const TerminalWorkbench = struct {
         self.dialog_handler = try @import("../vs/workbench/browser/parts/dialogs/dialog.web.contribution.zig").DialogHandlerContribution.create(self.allocator, &self.dialog_service.model);
         errdefer self.dialog_handler.destroy();
         self.problems_view = null;
+        self.bulk_edit_preview = null;
+        self.bulk_edit_preview_contribution = null;
         self.marker_listener = null;
         self.markers_status = null;
         self.range_highlights = null;
@@ -1555,7 +1579,15 @@ pub const TerminalWorkbench = struct {
         self.markers_status = try MarkersStatusBar.init(self.allocator, &self.statusbar);
     }
 
+    fn deinitBulkEditPreview(self: *TerminalWorkbench) void {
+        if (self.bulk_edit_preview) |*pane| pane.deinit();
+        self.bulk_edit_preview = null;
+        if (self.bulk_edit_preview_contribution) |*contribution| contribution.deinit();
+        self.bulk_edit_preview_contribution = null;
+    }
+
     fn deinitShellModels(self: *TerminalWorkbench) void {
+        self.deinitBulkEditPreview();
         self.lists.deinit();
         self.core.disposeListeners();
         self.dialog_handler.destroy();
@@ -1757,6 +1789,7 @@ pub const TerminalWorkbench = struct {
     }
 
     pub fn deinit(self: *TerminalWorkbench) void {
+        self.deinitBulkEditPreview();
         self.accessible_view.deinit();
         self.sidebar_part.setFocused(false);
         for (self.focus_subscriptions) |subscription| if (subscription) |value| value.dispose();
@@ -2340,7 +2373,7 @@ pub const TerminalWorkbench = struct {
         const part: layout_service_mod.Parts = switch (self.focus) {
             .editor => .editor,
             .sidebar => .sidebar,
-            .terminal, .problems => .panel,
+            .terminal, .problems, .bulk_edit => .panel,
             .statusbar => .statusbar,
             .breadcrumbs => return false,
         };
@@ -2470,6 +2503,8 @@ pub const TerminalWorkbench = struct {
         if (std.mem.eql(u8, id, PROBLEMS_CONTAINER_ID)) {
             try self.ensureProblemsView();
             if (focus) self.setFocus(.problems);
+        } else if (focus and std.mem.eql(u8, id, BulkEditPane.ID)) {
+            self.setFocus(.bulk_edit);
         } else if (focus and std.mem.eql(u8, id, TERMINAL_CONTAINER_ID)) {
             self.setFocus(.terminal);
         }
@@ -2495,6 +2530,9 @@ pub const TerminalWorkbench = struct {
         const terminals = if (self.terminal_service) |service| service.count() else 0;
         const terminal_active = std.mem.eql(u8, self.geometry().activePanelId(), TERMINAL_CONTAINER_ID);
         _ = try self.panel_part.pane.setPaneCompositeVisible(TERMINAL_CONTAINER_ID, terminals > 0 or terminal_active);
+        const bulk_active = std.mem.eql(u8, self.geometry().activePanelId(), BulkEditPane.ID);
+        const bulk_has_input = if (self.bulk_edit_preview) |*preview| preview.hasInput() else false;
+        _ = try self.panel_part.pane.setPaneCompositeVisible(BulkEditPane.ID, bulk_active or bulk_has_input);
     }
 
     /// Keeps the editor range highlight in sync with the Problems selection.
@@ -3822,6 +3860,7 @@ pub const TerminalWorkbench = struct {
         if (self.terminal_service) |terminal| try self.terminal_context.attach(terminal);
         try self.accessible_view.bindContextKeys(service.interface());
         try self.action_widget_service.bindContextKeys(service.interface());
+        if (self.bulk_edit_preview) |*pane| try pane.bindContextKeys(service.interface());
         self.context_keys = service;
         self.commands.context_keys = service.interface();
         self.updateContextKeys();
@@ -3872,7 +3911,8 @@ pub const TerminalWorkbench = struct {
             .search_results_focused = if (self.search_window.view) |view| view.results_focused else false,
             .statusbar_focused = self.focus == .statusbar,
             .terminal_focused = self.terminalFocused(),
-            .panel_focused = (self.focus == .terminal or self.focus == .problems) and geometry_value.panelShown(),
+            .panel_focused = (self.focus == .terminal or self.focus == .problems or self.focus == .bulk_edit) and geometry_value.panelShown(),
+            .bulk_edit_preview_focused = self.focus == .bulk_edit,
             .active_panel = if (geometry_value.panelShown()) geometry_value.activePanelId() else "",
             .quick_access_open = self.quick_access.isOpen(),
             .files_picker_open = self.quick_access.isOpen() and !self.quick_access.isPickOpen(),
@@ -4232,6 +4272,7 @@ pub const TerminalWorkbench = struct {
     fn updatePartFocus(self: *TerminalWorkbench) !void {
         const blocked = self.isDialogOpen() or self.quick_access.isOpen();
         self.part.setEditorFocus(!blocked and self.focus == .editor);
+        if (self.bulk_edit_preview) |*pane| pane.setFocus(!blocked and self.focus == .bulk_edit);
         if (self.terminal_service) |service| {
             if (service.setFocusedInstance(if (blocked) null else self.focusedTerminal())) self.terminal_input.button_down = null;
         }
@@ -4307,7 +4348,7 @@ pub const TerminalWorkbench = struct {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
         return switch (self.focus) {
             .sidebar => .sidebar,
-            .terminal, .problems => .panel,
+            .terminal, .problems, .bulk_edit => .panel,
             .statusbar => .statusbar,
             .breadcrumbs, .editor => .editor,
         };
@@ -4321,6 +4362,8 @@ pub const TerminalWorkbench = struct {
                 if (self.problemsVisible()) {
                     self.setFocus(.problems);
                     self.updateProblemsHighlight();
+                } else if (std.mem.eql(u8, self.geometry().activePanelId(), BulkEditPane.ID) and self.geometry().panelShown()) {
+                    self.setFocus(.bulk_edit);
                 } else if (self.terminalVisible()) {
                     self.setFocus(.terminal);
                 } else return self.focusEditor();

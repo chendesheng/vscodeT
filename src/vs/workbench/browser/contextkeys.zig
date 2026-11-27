@@ -21,6 +21,7 @@ pub const WindowContextState = struct {
     multi_diff_file_list_enabled: bool = false,
     multi_diff_file_list_visible: bool = false,
     multi_diff_file_list_focused: bool = false,
+    bulk_edit_preview_focused: bool = false,
     multi_diff_file_list_view_mode: []const u8 = "list",
     multi_diff_file_list_position: []const u8 = "right",
     visible_diff: bool = false,
@@ -83,6 +84,7 @@ const WindowContextKeys = struct {
     active_custom_editor_id: contextkeys.IContextKey,
     input_focus: contextkeys.IContextKey,
     list_focus: contextkeys.IContextKey,
+    focused_view: contextkeys.IContextKey,
     side_bar_focus: contextkeys.IContextKey,
     status_bar_focus: contextkeys.IContextKey,
     legacy_status_bar_focus: contextkeys.IContextKey,
@@ -141,6 +143,7 @@ const WindowContextKeys = struct {
             .editor_tab_moves_focus = try service.createKey("editorTabMovesFocus", .{ .boolean = false }),
             .input_focus = try service.createKey("inputFocus", .{ .boolean = false }),
             .list_focus = try service.createKey("listFocus", .{ .boolean = false }),
+            .focused_view = try service.createKey("focusedView", .{ .string = "" }),
             .side_bar_focus = try service.createKey("sideBarFocus", .{ .boolean = false }),
             .status_bar_focus = try service.createKey("statusBarFocused", .{ .boolean = false }),
             .legacy_status_bar_focus = try service.createKey("statusBarFocus", .{ .boolean = false }),
@@ -293,7 +296,8 @@ pub const WorkbenchContextKeysHandler = struct {
         keys.text_input_focus.set(.{ .boolean = state.editor_text_focused });
         keys.editor_tab_moves_focus.set(.{ .boolean = state.editor_tab_moves_focus });
         keys.side_bar_focus.set(.{ .boolean = state.sidebar_focused });
-        keys.list_focus.set(.{ .boolean = state.multi_diff_file_list_focused or (state.sidebar_focused and (!search_active or state.search_results_focused)) });
+        keys.list_focus.set(.{ .boolean = state.bulk_edit_preview_focused or state.multi_diff_file_list_focused or (state.sidebar_focused and (!search_active or state.search_results_focused)) });
+        keys.focused_view.set(.{ .string = if (state.bulk_edit_preview_focused) "refactorPreview" else "" });
         keys.input_focus.set(.{ .boolean = state.sidebar_focused and search_active and !state.search_results_focused });
         keys.status_bar_focus.set(.{ .boolean = state.statusbar_focused });
         keys.legacy_status_bar_focus.set(.{ .boolean = state.statusbar_focused });

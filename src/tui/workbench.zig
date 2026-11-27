@@ -27,6 +27,7 @@ const pane_composite_mod = @import("../vs/workbench/browser/parts/paneCompositeP
 const tab_bar = @import("../vs/workbench/browser/parts/editor/multiEditorTabsControl.zig");
 const search_view_mod = @import("../vs/workbench/contrib/search/browser/searchViewTerminal.zig");
 const PROBLEMS_CONTAINER_ID = @import("../vs/workbench/contrib/markers/common/markers.zig").Markers.MARKERS_CONTAINER_ID;
+const BulkEditPane = @import("../vs/workbench/contrib/bulkEdit/browser/preview/bulkEditPane.zig").BulkEditPane;
 const TERMINAL_CONTAINER_ID = "terminal";
 
 /// Creates the terminal document and its window element at a stable address.
@@ -409,7 +410,7 @@ fn paintOverlaysAndStatus(self: *Workbench) !void {
 /// like the upstream panel's container hosting the terminal view.
 fn renderPanel(self: *Workbench) !void {
     const rect = self.geometry().panelRect();
-    const focused = self.focus == .terminal or self.focus == .problems;
+    const focused = self.focus == .terminal or self.focus == .problems or self.focus == .bulk_edit;
     var badge_buf: [48]u8 = undefined;
     var badges: [1]panel_part_mod.Badge = undefined;
     const badge_slice = panelBadges(self, &badge_buf, &badges);
@@ -430,6 +431,8 @@ fn renderPanel(self: *Workbench) !void {
         } else {
             renderPlaceholder(self, content, focused);
         }
+    } else if (std.mem.eql(u8, active_id, BulkEditPane.ID)) {
+        if (self.bulk_edit_preview) |*view| view.render(&self.frame.next, content, self.focus == .bulk_edit, self.theme_palette) else renderPlaceholder(self, content, focused);
     } else if (std.mem.eql(u8, active_id, PROBLEMS_CONTAINER_ID)) {
         if (self.problems_view) |*view| {
             try view.render(&self.frame.next, content, self.focus == .problems, .{ .show_header = false });
@@ -2122,6 +2125,11 @@ pub fn handlePanelMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
     }
 
     self.panel_part.setHovered(null);
+    if (std.mem.eql(u8, self.geometry().activePanelId(), BulkEditPane.ID)) {
+        if (event.kind == .down) self.setFocus(.bulk_edit);
+        if (self.bulk_edit_preview) |*view| _ = view.handleMouse(event);
+        return true;
+    }
     if (std.mem.eql(u8, self.geometry().activePanelId(), PROBLEMS_CONTAINER_ID)) {
         if (event.kind == .down) {
             self.setFocus(.problems);
@@ -2138,6 +2146,15 @@ pub fn handlePanelMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
 /// `handleTerminalKey`.
 pub fn handlePanelKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
     if (!self.geometry().panelShown()) return false;
+    if (self.focus == .bulk_edit and std.mem.eql(u8, self.geometry().activePanelId(), BulkEditPane.ID)) {
+        if (event.key == .escape) {
+            if (self.layout.isZenModeActive()) return false;
+            self.focusEditor();
+            return true;
+        }
+        if (self.bulk_edit_preview) |*view| return view.handleKey(event);
+        return false;
+    }
     if (self.focus != .problems) return false;
     if (!std.mem.eql(u8, self.geometry().activePanelId(), PROBLEMS_CONTAINER_ID)) return false;
     if (event.key == .escape) {
