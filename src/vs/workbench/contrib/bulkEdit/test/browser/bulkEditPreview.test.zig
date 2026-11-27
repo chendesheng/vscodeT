@@ -257,6 +257,25 @@ test "BulkEditPreview: checked changes update the same real preview model and le
     defer operations.dispose();
     const provider = try Provider.create(a, operations, model_resolver.interface(), model_resolver.modelService(), &queue);
     defer provider.dispose();
+    // Drive-letter and UNC paths must remain URI paths after switching the
+    // scheme and authority, even when the test runs on a POSIX machine.
+    const uri_util = @import("../../../../../base/common/stdUri.zig");
+    var scratch = std.heap.ArenaAllocator.init(a);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    for ([_]struct { native: []const u8, expected: []const u8 }{
+        .{ .native = "C:\\Users\\me\\preview.txt", .expected = "/C:/Users/me/preview.txt" },
+        .{ .native = "\\\\server\\share\\preview.txt", .expected = "/share/preview.txt" },
+    }) |fixture| {
+        const original: std.Uri = .{ .scheme = "file", .path = .{ .raw = fixture.native } };
+        const preview_uri = try provider.asPreviewUri(original);
+        try std.testing.expectEqualStrings(fixture.expected, try uri_util.path(preview_uri, arena));
+        const key = try uri_util.resourceKey(arena, preview_uri);
+        const parsed = try std.Uri.parse(key);
+        try std.testing.expectEqualStrings(try uri_util.authority(preview_uri, arena), try uri_util.authority(parsed, arena));
+        try std.testing.expectEqualStrings(fixture.expected, try uri_util.path(parsed, arena));
+        try std.testing.expectEqualStrings(try uri_util.encodedResource(arena, original), try uri_util.query(preview_uri, arena));
+    }
     for (0..16) |_| _ = queue.dispatch(std.math.maxInt(i64));
     try std.testing.expect(provider.ready);
     const resources = try provider.resources(a);

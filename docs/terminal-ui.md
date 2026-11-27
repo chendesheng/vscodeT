@@ -1926,7 +1926,9 @@ window-owned tasks can use ordinary `io.async`, `io.concurrent`, futures and
 `Io.Group` without splitting their call stack into application callbacks. Each
 fiber is confined to the thread that initialized the runtime: Unix uses Zig's
 fiber context switch with a guarded stack, and Windows uses native Windows
-fibers. Other application work can still run on other threads. The UI library
+fibers. Each reserves the standard Zig thread stack capacity, with stack pages
+committed as used; this accommodates nested service calls and Windows's larger
+native path buffers. Other application work can still run on other threads. The UI library
 has no editor or workbench dependencies.
 
 The workbench owns one `WindowIo` and a separate concurrent `Io.Threaded`

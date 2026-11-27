@@ -5,7 +5,11 @@ const std = @import("std");
 const builtin = @import("builtin");
 const windows = builtin.os.tag == .windows;
 const Entry = *const fn (*anyopaque) noreturn;
-const stack_size = 1024 * 1024;
+// These fibers run the same editor/service call chains as native threads.
+// In particular Windows' maximum-path buffers are much larger than POSIX
+// ones. Reserve the standard Zig thread stack size (virtual memory; pages
+// are committed as used), while retaining the OS guard page.
+const stack_size = std.Thread.SpawnConfig.default_stack_size;
 const fiber_flag_float_switch = 1;
 
 extern "kernel32" fn ConvertThreadToFiberEx(?*anyopaque, u32) callconv(.winapi) ?*anyopaque;

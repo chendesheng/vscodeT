@@ -250,3 +250,25 @@ test "WindowIo fibers support allocator stack tracing" {
     var job = try serial.concurrent(Probe.allocate, .{std.testing.allocator});
     try job.await(serial);
 }
+
+test "WindowIo fibers have native-thread stack capacity across suspension" {
+    const Probe = struct {
+        noinline fn run(serial: Io) !void {
+            // Model a service call chain exceeding the old 1 MiB reserve,
+            // including Windows' large native path buffers. Force the pages
+            // to be touched and keep them live across a worker-backed wait.
+            var buffer: [2 * 1024 * 1024]u8 = undefined;
+            @memset(&buffer, 0x5a);
+            std.mem.doNotOptimizeAway(&buffer);
+            try serial.sleep(.fromMilliseconds(1), .awake);
+            std.mem.doNotOptimizeAway(&buffer);
+            try std.testing.expectEqual(@as(u8, 0x5a), buffer[0]);
+            try std.testing.expectEqual(@as(u8, 0x5a), buffer[buffer.len - 1]);
+        }
+    };
+    var runtime = try WindowIo.init(std.testing.allocator, std.testing.io);
+    defer runtime.deinit();
+    const serial = runtime.io();
+    var job = try serial.concurrent(Probe.run, .{serial});
+    try job.await(serial);
+}
