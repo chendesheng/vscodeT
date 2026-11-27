@@ -695,43 +695,18 @@ pub fn main(init: std.process.Init) !void {
 
     var extension_host: ?*extensions.Extensions = null;
     defer if (extension_host) |ext| ext.deinit();
-    var extension_paths = std.array_list.Managed(extensions.Extensions.ExtensionPath).init(allocator);
-    defer {
-        for (extension_paths.items) |entry| allocator.free(entry.path);
-        extension_paths.deinit();
-    }
-    // Executable bundles are resolved from the installed system scan, even
-    // when a user copy of the same id overrides it declaratively (the Node
-    // host only runs the bundled built-ins). Disabling a built-in removes it
-    // from the next launch's host inventory.
-    if (extension_service) |service| {
-        for (service.systemExtensions()) |extension| {
-            if (!service.isEnabled(extension.identifier)) continue;
-            const path = try std.fs.path.join(allocator, &.{ runtime_dir, "extensions", std.fs.path.basename(extension.location) });
-            errdefer allocator.free(path);
-            if (std.Io.Dir.cwd().access(io, path, .{})) |_| {
-                try extension_paths.append(.{ .path = path, .is_builtin = true });
-            } else |err| {
-                if (err != error.FileNotFound) infoLog(log_service, "extension unavailable at {s}: {s}", .{ path, @errorName(err) });
-                allocator.free(path);
-            }
-        }
-    } else if (declarative) |*catalog| {
-        for (catalog.extensions) |extension| {
-            const path = try std.fs.path.join(allocator, &.{ runtime_dir, "extensions", std.fs.path.basename(extension.root) });
-            errdefer allocator.free(path);
-            if (std.Io.Dir.cwd().access(io, path, .{})) |_| {
-                try extension_paths.append(.{ .path = path, .is_builtin = true });
-            } else |err| {
-                if (err != error.FileNotFound) infoLog(log_service, "extension unavailable at {s}: {s}", .{ path, @errorName(err) });
-                allocator.free(path);
-            }
-        }
-    }
-    if (extension_paths.items.len > 0) {
+    const abstract_extensions = @import("../vs/workbench/services/extensions/common/abstractExtensionService.zig");
+    const extension_paths = if (extension_service) |service|
+        try abstract_extensions.resolveEnabledPaths(allocator, io, service.enabledDescriptions(), runtime_dir)
+    else if (declarative) |*catalog|
+        try abstract_extensions.resolveCatalogPaths(allocator, io, catalog.extensions, runtime_dir)
+    else
+        try allocator.alloc(abstract_extensions.ExtensionPath, 0);
+    defer abstract_extensions.freePaths(allocator, extension_paths);
+    if (extension_paths.len > 0) {
         if (profile.user_data_dir) |user_data_dir| {
             std.Io.Dir.cwd().createDirPath(io, user_data_dir) catch {};
-            extension_host = extensions.Extensions.init(allocator, io, workbench.extensionHostServices(), extension_paths.items, user_data_dir, runtime_dir) catch |err| blk: {
+            extension_host = extensions.Extensions.init(allocator, io, workbench.extensionHostServices(), extension_paths, user_data_dir, runtime_dir) catch |err| blk: {
                 if (err == error.ExtensionHostBundleMissing) {
                     report(log_service, "extension host disabled: installed extensionHost.mjs is missing; run `zig build host` (details in README)", .{});
                 } else {
@@ -743,7 +718,7 @@ pub fn main(init: std.process.Init) !void {
             infoLog(log_service, "extension host disabled: no user data directory", .{});
         }
     } else {
-        infoLog(log_service, "extension host disabled: no executable built-ins installed", .{});
+        infoLog(log_service, "extension host disabled: no enabled extensions installed", .{});
     }
     infoLog(log_service, "startup: extension-host={d}ms", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,

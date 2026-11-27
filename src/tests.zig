@@ -761,7 +761,7 @@ comptime {
     _ = @import("./vs/workbench/services/extensions/test/common/rpcProtocol.test.zig");
     _ = @import("./vs/base/parts/ipc/test/node/ipc.net.test.zig");
     _ = @import("./vs/workbench/services/extensions/test/common/extensionHostManager.test.zig");
-    _ = @import("./vs/workbench/services/extensions/common/extensionService.zig");
+    _ = @import("./vs/workbench/services/extensions/common/abstractExtensionService.zig");
     _ = @import("./vs/platform/environment/common/environmentService.zig");
     _ = @import("./vs/platform/extensionManagement/common/extensionManagementUtil.zig");
     _ = @import("./vs/platform/extensionManagement/test/node/extensionsScannerService.test.zig");

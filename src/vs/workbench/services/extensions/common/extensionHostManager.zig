@@ -729,7 +729,9 @@ pub fn readExtensionDescription(allocator: Allocator, extension_path: []const u8
     defer allocator.free(manifest_path);
     const text = try std.Io.Dir.cwd().readFileAlloc(time_compat.io, manifest_path, allocator, .unlimited);
     defer allocator.free(text);
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{ .allocate = .alloc_always });
+    const sanitized = try @import("../../../../platform/configuration/common/configurationModels.zig").stripJsonc(allocator, text);
+    defer allocator.free(sanitized);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, sanitized, .{ .allocate = .alloc_always });
     errdefer parsed.deinit();
     const value = parsed.value;
 

@@ -173,7 +173,7 @@ test "test system extensions can be disabled" {
     try testing.expect(!service.find("pub.system-extension").?.isEnabled());
     try testing.expectEqual(@as(usize, 1), service.enabledDescriptions().len);
     try testing.expectEqualStrings("pub.user-extension", service.enabledDescriptions()[0].identifier);
-    // The system scan still owns executable built-in bundle resolution.
+    // The raw system scan still reports the installed disabled extension.
     try testing.expectEqual(@as(usize, 1), service.systemExtensions().len);
 
     try testing.expect(try service.setEnablement("pub.system-extension", .EnabledGlobally));
@@ -239,4 +239,52 @@ test "test refresh picks up a newly installed user extension" {
     try service.refresh();
     try testing.expectEqual(@as(usize, 2), service.queryLocal().len);
     try testing.expect(service.find("pub.user-extension") != null);
+}
+
+test "effective local extension host inventory uses enabled merged descriptions" {
+    const allocator = testing.allocator;
+    const host = @import("../../../../services/extensions/common/abstractExtensionService.zig");
+    var fixture = try Fixture.init(allocator);
+    defer fixture.deinit();
+    try fixture.write(true, "bundled", "{\"name\":\"bundled\",\"publisher\":\"pub\",\"version\":\"1.0.0\",\"engines\":{\"vscode\":\"*\"},\"main\":\"./extension.js\"}");
+    try fixture.write(true, "theme", "{\"name\":\"theme\",\"publisher\":\"pub\",\"version\":\"1.0.0\",\"engines\":{\"vscode\":\"*\"}}");
+    try fixture.write(true, "override", "{\"name\":\"override\",\"publisher\":\"pub\",\"version\":\"1.0.0\",\"engines\":{\"vscode\":\"*\"}}");
+    try fixture.write(false, "override-2.0.0", "{\"name\":\"override\",\"publisher\":\"pub\",\"version\":\"2.0.0\",\"engines\":{\"vscode\":\"*\"},\"main\":\"./extension.js\"}");
+    try fixture.write(false, "disabled", "{\"name\":\"disabled\",\"publisher\":\"pub\",\"version\":\"1.0.0\",\"engines\":{\"vscode\":\"*\"}}");
+    try fixture.tmp.dir.createDirPath(io, "runtime/extensions/bundled");
+    try fixture.tmp.dir.writeFile(io, .{ .sub_path = "runtime/extensions/bundled/package.json", .data = "{\"name\":\"bundled\",\"publisher\":\"pub\",\"version\":\"1.0.0\",\"engines\":{\"vscode\":\"*\"},\"main\":\"./extension.js\"}" });
+    try fixture.tmp.dir.writeFile(io, .{ .sub_path = "runtime/extensions/bundled/extension.js", .data = "exports.activate = () => {};" });
+    const runtime = try std.fs.path.join(allocator, &.{ fixture.root, "runtime" });
+    defer allocator.free(runtime);
+
+    var enablement = try ExtensionEnablementService.init(allocator, null);
+    defer enablement.deinit();
+    var service = try ExtensionsWorkbenchService.init(allocator, io, .{ .system_location = fixture.system, .user_location = fixture.user, .enablement = enablement });
+    defer service.deinit();
+    try testing.expect(try service.setEnablement("pub.disabled", .DisabledGlobally));
+    const paths = try host.resolveEnabledPaths(allocator, io, service.enabledDescriptions(), runtime);
+    defer host.freePaths(allocator, paths);
+    const descriptions = try host.readExtensions(allocator, io, paths);
+    defer {
+        for (descriptions) |*description| description.deinit(allocator);
+        allocator.free(descriptions);
+    }
+    try testing.expectEqual(@as(usize, 3), descriptions.len);
+    for (descriptions) |description| {
+        if (std.mem.eql(u8, description.identifier, "pub.bundled")) {
+            try testing.expect(description.is_builtin);
+            const expected = try std.fs.path.join(allocator, &.{ runtime, "extensions", "bundled" });
+            defer allocator.free(expected);
+            try testing.expectEqualStrings(expected, description.path);
+        } else if (std.mem.eql(u8, description.identifier, "pub.theme")) {
+            try testing.expect(description.is_builtin);
+            try testing.expect(description.manifest.object.get("main") == null);
+            try testing.expectEqualStrings(service.find("pub.theme").?.location, description.path);
+        } else if (std.mem.eql(u8, description.identifier, "pub.override")) {
+            try testing.expect(!description.is_builtin);
+            try testing.expect(!description.is_under_development);
+            try testing.expectEqualStrings("2.0.0", description.manifest.object.get("version").?.string);
+            try testing.expectEqualStrings(service.find("pub.override").?.location, description.path);
+        } else return error.UnexpectedHostExtension;
+    }
 }

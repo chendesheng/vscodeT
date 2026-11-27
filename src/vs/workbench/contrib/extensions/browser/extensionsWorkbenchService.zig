@@ -174,14 +174,13 @@ pub const ExtensionsWorkbenchService = struct {
         return self.state.inventory.user;
     }
 
-    /// The installed system scan, used to resolve executable built-in bundles
-    /// independently of a user copy that overrides the same id declaratively.
+    /// The raw installed system scan, retained for inventory reporting.
     pub fn systemExtensions(self: *const ExtensionsWorkbenchService) []const scanner.ScannedExtension {
         return self.state.inventory.system;
     }
 
     /// Descriptions of the enabled extensions in merged order; the declarative
-    /// registry and theme registration consume this.
+    /// registry, theme registration and local extension host consume this.
     pub fn enabledDescriptions(self: *const ExtensionsWorkbenchService) []const *const scanner.ScannedExtension {
         return self.state.enabled.items;
     }

@@ -19,9 +19,8 @@
 //   not ported.
 // - `engines.vscode` compatibility is checked for presence only (the semver
 //   range check needs the product version and is not ported).
-// - `ScanResult` keeps the system and user scans separately because the TUI
-//   resolves executable built-in bundles from the system scan even when a user
-//   copy overrides the extension declaratively.
+// - `ScanResult` keeps the raw system/user scans for inventory reporting and
+//   the merged effective descriptions for contributions and host startup.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const util = @import("extensionManagementUtil.zig");
