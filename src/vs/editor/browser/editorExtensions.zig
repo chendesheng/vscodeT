@@ -82,6 +82,27 @@ pub const EditorCommand = struct {
     }
 };
 
+/// A mounted terminal editor inherits workbench keys from the window, but
+/// editor-local values must come from the owning code-editor control rather
+/// than the currently active diff side. Menu snapshots query this context.
+pub const EditorScopedContext = struct {
+    editor: *@import("widget/codeEditor/codeEditorWidgetTerminal.zig").Editor,
+    parent: @import("../../platform/contextkey/common/contextkey.zig").IContext,
+    const contextkey = @import("../../platform/contextkey/common/contextkey.zig");
+
+    pub fn interface(self: *EditorScopedContext) contextkey.IContext {
+        return .{ .context = self, .get_value = get };
+    }
+    fn get(context: *anyopaque, key: []const u8) contextkey.ContextKeyValue {
+        const self: *EditorScopedContext = @ptrCast(@alignCast(context));
+        if (std.mem.eql(u8, key, "editorReadonly")) return .{ .boolean = self.editor.isReadOnly() };
+        if (std.mem.eql(u8, key, "editorHasCodeActionsProvider")) return .{ .boolean = self.editor.has_code_action_provider };
+        if (std.mem.eql(u8, key, "editorLangId")) return .{ .string = if (self.editor.getModel()) |model| model.getLanguageId() else "" };
+        if (std.mem.eql(u8, key, "resourceScheme")) return .{ .string = if (self.editor.getModel()) |model| model.uri().scheme else "" };
+        return self.parent.getValue(key);
+    }
+};
+
 /// Base shape shared by registered editor actions.
 pub const EditorAction = struct {
     id: []const u8,

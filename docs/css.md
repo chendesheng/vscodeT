@@ -153,6 +153,7 @@ Rules:
   | Editor `hover.css` | `0x0140` | themed editor hover and focus border; registered on the native document at theme changes |
   | `lightBulbWidget.css` | `0x0150` | centered one-cell code action control and normal, preferred and AI theme colors; icon fonts and pseudo-elements are omitted |
   | `messageController.css` | `0x0160` | model-anchored inline message and themed cell border; pixel triangle and animation are omitted |
+  | `gotoErrorWidget.css` | `0x0170` | marker-navigation message, stale state, details and related-location links; cell insets replace pixel padding |
 
   The multi-diff changed-files list's
   `media/multiDiffEditorWithFileList.css` is projected directly through the

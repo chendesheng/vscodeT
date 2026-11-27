@@ -24,6 +24,7 @@ pub const PeekViewWidget = struct {
     picker_label: []u8 = &.{},
     picker_node: ?*ui.Node = null,
     frame_color: ui.Color = .{ .r = 0, .g = 122, .b = 204 },
+    header_background: ?ui.Color = null,
     node: ?*ui.Node = null,
     header: ?*ui.Node = null,
     title_node: ?*ui.Node = null,
@@ -113,6 +114,11 @@ pub const PeekViewWidget = struct {
         if (self.zone.zone_id != null) self.zone.refresh() catch {};
     }
 
+    pub fn setHeaderBackground(self: *PeekViewWidget, background: ?ui.Color) void {
+        self.header_background = background;
+        if (self.zone.zone_id != null) self.zone.refresh() catch {};
+    }
+
     pub fn show(self: *PeekViewWidget, anchor: Position, height: usize) !void {
         try self.zone.show(anchor, height);
     }
@@ -186,7 +192,7 @@ pub const PeekViewWidget = struct {
 
     fn updateLayout(self: *PeekViewWidget, info: browser.IViewZone.RenderInfo) !void {
         if (self.pending_actions != null) try self.renderActions();
-        const bg = self.color("peekViewTitle.background", .{ 30, 30, 30 });
+        const bg = self.header_background orelse self.color("peekViewTitle.background", .{ 30, 30, 30 });
         self.header.?.setStyle(.{ .width = .{ .percent = 100 }, .background = bg });
         self.title_node.?.setStyle(.{ .color = self.color("peekViewTitleLabel.foreground", .{ 204, 204, 204 }), .bold = true });
         self.detail_node.?.setStyle(.{ .color = self.color("peekViewTitleDescription.foreground", .{ 153, 153, 153 }) });
@@ -198,7 +204,7 @@ pub const PeekViewWidget = struct {
         try self.detail_node.?.setTextContent(self.detail);
         const body_rows = info.height -| 2;
         self.body.?.setStyle(.{ .position = .absolute, .top = .{ .cells = 1 }, .left = .{ .cells = 0 }, .width = .{ .percent = 100 }, .height = .{ .cells = @floatFromInt(body_rows) } });
-        self.bottom.?.setStyle(.{ .position = .absolute, .top = .{ .cells = @floatFromInt(info.height -| 1) }, .width = .{ .percent = 100 }, .height = .{ .cells = @floatFromInt(@min(info.height -| 1, 1)) }, .background = self.frame_color, .pointer = .ns_resize });
+        self.bottom.?.setStyle(.{ .position = .absolute, .top = .{ .cells = @floatFromInt(info.height -| 1) }, .width = .{ .percent = 100 }, .height = .{ .cells = @floatFromInt(@min(info.height -| 1, 1)) }, .background = self.frame_color, .pointer = if (self.zone.options.is_resizeable) .ns_resize else .default });
         if (body_rows != 0) {
             try self.body_delegate.layout(self.body_delegate.context, self.body.?, info, body_rows);
         } else self.body_delegate.remove(self.body_delegate.context);

@@ -30,6 +30,7 @@ pub const hover = @import("../contrib/hover/browser/hover_css.zig");
 pub const hover_widget = @import("../../base/browser/ui/hover/hoverWidget_css.zig");
 pub const light_bulb = @import("../contrib/codeAction/browser/lightBulbWidget_css.zig");
 pub const message = @import("../contrib/message/browser/messageController_css.zig");
+pub const goto_error = @import("../contrib/gotoError/browser/media/gotoErrorWidget_css.zig");
 pub const code_editor = @import("widget/codeEditor/editor_css.zig");
 
 pub const block_decorations = block_decorations_css;
@@ -56,6 +57,7 @@ pub fn register(doc: *ui.Document) !void {
     _ = try doc.registerSheet(hover.sheet);
     _ = try doc.registerSheet(light_bulb.sheet);
     _ = try doc.registerSheet(message.sheet);
+    _ = try doc.registerSheet(goto_error.sheet);
 }
 
 pub fn registerWorkbench(doc: *ui.Document) !void {
@@ -110,6 +112,7 @@ test "editor css: sheets register into disjoint class ranges" {
 
     try std.testing.expectEqual(ui.Position.absolute, doc.classStyle(@backingInt(zone_widget.Class.zone_widget)).?.position.?);
     try std.testing.expectEqual(ui.Display.flex, doc.classStyle(@backingInt(peek_view.Class.head)).?.display.?);
+    try std.testing.expectEqual(ui.Pointer.pointer, doc.classStyle(@backingInt(goto_error.Class.filename)).?.pointer.?);
     try std.testing.expect(codelens.base < zone_widget.base and zone_widget.base < peek_view.base);
 
     try std.testing.expectEqual(ui.Display.flex, doc.classStyle(@backingInt(multi_diff_editor.Class.header_content)).?.display.?);
