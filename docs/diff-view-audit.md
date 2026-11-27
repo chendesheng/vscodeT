@@ -436,6 +436,32 @@ Quick Access responsiveness failure); the final suite must reverify that
 case. Active-editor snippet edits, closed-resource workspace undo
 preparation and preview refinements remain in progress.
 
+### Active workspace snippets checkpoint (2026-11-27)
+
+* The lazy `SnippetController2` owns the session on the real code editor,
+  independently of Suggest. Model detachment, undo and cursor-selection events
+  clear or advance snippet state; the terminal Suggest widget consumes the
+  controller's active-choice event. The next/previous/leave/accept commands
+  and all four snippet context keys are registered for the actual focused
+  control.
+* Bulk-edit requests and previews retain a detachable reference to the
+  initiating editor and recheck model identity after resource resolution.
+  A live writable target uses the snippet controller for mixed snippet and
+  literal edits, escaping the latter; unmounted/other-resource edits use
+  the parser's plain-text fallback. Editor operations append to the existing
+  workspace undo group without inserting a new stop between models.
+* The initiating cursor command suppresses transient model-event and
+  layout-remapping cursor changes until its computed selections are
+  published. This restores the upstream deletion and nested-tabstop cases
+  without disabling cursor recovery in other panes.
+
+The focused suite passed 90 tests with one explicitly skipped upstream case
+and zero failures, including all 41 active cases in the current controller
+suite, 15 legacy controller cases, existing snippet session/Suggest tests,
+and a real Git diff workspace edit exercising tabstops, mixed literal text
+and shared undo/redo. Closed-resource undo preparation and refactor preview
+refinements remain; full regression verification is running.
+
 ### Native performance measurements (2026-11-27)
 
 The opt-in `zig build bench-open --summary all` benchmark exercises native

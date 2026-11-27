@@ -636,7 +636,12 @@ navigation actions, breadcrumb symbols and document formatting are wired to the
 terminal editor. Code-action providers also drive the shared action widget,
 lightbulb and registered editor commands on the focused model, including both
 diff panes. Resolved workspace text edits use the URI model and bulk edit
-services; refactor preview uses checked changes and retained read-only
+services; edits targeting the live writable editor preserve snippet tabstops
+and choice state in the independent snippet controller. Edits to other
+resources use the upstream plain-text fallback. Mixed literal and snippet
+edits participate in the same workspace undo group. The registered snippet
+navigation and acceptance commands use the focused editor's context.
+Refactor preview uses checked changes and retained read-only
 multi-diff models. Workspace file create/delete/copy/rename operations also
 participate in shared undo groups, retaining binary file contents and dirty
 working-copy snapshots across native moves. Refactor auto-save uses the
