@@ -1,5 +1,7 @@
 {
+  "assert_cursor": false,
   "case": "change_word",
+  "cursor_gap": "post-Esc cursor placement after change differs from Helix; text/mode/count asserted",
   "engine": "helix",
   "keys": [
     "w",
@@ -40,7 +42,5 @@
       "text": "Xtwo\n"
     }
   ],
-  "width": 60,
-  "assert_cursor": false,
-  "cursor_gap": "post-Esc cursor placement after change differs from Helix; text/mode/count asserted"
+  "width": 60
 }

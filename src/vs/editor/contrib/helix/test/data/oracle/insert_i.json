@@ -1,5 +1,7 @@
 {
+  "assert_cursor": false,
   "case": "insert_i",
+  "cursor_gap": "post-Esc cursor placement after insert-at-start differs from Helix; text/mode/count asserted",
   "engine": "helix",
   "keys": [
     "i",
@@ -39,7 +41,5 @@
       "text": "Xabc\n"
     }
   ],
-  "width": 60,
-  "assert_cursor": false,
-  "cursor_gap": "post-Esc cursor placement after insert-at-start differs from Helix; text/mode/count asserted"
+  "width": 60
 }

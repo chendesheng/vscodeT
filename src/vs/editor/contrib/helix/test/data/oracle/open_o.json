@@ -1,23 +1,45 @@
 {
-  "schema": 1,
-  "engine": "helix",
-  "reference": "helix",
-  "reference_version": "helix 25.07.1 (a05c151b)",
+  "assert_cursor": false,
   "case": "open_o",
-  "width": 60,
-  "seed": {
-    "text": "abc\n",
-    "cursor": [
-      1,
-      1
-    ]
-  },
+  "cursor_gap": "post-Esc cursor placement after an insert variant differs from Helix; text/mode/count asserted",
+  "engine": "helix",
   "keys": [
     "o",
     "X",
     "<Esc>"
   ],
-  "states": [],
-  "assert_cursor": false,
-  "cursor_gap": "post-Esc cursor placement after an insert variant differs from Helix; text/mode/count asserted"
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      1
+    ],
+    "text": "abc\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        2,
+        2
+      ],
+      "mode": "normal",
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            2,
+            2
+          ],
+          "head": [
+            3,
+            1
+          ]
+        }
+      ],
+      "text": "abc\nX\n"
+    }
+  ],
+  "width": 60
 }

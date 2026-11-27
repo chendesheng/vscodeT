@@ -1,5 +1,7 @@
 {
+  "assert_cursor": false,
   "case": "undo_delete",
+  "cursor_gap": "cursor placement after undo differs from Helix; text/mode/count asserted",
   "engine": "helix",
   "keys": [
     "x",
@@ -39,7 +41,5 @@
       "text": "one\n"
     }
   ],
-  "width": 60,
-  "assert_cursor": false,
-  "cursor_gap": "cursor placement after undo differs from Helix; text/mode/count asserted"
+  "width": 60
 }
