@@ -66,6 +66,13 @@ pub const ThemeColors = struct {
         };
     }
 
+    pub fn inlayHintsTheme(palette: ?*const ThemeColors) @import("../../editor/contrib/inlayHints/browser/inlayHintsContribution.zig").Theme {
+        const colors = palette orelse return .{};
+        const foreground = colors.color("editorInlayHint.foreground", .{ 170, 170, 170 });
+        const background = colors.color("editorInlayHint.background", .{ 48, 48, 48 });
+        return .{ .foreground = foreground, .background = background, .type_foreground = colors.colorOr("editorInlayHint.typeForeground", foreground), .type_background = colors.colorOr("editorInlayHint.typeBackground", background), .parameter_foreground = colors.colorOr("editorInlayHint.parameterForeground", foreground), .parameter_background = colors.colorOr("editorInlayHint.parameterBackground", background) };
+    }
+
     pub fn renameTheme(palette: ?*const ThemeColors) @import("../../editor/contrib/rename/browser/renameWidget_css.zig").Colors {
         const colors = palette orelse return .{};
         return .{ .background = colors.color("editorWidget.background", .{ 37, 37, 38 }), .foreground = colors.color("editorWidget.foreground", .{ 204, 204, 204 }), .input_background = colors.color("input.background", .{ 30, 30, 30 }), .input_foreground = colors.color("input.foreground", .{ 204, 204, 204 }), .border = colors.color("editorWidget.border", .{ 69, 69, 69 }) };

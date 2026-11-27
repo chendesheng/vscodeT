@@ -550,6 +550,11 @@ pub const ProjectedViewModelLines = struct {
         return Position.init(info.model_line, column);
     }
 
+    pub fn getInjectedTextAt(self: *ProjectedViewModelLines, view_line: usize, view_column: usize) ?@import("../modelLineProjectionData.zig").InjectedText {
+        const info = self.getViewLineInfo(view_line);
+        return self.projections.items[info.model_line - 1].getInjectedTextAt(info.output_index, view_column);
+    }
+
     /// Upstream `convertViewPositionToModelPosition` for one position.
     pub fn convertViewPositionToModelPosition(
         self: *ProjectedViewModelLines,

@@ -216,6 +216,7 @@ pub const IEditorHoverParticipant = struct {
     context: *anyopaque,
     hover_ordinal: i32,
     hide_copy_button: ?bool = null,
+    suggest_hover_anchor: ?*const fn (*anyopaque, EditorMouseEvent) ?HoverAnchor = null,
     compute_sync: ?*const fn (
         context: *anyopaque,
         anchor: *const HoverAnchor,

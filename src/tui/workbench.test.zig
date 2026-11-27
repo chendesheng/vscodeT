@@ -14292,3 +14292,49 @@ test "Workbench: semantic token foreground and font style reach terminal cells" 
     }
     try std.testing.expect(found);
 }
+
+test "Workbench: inlay decorations paint and hit-test injected text without changing the document" {
+    const a = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "inlay.txt", .data = "abc" });
+    const path = try tmp.dir.realPathFileAlloc(io, "inlay.txt", a);
+    defer a.free(path);
+    const window = try TestWindow.init(a, io, &.{path}, 80, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    const editor = wb.activeTab().?.editor;
+    const model = editor.model;
+    const model_types = @import("../vs/editor/common/model.zig");
+    const R = @import("../vs/editor/common/core/range.zig").Range;
+    const P = @import("../vs/editor/common/core/position.zig").Position;
+    var attached: u8 = 7;
+    var options: model_types.ModelDecorationOptions = .init("InlayHint", .AlwaysGrowsWhenTypingAtEdges);
+    options.after = .{ .content = " HintQ", .inlineClassName = "inlay-hint-type", .inlineClassNameAffectsLetterSpacing = false, .attachedData = &attached, .cursorStops = .Right };
+    const ids = try model.deltaDecorations(&.{}, &.{.{ .range = R.init(1, 1, 1, 2), .options = &options }}, 0);
+    defer a.free(ids);
+    defer {
+        const empty = model.deltaDecorations(ids, &.{}, 0) catch &.{};
+        a.free(empty);
+    }
+    try std.testing.expectEqualStrings("abc", try model.borrowLineContent(1));
+    const data = try editor.viewLineData(1);
+    try std.testing.expectEqualStrings("a HintQbc", data.content);
+    const injection = (try editor.injectedTextAtViewPoint(1, 4)).?;
+    try std.testing.expectEqual(@as(?*anyopaque, &attached), injection.options.attachedData);
+    try std.testing.expectEqual(P.init(1, 2), try editor.positionAtViewPoint(1, 4));
+    var out: std.Io.Writer.Allocating = .init(a);
+    defer out.deinit();
+    try renderFrame(wb, &out.writer);
+    const wanted = ui.cell.packColor(.{ .r = 170, .g = 170, .b = 170 });
+    const grid = &wb.frame.prev;
+    var found = false;
+    for (grid.cluster, 0..) |glyph, i| {
+        if (glyph == 'Q' and grid.fg[i] == wanted) found = true;
+    }
+    try std.testing.expect(found);
+    try editor.setCursorPosition(P.init(1, 3));
+    try editor.insertText("!");
+    try std.testing.expectEqualStrings("ab!c", try model.borrowLineContent(1));
+}

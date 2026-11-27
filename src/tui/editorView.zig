@@ -1112,6 +1112,7 @@ pub const View = struct {
             .end_position_at_view_line = mouseEndPositionAtViewLine,
             .line_text_width = mouseLineTextWidth,
             .position_at_view_point = mousePositionAtViewPoint,
+            .injected_text_at_view_point = mouseInjectedTextAtViewPoint,
             .glyph_lane_at = mouseGlyphLaneAt,
         }, x, y);
     }
@@ -1182,6 +1183,11 @@ pub const View = struct {
     fn mousePositionAtViewPoint(context: *anyopaque, view_line: usize, column: usize) !Position {
         const self: *View = @ptrCast(@alignCast(context));
         return self.editor.positionAtViewPoint(view_line, column);
+    }
+
+    fn mouseInjectedTextAtViewPoint(context: *anyopaque, view_line: usize, column: usize) !?@import("../vs/editor/common/modelLineProjectionData.zig").InjectedText {
+        const self: *View = @ptrCast(@alignCast(context));
+        return self.editor.injectedTextAtViewPoint(view_line, column);
     }
 
     fn mouseGlyphLaneAt(context: *anyopaque, line: usize, column: usize) ?@import("../vs/editor/common/model.zig").GlyphMarginLane {
@@ -1895,7 +1901,10 @@ pub const View = struct {
         // Upstream's colorization classes set the foreground while find/bracket
         // decorations only add a background/border, so the rainbow color
         // survives a highlight.
-        if (part.decoration_class) |classes| applyBracketHighlightPaint(&value, classes, self);
+        if (part.decoration_class) |classes| {
+            applyBracketHighlightPaint(&value, classes, self);
+            @import("../vs/editor/contrib/inlayHints/browser/inlayHintsContribution.zig").applyPaint(&value, classes, theme_colors_mod.ThemeColors.inlayHintsTheme(self.theme_colors));
+        }
         // `viewLines.css` gives `mtkw` its own color with `!important`: uniform
         // whitespace wins over token, selection and bracket colors.
         if (part.is_whitespace) value.color = self.whitespaceColor();

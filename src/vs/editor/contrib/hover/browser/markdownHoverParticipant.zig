@@ -56,7 +56,7 @@ const HoverSource = struct {
     registration_time: ?u64 = null,
 };
 
-const MarkdownHover = struct {
+pub const MarkdownHover = struct {
     range: Range,
     contents: []const IMarkdownString,
     ordinal: usize,

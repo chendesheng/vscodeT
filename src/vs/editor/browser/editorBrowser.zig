@@ -424,6 +424,7 @@ pub const ViewZoneTargetData = struct {
 
 pub const MouseTargetDetail = union(enum) {
     content_empty: ContentEmptyDetail,
+    content_text: struct { injected_text: ?@import("../common/modelLineProjectionData.zig").InjectedText = null },
     view_zone: ViewZoneTargetData,
     glyph_margin: struct { glyphMarginLane: ?@import("../common/model.zig").GlyphMarginLane },
 };

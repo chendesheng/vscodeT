@@ -299,7 +299,13 @@ pub const ContentHoverWidgetWrapper = struct {
     }
 
     fn findHoverAnchor(self: *ContentHoverWidgetWrapper, mouse_event: EditorMouseEvent) ?HoverAnchor {
-        _ = self;
+        var selected: ?HoverAnchor = null;
+        for (self.participants) |participant| if (participant.suggest_hover_anchor) |suggest| {
+            if (suggest(participant.context, mouse_event)) |anchor| {
+                if (selected == null or anchor.getPriority() > selected.?.getPriority()) selected = anchor;
+            }
+        };
+        if (selected) |anchor| return anchor;
         const target = mouse_event.target;
         switch (target.type) {
             .content_text => {
@@ -309,7 +315,7 @@ pub const ContentHoverWidgetWrapper = struct {
             .content_empty => {
                 const detail = switch (target.detail orelse return null) {
                     .content_empty => |value| value,
-                    .view_zone, .glyph_margin => return null,
+                    .view_zone, .glyph_margin, .content_text => return null,
                 };
                 // Upstream accepts an empty-area hover when the pointer is
                 // within half a character of the text. Cells are whole units,

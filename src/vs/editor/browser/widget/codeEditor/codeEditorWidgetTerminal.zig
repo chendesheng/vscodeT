@@ -4394,6 +4394,13 @@ pub const Editor = struct {
         );
     }
 
+    pub fn injectedTextAtViewPoint(self: *Editor, view_line_number: usize, visible_column: usize) !?@import("../../../common/modelLineProjectionData.zig").InjectedText {
+        if (view_line_number == 0 or view_line_number > self.viewLineCount()) return null;
+        const data = try self.viewLineData(view_line_number);
+        const output_column = CursorColumns.columnFromVisibleColumnFrom(data.content, data.startVisibleColumn + visible_column, self.cursor_config.tabSize, data.startVisibleColumn);
+        return self.view_lines.getInjectedTextAt(view_line_number, output_column);
+    }
+
     /// Closes the current undo element unless a Vim-style undo group is
     /// active. Internal typing/newline/command boundaries call this; the group
     /// boundary is the only stack push that matters inside the group.

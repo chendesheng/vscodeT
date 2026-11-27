@@ -46,6 +46,7 @@ pub const TerminalMouseHost = struct {
     /// out in the current frame.
     line_text_width: *const fn (context: *anyopaque, view_line: usize) ?usize,
     position_at_view_point: *const fn (context: *anyopaque, view_line: usize, column: usize) anyerror!Position,
+    injected_text_at_view_point: ?*const fn (*anyopaque, usize, usize) anyerror!?@import("../../common/modelLineProjectionData.zig").InjectedText = null,
     glyph_lane_at: *const fn (context: *anyopaque, model_line: usize, column: usize) ?@import("../../common/model.zig").GlyphMarginLane,
 };
 
@@ -155,6 +156,7 @@ pub fn createMouseTarget(host: TerminalMouseHost, x: usize, y: usize) !MouseTarg
             .position = position,
             .range = range,
             .mouse_column = mouse_column,
+            .detail = .{ .content_text = .{ .injected_text = if (host.injected_text_at_view_point) |get| try get(host.context, view_line, offset) else null } },
         };
     }
     return .{

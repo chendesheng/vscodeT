@@ -198,8 +198,7 @@ pub const ModelLineProjection = struct {
         return output_position;
     }
 
-    pub fn getInjectedTextAt(self: *const ModelLineProjection, _: usize, _: usize) ?InjectedText {
-        _ = self;
-        return null;
+    pub fn getInjectedTextAt(self: *const ModelLineProjection, output_index: usize, output_column: usize) ?InjectedText {
+        return if (self.data) |data| data.getInjectedText(output_index, output_column -| 1) else null;
     }
 };
