@@ -3,7 +3,7 @@
 //
 // Ported features: hover, completion, definition, declaration,
 // implementation, type definition, references, document/workspace symbols, single- and
-// multi-document highlights, folding/selection ranges, signature help, CodeLens, code actions
+// multi-document highlights, folding/selection ranges, signature help, rename, CodeLens, code actions
 // and document/range/on-type formatting. The actor stores providers by handle
 // in `LanguageFeaturesService`, converts the extension-host DTOs into editor
 // types and forwards provider calls back to `ExtHostLanguageFeatures`.
@@ -738,6 +738,7 @@ pub const MainThreadLanguageFeatures = struct {
         if (std.mem.eql(u8, method, "$registerImplementationSupport")) return self.registerLocationProvider(args, arena, .implementation);
         if (std.mem.eql(u8, method, "$registerTypeDefinitionSupport")) return self.registerLocationProvider(args, arena, .type_definition);
         if (std.mem.eql(u8, method, "$registerReferenceSupport")) return self.registerReference(args, arena);
+        if (std.mem.eql(u8, method, "$registerRenameSupport")) return self.registerRename(args, arena);
         if (std.mem.eql(u8, method, "$registerSignatureHelpProvider")) return self.registerSignatureHelp(args, arena);
         if (std.mem.eql(u8, method, "$registerFoldingRangeProvider")) return self.registerFoldingRange(args, arena);
         if (std.mem.eql(u8, method, "$emitFoldingRangeEvent")) {
@@ -852,6 +853,26 @@ pub const MainThreadLanguageFeatures = struct {
             .context = state,
             .requires_window_fiber = self.proxy.request_async != null,
             .provide_references = provideReferences,
+        });
+        return .empty;
+    }
+
+    fn registerRename(self: *MainThreadLanguageFeatures, args: []const rpc.Arg, arena: Allocator) !rpc.HandlerReply {
+        const handle = handleArg(args) orelse return error.InvalidArguments;
+        const selector_value = jsonArg(args, 1) orelse return error.InvalidArguments;
+        const registration = try self.createRegistration(arena, handle);
+        errdefer {
+            _ = self.registrations.remove(handle);
+            self.destroyRegistration(registration);
+        }
+        const selector = try parseSelector(registration.arena.allocator(), selector_value);
+        const supports_resolve = boolArg(args, 2);
+        registration.disposable = try self.features.rename_provider.register(selector, .{
+            .context = registration,
+            .resolve_rename_location = if (supports_resolve) RenameState.resolve else null,
+            .provide_rename_edits = RenameState.provide,
+            .request_rename_location = if (supports_resolve and self.proxy.request_async != null) RenameState.requestLocation else null,
+            .request_rename_edits = if (self.proxy.request_async != null) RenameState.requestEdits else null,
         });
         return .empty;
     }
@@ -2470,6 +2491,89 @@ fn signatureCharacters(a: Allocator, value: ?std.json.Value) ![]const []const u8
     };
     return chars.items;
 }
+
+const RenameState = struct {
+    fn args(a: Allocator, registration: *Registration, model: *TextModel, position: Position) ![3]rpc.Arg {
+        return .{
+            .{ .json = .{ .integer = registration.handle } },
+            .{ .json = try std_uri.jsonComponents(a, model.uri()) },
+            .{ .json = try positionJson(a, model, position) },
+        };
+    }
+
+    fn parseLocation(a: Allocator, model: *TextModel, value: std.json.Value) !?languages.RenameLocation {
+        if (value != .object) return null;
+        if (try optionalJsonString(a, value.object.get("rejectReason"))) |reason| return .{ .reject_reason = reason };
+        const range = rangeFromJson(model, value.object.get("range") orelse return null) orelse return null;
+        const label = try optionalJsonString(a, value.object.get("text")) orelse return null;
+        return .{ .range = range, .text = label };
+    }
+
+    fn parseEdit(a: Allocator, value: std.json.Value) !?languages.RenameEdit {
+        if (value != .object) return null;
+        if (try optionalJsonString(a, value.object.get("rejectReason"))) |reason| return .{ .reject_reason = reason };
+        const edit = try @import("mainThreadBulkEdits.zig").reviveWorkspaceEditDto(a, value) orelse return null;
+        return .{ .edit = edit };
+    }
+
+    fn resolve(context: *anyopaque, a: Allocator, model: *TextModel, position: Position, token: CancellationToken) !?languages.RenameLocation {
+        const registration: *Registration = @ptrCast(@alignCast(context));
+        const arguments = try args(a, registration, model, position);
+        return parseLocation(a, model, try registration.owner.call(a, "$resolveRenameLocation", &arguments, token, timeout_default_ms));
+    }
+
+    fn provide(context: *anyopaque, a: Allocator, model: *TextModel, position: Position, new_name: []const u8, token: CancellationToken) !?languages.RenameEdit {
+        const registration: *Registration = @ptrCast(@alignCast(context));
+        const arguments = (try args(a, registration, model, position)) ++ [_]rpc.Arg{.{ .json = .{ .string = new_name } }};
+        return parseEdit(a, try registration.owner.call(a, "$provideRenameEdits", &arguments, token, timeout_default_ms));
+    }
+
+    const LocationPending = struct {
+        allocator: Allocator,
+        model: *TextModel,
+        callback: languages.RenameLocationCallback,
+        fn ready(context: *anyopaque, reply: rpc.Reply) void {
+            const self: *LocationPending = @ptrCast(@alignCast(context));
+            self.callback.complete(self.callback.context, switch (reply) {
+                .json => |value| parseLocation(self.allocator, self.model, value),
+                .err => error.RequestFailed,
+                else => @as(?languages.RenameLocation, null),
+            });
+        }
+    };
+    const EditPending = struct {
+        allocator: Allocator,
+        callback: languages.RenameEditCallback,
+        fn ready(context: *anyopaque, reply: rpc.Reply) void {
+            const self: *EditPending = @ptrCast(@alignCast(context));
+            self.callback.complete(self.callback.context, switch (reply) {
+                .json => |value| parseEdit(self.allocator, value),
+                .err => error.RequestFailed,
+                else => @as(?languages.RenameEdit, null),
+            });
+        }
+    };
+
+    fn requestLocation(context: *anyopaque, a: Allocator, model: *TextModel, position: Position, callback: languages.RenameLocationCallback) !IDisposable {
+        const registration: *Registration = @ptrCast(@alignCast(context));
+        const proxy = registration.owner.proxy;
+        const send = proxy.request_async orelse return error.RequestFailed;
+        const pending = try a.create(LocationPending);
+        pending.* = .{ .allocator = a, .model = model, .callback = callback };
+        const arguments = try args(a, registration, model, position);
+        return send(proxy.context, "$resolveRenameLocation", &arguments, .{ .context = pending, .callback = LocationPending.ready });
+    }
+
+    fn requestEdits(context: *anyopaque, a: Allocator, model: *TextModel, position: Position, new_name: []const u8, callback: languages.RenameEditCallback) !IDisposable {
+        const registration: *Registration = @ptrCast(@alignCast(context));
+        const proxy = registration.owner.proxy;
+        const send = proxy.request_async orelse return error.RequestFailed;
+        const pending = try a.create(EditPending);
+        pending.* = .{ .allocator = a, .callback = callback };
+        const arguments = (try args(a, registration, model, position)) ++ [_]rpc.Arg{.{ .json = .{ .string = new_name } }};
+        return send(proxy.context, "$provideRenameEdits", &arguments, .{ .context = pending, .callback = EditPending.ready });
+    }
+};
 
 const SignatureHelpState = struct {
     const Release = struct {

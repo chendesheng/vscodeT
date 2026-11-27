@@ -2679,6 +2679,43 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try workbench.commands.execute("closeParameterHints");
             try std.testing.expect(!selection_editor.parameter_hints_visible and !hints.widget_mounted);
 
+            const RenameSkeleton = @import("../../../editor/contrib/rename/browser/rename.zig").RenameSkeleton;
+            const rename_languages = @import("../../../editor/common/languages.zig");
+            const RenameProbe = struct {
+                location: ?rename_languages.RenameLocation = null,
+                edit: ?rename_languages.RenameEdit = null,
+                failure: ?anyerror = null,
+                fn prepared(context: *anyopaque, result: anyerror!?rename_languages.RenameLocation) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    if (result) |value| self.location = value else |err| self.failure = err;
+                }
+                fn edited(context: *anyopaque, result: anyerror!?rename_languages.RenameEdit) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    if (result) |value| self.edit = value else |err| self.failure = err;
+                }
+            };
+            var rename_probe: RenameProbe = .{};
+            var rename = try RenameSkeleton.init(allocator, model, Position.init(2, 1), &features.rename_provider);
+            defer rename.deinit();
+            try std.testing.expect(rename.hasProvider());
+            rename.resolveRenameLocation(.{ .context = &rename_probe, .complete = RenameProbe.prepared });
+            const rename_deadline = time_compat.milliTimestamp() + 5000;
+            while (rename_probe.location == null and rename_probe.failure == null and time_compat.milliTimestamp() < rename_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expectEqualStrings("fixture", (rename_probe.location orelse return error.RenamePrepareUnavailable).text);
+            rename.provideRenameEdits("newName", .{ .context = &rename_probe, .complete = RenameProbe.edited });
+            const edits_deadline = time_compat.milliTimestamp() + 5000;
+            while (rename_probe.edit == null and rename_probe.failure == null and time_compat.milliTimestamp() < edits_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            const rename_edit = (rename_probe.edit orelse return error.RenameEditsUnavailable).edit;
+            try std.testing.expectEqual(@as(usize, 1), rename_edit.edits.len);
+            try std.testing.expectEqualStrings("newName", rename_edit.edits[0].text.text);
+            try std.testing.expectEqual(@as(@FieldType(rename_languages.WorkspaceTextEdit, "column_encoding"), .utf16), rename_edit.edits[0].text.column_encoding);
+
             const action_model = @import("../../../editor/contrib/codeAction/browser/codeAction.zig");
             const action_types = @import("../../../editor/contrib/codeAction/common/types.zig");
             const ActionReceiver = struct {

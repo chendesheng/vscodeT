@@ -216,6 +216,18 @@ function activate(context) {
       ];
     }
   }));
+  context.subscriptions.push(vscode.languages.registerRenameProvider({ language: 'json' }, {
+    prepareRename(document, position) {
+      if (position.line === 0) throw new Error('Not a renamable location');
+      return { range: new vscode.Range(1, 0, 1, 1), placeholder: 'fixture' };
+    },
+    provideRenameEdits(document, position, newName) {
+      if (newName === 'reject') throw new Error('Rejected name');
+      const edit = new vscode.WorkspaceEdit();
+      edit.replace(document.uri, new vscode.Range(1, 0, 1, 1), newName);
+      return edit;
+    }
+  }));
   context.subscriptions.push(vscode.languages.registerSignatureHelpProvider({ language: 'json' }, {
     async provideSignatureHelp(document, position, token, trigger) {
       await new Promise(resolve => setTimeout(resolve, 20));

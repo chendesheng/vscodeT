@@ -845,6 +845,19 @@ pub const WorkspaceFileEdit = struct {
 pub const WorkspaceResourceEdit = union(enum) { text: WorkspaceTextEdit, file: WorkspaceFileEdit };
 pub const WorkspaceEdit = struct { edits: []const WorkspaceResourceEdit = &.{} };
 
+/// Upstream prepareRename and workspace-edit results preserve provider rejection messages.
+pub const RenameLocation = struct { range: ?Range = null, text: []const u8 = "", reject_reason: ?[]const u8 = null };
+pub const RenameEdit = struct { edit: WorkspaceEdit = .{}, reject_reason: ?[]const u8 = null };
+pub const RenameLocationCallback = struct { context: *anyopaque, complete: *const fn (*anyopaque, anyerror!?RenameLocation) void };
+pub const RenameEditCallback = struct { context: *anyopaque, complete: *const fn (*anyopaque, anyerror!?RenameEdit) void };
+pub const RenameProvider = struct {
+    context: *anyopaque,
+    resolve_rename_location: ?*const fn (*anyopaque, Allocator, *TextModel, Position, CancellationToken) anyerror!?RenameLocation = null,
+    provide_rename_edits: *const fn (*anyopaque, Allocator, *TextModel, Position, []const u8, CancellationToken) anyerror!?RenameEdit,
+    request_rename_location: ?*const fn (*anyopaque, Allocator, *TextModel, Position, RenameLocationCallback) anyerror!@import("../../base/common/lifecycle.zig").IDisposable = null,
+    request_rename_edits: ?*const fn (*anyopaque, Allocator, *TextModel, Position, []const u8, RenameEditCallback) anyerror!@import("../../base/common/lifecycle.zig").IDisposable = null,
+};
+
 /// Port of the code-action contracts in `languages.ts`. Workspace edit DTOs
 /// remain at the extension-host boundary until revived by the bulk-edit service.
 pub const CodeAction = struct {
