@@ -308,6 +308,7 @@ pub const TerminalWorkbench = struct {
     resource_file_service: @import("../vs/platform/files/common/fileService.zig").ProviderFileService,
     disk_resource_provider: @import("../vs/platform/files/node/diskFileSystemProvider.zig").DiskFileSystemProvider,
     disk_resource_registration: @import("../vs/base/common/lifecycle.zig").IDisposable,
+    extension_logger_service: @import("../vs/platform/log/common/fileLog.zig").FileLoggerService,
     file_service_api: @import("../vs/platform/files/common/files.zig").IFileService,
     working_copy_file_service: @import("../vs/workbench/services/workingCopy/common/workingCopyFileService.zig").WorkingCopyFileService,
     working_copy_file_api: @import("../vs/workbench/services/workingCopy/common/workingCopyFileService.zig").IWorkingCopyFileService,
@@ -572,6 +573,8 @@ pub const TerminalWorkbench = struct {
         self.resource_file_service = .init(allocator);
         errdefer self.resource_file_service.deinit();
         self.file_service_api = self.resource_file_service.interface();
+        self.extension_logger_service = .init(allocator, self.file_service_api);
+        errdefer self.extension_logger_service.deinit();
         self.disk_resource_provider = .init(allocator, self.worker_io);
         errdefer self.disk_resource_provider.deinit();
         self.disk_resource_registration = try self.file_service_api.registerProvider("file", self.disk_resource_provider.interface());
@@ -1978,6 +1981,7 @@ pub const TerminalWorkbench = struct {
         self.word_highlight_session.deinit();
         self.code_editors.deinit();
         self.working_copy_file_service.deinit();
+        self.extension_logger_service.deinit();
         self.disk_resource_registration.dispose();
         self.disk_resource_provider.deinit();
         self.resource_file_service.deinit();

@@ -740,6 +740,7 @@ comptime {
     _ = @import("./vs/workbench/api/test/browser/mainThreadDiagnostics.test.zig");
     _ = @import("./vs/workbench/api/test/browser/mainThreadFileSystem.test.zig");
     _ = @import("./vs/workbench/api/test/browser/mainThreadLanguages.test.zig");
+    _ = @import("./vs/workbench/api/test/browser/mainThreadLogService.test.zig");
     _ = @import("./vs/workbench/api/test/browser/mainThreadWorkspace.test.zig");
     _ = @import("./vs/workbench/api/test/browser/mainThreadDocumentsAndEditors.test.zig");
     _ = @import("./vs/workbench/api/test/browser/mainThreadDocumentContentProviders.test.zig");

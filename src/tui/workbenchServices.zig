@@ -207,6 +207,7 @@ pub fn extensionHostServices(host: *TerminalWorkbench) ExtensionServices {
         .common = common,
         .window = &host.window_events,
         .file_service = host.file_service_api,
+        .logger_service = &host.extension_logger_service,
         .language_status = host.language_status_api,
         .text_files = &host.text_file_service,
         .quick_access = host.quick_access,

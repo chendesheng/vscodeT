@@ -18,6 +18,31 @@ import type { IExtensionHostInitData } from '../vscode/src/vs/workbench/services
 import { Promises } from '../vscode/src/vs/base/node/pfs.js';
 import '../vscode/src/vs/workbench/api/common/extHost.common.services.js';
 import '../vscode/src/vs/workbench/api/node/extHost.node.services.js';
+import { ExtHostLoggerService as RpcExtHostLoggerService } from '../vscode/src/vs/workbench/api/common/extHostLoggerService.js';
+import { ILoggerService, type ILoggerResource } from '../vscode/src/vs/platform/log/common/log.js';
+import { registerSingleton, InstantiationType } from '../vscode/src/vs/platform/instantiation/common/extensions.js';
+import type { URI } from '../vscode/src/vs/base/common/uri.js';
+
+// The standalone distribution can omit native spdlog (including CI's
+// script-free npm install). Use the upstream RPC logger implementation in
+// that case, preserving the Node variant's logger registration notifications.
+// Keep the upstream Node-local logger when its native module is available.
+try {
+	await import('@vscode/spdlog');
+} catch {
+	class RpcLoggerService extends RpcExtHostLoggerService {
+		override registerLogger(resource: ILoggerResource): void {
+			super.registerLogger(resource);
+			this._proxy.$registerLogger(resource);
+		}
+		override deregisterLogger(resource: URI): void {
+			super.deregisterLogger(resource);
+			this._proxy.$deregisterLogger(resource);
+		}
+	}
+	registerSingleton(ILoggerService, RpcLoggerService, InstantiationType.Delayed);
+}
+
 const PIPE_IN_FD = Number(process.env.VSCODE_EXTENSION_HOST_IN_FD ?? 3);
 const PIPE_OUT_FD = Number(process.env.VSCODE_EXTENSION_HOST_OUT_FD ?? 4);
 const MAX_FRAME = 64 * 1024 * 1024;

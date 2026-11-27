@@ -440,6 +440,8 @@ pub const Extensions = struct {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeDocumentContentProviders });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadQuickDiff)) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeQuickDiff });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadLogger)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeLogger });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadLanguages)) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeLanguages });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadFileSystem)) {
@@ -615,6 +617,12 @@ pub const Extensions = struct {
         const self: *Extensions = @ptrCast(@alignCast(context));
         if (self.diagnostics_actor) |actor| return actor.invoke(method, args, arena);
         return .empty;
+    }
+
+    fn invokeLogger(context: *anyopaque, method: []const u8, args: []const rpc.Arg, _: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        var actor = @import("mainThreadLogService.zig").MainThreadLoggerService{ .service = self.services.logger_service };
+        return actor.invoke(method, args, arena);
     }
 
     fn invokeLanguages(context: *anyopaque, method: []const u8, args: []const rpc.Arg, _: ?@import("../../../base/common/cancellation.zig").CancellationToken, _: Allocator) anyerror!rpc.HandlerReply {

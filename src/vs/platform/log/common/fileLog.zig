@@ -133,3 +133,149 @@ test "log line format" {
     try std.testing.expect(std.mem.indexOf(u8, contents, " [info] hello 7\n") != null);
     try std.testing.expect(contents.len > " [info] hello 7\n".len);
 }
+
+/// FileLoggerService from fileLog.ts, used by extension-host RPC loggers when
+/// the standalone Node distribution has no native spdlog module. The existing
+/// file service owns URI handling and writes; raw output channels must not
+/// add formatting bytes because ExtHostOutputChannel tracks byte offsets.
+pub const FileLoggerService = struct {
+    allocator: Allocator,
+    files: @import("../../files/common/files.zig").IFileService,
+    loggers: std.StringHashMap(*ResourceLogger),
+    on_did_change_loggers: @import("../../../base/common/event.zig").Emitter(void),
+
+    pub const Options = struct {
+        id: ?[]const u8 = null,
+        name: ?[]const u8 = null,
+        level: log.LogLevel = .trace,
+        raw: bool = false,
+        hidden: bool = false,
+        extension_id: ?[]const u8 = null,
+        no_rotation: bool = false,
+    };
+
+    pub const ResourceLogger = struct {
+        arena: std.heap.ArenaAllocator,
+        resource: std.Uri,
+        key: []const u8,
+        options: Options,
+        locally_created: bool = false,
+        backup_index: usize = 1,
+    };
+
+    const uri_util = @import("../../../base/common/stdUri.zig");
+
+    pub fn init(allocator: Allocator, files: @import("../../files/common/files.zig").IFileService) FileLoggerService {
+        return .{ .allocator = allocator, .files = files, .loggers = .init(allocator), .on_did_change_loggers = .init(allocator) };
+    }
+
+    pub fn deinit(self: *FileLoggerService) void {
+        var entries = self.loggers.valueIterator();
+        while (entries.next()) |entry| self.destroy(entry.*);
+        self.loggers.deinit();
+        self.on_did_change_loggers.deinit();
+    }
+
+    fn destroy(self: *FileLoggerService, logger: *ResourceLogger) void {
+        logger.arena.deinit();
+        self.allocator.destroy(logger);
+    }
+
+    pub fn getLogger(self: *FileLoggerService, resource: std.Uri) !?*ResourceLogger {
+        const key = try uri_util.resourceKey(self.allocator, resource);
+        defer self.allocator.free(key);
+        return self.loggers.get(key);
+    }
+
+    fn copyOptions(arena: Allocator, options: Options) !Options {
+        var result = options;
+        if (options.id) |id| result.id = try arena.dupe(u8, id);
+        if (options.name) |name| result.name = try arena.dupe(u8, name);
+        if (options.extension_id) |id| result.extension_id = try arena.dupe(u8, id);
+        return result;
+    }
+
+    pub fn registerLogger(self: *FileLoggerService, resource: std.Uri, options: Options) !*ResourceLogger {
+        if (try self.getLogger(resource)) |logger| {
+            const updated = try copyOptions(logger.arena.allocator(), options);
+            // Registration metadata from a Node-local logger does not replace
+            // the raw/rotation settings of an already-created RPC logger.
+            logger.options.id = updated.id orelse logger.options.id;
+            logger.options.name = updated.name orelse logger.options.name;
+            logger.options.extension_id = updated.extension_id orelse logger.options.extension_id;
+            logger.options.hidden = updated.hidden;
+            self.on_did_change_loggers.fire({}) catch {};
+            return logger;
+        }
+        const logger = try self.allocator.create(ResourceLogger);
+        errdefer self.allocator.destroy(logger);
+        logger.arena = .init(self.allocator);
+        errdefer logger.arena.deinit();
+        const arena = logger.arena.allocator();
+        logger.resource = try uri_util.clone(arena, resource);
+        logger.key = try uri_util.resourceKey(arena, resource);
+        logger.options = try copyOptions(arena, options);
+        logger.locally_created = false;
+        logger.backup_index = 1;
+        try self.loggers.put(logger.key, logger);
+        self.on_did_change_loggers.fire({}) catch {};
+        return logger;
+    }
+
+    pub fn createLogger(self: *FileLoggerService, resource: std.Uri, options: Options) !void {
+        const logger = try self.registerLogger(resource, options);
+        if (logger.locally_created) return;
+        logger.options = try copyOptions(logger.arena.allocator(), options);
+        self.files.writeFile(resource, "", .{ .create = true, .overwrite = false }) catch |err| switch (err) {
+            error.FileExists => {},
+            else => return err,
+        };
+        logger.locally_created = true;
+    }
+
+    pub fn deregisterLogger(self: *FileLoggerService, resource: std.Uri) !void {
+        const key = try uri_util.resourceKey(self.allocator, resource);
+        defer self.allocator.free(key);
+        if (self.loggers.fetchRemove(key)) |entry| {
+            self.destroy(entry.value);
+            self.on_did_change_loggers.fire({}) catch {};
+        }
+    }
+
+    pub fn setVisibility(self: *FileLoggerService, resource: std.Uri, visible: bool) !void {
+        if (try self.getLogger(resource)) |logger| {
+            logger.options.hidden = !visible;
+            self.on_did_change_loggers.fire({}) catch {};
+        }
+    }
+
+    pub fn append(self: *FileLoggerService, resource: std.Uri, level: log.LogLevel, message: []const u8) !void {
+        const logger = (try self.getLogger(resource)) orelse return error.LoggerNotCreated;
+        if (!logger.locally_created) return error.LoggerNotCreated;
+        if (!log.canLog(logger.options.level, level)) return;
+        // The upstream file logger rotates formatted logs at 5 MiB. Raw
+        // channels explicitly opt out because their offsets refer to one file.
+        if (!logger.options.no_rotation) {
+            const stat = try self.files.stat(resource);
+            if (stat.size > 5 * 1024 * 1024) {
+                var scratch = std.heap.ArenaAllocator.init(self.allocator);
+                defer scratch.deinit();
+                const a = scratch.allocator();
+                const path = try uri_util.path(resource, a);
+                var backup = resource;
+                backup.path = .{ .raw = try std.fmt.allocPrint(a, "{s}_{d}", .{ path, logger.backup_index }) };
+                try self.files.copy(resource, backup, true);
+                try self.files.writeFile(resource, "", .{ .create = true, .overwrite = true });
+                logger.backup_index = if (logger.backup_index == 5) 1 else logger.backup_index + 1;
+            }
+        }
+        var writer = std.Io.Writer.Allocating.init(self.allocator);
+        defer writer.deinit();
+        const bytes = if (logger.options.raw) message else blk: {
+            try writeTimestamp(&writer.writer, time_compat.milliTimestamp());
+            try writer.writer.print(" [{s}] {s}\n", .{ levelLabel(level), message });
+            break :blk writer.written();
+        };
+        try self.files.writeFile(resource, bytes, .{ .create = true, .overwrite = true, .append = true });
+    }
+};
