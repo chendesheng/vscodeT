@@ -709,10 +709,10 @@ pub const TextModelResolverService = struct {
             }
             fn fromText(context: *anyopaque, resource: std.Uri, path: []const u8, text: []const u8, language: ?[]const u8, readonly: bool) !resolver.ModelReference {
                 const service: *TextModelResolverService = @ptrCast(@alignCast(context));
-                var reference = try service.createResolvedModelReference(resource, path, text, readonly);
-                errdefer reference.dispose();
-                if (language) |id| try TextModelResolverService.documentOf(reference).setLanguage(id);
-                return reference;
+                var model_ref = try service.createResolvedModelReference(resource, path, text, readonly);
+                errdefer model_ref.dispose();
+                if (language) |id| try TextModelResolverService.documentOf(model_ref).setLanguage(id);
+                return model_ref;
             }
             fn synthetic(context: *anyopaque, value: []const u8, language: ?[]const u8) !resolver.ModelReference {
                 const service: *TextModelResolverService = @ptrCast(@alignCast(context));
