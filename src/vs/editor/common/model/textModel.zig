@@ -1634,6 +1634,7 @@ pub const TextModel = struct {
                 const last_valid_line = @max(@as(usize, 1), @min(lastInsertedLineNumber, line_count_now));
 
                 const decorationsWithInjectedTextInEditedRange = try self._decorationsTree.getInjectedTextInInterval(self, self.getOffsetAt(Position.init(first_valid_line, 1)), self.getOffsetAt(Position.init(last_valid_line, self.getLineMaxColumn(last_valid_line))), 0);
+                defer decorationsWithInjectedTextInEditedRange.deinit();
 
                 const injectedTextInEditedRange = try LineInjectedText.fromDecorations(allocator, decorationsWithInjectedTextInEditedRange.items);
                 defer injectedTextInEditedRange.deinit();
