@@ -627,8 +627,10 @@ terminal editor. Code-action providers also drive the shared action widget,
 lightbulb and registered editor commands on the focused model, including both
 diff panes. Resolved workspace text edits use the URI model and bulk edit
 services; refactor preview uses checked changes and retained read-only
-multi-diff models. Workspace file edit undo/redo is still in progress. Hover
-and code-action provider results support asynchronous cancellation; other
+multi-diff models. Workspace file create/delete/copy/rename operations also
+participate in shared undo groups, retaining binary file contents and dirty
+working-copy snapshots across native moves. Hover and code-action provider
+results support asynchronous cancellation; other
 `MainThreadLanguageFeatures` methods remain incomplete.
 
 Host stderr is written to `<data dir>/extension-host.log` (normally

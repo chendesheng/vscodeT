@@ -348,14 +348,41 @@ verbosity, context and code-action integration.
 * Refactor preview groups operations by file or category, tracks confirmation
   checkboxes, detects model/file conflicts, and exposes retained read-only
   preview models through the multi-diff source. The registered pane opens
-  transient multi-diff inputs and applies only the selected changes. Native
-  integration verification is still in progress.
+  transient multi-diff inputs and applies only the selected changes; the
+  native integration test checks the real preview models and acceptance.
 
-The last full suite before pane integration passed 3,712/3,738 (26 skipped;
-48/48 build steps). The latest actual Node suite passed 22/22. File mutations
-and their workspace undo/redo grouping, marker hover quick-fix controls,
-public code-action execution and remaining accessible-hover integration are
-not yet verified as complete.
+The last actual Node suite at this checkpoint passed 22/22. See the
+subsequent workspace edit checkpoint for native verification and remaining
+provider-command/hover gaps.
+
+### Workspace file edits and shared undo checkpoint (2026-11-27)
+
+* Text models created through the workbench resolver, normal editor input and
+  session deserializer now share one resource-keyed undo service. Closed model
+  history retains owned URI identity, bounded heap accounting, a content hash,
+  version IDs and the initial snapshot; reopening restores matching history
+  rather than retaining pointers into disposed models. Encoded and raw paths
+  address the same undo stack.
+* Contiguous workspace resource groups execute in order. File creation,
+  deletion, rename and copy use the registered working-copy file service,
+  preserve raw inverse contents and upstream option semantics, and retain the
+  operation in the same undo group as text edits. The native disk provider is
+  registered through `IFileService`, not bypassed by the bulk edit service.
+* Working-copy file events capture dirty source snapshots and restore target
+  models before editor replacement. The editor service consumes the operation
+  on the window dispatcher, preserving the active editor, pinned state and
+  per-group cursor/view state. An undo-triggered rename does not destroy the
+  code editor while its undo call is on the stack.
+
+The full suite through file operations passed 3,727/3,753 (26 skipped; 48/48
+steps), including all six upstream `bulkFileEdits.test.ts` deletion cases and
+real provider create/copy/rename undo. The subsequent native view suite passed
+504/504 with actual checked refactor preview acceptance, mixed file/text
+workspace undo/redo, and dirty-file renaming/undo preserving content and cursor
+state. Final full-suite and extension-host verification are pending the next
+contribution changes. Remaining portable work includes active-editor snippet
+edits, closed-resource multi-model undo preparation, refactor auto-save,
+public code-action execution, and marker/accessible hover integration.
 
 ### Native performance measurements (2026-11-27)
 
