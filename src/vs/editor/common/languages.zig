@@ -488,6 +488,11 @@ pub const SelectionRange = struct {
 /// The provider allocates the returned buckets with the supplied allocator;
 /// the caller decides how they are freed (the smart-select helper gives each
 /// provider a temporary arena).
+pub const SelectionRangesCallback = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, anyerror![]const []const SelectionRange) void,
+};
+
 pub const SelectionRangeProvider = struct {
     context: *anyopaque,
     provide_selection_ranges: *const fn (
@@ -497,6 +502,14 @@ pub const SelectionRangeProvider = struct {
         positions: []const Position,
         token: CancellationToken,
     ) anyerror![]const []const SelectionRange,
+
+    request_selection_ranges: ?*const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        model: *TextModel,
+        positions: []const Position,
+        callback: SelectionRangesCallback,
+    ) anyerror!@import("../../base/common/lifecycle.zig").IDisposable = null,
 };
 
 /// Port of the definition/location subset of

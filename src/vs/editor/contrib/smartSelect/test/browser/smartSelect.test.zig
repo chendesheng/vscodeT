@@ -586,7 +586,10 @@ test "SmartSelectController: expands, shrinks and invalidates its cache" {
     defer allocator.free(third);
     try std.testing.expectEqualDeep(Selection.init(1, 1, 1, 4), third[0]);
 
-    // An external selection change invalidates the cached range chain.
+    // Mounted editors receive the invalidation through onDidChangeCursorPosition.
+    // The focused model harness delivers the same transition explicitly.
+    controller.invalidate();
+    try std.testing.expect(controller.state == null);
     selections[0] = Selection.init(1, 6, 1, 6);
     const fourth = (try controller.run(fixture.model(), &selections, true)).?;
     defer allocator.free(fourth);

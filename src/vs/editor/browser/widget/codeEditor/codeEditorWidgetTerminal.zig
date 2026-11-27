@@ -1404,6 +1404,7 @@ pub const Editor = struct {
         errdefer self.bracket_matching.deinit();
         self.smart_select = smart_select.SmartSelectController.init(allocator, &.{}, .{});
         errdefer self.smart_select.deinit();
+        try self.smart_select.bindCursor(&self.on_did_change_cursor_position);
         self.after_edit = .{ .model = model };
         self.cursor_config.tabSize = resolved.tabSize;
         self.cursor_config.indentSize = resolved.indentSize;
@@ -1990,6 +1991,7 @@ pub const Editor = struct {
         self.marker_service = marker_service;
         self.marker_decorations = marker_decorations;
         if (!self.hasModel()) return;
+        self.smart_select.bindRegistry(if (features) |service| &service.selection_range_provider else null) catch {};
         if (marker_decorations) |service| {
             if (!self.marker_model_registered) {
                 service.registerModel(self.model) catch {};
@@ -2603,6 +2605,7 @@ pub const Editor = struct {
     }
 
     fn onModelContentChanged(self: *Editor, event: InternalModelContentChangeEvent) void {
+        self.smart_select.invalidate();
         if (event.rawContentChangedEvent.isUndoing or event.rawContentChangedEvent.isRedoing) {
             if (event.rawContentChangedEvent.resultingSelection) |selections| {
                 const count = @min(selections.len, self.pending_selection.len);
@@ -3441,6 +3444,7 @@ pub const Editor = struct {
     }
 
     fn applyLanguageState(self: *Editor, language_id: []const u8) !void {
+        self.smart_select.invalidate();
         self.refreshAutoIndent();
         if (self.language_service.getLanguageConfiguration(language_id)) |resolved_config| {
             self.character_pair = try CharacterPairSupport.init(resolved_config);
@@ -5735,9 +5739,12 @@ pub const Editor = struct {
         const selections = try self.getSelectionsCopy();
         defer self.allocator.free(selections);
 
-        const updated = (try self.smart_select.run(self.model, selections, forward)) orelse return;
-        defer self.allocator.free(updated);
-        try self.updateSelectionsWithReason(updated, .Explicit);
+        try self.smart_select.runWithEditor(self.model, selections, forward, .{ .context = self, .run = applySmartSelection });
+    }
+
+    fn applySmartSelection(context: *anyopaque, selections: []const Selection) !void {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        try self.updateSelectionsWithReason(selections, .Explicit);
         self.ensureCursorVisible();
     }
 

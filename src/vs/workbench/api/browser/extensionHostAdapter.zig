@@ -2607,6 +2607,37 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(!workbench.quick_access.isOpen());
             try std.testing.expectEqual(Position.init(2, 3), workbench.activeTab().?.editor.modelCursorPosition());
 
+            // The async selection provider must be cancelled when the caret
+            // moves, then its nested ranges participate in expand/shrink.
+            const selection_editor = workbench.activeTab().?.editor;
+            try selection_editor.setCursorPosition(Position.init(2, 4));
+            try selection_editor.growSelection(true);
+            try std.testing.expect(selection_editor.smart_select.pending != null);
+            try selection_editor.setCursorPosition(Position.init(1, 1));
+            try std.testing.expect(selection_editor.smart_select.pending == null);
+            try selection_editor.setCursorPosition(Position.init(2, 4));
+            var expanded_line = false;
+            for (0..4) |_| {
+                try selection_editor.growSelection(true);
+                const selection_deadline = time_compat.milliTimestamp() + 5000;
+                while (selection_editor.smart_select.pending != null and time_compat.milliTimestamp() < selection_deadline) {
+                    _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                    time_compat.sleepMillis(5);
+                }
+                try std.testing.expect(selection_editor.smart_select.pending == null);
+                const selections = try selection_editor.getModelSelections();
+                defer allocator.free(selections);
+                if (selections[0].startLineNumber == 2 and selections[0].startColumn == 1 and selections[0].endColumn == model.getLineMaxColumn(2)) {
+                    expanded_line = true;
+                    break;
+                }
+            }
+            try std.testing.expect(expanded_line);
+            try selection_editor.growSelection(false);
+            const shrunk = try selection_editor.getModelSelections();
+            defer allocator.free(shrunk);
+            try std.testing.expect(shrunk[0].startColumn > 1 or shrunk[0].endColumn < model.getLineMaxColumn(2));
+
             const action_model = @import("../../../editor/contrib/codeAction/browser/codeAction.zig");
             const action_types = @import("../../../editor/contrib/codeAction/common/types.zig");
             const ActionReceiver = struct {
@@ -3778,6 +3809,19 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                             try std.testing.expect(!workbench.quick_access.isOpen());
                             try std.testing.expectEqual(@as(usize, 2), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
                         }
+                        const selection_editor = workbench.activeTab().?.editor;
+                        try selection_editor.setCursorPosition(Position.init(3, 32));
+                        try selection_editor.growSelection(true);
+                        try std.testing.expect(selection_editor.smart_select.pending != null);
+                        const selection_deadline = time_compat.milliTimestamp() + 5000;
+                        while (selection_editor.smart_select.pending != null and time_compat.milliTimestamp() < selection_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                            time_compat.sleepMillis(10);
+                        }
+                        try std.testing.expect(selection_editor.smart_select.pending == null);
+                        const selection = try selection_editor.getModelSelections();
+                        defer allocator.free(selection);
+                        try std.testing.expect(!selection[0].isEmpty());
                         model.setLanguage("plaintext");
                         try std.testing.expect(workbench.statusbar.model().findEntry("status.languageStatus") == null);
                         return;

@@ -216,6 +216,17 @@ function activate(context) {
       ];
     }
   }));
+  context.subscriptions.push(vscode.languages.registerSelectionRangeProvider({ language: 'json' }, {
+    async provideSelectionRanges(document, positions, token) {
+      await new Promise(resolve => setTimeout(resolve, 30));
+      if (token.isCancellationRequested) return [];
+      return positions.map(position => {
+        const outer = new vscode.SelectionRange(new vscode.Range(0, 0, document.lineCount - 1, document.lineAt(document.lineCount - 1).text.length));
+        if (position.line === 1) return new vscode.SelectionRange(new vscode.Range(1, 0, 1, document.lineAt(1).text.length), outer);
+        return outer;
+      });
+    }
+  }));
   context.subscriptions.push(vscode.languages.registerWorkspaceSymbolProvider({
     async provideWorkspaceSymbols(query, token) {
       if (query !== 'WorkspaceFixture' || token.isCancellationRequested) return [];

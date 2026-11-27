@@ -3,7 +3,7 @@
 //
 // Ported features: hover, completion, definition, declaration,
 // implementation, type definition, references, document/workspace symbols, single- and
-// multi-document highlights, CodeLens, code actions
+// multi-document highlights, selection ranges, CodeLens, code actions
 // and document/range/on-type formatting. The actor stores providers by handle
 // in `LanguageFeaturesService`, converts the extension-host DTOs into editor
 // types and forwards provider calls back to `ExtHostLanguageFeatures`.
@@ -729,6 +729,7 @@ pub const MainThreadLanguageFeatures = struct {
         if (std.mem.eql(u8, method, "$registerImplementationSupport")) return self.registerLocationProvider(args, arena, .implementation);
         if (std.mem.eql(u8, method, "$registerTypeDefinitionSupport")) return self.registerLocationProvider(args, arena, .type_definition);
         if (std.mem.eql(u8, method, "$registerReferenceSupport")) return self.registerReference(args, arena);
+        if (std.mem.eql(u8, method, "$registerSelectionRangeProvider")) return self.registerSelectionRange(args, arena);
         if (std.mem.eql(u8, method, "$registerNavigateTypeSupport")) return self.registerWorkspaceSymbol(args, arena);
         if (std.mem.eql(u8, method, "$registerDocumentSymbolProvider")) return self.registerDocumentSymbol(args, arena);
         if (std.mem.eql(u8, method, "$registerDocumentHighlightProvider")) return self.registerDocumentHighlights(args, arena, false);
@@ -837,6 +838,77 @@ pub const MainThreadLanguageFeatures = struct {
             .provide_references = provideReferences,
         });
         return .empty;
+    }
+
+    fn registerSelectionRange(self: *MainThreadLanguageFeatures, args: []const rpc.Arg, arena: Allocator) !rpc.HandlerReply {
+        const handle = handleArg(args) orelse return error.InvalidArguments;
+        const selector_value = jsonArg(args, 1) orelse return error.InvalidArguments;
+        const registration = try self.createRegistration(arena, handle);
+        errdefer {
+            _ = self.registrations.remove(handle);
+            self.destroyRegistration(registration);
+        }
+        const selector = try parseSelector(registration.arena.allocator(), selector_value);
+        registration.disposable = try self.features.selection_range_provider.register(selector, .{
+            .context = registration,
+            .provide_selection_ranges = provideSelectionRanges,
+            .request_selection_ranges = if (self.proxy.request_async != null) requestSelectionRanges else null,
+        });
+        return .empty;
+    }
+
+    fn selectionRangeArgs(allocator: Allocator, registration: *Registration, model: *TextModel, positions: []const Position) ![3]rpc.Arg {
+        var values = std.json.Array.init(allocator);
+        for (positions) |position| try values.append(try positionJson(allocator, model, position));
+        return .{ .{ .json = .{ .integer = registration.handle } }, .{ .json = try std_uri.jsonComponents(allocator, model.uri()) }, .{ .json = .{ .array = values } } };
+    }
+
+    fn parseSelectionRangeReply(allocator: Allocator, model: *TextModel, value: std.json.Value) ![]const []const languages.SelectionRange {
+        if (value != .array) return &.{};
+        const buckets = try allocator.alloc([]const languages.SelectionRange, value.array.items.len);
+        for (value.array.items, buckets) |bucket, *dest| {
+            if (bucket != .array) return error.InvalidResult;
+            var ranges: std.ArrayList(languages.SelectionRange) = .empty;
+            for (bucket.array.items) |item| {
+                if (item != .object) continue;
+                const range = rangeFromJson(model, item.object.get("range") orelse continue) orelse continue;
+                try ranges.append(allocator, .{ .range = range });
+            }
+            dest.* = ranges.items;
+        }
+        return buckets;
+    }
+
+    fn provideSelectionRanges(context: *anyopaque, allocator: Allocator, model: *TextModel, positions: []const Position, token: CancellationToken) ![]const []const languages.SelectionRange {
+        const registration: *Registration = @ptrCast(@alignCast(context));
+        const args = try selectionRangeArgs(allocator, registration, model, positions);
+        const reply = try registration.owner.call(allocator, "$provideSelectionRanges", &args, token, timeout_default_ms);
+        return parseSelectionRangeReply(allocator, model, reply);
+    }
+
+    const SelectionRangeRequest = struct {
+        allocator: Allocator,
+        model: *TextModel,
+        callback: languages.SelectionRangesCallback,
+
+        fn ready(context: *anyopaque, reply: rpc.Reply) void {
+            const self: *SelectionRangeRequest = @ptrCast(@alignCast(context));
+            self.callback.complete(self.callback.context, switch (reply) {
+                .json => |value| parseSelectionRangeReply(self.allocator, self.model, value),
+                .err => error.RequestFailed,
+                else => @as([]const []const languages.SelectionRange, &.{}),
+            });
+        }
+    };
+
+    fn requestSelectionRanges(context: *anyopaque, allocator: Allocator, model: *TextModel, positions: []const Position, callback: languages.SelectionRangesCallback) !IDisposable {
+        const registration: *Registration = @ptrCast(@alignCast(context));
+        const proxy = registration.owner.proxy;
+        const request = proxy.request_async orelse return error.RequestFailed;
+        const pending = try allocator.create(SelectionRangeRequest);
+        pending.* = .{ .allocator = allocator, .model = model, .callback = callback };
+        const args = try selectionRangeArgs(allocator, registration, model, positions);
+        return request(proxy.context, "$provideSelectionRanges", &args, .{ .context = pending, .callback = SelectionRangeRequest.ready });
     }
 
     fn registerWorkspaceSymbol(self: *MainThreadLanguageFeatures, args: []const rpc.Arg, arena: Allocator) !rpc.HandlerReply {

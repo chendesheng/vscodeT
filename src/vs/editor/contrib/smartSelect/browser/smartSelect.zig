@@ -1,11 +1,9 @@
 // Port of `src/vs/editor/contrib/smartSelect/browser/smartSelect.ts`.
 //
 // Adaptations for this port:
-//  * providers are passed explicitly instead of coming from a language-feature
-//    registry;
-//  * the run is synchronous because the TUI has no async provider service;
-//  * controller cache invalidation compares the current selections and model
-//    version instead of listening to cursor events;
+//  * the runtime controller uses the language-feature registry and cancellable
+//    provider continuations; the pure direct-call harness accepts providers;
+//  * cursor/content/provider events invalidate the mounted controller's state;
 //  * the action wrappers expose the upstream metadata and are driven by the TUI.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -22,6 +20,10 @@ const CancellationToken = @import("../../../../base/common/cancellation.zig").Ca
 const editor_extensions = @import("../../../browser/editorExtensions.zig");
 const EditorAction = editor_extensions.EditorAction;
 const WordSelectionRangeProvider = @import("./wordSelections.zig").WordSelectionRangeProvider;
+const Registry = @import("../../../common/languageFeatureRegistry.zig").LanguageFeatureRegistry(SelectionRangeProvider);
+const CursorEvent = @import("../../../common/cursorEvents.zig").ICursorPositionChangedEvent;
+const CursorEmitter = @import("../../../../base/common/event.zig").Emitter(CursorEvent);
+const IDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
 const BracketSelectionRangeProvider = @import("./bracketSelections.zig").BracketSelectionRangeProvider;
 
 pub const SelectionRangesOptions = struct {
@@ -57,8 +59,17 @@ pub const SmartSelectController = struct {
     providers: []const SelectionRangeProvider,
     options: SelectionRangesOptions,
     state: ?[]SelectionRanges = null,
-    state_selections: ?[]Selection = null,
-    state_version: u32 = 0,
+    registry: ?*Registry = null,
+    registry_listener: ?usize = null,
+    cursor_event: ?*CursorEmitter = null,
+    cursor_listener: ?usize = null,
+    pending: ?*Request = null,
+    applying: bool = false,
+
+    pub const Apply = struct {
+        context: *anyopaque,
+        run: *const fn (*anyopaque, []const Selection) anyerror!void,
+    };
 
     pub fn init(
         allocator: Allocator,
@@ -73,7 +84,78 @@ pub const SmartSelectController = struct {
     }
 
     pub fn deinit(self: *SmartSelectController) void {
+        self.invalidate();
+        if (self.cursor_listener) |id| self.cursor_event.?.unlisten(id);
+        if (self.registry_listener) |id| self.registry.?.on_did_change.unlisten(id);
+        self.cursor_listener = null;
+        self.cursor_event = null;
+        self.registry_listener = null;
+        self.registry = null;
+    }
+
+    pub fn bindCursor(self: *SmartSelectController, cursor: *CursorEmitter) !void {
+        if (self.cursor_listener) |id| self.cursor_event.?.unlisten(id);
+        self.cursor_listener = null;
+        self.cursor_event = cursor;
+        self.cursor_listener = try cursor.listen(self, onCursor);
+    }
+
+    fn onCursor(_: CursorEvent, self: *SmartSelectController) !void {
+        if (!self.applying) self.invalidate();
+    }
+
+    fn onRegistryChanged(_: usize, self: *SmartSelectController) !void {
+        self.invalidate();
+    }
+
+    pub fn bindRegistry(self: *SmartSelectController, registry: ?*Registry) !void {
+        if (self.registry == registry) return;
+        self.invalidate();
+        if (self.registry_listener) |id| self.registry.?.on_did_change.unlisten(id);
+        self.registry_listener = null;
+        self.registry = registry;
+        self.registry_listener = if (registry) |value| try value.on_did_change.listen(self, onRegistryChanged) else null;
+    }
+
+    pub fn invalidate(self: *SmartSelectController) void {
+        if (self.pending) |request| {
+            self.pending = null;
+            request.destroy();
+        }
         self.clearState();
+    }
+
+    /// Mounted editor path. State is invalidated by events, and provider
+    /// requests complete on the window dispatcher without blocking input.
+    pub fn runWithEditor(self: *SmartSelectController, model: *TextModel, selections: []const Selection, forward: bool, apply: Apply) !void {
+        if (selections.len == 0) return;
+        if (self.state != null) return self.applyState(forward, apply);
+        if (self.pending) |request| {
+            self.pending = null;
+            request.destroy();
+        }
+        const request = try self.allocator.create(Request);
+        request.* = .{ .owner = self, .arena = .init(self.allocator), .model = model, .forward = forward, .apply = apply };
+        self.pending = request;
+        errdefer {
+            self.pending = null;
+            request.destroy();
+        }
+        try request.start(selections);
+    }
+
+    fn applyState(self: *SmartSelectController, forward: bool, apply: Apply) !void {
+        const states = self.state orelse return;
+        const result = try self.allocator.alloc(Selection, states.len);
+        defer self.allocator.free(result);
+        for (states, result) |*state, *selection| {
+            moveSelectionRanges(state, forward);
+            const range = state.ranges[state.index];
+            selection.* = Selection.fromPositions(range.getStartPosition(), range.getEndPosition());
+        }
+        self.applying = true;
+        defer self.applying = false;
+        try apply.run(apply.context, result);
     }
 
     fn clearState(self: *SmartSelectController) void {
@@ -82,28 +164,6 @@ pub const SmartSelectController = struct {
             self.allocator.free(states);
             self.state = null;
         }
-        if (self.state_selections) |selections| {
-            self.allocator.free(selections);
-            self.state_selections = null;
-        }
-        self.state_version = 0;
-    }
-
-    fn stateMatches(self: *const SmartSelectController, model: *TextModel, selections: []const Selection) bool {
-        if (self.state == null or self.state_selections == null) return false;
-        if (self.state_version != model.getVersionId()) return false;
-        const cached = self.state_selections.?;
-        if (cached.len != selections.len) return false;
-        for (cached, selections) |old, new| {
-            if (!old.equalsSelection(&new)) return false;
-        }
-        return true;
-    }
-
-    fn replaceStateSelections(self: *SmartSelectController, selections: []const Selection) !void {
-        const copy = try self.allocator.dupe(Selection, selections);
-        if (self.state_selections) |old| self.allocator.free(old);
-        self.state_selections = copy;
     }
 
     /// Runs one expand/shrink step. Returns null when there is no state (this
@@ -115,8 +175,6 @@ pub const SmartSelectController = struct {
         selections: []const Selection,
         forward: bool,
     ) !?[]Selection {
-        if (!self.stateMatches(model, selections)) self.clearState();
-
         if (self.state == null) {
             try self.computeState(model, selections);
             if (self.state == null) return null;
@@ -132,7 +190,6 @@ pub const SmartSelectController = struct {
             result[index] = Selection.fromPositions(range.getStartPosition(), range.getEndPosition());
         }
 
-        try self.replaceStateSelections(result);
         return result;
     }
 
@@ -150,7 +207,10 @@ pub const SmartSelectController = struct {
             CancellationToken.None,
         );
         defer freeSelectionRanges(self.allocator, provided);
+        try self.installState(selections, provided);
+    }
 
+    fn installState(self: *SmartSelectController, selections: []const Selection, provided: [][]Range) !void {
         if (provided.len != selections.len) return;
 
         const states = try self.allocator.alloc(SelectionRanges, selections.len);
@@ -180,9 +240,97 @@ pub const SmartSelectController = struct {
         }
 
         self.state = states;
-        self.state_version = model.getVersionId();
-        try self.replaceStateSelections(selections);
     }
+
+    const Request = struct {
+        owner: *SmartSelectController,
+        arena: std.heap.ArenaAllocator,
+        model: *TextModel,
+        forward: bool,
+        apply: Apply,
+        selections: []Selection = &.{},
+        positions: []Position = &.{},
+        raw: []std.ArrayList(Range) = &.{},
+        pending: []Pending = &.{},
+        remaining: usize = 0,
+
+        const Pending = struct {
+            request: *Request,
+            disposable: ?IDisposable = null,
+
+            fn ready(context: *anyopaque, result: anyerror![]const []const SelectionRange) void {
+                const self: *Pending = @ptrCast(@alignCast(context));
+                self.disposable = null;
+                const request = self.request;
+                if (result) |ranges| request.collect(ranges) catch {} else |_| {}
+                request.remaining -= 1;
+                if (request.remaining == 0) request.finish();
+            }
+        };
+
+        fn start(self: *Request, selections: []const Selection) !void {
+            const a = self.arena.allocator();
+            self.selections = try a.dupe(Selection, selections);
+            self.positions = try a.alloc(Position, selections.len);
+            for (selections, self.positions) |selection, *position| position.* = selection.getPosition();
+            self.raw = try a.alloc(std.ArrayList(Range), selections.len);
+            for (self.raw) |*bucket| bucket.* = .empty;
+            const providers = if (self.owner.registry) |registry| try registry.ordered(a, self.model, false) else self.owner.providers;
+            var word = WordSelectionRangeProvider.init(self.owner.options.select_subwords);
+            try self.collectLocal(word.interface());
+            if (providers.len == 0) {
+                var brackets = BracketSelectionRangeProvider{};
+                try self.collectLocal(brackets.interface());
+            }
+            self.pending = try a.alloc(Pending, providers.len);
+            self.remaining = providers.len + 1;
+            for (providers, self.pending) |provider, *pending| {
+                pending.* = .{ .request = self };
+                if (provider.request_selection_ranges) |request| {
+                    pending.disposable = request(provider.context, a, self.model, self.positions, .{ .context = pending, .complete = Pending.ready }) catch {
+                        self.remaining -= 1;
+                        continue;
+                    };
+                } else {
+                    self.collectLocal(provider) catch {};
+                    self.remaining -= 1;
+                }
+            }
+            self.remaining -= 1;
+            if (self.remaining == 0) self.finish();
+        }
+
+        fn collectLocal(self: *Request, provider: SelectionRangeProvider) !void {
+            const ranges = provider.provide_selection_ranges(provider.context, self.arena.allocator(), self.model, self.positions, .None) catch return;
+            try self.collect(ranges);
+        }
+
+        fn collect(self: *Request, ranges: []const []const SelectionRange) !void {
+            if (ranges.len != self.positions.len) return;
+            for (ranges, self.positions, self.raw) |bucket, position, *raw| {
+                for (bucket) |range| if (Range.containsPosition(&range.range, &position)) {
+                    try raw.append(self.arena.allocator(), range.range);
+                };
+            }
+        }
+
+        fn finish(self: *Request) void {
+            const owner = self.owner;
+            owner.pending = null;
+            defer self.destroy();
+            const a = self.arena.allocator();
+            const result = a.alloc([]Range, self.raw.len) catch return;
+            for (result, self.raw) |*dest, bucket| dest.* = finishBucket(a, self.model, bucket.items, owner.options) catch return;
+            owner.installState(self.selections, result) catch return;
+            owner.applyState(self.forward, self.apply) catch {};
+        }
+
+        fn destroy(self: *Request) void {
+            for (self.pending) |entry| if (entry.disposable) |disposable| disposable.dispose();
+            self.arena.deinit();
+            self.owner.allocator.destroy(self);
+        }
+    };
 };
 
 pub fn freeSelectionRanges(allocator: Allocator, ranges: [][]Range) void {

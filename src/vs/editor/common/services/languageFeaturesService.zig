@@ -1,8 +1,8 @@
 // Port of the concrete registry collection from
 // `src/vs/editor/common/services/languageFeaturesService.ts`.
 //
-// Only the twelve registries consumed by `MainThreadLanguageFeatures` and the
-// TUI navigation contributions are ported; see `languageFeatures.zig` for the
+// The registries consumed by `MainThreadLanguageFeatures` and the
+// TUI editor contributions are ported; see `languageFeatures.zig` for the
 // deferred set.
 
 const std = @import("std");
@@ -14,6 +14,7 @@ const features = @import("languageFeatures.zig");
 
 pub const LanguageFeaturesService = struct {
     allocator: Allocator,
+    selection_range_provider: registry.LanguageFeatureRegistry(languages.SelectionRangeProvider),
     hover_provider: registry.LanguageFeatureRegistry(languages.HoverProvider),
     completion_provider: registry.LanguageFeatureRegistry(completion.CompletionItemProvider),
     definition_provider: registry.LanguageFeatureRegistry(languages.DefinitionProvider),
@@ -33,6 +34,7 @@ pub const LanguageFeaturesService = struct {
     pub fn init(allocator: Allocator) LanguageFeaturesService {
         return .{
             .allocator = allocator,
+            .selection_range_provider = .init(allocator),
             .hover_provider = registry.LanguageFeatureRegistry(languages.HoverProvider).init(allocator),
             .completion_provider = registry.LanguageFeatureRegistry(completion.CompletionItemProvider).init(allocator),
             .definition_provider = registry.LanguageFeatureRegistry(languages.DefinitionProvider).init(allocator),
@@ -52,6 +54,7 @@ pub const LanguageFeaturesService = struct {
     }
 
     pub fn deinit(self: *LanguageFeaturesService) void {
+        self.selection_range_provider.deinit();
         self.hover_provider.deinit();
         self.completion_provider.deinit();
         self.definition_provider.deinit();
@@ -71,6 +74,7 @@ pub const LanguageFeaturesService = struct {
 
     pub fn interface(self: *LanguageFeaturesService) features.ILanguageFeaturesService {
         return .{
+            .selection_range_provider = &self.selection_range_provider,
             .hover_provider = &self.hover_provider,
             .completion_provider = &self.completion_provider,
             .definition_provider = &self.definition_provider,

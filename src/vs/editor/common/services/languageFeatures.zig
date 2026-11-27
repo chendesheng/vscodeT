@@ -5,7 +5,7 @@
 // the registries and returns this pointer bag through `interface()`.
 //
 // Deferred registries from upstream (rename, semantic tokens, inlay hints,
-// links, colors, folding, selection ranges, signature help,
+// links, colors, folding, signature help,
 // call/type hierarchy, inline completions, paste/drop edits and the remaining
 // language-feature registries) are not present.
 
@@ -14,6 +14,7 @@ const languages = @import("../languages.zig");
 const completion = @import("../languages/completion.zig");
 
 pub const ILanguageFeaturesService = struct {
+    selection_range_provider: *registry.LanguageFeatureRegistry(languages.SelectionRangeProvider),
     hover_provider: *registry.LanguageFeatureRegistry(languages.HoverProvider),
     completion_provider: *registry.LanguageFeatureRegistry(completion.CompletionItemProvider),
     definition_provider: *registry.LanguageFeatureRegistry(languages.DefinitionProvider),
