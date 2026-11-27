@@ -2347,7 +2347,7 @@ pub const TerminalWorkbench = struct {
         try self.ensureWorkspaceWatcher();
     }
 
-    fn ensureFileService(self: *TerminalWorkbench) !*FileWatcherService {
+    pub fn ensureFileService(self: *TerminalWorkbench) !*FileWatcherService {
         if (self.file_watcher_service == null) {
             const service = try FileWatcherService.init(self.allocator, self.io);
             errdefer service.deinit();

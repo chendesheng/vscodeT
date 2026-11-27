@@ -153,6 +153,7 @@ pub const Extensions = struct {
     scroll_listener_editor: ?*Editor = null,
     inline_completions: @import("inlineCompletionSession.zig").Session = undefined,
     language_features_actor: ?MainThreadLanguageFeatures = null,
+    file_events_actor: ?@import("mainThreadFileSystemEventService.zig").MainThreadFileSystemEventService = null,
     output_actor: ?@import("mainThreadOutputService.zig").MainThreadOutputService = null,
     languages_actor: ?@import("mainThreadLanguages.zig").MainThreadLanguages = null,
     quick_diff_actor: ?MainThreadQuickDiff = null,
@@ -352,6 +353,9 @@ pub const Extensions = struct {
         self.output_actor = .init(allocator, services.output_service, services.views, .{ .context = self, .set_visible_channel = setVisibleOutputChannel });
         errdefer self.output_actor.?.deinit();
         try self.output_actor.?.attach();
+        self.file_events_actor = .init(allocator, try services.file_watcher(services.common.context), services.file_service, .{ .context = self, .notify = notifyFileEvents });
+        errdefer self.file_events_actor.?.deinit();
+        try self.file_events_actor.?.attach();
         self.registerActors();
         self.initLanguageActors() catch |err| {
             std.log.warn("language feature actors unavailable: {s}", .{@errorName(err)});
@@ -406,6 +410,7 @@ pub const Extensions = struct {
         if (self.language_features_actor) |*actor| actor.deinit();
         if (self.languages_actor) |*actor| actor.deinit();
         if (self.output_actor) |*actor| actor.deinit();
+        if (self.file_events_actor) |*actor| actor.deinit();
         self.services.logger_service.clear();
         if (self.storage_actor) |*actor| actor.deinit();
         if (self.statusbar_actor) |*actor| actor.deinit();
@@ -452,6 +457,8 @@ pub const Extensions = struct {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeLogger });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadLanguages)) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeLanguages });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadFileSystemEventService)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeFileEvents });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadFileSystem)) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeFileSystem });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadStorage)) {
@@ -651,6 +658,17 @@ pub const Extensions = struct {
             self.requestRender();
             return reply;
         }
+        return .{ .err = .{ .name = "Unavailable", .message = method } };
+    }
+
+    fn notifyFileEvents(context: *anyopaque, event: std.json.Value) !void {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        try self.host.notify(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostFileSystemEventService), "$onFileEvent", &.{.{ .json = event }});
+    }
+
+    fn invokeFileEvents(context: *anyopaque, method: []const u8, args: []const rpc.Arg, _: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        if (self.file_events_actor) |*actor| return actor.invoke(method, args, arena);
         return .{ .err = .{ .name = "Unavailable", .message = method } };
     }
 
@@ -4304,6 +4322,49 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                 if (!matched) std.debug.print("Output fixture step failed: {s}\n", .{step.command});
                 try std.testing.expect(matched);
             }
+            // Real RelativePattern outside a workspace must start a native watch.
+            try ext.host.executeContributedCommand("fixture.watchStart", &.{});
+            const watcher_service = workbench.file_watcher_service.?;
+            const watcher_actor = &ext.file_events_actor.?;
+            const watch_channel = "extension-output-vscode-textbuffer.transport-fixture-#2-Watcher Events";
+            const watch_deadline = time_compat.milliTimestamp() + 5000;
+            while (time_compat.milliTimestamp() < watch_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                if (watcher_actor.watches.count() == 1 and watcher_service.isReady() and workbench.output_service.getChannel(watch_channel) != null) break;
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expectEqual(@as(usize, 1), watcher_actor.watches.count());
+            try std.testing.expect(watcher_service.isReady());
+            const watcher_steps = [_][]const u8{ "created example.watch", "changed example.watch", "deleted example.watch" };
+            for (watcher_steps, 0..) |expected, index| {
+                switch (index) {
+                    0 => try tmp.dir.writeFile(io, .{ .sub_path = "example.watch", .data = "first" }),
+                    1 => try tmp.dir.writeFile(io, .{ .sub_path = "example.watch", .data = "second longer" }),
+                    2 => try tmp.dir.deleteFile(io, "example.watch"),
+                    else => unreachable,
+                }
+                const until = time_compat.milliTimestamp() + 5000;
+                var received = false;
+                while (time_compat.milliTimestamp() < until) {
+                    _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                    if (workbench.output_service.getChannel(watch_channel)) |channel| {
+                        if (std.mem.indexOf(u8, channel.model.content, expected) != null) {
+                            received = true;
+                            break;
+                        }
+                    }
+                    time_compat.sleepMillis(10);
+                }
+                if (!received) std.debug.print("Watcher fixture missing event: {s}\n", .{expected});
+                try std.testing.expect(received);
+            }
+            try ext.host.executeContributedCommand("fixture.watchStop", &.{});
+            const stop_deadline = time_compat.milliTimestamp() + 5000;
+            while (time_compat.milliTimestamp() < stop_deadline and watcher_actor.watches.count() != 0) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expectEqual(@as(usize, 0), watcher_actor.watches.count());
         }
 
         test "Extensions: task activation and provider results resume on the window" {

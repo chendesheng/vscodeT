@@ -156,6 +156,9 @@ pub fn extensionHostServices(host: *TerminalWorkbench) ExtensionServices {
         fn get(context: *anyopaque) *Host {
             return @ptrCast(@alignCast(context));
         }
+        fn watcher(context: *anyopaque) !*@import("../vs/platform/files/node/watcher/fileWatcherService.zig").FileWatcherService {
+            return get(context).ensureFileService();
+        }
         fn registerExtensionConfiguration(context: *anyopaque, manifest: std.json.Value, id: []const u8) void {
             get(context).registerExtensionConfiguration(manifest, id);
         }
@@ -207,6 +210,7 @@ pub fn extensionHostServices(host: *TerminalWorkbench) ExtensionServices {
         .common = common,
         .window = &host.window_events,
         .file_service = host.file_service_api,
+        .file_watcher = Adapter.watcher,
         .logger_service = &host.extension_logger_service,
         .output_service = &host.output_service,
         .language_status = host.language_status_api,
