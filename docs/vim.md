@@ -158,9 +158,9 @@ Tests:
 `src/vs/editor/contrib/vim/test/browser/vimCassette.test.zig` replays JSON
 cassettes recorded from a real Neovim by `scripts/oracle/record_nvim.py`
 (pinned release in `scripts/oracle/nvim/PIN`, currently `v0.10.4`). The data
-lives in `test/data/oracle/`. Replay is hermetic and runs in
-`zig build test` / `zig build test-oracle`; `zig build test-oracle-vim` runs
-only this lane, and it needs no Neovim.
+lives in `test/data/oracle/`. Replay is hermetic, needs no Neovim, and runs
+via `zig build test-oracle` (both lanes) or `zig build test-oracle-vim` (this
+lane only).
 
 The corpus covers ASCII documents, one cursor, and final normal, insert and
 replace modes; the 329 cases are green and gate CI. Visual selections are not a
