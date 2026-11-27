@@ -3619,6 +3619,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const token = @import("../../../base/common/cancellation.zig").CancellationToken.None;
             const deadline = time_compat.milliTimestamp() + 30_000;
             var hover_received = false;
+            var edited_document = false;
             while (time_compat.milliTimestamp() < deadline) {
                 _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
                 const statuses = try workbench.language_status.getLanguageStatus(allocator, model);
@@ -3630,17 +3631,27 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                     zls_status = zls_status or std.mem.endsWith(u8, status.id, "/zig.zls.status");
                 }
                 if (hover_received and zig_status and zls_status) {
-                    try std.testing.expect(workbench.statusbar.model().findEntry("status.languageStatus") != null);
-                    model.setLanguage("plaintext");
-                    try std.testing.expect(workbench.statusbar.model().findEntry("status.languageStatus") == null);
-                    return;
+                    if (!edited_document) {
+                        // A second, changed doc comment must be reflected by
+                        // ZLS rather than by a native textual hover fallback.
+                        const editor = workbench.activeTab().?.editor;
+                        try editor.setCursorPosition(Position.init(1, model.getLineMaxColumn(1)));
+                        try editor.insertText(" Updated by the editor.");
+                        edited_document = true;
+                        hover_received = false;
+                    } else {
+                        try std.testing.expect(workbench.statusbar.model().findEntry("status.languageStatus") != null);
+                        model.setLanguage("plaintext");
+                        try std.testing.expect(workbench.statusbar.model().findEntry("status.languageStatus") == null);
+                        return;
+                    }
                 }
                 const providers = try features.hover_provider.ordered(allocator, model, false);
                 defer allocator.free(providers);
                 for (providers) |provider| {
                     const result = provider.provide_hover(provider.context, model, Position.init(3, 32), token, null) catch continue;
                     if (result) |hover| for (hover.contents) |contents| {
-                        if (std.mem.indexOf(u8, contents.value, "answer") != null) hover_received = true;
+                        if (std.mem.indexOf(u8, contents.value, if (edited_document) "Updated by the editor." else "Returns the answer.") != null) hover_received = true;
                     };
                 }
                 time_compat.sleepMillis(20);
