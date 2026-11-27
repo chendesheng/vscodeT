@@ -2,12 +2,14 @@
 // `vscode/extensions/json-language-features/client/src/jsonClient.ts`.
 //
 // The reader owns framing and JSON decoding. Provider promises complete on the
-// terminal event loop. Explicit commands can also await their own response
-// without running unrelated provider callbacks inside the calling command.
+// terminal event loop. The native window may await a response from a fiber;
+// the reader only posts readiness and never accesses editor state.
 const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
+const Window = @import("../../../../base/common/windowDispatch.zig");
+const Cancellation = @import("../../../../base/common/cancellation.zig");
 const time_compat = @import("../../../../base/common/timeCompat.zig");
 
 /// The client creates its own `Io` for the server process. `std.process.spawn`
@@ -106,7 +108,8 @@ const Message = struct {
 
 pub const ResponseHandler = struct {
     context: *anyopaque,
-    complete: *const fn (*anyopaque, std.json.Value) void,
+    complete: ?*const fn (*anyopaque, std.json.Value) void = null,
+    take_message: ?*const fn (*anyopaque, ?Message) void = null,
 };
 
 pub const Client = struct {
@@ -124,6 +127,7 @@ pub const Client = struct {
     available: std.Io.Condition = .init,
     eof: bool = false,
     handlers: std.AutoHashMapUnmanaged(u32, ResponseHandler) = .empty,
+    dispatch_task: Window.Task = .{},
 
     pub fn start(allocator: Allocator, node_path: []const u8, server_script: []const u8) !*Client {
         const self = try allocator.create(Client);
@@ -191,6 +195,25 @@ pub const Client = struct {
         return self;
     }
 
+    /// The reader and lifecycle changes share the transport lock. This keeps
+    /// a late pipe completion from posting against a destroyed native window.
+    pub fn attachWindow(self: *Client, window: ?*Window.Queue) void {
+        self.lock.lockUncancelable(self.io);
+        defer self.lock.unlock(self.io);
+        self.dispatch_task.schedule(null);
+        self.dispatch_task = .{ .queue = window, .context = self, .run = dispatchReady, .progress = true };
+        if (self.queue.items.len != 0 or self.eof) self.dispatch_task.post();
+    }
+
+    pub fn hasWindow(self: *const Client) bool {
+        return self.dispatch_task.queue != null;
+    }
+
+    fn dispatchReady(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *Client = @ptrCast(@alignCast(context));
+        return self.dispatchResponses(false);
+    }
+
     /// Sends the settings the JSON server consumes. `schemas` is the raw
     /// `json.schemas` setting value, borrowed only for this call.
     pub fn configure(self: *Client, arena: Allocator, schemas: ?std.json.Value) !void {
@@ -212,6 +235,7 @@ pub const Client = struct {
     }
 
     pub fn deinit(self: *Client) void {
+        self.attachWindow(null);
         if (self.child.id != null) {
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
@@ -328,7 +352,17 @@ pub const Client = struct {
         try params.put(arena, "position", .{ .object = position });
         var response = try self.request(arena, "textDocument/completion", .{ .object = params });
         defer response.arena.deinit();
-        const result = response.result();
+        return parseCompletion(arena, response.result());
+    }
+
+    pub fn requestCompletion(self: *Client, arena: Allocator, uri: []const u8, line: u32, character: u32, handler: ResponseHandler) !u32 {
+        try self.handlers.ensureUnusedCapacity(self.allocator, 1);
+        const id = try self.sendRequest(arena, "textDocument/completion", try hoverParams(arena, uri, line, character));
+        self.handlers.putAssumeCapacity(id, handler);
+        return id;
+    }
+
+    pub fn parseCompletion(arena: Allocator, result: std.json.Value) ![]CompletionItem {
         const items_value = if (result == .array)
             result
         else if (result == .object and result.object.get("items") != null)
@@ -389,6 +423,10 @@ pub const Client = struct {
     }
 
     pub fn formatting(self: *Client, arena: Allocator, uri: []const u8, tab_size: u32, insert_spaces: bool) ![]FormattingEdit {
+        return self.formattingWithToken(arena, uri, tab_size, insert_spaces, .None);
+    }
+
+    pub fn formattingWithToken(self: *Client, arena: Allocator, uri: []const u8, tab_size: u32, insert_spaces: bool, token: Cancellation.CancellationToken) ![]FormattingEdit {
         var doc: std.json.ObjectMap = .empty;
         try doc.put(arena, "uri", .{ .string = try arena.dupe(u8, uri) });
         var options: std.json.ObjectMap = .empty;
@@ -397,7 +435,7 @@ pub const Client = struct {
         var params: std.json.ObjectMap = .empty;
         try params.put(arena, "textDocument", .{ .object = doc });
         try params.put(arena, "options", .{ .object = options });
-        var response = try self.request(arena, "textDocument/formatting", .{ .object = params });
+        var response = try self.requestWithToken(arena, "textDocument/formatting", .{ .object = params }, token);
         defer response.arena.deinit();
         const result = response.result();
         if (result != .array) return &.{};
@@ -479,6 +517,7 @@ pub const Client = struct {
             self.lock.lockUncancelable(self.io);
             self.eof = true;
             self.available.broadcast(self.io);
+            self.dispatch_task.post();
             self.lock.unlock(self.io);
         }
         while (true) {
@@ -498,6 +537,7 @@ pub const Client = struct {
                 return;
             };
             self.available.signal(self.io);
+            self.dispatch_task.post();
         }
     }
 
@@ -537,23 +577,63 @@ pub const Client = struct {
                     var keys = self.handlers.keyIterator();
                     const key = keys.next().?.*;
                     const removed = self.handlers.fetchRemove(key).?;
-                    removed.value.complete(removed.value.context, .null);
+                    if (removed.value.take_message) |take| take(removed.value.context, null) else removed.value.complete.?(removed.value.context, .null);
                     completed = true;
                 }
                 return completed;
             }) orelse return completed;
-            defer message.arena.deinit();
+            var transferred = false;
+            defer if (!transferred) message.arena.deinit();
             if (self.handleMethod(&message) catch true) continue;
             const id = message.value.object.get("id") orelse continue;
             if (id != .integer) continue;
             const key = std.math.cast(u32, id.integer) orelse continue;
             const pending = self.handlers.fetchRemove(key) orelse continue;
-            pending.value.complete(pending.value.context, message.result());
+            if (pending.value.take_message) |take| {
+                transferred = true;
+                take(pending.value.context, message);
+            } else pending.value.complete.?(pending.value.context, message.result());
             completed = true;
         }
     }
 
+    const AwaitResponse = struct {
+        io: Io,
+        event: Io.Event = .unset,
+        message: ?Message = null,
+        fn received(context: *anyopaque, message: ?Message) void {
+            const self: *AwaitResponse = @ptrCast(@alignCast(context));
+            self.message = message;
+            self.event.set(self.io);
+        }
+        fn canceled(self: *AwaitResponse) void {
+            self.event.set(self.io);
+        }
+    };
+
     fn request(self: *Client, arena: Allocator, method: []const u8, params: std.json.Value) !Message {
+        return self.requestWithToken(arena, method, params, .None);
+    }
+
+    fn requestWithToken(self: *Client, arena: Allocator, method: []const u8, params: std.json.Value, token: Cancellation.CancellationToken) !Message {
+        if (self.dispatch_task.queue) |window| {
+            if (!@import("ui").WindowIo.inFiber(window.io)) return error.NotInWindowFiber;
+            try token.throwIfCancellationRequested();
+            var response: AwaitResponse = .{ .io = window.io };
+            defer if (response.message) |*message| message.arena.deinit();
+            const subscription = try token.onCancellationRequested(Cancellation.CancellationListener.from(AwaitResponse, &response, AwaitResponse.canceled));
+            defer subscription.dispose();
+            try self.handlers.ensureUnusedCapacity(self.allocator, 1);
+            const id = try self.sendRequest(arena, method, params);
+            self.handlers.putAssumeCapacity(id, .{ .context = &response, .take_message = AwaitResponse.received });
+            defer self.cancel(id);
+            try response.event.wait(window.io);
+            try token.throwIfCancellationRequested();
+            const message = response.message orelse return Error.ServerUnavailable;
+            if (message.value.object.contains("error")) return Error.RequestFailed;
+            response.message = null;
+            return message;
+        }
         const id = try self.sendRequest(arena, method, params);
         while (true) {
             var message = (try self.nextMessage(id, true)).?;

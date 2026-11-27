@@ -780,9 +780,6 @@ pub fn main(init: std.process.Init) !void {
     while (true) {
         const now_ms = time_compat.milliTimestamp();
         if (workbench.window_events.dispatch(now_ms)) needs_render = true;
-        if (json_client) |client| {
-            if (client.dispatchResponses(false)) needs_render = true;
-        }
         var timeout = workbench.window_events.nextTimeout(time_compat.milliTimestamp(), 250);
 
         timeout = restore_timer.nextTimeout(timeout);

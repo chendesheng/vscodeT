@@ -577,6 +577,7 @@ pub const TerminalWorkbench = struct {
         errdefer self.working_copy_file_service.deinit();
         self.working_copy_file_api = self.working_copy_file_service.interface();
         self.text_model_resolver = .init(allocator, self.worker_io, &self.window_events);
+        self.text_model_resolver.text_files = &self.text_file_service;
         errdefer self.text_model_resolver.deinit();
         try self.text_model_resolver.bindFileService(self.file_service_api);
         _ = try self.text_model_resolver.undoRedoStore();
@@ -1841,6 +1842,8 @@ pub const TerminalWorkbench = struct {
     }
 
     pub fn deinit(self: *TerminalWorkbench) void {
+        if (self.json_client) |client| client.attachWindow(null);
+        self.text_model_resolver.cancelPendingSaves();
         self.deinitBulkEditPreview();
         self.editor_opening.unbindWorkingCopyFileService();
         self.text_file_model_manager.deinit();
@@ -3078,6 +3081,10 @@ pub const TerminalWorkbench = struct {
     }
 
     pub fn setJsonLanguageClient(self: *TerminalWorkbench, client: ?*json_language.Client) void {
+        if (self.json_client != client) {
+            if (self.json_client) |previous| previous.attachWindow(null);
+            if (client) |value| value.attachWindow(&self.window_events);
+        }
         self.json_client = client;
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {

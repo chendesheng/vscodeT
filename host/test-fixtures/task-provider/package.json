@@ -1,0 +1,11 @@
+{
+  "name": "task-provider-fixture",
+  "publisher": "vscode-textbuffer",
+  "version": "1.0.0",
+  "engines": { "vscode": "^1.100.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onTaskType:fixture"],
+  "contributes": {
+    "taskDefinitions": [{ "type": "fixture", "required": [], "properties": {} }]
+  }
+}

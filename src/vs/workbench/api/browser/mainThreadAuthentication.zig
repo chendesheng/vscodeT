@@ -12,6 +12,7 @@ const protocol = @import("../common/extHost.protocol.zig");
 const proxy = @import("../../services/extensions/common/proxyIdentifier.zig").identifierFromEnum;
 const actor = proxy(protocol.ExtHostContext.ExtHostAuthentication);
 const command = "workbench.action.accounts.manage";
+const Window = @import("../../../base/common/windowDispatch.zig");
 
 const Grant = struct {
     key: []const u8,
@@ -32,6 +33,8 @@ pub const Accounts = struct {
     status: Status,
     action: ManageAccountsAction,
     host: *manager.HostManager,
+    window: *Window.Queue,
+    queries: std.ArrayList(*Query) = .empty,
     extensions: []const manager.ExtensionDescription,
     pending: ?*@import("authenticationRequest.zig").Request = null,
     changed: bool = false,
@@ -41,10 +44,11 @@ pub const Accounts = struct {
 
     pub const Status = struct { context: *anyopaque, show: *const fn (*anyopaque, []const u8) void };
 
-    pub fn init(self: *Accounts, allocator: Allocator, commands: *CommandRegistry, quick_input: *QuickInputService, status: Status, host: *manager.HostManager, extensions: []const manager.ExtensionDescription) !void {
-        self.* = .{ .allocator = allocator, .commands = commands, .quick_input = quick_input, .status = status, .host = host, .extensions = extensions, .action = .{
+    pub fn init(self: *Accounts, allocator: Allocator, commands: *CommandRegistry, quick_input: *QuickInputService, status: Status, host: *manager.HostManager, window: *Window.Queue, extensions: []const manager.ExtensionDescription) !void {
+        self.* = .{ .allocator = allocator, .commands = commands, .quick_input = quick_input, .status = status, .host = host, .window = window, .extensions = extensions, .action = .{
             .authentication = self.interface(),
             .quick_input = quick_input,
+            .window = window,
             .extensions = extensions,
             .choices = .init(allocator),
         } };
@@ -52,9 +56,12 @@ pub const Accounts = struct {
     }
 
     pub fn deinit(self: *Accounts) void {
+        self.action.deinit();
+        while (self.queries.items.len != 0) self.queries.items[self.queries.items.len - 1].destroy();
+        self.queries.deinit(self.allocator);
         if (self.signing_in) |id| self.host.rpc.cancel(id);
         if (self.pending) |request| {
-            if (request.creating == null) self.quick_input.hide();
+            if (self.quick_input.isVisible() and self.quick_input.handler_context == @as(*anyopaque, request)) self.quick_input.hide();
             if (self.pending) |remaining| remaining.destroy();
         }
         for (self.grants.items) |grant| grant.free(self.allocator);
@@ -66,7 +73,6 @@ pub const Accounts = struct {
             self.allocator.free(entry.value_ptr.*);
         }
         self.registered.deinit(self.allocator);
-        self.action.deinit();
     }
 
     pub fn granted(self: *Accounts, key: []const u8, forget: bool) bool {
@@ -120,14 +126,17 @@ pub const Accounts = struct {
         const id = first.string;
         if (std.mem.eql(u8, method, "$unregisterAuthenticationProvider")) {
             self.revoke(id, null);
+            if (self.pending) |request| if (std.mem.eql(u8, request.provider, id)) {
+                request.invalidated = true;
+            };
             if (self.registered.fetchRemove(id)) |entry| {
                 self.allocator.free(entry.key);
                 self.allocator.free(entry.value);
             }
         } else if (std.mem.eql(u8, method, "$getAccounts")) {
-            return .{ .json = try self.accounts(arena, id) };
+            return self.beginQuery(id, .accounts);
         } else if (std.mem.eql(u8, method, "$ensureProvider")) {
-            try self.activate(arena, id);
+            return self.beginQuery(id, .activate);
         } else if (std.mem.eql(u8, method, "$getSession")) {
             return @import("authenticationRequest.zig").Request.begin(self, args, arena);
         } else if (std.mem.eql(u8, method, "$sendDidChangeSessions")) {
@@ -135,6 +144,9 @@ pub const Accounts = struct {
                 if (args[1].json.object.get("removed")) |removed| {
                     if (removed == .array) for (removed.array.items) |session| {
                         self.revoke(id, field(session, "id") orelse continue);
+                        if (self.pending) |request| if (std.mem.eql(u8, request.provider, id)) {
+                            request.invalidated = true;
+                        };
                     };
                 }
             }
@@ -143,10 +155,81 @@ pub const Accounts = struct {
         return .empty;
     }
 
+    pub fn requestRpc(self: *Accounts, arena: Allocator, target: @import("../../services/extensions/common/proxyIdentifier.zig").ProxyIdentifier, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, timeout: u32) !std.json.Value {
+        if (@import("ui").WindowIo.inFiber(self.window.io))
+            return self.host.requestAwait(self.window, arena, target, method, args, token, timeout);
+        return self.host.requestSync(arena, target, method, args, token, timeout);
+    }
+
+    const Query = struct {
+        owner: *Accounts,
+        arena: std.heap.ArenaAllocator,
+        provider: []const u8,
+        kind: enum { accounts, activate },
+        channel: ?*rpc.RpcProtocol = null,
+        id: u32 = 0,
+        future: ?std.Io.Future(anyerror!rpc.HandlerReply) = null,
+        completion: Window.Task,
+
+        fn run(self: *Query) anyerror!rpc.HandlerReply {
+            defer self.completion.post();
+            const a = self.arena.allocator();
+            switch (self.kind) {
+                .accounts => return .{ .json = try self.owner.accounts(a, self.provider) },
+                .activate => {
+                    try self.owner.activate(a, self.provider);
+                    return .empty;
+                },
+            }
+        }
+
+        fn start(context: *anyopaque, channel: *rpc.RpcProtocol, id: u32) void {
+            const self: *Query = @ptrCast(@alignCast(context));
+            self.channel = channel;
+            self.id = id;
+            self.future = self.owner.window.io.concurrent(run, .{self}) catch |err| {
+                self.finish(.{ .err = .{ .name = "Error", .message = @errorName(err) } });
+                return;
+            };
+        }
+
+        fn completed(context: *anyopaque, _: i64, _: bool) bool {
+            const self: *Query = @ptrCast(@alignCast(context));
+            const reply = self.future.?.await(self.owner.window.io) catch |err| rpc.HandlerReply{ .err = .{ .name = "Error", .message = @errorName(err) } };
+            self.future = null;
+            self.finish(reply);
+            return true;
+        }
+
+        fn finish(self: *Query, reply: rpc.HandlerReply) void {
+            if (self.channel) |channel| channel.sendReply(self.id, reply);
+            self.destroy();
+        }
+
+        fn destroy(self: *Query) void {
+            const owner = self.owner;
+            if (self.future) |*future| _ = future.cancel(owner.window.io) catch .empty;
+            self.completion.schedule(null);
+            if (std.mem.indexOfScalar(*Query, owner.queries.items, self)) |index| _ = owner.queries.swapRemove(index);
+            self.arena.deinit();
+            owner.allocator.destroy(self);
+        }
+    };
+
+    fn beginQuery(self: *Accounts, provider: []const u8, kind: @FieldType(Query, "kind")) !rpc.HandlerReply {
+        const query = try self.allocator.create(Query);
+        errdefer self.allocator.destroy(query);
+        query.* = .{ .owner = self, .arena = .init(self.allocator), .provider = undefined, .kind = kind, .completion = .{ .queue = self.window, .context = query, .run = Query.completed, .progress = true } };
+        errdefer query.arena.deinit();
+        query.provider = try query.arena.allocator().dupe(u8, provider);
+        try self.queries.append(self.allocator, query);
+        return .{ .deferred = .{ .context = query, .start = Query.start } };
+    }
+
     pub fn activate(self: *Accounts, arena: Allocator, id: []const u8) !void {
         if (self.registered.contains(id)) return;
         const event = try std.mem.concat(arena, u8, &.{ "onAuthenticationRequest:", id });
-        _ = try self.host.requestSync(arena, proxy(protocol.ExtHostContext.ExtHostExtensionService), "$activateByEvent", &.{ .{ .json = .{ .string = event } }, .{ .json = .{ .integer = 0 } } }, null, 5000);
+        _ = try self.requestRpc(arena, proxy(protocol.ExtHostContext.ExtHostExtensionService), "$activateByEvent", &.{ .{ .json = .{ .string = event } }, .{ .json = .{ .integer = 0 } } }, null, 5000);
     }
 
     pub fn interface(self: *Accounts) auth.IAuthenticationService {
@@ -171,7 +254,7 @@ pub const Accounts = struct {
         defer scratch.deinit();
         const a = scratch.allocator();
         try self.activate(a, id);
-        const sessions = try self.host.requestSync(a, actor, "$getSessions", &.{ .{ .json = .{ .string = id } }, .undefined, .{ .json = .{ .object = .empty } } }, null, 5000);
+        const sessions = try self.requestRpc(a, actor, "$getSessions", &.{ .{ .json = .{ .string = id } }, .undefined, .{ .json = .{ .object = .empty } } }, null, 5000);
         if (sessions != .array) return error.AuthenticationProviderUnavailable;
         var entries: std.ArrayList(auth.AuthenticationSessionAccount) = .empty;
         for (sessions.array.items) |session| {
@@ -206,12 +289,12 @@ pub const Accounts = struct {
         defer scratch.deinit();
         const a = scratch.allocator();
         const provider: rpc.Arg = .{ .json = .{ .string = provider_id } };
-        const sessions = try self.host.requestSync(a, actor, "$getSessions", &.{ provider, .undefined, .{ .json = .{ .object = .empty } } }, null, 5000);
+        const sessions = try self.requestRpc(a, actor, "$getSessions", &.{ provider, .undefined, .{ .json = .{ .object = .empty } } }, null, 5000);
         if (sessions != .array) return error.AuthenticationProviderUnavailable;
         for (sessions.array.items) |session| {
             const id = field(session, "id") orelse continue;
             if (!std.mem.eql(u8, account_label, field(session.object.get("account") orelse continue, "label") orelse continue)) continue;
-            _ = try self.host.requestSync(a, actor, "$removeSession", &.{ provider, .{ .json = .{ .string = id } } }, null, 5000);
+            _ = try self.requestRpc(a, actor, "$removeSession", &.{ provider, .{ .json = .{ .string = id } } }, null, 5000);
             self.revoke(provider_id, id);
         }
         self.status.show(self.status.context, "Signed out");

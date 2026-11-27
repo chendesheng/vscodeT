@@ -51,6 +51,7 @@ const supported_options = [_]EditorOption{
     .allowOverflow,
     .columnSelection,
     .codeLens,
+    .formatOnType,
     .occurrencesHighlightFromAllProviders,
     .disableLayerHinting,
     .disableMonospaceOptimizations,
@@ -139,6 +140,7 @@ pub fn optionField(comptime option: EditorOption) []const u8 {
         .allowOverflow => "allow_overflow",
         .columnSelection => "column_selection",
         .codeLens => "code_lens",
+        .formatOnType => "format_on_type",
         .occurrencesHighlightFromAllProviders => "occurrences_highlight_from_all_providers",
         .disableLayerHinting => "disable_layer_hinting",
         .disableMonospaceOptimizations => "disable_monospace_optimizations",
@@ -236,6 +238,7 @@ pub const ComputedEditorOptions = struct {
     fixed_overflow_widgets: bool = false,
     glyph_margin: bool = true,
     code_lens: bool = true,
+    format_on_type: bool = false,
     hide_cursor_in_overview_ruler: bool = false,
     inertial_scroll: bool = false,
     overview_ruler_border: bool = true,
@@ -414,8 +417,9 @@ test "ComputedEditorOptions exposes the supported options" {
         _ = options.read(option);
         _ = view.get(option);
     }
-    try std.testing.expectEqual(@as(usize, 80), supported_options.len);
+    try std.testing.expectEqual(@as(usize, 81), supported_options.len);
     try std.testing.expect(options.get(.codeLens));
+    try std.testing.expect(!options.get(.formatOnType));
     try std.testing.expectEqual(editorOptions.OccurrencesHighlight.single_file, options.get(.occurrencesHighlight));
     try std.testing.expectEqual(@as(i32, 0), options.get(.occurrencesHighlightDelay));
     try std.testing.expect(!options.get(.occurrencesHighlightFromAllProviders));

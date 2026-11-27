@@ -1630,6 +1630,7 @@ pub const Controllers = struct {
             self.completion_providers[1] = .{
                 .context = editor,
                 .provide_completion_items = Editor.jsonProvideCompletion,
+                .provide_completion_items_deferred = if (editor.document.json.client.?.hasWindow()) Editor.jsonProvideCompletionDeferred else null,
                 .trigger_characters = &.{ "\"", ":" },
             };
             self.completion_count = 2;

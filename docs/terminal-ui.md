@@ -1955,16 +1955,22 @@ stack allocation. These are runtime boundaries, not editor-specific shortcuts.
 
 The runtime is covered by UI and workbench integration tests (nested
 request/reply, thread affinity, detached worker bodies, timers, cancellation,
-groups, wake ordering and real file opens). Save and remaining synchronous
-provider contracts still need their upstream asynchronous lifecycle ports;
-providing the executor does not by itself make extension RPC asynchronous.
-The workbench now connects transport readiness to the dispatcher, with
-`HostManager.requestAwait` yielding only the requesting window fiber. Nested
-RPCs dispatch normally, including the workspace edit during
-`onWillSaveTextDocument`. Language navigation/formatting and participating
-text-file saves use that path; completion and document symbols use their
-existing deferred interfaces. The separate Windows extension-host transport
-remains unported.
+groups, wake ordering and real file opens). The workbench connects transport
+readiness to the dispatcher, with `HostManager.requestAwait` yielding only the
+requesting window fiber. Nested RPCs dispatch normally, including the workspace
+edit during `onWillSaveTextDocument`. Language navigation, document/range/on-type
+formatting, working-copy saves, task and authentication requests use asynchronous
+window continuations; completion, hover, symbols, code actions, code lenses and
+terminal suggestions use deferred responses. Search replacement waits for its
+working-copy saves, with closed-file edits performed by detached workers.
+The optional JSON language server posts transport readiness to the same queue
+and uses deferred completion and a cancellable formatting fiber. The native
+extension-host executable no longer recursively pumps synchronous RPCs;
+standalone harnesses retain compatibility entry points. This migration covers
+window-owned asynchronous jobs and RPC response waits. Outbound transport
+frame writes and unrelated synchronous native commands, such as the Git CLI
+command adapters, are not converted into asynchronous producer queues by
+this change. The separate Windows extension-host transport remains unported.
 
 `Workbench.async_io` is now `WindowIo`. Its existing service-owned jobs keep
 their completion/cancellation contracts, but execute the continuation on the

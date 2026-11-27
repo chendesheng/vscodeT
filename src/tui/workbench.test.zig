@@ -1821,6 +1821,22 @@ test "Search palette actions open the named view after the activity bar changes"
 }
 
 // Exercise the same deadlines and native worker wakeups as an idle window.
+fn waitForSaveCompletion(workbench: *Workbench, completion: enum { closed, next_dialog, quit }) !void {
+    const clock = @import("../vs/base/common/timeCompat.zig");
+    const deadline = clock.milliTimestamp() + 5000;
+    while (clock.milliTimestamp() < deadline) {
+        const done = switch (completion) {
+            .closed => workbench.tabCount() == 0,
+            .next_dialog => workbench.isDialogOpen(),
+            .quit => workbench.shouldQuit(),
+        };
+        if (done) return;
+        _ = workbench.window_events.dispatch(clock.milliTimestamp());
+        std.testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
+    }
+    return error.SaveTimeout;
+}
+
 fn waitForSearch(workbench: *Workbench) !void {
     const Signal = @import("wakeSignal.zig").Signal;
     const clock = @import("../vs/base/common/timeCompat.zig");
@@ -2040,6 +2056,8 @@ test "Workbench: search chevron and replace all confirmation update an open edit
 
     const path = try seedFile(allocator, io, &tmp, "replace_me.txt", "alpha beta\ngamma alpha\n");
     defer allocator.free(path);
+    const closed_path = try seedFile(allocator, io, &tmp, "closed.txt", "alpha\n");
+    defer allocator.free(closed_path);
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
@@ -2071,7 +2089,7 @@ test "Workbench: search chevron and replace all confirmation update an open edit
     view.model.setReplaceString("omega") catch {};
     try view.startSearch();
     try waitForSearch(workbench);
-    try std.testing.expectEqual(@as(usize, 2), view.model.result.count());
+    try std.testing.expectEqual(@as(usize, 3), view.model.result.count());
     try renderFrame(workbench, &out.writer);
     const replace_all = view.widget.controlRect(.replace_all).?;
     const click = ui.MouseEvent{
@@ -2082,13 +2100,23 @@ test "Workbench: search chevron and replace all confirmation update an open edit
     };
     try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &click));
     try std.testing.expect(view.replace_confirmation != null);
-    try std.testing.expectEqual(@as(usize, 2), view.matchCount());
+    try std.testing.expectEqual(@as(usize, 3), view.matchCount());
     var escape = ui.KeyEvent{ .key = .escape };
     try std.testing.expect(terminal_workbench.handleDialogKey(workbench, &escape));
     try std.testing.expect(view.replace_confirmation == null);
     try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &click));
     var enter = ui.KeyEvent{ .key = .enter };
     try std.testing.expect(terminal_workbench.handleDialogKey(workbench, &enter));
+    try std.testing.expect(view.controller.pending_replace != null);
+    const deadline = @import("../vs/base/common/timeCompat.zig").milliTimestamp() + 5000;
+    while (view.controller.pending_replace != null and @import("../vs/base/common/timeCompat.zig").milliTimestamp() < deadline) {
+        _ = workbench.window_events.dispatch(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+        std.testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
+    }
+    try std.testing.expect(view.controller.pending_replace == null);
+    var bytes: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("omega\n", try tmp.dir.readFile(io, "closed.txt", &bytes));
+    try std.testing.expectEqualStrings("omega beta\ngamma omega\n", try tmp.dir.readFile(io, "replace_me.txt", &bytes));
 
     const tab = workbench.activeTab().?;
     var content = try tab.editor.model.getValue(null, false);
@@ -4407,6 +4435,7 @@ test "Workbench: closing a dirty tab asks, cancel keeps it and save closes it" {
     try std.testing.expect(workbench.isDialogOpen());
     var enter = ui.KeyEvent{ .key = .enter };
     try std.testing.expect(terminal_workbench.handleDialogKey(workbench, &enter));
+    try waitForSaveCompletion(workbench, .closed);
     try std.testing.expect(!workbench.isDialogOpen());
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
 
@@ -4523,6 +4552,7 @@ test "Workbench: Ctrl-Q quits clean and confirms one dirty tab" {
     try std.testing.expect(workbench.isDialogOpen());
     var enter = ui.KeyEvent{ .key = .enter };
     try std.testing.expect(terminal_workbench.handleDialogKey(workbench, &enter));
+    try waitForSaveCompletion(workbench, .quit);
     try std.testing.expect(!workbench.isDialogOpen());
     try std.testing.expect(workbench.shouldQuit());
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
@@ -11478,6 +11508,7 @@ test "Workbench: group close confirmation veto keeps the entire editor set" {
     try std.testing.expectEqual(@as(usize, 3), wb.tabCount());
     var save = ui.KeyEvent{ .key = .enter };
     try std.testing.expect(terminal_workbench.handleDialogKey(wb, &save));
+    try waitForSaveCompletion(wb, .next_dialog);
     try std.testing.expect(wb.isDialogOpen());
     try std.testing.expectEqual(@as(usize, 3), wb.tabCount());
     var cancel = ui.KeyEvent{ .key = .escape };
@@ -11488,6 +11519,7 @@ test "Workbench: group close confirmation veto keeps the entire editor set" {
     try chooseContextMenuItem(wb, "Close All");
     try std.testing.expect(wb.isDialogOpen());
     try std.testing.expect(terminal_workbench.handleDialogKey(wb, &save));
+    try waitForSaveCompletion(wb, .closed);
     try std.testing.expect(!wb.isDialogOpen());
     try std.testing.expectEqual(@as(usize, 0), wb.tabCount());
 }
@@ -14140,4 +14172,63 @@ test "Workbench: window Io yields through the native dispatcher and resumes on t
     try std.testing.expect(probe.complete);
     try request.await(io);
     try response.await(io);
+}
+
+test "Workbench: JSON completion and formatting use the window dispatcher" {
+    const a = std.testing.allocator;
+    const io = time_compat.io;
+    std.Io.Dir.cwd().access(io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
+    const JsonClient = @import("../vs/workbench/services/language/common/jsonLanguageClient.zig").Client;
+    const client = try JsonClient.start(a, "node", "host/dist/jsonServer.mjs");
+    defer client.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(a, io, &tmp, "format.json", "{\"a\":1}");
+    defer a.free(path);
+    const window = try TestWindow.init(a, io, &.{path}, 80, 20);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.enableLanguageFeatures();
+    wb.setJsonLanguageClient(client);
+    const editor = wb.activeTab().?.editor;
+    try editor.formatDocument();
+    try std.testing.expect(editor.pending_format != null);
+    try std.testing.expectEqualStrings("{\"a\":1}", try editor.model.borrowLineContent(1));
+    const deadline = time_compat.milliTimestamp() + 5000;
+    while (editor.pending_format != null and time_compat.milliTimestamp() < deadline) {
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        time_compat.sleepMillis(1);
+    }
+    try std.testing.expect(editor.pending_format == null);
+    var formatted = try editor.model.getValue(.TextDefined, false);
+    defer formatted.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, formatted.items, ": 1") != null);
+
+    // The deferred provider must not run its reply callback from the reader
+    // thread or while the initiating editor command is on the stack.
+    const Completion = @import("../vs/editor/common/languages/completion.zig");
+    const Probe = struct {
+        done: bool = false,
+        count: usize = 0,
+        owner: std.Thread.Id,
+        fn ready(context: *anyopaque, _: *anyopaque, result: anyerror!Completion.CompletionList) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            std.debug.assert(self.owner == std.Thread.getCurrentId());
+            self.done = true;
+            if (result) |list| self.count = list.items.len else |_| {}
+        }
+    };
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    var probe: Probe = .{ .owner = std.Thread.getCurrentId() };
+    const request = (try Editor.jsonProvideCompletionDeferred(editor, arena.allocator(), editor.model, Position.init(2, 4), .{}, .None)).?;
+    defer request.cancel(request.context);
+    request.on_complete(request.context, &probe, Probe.ready);
+    try std.testing.expect(!probe.done);
+    const completion_deadline = time_compat.milliTimestamp() + 5000;
+    while (!probe.done and time_compat.milliTimestamp() < completion_deadline) {
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        time_compat.sleepMillis(1);
+    }
+    try std.testing.expect(probe.done);
 }

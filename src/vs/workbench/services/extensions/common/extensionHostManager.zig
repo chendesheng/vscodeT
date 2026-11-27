@@ -445,10 +445,9 @@ pub const HostManager = struct {
         }
     }
 
-    /// Sends a request and pumps the host until the reply arrives or the
-    /// timeout expires. Provider calls have no asynchronous editor boundary in
-    /// the TUI, so this is the synchronous bridge; the result is allocated with
-    /// `allocator` (callers normally pass an arena).
+    /// Legacy direct-call harness for protocol and provider tests. The
+    /// production window must never recursively pump the extension transport;
+    /// use requestAwait from an owned window fiber or a deferred callback.
     pub fn requestSync(
         self: *HostManager,
         allocator: Allocator,
@@ -458,6 +457,7 @@ pub const HostManager = struct {
         token: ?@import("../../../../base/common/cancellation.zig").CancellationToken,
         timeout_ms: u32,
     ) !std.json.Value {
+        if (!builtin.is_test) return error.NotInWindowFiber;
         const slot = try allocator.create(SyncSlot);
         slot.* = .{ .allocator = allocator, .arena = std.heap.ArenaAllocator.init(allocator) };
         errdefer {

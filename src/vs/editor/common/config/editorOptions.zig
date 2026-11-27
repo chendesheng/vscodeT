@@ -465,6 +465,7 @@ pub fn OptionValueType(comptime option: EditorOption) type {
         .allowOverflow,
         .columnSelection,
         .codeLens,
+        .formatOnType,
         .occurrencesHighlightFromAllProviders,
         .disableLayerHinting,
         .disableMonospaceOptimizations,

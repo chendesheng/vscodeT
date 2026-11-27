@@ -12,12 +12,19 @@ test "Run Task activates its type, requests contributed tasks and runs the selec
         ran: bool = false,
         activations: usize = 0,
         changes: usize = 0,
+        serial: ?std.Io = null,
+        activation_ready: std.Io.Event = .unset,
+        owner_thread: std.Thread.Id,
         fn show(_: *anyopaque, _: *QuickPick) !void {}
         fn hide(_: *anyopaque) void {}
         fn activate(context: *anyopaque, _: std.mem.Allocator, event: []const u8) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
             try std.testing.expectEqualStrings("onTaskType:build", event);
             self.activations += 1;
+            if (self.serial) |io| {
+                try self.activation_ready.wait(io);
+                try std.testing.expectEqual(self.owner_thread, std.Thread.getCurrentId());
+            }
         }
         fn provide(context: *anyopaque, arena: std.mem.Allocator, valid_types: std.json.Value) ![]const std.json.Value {
             const self: *@This() = @ptrCast(@alignCast(context));
@@ -44,31 +51,51 @@ test "Run Task activates its type, requests contributed tasks and runs the selec
         }
     };
     const allocator = std.testing.allocator;
-    var host: Host = .{};
-    var commands = CommandRegistry.init(allocator);
-    defer commands.deinit();
-    const input = try QuickInputService.init(allocator, .{ .context = &host, .show = Host.show, .hide = Host.hide });
-    defer input.deinit();
-    const manifest = try std.json.parseFromSlice(std.json.Value, allocator,
-        \\{"contributes":{"taskDefinitions":[{"type":"build"}]}}
-    , .{});
-    defer manifest.deinit();
-    const extension = ExtensionDescription{ .path = "", .parsed = manifest, .manifest = manifest.value, .identifier = "test.tasks", .activation_events = &.{} };
-    var service: AbstractTaskService = undefined;
-    try service.init(allocator, &commands, input, &.{extension}, .{ .context = &host, .activate = Host.activate, .run_terminal = Host.run });
-    defer service.deinit();
-    const listener = try service.on_did_change_task_providers.listen(&host, Host.changed);
-    defer service.on_did_change_task_providers.unlisten(listener);
-    {
-        const registration = try service.interface().registerTaskProvider(.{ .context = &host, .provide_tasks = Host.provide }, "build");
-        defer registration.dispose();
-        try commands.execute("workbench.action.tasks.runTask");
-        const picker = input.pickerRef();
-        try std.testing.expectEqualStrings("build", picker.items.items[0].item.id);
-        picker.accept();
-        try std.testing.expectEqualStrings("Compile", picker.items.items[0].item.label);
-        picker.accept();
-        try std.testing.expect(host.ran);
+    var runtime = try @import("ui").WindowIo.init(allocator, std.testing.io);
+    defer runtime.deinit();
+    var window: @import("../../../../../base/common/windowDispatch.zig").Queue = .{ .io = runtime.io(), .scheduler = &runtime };
+    for ([_]bool{ false, true }) |deferred| {
+        var host: Host = .{ .serial = if (deferred) window.io else null, .owner_thread = std.Thread.getCurrentId() };
+        var commands = CommandRegistry.init(allocator);
+        defer commands.deinit();
+        const input = try QuickInputService.init(allocator, .{ .context = &host, .show = Host.show, .hide = Host.hide });
+        defer input.deinit();
+        const manifest = try std.json.parseFromSlice(std.json.Value, allocator,
+            \\{"contributes":{"taskDefinitions":[{"type":"build"}]}}
+        , .{});
+        defer manifest.deinit();
+        const extension = ExtensionDescription{ .path = "", .parsed = manifest, .manifest = manifest.value, .identifier = "test.tasks", .activation_events = &.{} };
+        var service: AbstractTaskService = undefined;
+        try service.init(allocator, &commands, input, &.{extension}, .{ .context = &host, .window = if (deferred) &window else null, .activate = Host.activate, .run_terminal = Host.run });
+        defer service.deinit();
+        const listener = try service.on_did_change_task_providers.listen(&host, Host.changed);
+        defer service.on_did_change_task_providers.unlisten(listener);
+        {
+            const registration = try service.interface().registerTaskProvider(.{ .context = &host, .provide_tasks = Host.provide }, "build");
+            defer registration.dispose();
+            try commands.execute("workbench.action.tasks.runTask");
+            const picker = input.pickerRef();
+            try std.testing.expectEqualStrings("build", picker.items.items[0].item.id);
+            picker.accept();
+            if (deferred) {
+                const clock = @import("../../../../../base/common/timeCompat.zig");
+                try std.testing.expect(service.pending != null);
+                try std.testing.expect(!input.isVisible());
+                _ = window.dispatch(clock.milliTimestamp());
+                try std.testing.expectEqual(@as(usize, 1), host.activations);
+                try std.testing.expect(!input.isVisible());
+                host.activation_ready.set(window.io);
+                const deadline = clock.milliTimestamp() + 5000;
+                while (service.pending != null and clock.milliTimestamp() < deadline) {
+                    _ = window.dispatch(clock.milliTimestamp());
+                    std.testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
+                }
+                try std.testing.expect(service.pending == null);
+            }
+            try std.testing.expectEqualStrings("Compile", picker.items.items[0].item.label);
+            picker.accept();
+            try std.testing.expect(host.ran);
+        }
+        try std.testing.expectEqual(@as(usize, 2), host.changes);
     }
-    try std.testing.expectEqual(@as(usize, 2), host.changes);
 }

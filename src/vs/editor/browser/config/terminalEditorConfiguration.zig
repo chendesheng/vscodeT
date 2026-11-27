@@ -54,6 +54,10 @@ fn readBool(reader: Reader, key: []const u8, language_id: ?[]const u8, resource:
     };
 }
 
+pub fn formatOnType(reader: Reader, language_id: ?[]const u8, resource: ?[]const u8) bool {
+    return readBool(reader, "editor.formatOnType", language_id, resource) orelse false;
+}
+
 pub fn readInt(reader: Reader, key: []const u8, language_id: ?[]const u8, resource: ?[]const u8) ?i64 {
     const value = reader.get_value(reader.context, key, language_id, resource) orelse return null;
     return switch (value.*) {
@@ -223,6 +227,12 @@ pub fn applyViewSettings(
             options.set(setting.option, enabled);
         }
     }
+
+    const on_type = formatOnType(reader, language_id, resource);
+    const on_type_changed = options.get(.formatOnType) != on_type;
+    mark(changed, .formatOnType, on_type_changed);
+    any = any or on_type_changed;
+    options.set(.formatOnType, on_type);
 
     if (readString(reader, "editor.lineNumbers", language_id, resource)) |text| {
         if (parseLineNumbers(text)) |value| {

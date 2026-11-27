@@ -354,6 +354,7 @@ pub const EditorDocument = struct {
     saved_version: u32,
     text_file_service: ?*text_files.TextFileService = null,
     save_window: ?*window_dispatch.Queue = null,
+    save_managed: bool = false,
     pending_save: ?*SaveRequest = null,
     queued_save: ?QueuedSave = null,
     saving: bool = false,
@@ -591,6 +592,11 @@ pub const EditorDocument = struct {
 
     pub fn save(self: *EditorDocument) !void {
         if (self.pending_save != null) return error.SaveInProgress;
+        if (!@import("builtin").is_test) {
+            if (self.save_window) |window| {
+                if (window.scheduler != null) return error.AsyncSaveRequired;
+            }
+        }
         return self.saveWithIo(self.io);
     }
 
@@ -671,8 +677,8 @@ pub const EditorDocument = struct {
             const listeners = self.listeners;
             const allocator = document.allocator;
             allocator.destroy(self);
-            // Callbacks can close the last view or enqueue another save.
-            document.retain();
+            // The request's retained document survives dirty-state disposal
+            // and callbacks that close the final editor.
             defer document.release();
             if (result) |_| {} else |err| {
                 for (document.editors.items) |editor| editor.setMessage("Unable to save: {s}", .{@errorName(err)});
@@ -713,6 +719,7 @@ pub const EditorDocument = struct {
             .completion = .{ .queue = queue, .context = request, .run = SaveRequest.complete, .progress = true },
         };
         request.future = try queue.io.concurrent(SaveRequest.run, .{request});
+        self.retain();
         self.pending_save = request;
     }
 
@@ -734,8 +741,8 @@ pub const EditorDocument = struct {
             return;
         }
         if (self.saving) return error.SaveInProgress;
-        if (window) |queue| {
-            if (queue.scheduler != null and self.text_file_service != null and self.text_file_service.?.document_save_participants.items.len != 0) {
+        if (window orelse self.save_window) |queue| {
+            if (queue.scheduler != null) {
                 var listeners: SaveListeners = .empty;
                 errdefer listeners.deinit(self.allocator);
                 if (listener) |callback| try listeners.append(self.allocator, callback);
@@ -756,8 +763,8 @@ pub const EditorDocument = struct {
         self.pending_save = null;
         const listeners = request.listeners;
         allocator.destroy(request);
-        // No access to the document after notifying a callback; the last
-        // retained extension document reference may be released here.
+        // The active save owns a reference until every listener is notified.
+        defer self.release();
         deliverSaveListeners(allocator, listeners, error.Canceled);
         if (queued) |value| deliverSaveListeners(allocator, value.listeners, error.Canceled);
     }
@@ -943,6 +950,7 @@ pub const Editor = struct {
     /// Upstream Delayer for folding model updates.
     folding_task: window_dispatch.Task = .{},
     pending_format: ?*FormatRequest = null,
+    format_on_type_enabled: bool = false,
     folding_delay_ms: i64,
     smart_select: smart_select.SmartSelectController,
     in_place_replace_task: window_dispatch.Task = .{},
@@ -1808,6 +1816,10 @@ pub const Editor = struct {
     }
 
     pub fn formatJson(self: *Editor) !void {
+        return self.formatJsonWithToken(.None);
+    }
+
+    fn formatJsonWithToken(self: *Editor, token: CancellationToken) !void {
         if (self.read_only) return error.ReadOnly;
         const client = self.document.json.client orelse {
             self.setMessage("No JSON language server", .{});
@@ -1820,12 +1832,16 @@ pub const Editor = struct {
         if (self.model.getVersionId() != self.document.json_version) self.syncJsonDocument() catch {};
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
-        const edits = try client.formatting(
+        const version = self.model.getVersionId();
+        const edits = try client.formattingWithToken(
             arena.allocator(),
             self.document.json.uri.?,
             @intCast(self.cursor_config.tabSize),
             self.cursor_config.insertSpaces,
+            token,
         );
+        try token.throwIfCancellationRequested();
+        if (self.model.getVersionId() != version) return error.CancellationError;
         if (edits.len == 0) {
             self.setMessage("JSON already formatted", .{});
             return;
@@ -1836,14 +1852,14 @@ pub const Editor = struct {
             text_edits[index] = .{
                 .range = Range.init(
                     @intCast(edit.start_line + 1),
-                    @intCast(edit.start_character + 1),
+                    jsonColumnToEditorColumn(self.model, edit.start_line + 1, edit.start_character),
                     @intCast(edit.end_line + 1),
-                    @intCast(edit.end_character + 1),
+                    jsonColumnToEditorColumn(self.model, edit.end_line + 1, edit.end_character),
                 ),
                 .text = edit.new_text,
             };
         }
-        try self.applyTextEdits(text_edits, &.{});
+        try self.applyFormatEdits(text_edits);
         self.setMessage("Formatted JSON", .{});
     }
 
@@ -1878,6 +1894,10 @@ pub const Editor = struct {
             if (position.lineNumber > 0) @intCast(position.lineNumber - 1) else 0,
             if (position.column > 0) @intCast(position.column - 1) else 0,
         );
+        return convertJsonCompletion(allocator, items);
+    }
+
+    fn convertJsonCompletion(allocator: Allocator, items: []const json_language.CompletionItem) !completion.CompletionList {
         if (items.len == 0) return .{};
         const result = try allocator.alloc(completion.CompletionItem, items.len);
         for (items, 0..) |item, index| {
@@ -1888,6 +1908,50 @@ pub const Editor = struct {
             };
         }
         return .{ .items = result };
+    }
+
+    const JsonCompletionRequest = struct {
+        allocator: Allocator,
+        client: *json_language.Client,
+        id: u32 = undefined,
+        callback: ?completion.CompletionRequest.Callback = null,
+        callback_context: *anyopaque = undefined,
+        result: ?anyerror!completion.CompletionList = null,
+
+        fn ready(context: *anyopaque, value: std.json.Value) void {
+            const self: *JsonCompletionRequest = @ptrCast(@alignCast(context));
+            self.result = blk: {
+                const items = json_language.Client.parseCompletion(self.allocator, value) catch |err| break :blk err;
+                break :blk convertJsonCompletion(self.allocator, items);
+            };
+            if (self.callback) |callback| callback(self.callback_context, self, self.result.?);
+        }
+
+        fn subscribe(context: *anyopaque, callback_context: *anyopaque, callback: completion.CompletionRequest.Callback) void {
+            const self: *JsonCompletionRequest = @ptrCast(@alignCast(context));
+            self.callback = callback;
+            self.callback_context = callback_context;
+            if (self.result) |result| callback(callback_context, self, result);
+        }
+
+        fn cancel(context: *anyopaque) void {
+            const self: *JsonCompletionRequest = @ptrCast(@alignCast(context));
+            self.client.cancel(self.id);
+        }
+    };
+
+    pub fn jsonProvideCompletionDeferred(context: *anyopaque, allocator: Allocator, model: *TextModel, position: Position, _: completion.CompletionContext, token: CancellationToken) anyerror!?completion.CompletionRequest {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        if (self.model != model) return null;
+        const client = self.document.json.client orelse return null;
+        const uri = self.document.json.uri orelse return null;
+        try token.throwIfCancellationRequested();
+        if (model.getVersionId() != self.document.json_version) try self.syncJsonDocument();
+        const line = try model.borrowLineContent(position.lineNumber);
+        const request = try allocator.create(JsonCompletionRequest);
+        request.* = .{ .allocator = allocator, .client = client };
+        request.id = try client.requestCompletion(allocator, uri, @intCast(position.lineNumber - 1), @intCast(position_converter.utf16OffsetForColumn(line, position.column) -| 1), .{ .context = request, .complete = JsonCompletionRequest.ready });
+        return .{ .context = request, .on_complete = JsonCompletionRequest.subscribe, .cancel = JsonCompletionRequest.cancel };
     }
 
     /// Attaches the workbench's shared language services. Idempotent so both
@@ -1913,6 +1977,12 @@ pub const Editor = struct {
         const had_marker_service = self.marker_service != null;
         if (self.language_features != features) self.detachCodeActionRegistry();
         self.language_features = features;
+        const FormatOnType = @import("../../../contrib/format/browser/formatActions.zig").FormatOnType;
+        if (features) |service| {
+            _ = FormatOnType.getOrCreate(self, service, self.format_on_type_enabled) catch null;
+        } else if (self.getInstantiatedContribution(FormatOnType)) |contribution| {
+            contribution.bind(null, self.format_on_type_enabled) catch {};
+        }
         if (features) |service| if (self.code_action_registry_listener == null) {
             self.code_action_registry_listener = service.code_action_provider.on_did_change.listen(self, onCodeActionRegistryChanged) catch null;
         };
@@ -1946,6 +2016,7 @@ pub const Editor = struct {
         } }, .{
             .context = self,
             .provide_completion_items = jsonProvideCompletion,
+            .provide_completion_items_deferred = if (self.document.json.client.?.hasWindow()) jsonProvideCompletionDeferred else null,
             .trigger_characters = &.{ "\"", ":" },
         }) catch null;
     }
@@ -2141,7 +2212,8 @@ pub const Editor = struct {
         const features = self.language_features orelse return false;
         const defer_document = kind == .document and try asyncFormatter(&features.document_formatting_edit_provider, self.allocator, self.model);
         const defer_range = try asyncFormatter(&features.document_range_formatting_edit_provider, self.allocator, self.model);
-        if (!defer_document and !defer_range) return false;
+        const defer_json = kind == .document and self.document.json.uri != null and self.document.json.client.?.hasWindow();
+        if (!defer_document and !defer_range and !defer_json) return false;
         const request = try self.allocator.create(FormatRequest);
         errdefer self.allocator.destroy(request);
         var source = try CancellationTokenSource.init(self.allocator);
@@ -2255,7 +2327,7 @@ pub const Editor = struct {
             }
         }
         try token.throwIfCancellationRequested();
-        return self.formatJson();
+        return self.formatJsonWithToken(token);
     }
 
     /// Port of `FormatSelectionAction`: run the range formatter for each
@@ -2374,7 +2446,12 @@ pub const Editor = struct {
         if (!self.hasModel()) return;
         self.folding_task.schedule(null);
         self.in_place_replace_task.schedule(null);
-        if (self.document.editors.items.len == 1) self.detachJsonLanguage();
+        if (self.document.editors.items.len == 1) {
+            // Resolver-owned working copies keep explicit saves alive across
+            // tab closure. Standalone editors must join their own last job.
+            if (!self.document.save_managed) self.document.cancelPendingSave();
+            self.detachJsonLanguage();
+        }
         // Unregister the shared-model listeners first: the model may outlive
         // this view while a split copy stays open.
         self.model.removeDidChangeContentListener(self.content_listener_id);
@@ -4246,7 +4323,7 @@ pub const Editor = struct {
     /// Closes the current undo element unless a Vim-style undo group is
     /// active. Internal typing/newline/command boundaries call this; the group
     /// boundary is the only stack push that matters inside the group.
-    fn pushUndoStop(self: *Editor) void {
+    pub fn pushUndoStop(self: *Editor) void {
         if (self.undo_group_depth == 0) self.model.pushStackElement();
     }
 
@@ -5099,6 +5176,13 @@ pub const Editor = struct {
         language_id: ?[]const u8,
         resource: ?[]const u8,
     ) !bool {
+        const enabled = terminal_editor_config.formatOnType(reader, language_id, resource);
+        const formatting_changed = enabled != self.format_on_type_enabled;
+        self.format_on_type_enabled = enabled;
+        if (formatting_changed) {
+            const FormatOnType = @import("../../../contrib/format/browser/formatActions.zig").FormatOnType;
+            if (self.getInstantiatedContribution(FormatOnType)) |contribution| try contribution.setEnabled(enabled);
+        }
         const value = terminal_editor_config.readInt(reader, "editor.maxTokenizationLineLength", language_id, resource) orelse @as(i64, @import("../../../../workbench/services/textMate/browser/tokenizationSupport/tokenizationSupportWithLineLimit.zig").default_limit);
         const limit: usize = @intCast(@max(value, 0));
         const changed = self.model.max_tokenization_line_length != limit;
@@ -5106,7 +5190,7 @@ pub const Editor = struct {
             self.model.max_tokenization_line_length = limit;
             self.model.tokenization().resetTokenization();
         }
-        if (!terminal_editor_config.applyModelSettings(self.model, reader, language_id, resource)) return changed;
+        if (!terminal_editor_config.applyModelSettings(self.model, reader, language_id, resource)) return changed or formatting_changed;
         self.refreshCursorOptions();
         _ = try self.view_lines.setTabSize(self.model.getOptions().tabSize);
         try self.refreshLayout();

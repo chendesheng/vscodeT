@@ -31,6 +31,7 @@ pub const TextModelResolverService = struct {
     undo_store: ?*ModelUndoRedoStore = null,
     undo_participant: ?*@import("../../../../editor/common/services/modelUndoRedoParticipant.zig").ModelUndoRedoParticipant = null,
     file_service: ?files.IFileService = null,
+    text_files: ?*@import("../../textfile/common/textFileService.zig").TextFileService = null,
     file_listener: ?event_mod.SignalSubscription = null,
     providers: std.ArrayList(*ProviderEntry) = .empty,
     next_provider_id: usize = 0,
@@ -103,7 +104,12 @@ pub const TextModelResolverService = struct {
         return self.collection.entries.contains(key);
     }
 
+    pub fn cancelPendingSaves(self: *TextModelResolverService) void {
+        self.collection.cancelPendingSaves();
+    }
+
     pub fn deinit(self: *TextModelResolverService) void {
+        self.cancelPendingSaves();
         if (self.undo_participant) |participant| participant.dispose();
         self.undo_participant = null;
         if (self.file_listener) |listener| listener.dispose();
@@ -350,7 +356,15 @@ pub const TextModelResolverService = struct {
         }
     };
 
+    fn configureDocumentSave(self: *TextModelResolverService, document: *EditorDocument, readonly: bool) void {
+        if (readonly or !std.mem.eql(u8, document.model.uri().scheme, "file")) return;
+        document.save_window = self.window;
+        document.save_managed = true;
+        if (self.text_files) |service| document.text_file_service = service;
+    }
+
     pub fn registerDocument(self: *TextModelResolverService, document: *EditorDocument, readonly: bool) !void {
+        self.configureDocumentSave(document, readonly);
         _ = try self.collection.register(document, readonly);
     }
 
@@ -685,6 +699,7 @@ pub const TextModelResolverService = struct {
         if (try self.acquireExisting(resource)) |reference| return reference;
         const document = try EditorDocument.createFromTextWithUndoStore(self.allocator, self.io, path, text, resource, try self.undoRedoStore());
         defer document.release();
+        self.configureDocumentSave(document, readonly);
         const entry = try self.collection.register(document, readonly);
         return entry.acquire();
     }
@@ -908,12 +923,36 @@ const ResourceModelCollection = struct {
         return entry.acquire();
     }
 
+    fn cancelPendingSaves(self: *ResourceModelCollection) void {
+        // A save owns a document reference even after the last view closes.
+        // Join these jobs before detaching the weak URI registrations or the
+        // window executor. Cancellation callbacks can remove an entry, so
+        // restart the teardown lookup after each join.
+        while (true) {
+            var pending: ?*EditorDocument = null;
+            var scan = self.entries.valueIterator();
+            while (scan.next()) |entry| {
+                if (entry.*.document.pending_save != null) {
+                    pending = entry.*.document;
+                    break;
+                }
+            }
+            const document = pending orelse break;
+            document.cancelPendingSave();
+        }
+    }
+
     fn deinit(self: *ResourceModelCollection) void {
+        self.cancelPendingSaves();
         // References may outlive the owning service during orderly shutdown.
         // Detach all callbacks while the document is alive; a detached entry
         // with active references destroys itself on the last release.
         var iterator = self.entries.valueIterator();
         while (iterator.next()) |value| {
+            const document = value.*.document;
+            document.save_managed = false;
+            document.save_window = null;
+            document.text_file_service = null;
             self.on_model_removed.fire(value.*.modelInterface()) catch {};
             value.*.detach();
         }

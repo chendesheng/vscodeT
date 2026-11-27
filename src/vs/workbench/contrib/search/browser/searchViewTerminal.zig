@@ -79,6 +79,8 @@ pub const Action = enum { unhandled, handled, focus_editor };
 /// workbench; the terminal shell implements these callbacks.
 pub const Host = struct {
     context: *anyopaque,
+    window: ?*@import("../../../../base/common/windowDispatch.zig").Queue = null,
+    model_version: ?*const fn (*anyopaque, []const u8) ?u32 = null,
     open_results: *const fn (context: *anyopaque, config: search_editor_view.Config, snapshot: search_editor.Snapshot) anyerror!void,
     open_match: *const fn (context: *anyopaque, path: []const u8, range: ?Range) anyerror!void,
     highlight_range: *const fn (context: *anyopaque, path: []const u8, range: ?Range) void,
@@ -87,6 +89,7 @@ pub const Host = struct {
     free_paths: *const fn (context: *anyopaque, allocator: Allocator, paths: [][]u8) void,
     apply_edits: *const fn (context: *anyopaque, path: []const u8, edits: []const Edit) anyerror!void,
     save_file: *const fn (context: *anyopaque, path: []const u8) anyerror!void,
+    request_save_file: ?*const fn (*anyopaque, []const u8, @import("../../../services/workingCopy/common/workingCopy.zig").SaveCompletion) anyerror!void = null,
     active_selection_text: *const fn (context: *anyopaque, allocator: Allocator) anyerror!?[]u8,
     confirm_replace_all: *const fn (context: *anyopaque, message: []const u8) anyerror!void,
 };
@@ -231,7 +234,10 @@ pub const SearchView = struct {
                 .open_match = hostOpenMatch,
                 .highlight_range = hostHighlightRange,
                 .apply_edits = hostApplyEdits,
+                .window = host.window,
+                .model_version = hostModelVersion,
                 .save_file = hostSaveFile,
+                .request_save_file = hostRequestSaveFile,
                 .active_selection_text = hostActiveSelectionText,
                 .extra_files = hostExtraFiles,
                 .free_paths = hostFreePaths,
@@ -857,10 +863,7 @@ pub const SearchView = struct {
             self.rebuildRows();
             return;
         };
-        // VS Code recomputes matches after a line replacement. Refresh via the
-        // workspace provider here, which also handles closed files and matches
-        // spanning multiple lines.
-        if (row == .match) self.controller.triggerQueryChange(true, false) catch self.controller.reportReplaceError();
+
         self.rebuildRows();
     }
 
@@ -1848,6 +1851,19 @@ fn hostApplyEdits(context: *anyopaque, path: []const u8, edits: []const Edit) an
     return self.host.apply_edits(self.host.context, path, edits);
 }
 
+fn hostModelVersion(context: *anyopaque, path: []const u8) ?u32 {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    const version = self.host.model_version orelse return null;
+    return version(self.host.context, path);
+}
+
+fn hostRequestSaveFile(context: *anyopaque, path: []const u8, completion: @import("../../../services/workingCopy/common/workingCopy.zig").SaveCompletion) anyerror!void {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    if (self.host.request_save_file) |request| return request(self.host.context, path, completion);
+    try self.host.save_file(self.host.context, path);
+    completion.complete(completion.context, true);
+}
+
 fn hostSaveFile(context: *anyopaque, path: []const u8) anyerror!void {
     const self: *SearchView = @ptrCast(@alignCast(context));
     return self.host.save_file(self.host.context, path);
@@ -2111,8 +2127,14 @@ pub const SearchWindow = struct {
 
     fn searchApplyEdits(context: *anyopaque, path: []const u8, edits: []const NativeReplaceEdit) !void {
         const self: *SearchWindow = @ptrCast(@alignCast(context));
-        var host = NativeReplaceHost{ .allocator = self.allocator, .io = self.io, .part = self.part };
+        var host = NativeReplaceHost{ .allocator = self.allocator, .io = self.io, .part = self.part, .window = self.window };
         try host.applyEdits(path, edits);
+    }
+
+    fn searchRequestSaveFile(context: *anyopaque, path: []const u8, completion: @import("../../../services/workingCopy/common/workingCopy.zig").SaveCompletion) !void {
+        const self: *SearchWindow = @ptrCast(@alignCast(context));
+        var host = NativeReplaceHost{ .allocator = self.allocator, .io = self.io, .part = self.part };
+        try host.requestSaveFile(path, completion);
     }
 
     fn searchSaveFile(context: *anyopaque, path: []const u8) !void {
@@ -2139,6 +2161,8 @@ pub const SearchWindow = struct {
             service.interface(),
             .{
                 .context = self,
+                .window = self.window,
+                .model_version = searchModelVersion,
                 .open_match = searchOpenMatch,
                 .open_results = searchOpenResults,
                 .highlight_range = searchHighlightRange,
@@ -2147,6 +2171,7 @@ pub const SearchWindow = struct {
                 .free_paths = searchFreePaths,
                 .apply_edits = searchApplyEdits,
                 .save_file = searchSaveFile,
+                .request_save_file = searchRequestSaveFile,
                 .active_selection_text = searchActiveSelectionText,
                 .confirm_replace_all = searchConfirmReplaceAll,
             },
@@ -2294,6 +2319,10 @@ pub const SearchWindow = struct {
         if (self.view) |view| {
             if (result.confirmed) view.confirmReplaceAll() else view.clearReplaceConfirmation();
         }
+    }
+
+    fn searchModelVersion(context: *anyopaque, path: []const u8) ?u32 {
+        return if (searchTextModel(context, path)) |model| model.getVersionId() else null;
     }
 
     fn searchTextModel(context: *anyopaque, path: []const u8) ?*@import("../../../../editor/common/model/textModel.zig").TextModel {

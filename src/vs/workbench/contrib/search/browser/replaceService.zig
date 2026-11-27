@@ -12,6 +12,9 @@ const Range = @import("../../../../editor/common/core/range.zig").Range;
 const FileMatch = @import("searchTreeModel/searchTreeCommon.zig").FileMatch;
 const Match = @import("searchTreeModel/searchTreeCommon.zig").Match;
 const ReplacePattern = @import("../../../services/search/common/replace.zig").ReplacePattern;
+const SaveCompletion = @import("../../../services/workingCopy/common/workingCopy.zig").SaveCompletion;
+const Disposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
+const Window = @import("../../../../base/common/windowDispatch.zig");
 
 pub const Edit = struct {
     range: Range,
@@ -20,8 +23,11 @@ pub const Edit = struct {
 
 pub const IEditorHost = struct {
     context: *anyopaque,
+    window: ?*Window.Queue = null,
+    model_version: ?*const fn (*anyopaque, []const u8) ?u32 = null,
     apply_edits: *const fn (context: *anyopaque, path: []const u8, edits: []const Edit) anyerror!void,
     save_file: *const fn (context: *anyopaque, path: []const u8) anyerror!void,
+    request_save_file: ?*const fn (*anyopaque, []const u8, SaveCompletion) anyerror!void = null,
 };
 
 pub const IReplaceService = struct {
@@ -45,6 +51,175 @@ pub const ReplaceService = struct {
 
     pub fn interface(self: *ReplaceService) IReplaceService {
         return .{ .context = self, .replace_files = replaceFilesCallback };
+    }
+
+    const Batch = struct {
+        const File = struct { path: []const u8, edits: []const Edit, version: ?u32 = null };
+        arena: std.heap.ArenaAllocator,
+        callback: ?SaveCompletion,
+        remaining: usize = 1,
+        result: anyerror!bool = true,
+        host: IEditorHost = undefined,
+        files: []const File = &.{},
+        edit_future: ?std.Io.Future(anyerror!void) = null,
+        edit_completion: Window.Task = .{},
+
+        fn completed(context: *anyopaque, result: anyerror!bool) void {
+            const self: *Batch = @ptrCast(@alignCast(context));
+            if (result) |saved| {
+                if (!saved and (self.result catch false)) self.result = false;
+            } else |err| self.result = err;
+            self.release();
+        }
+
+        fn release(self: *Batch) void {
+            self.remaining -= 1;
+            if (self.remaining != 0) return;
+            const allocator = self.arena.child_allocator;
+            const callback = self.callback;
+            const result = self.result;
+            self.arena.deinit();
+            allocator.destroy(self);
+            if (callback) |value| value.complete(value.context, result);
+        }
+
+        fn detach(context: *anyopaque) void {
+            const self: *Batch = @ptrCast(@alignCast(context));
+            self.callback = null;
+            if (self.edit_future) |*future| {
+                future.cancel(self.host.window.?.io) catch {};
+                self.edit_future = null;
+                self.edit_completion.schedule(null);
+                self.release();
+            }
+        }
+
+        fn start(self: *Batch, host: IEditorHost, files: []const File) !?Disposable {
+            self.host = host;
+            self.files = files;
+            const handle: Disposable = .{ .context = self, .disposeFn = detach };
+            if (host.window) |window| {
+                if (window.scheduler != null) {
+                    self.edit_completion = .{ .queue = window, .context = self, .run = editCompleted, .progress = true };
+                    self.edit_future = try window.io.concurrent(editAsync, .{self});
+                    return handle;
+                }
+            }
+            self.applyAll() catch |err| {
+                self.result = err;
+            };
+            const pending = self.remaining > 1;
+            self.release();
+            return if (pending) handle else null;
+        }
+
+        fn editAsync(self: *Batch) anyerror!void {
+            defer self.edit_completion.post();
+            try self.applyAll();
+        }
+
+        fn editCompleted(context: *anyopaque, _: i64, _: bool) bool {
+            const self: *Batch = @ptrCast(@alignCast(context));
+            self.edit_future.?.await(self.host.window.?.io) catch |err| {
+                self.result = err;
+            };
+            self.edit_future = null;
+            self.release();
+            return true;
+        }
+
+        fn applyAll(self: *Batch) !void {
+            const host = self.host;
+            var applied: usize = 0;
+            for (self.files) |file| {
+                if (host.window) |window| try window.io.checkCancel();
+                if (host.model_version) |version| {
+                    if (version(host.context, file.path) != file.version) {
+                        self.result = error.StaleSearchResult;
+                        break;
+                    }
+                }
+                host.apply_edits(host.context, file.path, file.edits) catch |err| {
+                    self.result = err;
+                    break;
+                };
+                applied += 1;
+            }
+            // Upstream applies the resource edits first, then waits for all
+            // affected working-copy saves. Save participants may edit other
+            // files, so do not start them in the middle of applying edits.
+            for (self.files[0..applied]) |file| {
+                self.remaining += 1;
+                const completion: SaveCompletion = .{ .context = self, .complete = completed };
+                if (host.request_save_file) |request| {
+                    request(host.context, file.path, completion) catch |err| completed(self, err);
+                } else {
+                    host.save_file(host.context, file.path) catch |err| {
+                        completed(self, err);
+                        continue;
+                    };
+                    completed(self, true);
+                }
+            }
+        }
+    };
+
+    fn modelVersion(self: *ReplaceService, path: []const u8) ?u32 {
+        const version = self.host.model_version orelse return null;
+        return version(self.host.context, path);
+    }
+
+    fn createBatch(self: *ReplaceService, completion: SaveCompletion) !*Batch {
+        const batch = try self.allocator.create(Batch);
+        batch.* = .{ .arena = .init(self.allocator), .callback = completion };
+        return batch;
+    }
+
+    pub fn requestMatches(self: *ReplaceService, matches: []const *Match, pattern: *const ReplacePattern, preserve_case: bool, completion: SaveCompletion) !?Disposable {
+        const batch = try self.createBatch(completion);
+        errdefer {
+            batch.arena.deinit();
+            self.allocator.destroy(batch);
+        }
+        const a = batch.arena.allocator();
+        const Group = struct { path: []const u8, edits: std.ArrayList(Edit) = .empty };
+        var groups: std.ArrayList(Group) = .empty;
+        for (matches) |match| {
+            const text = match.replaceString(a, pattern, preserve_case) catch continue;
+            var found: ?*Group = null;
+            for (groups.items) |*group| if (std.mem.eql(u8, group.path, match.parent_file.path)) {
+                found = group;
+                break;
+            };
+            if (found == null) {
+                try groups.append(a, .{ .path = try a.dupe(u8, match.parent_file.path) });
+                found = &groups.items[groups.items.len - 1];
+            }
+            try found.?.edits.append(a, .{ .range = match.range(), .text = text });
+        }
+        var files: std.ArrayList(Batch.File) = .empty;
+        for (groups.items) |group| try files.append(a, .{ .path = group.path, .edits = group.edits.items, .version = self.modelVersion(group.path) });
+        return batch.start(self.host, files.items);
+    }
+
+    pub fn requestFiles(self: *ReplaceService, matches: []const *FileMatch, pattern: *const ReplacePattern, preserve_case: bool, completion: SaveCompletion) !?Disposable {
+        const batch = try self.createBatch(completion);
+        errdefer {
+            batch.arena.deinit();
+            self.allocator.destroy(batch);
+        }
+        const a = batch.arena.allocator();
+        var files: std.ArrayList(Batch.File) = .empty;
+        for (matches) |file| {
+            var edits: std.ArrayList(Edit) = .empty;
+            for (file.matches()) |match| {
+                const text = match.replaceString(a, pattern, preserve_case) catch continue;
+                try edits.append(a, .{ .range = match.range(), .text = text });
+            }
+            if (edits.items.len == 0) continue;
+            try files.append(a, .{ .path = try a.dupe(u8, file.path), .edits = edits.items, .version = self.modelVersion(file.path) });
+        }
+        return batch.start(self.host, files.items);
     }
 
     /// Replaces one selected line match. The file's other matches stay in
@@ -125,6 +300,7 @@ pub const NativeEditorHost = struct {
     allocator: Allocator,
     io: std.Io,
     part: *EditorPart,
+    window: ?*Window.Queue = null,
 
     pub fn applyEdits(self: *NativeEditorHost, path: []const u8, edits: []const Edit) anyerror!void {
         for (self.part.group_views.items) |pane| {
@@ -139,14 +315,17 @@ pub const NativeEditorHost = struct {
                 return;
             }
         }
-        return self.applyClosedFileEdits(path, edits);
+        if (self.window) |window| {
+            return Window.workerCall(window.io, applyClosedFileEdits, .{ self.allocator, Window.backingIo(window.io), path, edits });
+        }
+        return applyClosedFileEdits(self.allocator, self.io, path, edits);
     }
 
-    fn applyClosedFileEdits(self: *NativeEditorHost, path: []const u8, edits: []const Edit) !void {
-        const content = try std.Io.Dir.cwd().readFileAlloc(self.io, path, self.allocator, .limited(64 * 1024 * 1024));
-        defer self.allocator.free(content);
+    fn applyClosedFileEdits(allocator: Allocator, io: std.Io, path: []const u8, edits: []const Edit) !void {
+        const content = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(64 * 1024 * 1024));
+        defer allocator.free(content);
 
-        var starts = std.array_list.Managed(usize).init(self.allocator);
+        var starts = std.array_list.Managed(usize).init(allocator);
         defer starts.deinit();
         var bom_len: usize = 0;
         if (content.len >= 3 and content[0] == 0xef and content[1] == 0xbb and content[2] == 0xbf) bom_len = 3;
@@ -156,7 +335,7 @@ pub const NativeEditorHost = struct {
         }
 
         const Resolved = struct { start: usize, end: usize, text: []const u8 };
-        var resolved = std.array_list.Managed(Resolved).init(self.allocator);
+        var resolved = std.array_list.Managed(Resolved).init(allocator);
         defer resolved.deinit();
         for (edits) |edit| {
             const start = offsetAt(starts.items, edit.range.startLineNumber, edit.range.startColumn);
@@ -169,14 +348,25 @@ pub const NativeEditorHost = struct {
             }
         }.lessThan);
 
-        var buffer = std.array_list.Managed(u8).init(self.allocator);
+        var buffer = std.array_list.Managed(u8).init(allocator);
         defer buffer.deinit();
         try buffer.appendSlice(content);
         for (resolved.items) |edit| {
             if (edit.end < edit.start or edit.end > buffer.items.len) continue;
             try buffer.replaceRange(edit.start, edit.end - edit.start, edit.text);
         }
-        try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = buffer.items });
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = buffer.items });
+    }
+
+    pub fn requestSaveFile(self: *NativeEditorHost, path: []const u8, completion: SaveCompletion) !void {
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (!tab.isDiff() and pathsEqual(tab.editor.path, path)) {
+                    return tab.editor.requestSave(completion);
+                }
+            }
+        }
+        completion.complete(completion.context, true);
     }
 
     pub fn saveFile(self: *NativeEditorHost, path: []const u8) anyerror!void {

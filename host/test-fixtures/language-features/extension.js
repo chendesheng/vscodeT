@@ -176,6 +176,13 @@ function activate(context) {
       return [item];
     }
   }, '.'));
+  context.subscriptions.push(vscode.languages.registerOnTypeFormattingEditProvider({ language: 'json' }, {
+    async provideOnTypeFormattingEdits(document, position, ch) {
+      await new Promise(resolve => setTimeout(resolve, 30));
+      if (ch !== ';' || position.character === 0) return [];
+      return [vscode.TextEdit.replace(new vscode.Range(position.line, position.character - 1, position.line, position.character), '!')];
+    }
+  }, ';'));
   context.subscriptions.push(vscode.languages.registerDefinitionProvider({ language: 'json' }, {
     provideDefinition(document) {
       const range = new vscode.Range(0, 0, 0, 1);

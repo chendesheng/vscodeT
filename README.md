@@ -786,8 +786,13 @@ console API for raw mode, sizing and input polling.
   references and formatting await RPCs in window fibers. File save commands,
   extension document saves and close confirmation run the extension save
   participant before snapshotting the model and delegating the disk write.
-  Synchronous compatibility entry points and the remaining unported provider
-  and non-language actor contracts are tracked in the
+  Working-copy saves and search replacement use the same executor; account,
+  task and terminal-completion RPCs no longer recursively pump the transport.
+  The resource-aware `editor.formatOnType` setting triggers the registered
+  formatter on typing, with canceled stale results and detached minimal edits.
+  The optional JSON language server also delivers readiness through the same
+  dispatcher, including deferred completion and cancellable formatting.
+  Standalone test compatibility and remaining unported upstream contracts are tracked in the
   [Zig extension plan](docs/zig-extension-lsp-plan.md).
 - `ui/` is a standalone Zig package outside `src/`: a DOM-like tree with
   authored `Style` declarations that cascade into `ComputedStyle` (inherited

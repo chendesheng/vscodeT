@@ -27,6 +27,8 @@ const SearchResult = tree.SearchResult;
 const SearchModel = @import("searchTreeModel/searchModel.zig").SearchModel;
 const replace_service_mod = @import("replaceService.zig");
 const ReplaceService = replace_service_mod.ReplaceService;
+const SaveCompletion = @import("../../../services/workingCopy/common/workingCopy.zig").SaveCompletion;
+const ReplaceDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
 const ReplacePattern = @import("../../../services/search/common/replace.zig").ReplacePattern;
 const search = @import("../../../services/search/common/search.zig");
 const TextQuery = search.TextQuery;
@@ -74,10 +76,13 @@ pub const Widget = struct {
 
 pub const Host = struct {
     context: *anyopaque,
+    window: ?*@import("../../../../base/common/windowDispatch.zig").Queue = null,
+    model_version: ?*const fn (*anyopaque, []const u8) ?u32 = null,
     open_match: *const fn (context: *anyopaque, path: []const u8, range: ?Range, preserve_focus: bool, side_by_side: bool) anyerror!void,
     highlight_range: *const fn (context: *anyopaque, path: []const u8, range: ?Range) void,
     apply_edits: *const fn (context: *anyopaque, path: []const u8, edits: []const replace_service_mod.Edit) anyerror!void,
     save_file: *const fn (context: *anyopaque, path: []const u8) anyerror!void,
+    request_save_file: ?*const fn (*anyopaque, []const u8, SaveCompletion) anyerror!void = null,
     active_selection_text: *const fn (context: *anyopaque, allocator: Allocator) anyerror!?[]u8,
     extra_files: *const fn (context: *anyopaque, allocator: Allocator) anyerror![][]u8,
     free_paths: *const fn (context: *anyopaque, allocator: Allocator, paths: [][]u8) void,
@@ -133,6 +138,15 @@ pub const SearchView = struct {
     last_search_count: usize = 0,
     last_search_files: usize = 0,
     pending_replace_all: ?ReplaceAllRequest = null,
+    pending_replace: ?ReplaceDisposable = null,
+    replace_target: ?ReplaceTarget = null,
+
+    const ReplaceTarget = union(enum) {
+        all: []u8, // owned completion message
+        match,
+        file: []u8, // owned path
+        folder: []u8, // owned node id
+    };
 
     pub fn init(
         allocator: Allocator,
@@ -159,8 +173,11 @@ pub const SearchView = struct {
             .model = model,
             .replace_service = ReplaceService.init(allocator, .{
                 .context = host.context,
+                .window = host.window,
+                .model_version = host.model_version,
                 .apply_edits = host.apply_edits,
                 .save_file = host.save_file,
+                .request_save_file = host.request_save_file,
             }),
             .view_mode = view_mode,
             .messages = std.array_list.Managed(Message).init(allocator),
@@ -170,6 +187,8 @@ pub const SearchView = struct {
     }
 
     pub fn deinit(self: *SearchView) void {
+        if (self.pending_replace) |pending| pending.dispose();
+        self.clearReplaceTarget();
         self.clearMessages();
         self.messages.deinit();
         self.model.deinit();
@@ -283,6 +302,7 @@ pub const SearchView = struct {
     }
 
     pub fn triggerQueryChange(self: *SearchView, preserve_focus: bool, triggered_on_type: bool) !void {
+        self.clearReplaceTarget();
         defer self.scheduleDeadline();
         // A new query supersedes any pending refresh scheduled by an earlier
         // editor/content or configuration change.
@@ -359,7 +379,9 @@ pub const SearchView = struct {
 
     fn scheduleDeadline(self: *SearchView) void {
         var next = self.debounce_at;
-        if (self.refresh_at) |at| next = @min(next orelse at, at);
+        if (self.pending_replace == null) {
+            if (self.refresh_at) |at| next = @min(next orelse at, at);
+        }
         if (self.state == .searching) {
             if (self.search_started_at) |start| next = @min(next orelse (start + 2000), start + 2000);
         }
@@ -379,7 +401,7 @@ pub const SearchView = struct {
             }
         }
         if (self.refresh_at) |deadline| {
-            if (now >= deadline) {
+            if (self.pending_replace == null and now >= deadline) {
                 self.refresh_at = null;
                 self.triggerQueryChange(true, false) catch |err| {
                     self.setSingleMessage(searchErrorMessage(err), .err);
@@ -445,6 +467,7 @@ pub const SearchView = struct {
     }
 
     pub fn clearResults(self: *SearchView, clear_input: bool) void {
+        self.clearReplaceTarget();
         defer self.scheduleDeadline();
         _ = self.model.cancelSearch();
         self.model.clear();
@@ -629,24 +652,84 @@ pub const SearchView = struct {
     }
 
     pub fn executeReplaceAll(self: *SearchView) !void {
+        if (self.pending_replace != null) return error.ReplaceInProgress;
         defer self.scheduleDeadline();
         const pattern = self.model.replacePattern() orelse return;
         const files = try self.model.result.matches(self.allocator);
         defer self.allocator.free(files);
-        try self.replace_service.replaceFiles(self.allocator, files, pattern, self.model.preserve_case);
-        const occurrences = self.model.result.count();
-        const file_count = self.model.result.fileCount();
-        const replace_value = self.widget.value(self.widget.context, .replace);
-        self.model.result.clear();
-        _ = self.model.cancelSearch();
-        self.state = .idle;
-        const message = try buildAfterReplaceAllMessage(
-            self.allocator,
-            occurrences,
-            file_count,
-            replace_value,
-        );
-        self.setOwnedMessage(message, .info);
+        const message = try buildAfterReplaceAllMessage(self.allocator, self.model.result.count(), self.model.result.fileCount(), self.widget.value(self.widget.context, .replace));
+        self.replace_target = .{ .all = message };
+        errdefer self.clearReplaceTarget();
+        self.pending_replace = try self.replace_service.requestFiles(files, pattern, self.model.preserve_case, .{ .context = self, .complete = replaceCompleted });
+    }
+
+    fn clearReplaceTarget(self: *SearchView) void {
+        if (self.replace_target) |target| switch (target) {
+            .all, .file, .folder => |owned| self.allocator.free(owned),
+            .match => {},
+        };
+        self.replace_target = null;
+    }
+
+    fn findFolder(folder: *tree.FolderMatch, id: []const u8) ?*tree.FolderMatch {
+        if (std.mem.eql(u8, folder.id, id)) return folder;
+        for (folder.folders.items) |child| if (findFolder(child, id)) |found| return found;
+        return null;
+    }
+
+    fn replaceCompleted(ctx: *anyopaque, result: anyerror!bool) void {
+        const self: *SearchView = @ptrCast(@alignCast(ctx));
+        self.pending_replace = null;
+        const target = self.replace_target orelse {
+            self.scheduleDeadline();
+            return;
+        };
+        self.replace_target = null;
+        const success = result catch false;
+        if (!success) {
+            self.replace_target = target;
+            self.clearReplaceTarget();
+            self.reportReplaceError();
+            self.scheduleDeadline();
+            self.viewer.refreshView();
+            return;
+        }
+        switch (target) {
+            .all => |message| {
+                self.refresh_at = null;
+                self.model.result.clear();
+                _ = self.model.cancelSearch();
+                self.state = .idle;
+                self.setOwnedMessage(message, .info);
+            },
+            .match => {
+                // Recompute only after the actual save (including extension
+                // participants). Model events may have recreated the match.
+                self.triggerQueryChange(true, false) catch self.reportReplaceError();
+            },
+            .file => |path| {
+                defer self.allocator.free(path);
+                if (self.model.result.heading.getFolderMatch(path)) |folder| {
+                    if (folder.getDownstreamFileMatch(path)) |file| self.model.result.removeFile(file);
+                }
+            },
+            .folder => |id| {
+                defer self.allocator.free(id);
+                const heading = self.model.result.heading;
+                var found: ?*tree.FolderMatch = null;
+                for (heading.folders.items) |folder| if (findFolder(folder, id)) |value| {
+                    found = value;
+                    break;
+                };
+                if (found == null) if (heading.other) |folder| {
+                    found = findFolder(folder, id);
+                };
+                if (found) |folder| {
+                    if (folder.parent_folder) |parent| parent.removeFolder(folder) else heading.removeFolder(folder);
+                }
+            },
+        }
+        self.scheduleDeadline();
         self.viewer.refreshView();
     }
 
@@ -660,31 +743,27 @@ pub const SearchView = struct {
 
     /// Replaces one match/file/folder and removes it from the result tree.
     pub fn replaceElement(self: *SearchView, element: Node) !void {
+        if (self.pending_replace != null) return error.ReplaceInProgress;
         const pattern = self.model.replacePattern() orelse return;
+        const completion: SaveCompletion = .{ .context = self, .complete = replaceCompleted };
+        errdefer self.clearReplaceTarget();
         switch (element) {
             .match => |match| {
-                const matches = [_]*Match{match};
-                try self.replace_service.replaceMatches(self.allocator, matches[0..], pattern, self.model.preserve_case);
-                self.model.result.removeMatch(match);
+                self.replace_target = .match;
+                self.pending_replace = try self.replace_service.requestMatches(&.{match}, pattern, self.model.preserve_case, completion);
             },
             .file => |file| {
-                const files = [_]*FileMatch{file};
-                try self.replace_service.replaceFiles(self.allocator, files[0..], pattern, self.model.preserve_case);
-                self.model.result.removeFile(file);
+                self.replace_target = .{ .file = try self.allocator.dupe(u8, file.path) };
+                self.pending_replace = try self.replace_service.requestFiles(&.{file}, pattern, self.model.preserve_case, completion);
             },
             .folder => |folder| {
                 const files = try folder.allDownstreamFiles(self.allocator);
                 defer self.allocator.free(files);
-                try self.replace_service.replaceFiles(self.allocator, files, pattern, self.model.preserve_case);
-                if (folder.parent_folder) |parent| {
-                    parent.removeFolder(folder);
-                } else {
-                    self.model.result.heading.removeFolder(folder);
-                }
+                self.replace_target = .{ .folder = try self.allocator.dupe(u8, folder.id) };
+                self.pending_replace = try self.replace_service.requestFiles(files, pattern, self.model.preserve_case, completion);
             },
             .heading => {},
         }
-        self.viewer.refreshView();
     }
 
     pub fn onConfigurationChanged(self: *SearchView) void {

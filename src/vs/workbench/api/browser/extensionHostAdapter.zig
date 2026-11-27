@@ -309,15 +309,16 @@ pub const Extensions = struct {
             .on_did_activate = extensionServiceActivatedHost,
             .as_browser_uri = extensionServiceBrowserUriHost,
         } };
-        try self.accounts.init(allocator, services.common.commands, services.common.quick_input, .{ .context = services.common.context, .show = services.common.status_hint }, self.host, self.descriptions);
+        try self.accounts.init(allocator, services.common.commands, services.common.quick_input, .{ .context = services.common.context, .show = services.common.status_hint }, self.host, services.window, self.descriptions);
         errdefer self.accounts.deinit();
         try self.task_service.init(allocator, services.common.commands, services.common.quick_input, self.descriptions, .{
             .context = self,
+            .window = services.window,
             .activate = activateTaskType,
             .run_terminal = runTaskInTerminal,
         });
         errdefer self.task_service.deinit();
-        self.task_actor = .{ .allocator = allocator, .host = self.host, .service = self.task_service.interface() };
+        self.task_actor = .{ .allocator = allocator, .host = self.host, .window = services.window, .service = self.task_service.interface() };
         errdefer self.task_actor.deinit();
         for (self.descriptions) |extension| {
             if (!std.ascii.eqlIgnoreCase(extension.identifier, "vscode.terminal-suggest")) continue;
@@ -380,6 +381,7 @@ pub const Extensions = struct {
         if (self.terminal_completions) |*session| session.deinit();
         self.secret_state.deinit(self.allocator);
         self.accounts.deinit();
+        self.task_service.cancelPending();
         self.task_actor.deinit();
         self.task_service.deinit();
         self.inline_completions.deinit();
@@ -1976,7 +1978,7 @@ fn applyFoldCommand(editor: *Editor, command: []const u8, args: []const std.json
 
 fn activateTaskType(context: *anyopaque, arena: Allocator, event: []const u8) !void {
     const self: *Extensions = @ptrCast(@alignCast(context));
-    _ = try self.host.requestSync(arena, proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostExtensionService), "$activateByEvent", &.{ .{ .json = .{ .string = event } }, .{ .json = .{ .integer = 0 } } }, null, 5000);
+    _ = try self.host.requestAwait(self.services.window, arena, proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostExtensionService), "$activateByEvent", &.{ .{ .json = .{ .string = event } }, .{ .json = .{ .integer = 0 } } }, null, 5000);
 }
 
 fn runTaskInTerminal(context: *anyopaque, name: []const u8, executable: []const u8, args: []const []const u8, cwd: ?[]const u8) !void {
@@ -3960,6 +3962,91 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             return error.MissingMergeEdit;
         }
 
+        test "Extensions: on-type formatting yields, minimizes edits, and cancels on newer typing" {
+            if (!build_options.e2e) return error.SkipZigTest;
+            const allocator = std.testing.allocator;
+            const io = time_compat.io;
+            std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try tmp.dir.writeFile(io, .{ .sub_path = "on-type.json", .data = "{}" });
+            const path = try tmp.dir.realPathFileAlloc(io, "on-type.json", allocator);
+            defer allocator.free(path);
+            const workbench_window = try TestWindow.init(allocator, io, &.{path}, 100, 30);
+            const workbench = workbench_window.workbench;
+            defer workbench_window.deinit();
+            try workbench.enableLanguageFeatures();
+            try tmp.dir.writeFile(io, .{ .sub_path = "settings.json", .data = "{}" });
+            const settings_path = try tmp.dir.realPathFileAlloc(io, "settings.json", allocator);
+            defer allocator.free(settings_path);
+            try workbench.setUserSettingsPaths(&.{settings_path});
+            try workbench.setUserConfigurationValue("editor.formatOnType", .{ .bool = true });
+            const ext = try Extensions.init(allocator, io, workbench.extensionHostServices(), &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }}, ".cache-ext/on-type-fixture", "host/dist");
+            defer ext.deinit();
+            const editor = workbench.activeTab().?.editor;
+            const FormatOnType = @import("../../../editor/contrib/format/browser/formatActions.zig").FormatOnType;
+            const contribution = editor.getContribution(FormatOnType) orelse return error.MissingFormatContribution;
+            const activation_deadline = time_compat.milliTimestamp() + 5000;
+            while (contribution.typing_listener == null and time_compat.milliTimestamp() < activation_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(1);
+            }
+            try std.testing.expect(contribution.typing_listener != null);
+            try editor.setCursorPosition(Position.init(1, 2));
+            try editor.typeCharacter(";");
+            try std.testing.expect(contribution.pending != null);
+            try std.testing.expectEqualStrings("{;}", try editor.model.borrowLineContent(1));
+            const first_deadline = time_compat.milliTimestamp() + 5000;
+            while (contribution.pending != null and time_compat.milliTimestamp() < first_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(1);
+            }
+            try std.testing.expect(contribution.pending == null);
+            try std.testing.expectEqualStrings("{!}", try editor.model.borrowLineContent(1));
+            try editor.undo();
+            try std.testing.expectEqualStrings("{;}", try editor.model.borrowLineContent(1));
+
+            try editor.setCursorPosition(Position.init(1, 3));
+            try editor.typeCharacter(";");
+            try std.testing.expect(contribution.pending != null);
+            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            try editor.typeCharacter("x");
+            const second_deadline = time_compat.milliTimestamp() + 5000;
+            while (contribution.pending != null and time_compat.milliTimestamp() < second_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(1);
+            }
+            try std.testing.expect(contribution.pending == null);
+            try std.testing.expectEqualStrings("{;;x}", try editor.model.borrowLineContent(1));
+        }
+
+        test "Extensions: task activation and provider results resume on the window" {
+            if (!build_options.e2e) return error.SkipZigTest;
+            const allocator = std.testing.allocator;
+            const io = time_compat.io;
+            std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+            const workbench_window = try TestWindow.init(allocator, io, &.{}, 100, 30);
+            const workbench = workbench_window.workbench;
+            defer workbench_window.deinit();
+            const ext = try Extensions.init(allocator, io, workbench.extensionHostServices(), &.{.{ .path = "host/test-fixtures/task-provider", .is_under_development = true }}, ".cache-ext/task-fixture", "host/dist");
+            defer ext.deinit();
+
+            try workbench.commands.execute("workbench.action.tasks.runTask");
+            const picker = workbench.quick_access.inputService().pickerRef();
+            try std.testing.expectEqualStrings("fixture", picker.activeItem().?.id);
+            picker.accept();
+            try std.testing.expect(ext.task_service.pending != null);
+            try std.testing.expect(!workbench.quick_access.isOpen());
+            const deadline = time_compat.milliTimestamp() + 5000;
+            while (ext.task_service.pending != null and time_compat.milliTimestamp() < deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(1);
+            }
+            try std.testing.expect(ext.task_service.pending == null);
+            try std.testing.expect(workbench.quick_access.isOpen());
+            try std.testing.expectEqualStrings("Fixture task", picker.activeItem().?.label);
+        }
+
         test "Extensions: account sessions need a grant for the requesting extension and scopes" {
             if (!build_options.e2e) return error.SkipZigTest;
             const allocator = std.testing.allocator;
@@ -3989,7 +4076,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                 fn wait(self: *@This(), host: *Extensions, picker: bool) !void {
                     const deadline = time_compat.milliTimestamp() + 5000;
                     while (time_compat.milliTimestamp() < deadline) {
-                        _ = host.pump();
+                        _ = host.services.window.dispatch(time_compat.milliTimestamp());
                         if (if (picker) host.services.quick_access.isOpen() else self.success != null) return;
                         time_compat.sleepMillis(10);
                     }
@@ -4024,10 +4111,22 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(accounts.array.items[0].object.get("accessToken") == null);
             try workbench.commands.execute("workbench.action.accounts.manage");
             picker.accept();
+            const manage_deadline = time_compat.milliTimestamp() + 5000;
+            while (ext.accounts.action.pending != null and time_compat.milliTimestamp() < manage_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(1);
+            }
+            try std.testing.expect(ext.accounts.action.pending == null);
             try std.testing.expectEqualStrings("Fixture user", picker.activeItem().?.label);
             picker.accept();
             picker.setActiveIndex(1);
             picker.accept();
+            const signout_deadline = time_compat.milliTimestamp() + 5000;
+            while (ext.accounts.action.pending != null and time_compat.milliTimestamp() < signout_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(1);
+            }
+            try std.testing.expect(ext.accounts.action.pending == null);
             try std.testing.expectEqual(@as(usize, 0), (try ext.accounts.accounts(a, "fixture")).array.items.len);
             try result.request(ext, false, "read");
             try result.wait(ext, false);

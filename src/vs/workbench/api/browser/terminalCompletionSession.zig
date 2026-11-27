@@ -16,6 +16,8 @@ pub const Session = struct {
     mirrored_terminal: ?usize = null,
     pending: ?u32 = null,
     results: ?api.Results = null,
+    command_line: ?[]u8 = null,
+    cursor: usize = 0,
 
     pub fn interface(self: *Session) api.ITerminalCompletionService {
         return .{ .context = self, .provide = provide, .cancel_fn = cancel };
@@ -26,10 +28,13 @@ pub const Session = struct {
         if (self.pending) |id| self.host.rpc.cancel(id);
         self.pending = null;
         self.results = null;
+        if (self.command_line) |line| self.allocator.free(line);
+        self.command_line = null;
     }
 
     fn provide(context: *anyopaque, instance: *TerminalInstance, line: []const u8, cursor: usize, results: api.Results) !void {
         const self: *Session = @ptrCast(@alignCast(context));
+        cancel(self);
         var arena: std.heap.ArenaAllocator = .init(self.allocator);
         defer arena.deinit();
         const a = arena.allocator();
@@ -47,12 +52,34 @@ pub const Session = struct {
         }
         if (instance.shell_type) |shell| try self.host.notify(actor, "$acceptTerminalShellType", &.{ terminal_id, .{ .json = .{ .string = @tagName(shell) } } });
         try self.host.notify(actor, "$acceptActiveTerminalChanged", &.{terminal_id});
-        _ = try self.host.requestSync(a, proxy(protocol.ExtHostContext.ExtHostExtensionService), "$activateByEvent", &.{ .{ .json = .{ .string = "onTerminalShellIntegration:*" } }, .{ .json = .{ .integer = 0 } } }, null, 5000);
+        // Activation is a separate RPC promise. Its reply is dispatched on
+        // the window, so the terminal remains responsive while the provider
+        // extension starts. Keep only owned inputs across that boundary.
+        self.command_line = try self.allocator.dupe(u8, line);
+        self.cursor = cursor;
+        self.results = results;
+        errdefer cancel(self);
+        self.pending = try self.host.call(proxy(protocol.ExtHostContext.ExtHostExtensionService), "$activateByEvent", &.{ .{ .json = .{ .string = "onTerminalShellIntegration:*" } }, .{ .json = .{ .integer = 0 } } }, null, .{ .context = self, .callback = activated });
+    }
+
+    fn activated(context: *anyopaque, reply: rpc.Reply) void {
+        const self: *Session = @ptrCast(@alignCast(context));
+        self.pending = null;
+        const line = self.command_line orelse return;
+        self.command_line = null;
+        defer self.allocator.free(line);
+        if (reply == .err) return receive(context, reply);
+        self.requestCompletions(line) catch receive(context, .{ .err = .{ .name = "Error", .message = "Could not request terminal completions" } });
+    }
+
+    fn requestCompletions(self: *Session, line: []const u8) !void {
+        var arena: std.heap.ArenaAllocator = .init(self.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
         var ctx: std.json.ObjectMap = .empty;
         try ctx.put(a, "commandLine", .{ .string = line });
-        try ctx.put(a, "cursorIndex", .{ .integer = @intCast(cursor) });
+        try ctx.put(a, "cursorIndex", .{ .integer = @intCast(self.cursor) });
         self.pending = try self.host.call(actor, "$provideTerminalCompletions", &.{ .{ .json = .{ .string = "vscode.terminal-suggest" } }, .{ .json = .{ .object = ctx } } }, null, .{ .context = self, .callback = receive });
-        self.results = results;
     }
 
     fn receive(context: *anyopaque, reply: rpc.Reply) void {
