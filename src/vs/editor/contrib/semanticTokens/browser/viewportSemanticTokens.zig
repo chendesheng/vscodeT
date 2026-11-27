@@ -16,7 +16,7 @@ const time = @import("../../../../base/common/timeCompat.zig");
 const events = @import("../../../common/textModelEvents.zig");
 const editor_common = @import("../../../common/editorCommon.zig");
 const ScrollEvent = @import("../../../../base/common/scrollable.zig").ScrollEvent;
-const IDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
+const RangeRequest = @import("../common/getSemanticTokens.zig").RangeRequest;
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
 
 pub const Services = struct { registry: *Registry, document: *DocumentFeature, window: *dispatch.Queue };
@@ -34,12 +34,7 @@ pub const ViewportSemanticTokensContribution = struct {
     will_change_listener: ?usize = null,
     did_change_listener: ?usize = null,
     provider_listeners: std.ArrayList(ProviderListener) = .empty,
-    arena: ?std.heap.ArenaAllocator = null,
-    pending: ?IDisposable = null,
-    inline_reply: ?anyerror!?languages.SemanticTokensResult = null,
-    starting: bool = false,
-    providers: []const languages.DocumentRangeSemanticTokensProvider = &.{},
-    next_provider: usize = 0,
+    pending: ?*RangeRequest = null,
     range: Range = Range.init(1, 1, 1, 1),
     request_version: u32 = 0,
     const ProviderListener = struct { emitter: *Emitter(void), id: usize };
@@ -155,11 +150,8 @@ pub const ViewportSemanticTokensContribution = struct {
     }
     fn cancel(self: *ViewportSemanticTokensContribution) void {
         self.timer.schedule(null);
-        if (self.pending) |pending| pending.dispose();
+        if (self.pending) |pending| pending.deinit();
         self.pending = null;
-        if (self.arena) |*arena| arena.deinit();
-        self.arena = null;
-        self.providers = &.{};
     }
     fn schedule(self: *ViewportSemanticTokensContribution) void {
         self.cancel();
@@ -179,44 +171,17 @@ pub const ViewportSemanticTokensContribution = struct {
         const last = @max(first, @min(model.getLineCount(), visible.endLineNumber));
         self.range = Range.init(first, 1, last, model.getLineMaxColumn(last));
         self.request_version = model.getVersionId();
-        self.arena = .init(self.editor.allocator);
-        const groups = try svc.registry.orderedGroups(self.arena.?.allocator(), model);
-        self.providers = if (groups.len > 0) groups[0] else &.{};
-        self.next_provider = 0;
-        self.advance();
+        const request = try RangeRequest.create(self.editor.allocator, svc.registry, model, .{ .context = self, .complete = ready });
+        self.pending = request;
+        request.start(model, self.range);
     }
-    fn advance(self: *ViewportSemanticTokensContribution) void {
-        while (self.next_provider < self.providers.len) {
-            const provider = self.providers[self.next_provider];
-            self.next_provider += 1;
-            self.starting = true;
-            const request = provider.request_document_range_semantic_tokens(provider.context, self.arena.?.allocator(), self.model.?, self.range, .{ .context = self, .complete = ready }) catch {
-                self.starting = false;
-                continue;
-            };
-            self.starting = false;
-            if (self.inline_reply) |reply| {
-                self.inline_reply = null;
-                ready(self, reply);
-            } else self.pending = request;
-            return;
-        }
-        self.cancel();
-    }
-    fn ready(context: *anyopaque, result: anyerror!?languages.SemanticTokensResult) void {
+    fn ready(context: *anyopaque, request: *RangeRequest) void {
         const self: *ViewportSemanticTokensContribution = @ptrCast(@alignCast(context));
-        if (self.starting) {
-            self.inline_reply = result;
-            return;
-        }
         self.pending = null;
-        if (!self.enabled() or self.model.?.getVersionId() != self.request_version) return self.cancel();
-        const maybe = result catch return self.advance();
-        const value = maybe orelse return self.advance();
-        if (value.payload != .full) return self.advance();
-        const provider = self.providers[self.next_provider - 1];
-        self.install(provider.legend, value.payload.full) catch {};
-        self.cancel();
+        defer request.deinit();
+        if (!self.enabled() or self.model.?.getVersionId() != self.request_version) return;
+        const selected = request.selected() orelse return;
+        self.install(selected.provider.legend, selected.result.payload.full) catch {};
     }
     fn install(self: *ViewportSemanticTokensContribution, legend: languages.SemanticTokensLegend, data: []const u32) !void {
         const a = self.editor.allocator;

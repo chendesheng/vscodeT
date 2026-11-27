@@ -83,6 +83,84 @@ pub const FullRequest = struct {
     }
 };
 
+/// Like getDocumentRangeSemanticTokens upstream, query all providers in the
+/// highest-scoring group concurrently, ignore failed/invalid replies, and
+/// select the first valid token result in registry order.
+pub const RangeRegistry = @import("../../../common/languageFeatureRegistry.zig").LanguageFeatureRegistry(languages.DocumentRangeSemanticTokensProvider);
+pub const RangeRequest = struct {
+    allocator: std.mem.Allocator,
+    arena: std.heap.ArenaAllocator,
+    slots: []Slot = &.{},
+    remaining: usize = 0,
+    starting: bool = true,
+    callback: Callback,
+
+    const Slot = struct {
+        owner: *RangeRequest,
+        provider: languages.DocumentRangeSemanticTokensProvider,
+        pending: ?IDisposable = null,
+        result: ?languages.SemanticTokensResult = null,
+        done: bool = false,
+
+        fn ready(context: *anyopaque, result: anyerror!?languages.SemanticTokensResult) void {
+            const self: *Slot = @ptrCast(@alignCast(context));
+            self.pending = null;
+            if (result) |maybe| {
+                if (maybe) |value| if (value.payload == .full) {
+                    self.result = value;
+                };
+            } else |_| {}
+            self.done = true;
+            self.owner.remaining -= 1;
+            self.owner.finishIfReady();
+        }
+    };
+    pub const Callback = struct { context: *anyopaque, complete: *const fn (*anyopaque, *RangeRequest) void };
+    pub const Selection = struct { provider: languages.DocumentRangeSemanticTokensProvider, result: languages.SemanticTokensResult };
+
+    pub fn create(a: std.mem.Allocator, registry: *RangeRegistry, model: *TextModel, callback: Callback) !*RangeRequest {
+        const self = try a.create(RangeRequest);
+        self.* = .{ .allocator = a, .arena = .init(a), .callback = callback };
+        errdefer self.deinit();
+        const scratch = self.arena.allocator();
+        const groups = try registry.orderedGroups(scratch, model);
+        if (groups.len > 0) {
+            self.slots = try scratch.alloc(Slot, groups[0].len);
+            for (self.slots, groups[0]) |*slot, provider| slot.* = .{ .owner = self, .provider = provider };
+        }
+        self.remaining = self.slots.len;
+        return self;
+    }
+
+    pub fn start(self: *RangeRequest, model: *TextModel, range: @import("../../../common/core/range.zig").Range) void {
+        for (self.slots) |*slot| {
+            const request = slot.provider.request_document_range_semantic_tokens(slot.provider.context, self.arena.allocator(), model, range, .{ .context = slot, .complete = Slot.ready }) catch |err| {
+                Slot.ready(slot, err);
+                continue;
+            };
+            if (!slot.done) slot.pending = request;
+        }
+        self.starting = false;
+        self.finishIfReady();
+    }
+
+    fn finishIfReady(self: *RangeRequest) void {
+        if (self.starting or self.remaining != 0) return;
+        self.callback.complete(self.callback.context, self);
+    }
+
+    pub fn selected(self: *const RangeRequest) ?Selection {
+        for (self.slots) |slot| if (slot.result) |result| return .{ .provider = slot.provider, .result = result };
+        return null;
+    }
+
+    pub fn deinit(self: *RangeRequest) void {
+        for (self.slots) |slot| if (slot.pending) |pending| pending.dispose();
+        self.arena.deinit();
+        self.allocator.destroy(self);
+    }
+};
+
 /// Apply incremental edits in their original-data coordinates. Reject invalid
 /// or out-of-order edits so that the next request can restart with a full set.
 pub fn applyDelta(a: std.mem.Allocator, previous: []const u32, edits: []const Delta) ![]u32 {
