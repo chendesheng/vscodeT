@@ -72,7 +72,7 @@ pub const LightBulbWidget = struct {
     pub fn update(self: *LightBulbWidget, actions: *const codeAction.ManagedCodeActionSet, at: Position, enabled: model.LightbulbMode) void {
         self.hide();
         const info = computeLightBulbInfo(actions) orelse return;
-        if (enabled == .off or !self.view.hasEditorFocus()) return;
+        if (enabled == .off or !self.view.isFocused() or !self.view.hasEditorFocus()) return;
         if (self.only_with_empty_selection and !self.view.editor.modelSelection().isEmpty()) return;
         const editor = self.view.editor;
         const text_model = editor.getModel() orelse return;

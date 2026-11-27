@@ -733,6 +733,8 @@ pub const Editor = struct {
     on_did_change_code_action_provider: Emitter(void),
     on_did_change_word_highlights: Emitter(bool),
     on_did_change_hover_state: Emitter(void),
+    on_did_change_text_focus: Emitter(bool),
+    on_did_change_inline_message: Emitter(bool),
     on_did_mouse_event: Emitter(editorBrowser.EditorMouseEvent),
     on_did_key_down: Emitter(*input.KeyEvent),
     on_did_change_quick_diff_context: Emitter(void),
@@ -748,6 +750,7 @@ pub const Editor = struct {
     has_word_highlights: bool = false,
     hover_visible: bool = false,
     hover_focused: bool = false,
+    inline_message_visible: bool = false,
     screen_width: usize,
     screen_height: usize,
     /// Terminal default is soft wrap on; a configured `editor.wordWrap`
@@ -1037,6 +1040,8 @@ pub const Editor = struct {
             .on_did_change_code_action_provider = .init(allocator),
             .on_did_change_word_highlights = .init(allocator),
             .on_did_change_hover_state = .init(allocator),
+            .on_did_change_text_focus = .init(allocator),
+            .on_did_change_inline_message = .init(allocator),
             .on_did_mouse_event = .init(allocator),
             .on_did_key_down = .init(allocator),
             .on_did_change_quick_diff_context = .init(allocator),
@@ -1978,6 +1983,8 @@ pub const Editor = struct {
         if (self.supported_code_actions.len != 0) self.allocator.free(self.supported_code_actions);
         self.on_did_change_word_highlights.deinit();
         self.on_did_change_hover_state.deinit();
+        self.on_did_change_text_focus.deinit();
+        self.on_did_change_inline_message.deinit();
         self.on_did_mouse_event.deinit();
         self.on_did_key_down.deinit();
         self.on_did_change_quick_diff_context.deinit();
@@ -2509,6 +2516,12 @@ pub const Editor = struct {
         self.on_did_change_hover_state.fire({}) catch {};
     }
 
+    pub fn setInlineMessageVisible(self: *Editor, visible: bool) void {
+        if (self.inline_message_visible == visible) return;
+        self.inline_message_visible = visible;
+        self.on_did_change_inline_message.fire(visible) catch {};
+    }
+
     pub fn setHasWordHighlights(self: *Editor, has_highlights: bool) void {
         if (self.has_word_highlights == has_highlights) return;
         self.has_word_highlights = has_highlights;
@@ -2717,6 +2730,7 @@ pub const Editor = struct {
             else => {},
         }
         self.view_event_dispatcher.emitSingleViewEvent(event);
+        if (event == .ViewFocusChanged) self.on_did_change_text_focus.fire(event.ViewFocusChanged.isFocused) catch {};
     }
 
     /// Terminal implementation of ViewModel.changeWhitespace. Consumers see

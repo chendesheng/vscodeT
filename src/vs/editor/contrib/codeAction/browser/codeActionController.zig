@@ -5,6 +5,9 @@
 const std = @import("std");
 const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const View = @import("../../../browser/widget/codeEditor/terminalEditorView.zig").IEditorView;
+const TextModel = @import("../../../common/model/textModel.zig").TextModel;
+const model_types = @import("../../../common/model.zig");
+const Range = @import("../../../common/core/range.zig").Range;
 const Position = @import("../../../common/core/position.zig").Position;
 const language = @import("../../../common/languages.zig");
 const Registry = @import("../../../common/languageFeatureRegistry.zig").LanguageFeatureRegistry(language.CodeActionProvider);
@@ -20,6 +23,7 @@ const resource_config = @import("../../../common/services/textResourceConfigurat
 const codeAction = @import("codeAction.zig");
 const model_mod = @import("codeActionModel.zig");
 const types = @import("../common/types.zig");
+const MessageController = @import("../../message/browser/messageController.zig").MessageController;
 const LightBulbWidget = @import("lightBulbWidget.zig").LightBulbWidget;
 
 pub const Services = struct {
@@ -49,6 +53,13 @@ pub const CodeActionController = struct {
     menu_from_lightbulb: bool = false,
     menu_anchor: menu.Anchor = .{ .x = 0, .y = 0 },
     bound: bool = false,
+    highlight_model: ?*TextModel = null,
+    highlight_ids: []u64 = &.{},
+    highlight_options: model_types.ModelDecorationOptions = blk: {
+        var options = model_types.ModelDecorationOptions.init("quickfix-highlight", .AlwaysGrowsWhenTypingAtEdges);
+        options.className = "quickfix-edit-highlight";
+        break :blk options;
+    },
 
     pub fn getOrCreate(editor: *Editor, view: *View, services: Services) !*CodeActionController {
         if (editor.getInstantiatedContribution(CodeActionController)) |existing| {
@@ -91,6 +102,7 @@ pub const CodeActionController = struct {
         self.clearActive();
         if (self.lightbulb) |*widget| widget.unbind();
         self.lightbulb = null;
+        if (self.view != null) if (self.editor.getInstantiatedContribution(MessageController)) |message| message.unbind();
         self.services = null;
         self.view = null;
     }
@@ -111,6 +123,7 @@ pub const CodeActionController = struct {
 
     fn clearActive(self: *CodeActionController) void {
         if (self.services) |services| services.action_widget.hide(self);
+        self.clearActionHighlight();
         if (self.lightbulb) |*widget| widget.hide();
         if (self.active) |set| set.dispose();
         self.active = null;
@@ -118,7 +131,7 @@ pub const CodeActionController = struct {
 
     pub fn manualTriggerAtCurrentPosition(self: *CodeActionController, not_available: []const u8, source: types.CodeActionTriggerSource, filter: types.CodeActionFilter, auto_apply: ?types.CodeActionAutoApply) void {
         if (!self.editor.hasModel() or self.editor.isReadOnly()) return;
-        self.editor.clearMessage();
+        if (self.editor.getInstantiatedContribution(MessageController)) |message| message.closeMessage();
         if (self.model) |model| model.trigger(.{ .type = .Invoke, .trigger_action = source, .filter = filter, .auto_apply = auto_apply, .context = .{ .not_available_message = not_available, .position = self.editor.modelCursorPosition() } });
     }
 
@@ -166,8 +179,10 @@ pub const CodeActionController = struct {
     }
 
     fn showMessage(self: *CodeActionController, message: []const u8) void {
-        self.editor.setMessage("{s}", .{message});
-        if (self.view) |view| view.invalidate();
+        const view = self.view orelse return;
+        const services = self.services orelse return;
+        const controller = MessageController.getOrCreate(self.editor, view, services.window) catch return;
+        controller.showMessage(message, self.editor.modelCursorPosition()) catch {};
     }
 
     fn anchor(self: *CodeActionController) menu.Anchor {
@@ -212,11 +227,49 @@ pub const CodeActionController = struct {
             for (active.documentation, 0..) |doc, i| try items.append(a, .{ .kind = .Action, .item = actions.len + i, .label = doc.title });
             if (include_disabled and active.valid_actions.len > 0 and active.all_actions.len != active.valid_actions.len) try items.append(a, .{ .kind = .Action, .item = actions.len + active.documentation.len, .label = if (self.show_disabled) "Hide Disabled" else "Show Disabled" });
         }
-        try self.services.?.action_widget.show(items.items, .{ .context = self, .on_select = onSelect, .on_hide = onHide }, at);
+        try self.services.?.action_widget.show(items.items, .{ .context = self, .on_select = onSelect, .on_hide = onHide, .on_focus = onFocus }, at);
+    }
+
+    fn clearActionHighlight(self: *CodeActionController) void {
+        const model = self.highlight_model orelse return;
+        const allocator = model.getAllocator();
+        const empty = model.deltaDecorations(self.highlight_ids, &.{}, 0) catch &.{};
+        allocator.free(empty);
+        allocator.free(self.highlight_ids);
+        self.highlight_ids = &.{};
+        self.highlight_model = null;
+    }
+
+    fn onFocus(context: *anyopaque, focused: ?usize) void {
+        const self: *CodeActionController = @ptrCast(@alignCast(context));
+        self.clearActionHighlight();
+        const index = focused orelse return;
+        const active = self.active orelse return;
+        const actions = if (self.menu_all) active.all_actions else active.valid_actions;
+        if (index >= actions.len) return;
+        const action = actions[index].action;
+        const text_model = self.editor.getModel() orelse return;
+        const diagnostics = action.ranges.len == 0 or action.diagnostics.len > 1;
+        const count = if (diagnostics) action.diagnostics.len else action.ranges.len;
+        if (count == 0) return;
+        const decorations = self.allocator.alloc(model_types.ModelDeltaDecoration, count) catch return;
+        defer self.allocator.free(decorations);
+        if (diagnostics) {
+            for (action.diagnostics, decorations) |marker, *decoration| {
+                decoration.* = .{ .range = Range.init(marker.start_line_number, marker.start_column, marker.end_line_number, marker.end_column), .options = &self.highlight_options };
+            }
+        } else {
+            for (action.ranges, decorations) |range, *decoration| {
+                decoration.* = .{ .range = range, .options = &self.highlight_options };
+            }
+        }
+        self.highlight_ids = text_model.deltaDecorations(&.{}, decorations, 0) catch return;
+        self.highlight_model = text_model;
     }
 
     fn onHide(context: *anyopaque, _: bool) void {
         const self: *CodeActionController = @ptrCast(@alignCast(context));
+        self.clearActionHighlight();
         if (self.bound) if (self.view) |view| view.focusEditor();
     }
     fn onSelect(context: *anyopaque, index: usize, preview: bool) !void {

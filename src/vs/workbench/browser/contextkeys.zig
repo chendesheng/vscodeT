@@ -77,6 +77,7 @@ const WindowContextKeys = struct {
     has_word_highlights: contextkeys.IContextKey,
     hover_visible: contextkeys.IContextKey,
     hover_focused: contextkeys.IContextKey,
+    message_visible: contextkeys.IContextKey,
     quick_diff_decoration_count: contextkeys.IContextKey,
     dirty_diff_visible: contextkeys.IContextKey,
     active_custom_editor_id: contextkeys.IContextKey,
@@ -130,6 +131,7 @@ const WindowContextKeys = struct {
             .has_word_highlights = try service.createKey("hasWordHighlights", .{ .boolean = false }),
             .hover_visible = try service.createKey("hoverVisible", .{ .boolean = false }),
             .hover_focused = try service.createKey("hoverFocused", .{ .boolean = false }),
+            .message_visible = try service.createKey("messageVisible", .{ .boolean = false }),
             .quick_diff_decoration_count = try service.createKey("quickDiffDecorationCount", .{ .number = 0 }),
             .dirty_diff_visible = try service.createKey("dirtyDiffVisible", .{ .boolean = false }),
             .editor_lang_id = try service.createKey("editorLangId", .{ .string = "" }),
@@ -176,6 +178,7 @@ pub const WorkbenchContextKeysHandler = struct {
     code_lens_provider_listener: ?usize = null,
     word_highlights_listener: ?usize = null,
     hover_state_listener: ?usize = null,
+    inline_message_listener: ?usize = null,
     code_action_provider_listener: ?usize = null,
     quick_diff_context_listener: ?usize = null,
     working_copy_service: *WorkingCopyService,
@@ -329,12 +332,15 @@ pub const WorkbenchContextKeysHandler = struct {
         errdefer active.on_did_change_word_highlights.unlisten(self.word_highlights_listener.?);
         self.hover_state_listener = try active.on_did_change_hover_state.listen(self, onHoverStateChanged);
         errdefer active.on_did_change_hover_state.unlisten(self.hover_state_listener.?);
+        self.inline_message_listener = try active.on_did_change_inline_message.listen(self, onInlineMessageChanged);
+        errdefer active.on_did_change_inline_message.unlisten(self.inline_message_listener.?);
         self.code_action_provider_listener = try active.on_did_change_code_action_provider.listen(self, onCodeActionsChanged);
         errdefer active.on_did_change_code_action_provider.unlisten(self.code_action_provider_listener.?);
         self.quick_diff_context_listener = try active.on_did_change_quick_diff_context.listen(self, onQuickDiffContextChanged);
         self.window_keys.editor_has_code_lens_provider.set(.{ .boolean = active.has_code_lens_provider });
         self.window_keys.has_word_highlights.set(.{ .boolean = active.has_word_highlights });
         self.updateHoverState(active);
+        self.window_keys.message_visible.set(.{ .boolean = active.inline_message_visible });
         self.updateCodeActions(active);
         self.updateQuickDiffContext(active);
         self.read_only_listener = read_only_listener;
@@ -352,6 +358,9 @@ pub const WorkbenchContextKeysHandler = struct {
         self.window_keys.has_word_highlights.set(.{ .boolean = false });
         if (self.hover_state_listener) |listener| editor.on_did_change_hover_state.unlisten(listener);
         self.hover_state_listener = null;
+        if (self.inline_message_listener) |listener| editor.on_did_change_inline_message.unlisten(listener);
+        self.inline_message_listener = null;
+        self.window_keys.message_visible.set(.{ .boolean = false });
         if (self.code_action_provider_listener) |listener| editor.on_did_change_code_action_provider.unlisten(listener);
         self.code_action_provider_listener = null;
         self.window_keys.editor_has_code_actions_provider.set(.{ .boolean = false });
@@ -385,6 +394,10 @@ pub const WorkbenchContextKeysHandler = struct {
 
     fn onCodeActionsChanged(_: void, self: *@This()) !void {
         if (self.active_editor) |editor| self.updateCodeActions(editor);
+    }
+
+    fn onInlineMessageChanged(visible: bool, self: *@This()) !void {
+        self.window_keys.message_visible.set(.{ .boolean = visible });
     }
 
     fn onHoverStateChanged(_: void, self: *@This()) !void {

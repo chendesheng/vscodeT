@@ -10406,7 +10406,8 @@ test "Diff editor commands: Quick Fix queries the focused real model and execute
         fn provide(context: *anyopaque, arena: Allocator, model: *TextModel, _: Range, action_context: languages.CodeActionContext, _: CancellationToken) !languages.CodeActionList {
             const self: *@This() = @ptrCast(@alignCast(context));
             if (action_context.trigger_kind == 1) self.last_invoked = model;
-            return .{ .actions = try arena.dupe(languages.CodeAction, &.{ .{ .title = "Fix selection", .kind = "quickfix", .is_preferred = true, .command = .{ .id = "test.runCodeAction", .title = "Fix selection" } }, .{ .title = "Refactor selection", .kind = "refactor", .command = .{ .id = "test.runCodeAction", .title = "Refactor selection" } } }) };
+            const ranges = try arena.dupe(Range, &.{Range.init(1, 1, 1, 3)});
+            return .{ .actions = try arena.dupe(languages.CodeAction, &.{ .{ .title = "Fix selection", .kind = "quickfix", .is_preferred = true, .ranges = ranges, .command = .{ .id = "test.runCodeAction", .title = "Fix selection" } }, .{ .title = "Refactor selection", .kind = "refactor", .command = .{ .id = "test.runCodeAction", .title = "Refactor selection" } } }) };
         }
         fn run(context: *anyopaque) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
@@ -10445,14 +10446,37 @@ test "Diff editor commands: Quick Fix queries the focused real model and execute
     try std.testing.expectEqualStrings("Quick Fix", menu.items.items[0].label);
     try std.testing.expectEqualStrings("Fix selection", menu.items.items[1].label);
     try std.testing.expect(wb.context_menu_service.handleKey(&.{ .key = .home }));
-    try std.testing.expect(wb.context_menu_service.handleKey(&.{ .key = .enter }));
+    const controller = widget.modified_editor.getInstantiatedContribution(Controller).?;
+    try std.testing.expect(wb.context_keys.?.interface().getContextKeyValue("codeActionMenuVisible").boolean);
+    try std.testing.expectEqual(@as(usize, 1), controller.highlight_ids.len);
+    try std.testing.expectEqual(Range.init(1, 1, 1, 3), widget.modified_editor.model.getDecorationRange(controller.highlight_ids[0]).?);
+    try wb.commands.execute("selectNextCodeAction");
+    try std.testing.expectEqual(@as(usize, 0), controller.highlight_ids.len);
+    try wb.commands.execute("selectPrevCodeAction");
+    try std.testing.expectEqual(@as(usize, 1), controller.highlight_ids.len);
+    try wb.commands.execute("acceptSelectedCodeAction");
     try std.testing.expectEqual(@as(usize, 1), provider.runs);
+    try std.testing.expectEqual(@as(usize, 0), controller.highlight_ids.len);
+    try std.testing.expect(!wb.context_keys.?.interface().getContextKeyValue("codeActionMenuVisible").boolean);
     widget.setFocus(.original);
     try wb.commands.execute("editor.action.quickFix");
     for (0..12) |_| _ = wb.window_events.dispatch(std.math.maxInt(i64));
     try std.testing.expectEqual(widget.original_editor.model, provider.last_invoked.?);
     try std.testing.expect(wb.context_menu_service.handleKey(&.{ .key = .escape }));
     try std.testing.expectEqual(@as(usize, 1), provider.runs);
+    // An unavailable scoped action uses the shared model-anchored message,
+    // not the terminal status line. The registered Escape action clears it.
+    const original_controller = widget.original_editor.getInstantiatedContribution(Controller).?;
+    original_controller.manualTriggerAtCurrentPosition("No organize imports action available", .OrganizeImports, .{ .include = @import("../vs/editor/contrib/codeAction/common/types.zig").CodeActionKind.SourceOrganizeImports, .include_source_actions = true }, .IfSingle);
+    for (0..12) |_| _ = wb.window_events.dispatch(std.math.maxInt(i64));
+    const MessageController = @import("../vs/editor/contrib/message/browser/messageController.zig").MessageController;
+    const message = widget.original_editor.getInstantiatedContribution(MessageController) orelse return error.MissingEditorMessage;
+    try std.testing.expect(message.isVisible());
+    try std.testing.expectEqualStrings("No organize imports action available", message.message.?);
+    try std.testing.expect(wb.context_keys.?.interface().getContextKeyValue("messageVisible").boolean);
+    try wb.commands.execute("leaveEditorMessage");
+    try std.testing.expect(!message.isVisible());
+    try std.testing.expect(!wb.context_keys.?.interface().getContextKeyValue("messageVisible").boolean);
 }
 
 test "Diff editor commands: whitespace hint and timeout prompt use effective configuration" {

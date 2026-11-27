@@ -76,6 +76,15 @@ pub const ThemeColors = struct {
         };
     }
 
+    pub fn messageTheme(palette: ?*const ThemeColors) @import("../../editor/contrib/message/browser/messageController_css.zig").Colors {
+        const colors = palette orelse return .{};
+        return .{
+            .foreground = colors.color("editorHoverWidget.foreground", .{ 204, 204, 204 }),
+            .background = colors.color("editorHoverWidget.background", .{ 37, 37, 38 }),
+            .border = colors.color("inputValidation.infoBorder", .{ 0, 122, 204 }),
+        };
+    }
+
     /// Raw theme color, including its alpha. Surfaces that need to know
     /// whether a color was defined at all (for example the bracket-highlight
     /// pool, which skips transparent entries like upstream's `ColorProvider`)

@@ -29,6 +29,7 @@ pub const multi_diff_editor = @import("widget/multiDiffEditor/style_css.zig");
 pub const hover = @import("../contrib/hover/browser/hover_css.zig");
 pub const hover_widget = @import("../../base/browser/ui/hover/hoverWidget_css.zig");
 pub const light_bulb = @import("../contrib/codeAction/browser/lightBulbWidget_css.zig");
+pub const message = @import("../contrib/message/browser/messageController_css.zig");
 pub const code_editor = @import("widget/codeEditor/editor_css.zig");
 
 pub const block_decorations = block_decorations_css;
@@ -54,6 +55,7 @@ pub fn register(doc: *ui.Document) !void {
     _ = try doc.registerSheet(hover_widget.sheet);
     _ = try doc.registerSheet(hover.sheet);
     _ = try doc.registerSheet(light_bulb.sheet);
+    _ = try doc.registerSheet(message.sheet);
 }
 
 pub fn registerWorkbench(doc: *ui.Document) !void {
@@ -116,7 +118,8 @@ test "editor css: sheets register into disjoint class ranges" {
     try std.testing.expectEqual(ui.Overflow.hidden, doc.classStyle(@backingInt(hover_widget.Class.monaco_hover)).?.overflow.?);
     try std.testing.expectEqual(ui.Position.absolute, doc.classStyle(@backingInt(hover_widget.Class.monaco_hover_content)).?.position.?);
     try std.testing.expect(multi_diff_editor.base < hover_widget.base and hover_widget.base < hover.base);
-    try std.testing.expect(hover.base < light_bulb.base);
+    try std.testing.expect(hover.base < light_bulb.base and light_bulb.base < message.base);
+    try std.testing.expectEqual(ui.WhiteSpace.pre_wrap, doc.classStyle(@backingInt(message.Class.message)).?.white_space.?);
     try std.testing.expectEqual(ui.Pointer.pointer, doc.classStyle(@backingInt(light_bulb.Class.light_bulb_widget)).?.pointer.?);
     const color = ui.Color{ .r = 5, .g = 6, .b = 7 };
     try hover.registerTheme(&doc, .{ .background = color });

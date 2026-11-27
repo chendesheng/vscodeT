@@ -3821,6 +3821,7 @@ pub const TerminalWorkbench = struct {
         errdefer self.terminal_context.deinit();
         if (self.terminal_service) |terminal| try self.terminal_context.attach(terminal);
         try self.accessible_view.bindContextKeys(service.interface());
+        try self.action_widget_service.bindContextKeys(service.interface());
         self.context_keys = service;
         self.commands.context_keys = service.interface();
         self.updateContextKeys();
@@ -3980,6 +3981,7 @@ pub const TerminalWorkbench = struct {
     fn applyThemeToParts(self: *TerminalWorkbench, palette: ?*const theme_colors_mod.ThemeColors) void {
         editor_css.hover.registerTheme(self.editor_surface.document(), theme_colors_mod.ThemeColors.hoverTheme(palette)) catch {};
         editor_css.light_bulb.registerTheme(self.editor_surface.document(), theme_colors_mod.ThemeColors.lightBulbTheme(palette)) catch {};
+        editor_css.message.registerTheme(self.editor_surface.document(), theme_colors_mod.ThemeColors.messageTheme(palette)) catch {};
         self.applyContextMenuTheme(palette);
         if (self.sidebar) |sidebar| sidebar.setThemeColors(palette);
         self.search_window.setThemeColors(palette);

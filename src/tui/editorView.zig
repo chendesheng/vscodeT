@@ -245,6 +245,7 @@ const CellFlag = struct {
     const inline_deleted_text: u32 = 1 << 24;
     const diff_deleted_selection: u32 = 1 << 25;
     const symbol_highlight: u32 = 1 << 26;
+    const quickfix_highlight: u32 = 1 << 27;
 };
 
 const find_match_background = [3]u8{ 80, 70, 20 };
@@ -560,6 +561,7 @@ pub const View = struct {
         try editor_css.register(self.surface.document());
         try editor_css.hover.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.hoverTheme(self.theme_colors));
         try editor_css.light_bulb.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.lightBulbTheme(self.theme_colors));
+        try editor_css.message.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.messageTheme(self.theme_colors));
         self.owns_surface = true;
     }
 
@@ -1295,6 +1297,7 @@ pub const View = struct {
         if (self.owns_surface) {
             editor_css.hover.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.hoverTheme(palette)) catch {};
             editor_css.light_bulb.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.lightBulbTheme(palette)) catch {};
+            editor_css.message.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.messageTheme(palette)) catch {};
         }
         self.ghost_text.editor_foreground = if (palette) |colors| colors.color("editor.foreground", .{ 212, 212, 212 }) else color(.{ 212, 212, 212 });
         self.ghost_text.foreground = if (palette) |colors| colors.color("editorGhostText.foreground", .{ 128, 128, 128 }) else color(.{ 128, 128, 128 });
@@ -2721,6 +2724,9 @@ fn applyFlagPaint(style: *ui.style.PaintStyle, flag: u32, palette: ?*const theme
         style.color = themedColor(palette, "editorBracketMatch.border", bracket_match_foreground);
         style.underline = true;
     }
+    if (flag & CellFlag.quickfix_highlight != 0) {
+        style.background = themedColor(palette, "editor.findMatchHighlightBackground", find_match_background);
+    }
     if (flag & CellFlag.current_find_match != 0) {
         style.background = themedColor(palette, "editor.findMatchBackground", current_find_match_background);
         style.color = themedColor(palette, "editor.findMatchForeground", current_find_match_foreground);
@@ -2869,6 +2875,7 @@ fn decorationBit(class_name: []const u8) ?u32 {
     if (std.mem.eql(u8, class_name, "valueSetReplacement")) return CellFlag.value_set_replacement;
     if (std.mem.eql(u8, class_name, "rangeHighlight")) return CellFlag.search_range_highlight;
     if (std.mem.eql(u8, class_name, "symbolHighlight")) return CellFlag.symbol_highlight;
+    if (std.mem.eql(u8, class_name, "quickfix-edit-highlight")) return CellFlag.quickfix_highlight;
     if (std.mem.eql(u8, class_name, "char-insert")) return CellFlag.char_insert;
     if (std.mem.eql(u8, class_name, "char-delete")) return CellFlag.char_delete;
     if (std.mem.eql(u8, class_name, "inline-deleted-text")) return CellFlag.inline_deleted_text;
