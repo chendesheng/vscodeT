@@ -226,6 +226,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 features: *@import("../../../common/services/languageFeaturesService.zig").LanguageFeaturesService,
                 cache: ?*@import("../../../contrib/codelens/browser/codeLensCache.zig").CodeLensCache = null,
                 commands: ?@import("../../../contrib/codelens/browser/codelensWidget.zig").CommandHost = null,
+                code_actions: ?@import("../../../contrib/codeAction/browser/codeActionController.zig").Services = null,
                 window: *window_dispatch.Queue,
             };
         };

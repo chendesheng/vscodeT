@@ -208,6 +208,7 @@ pub const Tab = struct {
     controllers: ?*Controllers = null,
     original_controllers: ?*Controllers = null,
     code_lens_services: ?CodeLensServices = null,
+    code_action_services: ?CodeActionServices = null,
     diff: ?*DiffView = null,
     multi_diff: ?*MultiDiffPane = null,
     multi_diff_listener: ?usize = null,
@@ -532,6 +533,14 @@ pub const Tab = struct {
         if (self.original_controllers) |controllers| controllers.attachCodeLensServices(services) catch {};
     }
 
+    pub fn attachCodeActionServices(self: *Tab, services: CodeActionServices) void {
+        if (self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
+        self.code_action_services = services;
+        self.ensureControllers() catch return;
+        if (self.controllers) |controllers| controllers.attachCodeActionServices(services) catch {};
+        if (self.original_controllers) |controllers| controllers.attachCodeActionServices(services) catch {};
+    }
+
     pub fn detachCodeLensServices(self: *Tab) void {
         if (self.controllers) |controllers| controllers.detachCodeLensServices();
         if (self.original_controllers) |controllers| controllers.detachCodeLensServices();
@@ -583,6 +592,7 @@ pub const Tab = struct {
         try controllers.attachWidgets();
         if (self.window) |window| controllers.attachWindow(window);
         if (self.code_lens_services) |services| try controllers.attachCodeLensServices(services);
+        if (self.code_action_services) |services| try controllers.attachCodeActionServices(services);
         return controllers;
     }
 
@@ -1316,6 +1326,8 @@ fn SuggestControllerHostForView(view: *View) @import("../../../../editor/contrib
     };
 }
 
+const CodeActionController = @import("../../../../editor/contrib/codeAction/browser/codeActionController.zig").CodeActionController;
+const CodeActionServices = @import("../../../../editor/contrib/codeAction/browser/codeActionController.zig").Services;
 const CodeLensContribution = @import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution;
 const CodeLensServices = struct {
     features: *LanguageFeaturesService,
@@ -1352,6 +1364,8 @@ pub const Controllers = struct {
     suggest: ?*SuggestController,
     code_lens: ?*CodeLensContribution,
     code_lens_services: ?CodeLensServices,
+    code_action: ?*CodeActionController,
+    code_action_services: ?CodeActionServices,
     language_features: ?*LanguageFeaturesService,
     window: ?*@import("../../../../base/common/windowDispatch.zig").Queue,
     widgets_attached: bool = false,
@@ -1425,6 +1439,8 @@ pub const Controllers = struct {
         self.suggest = null;
         self.code_lens = null;
         self.code_lens_services = null;
+        self.code_action = null;
+        self.code_action_services = null;
         self.language_features = editor.language_features;
         self.window = null;
         self.hover_registration = null;
@@ -1592,6 +1608,29 @@ pub const Controllers = struct {
         self.setThemeColors(view.themeColors());
     }
 
+    pub fn attachCodeActionServices(self: *Controllers, services: CodeActionServices) !void {
+        if (self.code_action_services != null) return;
+        self.code_action_services = services;
+        errdefer self.code_action_services = null;
+        if (self.editor.getInstantiatedContribution(CodeActionController) != null) {
+            try createCodeAction(self);
+        } else try CodeActionController.registerFactory(self.editor, self, createCodeAction);
+    }
+
+    fn createCodeAction(context: *anyopaque) !void {
+        const self: *Controllers = @ptrCast(@alignCast(context));
+        if (self.code_action != null) return;
+        const services = self.code_action_services orelse return error.CodeActionServicesUnavailable;
+        self.code_action = try CodeActionController.getOrCreate(self.editor, self.view, services);
+    }
+
+    pub fn detachCodeActionServices(self: *Controllers) void {
+        self.editor.unregisterContributionFactory(CodeActionController, self);
+        if (self.code_action) |controller| controller.unbind();
+        self.code_action = null;
+        self.code_action_services = null;
+    }
+
     pub fn attachCodeLensServices(self: *Controllers, services: CodeLensServices) !void {
         if (self.code_lens_services != null) return;
         self.code_lens_services = services;
@@ -1698,6 +1737,7 @@ pub const Controllers = struct {
     }
 
     pub fn deinit(self: *Controllers) void {
+        self.detachCodeActionServices();
         self.detachCodeLensServices();
         self.find.widget().detachViewZones();
         if (self.widgets_attached) {
@@ -1775,6 +1815,10 @@ pub const MultiDiffBindingServices = struct {
         const self: *MultiDiffBindingServices = @ptrCast(@alignCast(context));
         self.original.attachLanguageRegistry(host.features);
         self.modified.attachLanguageRegistry(host.features);
+        if (host.code_actions) |services| {
+            self.original.attachCodeActionServices(services) catch {};
+            self.modified.attachCodeActionServices(services) catch {};
+        }
         const cache = host.cache orelse return;
         const commands = host.commands orelse return;
         const services: CodeLensServices = .{ .features = host.features, .cache = cache, .commands = commands, .window = host.window };
@@ -1801,6 +1845,7 @@ fn onConfigurationChanged(context: *anyopaque, event: @import("../../../../edito
         }
         if (self.glyph_hover) |glyph| glyph.applySettings(settings);
     }
+    if (event.hasChanged(.lightbulb)) if (self.code_action) |controller| controller.updateSettings();
     if (self.sticky) |sticky| sticky.onConfigurationChanged();
 }
 

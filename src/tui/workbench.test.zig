@@ -10394,6 +10394,67 @@ test "Diff editor commands: CodeLens action uses the active provider context and
     for (after) |pick| try std.testing.expect(!std.mem.eql(u8, pick.command_id, "codelens.showLensesInCurrentLine"));
 }
 
+test "Diff editor commands: Quick Fix queries the focused real model and executes the selected action" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const TextModel = @import("../vs/editor/common/model/textModel.zig").TextModel;
+    const Controller = @import("../vs/editor/contrib/codeAction/browser/codeActionController.zig").CodeActionController;
+    const Provider = struct {
+        last_invoked: ?*TextModel = null,
+        runs: usize = 0,
+        const kinds: []const []const u8 = &.{ "quickfix", "refactor" };
+        fn provide(context: *anyopaque, arena: Allocator, model: *TextModel, _: Range, action_context: languages.CodeActionContext, _: CancellationToken) !languages.CodeActionList {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (action_context.trigger_kind == 1) self.last_invoked = model;
+            return .{ .actions = try arena.dupe(languages.CodeAction, &.{ .{ .title = "Fix selection", .kind = "quickfix", .is_preferred = true, .command = .{ .id = "test.runCodeAction", .title = "Fix selection" } }, .{ .title = "Refactor selection", .kind = "refactor", .command = .{ .id = "test.runCodeAction", .title = "Refactor selection" } } }) };
+        }
+        fn run(context: *anyopaque) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.runs += 1;
+        }
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(a, io, &tmp, "actions.txt", "old");
+    defer a.free(path);
+    const window = try TestWindow.init(a, io, &.{}, 100, 12);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.enableLanguageFeatures();
+    try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "old", "new", "Original", "Modified");
+    const tab = wb.activeTab().?;
+    const widget = tab.diff.?.widget;
+    var options = widget.options;
+    options.original_editable = true;
+    options.read_only = false;
+    _ = try widget.updateOptions(options);
+    var provider: Provider = .{};
+    try wb.commands.registerCommand(.{ .id = "test.runCodeAction", .context = &provider, .run = Provider.run }, .{ .id = "test.runCodeAction", .title = "Run quick fix" }, .{ .show_in_palette = false });
+    defer wb.commands.unregister("test.runCodeAction");
+    const registration = try wb.language_features.?.code_action_provider.register(.{ .language = "*" }, .{ .context = &provider, .provide_code_actions = Provider.provide, .provided_kinds = Provider.kinds });
+    defer registration.dispose();
+    try std.testing.expect(widget.modified_editor.has_code_action_provider);
+    try std.testing.expect(widget.original_editor.has_code_action_provider);
+    for (0..24) |_| _ = wb.window_events.dispatch(std.math.maxInt(i64));
+    try std.testing.expect(widget.original_editor.getInstantiatedContribution(Controller) != null);
+    try std.testing.expect(widget.modified_editor.getInstantiatedContribution(Controller) != null);
+    try wb.commands.execute("editor.action.quickFix");
+    for (0..12) |_| _ = wb.window_events.dispatch(std.math.maxInt(i64));
+    try std.testing.expectEqual(widget.modified_editor.model, provider.last_invoked.?);
+    const menu = wb.context_menu_service.current orelse return error.MissingCodeActionMenu;
+    try std.testing.expectEqualStrings("Quick Fix", menu.items.items[0].label);
+    try std.testing.expectEqualStrings("Fix selection", menu.items.items[1].label);
+    try std.testing.expect(wb.context_menu_service.handleKey(&.{ .key = .home }));
+    try std.testing.expect(wb.context_menu_service.handleKey(&.{ .key = .enter }));
+    try std.testing.expectEqual(@as(usize, 1), provider.runs);
+    widget.setFocus(.original);
+    try wb.commands.execute("editor.action.quickFix");
+    for (0..12) |_| _ = wb.window_events.dispatch(std.math.maxInt(i64));
+    try std.testing.expectEqual(widget.original_editor.model, provider.last_invoked.?);
+    try std.testing.expect(wb.context_menu_service.handleKey(&.{ .key = .escape }));
+    try std.testing.expectEqual(@as(usize, 1), provider.runs);
+}
+
 test "Diff editor commands: whitespace hint and timeout prompt use effective configuration" {
     const a = std.testing.allocator;
     const io = std.testing.io;

@@ -430,6 +430,8 @@ pub const TerminalWorkbench = struct {
     clipboard_service: @import("clipboardService.zig").ClipboardService,
     clipboard_api: @import("../vs/platform/clipboard/common/clipboardService.zig").IClipboardService,
     context_menu_api: context_menus.IContextMenuService,
+    action_widget_service: @import("../vs/platform/actionWidget/browser/actionWidget.zig").ActionWidgetService,
+    action_widget_api: @import("../vs/platform/actionWidget/browser/actionWidget.zig").IActionWidgetService,
     sidebar_menus: sidebar_part_mod.SidebarViewMenus,
     editor_tab_menus: @import("../vs/workbench/browser/parts/editor/editorTabsControl.zig").EditorTabsControl,
     menu_service: @import("../vs/platform/actions/common/menuService.zig").MenuService,
@@ -574,6 +576,9 @@ pub const TerminalWorkbench = struct {
         self.frame_scheduler = null;
         self.context_menu_service = .init(allocator, self, reportMenuError);
         errdefer self.context_menu_service.deinit();
+        self.action_widget_service = .{ .allocator = allocator, .context_menu = self.context_menu_service.interface() };
+        self.action_widget_api = self.action_widget_service.interface();
+        errdefer self.action_widget_service.deinit();
         self.accessible_view = .init(allocator, io, view_factory, .{ .context = self, .request_frame = requestWorkbenchFrame, .lookup_keybinding = accessibilityKeybindingLabel, .visibility_changed = accessibilityVisibilityChanged });
         errdefer self.accessible_view.deinit();
         try @import("../vs/workbench/workbench.common.main.zig").registerAccessibleViews(&self.accessible_view.registry);
@@ -910,7 +915,7 @@ pub const TerminalWorkbench = struct {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
                         host.editor_configuration.applyToTab(tab);
                         if (host.language_features) |features| tab.attachLanguageRegistry(features);
-                        host.attachCodeLensServices(tab);
+                        host.attachLanguageContributionServices(tab);
                         host.instantiation.invokeFunction(@import("../vs/workbench/workbench.common.main.zig").attachDiffEditorContributions, .{tab}) catch {};
                         tab.attachDiffActionServices(host.clipboard_api, host.context_menu_api);
                         if (tab.diff != null) {
@@ -1209,6 +1214,7 @@ pub const TerminalWorkbench = struct {
         _ = try self.tab_focus.on_did_change_tab_focus.listen(self, onTabFocusChanged);
         self.context_menu_api = self.context_menu_service.interface();
         _ = try self.services.set(context_menus.context_menu_service_id, &self.context_menu_api);
+        _ = try self.services.set(@import("../vs/platform/actionWidget/browser/actionWidget.zig").action_widget_service_id, &self.action_widget_api);
         _ = try self.services.set(@import("../vs/platform/clipboard/common/clipboardService.zig").clipboard_service_id, &self.clipboard_api);
         self.statusbar_api = self.statusbar.interface();
         _ = try self.services.set(statusbar_types.statusbar_service_id, &self.statusbar_api);
@@ -1785,6 +1791,7 @@ pub const TerminalWorkbench = struct {
         self.symbol_navigation.deinit();
         self.symbol_quick_access.deinit();
         if (self.outline_creator) |*creator| creator.dispose();
+        self.action_widget_service.deinit();
         self.context_menu_service.deinit();
         self.clipboard_service.deinit();
         if (self.home_path) |home| {
@@ -2834,12 +2841,12 @@ pub const TerminalWorkbench = struct {
                     tab.attachDiffBreadcrumbs(features, self.outline_creator.?.models);
                 }
                 tab.attachLanguageRegistry(features);
-                self.attachCodeLensServices(tab);
+                self.attachLanguageContributionServices(tab);
             }
         }
     }
 
-    fn codeLensCommandHost(self: *TerminalWorkbench) @import("../vs/editor/contrib/codelens/browser/codelensWidget.zig").CommandHost {
+    fn providerCommandHost(self: *TerminalWorkbench) @import("../vs/editor/common/languages.zig").CommandHost {
         return .{ .context = self, .execute = struct {
             fn execute(context: *anyopaque, command: @import("../vs/editor/common/languages.zig").Command) !void {
                 const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
@@ -2851,17 +2858,27 @@ pub const TerminalWorkbench = struct {
         }.execute };
     }
 
-    fn attachCodeLensServices(self: *TerminalWorkbench, tab: *Tab) void {
+    fn codeActionServices(self: *TerminalWorkbench, features: *LanguageFeaturesService) @import("../vs/editor/contrib/codeAction/browser/codeActionController.zig").Services {
+        const configuration = self.instantiation.invokeFunction(struct {
+            fn get(accessor: @import("../vs/platform/instantiation/common/instantiation.zig").ServicesAccessor) !@import("../vs/editor/common/services/textResourceConfiguration.zig").ITextResourceConfigurationService {
+                return (try accessor.get(@import("../vs/editor/common/services/textResourceConfiguration.zig").text_resource_configuration_service_id)).*;
+            }
+        }.get, .{}) catch null;
+        return .{ .registry = &features.code_action_provider, .markers = self.marker_service, .window = &self.window_events, .action_widget = self.action_widget_api, .bulk_edit = self.bulk_edit_api, .commands = self.providerCommandHost(), .configuration = configuration };
+    }
+
+    fn attachLanguageContributionServices(self: *TerminalWorkbench, tab: *Tab) void {
         const features = self.language_features orelse return;
+        tab.attachCodeActionServices(self.codeActionServices(features));
         const cache = self.code_lens_cache orelse return;
-        tab.attachCodeLensServices(features, cache, self.codeLensCommandHost(), &self.window_events);
+        tab.attachCodeLensServices(features, cache, self.providerCommandHost(), &self.window_events);
     }
 
     fn attachMultiDiffLanguageServices(self: *TerminalWorkbench, widget: *@import("../vs/workbench/browser/parts/editor/editorPane.zig").DiffWidget) void {
         const features = self.language_features orelse return;
         widget.original_editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
         widget.modified_editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
-        widget.attachNativeLanguageServices(.{ .features = features, .cache = self.code_lens_cache, .commands = self.codeLensCommandHost(), .window = &self.window_events });
+        widget.attachNativeLanguageServices(.{ .features = features, .cache = self.code_lens_cache, .commands = self.providerCommandHost(), .code_actions = self.codeActionServices(features), .window = &self.window_events });
     }
 
     fn onMarkersChanged(_: MarkerChangeEvent, self: *TerminalWorkbench) !void {
@@ -3676,7 +3693,7 @@ pub const TerminalWorkbench = struct {
     fn configureCopiedPane(context: *anyopaque, tab: *Tab) void {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
         self.editor_configuration.applyToTab(tab);
-        self.attachCodeLensServices(tab);
+        self.attachLanguageContributionServices(tab);
         self.instantiation.invokeFunction(@import("../vs/workbench/workbench.common.main.zig").attachDiffEditorContributions, .{tab}) catch {};
         if (!tab.isImage()) self.registerWorkingCopy(tab);
         if (self.language_features) |features| tab.attachLanguageRegistry(features);
@@ -3962,6 +3979,7 @@ pub const TerminalWorkbench = struct {
 
     fn applyThemeToParts(self: *TerminalWorkbench, palette: ?*const theme_colors_mod.ThemeColors) void {
         editor_css.hover.registerTheme(self.editor_surface.document(), theme_colors_mod.ThemeColors.hoverTheme(palette)) catch {};
+        editor_css.light_bulb.registerTheme(self.editor_surface.document(), theme_colors_mod.ThemeColors.lightBulbTheme(palette)) catch {};
         self.applyContextMenuTheme(palette);
         if (self.sidebar) |sidebar| sidebar.setThemeColors(palette);
         self.search_window.setThemeColors(palette);

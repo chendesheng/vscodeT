@@ -14,10 +14,7 @@ const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorCo
 const CodeLensItem = @import("./codelens.zig").CodeLensItem;
 const Allocator = std.mem.Allocator;
 
-pub const CommandHost = struct {
-    context: *anyopaque,
-    execute: *const fn (*anyopaque, languages.Command) anyerror!void,
-};
+pub const CommandHost = languages.CommandHost;
 
 pub const Colors = struct { foreground: ?ui.Color = null, hover: ?ui.Color = null };
 

@@ -683,6 +683,12 @@ pub const Command = struct {
     arguments: ?std.json.Value = null,
 };
 
+/// Native ICommandService execution of a language-provider command DTO.
+pub const CommandHost = struct {
+    context: *anyopaque,
+    execute: *const fn (*anyopaque, Command) anyerror!void,
+};
+
 /// CodeLens and CodeLensList from languages.ts. Provider data is opaque to
 /// the editor, allowing the extension-host adapter to retain its cache ID.
 pub const CodeLens = struct {

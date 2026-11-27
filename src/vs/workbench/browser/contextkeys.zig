@@ -68,9 +68,12 @@ const WindowContextKeys = struct {
     diff_original_uri: contextkeys.IContextKey,
     diff_modified_uri: contextkeys.IContextKey,
     editor_text_focus: contextkeys.IContextKey,
+    text_input_focus: contextkeys.IContextKey,
     editor_tab_moves_focus: contextkeys.IContextKey,
     editor_lang_id: contextkeys.IContextKey,
     editor_has_code_lens_provider: contextkeys.IContextKey,
+    editor_has_code_actions_provider: contextkeys.IContextKey,
+    supported_code_actions: contextkeys.IContextKey,
     has_word_highlights: contextkeys.IContextKey,
     hover_visible: contextkeys.IContextKey,
     hover_focused: contextkeys.IContextKey,
@@ -122,6 +125,8 @@ const WindowContextKeys = struct {
             .diff_original_uri = try service.createKey("diffEditorOriginalUri", .{ .string = "" }),
             .diff_modified_uri = try service.createKey("diffEditorModifiedUri", .{ .string = "" }),
             .editor_has_code_lens_provider = try service.createKey("editorHasCodeLensProvider", .{ .boolean = false }),
+            .editor_has_code_actions_provider = try service.createKey("editorHasCodeActionsProvider", .{ .boolean = false }),
+            .supported_code_actions = try service.createKey("supportedCodeAction", .{ .string = "" }),
             .has_word_highlights = try service.createKey("hasWordHighlights", .{ .boolean = false }),
             .hover_visible = try service.createKey("hoverVisible", .{ .boolean = false }),
             .hover_focused = try service.createKey("hoverFocused", .{ .boolean = false }),
@@ -130,6 +135,7 @@ const WindowContextKeys = struct {
             .editor_lang_id = try service.createKey("editorLangId", .{ .string = "" }),
             .active_custom_editor_id = try service.createKey("activeCustomEditorId", .{ .string = "" }),
             .editor_text_focus = try service.createKey("editorTextFocus", .{ .boolean = false }),
+            .text_input_focus = try service.createKey("textInputFocus", .{ .boolean = false }),
             .editor_tab_moves_focus = try service.createKey("editorTabMovesFocus", .{ .boolean = false }),
             .input_focus = try service.createKey("inputFocus", .{ .boolean = false }),
             .list_focus = try service.createKey("listFocus", .{ .boolean = false }),
@@ -170,6 +176,7 @@ pub const WorkbenchContextKeysHandler = struct {
     code_lens_provider_listener: ?usize = null,
     word_highlights_listener: ?usize = null,
     hover_state_listener: ?usize = null,
+    code_action_provider_listener: ?usize = null,
     quick_diff_context_listener: ?usize = null,
     working_copy_service: *WorkingCopyService,
     dirty_working_copies: contextkeys.IContextKey,
@@ -280,6 +287,7 @@ pub const WorkbenchContextKeysHandler = struct {
         keys.editor_lang_id.set(.{ .string = state.language_id });
         keys.active_custom_editor_id.set(.{ .string = state.custom_editor_id });
         keys.editor_text_focus.set(.{ .boolean = state.editor_text_focused });
+        keys.text_input_focus.set(.{ .boolean = state.editor_text_focused });
         keys.editor_tab_moves_focus.set(.{ .boolean = state.editor_tab_moves_focus });
         keys.side_bar_focus.set(.{ .boolean = state.sidebar_focused });
         keys.list_focus.set(.{ .boolean = state.multi_diff_file_list_focused or (state.sidebar_focused and (!search_active or state.search_results_focused)) });
@@ -321,10 +329,13 @@ pub const WorkbenchContextKeysHandler = struct {
         errdefer active.on_did_change_word_highlights.unlisten(self.word_highlights_listener.?);
         self.hover_state_listener = try active.on_did_change_hover_state.listen(self, onHoverStateChanged);
         errdefer active.on_did_change_hover_state.unlisten(self.hover_state_listener.?);
+        self.code_action_provider_listener = try active.on_did_change_code_action_provider.listen(self, onCodeActionsChanged);
+        errdefer active.on_did_change_code_action_provider.unlisten(self.code_action_provider_listener.?);
         self.quick_diff_context_listener = try active.on_did_change_quick_diff_context.listen(self, onQuickDiffContextChanged);
         self.window_keys.editor_has_code_lens_provider.set(.{ .boolean = active.has_code_lens_provider });
         self.window_keys.has_word_highlights.set(.{ .boolean = active.has_word_highlights });
         self.updateHoverState(active);
+        self.updateCodeActions(active);
         self.updateQuickDiffContext(active);
         self.read_only_listener = read_only_listener;
         self.language_listener = language_listener;
@@ -341,6 +352,10 @@ pub const WorkbenchContextKeysHandler = struct {
         self.window_keys.has_word_highlights.set(.{ .boolean = false });
         if (self.hover_state_listener) |listener| editor.on_did_change_hover_state.unlisten(listener);
         self.hover_state_listener = null;
+        if (self.code_action_provider_listener) |listener| editor.on_did_change_code_action_provider.unlisten(listener);
+        self.code_action_provider_listener = null;
+        self.window_keys.editor_has_code_actions_provider.set(.{ .boolean = false });
+        self.window_keys.supported_code_actions.set(.{ .string = "" });
         self.window_keys.hover_visible.set(.{ .boolean = false });
         self.window_keys.hover_focused.set(.{ .boolean = false });
         if (self.quick_diff_context_listener) |listener| editor.on_did_change_quick_diff_context.unlisten(listener);
@@ -361,6 +376,15 @@ pub const WorkbenchContextKeysHandler = struct {
     fn updateHoverState(self: *@This(), editor: *Editor) void {
         self.window_keys.hover_visible.set(.{ .boolean = editor.hover_visible });
         self.window_keys.hover_focused.set(.{ .boolean = editor.hover_focused });
+    }
+
+    fn updateCodeActions(self: *@This(), editor: *Editor) void {
+        self.window_keys.editor_has_code_actions_provider.set(.{ .boolean = editor.has_code_action_provider });
+        self.window_keys.supported_code_actions.set(.{ .string = editor.supported_code_actions });
+    }
+
+    fn onCodeActionsChanged(_: void, self: *@This()) !void {
+        if (self.active_editor) |editor| self.updateCodeActions(editor);
     }
 
     fn onHoverStateChanged(_: void, self: *@This()) !void {

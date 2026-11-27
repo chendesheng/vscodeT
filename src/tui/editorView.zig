@@ -559,6 +559,7 @@ pub const View = struct {
         errdefer self.surface.deinit();
         try editor_css.register(self.surface.document());
         try editor_css.hover.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.hoverTheme(self.theme_colors));
+        try editor_css.light_bulb.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.lightBulbTheme(self.theme_colors));
         self.owns_surface = true;
     }
 
@@ -1291,7 +1292,10 @@ pub const View = struct {
 
     pub fn setThemeColors(self: *View, palette: ?*const theme_colors_mod.ThemeColors) void {
         self.theme_colors = palette;
-        if (self.owns_surface) editor_css.hover.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.hoverTheme(palette)) catch {};
+        if (self.owns_surface) {
+            editor_css.hover.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.hoverTheme(palette)) catch {};
+            editor_css.light_bulb.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.lightBulbTheme(palette)) catch {};
+        }
         self.ghost_text.editor_foreground = if (palette) |colors| colors.color("editor.foreground", .{ 212, 212, 212 }) else color(.{ 212, 212, 212 });
         self.ghost_text.foreground = if (palette) |colors| colors.color("editorGhostText.foreground", .{ 128, 128, 128 }) else color(.{ 128, 128, 128 });
         self.terminal_view_host.viewRef().marginPart().setTheme(marginTheme(palette));

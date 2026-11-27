@@ -20,6 +20,7 @@ pub fn registerAccessibleViews(registry: *@import("../platform/accessibility/bro
 
 pub fn registerConfigurations(registry: *@import("../platform/configuration/common/configurationRegistry.zig").ConfigurationRegistry) !void {
     try registry.registerConfiguration("multiDiffEditor", &@import("contrib/multiDiffEditor/common/multiDiffEditor.zig").properties);
+    try registry.registerConfiguration("editor", &@import("../editor/contrib/codeAction/browser/codeActionContributions.zig").properties);
     try registry.registerConfiguration("diffEditor", &@import("../editor/common/config/editorConfigurationSchema.zig").diff_editor_properties);
 }
 
@@ -206,4 +207,5 @@ pub fn registerEditorNavigationActions(commands: *CommandRegistry, instantiation
     try commands.registerEditorAction(instantiation, hover_actions.hide_hover_action);
     for (hover_actions.scroll_actions) |action| try commands.registerEditorAction(instantiation, action);
     for (hover_actions.verbosity_actions) |action| try commands.registerEditorAction(instantiation, action);
+    for (@import("../editor/contrib/codeAction/browser/codeActionContributions.zig").editor_actions) |action| try commands.registerEditorAction(instantiation, action);
 }

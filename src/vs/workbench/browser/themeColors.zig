@@ -66,6 +66,16 @@ pub const ThemeColors = struct {
         };
     }
 
+    pub fn lightBulbTheme(palette: ?*const ThemeColors) @import("../../editor/contrib/codeAction/browser/lightBulbWidget_css.zig").Colors {
+        const colors = palette orelse return .{};
+        const normal = colors.color("editorLightBulb.foreground", .{ 235, 200, 62 });
+        return .{
+            .normal = normal,
+            .preferred = colors.colorOr("editorLightBulbAutoFix.foreground", normal),
+            .ai = colors.colorOr("editorLightBulbAi.foreground", colors.colorOr("icon.foreground", colors.foreground)),
+        };
+    }
+
     /// Raw theme color, including its alpha. Surfaces that need to know
     /// whether a color was defined at all (for example the bracket-highlight
     /// pool, which skips transparent entries like upstream's `ColorProvider`)
