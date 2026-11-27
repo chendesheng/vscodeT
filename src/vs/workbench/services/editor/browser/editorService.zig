@@ -543,7 +543,13 @@ pub const EditorOpening = struct {
     pending_resource_open: ?struct {
         request: @import("../../../../editor/common/services/resolverService.zig").ModelReferenceRequest,
         label: []u8,
+        selection_utf16: ?@import("../../../../editor/common/core/position.zig").Position = null,
     } = null,
+    pending_link_open: ?struct {
+        encoded_uri: []u8,
+        selection_utf16: ?@import("../../../../editor/common/core/position.zig").Position,
+    } = null,
+    link_open_task: WindowTask = .{},
     diff_worker: ?*DiffWorker = null,
     diff_cache: diff_provider.Cache = .{},
     pending_diff: ?struct {
@@ -717,6 +723,9 @@ pub const EditorOpening = struct {
     }
 
     pub fn cancel(self: *EditorOpening) void {
+        self.link_open_task.schedule(null);
+        if (self.pending_link_open) |pending| self.allocator.free(pending.encoded_uri);
+        self.pending_link_open = null;
         self.cancelPendingOpen();
         self.cancelPendingDiff();
         self.cancelReloadJobs();
@@ -1363,10 +1372,19 @@ pub const EditorOpening = struct {
             }
             if (self.language_features.*) |features| tab.attachLanguageRegistry(features);
             try tab.ensureControllers();
+            if (options.selection_utf16) |position| try revealUtf16Position(tab.editor, position);
             if (!opened.is_new and !options.preserve_focus) tab.focusEditor();
         }
         try self.history.add(path);
         self.pruneTabs(opened.pane);
+    }
+
+    fn revealUtf16Position(editor: *Editor, position: @import("../../../../editor/common/core/position.zig").Position) !void {
+        const line_number = std.math.clamp(position.lineNumber, 1, editor.model.getLineCount());
+        var line = try editor.model.getLineContent(line_number);
+        defer line.deinit();
+        const column = @import("../../../api/common/positionConverter.zig").columnForUtf16Offset(line.items, position.column);
+        try editor.setCursorPosition(.init(line_number, column));
     }
 
     pub fn openPathWithOptions(self: *EditorOpening, path: []const u8, options: OpenOptions) !void {
@@ -1506,12 +1524,63 @@ pub const EditorOpening = struct {
     }
 
     pub fn requestOpenResourceUri(self: *EditorOpening, resource: std.Uri, label: []const u8) !void {
+        try self.requestOpenResourceUriAt(resource, label, null);
+    }
+
+    /// IOpenerService adapter. Defer the actual editor activation until the
+    /// current DOM event has returned, since opening a preview can dispose
+    /// the code editor and hover that initiated it.
+    pub const OpenerAdapter = struct {
+        opening: *EditorOpening,
+        pub fn interface(self: OpenerAdapter) @import("../../../../platform/opener/common/opener.zig").IOpenerService {
+            return .{ .context = self.opening, .open_resource = open };
+        }
+        fn open(context: *anyopaque, resource: resource_uri.Components, selection: ?@import("../../../../editor/common/core/position.zig").Position) void {
+            const self: *EditorOpening = @ptrCast(@alignCast(context));
+            var uri = @import("../../../../base/common/uri.zig").URI.from(self.allocator, .{ .scheme = resource.scheme, .authority = resource.authority, .path = resource.path, .query = resource.query, .fragment = resource.fragment }, false) catch return;
+            defer uri.deinit();
+            const encoded = uri.toStringEncoded(self.allocator) catch return;
+            if (self.pending_link_open) |pending| self.allocator.free(pending.encoded_uri);
+            self.pending_link_open = .{ .encoded_uri = encoded, .selection_utf16 = selection };
+            if (self.link_open_task.queue == null) self.link_open_task = .{ .queue = self.window_events, .context = self, .run = run, .progress = true };
+            self.link_open_task.post();
+        }
+        fn run(context: *anyopaque, _: i64, _: bool) bool {
+            const self: *EditorOpening = @ptrCast(@alignCast(context));
+            const pending = self.pending_link_open orelse return false;
+            self.pending_link_open = null;
+            defer self.allocator.free(pending.encoded_uri);
+            const resource = std.Uri.parse(pending.encoded_uri) catch return false;
+            if (std.mem.eql(u8, resource.scheme, "http") or std.mem.eql(u8, resource.scheme, "https")) {
+                _ = @import("../../../../platform/opener/common/opener.zig").openExternal(self.allocator, self.io, pending.encoded_uri) catch false;
+            } else if (!std.mem.eql(u8, resource.scheme, "command")) {
+                var scratch = std.heap.ArenaAllocator.init(self.allocator);
+                defer scratch.deinit();
+                const path = resource_uri.path(resource, scratch.allocator()) catch return false;
+                self.requestOpenResourceUriAt(resource, std.fs.path.basename(path), pending.selection_utf16) catch |err| self.setStatusHint("Open failed: {s}", .{@errorName(err)});
+            }
+            self.host.request_frame(self.host.context);
+            return true;
+        }
+    };
+
+    /// Shared opener path: files use their normal editable input, while
+    /// virtual resources resolve through ITextModelService in the same way
+    /// as opening the original side of a diff.
+    pub fn requestOpenResourceUriAt(self: *EditorOpening, resource: std.Uri, label: []const u8, selection: ?@import("../../../../editor/common/core/position.zig").Position) !void {
         self.cancelPendingOpen();
         self.cancelPendingDiff();
+        if (std.mem.eql(u8, resource.scheme, "file")) {
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+            const path = try @import("../../../../base/common/stdUri.zig").fsPath(resource, arena.allocator());
+            self.requestOpenPathWithOptions(path, .{ .force_text = selection != null, .selection_utf16 = selection });
+            return;
+        }
         const owned_label = try self.allocator.dupe(u8, label);
         errdefer self.allocator.free(owned_label);
         const request = try self.text_model_resolver.createModelReference(resource, .{ .context = self, .complete = resourceOpenCompleted });
-        self.pending_resource_open = .{ .request = request, .label = owned_label };
+        self.pending_resource_open = .{ .request = request, .label = owned_label, .selection_utf16 = selection };
         self.setStatusHint("Opening {s}...", .{label});
     }
 
@@ -1527,11 +1596,11 @@ pub const EditorOpening = struct {
         self.pending_resource_open = null;
         defer self.allocator.free(pending.label);
         self.clearStatusHint();
-        self.finishResourceOpen(result, pending.label) catch |err| self.setStatusHint("Open failed: {s}", .{@errorName(err)});
+        self.finishResourceOpen(result, pending.label, pending.selection_utf16) catch |err| self.setStatusHint("Open failed: {s}", .{@errorName(err)});
         self.host.request_frame(self.host.context);
     }
 
-    fn finishResourceOpen(self: *EditorOpening, result: @import("../../../../editor/common/services/resolverService.zig").ModelReferenceResult, label: []const u8) !void {
+    fn finishResourceOpen(self: *EditorOpening, result: @import("../../../../editor/common/services/resolverService.zig").ModelReferenceResult, label: []const u8, selection: ?@import("../../../../editor/common/core/position.zig").Position) !void {
         const reference = switch (result) {
             .resolved => |value| value,
             .failure => |err| return err,
@@ -1539,6 +1608,7 @@ pub const EditorOpening = struct {
         const input = try text_diff_editor_mod.TextResourceEditorInput.initFromReference(self.allocator, reference, label);
         defer input.destroy();
         try self.openTextResourceInput(input);
+        if (selection) |position| if (self.part.activeView()) |pane| if (pane.activeTab()) |tab| try revealUtf16Position(tab.editor, position);
     }
 
     fn cancelPendingOpen(self: *EditorOpening) void {

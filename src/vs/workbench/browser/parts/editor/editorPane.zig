@@ -209,6 +209,7 @@ pub const Tab = struct {
     original_controllers: ?*Controllers = null,
     code_lens_services: ?CodeLensServices = null,
     code_action_services: ?CodeActionServices = null,
+    hover_opener: ?MarkerHoverParticipantOpener = null,
     diff: ?*DiffView = null,
     multi_diff: ?*MultiDiffPane = null,
     multi_diff_listener: ?usize = null,
@@ -541,6 +542,12 @@ pub const Tab = struct {
         if (self.original_controllers) |controllers| controllers.attachCodeActionServices(services) catch {};
     }
 
+    pub fn attachHoverOpener(self: *Tab, opener: MarkerHoverParticipantOpener) void {
+        self.hover_opener = opener;
+        if (self.controllers) |controllers| controllers.attachHoverOpener(opener);
+        if (self.original_controllers) |controllers| controllers.attachHoverOpener(opener);
+    }
+
     pub fn detachCodeLensServices(self: *Tab) void {
         if (self.controllers) |controllers| controllers.detachCodeLensServices();
         if (self.original_controllers) |controllers| controllers.detachCodeLensServices();
@@ -593,6 +600,7 @@ pub const Tab = struct {
         if (self.window) |window| controllers.attachWindow(window);
         if (self.code_lens_services) |services| try controllers.attachCodeLensServices(services);
         if (self.code_action_services) |services| try controllers.attachCodeActionServices(services);
+        if (self.hover_opener) |opener| controllers.attachHoverOpener(opener);
         return controllers;
     }
 
@@ -1328,6 +1336,7 @@ fn SuggestControllerHostForView(view: *View) @import("../../../../editor/contrib
 
 const CodeActionController = @import("../../../../editor/contrib/codeAction/browser/codeActionController.zig").CodeActionController;
 const CodeActionServices = @import("../../../../editor/contrib/codeAction/browser/codeActionController.zig").Services;
+const MarkerHoverParticipantOpener = @import("../../../../editor/contrib/hover/browser/markerHoverParticipant.zig").Opener;
 const CodeLensContribution = @import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution;
 const CodeLensServices = struct {
     features: *LanguageFeaturesService,
@@ -1366,6 +1375,7 @@ pub const Controllers = struct {
     code_lens_services: ?CodeLensServices,
     code_action: ?*CodeActionController,
     code_action_services: ?CodeActionServices,
+    hover_opener: ?MarkerHoverParticipantOpener,
     language_features: ?*LanguageFeaturesService,
     window: ?*@import("../../../../base/common/windowDispatch.zig").Queue,
     widgets_attached: bool = false,
@@ -1441,6 +1451,7 @@ pub const Controllers = struct {
         self.code_lens_services = null;
         self.code_action = null;
         self.code_action_services = null;
+        self.hover_opener = null;
         self.language_features = editor.language_features;
         self.window = null;
         self.hover_registration = null;
@@ -1542,6 +1553,7 @@ pub const Controllers = struct {
             editor.model,
             editor.marker_decorations,
         );
+        self.marker_hover_participant.opener = self.hover_opener;
         errdefer self.marker_hover_participant.deinit();
         self.participants = .{
             self.marker_hover_participant.interface(),
@@ -1615,6 +1627,11 @@ pub const Controllers = struct {
         if (self.editor.getInstantiatedContribution(CodeActionController) != null) {
             try createCodeAction(self);
         } else try CodeActionController.registerFactory(self.editor, self, createCodeAction);
+    }
+
+    pub fn attachHoverOpener(self: *Controllers, opener: MarkerHoverParticipantOpener) void {
+        self.hover_opener = opener;
+        if (self.hover != null) self.marker_hover_participant.opener = opener;
     }
 
     fn createCodeAction(context: *anyopaque) !void {
@@ -1815,6 +1832,10 @@ pub const MultiDiffBindingServices = struct {
         const self: *MultiDiffBindingServices = @ptrCast(@alignCast(context));
         self.original.attachLanguageRegistry(host.features);
         self.modified.attachLanguageRegistry(host.features);
+        if (host.opener) |opener| {
+            self.original.attachHoverOpener(opener);
+            self.modified.attachHoverOpener(opener);
+        }
         if (host.code_actions) |services| {
             self.original.attachCodeActionServices(services) catch {};
             self.modified.attachCodeActionServices(services) catch {};

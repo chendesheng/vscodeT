@@ -20,6 +20,9 @@ pub const OpenOptions = struct {
     preserve_focus: bool = false,
     /// Explicit text editor override for image files.
     force_text: bool = false,
+    /// Location DTOs use one-based UTF-16 columns. Convert after the file's
+    /// actual model resolves, not at the caller or against a different model.
+    selection_utf16: ?@import("../../../../editor/common/core/position.zig").Position = null,
 };
 
 /// Upstream IEditorCloseEvent, with the native pinned state retained for

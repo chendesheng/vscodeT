@@ -1,9 +1,8 @@
 // Port of `src/vs/editor/contrib/hover/test/browser/markerHoverParticipant.test.ts`.
 //
 // Terminal adaptation: the upstream tests inspect DOM nodes. Here the rendered
-// rows are painted into a `ui.CellGrid` and read back as text. The marker
-// model has no `relatedInformation`, so that case is reduced to the multiline
-// message plus source/code assertion.
+// rows are painted into a `ui.CellGrid` and read back as text. Link activation
+// is dispatched through the native DOM focus and keyboard events.
 const std = @import("std");
 
 const ui = @import("ui");
@@ -152,6 +151,63 @@ test "marker hover: multiline message, source and code render as rows" {
     try testing.expect(std.mem.indexOf(u8, row1, "Second line") != null);
     try testing.expect(std.mem.indexOf(u8, row2, "test-source(test-code)") != null);
     try testing.expectEqualStrings("Warning: First line\nSecond line", interface.get_accessible_content.?(interface.context, &part));
+}
+
+test "marker hover: preserves a single diagnostic with multiline text, code and related information" {
+    const a = std.testing.allocator;
+    const Position = @import("../../../../common/core/position.zig").Position;
+    const Probe = struct {
+        opened: usize = 0,
+        code: bool = false,
+        related: bool = false,
+        fn open(context: *anyopaque, resource: @import("../../../../../base/common/stdUri.zig").Components, position: ?Position) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.opened += 1;
+            if (position) |p| {
+                self.related = std.mem.eql(u8, resource.path, "/related.ts") and p.lineNumber == 2 and p.column == 3;
+            } else self.code = std.mem.eql(u8, resource.scheme, "https") and std.mem.eql(u8, resource.authority, "example.com") and std.mem.eql(u8, resource.path, "/diagnostic");
+        }
+    };
+    var probe: Probe = .{};
+    var participant = MarkerHoverParticipant.init(a, undefined, null);
+    defer participant.deinit();
+    participant.opener = .{ .context = &probe, .open_resource = Probe.open };
+    var hover: MarkerHover = .{
+        .range = Range.init(1, 1, 1, 5),
+        .severity = markers.MarkerSeverity.Warning,
+        .message = "First line\nSecond line",
+        .source = "test-source",
+        .code = "test-code",
+        .code_target = .{ .scheme = "https", .authority = "example.com", .path = "/diagnostic" },
+        .related_information = &.{.{ .resource = .{ .scheme = "file", .path = "/related.ts" }, .message = "Related message", .start_line_number = 2, .start_column = 3, .end_line_number = 2, .end_column = 6 }},
+    };
+    const part = makePart(&participant, &hover);
+    const interface = participant.interface();
+    const context = renderContext();
+    const rendered = try interface.render_hover_parts.?(interface.context, &context, &.{part});
+    try std.testing.expectEqual(@as(usize, 1), rendered.len);
+    try std.testing.expectEqual(part.data, rendered[0].hover_part.data);
+    try std.testing.expectEqualStrings("Warning: First line\nSecond line\nrelated.ts(2, 3): Related message", interface.get_accessible_content.?(interface.context, &part));
+    var doc = try ui.Document.init(a, .{ .cols = 60, .rows = 8 });
+    defer doc.deinit();
+    const root = try doc.createElement(.div);
+    root.setStyle(.{ .position = .absolute, .width = .{ .percent = 100 }, .height = .{ .percent = 100 } });
+    doc.setRoot(root);
+    _ = try rendered[0].build(rendered[0].context, &doc, root, 40, 0);
+    var grid = try ui.CellGrid.init(a, 60, 8);
+    defer grid.deinit();
+    try ui.paint.paintDocument(&doc, &grid);
+    for ([_][]const u8{ "First line", "Second line", "test-source", "related.ts(2, 3): Related message" }, 0..) |expected, i| {
+        const row = try grid.rowText(a, i);
+        defer a.free(row);
+        try std.testing.expect(std.mem.indexOf(u8, row, expected) != null);
+    }
+    try std.testing.expect(doc.moveFocusWithin(root, .forward));
+    _ = doc.dispatchKey(.enter, .{});
+    try std.testing.expect(doc.moveFocusWithin(root, .forward));
+    _ = doc.dispatchKey(.enter, .{});
+    try std.testing.expectEqual(@as(usize, 2), probe.opened);
+    try std.testing.expect(probe.code and probe.related);
 }
 
 test "marker hover: marker decorations resolve to hover parts" {

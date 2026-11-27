@@ -13007,6 +13007,83 @@ test "Diff editor glyph hover follows real pane mouse targets, settings and boun
     try std.testing.expect(!original_widget.visible and !modified_widget.visible);
 }
 
+test "Diff editor commands: marker hover opens related locations from both real diff resources" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const markers = @import("../vs/platform/markers/common/markers.zig");
+    const HoverController = @import("../vs/editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(a, io, &tmp, "marker-hover.txt", "original");
+    defer a.free(path);
+    const target = try seedFile(a, io, &tmp, "related file.txt", "header\n😀target\n");
+    defer a.free(target);
+    const absolute_target = try @import("../vs/workbench/services/textfile/common/textFileService.zig").absolutePath(a, io, target);
+    defer a.free(absolute_target);
+    const window = try TestWindow.init(a, io, &.{}, 120, 28);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.enableLanguageFeatures();
+    try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "original", "modified", "Original", "Modified");
+    const tab = wb.activeTab().?;
+    const diff = tab.diff.?.widget;
+    const FindLink = struct {
+        fn find(node: *ui.Node) ?*ui.Node {
+            if (node.getAttribute("data-marker-hover-link")) |target_id| if (std.mem.eql(u8, target_id, "0")) return node;
+            var child = node.firstChild();
+            while (child) |value| : (child = value.nextSibling()) if (find(value)) |link| return link;
+            return null;
+        }
+    };
+    var frame: std.Io.Writer.Allocating = .init(a);
+    defer frame.deinit();
+    for ([_]*Editor{ diff.original_editor, diff.modified_editor }) |editor| {
+        try wb.part.activeView().?.activateTab(tab);
+        if (diff.focusedEditor() != editor) try diff.switchSide();
+        try renderFrame(wb, &frame.writer);
+        var resource = try markers.Resource.fromUri(a, editor.model.uri());
+        defer resource.deinit(a);
+        try wb.marker_service.?.changeOne("related-test", resource, &.{.{
+            .message = "Diagnostic message",
+            .severity = markers.MarkerSeverity.Warning,
+            .start_line_number = 1,
+            .start_column = 1,
+            .end_line_number = 1,
+            .end_column = 5,
+            .related_information = &.{.{ .resource = .{ .scheme = "file", .path = absolute_target }, .message = "Related declaration", .start_line_number = 2, .start_column = 3, .end_line_number = 2, .end_column = 4 }},
+        }}, null);
+        const decorations = try editor.model.getLineDecorations(1, 0, false);
+        defer a.free(decorations);
+        const marker_decorations = editor.marker_decorations orelse return error.MissingMarkerDecorations;
+        for (decorations) |decoration| {
+            if (marker_decorations.getMarker(editor.model, decoration.id) != null) break;
+        } else return error.MissingMarkerDecoration;
+        const controller = editor.getContribution(HoverController) orelse return error.MissingHover;
+        controller.showContentHover(Range.init(1, 1, 1, 2), .immediate, .keyboard, true);
+        try std.testing.expect(controller.widget().isVisible());
+        try renderFrame(wb, &frame.writer);
+        const hover = controller.widget().widget;
+        try std.testing.expect(hover.isVisible());
+        const accessible = hover.widgetContent() orelse return error.MissingMarkerHover;
+        try std.testing.expect(std.mem.indexOf(u8, accessible, "related file.txt(2, 3): Related declaration") != null);
+        const link = FindLink.find(hover.root orelse return error.MissingHoverRoot) orelse return error.MissingRelatedLink;
+        var click: ui.MouseEvent = .{ .kind = .click, .x = 0, .y = 0 };
+        link.document.dispatchMouse(link, &click);
+        // The link schedules editor activation after this event returns.
+        try std.testing.expect(wb.activeTab().? == tab);
+        for (0..5000) |_| {
+            _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            if (wb.activeTab().? != tab) break;
+            time_compat.sleepMillis(1);
+        }
+        const related = wb.activeTab().?;
+        try std.testing.expect(related != tab and related.file_input != null);
+        try std.testing.expect(!related.editor.isReadOnly());
+        try std.testing.expectEqual(Position.init(2, 5), related.editor.modelCursorPosition());
+        controller.hideContentHover();
+    }
+}
+
 test "Word highlights drive the active editor context and upstream F7 action before rendering" {
     const a = std.testing.allocator;
     const io = std.testing.io;

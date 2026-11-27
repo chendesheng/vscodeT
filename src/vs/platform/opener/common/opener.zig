@@ -4,6 +4,19 @@
 // workbench openers.
 const std = @import("std");
 const builtin = @import("builtin");
+const components = @import("../../../base/common/stdUri.zig").Components;
+const Position = @import("../../../editor/common/core/position.zig").Position;
+
+/// URI and editor options subset of the upstream IOpenerService. The host
+/// owns URI resolution, dispatch and the external-browser boundary. Selection
+/// coordinates are those of the target URI (one-based UTF-16).
+pub const IOpenerService = struct {
+    context: *anyopaque,
+    open_resource: *const fn (*anyopaque, components, ?Position) void,
+    pub fn open(self: IOpenerService, resource: components, selection: ?Position) void {
+        self.open_resource(self.context, resource, selection);
+    }
+};
 pub fn openExternal(allocator: std.mem.Allocator, io: std.Io, url: []const u8) !bool {
     if (!std.mem.startsWith(u8, url, "https://") and !std.mem.startsWith(u8, url, "http://")) return false;
     const opener = switch (builtin.os.tag) {

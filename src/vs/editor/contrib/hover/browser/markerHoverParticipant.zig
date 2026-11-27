@@ -4,11 +4,8 @@
 // icon, message, source/code and related-information links) as DOM nodes. The
 // terminal renders the same rows as cells: the severity glyph from the
 // Problems view, the plain-text marker message with its embedded newlines, and
-// a dim `source(code)` line. Related information, code-action links, the
-// "View Problem" status-bar action and quick-fix/code-action entries are not
-// ported: the marker model does not carry related information and the TUI has
-// no code-action controller. The marker message itself is what the hover and
-// `gh` popup show.
+// a dim `source(code)` line and related-information rows. Navigation and
+// status-bar actions are bound through the editor services.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
@@ -31,6 +28,10 @@ const IEditorHoverParticipant = hoverTypes.IEditorHoverParticipant;
 const IEditorHoverRenderContext = hoverTypes.IEditorHoverRenderContext;
 
 const markdown = @import("../../../common/markdown/markdownTerminalRenderer.zig");
+const Position = @import("../../../common/core/position.zig").Position;
+/// Narrow adapter for IOpenerService. Related positions retain UTF-16 columns
+/// until the target resource resolves, just as in the diagnostic DTO.
+pub const Opener = @import("../../../../platform/opener/common/opener.zig").IOpenerService;
 
 /// Port of `MarkerHover`. The marker fields are copied into the participant's
 /// arena so a later marker-service update cannot invalidate a rendered hover.
@@ -40,12 +41,17 @@ pub const MarkerHover = struct {
     message: []const u8,
     source: ?[]const u8 = null,
     code: ?[]const u8 = null,
+    code_target: ?markers.Resource = null,
+    related_information: []const markers.RelatedInformation = &.{},
+    /// The marker's full model range, distinct from its one-line hover anchor.
+    marker_range: ?Range = null,
 };
 
 pub const MarkerHoverParticipant = struct {
     allocator: Allocator,
     model: *TextModel,
     marker_decorations: ?*MarkerDecorationsService,
+    opener: ?Opener = null,
     /// Payloads of the current hover computation.
     parts_arena: std.heap.ArenaAllocator,
     /// Parsed rows of the currently rendered hover.
@@ -124,6 +130,9 @@ pub const MarkerHoverParticipant = struct {
                 .message = try allocator.dupe(u8, marker.message),
                 .source = if (marker.source) |value| try allocator.dupe(u8, value) else null,
                 .code = if (marker.code) |value| try allocator.dupe(u8, value) else null,
+                .code_target = if (marker.code_target) |target| try target.clone(allocator) else null,
+                .related_information = try markers.RelatedInformation.cloneAll(allocator, marker.related_information),
+                .marker_range = Range.init(marker.start_line_number, marker.start_column, marker.end_line_number, marker.end_column),
             };
             try result.append(.{
                 .owner = self,
@@ -164,6 +173,8 @@ pub const MarkerHoverParticipant = struct {
                 .allocator = self.allocator,
                 .lines = try buildLines(allocator, hover),
                 .accessible = try accessibleText(allocator, hover),
+                .hover = hover,
+                .opener = self.opener,
             };
             try rendered.append(.{
                 .hover_part = part,
@@ -223,6 +234,8 @@ const RenderedMarkerHover = struct {
     allocator: Allocator,
     lines: []const markdown.Line,
     accessible: []const u8,
+    hover: *const MarkerHover,
+    opener: ?Opener,
 };
 
 fn buildLines(allocator: Allocator, hover: *const MarkerHover) ![]const markdown.Line {
@@ -245,7 +258,12 @@ fn buildLines(allocator: Allocator, hover: *const MarkerHover) ![]const markdown
         try lines.append(.{ .spans = try spans.toOwnedSlice() });
     }
 
-    if (hover.source != null or hover.code != null) {
+    if (hover.code_target != null and hover.code != null) {
+        var spans = ArrayList(markdown.Span).init(allocator);
+        if (hover.source) |source| try spans.append(.{ .text = source, .style = .{ .dim = true } });
+        try spans.append(.{ .text = hover.code.?, .style = .{ .dim = true, .underline = true }, .link = "code" });
+        try lines.append(.{ .spans = try spans.toOwnedSlice() });
+    } else if (hover.source != null or hover.code != null) {
         const details = if (hover.source != null and hover.code != null)
             try std.fmt.allocPrint(allocator, "{s}({s})", .{ hover.source.?, hover.code.? })
         else if (hover.source) |source|
@@ -256,11 +274,33 @@ fn buildLines(allocator: Allocator, hover: *const MarkerHover) ![]const markdown
             .{ .text = details, .style = .{ .dim = true } },
         }) });
     }
+    for (hover.related_information, 0..) |info, index| {
+        const location = try relatedLocationLabel(allocator, info);
+        var related_lines = std.mem.splitScalar(u8, info.message, '\n');
+        try lines.append(.{ .spans = try allocator.dupe(markdown.Span, &.{
+            .{ .text = location, .style = .{ .underline = true }, .link = try std.fmt.allocPrint(allocator, "{d}", .{index}) },
+            .{ .text = related_lines.next() orelse "" },
+        }) });
+        while (related_lines.next()) |message| try lines.append(.{ .spans = try allocator.dupe(markdown.Span, &.{.{ .text = message }}) });
+    }
     return try lines.toOwnedSlice();
 }
 
+fn relatedLocationLabel(allocator: Allocator, info: markers.RelatedInformation) ![]const u8 {
+    // The resource path is URI syntax at this boundary (not a native path).
+    const basename = if (std.mem.lastIndexOfScalar(u8, info.resource.path, '/')) |index| info.resource.path[index + 1 ..] else info.resource.path;
+    return try std.fmt.allocPrint(allocator, "{s}({d}, {d}): ", .{ basename, info.start_line_number, info.start_column });
+}
+
 fn accessibleText(allocator: Allocator, hover: *const MarkerHover) ![]const u8 {
-    return try std.fmt.allocPrint(allocator, "{s}: {s}", .{ severityLabel(hover.severity), hover.message });
+    var text = ArrayList(u8).init(allocator);
+    try text.appendSlice(try std.fmt.allocPrint(allocator, "{s}: {s}", .{ severityLabel(hover.severity), hover.message }));
+    for (hover.related_information) |info| {
+        try text.append('\n');
+        try text.appendSlice(try relatedLocationLabel(allocator, info));
+        try text.appendSlice(info.message);
+    }
+    return try text.toOwnedSlice();
 }
 
 fn severityLabel(severity: u32) []const u8 {
@@ -321,21 +361,77 @@ fn buildRenderedMarker(
     const allocator = scratch.allocator();
 
     var row = top;
+    var previous_link: ?[]const u8 = null;
     for (state.lines) |line| {
         const rows = try markdown.wrapLine(allocator, line, width);
         for (rows) |wrapped| {
             const line_row = try appendRow(doc, parent, row);
             row += 1;
+            var link_node: ?*ui.Node = null;
             for (wrapped) |span| {
                 if (span.text.len == 0) continue;
                 const text = try doc.createText(span.text);
                 text.setStyle(span.style);
-                _ = try line_row.appendChild(text);
+                if (span.link != null and state.opener != null) {
+                    const target = span.link.?;
+                    const same_link = if (previous_link) |last| std.mem.eql(u8, last, target) else false;
+                    if (!same_link or link_node == null) {
+                        const link = try doc.createElement(.span);
+                        try link.setAttribute("data-marker-hover-link", target);
+                        // A wrapped link has one keyboard stop, while every
+                        // visible segment remains clickable.
+                        link.asElement().focusable = !same_link;
+                        link.setStyle(.{ .pointer = .pointer });
+                        const node_arena = doc.arena.allocator();
+                        const action = try node_arena.create(OpenLink);
+                        if (std.mem.eql(u8, target, "code")) {
+                            action.* = .{ .opener = state.opener.?, .resource = try state.hover.code_target.?.clone(node_arena) };
+                        } else {
+                            const index = try std.fmt.parseInt(usize, target, 10);
+                            const info = state.hover.related_information[index];
+                            action.* = .{ .opener = state.opener.?, .resource = try info.resource.clone(node_arena), .position = Position.init(info.start_line_number, info.start_column) };
+                        }
+                        try link.addEventListener(.{ .context = action, .click = OpenLink.click, .key_down = OpenLink.key });
+                        _ = try line_row.appendChild(link);
+                        link_node = link;
+                    }
+                    _ = try link_node.?.appendChild(text);
+                    previous_link = target;
+                } else {
+                    _ = try line_row.appendChild(text);
+                    previous_link = null;
+                    link_node = null;
+                }
             }
         }
     }
     return row - top;
 }
+
+const OpenLink = struct {
+    opener: Opener,
+    resource: markers.Resource,
+    position: ?Position = null,
+
+    fn click(context: ?*anyopaque, event: *ui.MouseEvent) void {
+        const self: *OpenLink = @ptrCast(@alignCast(context orelse return));
+        event.preventDefault();
+        event.stopPropagation();
+        self.open();
+    }
+
+    fn key(context: ?*anyopaque, event: *ui.KeyEvent) void {
+        if (event.key != .enter and !(event.key == .char and event.key.char == ' ')) return;
+        const self: *OpenLink = @ptrCast(@alignCast(context orelse return));
+        event.preventDefault();
+        event.stopPropagation();
+        self.open();
+    }
+
+    fn open(self: *const OpenLink) void {
+        self.opener.open(.{ .scheme = self.resource.scheme, .authority = self.resource.authority, .path = self.resource.path, .query = self.resource.query, .fragment = self.resource.fragment }, self.position);
+    }
+};
 
 fn appendRow(doc: *ui.Document, parent: *ui.Node, row: usize) !*ui.Node {
     const node = try doc.createElement(.div);
