@@ -46,7 +46,7 @@ pub fn reviveWorkspaceEditDto(a: Allocator, value: std.json.Value) !?languages.W
             if (obj.get("options")) |options| if (options == .object) {
                 const fields = options.object;
                 edit.options = .{
-                    .overwrite = boolean(fields.get("overwrite")),
+                    .overwrite = optionalBoolean(fields.get("overwrite")),
                     .ignore_if_not_exists = boolean(fields.get("ignoreIfNotExists")),
                     .ignore_if_exists = boolean(fields.get("ignoreIfExists")),
                     .recursive = boolean(fields.get("recursive")),
@@ -89,6 +89,10 @@ fn integer(value: ?std.json.Value) ?usize {
     const v = value orelse return null;
     return if (v == .integer and v.integer >= 0) std.math.cast(usize, v.integer) else null;
 }
+fn optionalBoolean(value: ?std.json.Value) ?bool {
+    const v = value orelse return null;
+    return if (v == .bool) v.bool else null;
+}
 fn boolean(value: ?std.json.Value) bool {
     const v = value orelse return false;
     return v == .bool and v.bool;
@@ -112,6 +116,7 @@ pub const MainThreadBulkEdits = struct {
         owner: *MainThreadBulkEdits,
         arena: std.heap.ArenaAllocator,
         edit: languages.WorkspaceEdit,
+        undo_redo_group_id: ?u64 = null,
         respect_auto_save: bool,
         channel: ?*rpc.RpcProtocol = null,
         id: u32 = 0,
@@ -124,7 +129,7 @@ pub const MainThreadBulkEdits = struct {
             self.channel = channel;
             self.id = id;
             self.starting = true;
-            self.pending = self.owner.service.apply(self.edit, .{ .respect_auto_save_config = self.respect_auto_save }, .{ .context = self, .complete = ready }) catch |err| blk: {
+            self.pending = self.owner.service.apply(self.edit, .{ .respect_auto_save_config = self.respect_auto_save, .undo_redo_group_id = self.undo_redo_group_id }, .{ .context = self, .complete = ready }) catch |err| blk: {
                 ready(self, err);
                 break :blk null;
             };
@@ -163,7 +168,7 @@ pub const MainThreadBulkEdits = struct {
         if (args.len == 0 or args[0] != .json) return .{ .json = .{ .bool = false } };
         const request = try self.allocator.create(Request);
         errdefer self.allocator.destroy(request);
-        request.* = .{ .owner = self, .arena = .init(self.allocator), .edit = undefined, .respect_auto_save = args.len > 2 and args[2] == .json and boolean(args[2].json) };
+        request.* = .{ .owner = self, .arena = .init(self.allocator), .edit = undefined, .respect_auto_save = args.len > 2 and args[2] == .json and boolean(args[2].json), .undo_redo_group_id = if (args.len > 1 and args[1] == .json) integer(args[1].json) else null };
         errdefer request.arena.deinit();
         const value = args[0].json;
         const dto = if (value == .object) value.object.get("value") orelse value else value;

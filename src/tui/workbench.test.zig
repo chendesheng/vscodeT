@@ -10542,6 +10542,65 @@ test "Diff editor commands: refactor preview shows real multi-diff models and ap
     try std.testing.expect(wb.activeTab().?.multi_diff == null);
 }
 
+test "Diff editor commands: workspace text and file edit groups share real model undo and redo" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const bulk = @import("../vs/editor/browser/services/bulkEditService.zig");
+    const languages = @import("../vs/editor/common/languages.zig");
+    const Probe = struct {
+        result: ?bulk.IBulkEditResult = null,
+        failure: ?anyerror = null,
+        fn complete(context: *anyopaque, reply: anyerror!bulk.IBulkEditResult) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (reply) |value| self.result = value else |err| self.failure = err;
+        }
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(a, io, &tmp, "original.txt", "old");
+    defer a.free(path);
+    const window = try TestWindow.init(a, io, &.{path}, 100, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    const model = wb.activeTab().?.editor.model;
+    const directory = std.fs.path.dirname(path).?;
+    const created_path = try std.fs.path.join(a, &.{ directory, "created.txt" });
+    defer a.free(created_path);
+    const moved_path = try std.fs.path.join(a, &.{ directory, "moved.txt" });
+    defer a.free(moved_path);
+    const created: std.Uri = .{ .scheme = "file", .path = .{ .raw = created_path } };
+    const moved: std.Uri = .{ .scheme = "file", .path = .{ .raw = moved_path } };
+    const edits = [_]languages.WorkspaceResourceEdit{
+        .{ .file = .{ .new_resource = created, .options = .{ .contents = "created" } } },
+        .{ .text = .{ .resource = model.uri(), .range = Range.init(1, 1, 1, 4), .text = "new" } },
+        .{ .file = .{ .old_resource = created, .new_resource = moved } },
+    };
+    var probe: Probe = .{};
+    _ = try wb.bulk_edit_api.apply(.{ .edits = &edits }, .{}, .{ .context = &probe, .complete = Probe.complete });
+    for (0..5000) |_| {
+        if (probe.result != null or probe.failure != null) break;
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        time_compat.sleepMillis(1);
+    }
+    if (probe.failure) |err| return err;
+    try std.testing.expect(probe.result.?.is_applied);
+    try std.testing.expectEqual(@as(usize, 3), probe.result.?.edit_count);
+    try std.testing.expectEqualStrings("new", try model.borrowLineContent(1));
+    const bytes = try wb.file_service_api.readFile(a, moved);
+    defer a.free(bytes);
+    try std.testing.expectEqualStrings("created", bytes);
+    try std.testing.expectError(error.FileNotFound, wb.file_service_api.stat(created));
+    try model.undo();
+    try std.testing.expectEqualStrings("old", try model.borrowLineContent(1));
+    try std.testing.expectError(error.FileNotFound, wb.file_service_api.stat(created));
+    try std.testing.expectError(error.FileNotFound, wb.file_service_api.stat(moved));
+    try model.redo();
+    try std.testing.expectEqualStrings("new", try model.borrowLineContent(1));
+    const redone = try wb.file_service_api.readFile(a, moved);
+    defer a.free(redone);
+    try std.testing.expectEqualStrings("created", redone);
+}
+
 test "Diff editor commands: whitespace hint and timeout prompt use effective configuration" {
     const a = std.testing.allocator;
     const io = std.testing.io;

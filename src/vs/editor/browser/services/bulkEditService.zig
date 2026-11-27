@@ -17,6 +17,9 @@ pub const IBulkEditOptions = struct {
     code: ?[]const u8 = null,
     quotable_label: ?[]const u8 = null,
     respect_auto_save_config: bool = false,
+    confirm_before_undo: bool = false,
+    undo_redo_group_id: ?u64 = null,
+    undo_redo_source: ?*@import("../../../platform/undoRedo/common/undoRedo.zig").UndoRedoSource = null,
 };
 pub const IBulkEditResult = struct { is_applied: bool, edited_resources: usize = 0, edit_count: usize = 0 };
 pub const EditListener = struct { context: *anyopaque, complete: *const fn (*anyopaque, anyerror!IBulkEditResult) void };

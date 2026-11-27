@@ -936,8 +936,8 @@ pub const EditStack = struct {
         return newEditStackElement;
     }
 
-    pub fn pushEOL(self: *EditStack, eol: EOL) !void {
-        const editStackElement = try self._getOrCreateEditStackElement(null, null);
+    pub fn pushEOL(self: *EditStack, eol: EOL, group: ?*UndoRedoGroup) !void {
+        const editStackElement = try self._getOrCreateEditStackElement(null, group);
         try self.textModel().setEOL(eol);
         try editStackElement.append(self.textModel(), &[_]TextChange{}, self.textModel().getEOL(), self.textModel().getAlternativeVersionId(), null);
     }

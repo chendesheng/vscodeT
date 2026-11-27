@@ -1196,6 +1196,10 @@ pub const TextModel = struct {
     }
 
     pub fn pushEOL(self: *TextModel, eol: EOL) !void {
+        try self.pushEOLWithGroup(eol, null);
+    }
+
+    pub fn pushEOLWithGroup(self: *TextModel, eol: EOL, group: ?*UndoRedoGroup) !void {
         const currentEOL = self.getEOL();
         if (currentEOL == eol) {
             return;
@@ -1209,7 +1213,7 @@ pub const TextModel = struct {
         if (self._initialUndoRedoSnapshot == null) {
             self._initialUndoRedoSnapshot = try self._undoRedoService.createSnapshot(self.uri());
         }
-        try self._commandManager.pushEOL(eol);
+        try self._commandManager.pushEOL(eol, group);
     }
 
     fn _validateEditOperation(self: *TextModel, rawOperation: *IdentifiedSingleEditOperation) ValidAnnotatedEditOperation {

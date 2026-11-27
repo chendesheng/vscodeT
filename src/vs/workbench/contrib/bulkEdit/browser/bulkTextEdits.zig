@@ -81,7 +81,7 @@ pub const ModelEditTask = struct {
             const selection = if (self.owner.selection_key) |key| if (std.mem.eql(u8, key, self.key)) self.owner.before_selections else null else null;
             _ = try model.pushEditOperations(selection, self.operations, null, group);
         }
-        if (self.eol) |eol| try model.pushEOL(eol);
+        if (self.eol) |eol| try model.pushEOLWithGroup(eol, group);
     }
 };
 
@@ -93,12 +93,18 @@ pub fn convertRange(model: *TextModel, range: Range) !Range {
     return .init(range.startLineNumber, columns.columnForUtf16Offset(start_line.items, range.startColumn), range.endLineNumber, columns.columnForUtf16Offset(end_line.items, range.endColumn));
 }
 
+pub const SelectionSnapshot = struct {
+    resource_key: []const u8,
+    selections: []Selection,
+};
+
 pub const BulkTextEdits = struct {
     allocator: Allocator,
     arena: std.heap.ArenaAllocator,
     resolver_service: resolver.ITextModelService,
     tasks: std.ArrayList(*ModelEditTask) = .empty,
     listener: bulk.EditListener,
+    undo_group: *UndoRedoGroup,
     selection_key: ?[]const u8 = null,
     before_selections: ?[]Selection = null,
     remaining: usize = 0,
@@ -111,18 +117,16 @@ pub const BulkTextEdits = struct {
     cancel_notify: bool = false,
     detached: bool = false,
 
-    pub fn start(allocator: Allocator, service: resolver.ITextModelService, edits: []const bulk.ResourceEdit, options: bulk.IBulkEditOptions, listener: bulk.EditListener) !?Disposable {
+    pub fn start(allocator: Allocator, service: resolver.ITextModelService, edits: []const bulk.ResourceEdit, options: bulk.IBulkEditOptions, group: *UndoRedoGroup, selection: ?SelectionSnapshot, listener: bulk.EditListener) !?Disposable {
         try options.token.throwIfCancellationRequested();
         const self = try allocator.create(BulkTextEdits);
-        self.* = .{ .allocator = allocator, .arena = .init(allocator), .resolver_service = service, .listener = listener };
+        self.* = .{ .allocator = allocator, .arena = .init(allocator), .resolver_service = service, .listener = listener, .undo_group = group };
         errdefer self.destroy();
         const a = self.arena.allocator();
-        if (options.editor) |editor| if (!editor.isReadOnly()) {
-            const selections = try editor.getSelections();
-            defer editor.allocator.free(selections);
-            self.selection_key = try uri_util.resourceKey(a, editor.model.uri());
-            self.before_selections = try a.dupe(Selection, selections);
-        };
+        if (selection) |snapshot| {
+            self.selection_key = try a.dupe(u8, snapshot.resource_key);
+            self.before_selections = try a.dupe(Selection, snapshot.selections);
+        }
         var groups: std.StringHashMapUnmanaged(*ModelEditTask) = .empty;
         for (edits) |resource_edit| {
             const edit = switch (resource_edit) {
@@ -188,8 +192,7 @@ pub const BulkTextEdits = struct {
         if (self.failure) |err| return err;
         if (self.tasks.items.len == 0) return .{ .is_applied = false };
         for (self.tasks.items) |task| try task.prepare();
-        var group = UndoRedoGroup.init();
-        for (self.tasks.items) |task| try task.apply(&group);
+        for (self.tasks.items) |task| try task.apply(self.undo_group);
         return .{ .is_applied = true, .edited_resources = self.tasks.items.len, .edit_count = self.edit_count };
     }
 

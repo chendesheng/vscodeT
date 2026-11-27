@@ -303,6 +303,8 @@ pub const TerminalWorkbench = struct {
     text_file_service: text_files.TextFileService,
     resource_file_service: @import("../vs/platform/files/common/fileService.zig").ProviderFileService,
     file_service_api: @import("../vs/platform/files/common/files.zig").IFileService,
+    working_copy_file_service: @import("../vs/workbench/services/workingCopy/common/workingCopyFileService.zig").WorkingCopyFileService,
+    working_copy_file_api: @import("../vs/workbench/services/workingCopy/common/workingCopyFileService.zig").IWorkingCopyFileService,
     text_model_resolver: @import("../vs/workbench/services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService,
     text_model_api: @import("../vs/editor/common/services/resolverService.zig").ITextModelService,
     bulk_edit_service: @import("../vs/workbench/contrib/bulkEdit/browser/bulkEditService.zig").BulkEditService,
@@ -546,12 +548,15 @@ pub const TerminalWorkbench = struct {
         self.resource_file_service = .init(allocator);
         errdefer self.resource_file_service.deinit();
         self.file_service_api = self.resource_file_service.interface();
+        self.working_copy_file_service = .init(allocator, self.file_service_api, &self.working_copy_service);
+        errdefer self.working_copy_file_service.deinit();
+        self.working_copy_file_api = self.working_copy_file_service.interface();
         self.text_model_resolver = .init(allocator, self.async_io, &self.window_events);
         errdefer self.text_model_resolver.deinit();
         try self.text_model_resolver.bindFileService(self.file_service_api);
         _ = try self.text_model_resolver.undoRedoStore();
         self.text_model_api = self.text_model_resolver.interface();
-        self.bulk_edit_service = .{ .allocator = allocator, .resolver_service = self.text_model_api };
+        self.bulk_edit_service = .{ .allocator = allocator, .resolver_service = self.text_model_api, .file_services = .{ .files = self.file_service_api, .working_copies = self.working_copy_file_api, .undo_redo = &self.text_model_resolver.undo_store.?.service } };
         self.bulk_edit_api = self.bulk_edit_service.interface();
         self.model_service_api = self.text_model_resolver.modelService();
         self.git_file_provider = .init(allocator, &self.git_model, self.async_io);
@@ -1286,6 +1291,7 @@ pub const TerminalWorkbench = struct {
         _ = try self.services.set(@import("../vs/workbench/contrib/scm/common/scm.zig").scm_view_service_id, scm_view);
         _ = try scm_view.on_did_change_active_repository.listen(self, onActiveScmRepositoryChanged);
         _ = try self.services.set(@import("../vs/platform/files/common/files.zig").file_service_id, &self.file_service_api);
+        _ = try self.services.set(@import("../vs/workbench/services/workingCopy/common/workingCopyFileService.zig").working_copy_file_service_id, &self.working_copy_file_api);
         _ = try self.services.set(@import("../vs/editor/common/services/resolverService.zig").text_model_service_id, &self.text_model_api);
         _ = try self.services.set(@import("../vs/editor/browser/services/bulkEditService.zig").bulk_edit_service_id, &self.bulk_edit_api);
         _ = try self.services.set(@import("../vs/editor/common/services/modelService.zig").model_service_id, &self.model_service_api);
@@ -1307,6 +1313,7 @@ pub const TerminalWorkbench = struct {
         _ = try self.services.set(@import("../vs/workbench/services/environment/common/environmentService.zig").workbench_environment_service_id, &self.environment_api);
         self.configuration_api = self.configuration_binding.interface();
         self.text_model_resolver.undo_store.?.configuration_service = self.configuration_api;
+        self.bulk_edit_service.file_services.?.configuration_service = self.configuration_api;
         _ = try self.services.set(@import("../vs/platform/configuration/common/configuration.zig").configuration_service_id, &self.configuration_api);
         try self.accessible_view.bindServices(self.configuration_api, self.editor_api, self.clipboard_api);
         _ = try self.services.set(@import("../vs/platform/accessibility/browser/accessibleView.zig").accessible_view_service_id, &self.accessible_view_api);
@@ -1907,6 +1914,7 @@ pub const TerminalWorkbench = struct {
         self.text_model_resolver.deinit();
         self.word_highlight_session.deinit();
         self.code_editors.deinit();
+        self.working_copy_file_service.deinit();
         self.resource_file_service.deinit();
         self.window_events.deinitWindowEvents();
         if (self.layout.main_container) |main| main.document.destroy(main);

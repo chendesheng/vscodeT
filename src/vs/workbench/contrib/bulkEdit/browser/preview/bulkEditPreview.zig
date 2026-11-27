@@ -154,7 +154,7 @@ pub const BulkFileOperations = struct {
                         resource = old;
                         if (file.new_resource) |new| {
                             kind = .Rename;
-                            if (!file.options.overwrite and file.options.ignore_if_exists and exists(file_service, old)) continue;
+                            if (file.options.overwrite == null and file.options.ignore_if_exists and exists(file_service, old)) continue;
                             try self.new_to_old_uri.put(a, try uri_util.resourceKey(a, new), old);
                         } else {
                             kind = .Delete;
@@ -163,7 +163,7 @@ pub const BulkFileOperations = struct {
                     } else if (file.new_resource) |new| {
                         resource = new;
                         kind = .Create;
-                        if (!file.options.overwrite and file.options.ignore_if_exists and exists(file_service, new)) continue;
+                        if (file.options.overwrite == null and file.options.ignore_if_exists and exists(file_service, new)) continue;
                     } else continue;
                 },
             }

@@ -498,6 +498,7 @@ comptime {
     _ = @import("./vs/editor/contrib/codeAction/test/browser/codeAction.test.zig");
     _ = @import("./vs/editor/contrib/codeAction/test/browser/codeActionModel.test.zig");
     _ = @import("./vs/workbench/contrib/bulkEdit/test/browser/bulkEditPreview.test.zig");
+    _ = @import("./vs/workbench/contrib/bulkEdit/test/browser/bulkFileEdits.test.zig");
     _ = @import("./vs/editor/contrib/hover/test/browser/glyphHoverComputer.test.zig");
     _ = @import("./vs/editor/contrib/hover/test/browser/markerHoverParticipant.test.zig");
     _ = @import("./vs/editor/contrib/wordHighlighter/browser/highlightDecorations.zig");

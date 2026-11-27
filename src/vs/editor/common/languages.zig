@@ -741,7 +741,7 @@ pub const WorkspaceTextEdit = struct {
     metadata: ?WorkspaceEditMetadata = null,
 };
 pub const WorkspaceFileEditOptions = struct {
-    overwrite: bool = false,
+    overwrite: ?bool = null,
     ignore_if_not_exists: bool = false,
     ignore_if_exists: bool = false,
     recursive: bool = false,
