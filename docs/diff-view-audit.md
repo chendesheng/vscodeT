@@ -1,6 +1,11 @@
 # Diff view audit: terminal port vs VS Code 1.147.0
 
-**Status:** partial remediation in progress. The historical findings below describe the re-audited baseline; see the implementation ledger for changes and remaining gaps.
+**Status:** all 19 numbered remediation requirements implemented and locally
+verified (2026-11-27, code commit `e78d1027`). The historical findings below
+describe the re-audited baseline; the verification index and final validation
+record provide the current evidence. Browser-boundary substitutions and the
+optional external diff-package fallback are described separately. Cross-platform
+CI is not claimed by the local validation.
 Re-audited after the 2026-11-26 source refactor.
 **Date:** 2026-11-25, re-audited 2026-11-26
 **Initial audit commit:** `cdde4cf8`
@@ -514,8 +519,15 @@ The preceding full regression pass after snippets was 3,802/3,829 (27 skipped;
 the subsequent focused suite passed 90/90 with real multiline tail, detailed
 result, EOF navigation and inactive-diff revert coverage. The full regression
 pass through the initial option validation passed 3,810/3,837 (27 skipped).
-All subsequent changes are being validated by the final full, native application, view
-and extension-host gates below.
+
+The compact-layout live-edit regression exposed a shared interval-tree bug:
+relative node coordinates and max-end bounds had been unsigned even though
+the upstream right-subtree delta may make them negative. The correction
+uses signed relative coordinates throughout insertion, deletion, rotation,
+edit and normalization, including the TextModel EOL-change path; only the
+resolved absolute UTF-8 offsets cross back to unsigned. Both the actual
+diff editing regression and the focused interval-tree insertion/edit/
+deletion regression pass. The final focused run passed 94/94.
 
 ### Requirement-by-requirement verification index
 
@@ -560,6 +572,33 @@ diff package itself is not bundled; its documented built-in fallback is
 distinct from a terminal rendering limitation. Independent SCM repository
 working-set selection and unrelated extension API coverage are tracked
 separately from the numbered diff-view plan.
+
+### Final local validation (2026-11-27)
+
+Code verified at `e78d1027` against the pinned upstream
+`e31c2e52f563620846caab877103f630ea361b9c`; both upstream submodules were
+left unchanged. Direct diff-editor source correspondence is 24/24 files,
+and all eight pinned widget scenarios are represented in the registered suite.
+
+| Gate | Result |
+|---|---|
+| `zig build` | Passed (native application) |
+| `zig build test --summary all` | 3,814/3,841 passed; 27 skipped, zero failures/crashes, 48/48 build steps |
+| `zig build test-view --summary all` | 519/519 passed; 43/43 build steps |
+| `zig build test-e2e --summary all` | 22/22 passed; real Node extension-host integration, 43/43 build steps |
+| Focused diff and interval-tree regressions | 94/94 passed |
+| `zig build check-workbench` | Passed |
+| `zig fmt --check` | Passed on the changed Zig files |
+| `git diff --check` | Passed on the committed range and worktree |
+
+The full and native suites run outside the filesystem sandbox so the native
+watcher tests can receive filesystem events. The final working tree retains
+only the seven pre-existing, unrelated user edits; no submodule pin changes
+or source changes were discarded. Stale disposable Zig binary caches were
+pruned, leaving roughly 10 GiB free after the final suites. This is local
+macOS verification, not a Linux/Windows CI result. The benchmark matrix
+below is the measured earlier Debug checkpoint rather than a claim that
+all large-file diff performance costs have disappeared.
 
 ### Native performance measurements (2026-11-27)
 
