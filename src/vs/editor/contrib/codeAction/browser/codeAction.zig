@@ -29,6 +29,7 @@ pub const ManagedCodeActionSet = struct {
     valid_actions: []CodeActionItem = &.{},
     documentation: []languages.Command = &.{},
     disposables: std.ArrayList(Disposable) = .empty,
+    summary_flags: ?struct { auto_fix: bool, ai_fix: bool, all_ai: bool } = null,
 
     pub fn create(allocator: Allocator) !*ManagedCodeActionSet {
         const self = try allocator.create(ManagedCodeActionSet);
@@ -43,6 +44,7 @@ pub const ManagedCodeActionSet = struct {
     }
 
     pub fn hasAutoFix(self: *const ManagedCodeActionSet) bool {
+        if (self.summary_flags) |flags| return flags.auto_fix;
         for (self.valid_actions) |item| if (item.action.is_preferred) if (item.action.kind) |kind| {
             if (types.CodeActionKind.QuickFix.contains(.init(kind))) return true;
         };
@@ -50,11 +52,13 @@ pub const ManagedCodeActionSet = struct {
     }
 
     pub fn hasAIFix(self: *const ManagedCodeActionSet) bool {
+        if (self.summary_flags) |flags| return flags.ai_fix;
         for (self.valid_actions) |item| if (item.action.is_ai) return true;
         return false;
     }
 
     pub fn allAIFixes(self: *const ManagedCodeActionSet) bool {
+        if (self.summary_flags) |flags| return flags.all_ai;
         for (self.valid_actions) |item| if (!item.action.is_ai) return false;
         return true;
     }

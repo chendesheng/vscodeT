@@ -77,7 +77,7 @@ pub const CodeActionController = struct {
         self.lightbulb = .{ .view = view, .context = self, .on_click = onLightbulb };
         try self.lightbulb.?.bind();
         self.model_will_listener = try self.editor.on_will_change_model.listen(self, onWillChangeModel);
-        self.model = try model_mod.CodeActionModel.create(self.allocator, self.editor, services.registry, services.markers, services.window, self, onState);
+        self.model = try model_mod.CodeActionModel.create(self.allocator, self.editor, services.registry, services.markers, services.configuration, services.window, self, onState);
         self.updateSettings();
     }
 

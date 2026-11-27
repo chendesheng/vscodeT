@@ -12,6 +12,8 @@ const MarkerResource = @import("../../../../../platform/markers/common/markers.z
 const Queue = @import("../../../../../base/common/windowDispatch.zig").Queue;
 const CancellationToken = @import("../../../../../base/common/cancellation.zig").CancellationToken;
 const Disposable = @import("../../../../../base/common/lifecycle.zig").IDisposable;
+const ResourceConfiguration = @import("../../../../common/services/textResourceConfiguration.zig").ITextResourceConfigurationService;
+const config = @import("../../../../../platform/configuration/common/configuration.zig");
 const codeAction = @import("../../browser/codeAction.zig");
 const codeActionModel = @import("../../browser/codeActionModel.zig");
 const CodeActionModel = codeActionModel.CodeActionModel;
@@ -21,12 +23,19 @@ const Provider = struct {
     manual_disposed: usize = 0,
     only_manual: bool = false,
     delay_first: bool = false,
+    nearby: bool = false,
     automatic: ?languages.CodeActionCallback = null,
     canceled: bool = false,
     const actions = [_]languages.CodeAction{.{ .title = "test", .kind = "quickfix", .command = .{ .id = "test-command", .title = "test" } }};
-    fn provide(context: *anyopaque, _: std.mem.Allocator, _: *TextModel, _: Range, call: languages.CodeActionContext, _: CancellationToken) !languages.CodeActionList {
+    fn provide(context: *anyopaque, allocator: std.mem.Allocator, _: *TextModel, range: Range, call: languages.CodeActionContext, _: CancellationToken) !languages.CodeActionList {
         const self: *Provider = @ptrCast(@alignCast(context));
         self.invoked += 1;
+        if (self.nearby) {
+            if (call.trigger_kind != 1 or (range.endColumn != 6 and range.endColumn != 11)) return .{};
+            const items = try allocator.alloc(languages.CodeAction, 1);
+            items[0] = .{ .title = if (range.endColumn == 6) "nearest" else "farther", .kind = "quickfix" };
+            return .{ .actions = items };
+        }
         if (call.trigger_kind == 2) return if (self.only_manual) .{} else .{ .actions = &actions };
         return .{ .actions = &actions, .disposable = Disposable.from(Provider, self, disposeManual) };
     }
@@ -63,13 +72,22 @@ const Fixture = struct {
     triggered: usize = 0,
     result: ?*codeAction.ManagedCodeActionSet = null,
     trigger_type: ?languages.CodeActionTriggerType = null,
+    include_nearby: bool = false,
+    const nearby_enabled: config.Value = .{ .bool = true };
+    fn getConfig(_: *anyopaque, _: *TextModel, key: []const u8) ?*const config.Value {
+        return if (std.mem.eql(u8, key, "editor.codeActionWidget.includeNearbyQuickFixes")) &nearby_enabled else null;
+    }
+    fn updateConfig(_: *anyopaque, _: *TextModel, _: []const u8, _: ?config.Value, _: ?config.ConfigurationTarget) !void {}
+    fn configuration(self: *Fixture) ResourceConfiguration {
+        return .{ .context = self, .get_value = getConfig, .update_value = updateConfig };
+    }
     fn init(self: *Fixture, provider: Provider) !void {
         self.* = .{ .editor = try Editor.createFromText(a, std.testing.io, "foobar  foo bar\nfarboo far boo", "path.txt", 80, 12), .registry = .init(a), .markers = .init(a), .queue = .{ .io = std.testing.io }, .provider = provider };
         errdefer self.deinit();
         self.registration = try self.registry.register(.{ .language = "*" }, .{ .context = &self.provider, .provide_code_actions = Provider.provide, .request_code_actions = Provider.request });
     }
     fn attach(self: *Fixture) !void {
-        self.model = try CodeActionModel.create(a, self.editor, &self.registry, &self.markers, &self.queue, self, changed);
+        self.model = try CodeActionModel.create(a, self.editor, &self.registry, &self.markers, if (self.include_nearby) self.configuration() else null, &self.queue, self, changed);
     }
     fn deinit(self: *Fixture) void {
         if (self.model) |model| model.dispose();
@@ -160,6 +178,7 @@ fn assertClaimedManualActionsSurvive(claim_before_automatic: bool) !void {
     var f: Fixture = undefined;
     try f.init(.{ .delay_first = true });
     defer f.deinit();
+    f.include_nearby = true;
     try f.attach();
     try std.testing.expect(f.provider.automatic != null);
     f.model.?.trigger(.{ .type = .Invoke, .trigger_action = .QuickFix });
@@ -183,4 +202,24 @@ test "CodeActionModel: does not dispose claimed manual code actions when a cance
 
 test "CodeActionModel: does not replace manual code actions when a canceled automatic request completes before claim" {
     try assertClaimedManualActionsSurvive(false);
+}
+
+test "CodeActionModel: nearest manual quick fixes query diagnostic ends on the current line" {
+    var f: Fixture = undefined;
+    try f.init(.{ .nearby = true });
+    defer f.deinit();
+    f.include_nearby = true;
+    try f.marker();
+    var resource = try MarkerResource.fromUri(a, f.editor.model.uri());
+    defer resource.deinit(a);
+    try f.markers.changeOne("another", resource, &.{ .{ .start_line_number = 1, .start_column = 9, .end_line_number = 1, .end_column = 11, .message = "second" }, .{ .start_line_number = 2, .start_column = 1, .end_line_number = 2, .end_column = 6, .message = "other line" } }, null);
+    try f.editor.setPosition(Position.init(1, 4));
+    try f.attach();
+    f.model.?.trigger(.{ .type = .Invoke, .trigger_action = .QuickFix });
+    f.flush();
+    const result = f.result.?;
+    try std.testing.expectEqual(@as(usize, 2), result.valid_actions.len);
+    try std.testing.expectEqualStrings("nearest", result.valid_actions[0].action.title);
+    try std.testing.expectEqualStrings("farther", result.valid_actions[1].action.title);
+    try std.testing.expectEqual(@as(usize, 2), result.all_actions.len);
 }

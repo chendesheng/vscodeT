@@ -13,6 +13,8 @@ const MarkerService = @import("../../../../platform/markers/common/markerService
 const MarkerChangeEvent = @import("../../../../platform/markers/common/markerService.zig").MarkerChangeEvent;
 const dispatch = @import("../../../../base/common/windowDispatch.zig");
 const time = @import("../../../../base/common/timeCompat.zig");
+const ResourceConfiguration = @import("../../../common/services/textResourceConfiguration.zig").ITextResourceConfigurationService;
+const MarkerResource = @import("../../../../platform/markers/common/markers.zig").Resource;
 const Disposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
 const codeAction = @import("codeAction.zig");
 const types = @import("../common/types.zig");
@@ -50,6 +52,7 @@ pub const CodeActionModel = struct {
     editor: *Editor,
     registry: *Registry,
     marker_service: ?*MarkerService,
+    configuration: ?ResourceConfiguration,
     oracle: CodeActionOracle = .{},
     state: CodeActionsState = .Empty,
     trigger_arena: std.heap.ArenaAllocator,
@@ -71,9 +74,9 @@ pub const CodeActionModel = struct {
     context: *anyopaque,
     on_change: *const fn (*anyopaque, CodeActionsState) void,
 
-    pub fn create(a: std.mem.Allocator, editor: *Editor, registry: *Registry, marker_service: ?*MarkerService, queue: *dispatch.Queue, context: *anyopaque, on_change: *const fn (*anyopaque, CodeActionsState) void) !*CodeActionModel {
+    pub fn create(a: std.mem.Allocator, editor: *Editor, registry: *Registry, marker_service: ?*MarkerService, configuration: ?ResourceConfiguration, queue: *dispatch.Queue, context: *anyopaque, on_change: *const fn (*anyopaque, CodeActionsState) void) !*CodeActionModel {
         const self = try a.create(CodeActionModel);
-        self.* = .{ .allocator = a, .editor = editor, .registry = registry, .marker_service = marker_service, .trigger_arena = .init(a), .context = context, .on_change = on_change };
+        self.* = .{ .allocator = a, .editor = editor, .registry = registry, .marker_service = marker_service, .configuration = configuration, .trigger_arena = .init(a), .context = context, .on_change = on_change };
         self.oracle.task = .{ .queue = queue, .context = self, .run = onAutoTrigger };
         self.completion_task = .{ .queue = queue, .context = self, .run = onCompleted };
         errdefer self.dispose();
@@ -233,10 +236,23 @@ pub const CodeActionModel = struct {
         self.state = .{ .Triggered = .{ .trigger = trigger_copy, .position = selection.getStartPosition() } };
         self.on_change(self.context, self.state);
         const range = Range.init(selection.startLineNumber, selection.startColumn, selection.endLineNumber, selection.endColumn);
-        self.pending = codeAction.getCodeActions(self.allocator, self.registry, model, range, trigger_copy, .None, .{ .context = self, .complete = provideResult }) catch |err| blk: {
+        const nearby = self.settingEnabledNearbyQuickfixes(model) and trigger_copy.type == .Invoke and
+            (trigger_copy.trigger_action == .QuickFix or (if (trigger_copy.filter.include) |kind| kind.contains(types.CodeActionKind.QuickFix) else false));
+        const listener: codeAction.Listener = .{ .context = self, .complete = provideResult };
+        const result = if (nearby and self.marker_service != null)
+            NearbyQuickFixQuery.start(self.allocator, self.registry, model, self.marker_service.?, range, selection.getPosition(), trigger_copy, listener)
+        else
+            codeAction.getCodeActions(self.allocator, self.registry, model, range, trigger_copy, .None, listener);
+        self.pending = result catch |err| blk: {
             provideResult(self, err);
             break :blk null;
         };
+    }
+
+    fn settingEnabledNearbyQuickfixes(self: *CodeActionModel, model: *TextModel) bool {
+        const configuration = self.configuration orelse return false;
+        const value = configuration.getValue(model, "editor.codeActionWidget.includeNearbyQuickFixes") orelse return true;
+        return value.* == .bool and value.bool;
     }
 
     fn provideResult(context: *anyopaque, result: anyerror!*codeAction.ManagedCodeActionSet) void {
@@ -268,5 +284,199 @@ pub const CodeActionModel = struct {
             self.on_change(self.context, .{ .Triggered = next });
         }
         return false;
+    }
+};
+
+/// The upstream manual Quick Fix path searches diagnostics on the current
+/// line if the initial position has no non-AI quick fix. Provider sets remain
+/// owned by the combined result, including their resolve IDs and commands.
+const NearbyQuickFixQuery = struct {
+    const Set = codeAction.ManagedCodeActionSet;
+    const Item = types.CodeActionItem;
+    allocator: std.mem.Allocator,
+    registry: *Registry,
+    model: *TextModel,
+    markers: *MarkerService,
+    range: Range,
+    cursor: Position,
+    trigger: types.CodeActionTrigger,
+    listener: codeAction.Listener,
+    result: *Set,
+    pending: ?Disposable = null,
+    response: ?anyerror!*Set = null,
+    output: ?anyerror!*Set = null,
+    driving: bool = false,
+    phase: enum { initial, retry, marker } = .initial,
+    positions: []Position = &.{},
+    index: usize = 0,
+    distance: usize = std.math.maxInt(usize),
+    collect_all: bool = false,
+    all: std.ArrayList(Item) = .empty,
+    valid: std.ArrayList(Item) = .empty,
+
+    fn start(allocator: std.mem.Allocator, registry: *Registry, model: *TextModel, markers: *MarkerService, range: Range, cursor: Position, trigger: types.CodeActionTrigger, listener: codeAction.Listener) !?Disposable {
+        const result = try Set.create(allocator);
+        errdefer result.dispose();
+        const self = try allocator.create(NearbyQuickFixQuery);
+        errdefer allocator.destroy(self);
+        self.* = .{ .allocator = allocator, .registry = registry, .model = model, .markers = markers, .range = range, .cursor = cursor, .trigger = try codeAction.copyTrigger(result.arena.allocator(), trigger), .listener = listener, .result = result };
+        if (self.drive()) {
+            self.finish();
+            return null;
+        }
+        return Disposable.from(NearbyQuickFixQuery, self, cancel);
+    }
+
+    fn query(self: *NearbyQuickFixQuery, range: Range, trigger_value: types.CodeActionTrigger) void {
+        const pending = codeAction.getCodeActions(self.allocator, self.registry, self.model, range, trigger_value, .None, .{ .context = self, .complete = received }) catch |err| {
+            self.response = err;
+            return;
+        };
+        if (self.response == null) self.pending = pending;
+    }
+
+    fn received(context: *anyopaque, result: anyerror!*Set) void {
+        const self: *NearbyQuickFixQuery = @ptrCast(@alignCast(context));
+        self.pending = null;
+        self.response = result;
+        if (!self.driving and self.drive()) self.finish();
+    }
+
+    fn drive(self: *NearbyQuickFixQuery) bool {
+        self.driving = true;
+        defer self.driving = false;
+        while (true) {
+            if (self.response) |response| {
+                self.response = null;
+                const set = response catch |err| {
+                    self.output = err;
+                    return true;
+                };
+                const complete = self.consume(set) catch |err| {
+                    self.output = err;
+                    return true;
+                };
+                if (complete) |result| {
+                    self.output = result;
+                    return true;
+                }
+            }
+            switch (self.phase) {
+                .initial, .retry => self.query(self.range, self.trigger),
+                .marker => {
+                    if (self.index == self.positions.len) {
+                        self.finalize() catch |err| {
+                            self.output = err;
+                            return true;
+                        };
+                        self.output = self.result;
+                        return true;
+                    }
+                    const position = self.positions[self.index];
+                    var trigger_value = self.trigger;
+                    trigger_value.filter = .{ .include = self.trigger.filter.include orelse types.CodeActionKind.QuickFix };
+                    trigger_value.context = .{ .not_available_message = if (self.trigger.context) |value| value.not_available_message else "", .position = position };
+                    self.query(Range.fromPositions(position, position), trigger_value);
+                },
+            }
+            if (self.response == null) return false;
+        }
+    }
+
+    fn consume(self: *NearbyQuickFixQuery, set: *Set) !?*Set {
+        // Each original provider result remains alive while its actions are
+        // borrowed by the aggregate. Failed allocations also release it.
+        const a = self.result.arena.allocator();
+        switch (self.phase) {
+            .retry => return set,
+            .initial => {
+                for (set.valid_actions) |item| if (item.action.kind) |kind| {
+                    if (!item.action.is_ai and types.CodeActionKind.QuickFix.contains(.init(kind))) return set;
+                };
+                var resource = MarkerResource.fromUri(a, self.model.uri()) catch |err| {
+                    set.dispose();
+                    return err;
+                };
+                defer resource.deinit(a);
+                const all_markers = self.markers.read(a, .{ .resource = resource }) catch |err| {
+                    set.dispose();
+                    return err;
+                };
+                if (all_markers.len == 0) {
+                    set.dispose();
+                    self.phase = .retry;
+                    return null;
+                }
+                self.result.disposables.append(a, Disposable.from(Set, set, Set.dispose)) catch |err| {
+                    set.dispose();
+                    return err;
+                };
+                var positions: std.ArrayList(Position) = .empty;
+                for (all_markers) |marker| {
+                    if (marker.start_line_number == self.cursor.lineNumber or marker.end_line_number == self.cursor.lineNumber) {
+                        try positions.append(a, Position.init(marker.end_line_number, marker.end_column));
+                    }
+                }
+                self.positions = positions.items;
+                self.result.documentation = set.documentation;
+                self.result.summary_flags = .{ .auto_fix = set.hasAutoFix(), .ai_fix = set.hasAIFix(), .all_ai = set.allAIFixes() };
+                self.collect_all = set.all_actions.len == 0;
+                try self.all.appendSlice(a, set.all_actions);
+                try self.valid.appendSlice(a, set.valid_actions);
+                self.phase = .marker;
+            },
+            .marker => {
+                self.result.disposables.append(a, Disposable.from(Set, set, Set.dispose)) catch |err| {
+                    set.dispose();
+                    return err;
+                };
+                const column = self.positions[self.index].column;
+                const distance = if (column >= self.cursor.column) column - self.cursor.column else self.cursor.column - column;
+                if (set.valid_actions.len != 0) {
+                    if (self.collect_all) try self.all.appendSlice(a, set.all_actions);
+                    if (distance < self.distance) try self.valid.insertSlice(a, 0, set.valid_actions) else try self.valid.appendSlice(a, set.valid_actions);
+                }
+                self.distance = distance;
+                self.index += 1;
+            },
+        }
+        return null;
+    }
+
+    fn finalize(self: *NearbyQuickFixQuery) !void {
+        const a = self.result.arena.allocator();
+        var seen: std.StringHashMapUnmanaged(void) = .empty;
+        var deduplicated: std.ArrayList(Item) = .empty;
+        for (self.valid.items) |item| {
+            const entry = try seen.getOrPut(a, item.action.title);
+            if (!entry.found_existing) try deduplicated.append(a, item);
+        }
+        std.mem.sort(Item, deduplicated.items, {}, struct {
+            fn lessThan(_: void, lhs: Item, rhs: Item) bool {
+                if (lhs.action.is_preferred != rhs.action.is_preferred) return lhs.action.is_preferred;
+                return !lhs.action.is_ai and rhs.action.is_ai;
+            }
+        }.lessThan);
+        self.result.all_actions = self.all.items;
+        self.result.valid_actions = deduplicated.items;
+    }
+
+    fn finish(self: *NearbyQuickFixQuery) void {
+        const output = self.output.?;
+        if (output) |set| {
+            if (set != self.result) self.result.dispose();
+        } else |_| self.result.dispose();
+        const listener = self.listener;
+        self.allocator.destroy(self);
+        listener.complete(listener.context, output);
+    }
+
+    fn cancel(self: *NearbyQuickFixQuery) void {
+        if (self.pending) |pending| pending.dispose();
+        if (self.response) |response| if (response) |set| {
+            set.dispose();
+        } else |_| {};
+        self.result.dispose();
+        self.allocator.destroy(self);
     }
 };
