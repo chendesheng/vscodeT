@@ -229,6 +229,7 @@ pub const ColorMap = struct {
             return value;
         }
 
+        if (self._lastColorId == std.math.maxInt(u9)) return error.TokenColorMapFull;
         self._lastColorId += 1;
         const stored = try self.allocator.dupe(u8, &uppercase);
         errdefer self.allocator.free(stored);
@@ -287,6 +288,10 @@ pub const TokenTheme = struct {
         self._cache.deinit();
         self._root.deinit();
         self._colorMap.deinit();
+    }
+
+    pub fn addTokenColor(self: *TokenTheme, color: []const u8) !u9 {
+        return self._colorMap.getId(color);
     }
 
     pub fn getColorMap(self: *const TokenTheme) []const Color {

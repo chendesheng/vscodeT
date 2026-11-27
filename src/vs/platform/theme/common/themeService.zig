@@ -38,6 +38,7 @@ pub const IColorTheme = struct {
     pub const VTable = struct {
         getColor: *const fn (context: *anyopaque, color: ColorIdentifier, useDefault: bool) ?Color,
         defines: *const fn (context: *anyopaque, color: ColorIdentifier) bool,
+        getTokenColor: ?*const fn (context: *anyopaque, index: u32) ?Color = null,
         getTokenStyleMetadata: *const fn (
             context: *anyopaque,
             token_type: []const u8,
@@ -66,6 +67,11 @@ pub const IColorTheme = struct {
 
     pub fn defines(self: *const IColorTheme, color: ColorIdentifier) bool {
         return self.vtable.defines(self.context, color);
+    }
+
+    pub fn getTokenColor(self: *const IColorTheme, index: u32) ?Color {
+        if (self.vtable.getTokenColor) |get| return get(self.context, index);
+        return null;
     }
 
     pub fn getTokenStyleMetadata(

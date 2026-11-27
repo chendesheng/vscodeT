@@ -95,7 +95,19 @@ pub const SyntaxTheme = struct {
             try rules.append(.{ .token = "", .foreground = foreground, .background = background });
         }
 
-        try self.installTheme(allocator, rules.items);
+        self.theme = try TokenTheme.createFromRawTokenTheme(allocator, rules.items, &.{});
+        errdefer self.theme.deinit();
+        // Preserve syntax token IDs, then append semantic-only theme colors
+        // before publishing the shared token color map to the renderer.
+        for ((try theme_data.getTokenColorMap())[1..]) |color| {
+            const hex = try color.toHexString(scratch);
+            _ = self.theme.addTokenColor(hex) catch |err| switch (err) {
+                error.TokenColorMapFull => break,
+                else => return err,
+            };
+        }
+        tokenization.setActiveTokenTheme(&self.theme);
+        TokenizationRegistry.instance.setColorMap(self.theme.getColorMap());
     }
 
     /// Loads the built-in Dark+ theme through the ported workbench theme

@@ -302,6 +302,14 @@ pub const TextModel = struct {
         try self._tokenizationTextModelPart.setSemanticTokens(tokens, isComplete);
     }
 
+    pub fn hasCompleteSemanticTokens(self: *TextModel) bool {
+        return self._tokenizationTextModelPart.hasCompleteSemanticTokens();
+    }
+
+    pub fn hasSomeSemanticTokens(self: *TextModel) bool {
+        return self._tokenizationTextModelPart.hasSomeSemanticTokens();
+    }
+
     pub fn setPartialSemanticTokens(self: *TextModel, range: Range, tokens: []SparseMultilineTokens) !void {
         try self._tokenizationTextModelPart.setPartialSemanticTokens(range, tokens);
     }

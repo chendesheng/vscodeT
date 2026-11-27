@@ -77,6 +77,8 @@ pub const ColorThemeData = struct {
     theme_token_colors: []TokenColor = &.{},
     custom_token_colors: []TokenColor = &.{},
     semantic_token_rules: []SemanticRule = &.{},
+    semantic_highlighting: bool = false,
+    token_color_map: ?[]const Color = null,
     token_registry: ?*token_classification.Registry = null,
     owns_token_registry: bool = false,
     location: ?[]const u8 = null,
@@ -250,6 +252,7 @@ pub const ColorThemeData = struct {
             });
         }
         self.semantic_token_rules = try result.toOwnedSlice();
+        self.token_color_map = null;
     }
 
     pub fn setCustomTokenColors(self: *ColorThemeData, rules: []const TokenColor) !void {
@@ -268,6 +271,7 @@ pub const ColorThemeData = struct {
             try result.append(copy);
         }
         self.custom_token_colors = try result.toOwnedSlice();
+        self.token_color_map = null;
     }
 
     /// Applies `workbench.colorCustomizations`-shaped semantic token settings:
@@ -281,6 +285,7 @@ pub const ColorThemeData = struct {
         };
         if (root.get("enabled")) |enabled| if (enabled == .bool and !enabled.bool) {
             self.semantic_token_rules = &.{};
+            self.token_color_map = null;
             return;
         };
         const rules_value = root.get("rules") orelse return;
@@ -345,11 +350,13 @@ pub const ColorThemeData = struct {
             if (try parseTokenColor(allocator, rule_object)) |rule| try rules.append(rule);
         }
         self.custom_token_colors = try rules.toOwnedSlice();
+        self.token_color_map = null;
     }
 
     /// Foreground colors of the token rules, index 1-based. Index 0 is unused
     /// (the upstream token-color index uses 0 for "no foreground").
     pub fn getTokenColorMap(self: *ColorThemeData) ![]const Color {
+        if (self.token_color_map) |map| return map;
         var colors = std.array_list.Managed(Color).init(self.arena.allocator());
         try colors.append(.{ .r = 0, .g = 0, .b = 0, .a = 255 });
         var seen = std.array_list.Managed(Color).init(self.arena.allocator());
@@ -398,7 +405,8 @@ pub const ColorThemeData = struct {
                 try colors.append(color);
             }
         }
-        return colors.toOwnedSlice();
+        self.token_color_map = try colors.toOwnedSlice();
+        return self.token_color_map.?;
     }
 
     pub fn getTokenStyleMetadata(self: *ColorThemeData, type_with_language: []const u8, modifiers: []const []const u8, default_language: []const u8) ?theme_service.ITokenStyle {
@@ -409,7 +417,7 @@ pub const ColorThemeData = struct {
         var foreground: ?u32 = null;
         if (style.foreground) |color| {
             const map = self.getTokenColorMap() catch return null;
-            for (map, 0..) |entry, index| {
+            for (map[1..], 1..) |entry, index| {
                 if (entry.r == color.r and entry.g == color.g and entry.b == color.b) {
                     foreground = @intCast(index);
                     break;
@@ -503,6 +511,7 @@ pub const ColorThemeData = struct {
     }
 
     fn refreshTokenColors(self: *ColorThemeData) !void {
+        self.token_color_map = null;
         self.token_colors = try buildTokenColors(self.arena.allocator(), self.color_map, self.transient_colors, self.theme_token_colors);
     }
 
@@ -510,6 +519,7 @@ pub const ColorThemeData = struct {
         return .{
             .theme_type = self.theme_type,
             .label = self.label,
+            .semanticHighlighting = self.semantic_highlighting,
             .context = self,
             .vtable = &vtable,
         };
@@ -519,6 +529,7 @@ pub const ColorThemeData = struct {
         .getColor = interfaceGetColor,
         .defines = interfaceDefines,
         .getTokenStyleMetadata = interfaceGetTokenStyleMetadata,
+        .getTokenColor = interfaceGetTokenColor,
     };
 
     fn interfaceGetColor(context: *anyopaque, color_id: []const u8, use_default: bool) ?Color {
@@ -529,6 +540,12 @@ pub const ColorThemeData = struct {
     fn interfaceDefines(context: *anyopaque, color_id: []const u8) bool {
         const self: *ColorThemeData = @ptrCast(@alignCast(context));
         return self.defines(color_id);
+    }
+
+    fn interfaceGetTokenColor(context: *anyopaque, index: u32) ?Color {
+        const self: *ColorThemeData = @ptrCast(@alignCast(context));
+        const map = self.getTokenColorMap() catch return null;
+        return if (index < map.len and index > 0) map[index] else null;
     }
 
     fn interfaceGetTokenStyleMetadata(context: *anyopaque, type_with_language: []const u8, modifiers: []const []const u8, default_language: []const u8) ?theme_service.ITokenStyle {
@@ -657,6 +674,9 @@ pub const ColorThemeData = struct {
                 }
             }
         }
+        if (object.get("semanticHighlighting")) |enabled| if (enabled == .bool) {
+            self.semantic_highlighting = enabled.bool;
+        };
         if (object.get("semanticTokenColors")) |semantic_colors| {
             if (semantic_colors == .object) {
                 var semantic_iterator = semantic_colors.object.iterator();

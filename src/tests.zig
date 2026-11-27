@@ -147,6 +147,8 @@ comptime {
     _ = @import("./vs/base/common/promise.zig");
     _ = @import("./vs/editor/common/model/fixedArray.zig");
     _ = @import("./vs/editor/common/services/semanticTokensDto.zig");
+    _ = @import("./vs/editor/test/common/services/semanticTokensProviderStyling.test.zig");
+    _ = @import("./vs/editor/contrib/semanticTokens/test/browser/getSemanticTokens.test.zig");
     _ = @import("./vs/editor/common/services/textModelSync/textModelSync.protocol.zig");
     _ = @import("./vs/editor/common/services/findSectionHeaders.zig");
     _ = @import("./vs/editor/common/model/bracketPairsTextModelPart/fixBrackets.zig");
