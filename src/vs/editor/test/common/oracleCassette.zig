@@ -41,16 +41,6 @@ pub const Case = struct {
     seed: Seed,
     keys: []const []const u8,
     states: []const State,
-    /// Some reference cursor representations (notably Helix insert/undo
-    /// placement) do not map onto the native engine yet. Such cases still
-    /// assert text, mode and selection count; the reason is documented in
-    /// `cursor_gap`.
-    assert_cursor: bool = true,
-    /// Whether every selection's active cursor position is asserted. Cases
-    /// with a known cursor-representation gap disable this; multi-cursor
-    /// cases keep it enabled even when the primary cursor is not asserted.
-    assert_cursors: bool = true,
-    cursor_gap: ?[]const u8 = null,
 };
 
 pub const Loaded = struct {

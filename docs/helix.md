@@ -230,14 +230,12 @@ count. Helix selection ranges and registers are recorded raw but not asserted
 yet. See [scripts/oracle/README.md](../scripts/oracle/README.md) for the
 `check`/`record` workflow and artifact flow.
 
-Cassettes whose reference text/mode/count match but whose cursor placement does
-not (insert/change after `<Esc>`, undo, paste) set `assert_cursor: false` and a
-`cursor_gap` reason; the edit itself is still asserted. Generated variants that
-cannot yet assert cursor or the full cursor set set `assert_cursors: false`.
-Multi-cursor cases seed `seed.cursors` (a set of 1-based line/byte positions)
-and assert the recorded `state.cursors` set, `selection_count`, text and mode.
-The suite currently has six multi-cursor cases (insert, append, change, delete,
-text object and yank/paste across three cursors).
+The cassette suite is strict: every recorded cursor and, when present, every
+cursor position in a multi-cursor set is asserted. `zig build test-oracle` is a
+separate test binary from `zig build test`; its CI job is allowed to fail until
+the native engine divergences it exposes are fixed. No cases or cursor
+assertions are excluded. Helix selection ranges and registers are recorded raw
+but not asserted yet.
 
 Tutor coverage is tracked explicitly. Covered: basic `hjkl`, character and
 multi-cursor deletion, insert/append/open variants, line selection/delete,

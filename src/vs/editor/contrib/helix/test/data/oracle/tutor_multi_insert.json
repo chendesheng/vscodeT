@@ -1,8 +1,5 @@
 {
-  "assert_cursor": false,
-  "assert_cursors": false,
   "case": "tutor_multi_insert",
-  "cursor_gap": "multi-cursor primary cursor is not asserted; cursor set is",
   "engine": "helix",
   "keys": [
     "i",

@@ -794,9 +794,10 @@ fn createTestRootModule(
     bench: bool,
     e2e: bool,
     bench_file: []const u8,
+    root_source_file: []const u8,
 ) *std.Build.Module {
     const module = b.createModule(.{
-        .root_source_file = b.path("src/tests.zig"),
+        .root_source_file = b.path(root_source_file),
         .target = target,
         .optimize = optimize,
     });
@@ -847,6 +848,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
             false,
             false,
             bench_file,
+            "src/tests.zig",
         ),
     });
 
@@ -895,10 +897,27 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const helix_test_step = b.step("test-helix", "Run Helix editing tests");
     helix_test_step.dependOn(&run_helix_tests.step);
 
-    // Focused runner for reference cassettes recorded from Neovim/Helix.
+    // Strict reference cassette suite. This is a separate root and binary:
+    // failures are engine-conformance work and do not block normal tests.
+    const oracle_module = createTestRootModule(
+        b,
+        target,
+        optimize,
+        onig,
+        vscode_textmate,
+        ui,
+        markdown,
+        vscode_syntax,
+        ghostty_vt,
+        onig_paths,
+        false,
+        false,
+        bench_file,
+        "src/oracle_tests.zig",
+    );
     const oracle_tests = b.addTest(.{
         .name = "oracle_tests",
-        .root_module = tests.root_module,
+        .root_module = oracle_module,
         .filters = &.{ "Vim cassette:", "Helix cassette:", "oracle cassette" },
     });
     const run_oracle_tests = b.addRunArtifact(oracle_tests);
@@ -947,6 +966,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
             false,
             true,
             bench_file,
+            "src/tests.zig",
         ),
         .filters = &.{"Extensions:"},
     });
@@ -981,6 +1001,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
             true,
             false,
             bench_file,
+            "src/tests.zig",
         ),
         .filters = &.{"benchmark:"},
     });

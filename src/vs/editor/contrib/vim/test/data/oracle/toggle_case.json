@@ -24,7 +24,5 @@
       ],
       "mode": "normal"
     }
-  ],
-  "assert_cursor": false,
-  "cursor_gap": "cursor after ~ differs from Neovim; text/mode asserted"
+  ]
 }

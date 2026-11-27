@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "engine": "helix",
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "case": "tutor_copy_selection_C",
+  "width": 60,
+  "seed": {
+    "text": "a\nb\n",
+    "cursor": [
+      1,
+      1
+    ]
+  },
+  "keys": [
+    "C"
+  ],
+  "states": []
+}

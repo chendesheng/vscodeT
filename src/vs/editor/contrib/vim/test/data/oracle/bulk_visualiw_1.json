@@ -27,7 +27,5 @@
       ],
       "mode": "normal"
     }
-  ],
-  "assert_cursor": false,
-  "cursor_gap": "bulk-generated case asserts text/mode; cursor is asserted by the curated corpus"
+  ]
 }

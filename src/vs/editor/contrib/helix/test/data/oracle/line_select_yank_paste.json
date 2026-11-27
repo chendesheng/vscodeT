@@ -1,8 +1,5 @@
 {
-  "assert_cursor": false,
-  "assert_cursors": false,
   "case": "line_select_yank_paste",
-  "cursor_gap": "cursor after line yank/paste differs from Helix; text/mode/count asserted",
   "engine": "helix",
   "keys": [
     "x",

@@ -1,8 +1,5 @@
 {
-  "assert_cursor": false,
-  "assert_cursors": false,
   "case": "bulk_hx_selectall_1",
-  "cursor_gap": "bulk-generated case asserts text/mode/selection count; cursor is asserted by the curated corpus",
   "engine": "helix",
   "keys": [
     "%",

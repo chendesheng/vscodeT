@@ -1,8 +1,5 @@
 {
-  "assert_cursor": false,
-  "assert_cursors": false,
   "case": "replace_char_selection",
-  "cursor_gap": "cursor after r differs from Helix; text/mode/count asserted",
   "engine": "helix",
   "keys": [
     "r",

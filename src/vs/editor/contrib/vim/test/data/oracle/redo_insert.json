@@ -28,7 +28,5 @@
       ],
       "mode": "normal"
     }
-  ],
-  "assert_cursor": false,
-  "cursor_gap": "cursor after undo/redo of an insert differs from Neovim; text/mode asserted"
+  ]
 }

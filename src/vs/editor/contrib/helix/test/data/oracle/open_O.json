@@ -1,8 +1,5 @@
 {
-  "assert_cursor": false,
-  "assert_cursors": false,
   "case": "open_O",
-  "cursor_gap": "post-Esc cursor placement after an insert variant differs from Helix; text/mode/count asserted",
   "engine": "helix",
   "keys": [
     "O",

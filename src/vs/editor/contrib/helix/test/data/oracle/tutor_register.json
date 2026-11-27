@@ -1,8 +1,5 @@
 {
-  "assert_cursor": false,
-  "assert_cursors": false,
   "case": "tutor_register",
-  "cursor_gap": "cursor after register paste differs; text/mode/count asserted",
   "engine": "helix",
   "keys": [
     "x",

@@ -57,7 +57,7 @@ zig build run -- <file>...   # open files in an empty workspace
 zig build run -- --session <file> [<folder>] [<file>...]  # restore/save the tab session
 zig build run -- --preview <file>   # read-only terminal UI preview
 zig build test   # run the editor and ui library tests
-zig build test-oracle   # replay the Neovim/Helix reference cassettes
+zig build test-oracle   # strict Neovim/Helix conformance suite (may expose known engine gaps)
 zig build test-watcher -Dwatcher-only=true   # run the file-watcher tests without the TUI
 zig build bench-open   # Debug open/edit benchmarks (skipped by zig build test)
 zig build bench-ui -Dbench-args="--runs 5 --markdown"   # UI library stress benchmarks
