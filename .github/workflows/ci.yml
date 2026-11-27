@@ -19,6 +19,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+      - name: Check portable cassette filenames and indexes
+        run: |
+          python3 -m unittest discover -s scripts/oracle -p test_cassette_files.py
+          python3 scripts/oracle/generate_cassette_index.py --check
       - name: Initialize upstream submodules
         run: git submodule update --init --depth 1 vscode vscode-textmate
       - uses: mlugg/setup-zig@v2
@@ -133,7 +137,8 @@ jobs:
           if (!(Test-Path dist/extensionHost.mjs)) { throw "Extension host bundle missing" }
       - name: Test Windows extension-host IPC
         shell: pwsh
-        run: zig build test-e2e "-De2e-filter=Extensions: transport" --summary all "-Donig-include=$env:ONIG_DIR\include" "-Donig-lib=$env:ONIG_DIR\lib"
+        run: |
+          zig build test-e2e "-De2e-filter=Extensions: transport" --summary all "-Donig-include=$env:ONIG_DIR\include" "-Donig-lib=$env:ONIG_DIR\lib"
       - name: Test
         shell: pwsh
         run: zig build test --summary all "-Donig-include=$env:ONIG_DIR\include" "-Donig-lib=$env:ONIG_DIR\lib"
@@ -149,6 +154,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+      - name: Initialize upstream submodules
+        run: git submodule update --init --depth 1 vscode vscode-textmate
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1

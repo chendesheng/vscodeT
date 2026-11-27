@@ -20,6 +20,8 @@ import shutil
 import subprocess
 import sys
 
+from cassette_files import CassetteFileError, load_cases, tracked_names
+
 try:
     import pynvim
 except ImportError:  # pragma: no cover - developer guidance
@@ -136,15 +138,6 @@ def record_case(nvim, case: dict) -> dict:
     return record_state(nvim)
 
 
-def load_cases(directory: pathlib.Path, only: str | None) -> list[pathlib.Path]:
-    files = sorted(directory.glob("*.json"))
-    if only is not None:
-        files = [p for p in files if p.stem == only]
-        if not files:
-            raise SystemExit(f"no cassette named {only!r} in {directory}")
-    return files
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dir", type=pathlib.Path, default=DEFAULT_DIR)
@@ -157,6 +150,11 @@ def main() -> int:
     parser.add_argument("--nvim", default=os.environ.get("NVIM", "nvim"))
     args = parser.parse_args()
 
+    try:
+        files = load_cases(args.dir, args.case, tracked_names=tracked_names(args.dir, ROOT))
+    except CassetteFileError as error:
+        raise SystemExit(str(error)) from error
+
     if shutil.which(args.nvim) is None:
         raise SystemExit(f"{args.nvim}: Neovim not found; install the pinned version or pass --nvim")
 
@@ -165,7 +163,7 @@ def main() -> int:
     changed = 0
     checked = 0
     try:
-        for path in load_cases(args.dir, args.case):
+        for path in files:
             case = json.loads(path.read_text())
             if case.get("engine") != "vim" or case.get("reference") != "neovim":
                 raise SystemExit(f"{path}: not a Vim/Neovim cassette")
