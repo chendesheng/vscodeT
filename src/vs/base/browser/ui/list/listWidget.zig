@@ -138,6 +138,19 @@ pub const ListWidget = struct {
         }
     }
 
+    /// Hit-test a rendered list element using the shared range map. Context
+    /// menu and checkbox consumers use the same coordinate path as selection.
+    pub fn indexAt(self: *const ListWidget, x: usize, y: usize) ?usize {
+        const rect = self.last_rect;
+        const left = ui.cell.snap(rect.x);
+        const top = ui.cell.snap(rect.y);
+        if (x < left or x >= left + ui.cell.snap(rect.w) or y < top or y >= top + ui.cell.snap(rect.h)) return null;
+        const position = self.view.scroll_top + @as(f64, @floatFromInt(y - top));
+        const index = self.view.range_map.indexAt(position);
+        if (index < 0 or index >= @as(i64, @intCast(self.view.count()))) return null;
+        return @intCast(index);
+    }
+
     /// Wheel scrolls the viewport independently of selection. A left click
     /// selects the row under the pointer. Coordinates are viewport cells.
     pub fn handleMouse(self: *ListWidget, event: *const ui.MouseEvent) bool {
@@ -155,13 +168,7 @@ pub const ListWidget = struct {
         }
 
         if (event.kind == .move) {
-            const position = self.view.scroll_top +
-                @as(f64, @floatFromInt(event.y - y));
-            const index = self.view.range_map.indexAt(position);
-            self.view.hovered = if (index >= 0 and index < @as(i64, @intCast(self.view.count())))
-                @intCast(index)
-            else
-                null;
+            self.view.hovered = self.indexAt(event.x, event.y);
             return true;
         }
 
@@ -173,11 +180,7 @@ pub const ListWidget = struct {
             },
             .down => {
                 if (event.button != .left) return false;
-                const position = self.view.scroll_top +
-                    @as(f64, @floatFromInt(event.y - y));
-                const index = self.view.range_map.indexAt(position);
-                if (index < 0 or index >= @as(i64, @intCast(self.view.count()))) return true;
-                self.setSelection(@intCast(index));
+                if (self.indexAt(event.x, event.y)) |index| self.setSelection(index);
                 return true;
             },
             else => return false,

@@ -312,3 +312,19 @@ test "IndexTreeModel: smart splice preserves node identity and collapse state" {
     try testing.expectEqual(@as(usize, 3), changed.len);
     try testing.expectEqual(@as(i32, 3), changed[2].element);
 }
+
+test "IndexTreeModel: explicit expanded element overrides collapseByDefault" {
+    const a = testing.allocator;
+    var model = try Model.init(a, "test", -1, .{ .collapse_by_default = true });
+    defer model.deinit();
+    try model.splice(&.{0}, 0, &.{
+        .{ .element = 1, .children = &.{.{ .element = 10 }}, .collapsed = false },
+        .{ .element = 2, .children = &.{.{ .element = 20 }} },
+    });
+    try testing.expect(!(try model.getNode(&.{0})).collapsed);
+    try testing.expect((try model.getNode(&.{1})).collapsed);
+    const rendered = try collect(&model, a);
+    defer a.free(rendered);
+    try testing.expectEqual(@as(usize, 3), rendered.len);
+    try testing.expectEqual(@as(i32, 10), rendered[1].element);
+}

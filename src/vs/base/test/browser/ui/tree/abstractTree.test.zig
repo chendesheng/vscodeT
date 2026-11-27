@@ -133,3 +133,51 @@ test "AbstractTree: enter activates the selected element" {
     try testing.expect(tree.handleKey(&enter));
     try testing.expectEqual(@as(?i32, 7), state.activated);
 }
+
+test "AbstractTree: identity view state restores collapsed nodes, selected element and scroll position after replacement" {
+    const a = testing.allocator;
+    const fixture = try setup(a);
+    defer {
+        fixture.tree.deinit();
+        fixture.model.deinit();
+        a.destroy(fixture.model);
+    }
+    const Identity = struct {
+        fn getId(_: *anyopaque, element: i32) []const u8 {
+            const labels = [_][]const u8{ "zero", "one", "two", "three", "four", "five" };
+            return labels[@intCast(element)];
+        }
+    };
+    const identity: @import("../../../../browser/ui/tree/tree.zig").IdentityProvider(i32) = .{ .context = @constCast(&{}), .get_id = Identity.getId };
+    try fixture.model.setChildren(null, &.{
+        .{ .element = 0, .children = &.{.{ .element = 1 }} },
+        .{ .element = 2, .children = &.{.{ .element = 3 }} },
+        .{ .element = 4 },
+        .{ .element = 5 },
+    });
+    _ = try fixture.model.setCollapsed(0, true, false);
+    try fixture.tree.refresh();
+    var grid = try ui.CellGrid.init(a, 10, 2);
+    defer grid.deinit();
+    fixture.tree.render(&grid, .{ .x = 0, .y = 0, .w = 10, .h = 2 });
+    fixture.tree.setSelectionNode(try fixture.model.getNode(3));
+    fixture.tree.widget.view.setScrollTop(1);
+    var state = try fixture.tree.getViewState(identity);
+    defer state.deinit();
+    try testing.expectEqualStrings("three", state.selection.?);
+    try testing.expectEqual(false, state.expanded.get("zero").?);
+    try testing.expectEqual(true, state.expanded.get("two").?);
+    try fixture.model.setChildren(null, &.{.{ .element = 5 }});
+    try fixture.tree.refresh();
+    try fixture.model.setChildren(null, &.{
+        .{ .element = 4 },
+        .{ .element = 0, .children = &.{.{ .element = 1 }} },
+        .{ .element = 2, .children = &.{.{ .element = 3 }} },
+        .{ .element = 5 },
+    });
+    try fixture.tree.restoreViewState(identity, &state);
+    try testing.expect(fixture.model.isCollapsed(0));
+    try testing.expect(!fixture.model.isCollapsed(2));
+    try testing.expectEqual(@as(i32, 3), fixture.tree.selectedElement().?);
+    try testing.expectEqual(@as(f64, 1), fixture.tree.widget.view.scroll_top);
+}

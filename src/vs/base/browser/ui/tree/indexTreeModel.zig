@@ -115,7 +115,7 @@ pub fn IndexTreeModel(comptime T: type) type {
                 .children = std.array_list.Managed(*Node).init(self.allocator),
                 .depth = parent.depth + 1,
                 .collapsible = element.collapsible or element.children.len > 0,
-                .collapsed = if (element.collapsed) true else self.options.collapse_by_default,
+                .collapsed = element.collapsed orelse self.options.collapse_by_default,
             };
             try parent.children.append(node);
             errdefer _ = parent.children.pop();

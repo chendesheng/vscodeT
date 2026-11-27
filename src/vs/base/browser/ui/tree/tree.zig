@@ -32,7 +32,7 @@ pub fn TreeElement(comptime T: type) type {
         element: T,
         children: []const TreeElement(T) = &.{},
         collapsible: bool = false,
-        collapsed: bool = false,
+        collapsed: ?bool = null,
     };
 }
 

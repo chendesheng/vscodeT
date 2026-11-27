@@ -25,6 +25,24 @@ pub fn AbstractTree(comptime T: type) type {
     return AbstractTreeForModel(T, object_tree.ObjectTreeModel(T));
 }
 
+/// Port of IAbstractTreeViewState. The terminal ListWidget currently uses
+/// single selection/navigation, so its selected row also identifies focus.
+pub const AbstractTreeViewState = struct {
+    arena: std.heap.ArenaAllocator,
+    focus: ?[]const u8 = null,
+    selection: ?[]const u8 = null,
+    expanded: std.StringHashMapUnmanaged(bool) = .empty,
+    scroll_top: f64 = 0,
+
+    pub fn init(allocator: std.mem.Allocator) AbstractTreeViewState {
+        return .{ .arena = .init(allocator) };
+    }
+
+    pub fn deinit(self: *AbstractTreeViewState) void {
+        self.arena.deinit();
+    }
+};
+
 /// Port of upstream `RenderIndentGuides` from `abstractTree.ts`.
 pub const RenderIndentGuides = enum {
     none,
@@ -824,6 +842,52 @@ pub fn AbstractTreeForModel(comptime T: type, comptime Model: type) type {
             self.widget.selectOnly(null);
         }
 
+        pub fn getViewState(self: *AbstractTreeForModel(T, Model), identity: @import("tree.zig").IdentityProvider(T)) !AbstractTreeViewState {
+            var state = AbstractTreeViewState.init(self.allocator);
+            errdefer state.deinit();
+            const a = state.arena.allocator();
+            state.scroll_top = self.widget.view.scroll_top;
+            if (self.selectedElement()) |selected| {
+                state.selection = try a.dupe(u8, identity.get_id(identity.context, selected));
+                state.focus = state.selection;
+            }
+            const root = try self.model.getNode(null);
+            var stack = std.ArrayList(*Node).empty;
+            defer stack.deinit(self.allocator);
+            try stack.appendSlice(self.allocator, root.children.items);
+            while (stack.pop()) |node| {
+                if (node.collapsible) if (node.element) |element| {
+                    try state.expanded.put(a, try a.dupe(u8, identity.get_id(identity.context, element)), !node.collapsed);
+                };
+                try stack.appendSlice(self.allocator, node.children.items);
+            }
+            return state;
+        }
+
+        /// Restore a state after replacing the tree input. The identity map
+        /// refers to elements rather than stale list indexes/node addresses.
+        pub fn restoreViewState(self: *AbstractTreeForModel(T, Model), identity: @import("tree.zig").IdentityProvider(T), state: *const AbstractTreeViewState) !void {
+            const root = try self.model.getNode(null);
+            var stack = std.ArrayList(*Node).empty;
+            defer stack.deinit(self.allocator);
+            try stack.appendSlice(self.allocator, root.children.items);
+            while (stack.pop()) |node| {
+                if (node.collapsible) if (node.element) |element| {
+                    if (state.expanded.get(identity.get_id(identity.context, element))) |expanded| {
+                        if (node.collapsed == expanded) _ = try self.model.setCollapsedElement(element, !expanded, false);
+                    }
+                };
+                try stack.appendSlice(self.allocator, node.children.items);
+            }
+            try self.refresh();
+            const wanted = state.selection orelse state.focus;
+            const selected: ?*Node = if (wanted) |id| for (self.rendered.items) |node| {
+                if (node.element) |element| if (std.mem.eql(u8, id, identity.get_id(identity.context, element))) break node;
+            } else null else null;
+            self.setSelectionNodeNoReveal(selected);
+            self.widget.view.setScrollTop(state.scroll_top);
+        }
+
         /// Rows hidden by the sticky widget above `node`, applied when
         /// revealing a selection so the revealed row is not pinned underneath
         /// the sticky headers (upstream `view.reveal(index, top, paddingTop)`).
@@ -1002,6 +1066,32 @@ pub fn AbstractTreeForModel(comptime T: type, comptime Model: type) type {
         pub fn clearHover(self: *AbstractTreeForModel(T, Model)) void {
             self.sticky_hovered_index = null;
             self.widget.clearHover();
+        }
+
+        /// Context menu selection uses the list's hit-test contract, as
+        /// upstream AbstractTree translates the list context-menu event.
+        pub fn selectElementAt(self: *AbstractTreeForModel(T, Model), x: usize, y: usize) ?T {
+            if (self.stickyRowAt(x, y)) |index| {
+                self.activateStickyNode(index);
+                return self.selectedElement();
+            }
+            const index = self.widget.indexAt(x, y) orelse return null;
+            self.widget.selectOnly(index);
+            return self.selectedElement();
+        }
+
+        /// Position of the selected row for keyboard context-menu invocation.
+        pub fn selectionAnchor(self: *AbstractTreeForModel(T, Model)) ?struct { x: usize, y: usize } {
+            const node = self.selection() orelse return null;
+            self.setSelectionNode(node);
+            const index = self.widget.selection() orelse return null;
+            const rect = self.widget.last_rect;
+            if (rect.w <= 0 or rect.h <= 0) return null;
+            const top = self.widget.view.range_map.positionAt(@intCast(index)) - self.widget.view.scroll_top;
+            return .{
+                .x = ui.cell.snap(rect.x),
+                .y = ui.cell.snap(rect.y) + @min(ui.cell.snap(rect.h) -| 1, ui.cell.snap(@max(0, top))),
+            };
         }
 
         pub fn selectedElement(self: *AbstractTreeForModel(T, Model)) ?T {
