@@ -17,9 +17,9 @@ workbench/view glue that opens, paints and routes input.
 
 **Method:** read both implementations and their tests; trace the widget,
 workbench, Git extension and TUI call paths; compare the upstream feature
-objects, options, commands and view state against the local composition. No
-profiler run was performed, so §4 separates confirmed code-level cost from a
-measurement plan.
+objects, options, commands and view state against the local composition. The
+initial audit used code evidence; the later native performance checkpoint
+records the benchmark matrix and a sampled render-path investigation.
 
 The reported symptoms are "the diff view seems slow" and "there are missing UI
 elements of the diff view". This audit confirms both. It also records several
@@ -30,8 +30,9 @@ fixed together with the presentation work.
 
 ## Implementation ledger (2026-11-26)
 
-The following changes are implemented in separate commits. This is not full
-upstream parity, and the historical findings below remain useful as a baseline.
+The following changes are implemented in separate commits. The ledger records
+progressive implementation checkpoints; the historical findings below remain
+useful as a baseline, not as a description of the current source.
 The subsequent implementation passes established shared view-zone geometry,
 retained both real snapshot models in all modes, and removed the pre-aligned
 text representation. Deleted-code zones render only their visible rows using
@@ -462,6 +463,104 @@ and a real Git diff workspace edit exercising tabstops, mixed literal text
 and shared undo/redo. Closed-resource undo preparation and refactor preview
 refinements remain; full regression verification is running.
 
+### Closed-resource undo, preview and direct editor contribution checkpoint (2026-11-27)
+
+* The model undo/redo participant resolves closed affected text models through
+  the URI resolver. It holds acquired references for the group, cancels
+  obsolete preparation, checks stack versions after resolution, and releases
+  references before continuing. A changed or missing model follows the
+  workspace-element split path; the initiating editor receives the resulting
+  selection asynchronously. Tests reopen saved files, cancel resolution,
+  remove a file during preparation and grow the resource stack map in flight.
+* Refactor preview preserves expanded and focused identities independently
+  for its category and file grouping modes. The registered panel-title
+  grouping action, context menu and tree disclosure operate on the retained
+  tree; the first ten roots are recursively expanded, with explicit collapse
+  state distinguished from default expansion.
+* `diffEditor.contribution.zig` owns the upstream gutter hunk/selection revert
+  actions, secondary title actions for showing moved code and opening the
+  accessible viewer, and the two legacy diff-review command aliases.
+  The code-editor service registers the stable diff widget for its lifetime.
+  Typed toolbar arguments resolve the original and modified URI pair rather
+  than the active pane. Two primary actions occupy the two gutter cells;
+  remaining actions use overflow. Read-only resources suppress revert; the
+  gutter validates the captured versions on activation and revert rejects an
+  out-of-date diff. The generic editor
+  delegation resolves the modified control, independently of the focused
+  original contribution. Switch Side also supports the dry-run selection
+  result without mutating focus.
+* `registrations.contribution.zig` owns the ten upstream decoration variants.
+  Pure insertions/deletions carry both the line and whole-line character
+  decoration; normal multi-line character ranges fill through the row end
+  where the upstream overlay would emit a full-width rectangle. The terminal
+  clips that range to cells and uses the resolved character tint where two
+  translucent browser backgrounds would composite. Theme color IDs are shared.
+* Diff settings preserve upstream numeric bounds, deprecated algorithm aliases
+  and requested package identifiers. The native algorithm provider owns its
+  fallback to built-in advanced diff when the optional JS/Wasm package is not
+  installed. The Git blob size setting accepts zero for unlimited reads.
+  Detailed diff results expose the real line/inner-range mappings; the
+  legacy line result also contains the original and modified character
+  coordinates, omitting character arrays for pure insertion/deletion.
+  Generic subeditor controls remain stable even before/after model attachment.
+  Navigation follows the modified exclusive-range reveal, including wrapping
+  from the last modified line before an EOF deletion. Compact smart mode
+  retains the first defined decision for the attached model, as upstream
+  does, rather than changing layout every time an edit changes the hunks.
+
+The preceding full regression pass after snippets was 3,802/3,829 (27 skipped;
+48/48 steps). The closed-resource undo and preview probes passed 10/10 and
+38/38 respectively. The focused diff action/decoration suite passed 87/87;
+the subsequent focused suite passed 90/90 with real multiline tail, detailed
+result, EOF navigation and inactive-diff revert coverage. The full regression
+pass through the initial option validation passed 3,810/3,837 (27 skipped).
+All subsequent changes are being validated by the final full, native application, view
+and extension-host gates below.
+
+### Requirement-by-requirement verification index
+
+The original numbered plan in §8 is the acceptance scope. The source and
+regression names below are current, unlike the historical line numbers in
+Appendix A. The widget tests live in
+`src/vs/editor/test/browser/widget/diffEditorWidget.test.zig`; native workbench
+integration tests live in `src/tui/workbench.test.zig`. All TypeScript files
+in the pinned `editor/browser/widget/diffEditor/` directory now have
+corresponding Zig files at the same relative path; this inventory alone is not
+the proof of behavioral coverage.
+
+| Item | Current owner and proof |
+|---|---|
+| 1 | `diffProviderFactoryService`, `editorWorkerService`, model-content events in `diffEditorViewModel`, Git URI resolver, 200 ms debounce, 1 s progress, 10-entry cache. "worker drops superseded results and detaches on dispose", "content events recompute the real model diff", benchmark cached refresh matrix. |
+| 2 | `Tab.refresh`, shared View event/render pipeline, retained two-pane widget; the benchmark records viewport render/layout counts during input. |
+| 3 | `utils/editorGutter` and `features/gutterFeature`: binary search then visit intersecting item bounds. 1k/10k hunk benchmark with identical checksums and layout-only timings. |
+| 4 | Real layout offsets for gutter/moved connectors, not materialized display rows. "gutter paints pure deletions and hunks after fillers", "moved blocks connect real ranges and compare them through view zones". |
+| 5 | `UnchangedRegion`, `HideUnchangedRegionsFeature`, direct ViewModel hidden areas, document-symbol breadcrumb service. "unchanged disclosure owns direct hidden areas and its fold glyph", "bottom unchanged reveal anchors the following line", model-coordinate navigation and upstream compact disclosures. |
+| 6 | `DiffEditorOptions.WidthBasedLayout`, `DiffEditorViewZones`. "narrow panes keep deleted text in inline layout", "large deleted-code view zone renders only visible rows", both upstream smooth/discrete resize cases. |
+| 7 | Delegated modified control and independent focused editor dispatch. "keyboard navigation reaches the focused editor and syncs scrolling", "Diff editor commands resolve the active snapshot pane through their service", native focus traversal. |
+| 8 | `registrations.contribution`, `DiffEditorDecorations`, shared DecorationsOverlay and view-line renderer. Indicator, empty marker, whole-line insertion/deletion and multiline continuing-row paint regressions. |
+| 9 | `textDiffEditor.computeConfigurationForResource`, live configuration and theme events, `diffEditorOptions.normalize`. "live options preserve both models and recompute only diff options" and "inner editor options follow inline and hide-unchanged layout"; native diff helper/configuration test. |
+| 10 | Scoped registered hunk/selection toolbar, legacy revert feature and sash. "git scm integration stages selected inner changes through the diff gutter" includes real stage, revert, undo, inactive-diff URI-targeted revert; mouse-capture/reset cases. |
+| 11 | Direct hidden areas, disclosure controls and serialized model ranges. All four upstream UnchangedRegion cases and both compact keyboard disclosure modes. |
+| 12 | `OverviewRulerFeature` and two-lane viewport slider. "combined overview reserves two lanes and scrolls both panes"; window pointer capture regression. |
+| 13 | `MovedBlocksLinesFeature`, block decorations, comparison view zones and Exit Compare Move. Connector/active comparisons and inline suppression cases. |
+| 14 | `diffEditor.contribution`, `commands`, workbench `diffEditorCommands` and retained title menu. Native menu, move toggle, accessible viewer, aliases, dry-run side switching, open side, navigation/EOF-wrap, swaps and refresh. |
+| 15 | Shared model-anchored `DiffEditorViewZones`/renderLines and `InlineDiffDeletedCodeMargin`. Real model identity, wrapped/foreign-zone alignment, visible deleted rows, original selection/copy/revert, injected true-inline strikethrough. |
+| 16 | `AccessibleDiffViewer`, dedicated grouped model and retained line surface. Group/line navigation and reveal, accessible-only mode, registered accessibility help and return focus. |
+| 17 | Code-editor contribution registrations on both real models, model-lifetime cancellation; native independent Find, Hover/marker/code actions, Suggest/snippets, Sticky Scroll, word highlights, menu, Quick Diff peek, workspace edit/undo and extension-host integration regressions. |
+| 18 | Two model-position editor view states, collapsed ranges, resource/group memento, serialized file and multi-diff inputs, live working document, CodeLens, word wrap and model resolver. View-state restoration/checksummed folds, native composite restoration, CodeLens provider/command tests. |
+| 19 | All eight pinned widget scenarios (two compact disclosure variants, two width-layout cases, four UnchangedRegion cases), additional model/paint/input/worker/lifecycle tests, real Git integration and the recorded native benchmark matrix. Final build and suite totals are recorded after the verification gates. |
+
+The terminal boundary substitutions are fixed-cell geometry, typed CSS class
+rules (no selector engine, transforms, CSS transitions, shadows or subpixel
+units), resolved cell colors instead of alpha-composited rectangles, glyphs
+instead of browser icons/SVG and retained keyboard navigation instead of a
+browser accessibility tree and screen-reader/audio services. They do not
+replace the portable diff/model/feature state. The optional external JS/Wasm
+diff package itself is not bundled; its documented built-in fallback is
+distinct from a terminal rendering limitation. Independent SCM repository
+working-set selection and unrelated extension API coverage are tracked
+separately from the numbered diff-view plan.
+
 ### Native performance measurements (2026-11-27)
 
 The opt-in `zig build bench-open --summary all` benchmark exercises native
@@ -539,7 +638,7 @@ decorations have no gutter classes. The regression checks that glyph-margin
 layout does not force the bracket tree to materialize. This fixes a real
 unnecessary dependency, not the dominant large-file initial rendering cost.
 
-## 0. Re-audit update (2026-11-26)
+## 0. Historical re-audit update (2026-11-26)
 
 The source tree changed substantially after the first audit, mainly through the
 portable-workbench split (`src/tui/workbenchWindow.zig`,

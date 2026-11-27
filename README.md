@@ -1315,7 +1315,9 @@ console API for raw mode, sizing and input polling.
   breakpoint maps to 53 terminal cells using the workbench width scale;
   narrower views switch to inline mode without hiding deleted text.
   Diff line indicators and margin classes follow `renderIndicators`; line
-  and character backgrounds use the active theme. Refresh retains both
+  and character backgrounds use the active theme. The registered whole-line
+  character variants highlight pure insertions and deletions, and multiline
+  character ranges fill through the end of a continuing row. Refresh retains both
   resource inputs, models, mounted views, split, cursors and scroll state. Git snapshot resolution and diff computation run on
   the editor worker; identical content/options reuse a bounded result cache.
   Model-content events debounce a new diff by 200 ms and computation-option
@@ -1330,8 +1332,12 @@ console API for raw mode, sizing and input polling.
   strikethrough; empty character ranges render a one-cell marker. The accessible
   diff viewer uses grouped unified review rows (F7/Shift-F7), arrow-key line
   navigation, and Enter to reveal the selected source. The retained editor title
-  and gutter menus expose Git hunk and selected-inner-change staging without
-  rewriting the working file; legacy margin revert buttons are available when
+  and gutter menus expose undoable block/selection revert, Git hunk and
+  selected-inner-change staging without rewriting the working file, and the
+  moved-code and accessible-viewer title actions. The two legacy review
+  command aliases forward to the same registered viewer actions. Gutter
+  commands resolve the captured pair of real resource URIs, independent
+  of which diff has focus; legacy margin revert buttons are available when
   the gutter menu is disabled. Inline deleted-code controls copy original text,
   reveal original line numbers, support selection, and apply undoable revert.
   `diffEditor.codeLens` enables CodeLens rows in both panes (off by default);
@@ -1400,7 +1406,14 @@ console API for raw mode, sizing and input polling.
   follows active editors, tree focus and pinning; workspace-folder removal
   releases independent providers unless visible text editors or a remaining
   workspace ancestor retain the repository.
-  See [the diff view audit](docs/diff-view-audit.md) for the gap ledger.
+  Workspace edits from either real inner editor support active-editor snippet
+  sessions and shared undo/redo, including asynchronously reopening closed
+  affected text models. Refactor preview uses the registered multi-diff source,
+  retained checkboxes, grouping-specific tree state and scoped actions.
+  The native diff provider falls back to the built-in advanced computer for
+  optional JS/Wasm package algorithms, which are not bundled in this port.
+  See [the diff view audit](docs/diff-view-audit.md) for the implementation
+  and verification ledger.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and
   `src/vs/workbench/contrib/search/browser/searchWidget.zig`) over the upstream-shaped portable view:
   `src/vs/workbench/contrib/search/browser/searchView.zig` owns the query

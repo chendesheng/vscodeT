@@ -1,16 +1,16 @@
 # Git integration and diff view plan
 
-**Status:** partial read-only implementation. Inline layout, hidden-unchanged
-folding and moved-block decorations exist; they are not complete ports of the
-upstream view features. Initial Git snapshot resolution and diff computation
-are asynchronous. Follow-ups remain: alignment view zones, disclosure and
-moved-block widgets, quick-diff peek, multi-diff, accessible diff viewer, editable/serialized diff tabs and
-multi-repository SCM. See `docs/diff-view-audit.md` for current status.
+**Status:** historical plan, superseded for diff editor and Quick Diff work by
+the [implementation and verification ledger](diff-view-audit.md). Its original
+read-only scope and follow-up lists describe the November 20 baseline; real
+model/view-zone rendering, editable and serialized file diffs, unified review,
+multi-diff, Quick Diff peek and multi-repository sources have since been ported.
+Remaining independent SCM gaps are tracked in that ledger.
 **Date:** 2026-11-20
 **Upstream:** VS Code 1.147.0, `vscode/` pinned at `e31c2e52f563620846caab877103f630ea361b9c`
 
 This document plans two connected contributions: read-only Git/SCM integration
-and a terminal side-by-side diff viewer. It is written against the current
+and a terminal side-by-side diff viewer. It is written against the November 20
 tree, where the terminal editor view lives in `src/tui/editorView.zig` and is
 assembled from the ported `src/vs/editor/browser/view.zig` and view parts.
 

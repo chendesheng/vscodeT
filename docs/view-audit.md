@@ -68,7 +68,7 @@ For each row:
 | Suggest widget | `vs/editor/contrib/suggest/browser/*` | `editor/contrib/suggest/browser/*` | **T** | Trigger/session model, windowed list, one-cell scrollbar, selection, mouse listeners, plain-text documentation and the `editorSuggestWidget.*`/`scrollbarSlider.*` theme are ported (20 tests); browser details/status chrome and accessibility panes are replaced by the terminal list/docs panes. |
 | Hover widget | `vs/editor/contrib/hover/browser/*` | `editor/contrib/hover/browser/*` | **T** | Content-hover controller, scheduling, markdown rendering, the marker participant and the `editorHoverWidget.*`/`focusBorder`/scrollbar theme are ported; browser sticky/pin chrome, status-bar actions and code-action links are terminal omissions. |
 | Sticky scroll | `vs/editor/contrib/stickyScroll/browser/*` | `editor/contrib/stickyScroll/browser/*` | **T** | Candidate rebuild, folding, 25% cap, overlay focus and theme are ported; it paints as a top-left overlay instead of an upstream view zone. |
-| Diff editor | `vs/editor/browser/widget/diffEditor/**`, `vs/workbench/browser/parts/editor/textDiffEditor.zig` | `editor/browser/widget/diffEditor/**`, `workbench/.../textDiffEditor.ts` | **P** | Partial portable port. Aligned snapshots, grouped fillers, themed line/character backgrounds, indicators, cursor-based navigation, projected gutter lookups, automatic inline layout, worker-backed Git snapshot/diff opening, and read-only keyboard routing are implemented. Actual view zones, full sub-editor contributions, disclosure/overview/moved-block features and accessible review are unfinished; see `docs/diff-view-audit.md`. |
+| Diff editor | `vs/editor/browser/widget/diffEditor/**`, `vs/workbench/browser/parts/editor/textDiffEditor.zig` | `editor/browser/widget/diffEditor/**`, `workbench/.../textDiffEditor.ts` | **T** | Both real resource models, retained ViewZones, worker/cache/event lifecycle, scoped actions, themed line/character overlays, layout-based gutters, inline/true-inline deleted text, disclosure/overview/moved-block features, accessible review, independent contributions, editable and serialized inputs. Fixed cells, typed CSS, glyphs and accessible keyboard traversal replace browser geometry, compositing and accessibility surfaces. The [diff-view audit](diff-view-audit.md) records all 19 requirements and their tests, including the eight pinned upstream widget scenarios. |
 | Snippet tab stops | decorations in `src/tui/editorView.zig` | `editor/contrib/snippet/browser/*` | **T** | Parser/session, placeholder groups, transforms, `snippet-placeholder`/`finish-snippet-placeholder` themed decorations and TUI Tab/Shift-Tab/Escape placeholder navigation are ported. The browser controller's remaining action/context-key plumbing and full upstream session tests are terminal command-layer omissions. |
 | Rulers | `vs/editor/browser/viewParts/rulers/rulers.zig` | `editor/browser/viewParts/rulers/rulers.ts` | **T** | Configured `editor.rulers` columns are mapped to visible cell columns and painted as one-cell vertical guides through the view-line guide layer; the guide is skipped where a text glyph occupies the cell because a cell cannot show both. Per-ruler CSS color overrides are not parsed; `editorRuler.foreground` is used. |
 | Scroll decoration | `vs/editor/browser/viewParts/scrollDecoration/scrollDecoration.zig` + `src/tui/editorView.zig` | `editor/browser/viewParts/scrollDecoration/` | **T** | The shadow appears after the first view line scrolls away and tints the first text row with `scrollbar.shadow`; the terminal has no alpha/blur, so it is a solid one-row background instead of a CSS box shadow. Covered by a View test. |
@@ -272,9 +272,11 @@ For each row:
   panes, editor part, editor status, quick input).
 - Classified the content views and suggest/hover as **T** where the remaining
   gaps are browser chrome/accessibility. Snippet tab stops are **T** after the
-  TUI placeholder navigation. The diff editor is **T**: the terminal side-by-side
-  cell panes replace inline mode/hide-unchanged/moved-block layout, with the
-  omissions documented. All ledger rows now have a terminal-aware verdict.
+  TUI placeholder navigation. The initial diff verdict was subsequently
+  reopened: inline layout, hide-unchanged and moved-block behavior were
+  missing portable implementations, not terminal constraints. The November
+  27 diff-view remediation ports those features and records the remaining
+  actual cell-grid adaptations in the diff ledger.
 - Resolved the suggest widget's `editorSuggestWidget.*`/`scrollbarSlider.*`
   theme through `SuggestController.setTheme` in the editor pane.
 - Resolved the content-hover widget's `editorHoverWidget.*`, `focusBorder` and
@@ -282,9 +284,9 @@ For each row:
 
 ## Next slice
 
-The audit is complete: every listed view has an **F** or **T** verdict with
-evidence, and no `Pending audit`, **P** or **M** rows remain. The terminal
-adaptations' remaining optional enhancements are recorded in the **T** rows,
-for example diff inline/hide-unchanged layout, the separate pinned-tab row and
-the browser menu/accessibility surfaces. Further work should start from those
-documented omissions rather than reopen a view's verdict.
+The diff-view verdict is backed by the dedicated November 27 audit and
+verification index. Other terminal adaptations are tracked in their **T** rows,
+such as the separate pinned-tab row and browser menu/accessibility surfaces.
+Reopen a verdict when an implementation or regression exposes a missing
+portable behavior; fixed-cell geometry alone is not a reason to leave such a
+gap unported.

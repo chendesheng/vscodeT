@@ -2069,7 +2069,12 @@ Terminal substitutions and their reasons:
 - **Whole-line decoration data.** The ported `DecorationsOverlay` produces
   per-visible-line class lists instead of positioned `<div>`s; the terminal maps
   `line-insert`/`line-delete`/`diff-filler` to row backgrounds and
-  `char-insert`/`char-delete` to inline cell styles.
+  `char-insert`/`char-delete` to inline cell styles. Pure insertion and
+  deletion use the additional upstream whole-line character variants; the
+  terminal substitutes a resolved character tint for the two overlapping
+  translucent browser rectangles. The shared decoration overlay maps
+  `shouldFillLineOnLineBreak` to the rest of each continuing row, clipped
+  by the editor viewport.
 - **Model-anchored diff view zones.** The view layout accepts whitespace
   transactions and emits zone-change events. Both panes keep their real
   resource models; filler rows are represented by view zones rather than
@@ -2080,9 +2085,11 @@ Terminal substitutions and their reasons:
   TextResourceEditorInput. The working copy is registered once per document,
   regardless of the number of mounted file or diff views.
 - **Diff action controls.** The registered editor-title and gutter menus keep
-  upstream context keys and actions. A hunk toolbar places the primary and
-  overflow affordances in two adjacent terminal cells instead of vertically
-  stacking browser buttons; actual gutter items use the real layout bounds.
+  upstream context keys and actions. A hunk toolbar places the first two
+  primary actions (for example Revert and Stage), or the first primary and
+  overflow, in two adjacent cells instead of vertically stacking browser
+  buttons. Actual gutter items use real layout bounds; typed revert and stage
+  commands carry the selected mapping and the real resource URI pair.
   Legacy revert arrows use model-anchored glyph-margin widgets. The inline
   deleted-code margin exposes the original line numbers, selection and exact
   copy via the terminal clipboard service. Both normal and compact disclosure
@@ -2097,10 +2104,11 @@ Terminal substitutions and their reasons:
   overview renderer's half-cell projection and the viewport slider uses
   scrollbar geometry and mouse events. The sash uses whole-cell geometry and
   two stationary primary clicks to reset to the configured ratio.
-- **Decoration generation events.** Quick-diff/diff decorations change without
-  a content edit. `TerminalViewHost.renderRange` dispatches
-  `ViewDecorationsChanged` when `Editor.decorationGeneration()` changes, so the
-  line-decorations and whole-line overlays re-prepare instead of staying stale.
+- **Decoration change events.** Quick-diff/diff decorations change without
+  a content edit. The model's decorations-changed event reaches the editor's
+  registered listener and dispatches `ViewDecorationsChanged`, so overlays
+  re-prepare without polling generation counters or relying on a new frame
+  to detect the change.
 - The main loop drives the quick-diff delay and dispatches completed worker
   results. The native worker receives owned text snapshots.
 
