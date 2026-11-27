@@ -477,6 +477,25 @@ pub const MultiDocumentHighlightProvider = struct {
     provide_multi_document_highlights: *const fn (*anyopaque, Allocator, *TextModel, Position, []const *TextModel, CancellationToken) anyerror!?[]const MultiDocumentHighlight,
 };
 
+/// Upstream FoldingRange uses one-based line numbers and an optional kind.
+pub const FoldingRangeKind = enum { comment, imports, region };
+pub const FoldingRange = struct {
+    start: usize,
+    end: usize,
+    kind: ?FoldingRangeKind = null,
+};
+pub const FoldingRangesCallback = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, anyerror!?[]const FoldingRange) void,
+};
+pub const FoldingRangeProvider = struct {
+    context: *anyopaque,
+    id: []const u8 = "",
+    on_did_change: ?*@import("../../base/common/event.zig").Emitter(void) = null,
+    provide_folding_ranges: *const fn (*anyopaque, Allocator, *TextModel, CancellationToken) anyerror!?[]const FoldingRange,
+    request_folding_ranges: ?*const fn (*anyopaque, Allocator, *TextModel, FoldingRangesCallback) anyerror!@import("../../base/common/lifecycle.zig").IDisposable = null,
+};
+
 /// Port of `SelectionRange` from
 /// `src/vs/editor/common/languages.ts`.
 pub const SelectionRange = struct {

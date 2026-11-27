@@ -500,7 +500,8 @@ subsequent ZLS hover responses. The Zig extension’s ZLS output command opens
 the real file-backed Output panel. Go to Symbol in Workspace (`Ctrl-T` or
 type `#` in Quick Access) queries real ZLS workspace symbols and opens their
 source locations. Expand/Shrink Selection also consumes language-server
-selection ranges. The negotiated capabilities are recorded in
+selection ranges, and syntax folding uses the server’s folding ranges. The
+negotiated capabilities are recorded in
 [the reference capture](docs/zig-zls-reference-capabilities.json). The full LSP capability matrix
 is still in progress; see [the integration plan](docs/zig-extension-lsp-plan.md).
 

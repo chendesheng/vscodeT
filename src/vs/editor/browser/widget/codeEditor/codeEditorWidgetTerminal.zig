@@ -1992,6 +1992,7 @@ pub const Editor = struct {
         self.marker_decorations = marker_decorations;
         if (!self.hasModel()) return;
         self.smart_select.bindRegistry(if (features) |service| &service.selection_range_provider else null) catch {};
+        self.folding.bindRegistry(if (features) |service| &service.folding_range_provider else null, .{ .context = self, .changed = foldingProvidersChanged, .complete = foldingSyntaxCompleted }) catch {};
         if (marker_decorations) |service| {
             if (!self.marker_model_registered) {
                 service.registerModel(self.model) catch {};
@@ -2854,10 +2855,20 @@ pub const Editor = struct {
         self.ensureCursorVisible();
     }
 
+    pub fn setFoldingOptions(self: *Editor, use_syntax: bool, maximum_regions: usize, fold_imports_by_default: bool) void {
+        if (!self.hasModel()) return;
+        if (self.folding.use_syntax == use_syntax and self.folding.maximum_regions == maximum_regions and self.folding.fold_imports_by_default == fold_imports_by_default) return;
+        self.folding.use_syntax = use_syntax;
+        self.folding.maximum_regions = maximum_regions;
+        self.folding.fold_imports_by_default = fold_imports_by_default;
+        self.triggerFoldingUpdate(time_compat.milliTimestamp());
+    }
+
     /// Diff sub-editors disable the ordinary folding contribution; their
     /// hidden areas are owned by HideUnchangedRegionsFeature instead.
     pub fn disableFolding(self: *Editor) void {
         self.folding_override = false;
+        if (self.hasModel()) self.folding.cancelPending();
         self.folding_dirty = false;
         self.folding_task.schedule(null);
         self.setGutterOptions(self.gutter_line_numbers, self.gutter_line_numbers_min_chars, false);
@@ -3125,15 +3136,44 @@ pub const Editor = struct {
         // A line-count change may leave the wrapping model one change behind;
         // rebuild it before a hidden range can point past its projections.
         self.ensureTokensVisible();
+        self.folding_dirty = false;
+        if (try self.folding.requestSyntax()) return;
         const selections = try self.getSelections();
         defer self.allocator.free(selections);
         try self.folding.refresh(selections);
-        self.folding_dirty = false;
         try self.applyFoldingVisibility();
         const elapsed_ms: i64 = @intCast(@divTrunc(std.Io.Timestamp.now(time_compat.io, .awake).toMicroseconds() - start_us, 1000));
         if (elapsed_ms > 0) {
             self.folding_delay_ms = @max(folding_debounce_min_ms, @min(elapsed_ms, folding_debounce_max_ms));
         }
+    }
+
+    fn foldingProvidersChanged(context: *anyopaque) void {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        self.triggerFoldingUpdate(time_compat.milliTimestamp());
+    }
+
+    fn foldingSyntaxCompleted(context: *anyopaque, result: anyerror!?@import("../../../contrib/folding/browser/foldingRanges.zig").FoldingRegions, elapsed_ms: i64) void {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        const regions = result catch null;
+        self.applySyntaxFolding(regions) catch |err| self.setMessage("folding failed: {s}", .{@errorName(err)});
+        if (elapsed_ms > 0) self.folding_delay_ms = @max(folding_debounce_min_ms, @min(elapsed_ms, folding_debounce_max_ms));
+    }
+
+    fn applySyntaxFolding(self: *Editor, regions: ?@import("../../../contrib/folding/browser/foldingRanges.zig").FoldingRegions) !void {
+        const selections = self.getSelections() catch |err| {
+            if (regions) |provided| {
+                var owned = provided;
+                owned.deinit();
+            }
+            return err;
+        };
+        defer self.allocator.free(selections);
+        if (regions) |provided| try self.folding.updateSyntax(provided, selections) else try self.folding.refresh(selections);
+        try self.applyFoldingVisibility();
+        // The provider can change gutter controls without altering hidden
+        // areas. Deliver the folding decoration update on completion.
+        self.emitViewEvent(.{ .ViewDecorationsChanged = view_events.ViewDecorationsChangedEvent.init(null) });
     }
 
     /// Applies the fold controller's hidden ranges to the view model and keeps
@@ -3183,6 +3223,7 @@ pub const Editor = struct {
     /// Content and language changes reset the folding model update deadline.
     fn triggerFoldingUpdate(self: *Editor, now_ms: i64) void {
         if (self.folding_override == false) return;
+        self.folding.cancelPending();
         self.folding_dirty = true;
         self.folding_task.schedule(now_ms + self.folding_delay_ms);
     }
@@ -3457,6 +3498,7 @@ pub const Editor = struct {
             self.character_pair = null;
         }
         try self.refreshFoldingRules();
+        try self.folding.updateProviders();
         self.triggerFoldingUpdate(time_compat.milliTimestamp());
     }
 

@@ -228,6 +228,19 @@ pub fn applyViewSettings(
         }
     }
 
+    const strategy: editorOptions.FoldingStrategy = if (std.mem.eql(u8, readString(reader, "editor.foldingStrategy", language_id, resource) orelse "auto", "indentation")) .indentation else .auto;
+    inline for (.{
+        .{ .option = EditorOption.foldingStrategy, .value = strategy },
+        .{ .option = EditorOption.foldingHighlight, .value = readBool(reader, "editor.foldingHighlight", language_id, resource) orelse true },
+        .{ .option = EditorOption.foldingImportsByDefault, .value = readBool(reader, "editor.foldingImportsByDefault", language_id, resource) orelse false },
+        .{ .option = EditorOption.foldingMaximumRegions, .value = @as(i32, @intCast(std.math.clamp(readInt(reader, "editor.foldingMaximumRegions", language_id, resource) orelse 5000, 10, 65000))) },
+    }) |setting| {
+        const previous = options.get(setting.option);
+        mark(changed, setting.option, previous != setting.value);
+        any = any or previous != setting.value;
+        options.set(setting.option, setting.value);
+    }
+
     const on_type = formatOnType(reader, language_id, resource);
     const on_type_changed = options.get(.formatOnType) != on_type;
     mark(changed, .formatOnType, on_type_changed);

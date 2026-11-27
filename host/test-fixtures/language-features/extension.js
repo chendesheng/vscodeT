@@ -216,6 +216,16 @@ function activate(context) {
       ];
     }
   }));
+  const foldingChanges = new vscode.EventEmitter();
+  let changedFolds = false;
+  context.subscriptions.push(foldingChanges,
+    vscode.commands.registerCommand('fixture.changeFoldingRanges', () => { changedFolds = true; foldingChanges.fire(); }),
+    vscode.languages.registerFoldingRangeProvider({ language: 'json' }, {
+      onDidChangeFoldingRanges: foldingChanges.event,
+      provideFoldingRanges() {
+        return changedFolds ? [new vscode.FoldingRange(0, 2, vscode.FoldingRangeKind.Region)] : [new vscode.FoldingRange(1, 2, vscode.FoldingRangeKind.Region)];
+      }
+    }));
   context.subscriptions.push(vscode.languages.registerSelectionRangeProvider({ language: 'json' }, {
     async provideSelectionRanges(document, positions, token) {
       await new Promise(resolve => setTimeout(resolve, 30));

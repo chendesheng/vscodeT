@@ -2638,6 +2638,28 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             defer allocator.free(shrunk);
             try std.testing.expect(shrunk[0].startColumn > 1 or shrunk[0].endColumn < model.getLineMaxColumn(2));
 
+            // Syntax ranges replace the indent fallback, drive the gutter and
+            // refresh when the provider's change event arrives.
+            const folding_deadline = time_compat.milliTimestamp() + 5000;
+            while (selection_editor.folding.regionStartingAt(2) == null and time_compat.milliTimestamp() < folding_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(selection_editor.folding.regionStartingAt(2) != null);
+            try selection_editor.setCursorPosition(Position.init(2, 1));
+            try selection_editor.foldAtCursor();
+            try std.testing.expect(!selection_editor.isModelLineVisible(3));
+            try selection_editor.unfoldAtCursor();
+            try std.testing.expect(selection_editor.isModelLineVisible(3));
+            try extension_host.host.executeContributedCommand("fixture.changeFoldingRanges", &.{});
+            const refresh_deadline = time_compat.milliTimestamp() + 5000;
+            while (selection_editor.folding.regionStartingAt(2) != null and time_compat.milliTimestamp() < refresh_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(selection_editor.folding.regionStartingAt(2) == null);
+            try std.testing.expect(selection_editor.folding.regionStartingAt(1) != null);
+
             const action_model = @import("../../../editor/contrib/codeAction/browser/codeAction.zig");
             const action_types = @import("../../../editor/contrib/codeAction/common/types.zig");
             const ActionReceiver = struct {
@@ -3708,7 +3730,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try directory.writeFile(io, .{ .sub_path = "settings.json", .data = settings });
             const settings_path = try std.fs.path.join(allocator, &.{ root, "settings.json" });
             defer allocator.free(settings_path);
-            try directory.writeFile(io, .{ .sub_path = "sample.zig", .data = "/// Returns the answer.\npub fn answer() u32 { return 42; }\npub fn example() u32 { return answer(); }\n" });
+            try directory.writeFile(io, .{ .sub_path = "sample.zig", .data = "/// Returns the answer.\npub fn answer() u32 { return 42; }\npub fn example() u32 { return answer(); }\npub fn multiline() void {\n    const x = 1;\n    _ = x;\n}\n" });
             const document_path = try std.fs.path.join(allocator, &.{ root, "sample.zig" });
             defer allocator.free(document_path);
             var catalog = try @import("../../services/extensions/common/extensionsRegistry.zig").scan(allocator, &.{extension_path});
@@ -3822,6 +3844,12 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                         const selection = try selection_editor.getModelSelections();
                         defer allocator.free(selection);
                         try std.testing.expect(!selection[0].isEmpty());
+                        const folding_deadline = time_compat.milliTimestamp() + 5000;
+                        while (selection_editor.folding.regionStartingAt(4) == null and time_compat.milliTimestamp() < folding_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                            time_compat.sleepMillis(10);
+                        }
+                        try std.testing.expect(selection_editor.folding.regionStartingAt(4) != null);
                         model.setLanguage("plaintext");
                         try std.testing.expect(workbench.statusbar.model().findEntry("status.languageStatus") == null);
                         return;

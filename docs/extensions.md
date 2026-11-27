@@ -1990,7 +1990,7 @@ with explicit `zig.path`, `zig.zls.path` and `zig.zls.enabled: "on"`. The
 opt-in real-extension test uses Zig extension 0.7.0, Zig 0.17.0 and ZLS 0.17.0.
 It verifies both standalone and workspace activation, the actual initialize
 exchange, incremental hover, language status, the ZLS Output command and a
-workspace-symbol query/navigation, and selection-range expansion. See the [implementation record and remaining
+workspace-symbol query/navigation, selection-range expansion, and syntax folding. See the [implementation record and remaining
 capabilities](zig-extension-lsp-plan.md) and the
 [captured negotiation](zig-zls-reference-capabilities.json).
 
@@ -1998,7 +1998,7 @@ The transport fixtures also exercise local filesystem RPC, asynchronous
 background document resolution, watcher registration and disposal, output
 channel lifecycle, progress reporting and cancellation, and optional workspace
 symbol resolution. Remaining portable gaps include signature help, rename,
-semantic tokens, inlay hints and folding providers; the
+semantic tokens and inlay hints; the
 full advertised ZLS capability matrix is not yet verified.
 
 ## 16. Deferred / explicit limitations

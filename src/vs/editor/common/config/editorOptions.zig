@@ -258,6 +258,7 @@ pub const RenderLineHighlight = enum { none, gutter, line, all };
 
 pub const RenderWhitespace = enum { none, boundary, selection, trailing, all };
 
+pub const FoldingStrategy = enum { auto, indentation };
 pub const ShowFoldingControls = enum { always, never, mouseover };
 
 pub const CursorSmoothCaretAnimation = enum { off, explicit, on };
@@ -486,6 +487,8 @@ pub fn OptionValueType(comptime option: EditorOption) type {
         .tabFocusMode,
         .wordWrapIndicator,
         .folding,
+        .foldingHighlight,
+        .foldingImportsByDefault,
         .effectiveEditContext,
         .effectiveAllowVariableFonts,
         .allowVariableFonts,
@@ -496,6 +499,7 @@ pub fn OptionValueType(comptime option: EditorOption) type {
         .cursorSurroundingLines,
         .cursorWidth,
         .lineNumbersMinChars,
+        .foldingMaximumRegions,
         .occurrencesHighlightDelay,
         .overviewRulerLanes,
         .revealHorizontalRightPadding,
@@ -532,6 +536,7 @@ pub fn OptionValueType(comptime option: EditorOption) type {
         .experimentalGpuAcceleration => GpuAcceleration,
         .wordWrap => WordWrap,
         .wordWrapOverride1, .wordWrapOverride2 => WordWrapOverride,
+        .foldingStrategy => FoldingStrategy,
         .showFoldingControls => ShowFoldingControls,
         .accessibilitySupport => AccessibilitySupport,
         .wrappingIndent => WrappingIndent,

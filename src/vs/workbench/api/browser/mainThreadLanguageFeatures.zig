@@ -3,7 +3,7 @@
 //
 // Ported features: hover, completion, definition, declaration,
 // implementation, type definition, references, document/workspace symbols, single- and
-// multi-document highlights, selection ranges, CodeLens, code actions
+// multi-document highlights, folding/selection ranges, CodeLens, code actions
 // and document/range/on-type formatting. The actor stores providers by handle
 // in `LanguageFeaturesService`, converts the extension-host DTOs into editor
 // types and forwards provider calls back to `ExtHostLanguageFeatures`.
@@ -67,6 +67,7 @@ const Registration = struct {
     hover_arena: ?*std.heap.ArenaAllocator = null,
     code_lens_state: ?*CodeLensState = null,
     workspace_symbol_state: ?*WorkspaceSymbolState = null,
+    folding_state: ?*FoldingState = null,
 };
 
 const HoverState = struct {
@@ -586,6 +587,7 @@ pub const MainThreadLanguageFeatures = struct {
     workspace_symbol_registry: ?*workspace_symbols.WorkspaceSymbolProviderRegistry = null,
     registrations: std.AutoHashMap(u32, *Registration),
     code_lens_events: std.AutoHashMap(u32, *CodeLensState),
+    folding_events: std.AutoHashMap(u32, *FoldingState),
     code_lens_commands: std.ArrayList(*CodeLensCommandRequest) = .empty,
     model_position_commands: std.ArrayList(*ModelPositionCommandRequest) = .empty,
     code_action_commands: std.ArrayList(*CodeActionCommandRequest) = .empty,
@@ -599,6 +601,7 @@ pub const MainThreadLanguageFeatures = struct {
             .inline_providers = .init(allocator),
             .registrations = std.AutoHashMap(u32, *Registration).init(allocator),
             .code_lens_events = std.AutoHashMap(u32, *CodeLensState).init(allocator),
+            .folding_events = .init(allocator),
         };
     }
 
@@ -613,6 +616,7 @@ pub const MainThreadLanguageFeatures = struct {
         self.registrations.deinit();
         self.code_lens_commands.deinit(self.allocator);
         self.code_lens_events.deinit();
+        self.folding_events.deinit();
         self.inline_providers.deinit();
     }
 
@@ -674,6 +678,10 @@ pub const MainThreadLanguageFeatures = struct {
         }
         if (registration.disposable) |disposable| disposable.dispose();
         if (registration.workspace_symbol_state) |state| state.releaseLastResult();
+        if (registration.folding_state) |state| {
+            if (state.event_handle) |handle| _ = self.folding_events.remove(handle);
+            state.changed.deinit();
+        }
         if (registration.code_lens_state) |state| {
             if (state.event_handle) |handle| _ = self.code_lens_events.remove(handle);
             state.changed.deinit();
@@ -713,6 +721,7 @@ pub const MainThreadLanguageFeatures = struct {
             const handle = handleArg(args) orelse return error.InvalidArguments;
             if (self.registrations.fetchRemove(handle)) |entry| self.destroyRegistration(entry.value);
             if (self.code_lens_events.fetchRemove(handle)) |entry| entry.value.event_handle = null;
+            if (self.folding_events.fetchRemove(handle)) |entry| entry.value.event_handle = null;
             return .empty;
         }
         if (std.mem.eql(u8, method, "$registerInlineCompletionsSupport")) {
@@ -729,6 +738,12 @@ pub const MainThreadLanguageFeatures = struct {
         if (std.mem.eql(u8, method, "$registerImplementationSupport")) return self.registerLocationProvider(args, arena, .implementation);
         if (std.mem.eql(u8, method, "$registerTypeDefinitionSupport")) return self.registerLocationProvider(args, arena, .type_definition);
         if (std.mem.eql(u8, method, "$registerReferenceSupport")) return self.registerReference(args, arena);
+        if (std.mem.eql(u8, method, "$registerFoldingRangeProvider")) return self.registerFoldingRange(args, arena);
+        if (std.mem.eql(u8, method, "$emitFoldingRangeEvent")) {
+            const handle = handleArg(args) orelse return error.InvalidArguments;
+            if (self.folding_events.get(handle)) |state| try state.changed.fire({});
+            return .empty;
+        }
         if (std.mem.eql(u8, method, "$registerSelectionRangeProvider")) return self.registerSelectionRange(args, arena);
         if (std.mem.eql(u8, method, "$registerNavigateTypeSupport")) return self.registerWorkspaceSymbol(args, arena);
         if (std.mem.eql(u8, method, "$registerDocumentSymbolProvider")) return self.registerDocumentSymbol(args, arena);
@@ -836,6 +851,33 @@ pub const MainThreadLanguageFeatures = struct {
             .context = state,
             .requires_window_fiber = self.proxy.request_async != null,
             .provide_references = provideReferences,
+        });
+        return .empty;
+    }
+
+    fn registerFoldingRange(self: *MainThreadLanguageFeatures, args: []const rpc.Arg, arena: Allocator) !rpc.HandlerReply {
+        const handle = handleArg(args) orelse return error.InvalidArguments;
+        const selector_value = jsonArg(args, 1) orelse return error.InvalidArguments;
+        const registration = try self.createRegistration(arena, handle);
+        errdefer {
+            _ = self.registrations.remove(handle);
+            self.destroyRegistration(registration);
+        }
+        const a = registration.arena.allocator();
+        const state = try a.create(FoldingState);
+        state.* = .{ .registration = registration, .changed = .init(self.allocator) };
+        registration.folding_state = state;
+        if (jsonArg(args, 3)) |event| {
+            if (event == .integer) state.event_handle = std.math.cast(u32, event.integer);
+        }
+        if (state.event_handle) |event| try self.folding_events.put(event, state);
+        const selector = try parseSelector(a, selector_value);
+        registration.disposable = try self.features.folding_range_provider.register(selector, .{
+            .context = state,
+            .id = try a.dupe(u8, extensionIdArg(args, 2)),
+            .on_did_change = if (state.event_handle != null) &state.changed else null,
+            .provide_folding_ranges = FoldingState.provide,
+            .request_folding_ranges = if (self.proxy.request_async != null) FoldingState.request else null,
         });
         return .empty;
     }
@@ -2333,3 +2375,65 @@ fn parseWorkspaceSymbol(allocator: Allocator, value: std.json.Value) !?workspace
     };
     return symbol;
 }
+
+const FoldingState = struct {
+    registration: *Registration,
+    changed: @import("../../../base/common/event.zig").Emitter(void),
+    event_handle: ?u32 = null,
+
+    fn args(self: *FoldingState, a: Allocator, model: *TextModel) ![3]rpc.Arg {
+        return .{
+            .{ .json = .{ .integer = self.registration.handle } },
+            .{ .json = try std_uri.jsonComponents(a, model.uri()) },
+            .{ .json = .{ .object = .empty } },
+        };
+    }
+
+    fn parse(a: Allocator, value: std.json.Value) !?[]const languages.FoldingRange {
+        if (value == .null) return null;
+        if (value != .array) return error.InvalidResult;
+        var result: std.ArrayList(languages.FoldingRange) = .empty;
+        for (value.array.items) |item| {
+            if (item != .object) continue;
+            const start = intField(item.object, "start") orelse continue;
+            const end = intField(item.object, "end") orelse continue;
+            var kind: ?languages.FoldingRangeKind = null;
+            if (item.object.get("kind")) |k| {
+                const val = if (k == .object) k.object.get("value") orelse .null else k;
+                if (val == .string) kind = std.meta.stringToEnum(languages.FoldingRangeKind, val.string);
+            }
+            try result.append(a, .{ .start = start, .end = end, .kind = kind });
+        }
+        return result.items;
+    }
+
+    fn provide(context: *anyopaque, a: Allocator, model: *TextModel, token: CancellationToken) !?[]const languages.FoldingRange {
+        const self: *FoldingState = @ptrCast(@alignCast(context));
+        const arguments = try self.args(a, model);
+        const reply = try self.registration.owner.call(a, "$provideFoldingRanges", &arguments, token, timeout_default_ms);
+        return parse(a, reply);
+    }
+
+    const Pending = struct {
+        allocator: Allocator,
+        callback: languages.FoldingRangesCallback,
+        fn ready(context: *anyopaque, reply: rpc.Reply) void {
+            const self: *Pending = @ptrCast(@alignCast(context));
+            self.callback.complete(self.callback.context, switch (reply) {
+                .json => |value| parse(self.allocator, value),
+                .err => error.RequestFailed,
+                else => @as(?[]const languages.FoldingRange, null),
+            });
+        }
+    };
+
+    fn request(context: *anyopaque, a: Allocator, model: *TextModel, callback: languages.FoldingRangesCallback) !IDisposable {
+        const self: *FoldingState = @ptrCast(@alignCast(context));
+        const proxy = self.registration.owner.proxy;
+        const send = proxy.request_async orelse return error.RequestFailed;
+        const pending = try a.create(Pending);
+        pending.* = .{ .allocator = a, .callback = callback };
+        const arguments = try self.args(a, model);
+        return send(proxy.context, "$provideFoldingRanges", &arguments, .{ .context = pending, .callback = Pending.ready });
+    }
+};

@@ -448,11 +448,10 @@ pub const TerminalViewHost = struct {
         const folding = self.options.get(.folding) and
             self.options.get(.showFoldingControls) != .never;
         self.editor.setGutterOptions(line_numbers, min_chars, folding);
-        // Port of `FoldingController`'s construction/configuration handler:
-        // the decoration provider follows `showFoldingControls`. The
-        // `foldingHighlight` option is not ported yet, so the provider keeps
-        // its upstream default (`true`).
+        self.editor.setFoldingOptions(self.options.get(.foldingStrategy) == .auto, @intCast(self.options.get(.foldingMaximumRegions)), self.options.get(.foldingImportsByDefault));
+        // Port of FoldingController's construction/configuration handler.
         self.folding_decorations.show_folding_controls = self.options.get(.showFoldingControls);
+        self.folding_decorations.show_folding_highlights = self.options.get(.foldingHighlight);
     }
 
     pub fn deinit(self: *TerminalViewHost) void {
