@@ -1,6 +1,6 @@
 # Faithful port of the Zig VS Code extension and ZLS LSP support
 
-Status: implementation in progress. Initial real Zig/ZLS activation and hover are verified on macOS; the full advertised-capability matrix is not complete.
+Status: implementation in progress. The mandatory mock languageclient capability matrix and real Zig/ZLS activation and multiple provider behaviors pass on macOS. Remaining upstream fidelity and platform verification are tracked below.
 Upstream specification: VS Code 1.147.0 at `e31c2e52f563620846caab877103f630ea361b9c`.
 
 ## Fidelity contract
@@ -78,7 +78,7 @@ Not included: LSP features ZLS does not advertise (code lens, document links/col
 
 - The Node extension host remains optional (`zig build host`) on Linux, macOS and Windows. Missing host/Node is diagnosed and the editor continues with declarative extensions.
 - ZLS is supplied by the extension (or `zig.zls.path`). The extension's `workspace.fs` installer is supported by the ported local `MainThreadFileSystem`; network access remains external.
-- Configuration writes from extensions stay session-memory only (existing limitation); users persist `zig.path`, `zig.zls.path` and `zig.zls.enabled` (string `"on"`, not boolean; extension default is `"ask"`) in settings if they must survive restart.
+- Extension writes to user/workspace/folder settings persist through the configuration service; explicit memory-target writes are session-only. `zig.zls.enabled` is a string (`"on"`, not boolean; extension default is `"ask"`).
 - User-installed extension JavaScript executes with user privileges when enabled; no sandbox is added.
 
 ## Implementation record (2026-11-27)

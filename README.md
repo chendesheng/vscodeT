@@ -696,10 +696,12 @@ completion/hover ranges, formatting edits, document changes and selections) are
 converted between the host's UTF-16 code units and the editor's UTF-8 byte
 columns. CodeLens providers are mirrored with their real document URIs; the editor
 mounts and resolves visible lens commands in model-anchored rows. Semantic
-tokens, inlay hints, links, colors and call hierarchy remain without terminal
-renderers; navigation and reference results open in the terminal
-quick pick, while code actions use the editor lightbulb and action menu. Configuration writes are accepted in memory and are not
-persisted.
+tokens and inlay hints now render through the model and injected-text pipeline;
+links, colors and call hierarchy remain without terminal renderers. Navigation
+and reference results open in the terminal quick pick, while code actions use
+the editor lightbulb and action menu. Extension configuration writes persist
+through the user/workspace/folder configuration service; explicit memory-target
+writes are session-only.
 
 The editor core itself stays UTF-8: model text, positions, columns and edit
 offsets are byte-based, and core code never converts to or from UTF-16. This is

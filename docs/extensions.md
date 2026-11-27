@@ -1958,9 +1958,10 @@ The storage, status-bar, command and configuration actors are now ported as
 and `mainThreadConfiguration.zig`. Storage uses the in-memory storage service,
 status entries go through the ported status-bar service, command
 registration/activation and `$getCommands` are tracked in the actor while the
-terminal command switch stays in the adapter, and configuration writes are
-kept in a session-memory overlay that is pushed back with
-`$acceptConfigurationChanged`.
+terminal command switch stays in the adapter, and configuration writes use the
+workbench configuration service, forwarding its change events through
+`$acceptConfigurationChanged`. Explicit memory-target writes use a session
+snapshot overlay.
 
 Document/editor wire shaping lives in
 `mainThreadDocumentsAndEditors.zig`: the document/editor delta, removed
@@ -1977,9 +1978,9 @@ the adapter. `mainThreadWindow.zig` provides the always-focused initial state,
 local `$openUri` and identity `$asExternalUri`; `mainThreadExtensionService.zig`
 handles activation bookkeeping and browser-URI identity. The adapter supplies
 editor snapshots and applies converted selections/edits, and still owns the
-active-editor mirror and terminal command switch. The logger/output/progress/
-file-system actors and the `$getTools`/`$ensureActivation` stubs remain in the
-generic fallback.
+active-editor mirror and terminal command switch. Logger, Output, progress and
+local filesystem actors now have owner modules; the `$getTools` and
+`$ensureActivation` stubs remain in the generic fallback.
 
 ### 15.8 Zig/ZLS language features (in progress)
 
@@ -2042,9 +2043,9 @@ It runs in `zig build test-e2e` without installed Zig extension/ZLS assets.
 - Scoped `ContextKeyService`: only the expression/scanner plus the terminal's
   flat context are ported, so contributed `when` clauses that need scoped keys
   cannot be resolved yet.
-- Configuration writes (`updateValue`), language overrides and
-  `ConfigurationTarget`; extension updates are accepted in memory but are not
-  persisted to settings files.
+- Application, remote and profile configuration targets; explicit memory-target
+  writes are isolated to the extension-host snapshot. User, workspace and
+  folder updates and explicit language overrides persist to settings files.
 - General persistent storage: `InMemoryStorageService`, in-memory working-copy
   backups/history, and no disk memento backend, so most state does not survive
   a process restart. Extension enablement is the exception: it persists in
