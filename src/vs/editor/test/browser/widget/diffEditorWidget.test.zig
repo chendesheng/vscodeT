@@ -612,6 +612,21 @@ pub fn Tests(comptime View: type) type {
             try testing.expectEqual(@as(usize, 2), widget.changeCount());
         }
 
+        test "diffEditorWidget: next change wraps from the last modified line before an EOF deletion" {
+            const allocator = testing.allocator;
+            const io = Io.Threaded.global_single_threaded.io();
+            const widget = try DiffEditorWidget.create(View.init, allocator, io, "a.txt", "b.txt", "old\nkeep1\nkeep2\nremoved", "new\nkeep1\nkeep2", "Original", "Modified", 80, 8, .{});
+            defer widget.destroy();
+            try testing.expectEqual(@as(usize, 2), widget.changeCount());
+            const last_line = widget.modifiedModel().getLineCount();
+            try testing.expect(widget.state().?.mappings[1].line_range_mapping.modified.isEmpty());
+            try testing.expect(widget.state().?.mappings[1].line_range_mapping.modified.startLineNumber > last_line);
+            try widget.modified_editor.setCursorPosition(.{ .lineNumber = last_line, .column = 1 });
+            try testing.expect(widget.nextChange());
+            try testing.expectEqual(@as(?usize, 0), widget.current_change);
+            try testing.expectEqual(@as(usize, 1), widget.modified_editor.modelCursorPosition().lineNumber);
+        }
+
         test "diffEditorWidget: narrow panes keep deleted text in inline layout" {
             const allocator = testing.allocator;
             const io = Io.Threaded.global_single_threaded.io();

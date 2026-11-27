@@ -1186,10 +1186,12 @@ pub fn DiffEditorWidget(comptime View: type) type {
             if (count == 0) return false;
             const cursor = self.modified_editor.modelCursorPosition().lineNumber;
             var next: usize = 0;
-            for (0..count) |index| {
-                if (self.changeStart(index) > cursor) {
-                    next = index;
-                    break;
+            if (cursor != self.modified_editor.model.getLineCount()) {
+                for (0..count) |index| {
+                    if (self.changeStart(index) > cursor) {
+                        next = index;
+                        break;
+                    }
                 }
             }
             self.current_change = next;
@@ -1221,15 +1223,15 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         fn revealChange(self: *Self, index: usize) void {
             if (index >= self.changeCount()) return;
-            const row = self.changeStart(index);
+            const mapping = self.state().?.mappings[index].line_range_mapping.modified;
             self.modified_editor.setCursorPosition(.{
-                .lineNumber = @min(row, self.modified_editor.model.getLineCount()),
+                .lineNumber = @min(mapping.startLineNumber, self.modified_editor.model.getLineCount()),
                 .column = 1,
             }) catch {};
-            const bounds = gutter_feature.hunkBounds(self.state().?.mappings[index].line_range_mapping, self.original_editor, self.modified_editor);
-            const top = bounds.startLineNumber -| (self.height / 2);
-            _ = self.modified_editor.setScrollTop(top);
-            _ = self.original_editor.setScrollTop(top);
+            // Upstream _goTo reveals the entire modified exclusive range
+            // in the center. ViewLayout accounts for wrapped/zone rows.
+            _ = self.modified_editor.revealRange(self.modified_editor.model.validateRange(mapping.toExclusiveRange()), .Center);
+            _ = self.original_editor.setScrollTop(self.modified_editor.scrollTop());
             self.original_view.invalidate();
             self.modified_view.invalidate();
         }
