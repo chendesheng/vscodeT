@@ -1038,7 +1038,7 @@ fn dispatchExtensionKey(workbench: *Workbench, host: anytype, event: *ui.KeyEven
 
 /// Routes one mouse event through the view. The view owns hit testing, focus,
 /// caret placement, drag selection, click synthesis and wheel scrolling.
-fn handleMouseEvent(view: *View, hover: *ContentHoverController, suggest: ?*SuggestController, editor: *Editor, event: *input.MouseEvent) !void {
+fn handleMouseEvent(view: *View, hover: ?*ContentHoverController, suggest: ?*SuggestController, editor: *Editor, event: *input.MouseEvent) !void {
     _ = try editorInputDispatch.handleMouseEvent(view, hover, suggest, editor, event);
 }
 
