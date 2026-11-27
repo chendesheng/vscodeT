@@ -1475,8 +1475,9 @@ Library constraints:
   decoration through `MarkerDecorationsService.getMarker` and renders the
   severity glyph, the diagnostic message (including embedded newlines) and a
   dim `source(code)` line. Marker quick fixes, related-information links and
-  the "View Problem" status-bar action are not ported: the marker model has no
-  related information and the TUI has no code-action controller. Hovering a
+  the "View Problem" status-bar action are not yet wired into marker hover.
+  The shared code-action controller is available separately through the
+  editor actions and lightbulb. Hovering a
   squiggle and the keyboard `gh` command both show the marker message.
 - `ui/src/widgets/inputbox.zig` is the terminal single-line input: UTF-8 buffer,
   `(anchor, cursor)` selection with keyboard/mouse extension and selection

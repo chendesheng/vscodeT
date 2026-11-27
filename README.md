@@ -601,7 +601,7 @@ columns. CodeLens providers are mirrored with their real document URIs; the edit
 mounts and resolves visible lens commands in model-anchored rows. Semantic
 tokens, inlay hints, links, colors and call hierarchy remain without terminal
 renderers; navigation and reference results open in the terminal
-quick pick, while code actions still have no TUI command surface. Configuration writes are accepted in memory and are not
+quick pick, while code actions use the editor lightbulb and action menu. Configuration writes are accepted in memory and are not
 persisted.
 
 The editor core itself stays UTF-8: model text, positions, columns and edit
@@ -623,10 +623,13 @@ the range) shows the severity and marker message in the content-hover popup.
 Selecting a problem highlights its code range
 in the editor while the Problems view owns focus. Hover, completion, the
 navigation actions, breadcrumb symbols and document formatting are wired to the
-terminal editor. Code-action providers are transported but have no TUI command
-surface yet, and the remaining `MainThreadLanguageFeatures` methods stay
-unsupported. Provider calls are synchronous with a bounded timeout
-because the terminal editor has no asynchronous provider boundary.
+terminal editor. Code-action providers also drive the shared action widget,
+lightbulb and registered editor commands on the focused model, including both
+diff panes. Resolved workspace text edits use the URI model and bulk edit
+services; refactor preview uses checked changes and retained read-only
+multi-diff models. Workspace file edit undo/redo is still in progress. Hover
+and code-action provider results support asynchronous cancellation; other
+`MainThreadLanguageFeatures` methods remain incomplete.
 
 Host stderr is written to `<data dir>/extension-host.log` (normally
 `<user-data-dir>/logs/extension-host.log`) so it cannot

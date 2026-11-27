@@ -327,8 +327,35 @@ The full suite through the asynchronous provider implementation passed
 3,682/3,707 (25 skipped; 48/48 build steps). The subsequent focused view suite
 passed 500/500, including themed glyph hover painting, and the actual Node
 suite passed 22/22, including partial/loading results, pane-crossing
-cancellation and public hover execution. Hover verbosity actions and the
-remaining context/action and accessible-view integration are still in progress.
+cancellation and public hover execution. See the subsequent checkpoint for
+verbosity, context and code-action integration.
+
+### Code actions and workspace refactoring checkpoint (2026-11-27)
+
+* Hover visibility/focus contexts, navigation commands and extension-provider
+  verbosity controls now follow the shared hover lifecycle on both panes.
+  Provider refreshes retain individual hover IDs and cancel superseded results.
+* The shared `CodeActionModel` and oracle retain provider sets, apply upstream
+  hierarchical kind filtering and ordering, and schedule automatic queries
+  after the cursor/marker/registry events. The registered actions, lightbulbs
+  and shared action widget operate on the focused real diff editor, including
+  nearby diagnostic quick fixes and keyboard selection. Disabled actions use
+  the editor's inline message controller; focused actions decorate their ranges.
+* The extension-host bridge resolves code actions with provider identity and
+  forwards typed workspace edits through the bulk edit service. Text edits
+  resolve the URI model references, check supplied versions, convert UTF-16
+  ranges and validate the text group before changing models.
+* Refactor preview groups operations by file or category, tracks confirmation
+  checkboxes, detects model/file conflicts, and exposes retained read-only
+  preview models through the multi-diff source. The registered pane opens
+  transient multi-diff inputs and applies only the selected changes. Native
+  integration verification is still in progress.
+
+The last full suite before pane integration passed 3,712/3,738 (26 skipped;
+48/48 build steps). The latest actual Node suite passed 22/22. File mutations
+and their workspace undo/redo grouping, marker hover quick-fix controls,
+public code-action execution and remaining accessible-hover integration are
+not yet verified as complete.
 
 ### Native performance measurements (2026-11-27)
 
