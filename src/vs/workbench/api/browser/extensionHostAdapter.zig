@@ -611,6 +611,17 @@ pub const Extensions = struct {
             const provider = if (self.language_features_actor) |*actor| actor else return error.LanguageFeaturesUnavailable;
             return provider.executeCodeLensCommand(document, count, self.services.common.commands, self.services.window);
         }
+        if (std.mem.eql(u8, method, "$executeCommand") and args.len > 1 and args[0] == .json and args[0].json == .string and std.mem.eql(u8, args[0].json.string, "_executeCodeActionProvider")) {
+            if (args[1] != .json or args[1].json != .array or args[1].json.array.items.len < 2) return error.InvalidArguments;
+            const parameters = args[1].json.array.items;
+            const components = try std_uri.componentsFromJson(parameters[0], arena);
+            const key = try std_uri.resourceKeyFromComponents(arena, components);
+            const resource: std.Uri = .{ .scheme = components.scheme, .host = if (components.authority.len != 0) .{ .raw = components.authority } else null, .path = .{ .raw = components.path }, .query = if (components.query.len != 0) .{ .raw = components.query } else null, .fragment = if (components.fragment.len != 0) .{ .raw = components.fragment } else null };
+            const kind = if (parameters.len > 2 and parameters[2] == .string) parameters[2].string else null;
+            const count: usize = if (parameters.len > 3 and parameters[3] == .integer and parameters[3].integer > 0) @intCast(parameters[3].integer) else 0;
+            const provider = if (self.language_features_actor) |*actor| actor else return error.LanguageFeaturesUnavailable;
+            return provider.executeCodeActionCommand(resource, parameters[1], kind, count, self.models.documentForResource(key), self.services.text_model_service, self.services.common.commands, self.services.window);
+        }
         if (std.mem.eql(u8, method, "$executeCommand") and args.len > 1 and args[0] == .json and args[0].json == .string) if (@import("mainThreadLanguageFeatures.zig").ModelPositionCommand.fromId(args[0].json.string)) |command| {
             if (args[1] != .json or args[1].json != .array or args[1].json.array.items.len < 2) return error.InvalidArguments;
             const parameters = args[1].json.array.items;
@@ -2771,6 +2782,38 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                     try std.testing.expectEqual(0, extensions.language_features_actor.?.model_position_commands.items.len);
                 }
             }
+            // The public code-action command uses the same registered provider
+            // set on each genuine diff resource and preserves reversed selection.
+            for ([_][]const u8{ original_uri, modified_uri }) |uri| {
+                for ([_]i64{ 0, 1 }) |count| {
+                    const actions = try extensions.host.requestSync(scratch.allocator(), command, "$executeContributedCommand", &.{ .{ .json = .{ .string = "fixture.executeCodeActions" } }, .{ .json = .{ .string = uri } }, .{ .json = .{ .string = "quickfix" } }, .{ .json = .{ .integer = count } } }, null, 5000);
+                    const items = actions.object.get("items").?.array.items;
+                    try std.testing.expectEqual(@as(usize, 1), items.len);
+                    try std.testing.expectEqualStrings("Fixture quick fix", items[0].object.get("title").?.string);
+                    try std.testing.expect(items[0].object.get("preferred").?.bool);
+                    if (count == 0) {
+                        try std.testing.expect(items[0].object.get("edits") == null);
+                    } else {
+                        const edits = items[0].object.get("edits").?.array.items;
+                        try std.testing.expectEqual(@as(usize, 1), edits.len);
+                        try std.testing.expectEqualStrings(" ", edits[0].object.get("text").?.string);
+                    }
+                    const query = actions.object.get("query").?.object;
+                    try std.testing.expect(query.get("selection").?.bool);
+                    try std.testing.expectEqual(@as(i64, 6), query.get("anchor").?.integer);
+                    try std.testing.expectEqual(@as(i64, 2), query.get("active").?.integer);
+                }
+                const disabled = try extensions.host.requestSync(scratch.allocator(), command, "$executeContributedCommand", &.{ .{ .json = .{ .string = "fixture.executeCodeActions" } }, .{ .json = .{ .string = uri } }, .{ .json = .{ .string = "refactor" } }, .{ .json = .{ .integer = 1 } } }, null, 5000);
+                try std.testing.expectEqual(@as(usize, 0), disabled.object.get("items").?.array.items.len);
+                const source_actions = try extensions.host.requestSync(scratch.allocator(), command, "$executeContributedCommand", &.{ .{ .json = .{ .string = "fixture.executeCodeActions" } }, .{ .json = .{ .string = uri } }, .{ .json = .{ .string = "source" } }, .{ .json = .{ .integer = 0 } } }, null, 5000);
+                try std.testing.expectEqualStrings("Fixture source action", source_actions.object.get("items").?.array.items[0].object.get("title").?.string);
+            }
+            for (0..1000) |_| {
+                if (extensions.language_features_actor.?.code_action_commands.items.len == 0) break;
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(1);
+            }
+            try std.testing.expectEqual(@as(usize, 0), extensions.language_features_actor.?.code_action_commands.items.len);
             original.applyConfiguration(.{ .occurrences_highlight = .off });
             try std.testing.expect(!original.saveViewState() and !modified.saveViewState());
         }

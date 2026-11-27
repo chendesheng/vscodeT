@@ -316,6 +316,7 @@
 ["_executeDocumentHighlights","Execute Document Highlights","","",false,false,false,false,false]
 ["_executeHoverProvider","Execute Hover Provider","","",false,false,false,false,false]
 ["_executeHoverProvider_recursive","Execute Hover Provider","","",false,false,false,false,false]
+["_executeCodeActionProvider","Execute Code Action Provider","","",false,false,false,false,false]
 ["editor.action.wordHighlight.next","Go to Next Symbol Highlight","","",true,true,true,false,false]
 ["editor.action.wordHighlight.prev","Go to Previous Symbol Highlight","","",true,true,true,false,false]
 ["remote.tunnel.forwardCommandPalette","Forward a Port","Ports","",true,false,false,true,true]

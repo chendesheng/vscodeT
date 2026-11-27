@@ -29,23 +29,39 @@ function activate(context) {
     const items = await vscode.commands.executeCommand('vscode.executeCodeLensProvider', vscode.Uri.parse(uri), count);
     return items.map(item => ({ title: item.command?.title, start: item.range.start.character }));
   }));
+  const codeActionTargets = new WeakMap();
+  const codeActionQueries = [];
   context.subscriptions.push(vscode.languages.registerCodeActionsProvider({ language: 'json' }, {
     async provideCodeActions(document, range, context, token) {
       if (token.isCancellationRequested) return [];
+      codeActionQueries.push({ uri: document.uri.toString(), selection: range instanceof vscode.Selection, anchor: range.anchor?.character, active: range.active?.character });
       const quickfix = new vscode.CodeAction('Fixture quick fix', vscode.CodeActionKind.QuickFix);
       quickfix.isPreferred = true;
+      codeActionTargets.set(quickfix, document.uri);
       const refactor = new vscode.CodeAction('Fixture refactor', vscode.CodeActionKind.Refactor);
       refactor.disabled = { reason: 'Not available here' };
-      return [quickfix, refactor].filter(action => !context.only || context.only.contains(action.kind));
+      const source = new vscode.CodeAction('Fixture source action', vscode.CodeActionKind.Source);
+      return [quickfix, refactor, source].filter(action => !context.only || context.only.contains(action.kind));
     },
     async resolveCodeAction(action, token) {
       if (token.isCancellationRequested) return undefined;
       // A command argument survives only while the provider list is cached.
       action.command = { title: 'Fixture code action command', command: 'fixture.codeActionCommand', arguments: [action.title] };
+      const uri = codeActionTargets.get(action);
+      if (uri) {
+        action.edit = new vscode.WorkspaceEdit();
+        action.edit.insert(uri, new vscode.Position(0, 0), ' ');
+      }
       return action;
     }
-  }, { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix, vscode.CodeActionKind.Refactor] }));
+  }, { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix, vscode.CodeActionKind.Refactor, vscode.CodeActionKind.Source] }));
   context.subscriptions.push(vscode.commands.registerCommand('fixture.codeActionCommand', title => title));
+  context.subscriptions.push(vscode.commands.registerCommand('fixture.executeCodeActions', async (uri, kind, count) => {
+    const resource = vscode.Uri.parse(uri);
+    const selection = new vscode.Selection(0, 6, 0, 2);
+    const items = await vscode.commands.executeCommand('vscode.executeCodeActionProvider', resource, selection, kind, count);
+    return { items: items.map(item => ({ title: item.title, kind: item.kind?.value, preferred: item.isPreferred, edits: item.edit?.entries().map(([target, edits]) => ({ uri: target.toString(), text: edits[0].newText })) })), query: codeActionQueries.at(-1) };
+  }));
   context.subscriptions.push(vscode.commands.registerCommand('fixture.applyWorkspaceEdit', async uri => {
     const edit = new vscode.WorkspaceEdit();
     edit.insert(vscode.Uri.parse(uri), new vscode.Position(0, 0), ' ');

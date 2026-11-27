@@ -9,9 +9,10 @@
 // types and forwards provider calls back to `ExtHostLanguageFeatures`.
 //
 // Terminal adaptation: existing synchronous providers have bounded timeouts;
-// Hover, CodeLens and document highlight providers use cancellable RPC continuations. Workspace
-// edits from code actions are retained as raw DTO JSON until a bulk-edit
-// service exists; there is no TUI code-action surface yet.
+// Hover, CodeLens, document highlights and code-action providers use
+// cancellable RPC continuations. Code-action workspace edits are revived
+// into typed bulk-edit operations; their raw DTOs also preserve extension
+// command and public provider result conversion.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -381,6 +382,201 @@ const ModelPositionCommandRequest = struct {
     }
 };
 
+const code_action_model = @import("../../../editor/contrib/codeAction/browser/codeAction.zig");
+const Selection = @import("../../../editor/common/core/selection.zig").Selection;
+
+/// Native RPC boundary for the registered `_executeCodeActionProvider` action.
+/// Results and command caches remain valid for the upstream 100 ms grace
+/// period after the public extension API response.
+const CodeActionCommandRequest = struct {
+    owner: *MainThreadLanguageFeatures,
+    allocator: Allocator,
+    arena: std.heap.ArenaAllocator,
+    commands: *CommandRegistry,
+    resolver_service: resolver.ITextModelService,
+    resource: std.Uri,
+    input_range: std.json.Value,
+    kind: ?[]const u8,
+    resolve_count: usize,
+    cleanup: WindowDispatch.Task = .{},
+    document: ?*EditorDocument = null,
+    reference: ?resolver.ModelReference = null,
+    resolving: ?resolver.ModelReferenceRequest = null,
+    pending: ?IDisposable = null,
+    set: ?*code_action_model.ManagedCodeActionSet = null,
+    channel: ?*rpc.RpcProtocol = null,
+    request_id: u32 = 0,
+    finished: bool = false,
+
+    fn start(context: *anyopaque, channel: *rpc.RpcProtocol, id: u32) void {
+        const self: *CodeActionCommandRequest = @ptrCast(@alignCast(context));
+        self.channel = channel;
+        self.request_id = id;
+        if (self.document) |document| self.run(document.model) else {
+            self.resolving = self.resolver_service.createModelReference(self.resource, .{ .context = self, .complete = modelReady }) catch |err| return self.fail(err);
+        }
+    }
+    fn modelReady(context: *anyopaque, result: resolver.ModelReferenceResult) void {
+        const self: *CodeActionCommandRequest = @ptrCast(@alignCast(context));
+        self.resolving = null;
+        switch (result) {
+            .failure => |err| self.fail(err),
+            .resolved => |reference| {
+                self.reference = reference;
+                self.run(reference.object.textEditorModel);
+            },
+        }
+    }
+    fn currentModel(self: *CodeActionCommandRequest) *TextModel {
+        return if (self.document) |document| document.model else self.reference.?.object.textEditorModel;
+    }
+    fn run(self: *CodeActionCommandRequest, model: *TextModel) void {
+        if (self.input_range != .object) return self.fail(error.InvalidArguments);
+        const object = self.input_range.object;
+        const selection: ?Selection = if (intField(object, "selectionStartLineNumber")) |line| blk: {
+            const column = intField(object, "selectionStartColumn") orelse return self.fail(error.InvalidArguments);
+            const end_line = intField(object, "positionLineNumber") orelse return self.fail(error.InvalidArguments);
+            const end_column = intField(object, "positionColumn") orelse return self.fail(error.InvalidArguments);
+            break :blk Selection.init(line, columnForModel(model, line, column), end_line, columnForModel(model, end_line, end_column));
+        } else null;
+        const range = if (selection) |value| Range.init(value.startLineNumber, value.startColumn, value.endLineNumber, value.endColumn) else rangeFromJson(model, self.input_range) orelse return self.fail(error.InvalidArguments);
+        const command = self.commands.get("_executeCodeActionProvider") orelse return self.fail(error.CommandNotFound);
+        const args: code_action_model.ExecuteCodeActionProviderArgs = .{ .allocator = self.allocator, .registry = &self.owner.features.code_action_provider, .model = model, .range = model.validateRange(range), .selection = selection, .kind = self.kind, .resolve_count = self.resolve_count, .listener = .{ .context = self, .complete = ready }, .pending = &self.pending };
+        command.executeWithArgument(@import("../../../platform/commands/common/commands.zig").CommandArgument.from(code_action_model.ExecuteCodeActionProviderArgs, &args)) catch |err| self.fail(err);
+    }
+    fn ready(context: *anyopaque, outcome: anyerror!*code_action_model.ManagedCodeActionSet) void {
+        const self: *CodeActionCommandRequest = @ptrCast(@alignCast(context));
+        self.pending = null;
+        const set = outcome catch |err| return self.fail(err);
+        self.set = set;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        var array = std.json.Array.init(a);
+        for (set.valid_actions) |item| {
+            const dto = self.serializeAction(a, item.action) catch |err| return self.fail(err);
+            array.append(dto) catch |err| return self.fail(err);
+        }
+        self.reply(.{ .json = .{ .array = array } });
+    }
+    fn serializeAction(self: *CodeActionCommandRequest, a: Allocator, action: languages.CodeAction) !std.json.Value {
+        var value: std.json.ObjectMap = .empty;
+        try value.put(a, "title", .{ .string = action.title });
+        if (action.kind) |kind| try value.put(a, "kind", .{ .string = kind });
+        if (action.is_preferred) try value.put(a, "isPreferred", .{ .bool = true });
+        if (action.is_ai) try value.put(a, "isAI", .{ .bool = true });
+        if (action.is_synthetic) try value.put(a, "_isSynthetic", .{ .bool = true });
+        if (action.command) |command| {
+            var dto: std.json.ObjectMap = .empty;
+            try dto.put(a, "id", .{ .string = command.id });
+            try dto.put(a, "title", .{ .string = command.title });
+            if (command.arguments) |arguments| try dto.put(a, "arguments", arguments);
+            try value.put(a, "command", .{ .object = dto });
+        }
+        if (action.edit_json) |edit| try value.put(a, "edit", edit) else if (action.edit) |edit| try value.put(a, "edit", try self.serializeWorkspaceEdit(a, edit));
+        return .{ .object = value };
+    }
+    fn serializeWorkspaceEdit(self: *CodeActionCommandRequest, a: Allocator, edit: languages.WorkspaceEdit) !std.json.Value {
+        var edits = std.json.Array.init(a);
+        for (edit.edits) |resource_edit| {
+            var dto: std.json.ObjectMap = .empty;
+            const metadata = switch (resource_edit) {
+                .text => |text| blk: {
+                    try dto.put(a, "resource", try std_uri.jsonComponents(a, text.resource));
+                    if (text.version_id) |version| try dto.put(a, "versionId", .{ .integer = version });
+                    var text_dto: std.json.ObjectMap = .empty;
+                    try text_dto.put(a, "text", .{ .string = text.text });
+                    if (text.eol) |eol| try text_dto.put(a, "eol", .{ .integer = @backingInt(eol) });
+                    if (text.insert_as_snippet) try text_dto.put(a, "insertAsSnippet", .{ .bool = true });
+                    if (text.keep_whitespace) try text_dto.put(a, "keepWhitespace", .{ .bool = true });
+                    if (text.range) |range| {
+                        const range_dto = if (text.column_encoding == .utf16) try rawRangeJson(a, range) else blk_range: {
+                            const model = self.currentModel();
+                            const key = try std_uri.resourceKey(a, text.resource);
+                            const current_key = try std_uri.resourceKey(a, model.uri());
+                            if (std.mem.eql(u8, key, current_key)) break :blk_range try rangeJson(a, model, range);
+                            var reference = try self.resolver_service.acquireModelReference(text.resource);
+                            defer reference.dispose();
+                            break :blk_range try rangeJson(a, reference.object.textEditorModel, range);
+                        };
+                        try text_dto.put(a, "range", range_dto);
+                    }
+                    try dto.put(a, "textEdit", .{ .object = text_dto });
+                    break :blk text.metadata;
+                },
+                .file => |file| blk: {
+                    if (file.old_resource) |resource| try dto.put(a, "oldResource", try std_uri.jsonComponents(a, resource));
+                    if (file.new_resource) |resource| try dto.put(a, "newResource", try std_uri.jsonComponents(a, resource));
+                    var options: std.json.ObjectMap = .empty;
+                    if (file.options.overwrite) |overwrite| try options.put(a, "overwrite", .{ .bool = overwrite });
+                    inline for (.{ .{ "ignoreIfNotExists", file.options.ignore_if_not_exists }, .{ "ignoreIfExists", file.options.ignore_if_exists }, .{ "recursive", file.options.recursive }, .{ "copy", file.options.copy }, .{ "folder", file.options.folder }, .{ "skipTrashBin", file.options.skip_trash_bin } }) |pair| {
+                        if (pair[1]) try options.put(a, pair[0], .{ .bool = true });
+                    }
+                    if (file.options.max_size) |size| try options.put(a, "maxSize", .{ .integer = @intCast(size) });
+                    if (file.options.contents) |contents| {
+                        const encoder = std.base64.standard.Encoder;
+                        const encoded = try a.alloc(u8, encoder.calcSize(contents.len));
+                        var content: std.json.ObjectMap = .empty;
+                        try content.put(a, "type", .{ .string = "base64" });
+                        try content.put(a, "value", .{ .string = encoder.encode(encoded, contents) });
+                        try options.put(a, "contents", .{ .object = content });
+                    }
+                    try dto.put(a, "options", .{ .object = options });
+                    break :blk file.metadata;
+                },
+            };
+            if (metadata) |value| {
+                var meta: std.json.ObjectMap = .empty;
+                try meta.put(a, "label", .{ .string = value.label });
+                try meta.put(a, "needsConfirmation", .{ .bool = value.needs_confirmation });
+                if (value.description) |description| try meta.put(a, "description", .{ .string = description });
+                try dto.put(a, "metadata", .{ .object = meta });
+            }
+            try edits.append(.{ .object = dto });
+        }
+        var object: std.json.ObjectMap = .empty;
+        try object.put(a, "edits", .{ .array = edits });
+        return .{ .object = object };
+    }
+    fn rawRangeJson(a: Allocator, range: Range) !std.json.Value {
+        var result: std.json.ObjectMap = .empty;
+        try result.put(a, "startLineNumber", .{ .integer = @intCast(range.startLineNumber) });
+        try result.put(a, "startColumn", .{ .integer = @intCast(range.startColumn) });
+        try result.put(a, "endLineNumber", .{ .integer = @intCast(range.endLineNumber) });
+        try result.put(a, "endColumn", .{ .integer = @intCast(range.endColumn) });
+        return .{ .object = result };
+    }
+    fn fail(self: *CodeActionCommandRequest, err: anyerror) void {
+        self.reply(.{ .err = .{ .name = @errorName(err), .message = @errorName(err) } });
+    }
+    fn reply(self: *CodeActionCommandRequest, response: rpc.HandlerReply) void {
+        if (self.finished) return;
+        self.finished = true;
+        if (self.channel) |channel| channel.sendReply(self.request_id, response);
+        self.channel = null;
+        self.cleanup.schedule(@import("../../../base/common/timeCompat.zig").milliTimestamp() + 100);
+    }
+    fn onCleanup(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *CodeActionCommandRequest = @ptrCast(@alignCast(context));
+        self.dispose();
+        return false;
+    }
+    fn dispose(self: *CodeActionCommandRequest) void {
+        self.cleanup.schedule(null);
+        if (self.resolving) |request| request.cancel();
+        if (self.pending) |pending| pending.dispose();
+        if (self.set) |set| set.dispose();
+        if (self.reference) |*reference| reference.dispose();
+        if (self.document) |document| document.release();
+        for (self.owner.code_action_commands.items, 0..) |candidate, i| if (candidate == self) {
+            _ = self.owner.code_action_commands.swapRemove(i);
+            break;
+        };
+        self.arena.deinit();
+        self.allocator.destroy(self);
+    }
+};
+
 pub const MainThreadLanguageFeatures = struct {
     allocator: Allocator,
     features: *features_mod.LanguageFeaturesService,
@@ -389,6 +585,7 @@ pub const MainThreadLanguageFeatures = struct {
     code_lens_events: std.AutoHashMap(u32, *CodeLensState),
     code_lens_commands: std.ArrayList(*CodeLensCommandRequest) = .empty,
     model_position_commands: std.ArrayList(*ModelPositionCommandRequest) = .empty,
+    code_action_commands: std.ArrayList(*CodeActionCommandRequest) = .empty,
     inline_providers: @import("../../../editor/common/languageFeatureRegistry.zig").LanguageFeatureRegistry(InlineProvider),
 
     pub fn init(allocator: Allocator, features: *features_mod.LanguageFeaturesService, proxy: HostProxy) MainThreadLanguageFeatures {
@@ -405,6 +602,8 @@ pub const MainThreadLanguageFeatures = struct {
     pub fn deinit(self: *MainThreadLanguageFeatures) void {
         while (self.model_position_commands.items.len != 0) self.model_position_commands.items[self.model_position_commands.items.len - 1].dispose();
         self.model_position_commands.deinit(self.allocator);
+        while (self.code_action_commands.items.len != 0) self.code_action_commands.items[self.code_action_commands.items.len - 1].dispose();
+        self.code_action_commands.deinit(self.allocator);
         while (self.code_lens_commands.items.len != 0) self.code_lens_commands.items[self.code_lens_commands.items.len - 1].dispose();
         var iterator = self.registrations.valueIterator();
         while (iterator.next()) |registration_ptr| self.destroyRegistration(registration_ptr.*);
@@ -428,6 +627,23 @@ pub const MainThreadLanguageFeatures = struct {
         };
         try self.code_lens_commands.append(self.allocator, request);
         return .{ .deferred = .{ .context = request, .start = CodeLensCommandRequest.start } };
+    }
+
+    pub fn executeCodeActionCommand(self: *MainThreadLanguageFeatures, resource: std.Uri, range: std.json.Value, kind: ?[]const u8, resolve_count: usize, document: ?*EditorDocument, resolver_service: resolver.ITextModelService, commands: *CommandRegistry, queue: *WindowDispatch.Queue) !rpc.HandlerReply {
+        const request = try self.allocator.create(CodeActionCommandRequest);
+        errdefer self.allocator.destroy(request);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        const owned_resource = try std_uri.clone(a, resource);
+        const owned_range = try rpc.cloneJsonValue(a, range);
+        const owned_kind = if (kind) |value| try a.dupe(u8, value) else null;
+        if (document) |loaded| loaded.retain();
+        errdefer if (document) |loaded| loaded.release();
+        request.* = .{ .owner = self, .allocator = self.allocator, .arena = arena, .commands = commands, .resolver_service = resolver_service, .resource = owned_resource, .input_range = owned_range, .kind = owned_kind, .resolve_count = resolve_count, .document = document };
+        request.cleanup = .{ .queue = queue, .context = request, .run = CodeActionCommandRequest.onCleanup };
+        try self.code_action_commands.append(self.allocator, request);
+        return .{ .deferred = .{ .context = request, .start = CodeActionCommandRequest.start } };
     }
 
     pub fn executeModelPositionCommand(self: *MainThreadLanguageFeatures, command: ModelPositionCommand, resource: std.Uri, position: Position, document: ?*EditorDocument, resolver_service: resolver.ITextModelService, commands: *CommandRegistry) !rpc.HandlerReply {
@@ -1230,10 +1446,17 @@ pub const MainThreadLanguageFeatures = struct {
         var context_json: std.json.ObjectMap = .empty;
         if (action_context.only) |only| try context_json.put(a, "only", .{ .string = only });
         try context_json.put(a, "trigger", .{ .integer = action_context.trigger_kind });
+        var range_value = try rangeJson(a, model, range);
+        if (action_context.selection) |selection| {
+            try range_value.object.put(a, "selectionStartLineNumber", .{ .integer = @intCast(selection.selectionStartLineNumber) });
+            try range_value.object.put(a, "selectionStartColumn", .{ .integer = @intCast(utf16ColumnForModel(model, selection.selectionStartLineNumber, selection.selectionStartColumn)) });
+            try range_value.object.put(a, "positionLineNumber", .{ .integer = @intCast(selection.positionLineNumber) });
+            try range_value.object.put(a, "positionColumn", .{ .integer = @intCast(utf16ColumnForModel(model, selection.positionLineNumber, selection.positionColumn)) });
+        }
         return .{
             .{ .json = .{ .integer = handle } },
             .{ .json = try std_uri.jsonComponents(a, model.uri()) },
-            .{ .json = try rangeJson(a, model, range) },
+            .{ .json = range_value },
             .{ .json = .{ .object = context_json } },
         };
     }
@@ -1293,6 +1516,7 @@ pub const MainThreadLanguageFeatures = struct {
                 .kind = try optionalJsonString(a, object.get("kind")),
                 .is_preferred = boolValue(object.get("isPreferred")),
                 .is_ai = boolValue(object.get("isAI")),
+                .is_synthetic = boolValue(object.get("_isSynthetic")),
                 .disabled = try optionalJsonString(a, object.get("disabled")),
                 .edit_json = if (object.get("edit")) |edit| try rpc.cloneJsonValue(a, edit) else null,
                 .edit = if (object.get("edit")) |edit| try @import("mainThreadBulkEdits.zig").reviveWorkspaceEditDto(a, edit) else null,
