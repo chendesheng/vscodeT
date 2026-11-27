@@ -767,6 +767,7 @@ pub const CodeAction = struct {
     kind: ?[]const u8 = null,
     is_preferred: bool = false,
     is_ai: bool = false,
+    is_synthetic: bool = false,
     diagnostics: []const @import("../../platform/markers/common/markers.zig").MarkerData = &.{},
     ranges: []const Range = &.{},
     cache_id: ?struct { list: u32, index: u32 } = null,
@@ -787,6 +788,7 @@ pub const CodeActionCallback = struct { context: *anyopaque, complete: *const fn
 pub const ResolveCodeActionCallback = struct { context: *anyopaque, complete: *const fn (*anyopaque, anyerror!?CodeAction) void };
 
 pub const CodeActionContext = struct {
+    selection: ?@import("core/selection.zig").Selection = null,
     only: ?[]const u8 = null,
     trigger_kind: u8 = 1,
     diagnostics: ?std.json.Value = null,

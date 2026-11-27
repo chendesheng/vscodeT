@@ -243,7 +243,8 @@ pub const CodeActionModel = struct {
             self.on_change(self.context, .Empty);
             return;
         };
-        const trigger_copy = codeAction.copyTrigger(self.trigger_arena.allocator(), trigger_value) catch return;
+        var trigger_copy = codeAction.copyTrigger(self.trigger_arena.allocator(), trigger_value) catch return;
+        trigger_copy.selection = selection;
         self.state = .{ .Triggered = .{ .trigger = trigger_copy, .position = selection.getStartPosition() } };
         if (manual_to_auto) self.publication_task.schedule(time.milliTimestamp() + 500) else self.on_change(self.context, self.state);
         const range = Range.init(selection.startLineNumber, selection.startColumn, selection.endLineNumber, selection.endColumn);
@@ -346,7 +347,11 @@ const NearbyQuickFixQuery = struct {
     }
 
     fn query(self: *NearbyQuickFixQuery, range: Range, trigger_value: types.CodeActionTrigger) void {
-        const pending = codeAction.getCodeActions(self.allocator, self.registry, self.model, range, trigger_value, .None, .{ .context = self, .complete = received }) catch |err| {
+        var query_trigger = trigger_value;
+        if (query_trigger.selection) |selection| {
+            if (selection.startLineNumber != range.startLineNumber or selection.startColumn != range.startColumn or selection.endLineNumber != range.endLineNumber or selection.endColumn != range.endColumn) query_trigger.selection = null;
+        }
+        const pending = codeAction.getCodeActions(self.allocator, self.registry, self.model, range, query_trigger, .None, .{ .context = self, .complete = received }) catch |err| {
             self.response = err;
             return;
         };

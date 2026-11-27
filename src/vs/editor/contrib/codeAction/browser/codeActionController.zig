@@ -326,34 +326,27 @@ pub const CodeActionController = struct {
         fn start(self: *ApplyRequest) void {
             self.depth += 1;
             defer self.leave();
-            if (self.action.edit == null) if (self.item.provider) |provider| {
-                const registered = if (self.item.registration_time) |identity| self.owner.?.services.?.registry.hasRegistration(identity) else true;
-                if (registered) {
-                    const token = self.token.token() catch |err| {
-                        self.finish(err);
-                        return;
-                    };
-                    if (provider.request_resolve_code_action) |request| {
-                        const pending = request(provider.context, self.set.arena.allocator(), self.action, token, .{ .context = self, .complete = resolved }) catch |err| {
-                            resolved(self, err);
-                            return;
-                        };
-                        if (self.stage == .resolving) self.pending = pending else if (pending) |handle| handle.dispose();
-                        return;
-                    }
-                    if (provider.resolve_code_action) |resolve| {
-                        resolved(self, resolve(provider.context, self.set.arena.allocator(), self.action, token));
-                        return;
-                    }
-                }
-            };
+            const registered = if (self.item.registration_time) |identity| self.owner.?.services.?.registry.hasRegistration(identity) else true;
+            if (registered) {
+                const token = self.token.token() catch |err| {
+                    self.finish(err);
+                    return;
+                };
+                const pending = self.item.resolve(self.set.arena.allocator(), token, .{ .context = self, .complete = resolved }) catch |err| {
+                    resolved(self, err);
+                    return;
+                };
+                if (self.stage == .resolving) self.pending = pending else if (pending) |handle| handle.dispose();
+                return;
+            }
             self.apply();
         }
         fn resolved(context: *anyopaque, value: anyerror!?language.CodeAction) void {
             const self: *ApplyRequest = @ptrCast(@alignCast(context));
             if (self.canceled or self.stage != .resolving) return;
             self.pending = null;
-            if (value catch null) |action| self.action = action;
+            self.item.acceptResolved(value catch null);
+            self.action = self.item.action;
             self.apply();
         }
         fn apply(self: *ApplyRequest) void {

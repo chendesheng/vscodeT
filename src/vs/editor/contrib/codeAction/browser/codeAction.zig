@@ -174,6 +174,7 @@ const Request = struct {
         self.registry_listener = try self.registry.on_did_change.listen(self, onRegistryChanged);
         self.parent_listener = try parent.onCancellationRequested(.{ .context = self, .callbackFn = onParentCanceled });
         const context: languages.CodeActionContext = .{
+            .selection = self.trigger.selection,
             .only = if (self.trigger.filter.include) |value| value.value else null,
             .trigger_kind = @backingInt(self.trigger.type),
         };
@@ -355,3 +356,146 @@ fn cloneJson(a: Allocator, value: std.json.Value) !std.json.Value {
         else => value,
     };
 }
+
+/// `_executeCodeActionProvider` keeps the set (and therefore provider caches)
+/// alive through resolution and result conversion. Only the first requested
+/// count of valid actions is resolved; disabled actions are never returned.
+pub const ExecuteCodeActionProviderArgs = struct {
+    allocator: Allocator,
+    registry: *Registry,
+    model: *TextModel,
+    range: Range,
+    selection: ?@import("../../../common/core/selection.zig").Selection = null,
+    kind: ?[]const u8,
+    resolve_count: usize,
+    listener: Listener,
+    pending: *?Disposable,
+};
+
+const ExecuteRequest = struct {
+    allocator: Allocator,
+    registry: *Registry,
+    listener: Listener,
+    count: usize,
+    set: ?*ManagedCodeActionSet = null,
+    retrieving: ?Disposable = null,
+    slots: []ResolveSlot = &.{},
+    depth: usize = 1,
+    remaining: usize = 0,
+    launching: bool = false,
+    result: ?anyerror!*ManagedCodeActionSet = null,
+    detached: bool = false,
+
+    const ResolveSlot = struct {
+        owner: *ExecuteRequest,
+        index: usize,
+        pending: ?Disposable = null,
+        done: bool = false,
+
+        fn resolved(context: *anyopaque, result: anyerror!?languages.CodeAction) void {
+            const self: *ResolveSlot = @ptrCast(@alignCast(context));
+            const owner = self.owner;
+            if (self.done or owner.result != null) return;
+            owner.depth += 1;
+            defer owner.leave();
+            self.done = true;
+            self.pending = null;
+            owner.set.?.valid_actions[self.index].acceptResolved(result catch null);
+            owner.remaining -= 1;
+            if (!owner.launching and owner.remaining == 0) owner.result = owner.set.?;
+        }
+    };
+
+    fn start(args: *const ExecuteCodeActionProviderArgs) !?Disposable {
+        const self = try args.allocator.create(ExecuteRequest);
+        self.* = .{ .allocator = args.allocator, .registry = args.registry, .listener = args.listener, .count = args.resolve_count };
+        const trigger: types.CodeActionTrigger = .{ .selection = args.selection, .type = .Invoke, .trigger_action = .Default, .filter = .{ .include_source_actions = true, .include = if (args.kind) |value| Kind.init(value) else null } };
+        const pending = getCodeActions(args.allocator, args.registry, args.model, args.range, trigger, .None, .{ .context = self, .complete = received }) catch |err| blk: {
+            self.result = err;
+            break :blk null;
+        };
+        if (self.set == null and self.result == null) self.retrieving = pending else if (pending) |value| value.dispose();
+        const finished = self.result != null;
+        self.leave();
+        return if (finished) null else Disposable.from(ExecuteRequest, self, dispose);
+    }
+    fn received(context: *anyopaque, reply: anyerror!*ManagedCodeActionSet) void {
+        const self: *ExecuteRequest = @ptrCast(@alignCast(context));
+        if (self.result != null) return;
+        self.depth += 1;
+        defer self.leave();
+        self.retrieving = null;
+        const set = reply catch |err| {
+            self.result = err;
+            return;
+        };
+        self.set = set;
+        const count = @min(self.count, set.valid_actions.len);
+        const a = set.arena.allocator();
+        self.slots = a.alloc(ResolveSlot, count) catch |err| {
+            self.result = err;
+            return;
+        };
+        self.remaining = count;
+        self.launching = true;
+        for (self.slots, 0..) |*slot, index| slot.* = .{ .owner = self, .index = index };
+        for (self.slots) |*slot| {
+            const item = set.valid_actions[slot.index];
+            if (item.registration_time) |registration| if (!self.registry.hasRegistration(registration)) {
+                ResolveSlot.resolved(slot, null);
+                continue;
+            };
+            const pending = item.resolve(a, .None, .{ .context = slot, .complete = ResolveSlot.resolved }) catch |err| {
+                ResolveSlot.resolved(slot, err);
+                continue;
+            };
+            if (!slot.done) slot.pending = pending else if (pending) |handle| handle.dispose();
+        }
+        self.launching = false;
+        if (self.remaining == 0) self.result = set;
+    }
+    fn dispose(self: *ExecuteRequest) void {
+        if (self.result != null) return;
+        self.depth += 1;
+        defer self.leave();
+        self.detached = true;
+        self.result = error.CancellationError;
+        if (self.retrieving) |request| request.dispose();
+        for (self.slots) |slot| if (slot.pending) |request| request.dispose();
+    }
+    fn leave(self: *ExecuteRequest) void {
+        self.depth -= 1;
+        if (self.depth != 0 or self.result == null) return;
+        const result = self.result.?;
+        const listener = self.listener;
+        const notify = !self.detached;
+        if (self.set) |set| {
+            if (self.detached) set.dispose() else if (result) |_| {} else |_| set.dispose();
+        }
+        self.allocator.destroy(self);
+        if (notify) listener.complete(listener.context, result);
+    }
+};
+
+pub fn executeCodeActionProvider(args: *const ExecuteCodeActionProviderArgs) !?Disposable {
+    return ExecuteRequest.start(args);
+}
+
+const ServicesAccessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
+const CommandArgument = @import("../../../../platform/commands/common/commands.zig").CommandArgument;
+const Action2 = @import("../../../../platform/actions/common/actions.zig").Action2;
+pub const execute_provider_action = Action2{
+    .command = .{ .id = "_executeCodeActionProvider", .title = "Execute Code Action Provider" },
+    .context = @constCast(&{}),
+    .run_fn = struct {
+        fn run(_: *anyopaque, _: ServicesAccessor) !void {
+            return error.InvalidArgument;
+        }
+    }.run,
+    .run_with_argument_fn = struct {
+        fn run(_: *anyopaque, _: ServicesAccessor, argument: CommandArgument) !void {
+            const args = argument.as(ExecuteCodeActionProviderArgs) orelse return error.InvalidArgument;
+            args.pending.* = try executeCodeActionProvider(args);
+        }
+    }.run,
+};

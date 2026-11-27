@@ -22,9 +22,11 @@ const Provider = struct {
     token: cancellation.CancellationToken = .None,
     canceled: bool = false,
     releases: usize = 0,
+    resolve_enabled: bool = false,
+    resolved: usize = 0,
 
     fn interface(self: *Provider) languages.CodeActionProvider {
-        return .{ .context = self, .provided_kinds = self.kinds, .provide_code_actions = provide, .request_code_actions = if (self.asynchronous) request else null };
+        return .{ .context = self, .provided_kinds = self.kinds, .provide_code_actions = provide, .request_code_actions = if (self.asynchronous) request else null, .resolve_code_action = if (self.resolve_enabled) resolveAction else null };
     }
     fn provide(context: *anyopaque, allocator: std.mem.Allocator, _: *TextModel, _: Range, call: languages.CodeActionContext, _: cancellation.CancellationToken) !languages.CodeActionList {
         const self: *Provider = @ptrCast(@alignCast(context));
@@ -42,6 +44,14 @@ const Provider = struct {
         self.token = token;
         self.callback = callback;
         return Disposable.from(Provider, self, cancel);
+    }
+    fn resolveAction(context: *anyopaque, _: std.mem.Allocator, action: languages.CodeAction, _: cancellation.CancellationToken) !?languages.CodeAction {
+        const self: *Provider = @ptrCast(@alignCast(context));
+        self.resolved += 1;
+        var resolved = action;
+        resolved.title = "Provider must not replace this title";
+        resolved.edit = .{};
+        return resolved;
     }
     fn cancel(self: *Provider) void {
         self.canceled = self.token.isCancellationRequested();
@@ -207,4 +217,30 @@ test "getCodeActions: concurrent provider ordering and cancellation release cach
     try std.testing.expect(high.canceled and high.callback == null);
     try std.testing.expectEqual(2, low.releases);
     try std.testing.expectEqual(1, high.releases);
+}
+
+test "executeCodeActionProvider: resolves only valid requested items and retains source actions" {
+    var model = try TestModel.init(a, "example", "fooLang");
+    defer model.deinit();
+    var registry = Registry.init(a);
+    defer registry.deinit();
+    var provider = Provider{ .resolve_enabled = true, .actions = &.{
+        .{ .title = "first", .kind = "quickfix", .is_preferred = true },
+        .{ .title = "disabled", .kind = "quickfix", .disabled = "not available" },
+        .{ .title = "source", .kind = "source.organizeImports" },
+    } };
+    const registration = try registry.register(.{ .language = "fooLang" }, provider.interface());
+    defer registration.dispose();
+    var receiver: Receiver = .{};
+    var pending: ?Disposable = null;
+    const args: codeAction.ExecuteCodeActionProviderArgs = .{ .allocator = a, .registry = &registry, .model = model.model, .range = .init(1, 1, 1, 2), .kind = null, .resolve_count = 1, .listener = .{ .context = &receiver, .complete = Receiver.ready }, .pending = &pending };
+    try std.testing.expect((try codeAction.executeCodeActionProvider(&args)) == null);
+    const result = receiver.result orelse return receiver.failure orelse error.ExpectedActionSet;
+    defer result.dispose();
+    try std.testing.expectEqual(@as(usize, 2), result.valid_actions.len);
+    try std.testing.expectEqualStrings("first", result.valid_actions[0].action.title);
+    try std.testing.expect(result.valid_actions[0].action.edit != null);
+    try std.testing.expectEqualStrings("source", result.valid_actions[1].action.title);
+    try std.testing.expect(result.valid_actions[1].action.edit == null);
+    try std.testing.expectEqual(@as(usize, 1), provider.resolved);
 }

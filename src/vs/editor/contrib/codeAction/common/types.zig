@@ -53,6 +53,7 @@ pub fn filtersAction(filter: CodeActionFilter, action: languages.CodeAction) boo
 }
 
 pub const CodeActionTrigger = struct {
+    selection: ?@import("../../../common/core/selection.zig").Selection = null,
     type: languages.CodeActionTriggerType,
     trigger_action: CodeActionTriggerSource,
     filter: CodeActionFilter = .{},
@@ -85,4 +86,25 @@ pub const CodeActionItem = struct {
     provider: ?languages.CodeActionProvider = null,
     registration_time: ?u64 = null,
     highlight_range: ?bool = null,
+
+    /// Provider resolve fills the missing workspace edit while preserving the
+    /// identity and metadata of the original item, as in upstream resolve().
+    pub fn resolve(self: CodeActionItem, allocator: std.mem.Allocator, token: @import("../../../../base/common/cancellation.zig").CancellationToken, listener: languages.ResolveCodeActionCallback) !?@import("../../../../base/common/lifecycle.zig").IDisposable {
+        if (self.action.edit == null) if (self.provider) |provider| {
+            if (provider.request_resolve_code_action) |request| return request(provider.context, allocator, self.action, token, listener);
+            if (provider.resolve_code_action) |callback| {
+                listener.complete(listener.context, callback(provider.context, allocator, self.action, token));
+                return null;
+            }
+        };
+        listener.complete(listener.context, null);
+        return null;
+    }
+
+    pub fn acceptResolved(self: *CodeActionItem, value: ?languages.CodeAction) void {
+        if (value) |action| {
+            self.action.edit = action.edit;
+            self.action.edit_json = action.edit_json;
+        }
+    }
 };
