@@ -102,8 +102,9 @@ pub const DiffEditorSelectionHunkToolbarContext = struct {
 pub const toolbar_width: usize = 2;
 
 /// Retained menu and selected-diff state owned by the diff widget. One cell
-/// represents the primary action and the adjacent cell opens overflow, in
-/// place of a browser toolbar of nested buttons with subpixel geometry.
+/// represents the first primary action; the adjacent cell shows a second
+/// primary action or overflow for remaining actions. This replaces the
+/// browser toolbar of nested buttons with subpixel geometry.
 pub const DiffGutterToolbar = struct {
     allocator: std.mem.Allocator,
     model: *view_model.DiffEditorViewModel,
@@ -118,6 +119,7 @@ pub const DiffGutterToolbar = struct {
     selected_mapping: ?view_model.DetailedLineRangeMapping = null,
     current_diff: ?usize = null,
     hovered: bool = false,
+    inline_mode: bool = false,
     open: bool = false,
     pressed: ?Press = null,
 
@@ -131,7 +133,16 @@ pub const DiffGutterToolbar = struct {
 
     const Press = struct { row: usize, col: usize, original_version: u32, modified_version: u32 };
     const Item = struct { index: ?usize, mapping: view_model.DetailedLineRangeMapping, bounds: LineRange, menu: MenuId };
-    const Buttons = struct { primary: ?IAction = null, count: usize = 0 };
+    const Buttons = struct {
+        primary: ?IAction = null,
+        second_primary: ?IAction = null,
+        count: usize = 0,
+
+        fn secondAction(self: Buttons) ?IAction {
+            if (self.count != 2) return null;
+            return self.second_primary;
+        }
+    };
 
     pub fn attach(self: *DiffGutterToolbar, host: Host) !void {
         if (self.host != null) return;
@@ -199,6 +210,7 @@ pub const DiffGutterToolbar = struct {
         const self: *DiffGutterToolbar = @ptrCast(@alignCast(ptr));
         if (std.mem.eql(u8, key, "diffEditorOriginalUri")) return .{ .string = self.original_uri };
         if (std.mem.eql(u8, key, "diffEditorModifiedUri")) return .{ .string = self.modified_uri };
+        if (std.mem.eql(u8, key, "diffEditorInlineMode")) return .{ .boolean = self.inline_mode };
         if (std.mem.eql(u8, key, "diffEditorModifiedWritable")) return .{ .boolean = !self.modified.isReadOnly() };
         if (std.mem.eql(u8, key, "isInDiffEditor")) return .{ .boolean = true };
         return if (self.host) |host| host.parent_context.getValue(key) else .undefined_value;
@@ -211,6 +223,12 @@ pub const DiffGutterToolbar = struct {
     fn onSelection(_: SelectionEvent, self: *DiffGutterToolbar) !void {
         try self.updateSelection();
         if (self.host) |host| host.changed(host.context, false);
+    }
+
+    pub fn setInlineMode(self: *DiffGutterToolbar, inline_mode: bool) !void {
+        if (self.inline_mode == inline_mode) return;
+        self.inline_mode = inline_mode;
+        try self.refreshMenus();
     }
 
     pub fn refreshMenus(self: *DiffGutterToolbar) !void {
@@ -247,7 +265,13 @@ pub const DiffGutterToolbar = struct {
         var result: Buttons = .{};
         if (menu) |value| for (value.getActions()) |group| {
             result.count += group.actions.len;
-            if (result.primary == null and group.actions.len > 0 and std.mem.startsWith(u8, group.id, "primary")) result.primary = group.actions[0];
+            if (std.mem.startsWith(u8, group.id, "primary")) for (group.actions) |action| {
+                if (result.primary == null) {
+                    result.primary = action;
+                } else if (result.second_primary == null) {
+                    result.second_primary = action;
+                }
+            };
         };
         return result;
     }
@@ -287,6 +311,7 @@ pub const DiffGutterToolbar = struct {
         if (std.mem.eql(u8, icon, "plus") or std.mem.eql(u8, icon, "add")) return '+';
         if (std.mem.eql(u8, icon, "arrow-right")) return '→';
         if (std.mem.eql(u8, icon, "trash")) return '×';
+        if (std.mem.eql(u8, icon, "discard")) return '↶';
         return '•';
     }
 
@@ -295,7 +320,11 @@ pub const DiffGutterToolbar = struct {
         const buttons = self.getButtons(item.menu);
         if (buttons.primary) |primary| {
             grid.putCodepoint(x, y + row, glyph(primary), 1, if (primary.enabled() and self.model.is_diff_up_to_date) active else normal);
-            if (width > 1 and buttons.count > 1) grid.putCodepoint(x + 1, y + row, '…', 1, active);
+            if (width > 1 and buttons.count > 1) {
+                if (buttons.secondAction()) |second| {
+                    grid.putCodepoint(x + 1, y + row, glyph(second), 1, if (second.enabled() and self.model.is_diff_up_to_date) active else normal);
+                } else grid.putCodepoint(x + 1, y + row, '…', 1, active);
+            }
         } else if (buttons.count > 0) grid.putCodepoint(x, y + row, '…', 1, active);
     }
 
@@ -336,9 +365,9 @@ pub const DiffGutterToolbar = struct {
         } else if (event.kind != .click) return true;
         if (!self.model.is_diff_up_to_date) return true;
         const buttons = self.getButtons(item.menu);
-        if (col == 0 and buttons.primary != null) {
-            const action = buttons.primary.?;
-            if (action.enabled()) try self.runItem(item, action.id());
+        const action = if (col == 0) buttons.primary else if (col == 1) buttons.secondAction() else null;
+        if (action) |primary| {
+            if (primary.enabled()) try self.runItem(item, primary.id());
         } else try self.showOverflow(item, anchor);
         return true;
     }

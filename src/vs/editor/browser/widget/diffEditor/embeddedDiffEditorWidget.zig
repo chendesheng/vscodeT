@@ -25,8 +25,10 @@ pub const EmbeddedDiffEditorWidget = struct {
         const widget = try Widget.createWithModelSources(factory, allocator, editor.io, editor.path, editor.path, "", "", label, "Working Tree", editor.screen_width, 1, opts, .{ .original = original, .modified = editor.document }, computed);
         errdefer widget.destroy();
         self.* = .{ .allocator = allocator, .parent = parent, .widget = widget };
+        if (editor.code_editor_service) |service| try widget.attachCodeEditorService(service);
         for ([_]*@import("../codeEditor/codeEditorWidgetTerminal.zig").Editor{ widget.original_editor, widget.modified_editor }) |child| {
             child.attachWindow(queue);
+            if (editor.code_editor_service) |service| try child.attachCodeEditorService(service, editor.word_highlight_session);
             child.attachLanguageServices(editor.language_features, editor.marker_service, editor.marker_decorations);
         }
         widget.view_model.attachWorker(worker, null, queue);

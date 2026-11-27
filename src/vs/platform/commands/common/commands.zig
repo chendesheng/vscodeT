@@ -68,6 +68,28 @@ pub const CommandRegistry = struct {
         try self.commands.append(command);
     }
 
+    /// Upstream CommandsRegistry.registerCommandAlias. Static Zig command
+    /// IDs bind a forwarding callback at compile time, avoiding a separate
+    /// alias heap object or a copied target handler.
+    pub fn registerCommandAlias(self: *CommandRegistry, comptime alias: []const u8, comptime target: []const u8) !void {
+        try self.register(.{
+            .id = alias,
+            .context = self,
+            .run = struct {
+                fn run(context: *anyopaque) !void {
+                    const registry: *CommandRegistry = @ptrCast(@alignCast(context));
+                    _ = try registry.execute(target);
+                }
+            }.run,
+            .run_with_argument = struct {
+                fn run(context: *anyopaque, argument: CommandArgument) !void {
+                    const registry: *CommandRegistry = @ptrCast(@alignCast(context));
+                    _ = try registry.executeWithArgument(target, argument);
+                }
+            }.run,
+        });
+    }
+
     pub fn get(self: *const CommandRegistry, id: []const u8) ?Command {
         for (self.commands.items) |command| {
             if (std.mem.eql(u8, command.id, id)) return command;
@@ -141,6 +163,11 @@ test "commands: forwards borrowed typed argument to registered handler" {
     const value: u32 = 42;
     try std.testing.expect(try registry.executeWithArgument("test.context", .from(u32, &value)));
     try std.testing.expectEqual(value, state.result);
+    try registry.registerCommandAlias("test.alias", "test.context");
+    const other_value: u32 = 7;
+    try std.testing.expect(try registry.executeWithArgument("test.alias", .from(u32, &other_value)));
+    try std.testing.expectEqual(other_value, state.result);
+    try std.testing.expect(try registry.execute("test.alias"));
     const wrong: u8 = 1;
     try std.testing.expectError(error.InvalidArgument, registry.executeWithArgument("test.context", .from(u8, &wrong)));
 }

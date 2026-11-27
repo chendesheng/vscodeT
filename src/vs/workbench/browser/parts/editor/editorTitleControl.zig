@@ -124,6 +124,7 @@ pub const EditorTitleControl = struct {
         if (std.mem.eql(u8, key, "multiDiffEditorFileListViewMode")) return .{ .string = if (self.multi_pane) |multi| @tagName(multi.fileListViewMode()) else "list" };
         if (std.mem.eql(u8, key, "multiDiffEditorFileListPosition")) return .{ .string = if (self.multi_pane) |multi| @tagName(multi.fileListPosition()) else "right" };
         if (std.mem.eql(u8, key, "diffEditorHasChanges")) return .{ .boolean = if (widget) |value| value.context_state.has_changes else false };
+        if (std.mem.eql(u8, key, "accessibleDiffViewerVisible")) return .{ .boolean = if (widget) |value| value.context_state.accessible_viewer_visible else false };
         if (std.mem.eql(u8, key, "diffEditorInlineMode")) return .{ .boolean = if (widget) |value| value.context_state.inline_mode else false };
         if (std.mem.eql(u8, key, "diffEditorAutomaticRenderSideBySide")) return .{ .boolean = if (widget) |value| value.context_state.automatic_side_by_side else true };
         if (std.mem.eql(u8, key, "diffEditorTemporaryInlineMode")) return .{ .boolean = if (widget) |value| value.context_state.temporary_inline_mode else false };
@@ -132,6 +133,7 @@ pub const EditorTitleControl = struct {
             if (std.mem.eql(u8, key, "config.diffEditor.renderSideBySide")) return .{ .boolean = state.render_side_by_side };
             if (std.mem.eql(u8, key, "config.diffEditor.useInlineViewWhenSpaceIsLimited")) return .{ .boolean = state.auto_inline };
             if (std.mem.eql(u8, key, "config.diffEditor.ignoreTrimWhitespace")) return .{ .boolean = state.ignore_whitespace };
+            if (std.mem.eql(u8, key, "config.diffEditor.experimental.showMoves")) return .{ .boolean = state.show_moves };
             if (std.mem.eql(u8, key, "config.diffEditor.hideUnchangedRegions.enabled")) return .{ .boolean = state.hide_unchanged };
         }
         if (self.multi_pane) |multi| if (multi.widget.impl.getContextKey(key)) |value| return value;

@@ -43,6 +43,7 @@ pub fn attachDiffEditorContributions(accessor: @import("../platform/instantiatio
 }
 
 pub fn attachDiffWidgetContributions(accessor: @import("../platform/instantiation/common/instantiation.zig").ServicesAccessor, widget: *@import("browser/parts/editor/editorPane.zig").DiffWidget) !void {
+    try widget.attachCodeEditorService((try accessor.get(@import("../editor/browser/services/codeEditorService.zig").code_editor_service_id)).*);
     try widget.attachContributions(&diff_editor_contributions, accessor);
 }
 
@@ -163,7 +164,10 @@ pub fn registerActions(commands: *CommandRegistry, instantiation: *Instantiation
     try @import("contrib/multiDiffEditor/browser/multiDiffEditor.contribution.zig").registerActions(commands, instantiation);
     for (@import("contrib/bulkEdit/browser/preview/bulkEdit.contribution.zig").view_actions) |action| try commands.registerAction(instantiation, action);
     for (@import("browser/parts/editor/diffEditorCommands.zig").diff_actions) |action| try commands.registerAction(instantiation, action);
-    for (@import("../editor/browser/widget/diffEditor/commands.zig").diff_actions) |action| try commands.registerAction(instantiation, action);
+    const diff_contribution = @import("../editor/browser/widget/diffEditor/diffEditor.contribution.zig");
+    for (diff_contribution.editor_actions) |action| try commands.registerAction(instantiation, action);
+    try diff_contribution.registerMenus(&commands.menus);
+    try diff_contribution.registerAliases(&commands.platform);
     try commands.registerAction(instantiation, @import("../editor/contrib/toggleTabFocusMode/browser/toggleTabFocusMode.zig").ToggleTabFocusModeAction.action);
     for (@import("contrib/accessibility/browser/accessibleViewActions.zig").accessible_view_actions) |action| try commands.registerAction(instantiation, action);
     try @import("browser/parts/editor/editor.contribution.zig").registerDiffEditorTitle(&commands.menus);

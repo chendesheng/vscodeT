@@ -57,6 +57,8 @@ pub const ContextState = struct {
     auto_inline: bool = true,
     ignore_whitespace: bool = true,
     hide_unchanged: bool = false,
+    accessible_viewer_visible: bool = false,
+    show_moves: bool = false,
 };
 
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
@@ -194,6 +196,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         on_did_change_focused_side: Emitter(Side),
         on_did_update_diff: Emitter(void),
         contributions: std.ArrayList(@import("../../editorExtensions.zig").DiffEditorContribution) = .empty,
+        code_editor_service: ?@import("../../services/codeEditorService.zig").ICodeEditorService = null,
         native_input_services: ?NativeInputServices = null,
 
         laying_out: bool = false,
@@ -238,8 +241,12 @@ pub fn DiffEditorWidget(comptime View: type) type {
             return .{
                 .context = self,
                 .switch_side = CommandAdapter.call(switchSide),
+                .map_to_other_side = mapSelectionToOtherSide,
                 .exit_compare_move = CommandAdapter.call(exitCompareMove),
                 .revert_focused = CommandAdapter.call(revertFocusedRangeMappings),
+                .revert_ranges = revertToolbarRanges,
+                .get_original_editor = getOriginalEditor,
+                .delegated_editor = .{ .context = self, .get_target_editor = getModifiedEditor },
                 .collapse_all = CommandAdapter.call(collapseAllUnchangedRegions),
                 .show_all = CommandAdapter.call(showAllUnchangedRegions),
                 .accessible_next = CommandAdapter.call(accessibleDiffViewerNext),
@@ -253,6 +260,36 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .set_accessibility_help_keybinding = setHelpKeybinding,
                 .is_embedded = self.options.is_in_embedded_editor,
             };
+        }
+
+        fn getOriginalEditor(context: *anyopaque) ?*Editor {
+            const self: *Self = @ptrCast(@alignCast(context));
+            return if (self.hasModel()) self.original_editor else null;
+        }
+        fn getModifiedEditor(context: *anyopaque) ?*Editor {
+            const self: *Self = @ptrCast(@alignCast(context));
+            return if (self.hasModel()) self.modified_editor else null;
+        }
+        fn mapSelectionToOtherSide(context: *anyopaque) ?Range {
+            const self: *Self = @ptrCast(@alignCast(context));
+            if (self.state() == null) return null;
+            return self.mapToOtherSide();
+        }
+
+        fn revertToolbarRanges(context: *anyopaque, mappings: []const view_model.RangeMapping) !void {
+            const self: *Self = @ptrCast(@alignCast(context));
+            if (self.hasModel()) try self.revertRangeMappings(mappings);
+        }
+
+        /// Register the stable widget, not its model-bound child Views.
+        pub fn attachCodeEditorService(self: *Self, service: @import("../../services/codeEditorService.zig").ICodeEditorService) !void {
+            if (self.code_editor_service) |previous| {
+                if (previous.context == service.context) return;
+                previous.removeDiffEditor(self.interface());
+            }
+            self.code_editor_service = null;
+            try service.addDiffEditor(self.interface());
+            self.code_editor_service = service;
         }
 
         fn setHelpKeybinding(context: *anyopaque, label: ?[]const u8) !void {
@@ -690,6 +727,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
 
         pub fn destroy(self: *Self) void {
             const allocator = self.allocator;
+            if (self.code_editor_service) |service| service.removeDiffEditor(self.interface());
+            self.code_editor_service = null;
             _ = self.detachModel(null);
             self.contributions.deinit(allocator);
             self.smooth_resize.deinit();
@@ -988,6 +1027,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                     self.modified_editor.setMessage("diff layout failed: {s}", .{@errorName(err)});
                 };
             }
+            self.gutter_toolbar.setInlineMode(self.inline_mode) catch {};
             self.hide_unchanged.setSideBySide(self.sideBySide());
             self.width = @max(width, 1);
             self.height = @max(height, 1);
@@ -1021,6 +1061,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 .auto_inline = self.options.use_inline_view_when_space_is_limited,
                 .ignore_whitespace = self.options.ignore_trim_whitespace,
                 .hide_unchanged = self.options.hide_unchanged_regions,
+                .accessible_viewer_visible = self.accessible_viewer.visible(),
+                .show_moves = self.options.show_moves,
             };
             if (std.meta.eql(self.context_state, next)) return;
             self.context_state = next;
@@ -1317,8 +1359,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 self.paintGutter(frame, x + widths.original, y, h);
                 if (widths.moves > 0) {
                     const palette = self.modified_view.themeColors();
-                    const normal = if (palette) |colors| colors.color("diffEditor.move.border", .{ 139, 139, 139 }) else ui.Color{ .r = 139, .g = 139, .b = 139 };
-                    const active = if (palette) |colors| colors.color("diffEditor.moveActive.border", .{ 255, 165, 0 }) else ui.Color{ .r = 255, .g = 165, .b = 0 };
+                    const normal = if (palette) |colors| colors.color(@import("registrations.contribution.zig").diffMoveBorder, .{ 139, 139, 139 }) else ui.Color{ .r = 139, .g = 139, .b = 139 };
+                    const active = if (palette) |colors| colors.color(@import("registrations.contribution.zig").diffMoveBorderActive, .{ 255, 165, 0 }) else ui.Color{ .r = 255, .g = 165, .b = 0 };
                     self.moved_blocks.paint(&frame.next, x + widths.original + widths.gutter, y, widths.moves, h, normal, active);
                 }
                 try self.modified_view.paint();
@@ -1711,11 +1753,12 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         pub fn switchSide(self: *Self) !void {
-            const selection = self.mapToOtherSide();
+            if (!self.hasModel()) return;
+            const selection = if (self.state() != null) self.mapToOtherSide() else null;
             const target_side: Side = if (self.focused == .modified) .original else .modified;
             const editor = if (target_side == .original) self.original_editor else self.modified_editor;
             self.setFocus(target_side);
-            try editor.setSelection(editor.model.validateRange(selection));
+            if (selection) |range| try editor.setSelection(editor.model.validateRange(range));
         }
 
         fn canRevert(self: *Self) bool {
@@ -1783,14 +1826,16 @@ pub fn DiffEditorWidget(comptime View: type) type {
         }
 
         fn openAccessibleViewer(self: *Self) !void {
+            const state_value = self.state() orelse return;
             const paint_args: @import("./components/diffEditorViewZones/renderLines.zig").PaintOptions = .{
                 .colors = .{ .line_background = .{ .r = 30, .g = 30, .b = 30 }, .text_background = .{ .r = 30, .g = 30, .b = 30 } },
                 .style_fn = self.modified_view.lineStyleFunction(),
                 .decoration_bits_fn = self.modified_view.decorationBitsFunction(),
             };
-            try self.accessible_viewer.show(self.state().?.mappings, self.original_editor, self.modified_editor, self.width, self.height, !self.options.only_show_accessible_diff_viewer, paint_args, self.modified_view.themeColors());
+            try self.accessible_viewer.show(state_value.mappings, self.original_editor, self.modified_editor, self.width, self.height, !self.options.only_show_accessible_diff_viewer, paint_args, self.modified_view.themeColors());
             self.original_view.detach();
             self.modified_view.detach();
+            self.updateContextState(self.isSimpleDiff());
         }
 
         pub fn accessibleDiffViewerNext(self: *Self) !void {
@@ -1826,6 +1871,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             self.focusedView().focusEditor();
             self.original_view.invalidate();
             self.modified_view.invalidate();
+            self.updateContextState(self.isSimpleDiff());
         }
 
         fn syncAccessibleSelectionAfterClose(self: *Self, item: accessible_module.ViewElement) void {

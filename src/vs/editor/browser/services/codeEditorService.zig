@@ -20,6 +20,9 @@ pub const ICodeEditorService = struct {
     focused: *const fn (*anyopaque) ?*Editor,
     active: *const fn (*anyopaque) ?*Editor,
     focused_diff: ?*const fn (*anyopaque) ?IDiffEditor = null,
+    add_diff_editor: ?*const fn (*anyopaque, IDiffEditor) anyerror!void = null,
+    remove_diff_editor: ?*const fn (*anyopaque, IDiffEditor) void = null,
+    list_diff_editors: ?*const fn (*anyopaque) []const IDiffEditor = null,
     add_code_editor: ?*const fn (*anyopaque, *Editor) anyerror!void = null,
     remove_code_editor: ?*const fn (*anyopaque, *Editor) void = null,
     list_code_editors: ?*const fn (*anyopaque) []const *Editor = null,
@@ -35,6 +38,19 @@ pub const ICodeEditorService = struct {
 
     pub fn listCodeEditors(self: ICodeEditorService) []const *Editor {
         if (self.list_code_editors) |list| return list(self.context);
+        return &.{};
+    }
+
+    pub fn addDiffEditor(self: ICodeEditorService, editor: IDiffEditor) !void {
+        if (self.add_diff_editor) |add| try add(self.context, editor);
+    }
+
+    pub fn removeDiffEditor(self: ICodeEditorService, editor: IDiffEditor) void {
+        if (self.remove_diff_editor) |remove| remove(self.context, editor);
+    }
+
+    pub fn listDiffEditors(self: ICodeEditorService) []const IDiffEditor {
+        if (self.list_diff_editors) |list| return list(self.context);
         return &.{};
     }
 

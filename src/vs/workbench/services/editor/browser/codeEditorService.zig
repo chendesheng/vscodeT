@@ -3,6 +3,7 @@
 // Terminal group views expose the mounted code editors and their focus state.
 const std = @import("std");
 const service = @import("../../../../editor/browser/services/codeEditorService.zig");
+const IDiffEditor = @import("../../../../editor/browser/editorBrowser.zig").IDiffEditor;
 const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const Tab = @import("../../../browser/parts/editor/editorPane.zig").Tab;
 const GroupView = @import("../../../browser/parts/editor/editorGroupView.zig").EditorGroupView(*Tab);
@@ -12,6 +13,7 @@ pub const CodeEditorService = struct {
     part: *EditorPart,
     allocator: std.mem.Allocator,
     editors: std.ArrayList(*Editor) = .empty,
+    diff_editors: std.ArrayList(IDiffEditor) = .empty,
     opening: ?struct { context: *anyopaque, open: *const fn (*anyopaque, service.OpenCodeEditorOptions) anyerror!void } = null,
 
     pub fn init(allocator: std.mem.Allocator, part: *EditorPart) CodeEditorService {
@@ -19,11 +21,12 @@ pub const CodeEditorService = struct {
     }
 
     pub fn deinit(self: *CodeEditorService) void {
+        self.diff_editors.deinit(self.allocator);
         self.editors.deinit(self.allocator);
     }
 
     pub fn interface(self: *CodeEditorService) service.ICodeEditorService {
-        return .{ .context = self, .focused = focusedEditor, .active = activeEditor, .focused_diff = focusedDiffEditor, .add_code_editor = addCodeEditor, .remove_code_editor = removeCodeEditor, .list_code_editors = listCodeEditors, .open_code_editor = openCodeEditor };
+        return .{ .context = self, .focused = focusedEditor, .active = activeEditor, .focused_diff = focusedDiffEditor, .add_diff_editor = addDiffEditor, .remove_diff_editor = removeDiffEditor, .list_diff_editors = listDiffEditors, .add_code_editor = addCodeEditor, .remove_code_editor = removeCodeEditor, .list_code_editors = listCodeEditors, .open_code_editor = openCodeEditor };
     }
 
     fn openCodeEditor(context: *anyopaque, options: service.OpenCodeEditorOptions) !void {
@@ -50,6 +53,26 @@ pub const CodeEditorService = struct {
     fn listCodeEditors(context: *anyopaque) []const *Editor {
         const self: *CodeEditorService = @ptrCast(@alignCast(context));
         return self.editors.items;
+    }
+
+    fn addDiffEditor(context: *anyopaque, editor: IDiffEditor) !void {
+        const self: *CodeEditorService = @ptrCast(@alignCast(context));
+        for (self.diff_editors.items) |existing| if (existing.context == editor.context) return;
+        try self.diff_editors.append(self.allocator, editor);
+    }
+
+    fn removeDiffEditor(context: *anyopaque, editor: IDiffEditor) void {
+        const self: *CodeEditorService = @ptrCast(@alignCast(context));
+        for (self.diff_editors.items, 0..) |existing, index| {
+            if (existing.context != editor.context) continue;
+            _ = self.diff_editors.orderedRemove(index);
+            return;
+        }
+    }
+
+    fn listDiffEditors(context: *anyopaque) []const IDiffEditor {
+        const self: *CodeEditorService = @ptrCast(@alignCast(context));
+        return self.diff_editors.items;
     }
 
     fn hasTextControl(tab: *const Tab) bool {

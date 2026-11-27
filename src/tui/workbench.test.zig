@@ -8348,7 +8348,7 @@ test "Workbench: git scm integration stages selected inner changes through the d
     const row = for (0..widget.height) |row| {
         if (try widget.pointerAt(col, row) == .pointer) break row;
     } else return error.TestExpectedDiffToolbar;
-    var click: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = col, .y = row };
+    var click: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = col + 1, .y = row };
     try std.testing.expect(try tab.handleDiffMouse(&click));
     click.kind = .up;
     try std.testing.expect(try tab.handleDiffMouse(&click));
@@ -8372,7 +8372,7 @@ test "Workbench: git scm integration stages selected inner changes through the d
     const hunk = widget.state().?.mappings[widget.gutter_toolbar.current_diff.?].line_range_mapping;
     const bounds = gutter.hunkBounds(hunk, widget.original_editor, widget.modified_editor);
     const last_row = bounds.startLineNumber - widget.modified_editor.scrollTop();
-    click = .{ .kind = .down, .button = .left, .x = widget.paneWidths().toolbarLeft(widget.sideBySide()), .y = last_row };
+    click = .{ .kind = .down, .button = .left, .x = widget.paneWidths().toolbarLeft(widget.sideBySide()) + 1, .y = last_row };
     try std.testing.expect(try tab.handleDiffMouse(&click));
     click.kind = .up;
     try std.testing.expect(try tab.handleDiffMouse(&click));
@@ -8381,6 +8381,52 @@ test "Workbench: git scm integration stages selected inner changes through the d
     defer allocator.free(staged_hunk);
     try std.testing.expectEqualStrings("alpha\nabc new def stale\nunchanged1\nunchanged2\nunchanged3\nlast NEW\n", staged_hunk);
     try std.testing.expectEqual(@as(usize, 1), widget.changeCount());
+
+    // The first button is upstream's registered Revert Selection; the
+    // second stage action left the working model intact until this click.
+    try widget.modified_editor.setSelection(@import("../vs/editor/common/core/range.zig").Range.init(2, 13, 2, 18));
+    try std.testing.expect(widget.gutter_toolbar.selected_mapping != null);
+    try renderFrame(workbench, &frame.writer);
+    const revert_col = widget.paneWidths().toolbarLeft(widget.sideBySide());
+    const revert_row = for (0..widget.height) |r| {
+        if (try widget.pointerAt(revert_col, r) == .pointer) break r;
+    } else return error.TestExpectedDiffToolbar;
+    click = .{ .kind = .down, .button = .left, .x = revert_col, .y = revert_row };
+    try std.testing.expect(try tab.handleDiffMouse(&click));
+    click.kind = .up;
+    try std.testing.expect(try tab.handleDiffMouse(&click));
+    try std.testing.expectEqualStrings("abc new def stale", try widget.modifiedModel().borrowLineContent(2));
+    const after_revert_disk = (try cli.readRef(root, "a.txt", .working)).?;
+    defer allocator.free(after_revert_disk);
+    try std.testing.expectEqualStrings(modified, after_revert_disk);
+
+    // Undo restores the working side, then another diff is focused. The
+    // typed toolbar command uses the captured pair, not the focused widget.
+    try widget.modified_editor.undo();
+    for (0..5000) |_| {
+        if (widget.view_model.is_diff_up_to_date) break;
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+        time_compat.sleepMillis(1);
+    }
+    try std.testing.expect(widget.view_model.is_diff_up_to_date);
+    try std.testing.expectEqualStrings("abc new def fresh", try widget.modifiedModel().borrowLineContent(2));
+    const other_path = try seedFile(allocator, io, &tmp, "other.txt", "unrelated");
+    defer allocator.free(other_path);
+    try workbench.editors.openSnapshotDiff(workbench.view_factory, io, null, other_path, "unrelated", "UNRELATED", "old", "new");
+    const other = workbench.activeTab().?.diff.?.widget;
+    try std.testing.expect(other != widget);
+    const command_argument = @import("../vs/platform/commands/common/commands.zig").CommandArgument;
+    const captured = gutter.DiffEditorSelectionHunkToolbarContext{
+        .mapping = widget.state().?.mappings[0].line_range_mapping,
+        .originalWithModifiedChanges = "",
+        .modifiedUri = widget.modifiedModel().uri(),
+        .originalUri = widget.originalModel().uri(),
+        .modifiedEncoding = "utf8",
+    };
+    try std.testing.expect(try workbench.commands.platform.executeWithArgument("diffEditor.revert", command_argument.from(gutter.DiffEditorSelectionHunkToolbarContext, &captured)));
+    try std.testing.expectEqualStrings("abc new def stale", try widget.modifiedModel().borrowLineContent(2));
+    try std.testing.expectEqualStrings("UNRELATED", try other.modifiedModel().borrowLineContent(1));
+    try std.testing.expectEqual(other, workbench.activeTab().?.diff.?.widget);
 }
 
 test "Workbench: git scm integration, shared working files and read-only revision snapshots" {
@@ -10258,6 +10304,14 @@ test "Diff editor commands resolve the active snapshot pane through their servic
     try std.testing.expectEqual(tab, wb.activeTab().?);
     try wb.commands.execute("workbench.action.compareEditor.focusSecondarySide");
     try std.testing.expectEqual(widget.original_editor, widget.focusedEditor());
+    // Generic delegated position/selection/reveal APIs remain on modified
+    // even while editor contributions correctly target the focused original.
+    const delegated = widget.interface().getModifiedEditor().?;
+    try std.testing.expectEqual(widget.modified_editor, delegated);
+    try std.testing.expectEqual(delegated, tab.codeEditorControl().?);
+    try delegated.setPosition(.{ .lineNumber = 2, .column = 1 });
+    try std.testing.expectEqual(@as(usize, 2), delegated.modelSelection().positionLineNumber);
+    try std.testing.expectEqual(widget.original_editor, widget.focusedEditor());
     // Each inner editor owns its own find controller, including on read-only snapshots.
     var find_key = ui.KeyEvent{ .key = .{ .char = 'f' }, .mods = .{ .ctrl = true } };
     try std.testing.expect(tab.handleDiffKey(&find_key));
@@ -10277,6 +10331,13 @@ test "Diff editor commands resolve the active snapshot pane through their servic
     try wb.commands.execute("toggle.diff.ignoreTrimWhitespace");
     try std.testing.expect(!tab.diff.?.widget.options.ignore_trim_whitespace);
     const current = tab.diff.?.widget;
+    const diff_commands = @import("../vs/editor/browser/widget/diffEditor/commands.zig");
+    const command_argument = @import("../vs/platform/commands/common/commands.zig").CommandArgument;
+    var destination: ?@import("../vs/editor/common/core/range.zig").Range = null;
+    const dry_run = diff_commands.SwitchSideArguments{ .dry_run = true, .destination_selection = &destination };
+    try std.testing.expect(try wb.commands.platform.executeWithArgument("diffEditor.switchSide", command_argument.from(diff_commands.SwitchSideArguments, &dry_run)));
+    try std.testing.expectEqual(current.mapToOtherSide(), destination.?);
+    try std.testing.expectEqual(current.modified_editor, current.focusedEditor());
     try wb.commands.execute("diffEditor.switchSide");
     try std.testing.expectEqual(current.original_editor, current.focusedEditor());
     var next_review: ui.KeyEvent = .{ .key = .f7 };
@@ -10286,6 +10347,12 @@ test "Diff editor commands resolve the active snapshot pane through their servic
     try std.testing.expect(tab.handleDiffKey(&review_down));
     try std.testing.expect(current.accessible_viewer.model.?.current_element_index > 0);
     var review_close: ui.KeyEvent = .{ .key = .escape };
+    try std.testing.expect(tab.handleDiffKey(&review_close));
+    try std.testing.expect(!current.accessible_viewer.visible());
+    try wb.commands.execute("editor.action.diffReview.next");
+    try std.testing.expect(current.accessible_viewer.visible());
+    try wb.commands.execute("editor.action.diffReview.prev");
+    try std.testing.expect(current.accessible_viewer.visible());
     try std.testing.expect(tab.handleDiffKey(&review_close));
     try std.testing.expect(!current.accessible_viewer.visible());
     try wb.commands.execute("diffEditor.toggleCollapseUnchangedRegions");
@@ -11267,6 +11334,34 @@ test "Diff editor commands: retained title menu exposes navigation, toggles and 
     try std.testing.expect(wb.context_menu_service.handleKey(&.{ .key = .right }));
     try std.testing.expect(wb.context_menu_service.handleKey(&.{ .key = .enter }));
     try std.testing.expect(widget.inline_mode);
+
+    // Both upstream secondary title actions are registered and use the
+    // active diff's context, not a global menu switch.
+    try renderFrame(wb, &frame.writer);
+    click.x = pane.toolbar_hits.items[pane.toolbar_hits.items.len - 1].start + 1;
+    try std.testing.expect(terminal_workbench.handleTabMouse(wb, &click));
+    try chooseContextMenuItem(wb, "Show Moved Code Blocks");
+    try std.testing.expect(widget.options.show_moves);
+    try renderFrame(wb, &frame.writer);
+    click.x = pane.toolbar_hits.items[pane.toolbar_hits.items.len - 1].start + 1;
+    try std.testing.expect(terminal_workbench.handleTabMouse(wb, &click));
+    const toggled_menu = wb.context_menu_service.current.?.popup.?;
+    var checked = false;
+    for (toggled_menu.items) |item| {
+        if (std.mem.eql(u8, item.label, "Show Moved Code Blocks")) checked = item.checked;
+    }
+    try std.testing.expect(checked);
+    try chooseContextMenuItem(wb, "Open Accessible Diff Viewer");
+    try std.testing.expect(widget.accessible_viewer.visible());
+    try renderFrame(wb, &frame.writer);
+    click.x = pane.toolbar_hits.items[pane.toolbar_hits.items.len - 1].start + 1;
+    try std.testing.expect(terminal_workbench.handleTabMouse(wb, &click));
+    for (wb.context_menu_service.current.?.popup.?.items) |item| {
+        try std.testing.expect(!std.mem.eql(u8, item.label, "Open Accessible Diff Viewer"));
+    }
+    try std.testing.expect(wb.context_menu_service.handleKey(&.{ .key = .escape }));
+    var close_review: ui.KeyEvent = .{ .key = .escape };
+    try std.testing.expect(pane.activeTab().?.handleDiffKey(&close_review));
 
     // The inactive group's menu continues to use its own diff context.
     try wb.commands.execute("workbench.action.newGroupRight");

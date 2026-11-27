@@ -45,8 +45,12 @@ pub const ModifiedDiffControl = struct {
 pub const IDiffEditor = struct {
     context: *anyopaque,
     switch_side: *const fn (*anyopaque) anyerror!void,
+    map_to_other_side: ?*const fn (*anyopaque) ?@import("../common/core/range.zig").Range = null,
     exit_compare_move: *const fn (*anyopaque) anyerror!void,
     revert_focused: *const fn (*anyopaque) anyerror!void,
+    revert_ranges: ?*const fn (*anyopaque, []const @import("../common/diff/rangeMapping.zig").RangeMapping) anyerror!void = null,
+    get_original_editor: ?*const fn (*anyopaque) ?*@import("widget/codeEditor/codeEditorWidgetTerminal.zig").Editor = null,
+    delegated_editor: ?@import("widget/diffEditor/delegatingEditorImpl.zig").DelegatingEditor = null,
     collapse_all: *const fn (*anyopaque) anyerror!void,
     show_all: *const fn (*anyopaque) anyerror!void,
     accessible_next: *const fn (*anyopaque) anyerror!void,
@@ -59,6 +63,16 @@ pub const IDiffEditor = struct {
     focus_modified: ?*const fn (*anyopaque) void = null,
     set_accessibility_help_keybinding: ?*const fn (*anyopaque, ?[]const u8) anyerror!void = null,
     is_embedded: bool = false,
+
+    pub fn getOriginalEditor(self: IDiffEditor) ?*@import("widget/codeEditor/codeEditorWidgetTerminal.zig").Editor {
+        return if (self.get_original_editor) |get| get(self.context) else null;
+    }
+    pub fn getModifiedEditor(self: IDiffEditor) ?*@import("widget/codeEditor/codeEditorWidgetTerminal.zig").Editor {
+        return if (self.delegated_editor) |delegate| delegate.targetEditor() else null;
+    }
+    pub fn revertRangeMappings(self: IDiffEditor, mappings: []const @import("../common/diff/rangeMapping.zig").RangeMapping) !void {
+        if (self.revert_ranges) |run| try run(self.context, mappings);
+    }
 
     pub fn getDiffComputationResult(self: IDiffEditor) ?DiffComputationResult {
         return if (self.get_computation_result) |get| get(self.context) else null;
@@ -74,6 +88,10 @@ pub const IDiffEditor = struct {
 
     pub fn runGutterHunk(self: IDiffEditor, id: []const u8) !void {
         if (self.run_gutter_hunk) |run| try run(self.context, id);
+    }
+
+    pub fn mapToOtherSide(self: IDiffEditor) ?@import("../common/core/range.zig").Range {
+        return if (self.map_to_other_side) |map| map(self.context) else null;
     }
 
     pub fn switchSide(self: IDiffEditor) !void {

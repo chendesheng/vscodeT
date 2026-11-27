@@ -1,5 +1,6 @@
 // Port of the diff editor actions in
 // src/vs/editor/browser/widget/diffEditor/commands.ts.
+const std = @import("std");
 const actions = @import("../../../../platform/actions/common/actions.zig");
 const bindings = @import("../../../../platform/keybinding/common/keybindingsRegistry.zig");
 const key_codes = @import("../../../../base/common/keyCodes.zig");
@@ -8,6 +9,15 @@ const configuration = @import("../../../../platform/configuration/common/configu
 const contextkey = @import("../../../../platform/contextkey/common/contextkey.zig");
 const code_editors = @import("../../services/codeEditorService.zig");
 const IDiffEditor = @import("../../editorBrowser.zig").IDiffEditor;
+const CommandArgument = @import("../../../../platform/commands/common/commands.zig").CommandArgument;
+const Range = @import("../../../common/core/range.zig").Range;
+
+/// The command registry carries borrowed typed arguments. For the upstream
+/// dry-run command result, the caller provides a nullable result slot.
+pub const SwitchSideArguments = struct {
+    dry_run: bool,
+    destination_selection: ?*?Range = null,
+};
 
 const in_diff = contextkey.Expr{ .Defined = "isInDiffEditor" };
 const comparing_move = contextkey.Expr{ .Defined = "comparingMovedCode" };
@@ -36,7 +46,16 @@ pub const diff_actions = [_]actions.Action2{
         .context = @constCast(&{}),
         .run_fn = toggleSetting("diffEditor.useInlineViewWhenSpaceIsLimited", true),
     },
-    editorAction("diffEditor.switchSide", "Switch Side", "Diff Editor", "arrow-swap", null, IDiffEditor.switchSide),
+    blk: {
+        var action = editorAction("diffEditor.revert", "Revert", "Diff Editor", null, null, IDiffEditor.revertFocusedRangeMappings);
+        action.run_with_argument_fn = revertToolbarContext;
+        break :blk action;
+    },
+    blk: {
+        var action = editorAction("diffEditor.switchSide", "Switch Side", "Diff Editor", "arrow-swap", null, IDiffEditor.switchSide);
+        action.run_with_argument_fn = switchSideWithArgument;
+        break :blk action;
+    },
     .{
         .command = .{ .id = "diffEditor.exitCompareMove", .title = "Exit Compare Move", .category = "Diff Editor", .icon = "close", .precondition = &comparing_move },
         .keybindings = &.{.{ .id = "diffEditor.exitCompareMove", .weight = 10000, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Escape) } }},
@@ -51,7 +70,6 @@ pub const diff_actions = [_]actions.Action2{
     },
     editorAction("diffEditor.collapseAllUnchangedRegions", "Collapse All Unchanged Regions", "Diff Editor", "fold", null, IDiffEditor.collapseAllUnchangedRegions),
     editorAction("diffEditor.showAllUnchangedRegions", "Show All Unchanged Regions", "Diff Editor", "unfold", null, IDiffEditor.showAllUnchangedRegions),
-    editorAction("diffEditor.revert", "Revert", "Diff Editor", null, null, IDiffEditor.revertFocusedRangeMappings),
     editorAction("editor.action.accessibleDiffViewer.next", "Go to Next Difference", "Accessible Diff Viewer", null, @backingInt(key_codes.KeyCode.F7), IDiffEditor.accessibleDiffViewerNext),
     editorAction("editor.action.accessibleDiffViewer.prev", "Go to Previous Difference", "Accessible Diff Viewer", null, key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.F7), IDiffEditor.accessibleDiffViewerPrev),
 };
@@ -79,4 +97,43 @@ fn editorAction(comptime id: []const u8, title: []const u8, category: []const u8
             }
         }.run,
     };
+}
+
+fn findDiffEditor(service: code_editors.ICodeEditorService, original_uri: std.Uri, modified_uri: std.Uri) !?IDiffEditor {
+    const allocator = std.heap.page_allocator;
+    const uri = @import("../../../../base/common/stdUri.zig");
+    const original_key = try uri.resourceKey(allocator, original_uri);
+    defer allocator.free(original_key);
+    const modified_key = try uri.resourceKey(allocator, modified_uri);
+    defer allocator.free(modified_key);
+    for (service.listDiffEditors()) |diff| {
+        const original = diff.getOriginalEditor() orelse continue;
+        const modified = diff.getModifiedEditor() orelse continue;
+        const left = try uri.resourceKey(allocator, original.model.uri());
+        defer allocator.free(left);
+        const right = try uri.resourceKey(allocator, modified.model.uri());
+        defer allocator.free(right);
+        if (std.mem.eql(u8, left, original_key) and std.mem.eql(u8, right, modified_key)) return diff;
+    }
+    return null;
+}
+
+fn revertToolbarContext(_: *anyopaque, accessor: ServicesAccessor, argument: CommandArgument) !void {
+    const service = (try accessor.get(code_editors.code_editor_service_id)).*;
+    const context = argument.as(@import("features/gutterFeature.zig").DiffEditorSelectionHunkToolbarContext) orelse return;
+    if (try findDiffEditor(service, context.originalUri, context.modifiedUri)) |diff| {
+        try diff.revertRangeMappings(context.mapping.inner_changes orelse &.{});
+    }
+}
+
+fn switchSideWithArgument(_: *anyopaque, accessor: ServicesAccessor, argument: CommandArgument) !void {
+    const service = (try accessor.get(code_editors.code_editor_service_id)).*;
+    const editor = service.getFocusedDiffEditor() orelse return;
+    if (argument.as(SwitchSideArguments)) |args| {
+        if (args.dry_run) {
+            if (args.destination_selection) |result| result.* = editor.mapToOtherSide();
+            return;
+        }
+    }
+    try editor.switchSide();
 }

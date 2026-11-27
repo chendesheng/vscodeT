@@ -1016,8 +1016,8 @@ pub const Tab = struct {
     /// terminal. A diff exposes its modified text control.
     pub fn codeEditorControl(self: *Tab) ?*Editor {
         if (self.isImage() or self.terminal_input != null or self.markdown_preview != null) return null;
-        if (self.multi_diff) |multi| return if (multi.widget.activeControl()) |editor| editor.modified_editor else null;
-        if (self.diff) |diff| return diff.widget.modified_editor;
+        if (self.multi_diff) |multi| return if (multi.widget.activeControl()) |editor| editor.interface().getModifiedEditor() else null;
+        if (self.diff) |diff| return diff.widget.interface().getModifiedEditor();
         return self.editor;
     }
 
