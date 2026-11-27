@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "replace_mode",
+  "width": 60,
+  "seed": {
+    "text": "abc\n",
+    "cursor": [
+      1,
+      1
+    ]
+  },
+  "keys": [
+    "R",
+    "X",
+    "Y",
+    "<Esc>"
+  ],
+  "states": [
+    {
+      "text": "XYc\n",
+      "cursor": [
+        1,
+        2
+      ],
+      "mode": "normal"
+    }
+  ]
+}

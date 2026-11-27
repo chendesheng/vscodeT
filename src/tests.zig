@@ -717,6 +717,9 @@ comptime {
     _ = @import("./vs/editor/contrib/vim/browser/vimEngine.zig");
     _ = @import("./vs/workbench/contrib/vim/browser/vimExtension.zig");
     _ = @import("./vs/editor/contrib/vim/test/browser/vimEngine.test.zig");
+    _ = @import("./vs/editor/contrib/vim/test/browser/vimCassette.test.zig");
+    _ = @import("./vs/editor/contrib/helix/test/browser/helixCassette.test.zig");
+    _ = @import("./vs/editor/test/common/oracleCassette.zig");
     _ = @import("./vs/workbench/contrib/vim/test/browser/vimExtension.test.zig").Tests(@import("./tui/workbench.zig").TerminalWorkbench, @import("./tui/editorView.zig").View.createHandle);
     _ = @import("./vs/workbench/contrib/vim/test/browser/vimRuntime.test.zig").Tests(@import("./tui/workbench.zig").TerminalWorkbench, @import("./tui/editorView.zig").View.createHandle);
     _ = @import("./vs/workbench/services/extensions/test/common/rpcProtocol.test.zig");

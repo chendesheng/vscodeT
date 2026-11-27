@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "engine": "helix",
+  "reference": "helix",
+  "reference_version": "helix 25.07.1 (a05c151b)",
+  "case": "append_a",
+  "width": 60,
+  "seed": {
+    "text": "abc\n",
+    "cursor": [
+      1,
+      1
+    ]
+  },
+  "keys": [
+    "a",
+    "X",
+    "<Esc>"
+  ],
+  "states": []
+}

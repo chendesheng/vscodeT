@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "delete_line",
+  "width": 60,
+  "seed": {
+    "text": "one\ntwo\nthree\n",
+    "cursor": [
+      1,
+      1
+    ]
+  },
+  "keys": [
+    "d",
+    "d"
+  ],
+  "states": [
+    {
+      "text": "two\nthree\n",
+      "cursor": [
+        1,
+        1
+      ],
+      "mode": "normal"
+    }
+  ]
+}

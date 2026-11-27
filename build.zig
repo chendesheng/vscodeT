@@ -895,6 +895,16 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const helix_test_step = b.step("test-helix", "Run Helix editing tests");
     helix_test_step.dependOn(&run_helix_tests.step);
 
+    // Focused runner for reference cassettes recorded from Neovim/Helix.
+    const oracle_tests = b.addTest(.{
+        .name = "oracle_tests",
+        .root_module = tests.root_module,
+        .filters = &.{ "Vim cassette:", "Helix cassette:" },
+    });
+    const run_oracle_tests = b.addRunArtifact(oracle_tests);
+    const oracle_test_step = b.step("test-oracle", "Run reference cassette tests");
+    oracle_test_step.dependOn(&run_oracle_tests.step);
+
     // Terminal-only test root: keeps the integrated-terminal tests runnable
     // without compiling the whole editor. `zig build test` covers them too.
     const terminal_tests = b.addTest(.{

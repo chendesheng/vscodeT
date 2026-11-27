@@ -18,8 +18,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 1
+      - name: Initialize upstream submodules
+        run: git submodule update --init --depth 1 vscode vscode-textmate
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
@@ -47,8 +48,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 1
+      - name: Initialize upstream submodules
+        run: git submodule update --init --depth 1 vscode vscode-textmate
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
@@ -96,8 +98,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 1
+      - name: Initialize upstream submodules
+        run: git submodule update --init --depth 1 vscode vscode-textmate
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
