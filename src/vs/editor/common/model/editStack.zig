@@ -33,11 +33,13 @@ const pair = utils.pair;
 pub const EditStackElement = union(enum) {
     singleModel: SingleModelEditStackElement,
     multiModel: MultiModelEditStackElement,
+    workspace: @import("../../../platform/undoRedo/common/undoRedo.zig").IWorkspaceUndoRedoElement,
 
     pub fn deinit(self: *EditStackElement) void {
         switch (self.*) {
             .singleModel => |*singleModel| singleModel.deinit(),
             .multiModel => |*multiModel| multiModel.deinit(),
+            .workspace => |element| element.dispose(),
         }
     }
 
@@ -49,6 +51,7 @@ pub const EditStackElement = union(enum) {
             .multiModel => |*multiModel| {
                 multiModel.close();
             },
+            .workspace => {},
         }
     }
 
@@ -57,7 +60,7 @@ pub const EditStackElement = union(enum) {
             .singleModel => |*singleModel| {
                 try singleModel.open();
             },
-            .multiModel => {},
+            .multiModel, .workspace => {},
         }
     }
 
@@ -69,6 +72,7 @@ pub const EditStackElement = union(enum) {
             .multiModel => |*multiModel| {
                 return multiModel.canAppend(model);
             },
+            .workspace => return false,
         }
     }
 
@@ -80,6 +84,7 @@ pub const EditStackElement = union(enum) {
             .multiModel => |*multiModel| {
                 try multiModel.append(model, textChanges, afterEOL, afterVersionId, afterCursorState);
             },
+            .workspace => return error.InvalidEditStackElement,
         }
     }
 
@@ -91,6 +96,7 @@ pub const EditStackElement = union(enum) {
             .multiModel => |*multiModel| {
                 multiModel.setModel(model);
             },
+            .workspace => {},
         }
     }
 
@@ -102,6 +108,7 @@ pub const EditStackElement = union(enum) {
             .multiModel => |*multiModel| {
                 try multiModel.undo();
             },
+            .workspace => |element| try element.undo(),
         }
     }
 
@@ -113,6 +120,7 @@ pub const EditStackElement = union(enum) {
             .multiModel => |*multiModel| {
                 try multiModel.redo();
             },
+            .workspace => |element| try element.redo(),
         }
     }
 
@@ -123,6 +131,12 @@ pub const EditStackElement = union(enum) {
             },
             .multiModel => |*multiModel| {
                 return try multiModel.toString();
+            },
+            .workspace => |element| {
+                var result = ArrayList(u8).init(element.allocator);
+                errdefer result.deinit();
+                try result.appendSlice(element.label);
+                return result;
             },
         }
     }
@@ -135,7 +149,16 @@ pub const EditStackElement = union(enum) {
             .multiModel => |*multiModel| {
                 return multiModel.label;
             },
+            .workspace => |element| return element.label,
         }
+    }
+
+    pub fn confirmBeforeUndo(self: *const EditStackElement) bool {
+        return switch (self.*) {
+            .singleModel => |element| element.confirmBeforeUndo orelse false,
+            .multiModel => false,
+            .workspace => |element| element.confirmBeforeUndo,
+        };
     }
 
     pub fn getAllocator(self: *const EditStackElement) Allocator {
@@ -146,6 +169,7 @@ pub const EditStackElement = union(enum) {
             .multiModel => |*multiModel| {
                 return multiModel.allocator;
             },
+            .workspace => |element| return element.allocator,
         }
     }
 
@@ -168,6 +192,7 @@ pub const EditStackElement = union(enum) {
                     try result.append(.{ .singleModel = try element.clone() });
                 }
             },
+            .workspace => return error.WorkspaceElementCannotSplit,
         }
         return result;
     }
@@ -180,6 +205,7 @@ pub const EditStackElement = union(enum) {
             .multiModel => |*multiModel| {
                 return multiModel.resource();
             },
+            .workspace => |element| return element.resources[0],
         }
     }
 };

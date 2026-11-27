@@ -32,20 +32,16 @@ var stackElementCount: u64 = 0;
 
 const StackElement = union(enum) {
     resourceStackElement: ResourceStackElement,
-    workspaceStackElement: WorkspaceStackElement,
+    workspaceStackElement: *WorkspaceStackElement,
 
     pub fn initResourceStackElement(actual_: *EditStackElement, resourceLabel: []const u8, strResource: String, groupId_: u64, groupOrder_: u64, sourceId_: u64, sourceOrder_: u64) StackElement {
         return .{ .resourceStackElement = ResourceStackElement.init(actual_, resourceLabel, strResource, groupId_, groupOrder_, sourceId_, sourceOrder_) };
     }
 
-    pub fn initWorkspaceStackElement(actual_: *EditStackElement, resourceLabels_: ArrayList([]const u8), strResources_: ArrayList(String), groupId_: u64, groupOrder_: u64, sourceId_: u64, sourceOrder_: u64) StackElement {
-        return .{ .workspaceStackElement = WorkspaceStackElement.init(actual_, resourceLabels_, strResources_, groupId_, groupOrder_, sourceId_, sourceOrder_) };
-    }
-
     pub fn deinit(self: *StackElement) void {
         switch (self.*) {
             .resourceStackElement => |*resourceStackElement| resourceStackElement.deinit(),
-            .workspaceStackElement => |*workspaceStackElement| workspaceStackElement.deinit(),
+            .workspaceStackElement => |workspaceStackElement| workspaceStackElement.release(),
         }
     }
 
@@ -143,7 +139,7 @@ const ResourceStackElement = struct {
             .id = stackElementCount,
             .actual = actual,
             .label = actual.label(),
-            .confirmBeforeUndo = false,
+            .confirmBeforeUndo = actual.confirmBeforeUndo(),
             .resourceLabel = resourceLabel,
             .strResource = strResource,
             .groupId = groupId,
@@ -233,6 +229,7 @@ const RemovedResources = struct {
 };
 
 const WorkspaceStackElement = struct {
+    refs: usize = 1,
     id: u64,
     actual: *EditStackElement,
     label: []const u8,
@@ -253,7 +250,7 @@ const WorkspaceStackElement = struct {
             .id = stackElementCount,
             .actual = actual,
             .label = actual.label(),
-            .confirmBeforeUndo = false,
+            .confirmBeforeUndo = actual.confirmBeforeUndo(),
             .resourceLabels = resourceLabels,
             .strResources = strResources,
             .groupId = groupId,
@@ -265,35 +262,61 @@ const WorkspaceStackElement = struct {
         };
     }
 
-    pub fn deinit(self: *WorkspaceStackElement) void {
+    pub fn retain(self: *WorkspaceStackElement) void {
+        self.refs += 1;
+    }
+
+    pub fn release(self: *WorkspaceStackElement) void {
+        self.refs -= 1;
+        if (self.refs != 0) return;
+        const allocator = self.strResources.allocator;
+        self.deinit();
+        allocator.destroy(self);
+    }
+
+    fn deinit(self: *WorkspaceStackElement) void {
         if (self.removedResources) |*removedResources| removedResources.elements.deinit();
         if (self.invalidatedResources) |*invalidatedResources| invalidatedResources.elements.deinit();
         for (self.strResources.items) |*strResource| {
             strResource.deinit();
         }
         self.strResources.deinit();
+        for (self.resourceLabels.items) |label| self.resourceLabels.allocator.free(label);
+        self.resourceLabels.deinit();
+        const allocator = self.actual.getAllocator();
+        self.actual.deinit();
+        allocator.destroy(self.actual);
     }
 
     pub fn canSplit(self: *const WorkspaceStackElement) bool {
         return switch (self.actual.*) {
-            .singleModel => false,
+            .singleModel, .workspace => false,
             .multiModel => true,
         };
     }
 
-    pub fn removeResource(self: *WorkspaceStackElement, resourceLabel: []const u8, strResource: []const u8, reason: RemovedResourceReason) !void {
+    fn stableResource(self: *const WorkspaceStackElement, strResource: []const u8) ?struct { key: []const u8, label: []const u8 } {
+        for (self.strResources.items, self.resourceLabels.items) |str, label| {
+            if (std.mem.eql(u8, str.items(), strResource)) return .{ .key = str.items(), .label = label };
+        }
+        return null;
+    }
+
+    pub fn removeResource(self: *WorkspaceStackElement, _: []const u8, strResource: []const u8, reason: RemovedResourceReason) !void {
+        const stable = self.stableResource(strResource) orelse return;
         if (self.removedResources == null) {
             const allocator = self.actual.getAllocator();
             self.removedResources = RemovedResources{ .elements = std.StringHashMap(ResourceReasonPair).init(allocator) };
         }
         if (self.removedResources) |*removedResources| {
             if (!removedResources.has(strResource)) {
-                try removedResources.set(strResource, ResourceReasonPair{ .resourceLabel = resourceLabel, .reason = reason });
+                try removedResources.set(stable.key, ResourceReasonPair{ .resourceLabel = stable.label, .reason = reason });
             }
         }
     }
 
-    pub fn setValid(self: *WorkspaceStackElement, resourceLabel: []const u8, strResource: []const u8, isValid: bool) !void {
+    pub fn setValid(self: *WorkspaceStackElement, _: []const u8, strResource: []const u8, isValid: bool) !void {
+        const stable = self.stableResource(strResource) orelse return;
         if (self.invalidatedResources) |*invalidatedResources| {
             _ = invalidatedResources.delete(strResource);
             if (invalidatedResources.size() == 0) {
@@ -308,7 +331,7 @@ const WorkspaceStackElement = struct {
             }
             if (self.invalidatedResources) |*invalidatedResources| {
                 if (!invalidatedResources.has(strResource)) {
-                    try invalidatedResources.set(strResource, ResourceReasonPair{ .resourceLabel = resourceLabel, .reason = RemovedResourceReason.ExternalRemoval });
+                    try invalidatedResources.set(stable.key, ResourceReasonPair{ .resourceLabel = stable.label, .reason = RemovedResourceReason.ExternalRemoval });
                 }
             }
         }
@@ -337,6 +360,7 @@ const WorkspaceStackElement = struct {
 var missingEditStack = ResourceEditStack.init("", String.Empty, std.heap.page_allocator);
 const ResourceEditStack = struct {
     resourceLabel: []const u8,
+    owned_resource_label: ?[]u8 = null,
     strResource: String,
     _past: ArrayList(StackElement),
     _future: ArrayList(StackElement),
@@ -366,6 +390,7 @@ const ResourceEditStack = struct {
         // The map key points at this owned copy; the value owns it until the
         // stack is removed from the map.
         self.strResource.deinit();
+        if (self.owned_resource_label) |label| self.getAllocator().free(label);
     }
 
     fn getAllocator(self: *const ResourceEditStack) Allocator {
@@ -375,7 +400,7 @@ const ResourceEditStack = struct {
     pub fn dispose(self: *ResourceEditStack) !void {
         for (self._past.items) |*element| {
             switch (element.*) {
-                .workspaceStackElement => |*workspaceStackElement| {
+                .workspaceStackElement => |workspaceStackElement| {
                     try workspaceStackElement.removeResource(self.resourceLabel, self.strResource.items(), RemovedResourceReason.ExternalRemoval);
                 },
                 .resourceStackElement => {},
@@ -383,7 +408,7 @@ const ResourceEditStack = struct {
         }
         for (self._future.items) |*element| {
             switch (element.*) {
-                .workspaceStackElement => |*workspaceStackElement| {
+                .workspaceStackElement => |workspaceStackElement| {
                     try workspaceStackElement.removeResource(self.resourceLabel, self.strResource.items(), RemovedResourceReason.ExternalRemoval);
                 },
                 .resourceStackElement => {},
@@ -428,31 +453,13 @@ const ResourceEditStack = struct {
     }
 
     pub fn setElementsIsValid(self: *ResourceEditStack, isValid: bool) void {
-        for (self._past.items) |element| {
-            switch (element.*) {
-                .workspaceStackElement => |workspaceStackElement| {
-                    workspaceStackElement.setValid(self.resourceLabel, self.strResource.items(), isValid);
-                },
-                .resourceStackElement => |resourceStackElement| {
-                    resourceStackElement.setValid(isValid);
-                },
-            }
-        }
-        for (self._future.items) |element| {
-            switch (element.*) {
-                .workspaceStackElement => |workspaceStackElement| {
-                    workspaceStackElement.setValid(self.resourceLabel, self.strResource.items(), isValid);
-                },
-                .resourceStackElement => |resourceStackElement| {
-                    resourceStackElement.setValid(isValid);
-                },
-            }
-        }
+        for (self._past.items) |*element| self._setElementValidFlag(element, isValid);
+        for (self._future.items) |*element| self._setElementValidFlag(element, isValid);
     }
 
     fn _setElementValidFlag(self: *ResourceEditStack, element: *StackElement, isValid: bool) void {
         switch (element.*) {
-            .workspaceStackElement => |*workspaceStackElement| {
+            .workspaceStackElement => |workspaceStackElement| {
                 workspaceStackElement.setValid(self.resourceLabel, self.strResource.items(), isValid) catch {};
             },
             .resourceStackElement => |*resourceStackElement| {
@@ -474,19 +481,20 @@ const ResourceEditStack = struct {
         }
     }
 
-    pub fn pushElement(self: *ResourceEditStack, element: StackElement) !void {
-        // remove the future
+    fn preparePush(self: *ResourceEditStack) !void {
+        try self._past.ensureUnusedCapacity(1);
         for (self._future.items) |*futureElement| {
             switch (futureElement.*) {
-                .workspaceStackElement => {
-                    try futureElement.workspaceStackElement.removeResource(self.resourceLabel, self.strResource.items(), RemovedResourceReason.NoParallelUniverses);
-                },
+                .workspaceStackElement => try futureElement.workspaceStackElement.removeResource(self.resourceLabel, self.strResource.items(), RemovedResourceReason.NoParallelUniverses),
                 .resourceStackElement => {},
             }
-            futureElement.deinit();
         }
+    }
+
+    fn pushPrepared(self: *ResourceEditStack, element: StackElement) void {
+        for (self._future.items) |*futureElement| futureElement.deinit();
         self._future.clearAndFree();
-        try self._past.append(element);
+        self._past.appendAssumeCapacity(element);
         self.versionId += 1;
     }
 
@@ -517,7 +525,7 @@ const ResourceEditStack = struct {
                 removePastAfter = i;
             }
             switch (element.*) {
-                .workspaceStackElement => |*workspaceStackElement| {
+                .workspaceStackElement => |workspaceStackElement| {
                     if (!isOK) {
                         workspaceStackElement.removeResource(self.resourceLabel, self.strResource.items(), RemovedResourceReason.ExternalRemoval) catch {};
                     }
@@ -537,7 +545,7 @@ const ResourceEditStack = struct {
                 removeFutureBefore = future_index;
             }
             switch (element.*) {
-                .workspaceStackElement => |*workspaceStackElement| {
+                .workspaceStackElement => |workspaceStackElement| {
                     if (!isOK) {
                         workspaceStackElement.removeResource(self.resourceLabel, self.strResource.items(), RemovedResourceReason.ExternalRemoval) catch {};
                     }
@@ -621,12 +629,14 @@ const ResourceEditStack = struct {
         while (j > 0) {
             j -= 1;
             if (self._past.items[j].id() == toRemove.id) {
-                if (individualMap.get(self.strResource.items())) |individual| {
+                if (individualMap.fetchRemove(self.strResource.items())) |individual| {
                     // gets replaced
-                    self._past.items[j] = .{ .resourceStackElement = individual };
+                    self._past.items[j].deinit();
+                    self._past.items[j] = .{ .resourceStackElement = individual.value };
                 } else {
                     // gets deleted
-                    self._past.items.len = j;
+                    var removed = self._past.orderedRemove(j);
+                    removed.deinit();
                 }
                 break;
             }
@@ -639,12 +649,14 @@ const ResourceEditStack = struct {
         while (j > 0) {
             j -= 1;
             if (self._future.items[j].id() == toRemove.id) {
-                if (individualMap.get(self.strResource.items())) |individual| {
+                if (individualMap.fetchRemove(self.strResource.items())) |individual| {
                     // gets replaced
-                    self._future.items[j] = .{ .resourceStackElement = individual };
+                    self._future.items[j].deinit();
+                    self._future.items[j] = .{ .resourceStackElement = individual.value };
                 } else {
                     // gets deleted
-                    self._future.items.len = j;
+                    var removed = self._future.orderedRemove(j);
+                    removed.deinit();
                 }
                 break;
             }
@@ -784,31 +796,60 @@ pub const UndoRedoService = struct {
                 try self._pushElement(.{ .resourceStackElement = ResourceStackElement.init(element, resourceLabel, strResource, group.id, group.nextOrder(), source.id, source.nextOrder()) });
             },
             .multiModel => |multiModel| {
-                const allocator = self._uriComparisonKeyComputers.allocator;
-                var seen = std.StringHashMap(void).init(allocator);
-                defer seen.deinit();
-                var resourceLabels = ArrayList([]const u8).init(allocator);
-                var strResources = ArrayList(String).init(allocator);
-                for ((try multiModel.resources()).items) |resource| {
-                    const resourceLabel = getResourceLabel(resource);
-                    const strResource = try self.getUriComparisonKey(resource);
-
-                    if (seen.contains(strResource.items())) {
-                        continue;
-                    }
-                    try seen.put(strResource.items(), {});
-                    try resourceLabels.append(resourceLabel);
-                    try strResources.append(strResource);
-                }
-
-                if (resourceLabels.items.len == 1) {
-                    defer resourceLabels.deinit();
-                    defer strResources.deinit();
-                    try self._pushElement(.{ .resourceStackElement = ResourceStackElement.init(element, resourceLabels.items[0], strResources.items[0], group.id, group.nextOrder(), source.id, source.nextOrder()) });
-                } else {
-                    try self._pushElement(.{ .workspaceStackElement = WorkspaceStackElement.init(element, resourceLabels, strResources, group.id, group.nextOrder(), source.id, source.nextOrder()) });
-                }
+                var resources = try multiModel.resources();
+                defer resources.deinit();
+                try self.pushWorkspaceElement(element, resources.items, group, source);
             },
+            .workspace => |workspace| try self.pushWorkspaceElement(element, workspace.resources, group, source),
+        }
+    }
+
+    fn pushWorkspaceElement(self: *UndoRedoService, element: *EditStackElement, resources: []const Uri, group: *UndoRedoGroup, source: *UndoRedoSource) !void {
+        const allocator = self._uriComparisonKeyComputers.allocator;
+        var seen = std.StringHashMap(void).init(allocator);
+        defer seen.deinit();
+        var resourceLabels = ArrayList([]const u8).init(allocator);
+        errdefer resourceLabels.deinit();
+        var strResources = ArrayList(String).init(allocator);
+        errdefer {
+            for (strResources.items) |*str| str.deinit();
+            strResources.deinit();
+        }
+        for (resources) |resource| {
+            var strResource = try self.getUriComparisonKey(resource);
+            if (seen.contains(strResource.items())) {
+                strResource.deinit();
+                continue;
+            }
+            errdefer strResource.deinit();
+            try seen.put(strResource.items(), {});
+            try resourceLabels.append(getResourceLabel(resource));
+            try strResources.append(strResource);
+        }
+        if (resourceLabels.items.len == 0) {
+            resourceLabels.deinit();
+            strResources.deinit();
+            const a = element.getAllocator();
+            element.deinit();
+            a.destroy(element);
+        } else if (resourceLabels.items.len == 1) {
+            try self._pushElement(.{ .resourceStackElement = ResourceStackElement.init(element, resourceLabels.items[0], strResources.items[0], group.id, group.nextOrder(), source.id, source.nextOrder()) });
+            resourceLabels.deinit();
+            strResources.deinit();
+        } else {
+            var owned_labels = ArrayList([]const u8).init(allocator);
+            errdefer {
+                for (owned_labels.items) |label| allocator.free(label);
+                owned_labels.deinit();
+            }
+            try owned_labels.ensureTotalCapacity(resourceLabels.items.len);
+            for (resourceLabels.items) |label| owned_labels.appendAssumeCapacity(try allocator.dupe(u8, label));
+            const workspace = try allocator.create(WorkspaceStackElement);
+            errdefer allocator.destroy(workspace);
+            workspace.* = WorkspaceStackElement.init(element, owned_labels, strResources, group.id, group.nextOrder(), source.id, source.nextOrder());
+            try self._pushElement(.{ .workspaceStackElement = workspace });
+            workspace.release(); // each affected stack now owns a reference
+            resourceLabels.deinit();
         }
     }
 
@@ -827,11 +868,22 @@ pub const UndoRedoService = struct {
                     _ = self._editStacks.remove(strResource.items());
                     return err;
                 };
+                const label = allocator.dupe(u8, resourceLabel) catch |err| {
+                    allocator.free(owned_bytes);
+                    _ = self._editStacks.remove(strResource.items());
+                    return err;
+                };
                 const owned = String.initOwned(ArrayList(u8).fromOwnedSlice(allocator, owned_bytes));
                 res.key_ptr.* = owned.items();
-                res.value_ptr.* = ResourceEditStack.init(resourceLabel, owned, allocator);
+                res.value_ptr.* = ResourceEditStack.init(label, owned, allocator);
+                res.value_ptr.owned_resource_label = label;
             }
-            try res.value_ptr.pushElement(element);
+            try res.value_ptr.preparePush();
+        }
+        for (str_resources) |strResource| {
+            const stack = self._editStacks.getPtr(strResource.items()).?;
+            stack.pushPrepared(element);
+            if (element == .workspaceStackElement) element.workspaceStackElement.retain();
         }
     }
 
@@ -850,15 +902,21 @@ pub const UndoRedoService = struct {
     }
 
     fn _splitPastWorkspaceElement(self: *UndoRedoService, toRemove: *WorkspaceStackElement, ignoreResources: ?RemovedResources) !void {
-        const individualArr = try toRemove.actual.split();
+        var individualArr = try toRemove.actual.split();
         defer individualArr.deinit();
 
         var individualMap = std.StringHashMap(ResourceStackElement).init(self._uriComparisonKeyComputers.allocator);
-        defer individualMap.deinit();
+        defer {
+            var iter = individualMap.valueIterator();
+            while (iter.next()) |item| item.deinit();
+            individualMap.deinit();
+        }
         for (individualArr.items) |*_element| {
             const resourceLabel = getResourceLabel(_element.resource());
             const strResource = try self.getUriComparisonKey(_element.resource());
-            const element = ResourceStackElement.init(_element, resourceLabel, strResource, 0, 0, 0, 0);
+            const owned = try _element.getAllocator().create(EditStackElement);
+            owned.* = _element.*;
+            const element = ResourceStackElement.init(owned, resourceLabel, strResource, 0, 0, 0, 0);
             try individualMap.put(element.strResource.items(), element);
         }
 
@@ -873,13 +931,20 @@ pub const UndoRedoService = struct {
     }
 
     fn _splitFutureWorkspaceElement(self: *UndoRedoService, toRemove: *const WorkspaceStackElement, ignoreResources: ?RemovedResources) !void {
-        const individualArr = try toRemove.actual.split();
+        var individualArr = try toRemove.actual.split();
+        defer individualArr.deinit();
         var individualMap = std.StringHashMap(ResourceStackElement).init(self._uriComparisonKeyComputers.allocator);
-        defer individualMap.deinit();
+        defer {
+            var iter = individualMap.valueIterator();
+            while (iter.next()) |item| item.deinit();
+            individualMap.deinit();
+        }
         for (individualArr.items) |*_element| {
             const resourceLabel = getResourceLabel(_element.resource());
             const strResource = try self.getUriComparisonKey(_element.resource());
-            const element = ResourceStackElement.init(_element, resourceLabel, strResource, 0, 0, 0, 0);
+            const owned = try _element.getAllocator().create(EditStackElement);
+            owned.* = _element.*;
+            const element = ResourceStackElement.init(owned, resourceLabel, strResource, 0, 0, 0, 0);
             try individualMap.put(element.strResource.items(), element);
         }
 
@@ -1187,7 +1252,10 @@ pub const UndoRedoService = struct {
     }
 
     fn _workspaceUndo(self: *UndoRedoService, strResource: []const u8, element: *WorkspaceStackElement, undoConfirmed: bool) !void {
-        const affectedEditStacks = try self._getAffectedEditStacks(element);
+        element.retain();
+        defer element.release();
+        var affectedEditStacks = try self._getAffectedEditStacks(element);
+        defer affectedEditStacks.deinit();
         const verificationError = try self._checkWorkspaceUndo(strResource, element, affectedEditStacks, false); // invalidated resources will be checked after the prepare call
         if (verificationError != null) {
             return;
@@ -1279,11 +1347,20 @@ pub const UndoRedoService = struct {
             return;
         }
 
+        defer if (cleanup) |c| c.dispose();
+        if (!self._acquireLocks(editStackSnapshot)) return;
         for (editStackSnapshot.editStacks.items) |editStack| {
-            try editStack.moveBackward(.{ .workspaceStackElement = element.* });
+            editStack.moveBackward(.{ .workspaceStackElement = element }) catch |err| {
+                _releaseLocks(editStackSnapshot);
+                return err;
+            };
         }
-        if (cleanup) |c| c.dispose();
-        try element.actual.undo();
+        element.actual.undo() catch |err| {
+            _releaseLocks(editStackSnapshot);
+            self._onError(err, .{ .workspaceStackElement = element });
+            return err;
+        };
+        _releaseLocks(editStackSnapshot);
         try self._continueUndoInGroup(element.groupId, undoConfirmed);
     }
 
@@ -1404,7 +1481,7 @@ pub const UndoRedoService = struct {
                     .resourceStackElement => |*resourceStackElement| {
                         try self._resourceUndo(editStack, resourceStackElement, undoConfirmed);
                     },
-                    .workspaceStackElement => |*workspaceStackElement| {
+                    .workspaceStackElement => |workspaceStackElement| {
                         try self._workspaceUndo(strResource, workspaceStackElement, undoConfirmed);
                     },
                 }
@@ -1537,8 +1614,11 @@ pub const UndoRedoService = struct {
         return null;
     }
 
-    fn _workspaceRedo(self: *UndoRedoService, strResource: []const u8, element: *const WorkspaceStackElement) !void {
-        const affectedEditStacks = try self._getAffectedEditStacks(element);
+    fn _workspaceRedo(self: *UndoRedoService, strResource: []const u8, element: *WorkspaceStackElement) !void {
+        element.retain();
+        defer element.release();
+        var affectedEditStacks = try self._getAffectedEditStacks(element);
+        defer affectedEditStacks.deinit();
         // invalidated resources will be checked after the prepare call
         const verificationError = try self._checkWorkspaceRedo(strResource, element, affectedEditStacks, false);
         if (verificationError != null) {
@@ -1547,7 +1627,7 @@ pub const UndoRedoService = struct {
         try self._executeWorkspaceRedo(strResource, element, affectedEditStacks);
     }
 
-    fn _executeWorkspaceRedo(self: *UndoRedoService, strResource: []const u8, element: *const WorkspaceStackElement, editStackSnapshot: EditStackSnapshot) !void {
+    fn _executeWorkspaceRedo(self: *UndoRedoService, strResource: []const u8, element: *WorkspaceStackElement, editStackSnapshot: EditStackSnapshot) !void {
         // prepare
         const cleanup = self._invokeWorkspacePrepare(element);
 
@@ -1562,10 +1642,20 @@ pub const UndoRedoService = struct {
             return;
         }
 
+        defer if (cleanup) |c| c.dispose();
+        if (!self._acquireLocks(editStackSnapshot)) return;
         for (editStackSnapshot.editStacks.items) |editStack| {
-            try editStack.moveForward(.{ .workspaceStackElement = element.* });
+            editStack.moveForward(.{ .workspaceStackElement = element }) catch |err| {
+                _releaseLocks(editStackSnapshot);
+                return err;
+            };
         }
-        try element.actual.redo();
+        element.actual.redo() catch |err| {
+            _releaseLocks(editStackSnapshot);
+            self._onError(err, .{ .workspaceStackElement = element });
+            return err;
+        };
+        _releaseLocks(editStackSnapshot);
         try self._continueRedoInGroup(element.groupId);
         // return self._safeInvokeWithLocks(element, () => element.actual.redo(), editStackSnapshot, cleanup, () => self._continueRedoInGroup(element.groupId));
     }
@@ -1681,7 +1771,7 @@ pub const UndoRedoService = struct {
                     .resourceStackElement => |*resourceStackElement| {
                         return try self._resourceRedo(editStack, resourceStackElement);
                     },
-                    .workspaceStackElement => |*workspaceStackElement| {
+                    .workspaceStackElement => |workspaceStackElement| {
                         return try self._workspaceRedo(strResource, workspaceStackElement);
                     },
                 }

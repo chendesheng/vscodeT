@@ -141,6 +141,7 @@ comptime {
     _ = @import("./vs/base/common/cache.zig");
     _ = @import("./vs/base/common/event.zig");
     _ = @import("./vs/editor/common/core/ranges/lineRange.zig");
+    _ = @import("./vs/platform/undoRedo/test/common/undoRedoService.test.zig");
     _ = @import("./vs/base/common/promise.zig");
     _ = @import("./vs/editor/common/model/fixedArray.zig");
     _ = @import("./vs/editor/common/services/semanticTokensDto.zig");

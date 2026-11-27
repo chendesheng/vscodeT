@@ -3,6 +3,30 @@ const ArrayList = std.array_list.Managed;
 const Uri = std.Uri;
 const EditStackElement = @import("../../../editor/common/model/editStack.zig").EditStackElement;
 
+/// Port of IWorkspaceUndoRedoElement. A workspace operation need not be a
+/// text-model edit (file operations are one such producer).
+pub const IWorkspaceUndoRedoElement = struct {
+    allocator: std.mem.Allocator,
+    context: *anyopaque,
+    resources: []const Uri,
+    label: []const u8,
+    code: []const u8,
+    confirmBeforeUndo: bool = false,
+    undo_fn: *const fn (*anyopaque) anyerror!void,
+    redo_fn: *const fn (*anyopaque) anyerror!void,
+    dispose_fn: *const fn (*anyopaque) void,
+
+    pub fn undo(self: @This()) !void {
+        try self.undo_fn(self.context);
+    }
+    pub fn redo(self: @This()) !void {
+        try self.redo_fn(self.context);
+    }
+    pub fn dispose(self: @This()) void {
+        self.dispose_fn(self.context);
+    }
+};
+
 pub const ResourceEditStackSnapshot = struct {
     resource: Uri,
     elements: ArrayList(u64),
