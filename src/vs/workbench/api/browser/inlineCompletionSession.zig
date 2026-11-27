@@ -158,8 +158,9 @@ pub const Session = struct {
         if (!self.has_editor_focus(self.host_context) or tab.editor.read_only or tab.markdown_preview != null) return false;
         if (self.actor == null or self.actor.?.inline_providers.entries.items.len == 0) return false;
         if (!self.configuration.getBool("editor.inlineSuggest.enabled", true)) return false;
+        if (tab.editor.snippet_state.in_snippet_mode) return false;
         if (tab.controllers) |controllers| {
-            if (controllers.suggest) |suggest| if (suggest.isOpen() or suggest.hasSnippetSession()) return false;
+            if (controllers.suggest) |suggest| if (suggest.isOpen()) return false;
         }
         return true;
     }

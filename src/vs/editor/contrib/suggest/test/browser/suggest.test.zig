@@ -351,7 +351,7 @@ pub fn Tests(comptime ViewType: type) type {
             _ = try controller.model.triggerExplicit(0);
             var enter = ui.KeyEvent{ .key = .enter };
             try std.testing.expect(try controller.handleKey(&enter, 0));
-            try std.testing.expect(controller.snippet_session != null);
+            try std.testing.expect(controller.hasSnippetSession());
 
             const selection = editor.modelSelection();
             try std.testing.expectEqual(@as(usize, 4), selection.startColumn);
@@ -544,7 +544,7 @@ pub fn Tests(comptime ViewType: type) type {
             _ = try controller.model.triggerExplicit(0);
             var enter = ui.KeyEvent{ .key = .enter };
             try std.testing.expect(try controller.handleKey(&enter, 0));
-            try std.testing.expect(controller.snippet_session != null);
+            try std.testing.expect(controller.hasSnippetSession());
 
             // Both mirrors are selected together.
             const selections = try editor.getModelSelections();
@@ -619,7 +619,7 @@ pub fn Tests(comptime ViewType: type) type {
             _ = try controller.model.triggerExplicit(0);
             var enter = ui.KeyEvent{ .key = .enter };
             try std.testing.expect(try controller.handleKey(&enter, 0));
-            try std.testing.expect(controller.snippet_session != null);
+            try std.testing.expect(controller.hasSnippetSession());
 
             _ = try controller.model.triggerExplicit(0);
             try std.testing.expect(try controller.handleKey(&enter, 0));
@@ -627,7 +627,7 @@ pub fn Tests(comptime ViewType: type) type {
             const line = try editor.model.getLineContent(1);
             defer line.deinit();
             try std.testing.expectEqualStrings("inner", line.items);
-            try std.testing.expect(controller.snippet_session != null);
+            try std.testing.expect(controller.hasSnippetSession());
         }
 
         test "SuggestController: snippet placeholder navigation helpers" {

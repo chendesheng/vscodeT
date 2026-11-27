@@ -274,6 +274,13 @@ const ReplaceCursorComputer = struct {
     }
 };
 
+pub const SnippetState = @import("../../../contrib/snippet/browser/snippetController2.zig").SnippetState;
+
+pub const TextEditApplyOptions = struct {
+    undo_stop_before: bool = true,
+    undo_group: ?*@import("../../../../platform/undoRedo/common/undoRedo.zig").UndoRedoGroup = null,
+};
+
 pub const TextEdit = struct {
     range: Range,
     text: []const u8,
@@ -772,6 +779,9 @@ pub const Editor = struct {
     /// True while this view keeps selection markers in the shared model so
     /// edits in another pane can move its cursors.
     cursor_tracking: bool = false,
+    // CursorsController._isHandling: an initiating edit supplies its own
+    // resulting selections; other editors still recover theirs from markers.
+    cursor_is_handling: bool = false,
     view_lines: ProjectedViewModelLines,
     /// Upstream `ViewModelImpl` owns the view-event dispatcher and emits the
     /// events for line-mapping changes, content flushes and decorations. The
@@ -819,6 +829,7 @@ pub const Editor = struct {
     on_did_change_text_focus: Emitter(bool),
     on_did_change_inline_message: Emitter(bool),
     on_did_change_markers_navigation: Emitter(bool),
+    on_did_change_snippet_state: Emitter(SnippetState),
     on_did_mouse_event: Emitter(editorBrowser.EditorMouseEvent),
     on_did_key_down: Emitter(*input.KeyEvent),
     on_did_change_quick_diff_context: Emitter(void),
@@ -836,6 +847,7 @@ pub const Editor = struct {
     hover_focused: bool = false,
     inline_message_visible: bool = false,
     markers_navigation_visible: bool = false,
+    snippet_state: SnippetState = .{},
     screen_width: usize,
     screen_height: usize,
     /// Terminal default is soft wrap on; a configured `editor.wordWrap`
@@ -1129,6 +1141,7 @@ pub const Editor = struct {
             .on_did_change_text_focus = .init(allocator),
             .on_did_change_inline_message = .init(allocator),
             .on_did_change_markers_navigation = .init(allocator),
+            .on_did_change_snippet_state = .init(allocator),
             .on_did_mouse_event = .init(allocator),
             .on_did_key_down = .init(allocator),
             .on_did_change_quick_diff_context = .init(allocator),
@@ -1162,6 +1175,8 @@ pub const Editor = struct {
             .decoration_generation = 0,
             .shortcut_commands = CommandRegistry.init(allocator),
         };
+        errdefer editor.deinit();
+        try @import("../../../contrib/snippet/browser/snippetController2.zig").SnippetController2.registerFactory(editor);
         return editor;
     }
 
@@ -2073,6 +2088,7 @@ pub const Editor = struct {
         self.on_did_change_text_focus.deinit();
         self.on_did_change_inline_message.deinit();
         self.on_did_change_markers_navigation.deinit();
+        self.on_did_change_snippet_state.deinit();
         self.on_did_mouse_event.deinit();
         self.on_did_key_down.deinit();
         self.on_did_change_quick_diff_context.deinit();
@@ -2274,13 +2290,11 @@ pub const Editor = struct {
         for (self.working_copy_content_listeners.items) |listener| listener.callback(listener.context);
     }
 
-    /// Port of `CursorsController.onModelContentChanged` for a view that did
-    /// not initiate the edit: move this pane's cursors with the shared model's
-    /// tracked selection markers. The editing pane receives the same event and
-    /// then overwrites its state from `pushEditOperations`' resulting
-    /// selections, so recovering here is idempotent for it.
+    /// Port of `CursorsController.onModelContentChanged`: recover the
+    /// selection from markers for edits that did not originate in this editor.
+    /// An initiating command publishes its computed cursor state instead.
     fn recoverCursorFromModel(self: *Editor, event: InternalModelContentChangeEvent) void {
-        if (!self.cursor_tracking) return;
+        if (!self.cursor_tracking or self.cursor_is_handling) return;
         var flushed = false;
         for (event.rawContentChangedEvent.changes.items) |change| {
             if (change == .flush) {
@@ -2608,6 +2622,12 @@ pub const Editor = struct {
         if (self.inline_message_visible == visible) return;
         self.inline_message_visible = visible;
         self.on_did_change_inline_message.fire(visible) catch {};
+    }
+
+    pub fn setSnippetState(self: *Editor, state: SnippetState) void {
+        if (std.meta.eql(self.snippet_state, state)) return;
+        self.snippet_state = state;
+        self.on_did_change_snippet_state.fire(state) catch {};
     }
 
     pub fn setMarkersNavigationVisible(self: *Editor, visible: bool) void {
@@ -4366,14 +4386,19 @@ pub const Editor = struct {
             .scratch = scratch,
         };
 
-        const after_selections = try self.model.pushEditOperations(
-            @constCast(before_selections),
-            operations.items,
-            computer.state(),
-            null,
-        );
-
-        try self.afterEdit();
+        const after_selections = blk: {
+            const was_handling = self.cursor_is_handling;
+            self.cursor_is_handling = true;
+            defer self.cursor_is_handling = was_handling;
+            const result = try self.model.pushEditOperations(
+                @constCast(before_selections),
+                operations.items,
+                computer.state(),
+                null,
+            );
+            try self.afterEdit();
+            break :blk result;
+        };
 
         if (after_selections) |selections| {
             try self.updateSelections(selections);
@@ -4929,6 +4954,9 @@ pub const Editor = struct {
     }
 
     fn emitCursorStateChangedIfNeeded(self: *Editor, reason: CursorChangeReason, force: bool) void {
+        // Line mappings can change while a command's model event is being
+        // delivered. Publish only the final state after its cursor computation.
+        if (self.cursor_is_handling) return;
         const view = self.getViewSelections() catch return;
         const model = self.getModelSelections() catch {
             self.allocator.free(view);
@@ -5063,7 +5091,12 @@ pub const Editor = struct {
         const selections = after orelse return;
         defer self.allocator.free(selections);
 
-        try self.afterEdit();
+        {
+            const was_handling = self.cursor_is_handling;
+            self.cursor_is_handling = true;
+            defer self.cursor_is_handling = was_handling;
+            try self.afterEdit();
+        }
         try self.updateSelections(selections);
         self.ensureCursorVisible();
         self.pushUndoStop();
@@ -5073,7 +5106,12 @@ pub const Editor = struct {
         const before = try self.getSelectionsCopy();
         defer self.allocator.free(before);
 
-        const after = try command_runner.executeCommands(self.allocator, self.model, commands, before);
+        const after = blk: {
+            const was_handling = self.cursor_is_handling;
+            self.cursor_is_handling = true;
+            defer self.cursor_is_handling = was_handling;
+            break :blk try command_runner.executeCommands(self.allocator, self.model, commands, before);
+        };
         try self.applyCommandResult(after);
     }
 
@@ -5150,6 +5188,12 @@ pub const Editor = struct {
         self.ensureCursorVisible();
     }
 
+    /// SnippetController2 owns undo boundaries while moving between tabstops.
+    pub fn setSelectionsFromSnippet(self: *Editor, selections: []const Selection) !void {
+        try self.updateSelectionsFromApi(selections);
+        self.ensureCursorVisible();
+    }
+
     /// Mouse moveTo/moveToSelect begins an explicit cursor operation. Motion
     /// after the press reuses updateDragSelection without another undo stop.
     pub fn setMouseSelection(self: *Editor, anchor: Position, position: Position) !void {
@@ -5214,6 +5258,10 @@ pub const Editor = struct {
     /// mirroring the `textChange.newPosition` values the upstream snippet
     /// session receives from `executeEdits`.
     pub fn applyTextEditsWithPositions(self: *Editor, edits: []const TextEdit) ![]AppliedTextEdit {
+        return self.applyTextEditsWithPositionsWithOptions(edits, .{});
+    }
+
+    pub fn applyTextEditsWithPositionsWithOptions(self: *Editor, edits: []const TextEdit, options: TextEditApplyOptions) ![]AppliedTextEdit {
         if (self.read_only) return error.ReadOnly;
         const result = try self.allocator.alloc(AppliedTextEdit, edits.len);
         errdefer self.allocator.free(result);
@@ -5247,7 +5295,7 @@ pub const Editor = struct {
             delta += @as(isize, @intCast(edit.text.len)) - @as(isize, @intCast(end - start));
         }
 
-        self.closeTypingGroup();
+        if (options.undo_stop_before) self.closeTypingGroup() else self.prev_edit_operation_type = .Other;
         const before = try self.getSelectionsCopy();
         defer self.allocator.free(before);
 
@@ -5260,7 +5308,7 @@ pub const Editor = struct {
             ));
         }
 
-        _ = try self.model.pushEditOperations(before, operations.items, null, null);
+        _ = try self.model.pushEditOperations(before, operations.items, null, options.undo_group);
         try self.afterEdit();
         for (offsets, 0..) |offset, index| {
             result[index] = .{

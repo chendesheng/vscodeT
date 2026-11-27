@@ -12,7 +12,7 @@ const Position = @import("../../../common/core/position.zig").Position;
 const completion = @import("../../../common/languages/completion.zig");
 const SuggestModel = @import("./suggestModel.zig").SuggestModel;
 const SuggestWidget = @import("./suggestWidget.zig").SuggestWidget;
-const SnippetSession = @import("../../snippet/browser/snippetSession.zig").SnippetSession;
+const SnippetController2 = @import("../../snippet/browser/snippetController2.zig").SnippetController2;
 const OvertypingCapturer = @import("./suggestOvertypingCapturer.zig").OvertypingCapturer;
 const suggestWidget = @import("./suggestWidget.zig");
 
@@ -35,7 +35,7 @@ pub const SuggestController = struct {
     editor: *Editor,
     model: SuggestModel,
     widget: *SuggestWidget,
-    snippet_session: ?*SnippetSession = null,
+    snippet_choice_listener: ?usize = null,
     choice_active: bool = false,
     overtyping_capturer: OvertypingCapturer,
     host: SuggestControllerHost,
@@ -120,7 +120,11 @@ pub const SuggestController = struct {
         try self.model.registerListeners();
         errdefer self.model.unregisterListeners();
         self.will_type_listener = try self.editor.on_will_type.listen(self, onWillType);
+        errdefer self.editor.on_will_type.unlisten(self.will_type_listener.?);
+        const snippet = try SnippetController2.getOrCreate(self.editor);
+        self.snippet_choice_listener = try snippet.on_did_change_choice.listen(self, onSnippetChoiceChanged);
         self.model_attached = true;
+        if (snippet.state.in_snippet_choice) try self.maybeShowChoice();
     }
 
     fn detachModel(self: *SuggestController) void {
@@ -129,7 +133,9 @@ pub const SuggestController = struct {
         self.will_type_listener = null;
         self.model.unregisterListeners();
         self.model.cancel();
-        self.cancelSnippetSession();
+        if (self.snippetController()) |snippet| if (self.snippet_choice_listener) |id| snippet.on_did_change_choice.unlisten(id);
+        self.snippet_choice_listener = null;
+        self.choice_active = false;
         self.overtyping_capturer.reset();
         self.hideWidget();
         self.model.active_providers = self.model.providers;
@@ -159,28 +165,31 @@ pub const SuggestController = struct {
     }
 
     pub fn hasSnippetSession(self: *const SuggestController) bool {
-        return self.snippet_session != null;
+        return if (self.snippetController()) |snippet| snippet.isInSnippet() else false;
+    }
+
+    fn snippetController(self: *const SuggestController) ?*SnippetController2 {
+        return self.editor.getInstantiatedContribution(SnippetController2);
+    }
+
+    fn onSnippetChoiceChanged(_: void, self: *SuggestController) !void {
+        if (!self.model_attached or self.model.suspend_events) return;
+        try self.maybeShowChoice();
+        self.host.request_frame(self.host.context);
     }
 
     pub fn nextSnippetPlaceholder(self: *SuggestController) !bool {
-        const session = self.snippet_session orelse return false;
-        if (session.isAtLastPlaceholder()) {
-            session.deinit();
-            self.snippet_session = null;
-            return false;
-        }
-        return try session.next();
+        const snippet = self.snippetController() orelse return false;
+        return snippet.next();
     }
 
     pub fn previousSnippetPlaceholder(self: *SuggestController) !bool {
-        const session = self.snippet_session orelse return false;
-        if (session.isAtFirstPlaceholder()) return false;
-        return try session.previous();
+        const snippet = self.snippetController() orelse return false;
+        return snippet.previous();
     }
 
     pub fn cancelSnippetSession(self: *SuggestController) void {
-        if (self.snippet_session) |session| session.deinit();
-        self.snippet_session = null;
+        if (self.snippetController()) |snippet| snippet.cancel(false);
         self.choice_active = false;
     }
 
@@ -242,14 +251,6 @@ pub const SuggestController = struct {
 
     pub fn onCursorMoved(self: *SuggestController) void {
         if (!self.model_attached) return;
-        if (self.snippet_session) |session| {
-            const within = session.isSelectionWithinPlaceholders() catch false;
-            if (!within or session.isAtLastPlaceholder()) {
-                self.choice_active = false;
-                session.deinit();
-                self.snippet_session = null;
-            }
-        }
         if (self.model.onCursorMoved()) self.hideWidget();
     }
 
@@ -280,32 +281,26 @@ pub const SuggestController = struct {
                 else => {},
             }
         }
-        if (self.snippet_session) |session| {
+        if (self.hasSnippetSession()) {
             switch (event.key) {
                 .tab => {
-                    const moved = try session.next();
-                    if (!moved) {
-                        session.deinit();
-                        self.snippet_session = null;
+                    _ = try self.nextSnippetPlaceholder();
+                    if (!self.hasSnippetSession()) {
                         self.choice_active = false;
                         self.hideWidget();
-                    } else {
-                        try self.maybeShowChoice();
                     }
                     self.host.focus_editor(self.host.context);
                     self.host.request_frame(self.host.context);
                     return true;
                 },
                 .backtab => {
-                    _ = try session.previous();
-                    try self.maybeShowChoice();
+                    _ = try self.previousSnippetPlaceholder();
                     self.host.focus_editor(self.host.context);
                     self.host.request_frame(self.host.context);
                     return true;
                 },
                 .escape => {
-                    session.deinit();
-                    self.snippet_session = null;
+                    if (self.snippetController()) |snippet| snippet.cancel(true);
                     self.choice_active = false;
                     self.hideWidget();
                     self.host.request_frame(self.host.context);
@@ -410,10 +405,10 @@ pub const SuggestController = struct {
         self.model.suspend_events = true;
         defer self.model.suspend_events = old_suspend;
         const was_choice = self.choice_active;
-        if (!was_choice and self.snippet_session != null) {
+        if (!was_choice and self.hasSnippetSession()) {
             if (self.model.selectedItem()) |item| {
                 if (item.insert_text_rules & @backingInt(completion.CompletionItemInsertTextRule.InsertAsSnippet) != 0) {
-                    try self.snippet_session.?.merge(item.insert_text, .{});
+                    try self.snippetController().?.insert(item.insert_text, .{});
                     self.model.cancel();
                     self.hideWidget();
                     try self.maybeShowChoice();
@@ -423,24 +418,15 @@ pub const SuggestController = struct {
                 }
             }
         }
-        if (try self.model.accept()) |result| {
+        if (try self.model.accept()) |_| {
             self.overtyping_capturer.unlock();
             self.hideWidget();
             self.host.focus_editor(self.host.context);
-            if (result.snippet_session) |session| {
-                self.snippet_session = session;
-            }
             if (was_choice) {
                 self.choice_active = false;
-                if (self.snippet_session) |session| {
-                    const moved = try session.next();
-                    if (!moved) {
-                        session.deinit();
-                        self.snippet_session = null;
-                    }
-                }
+                if (self.hasSnippetSession()) _ = try self.nextSnippetPlaceholder();
                 try self.maybeShowChoice();
-            } else if (self.snippet_session != null) {
+            } else if (self.hasSnippetSession()) {
                 try self.maybeShowChoice();
             }
             self.host.request_frame(self.host.context);
@@ -452,7 +438,7 @@ pub const SuggestController = struct {
 
     fn maybeShowChoice(self: *SuggestController) !void {
         self.choice_active = false;
-        if (self.snippet_session) |session| {
+        if (self.snippetController()) |snippet| if (snippet.session) |session| {
             if (session.activeChoice()) |active| {
                 var options = std.array_list.Managed([]const u8).init(self.allocator);
                 defer options.deinit();
@@ -462,7 +448,7 @@ pub const SuggestController = struct {
                 self.showWidget();
                 return;
             }
-        }
+        };
         if (self.model.isOpen()) {
             self.model.cancel();
             self.hideWidget();

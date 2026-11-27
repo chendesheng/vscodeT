@@ -23,7 +23,7 @@ const completion = @import("../../../common/languages/completion.zig");
 const CancellationToken = @import("../../../../base/common/cancellation.zig").CancellationToken;
 const CompletionModel = @import("./completionModel.zig").CompletionModel;
 const snippetParser = @import("../../snippet/browser/snippetParser.zig");
-const SnippetSession = @import("../../snippet/browser/snippetSession.zig").SnippetSession;
+const SnippetController2 = @import("../../snippet/browser/snippetController2.zig").SnippetController2;
 const window_dispatch = @import("../../../../base/common/windowDispatch.zig");
 const snippet_variables = @import("../../snippet/browser/snippetVariables.zig");
 
@@ -402,7 +402,7 @@ pub const SuggestModel = struct {
     }
 
     pub const AcceptResult = struct {
-        snippet_session: ?*SnippetSession = null,
+        inserted_snippet: bool = false,
         snippet_anchor: ?Position = null,
     };
 
@@ -544,15 +544,14 @@ pub const SuggestModel = struct {
         else
             0;
 
-        const session = try SnippetSession.init(self.allocator, self.editor, item.insert_text, .{
+        const controller = try SnippetController2.getOrCreate(self.editor);
+        try controller.insert(item.insert_text, .{
             .overwrite_before = overwrite_before,
             .overwrite_after = overwrite_after,
             .overtyping_capturer = self.overtyping_capturer,
         });
-        errdefer session.deinit();
-        try session.insert();
         self.cancel();
-        return .{ .snippet_session = session };
+        return .{ .inserted_snippet = true };
     }
 
     pub fn cancel(self: *SuggestModel) void {

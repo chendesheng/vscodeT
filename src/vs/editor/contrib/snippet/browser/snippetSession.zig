@@ -540,6 +540,9 @@ pub const InsertOptions = struct {
     adjust_whitespace: bool = true,
     clipboard_text: ?[]const u8 = null,
     overtyping_capturer: ?variables.OvertypingCapturer = null,
+    undo_stop_before: bool = true,
+    undo_stop_after: bool = true,
+    undo_group: ?*@import("../../../../platform/undoRedo/common/undoRedo.zig").UndoRedoGroup = null,
 };
 
 pub const SnippetEdit = struct {
@@ -630,6 +633,8 @@ pub const SnippetSession = struct {
 
     pub fn insert(self: *SnippetSession) !void {
         if (self.inserted) return;
+        // A workspace edit owns the group only until this insertion returns.
+        defer self.options.undo_group = null;
         var built = if (self.template_edits) |edits|
             try createEditsAndSnippetsFromEdits(
                 self.allocator,
@@ -654,7 +659,7 @@ pub const SnippetSession = struct {
             self.allocator.free(built.edits);
         }
 
-        const applied = try self.editor.applyTextEditsWithPositions(built.edits);
+        const applied = try self.editor.applyTextEditsWithPositionsWithOptions(built.edits, .{ .undo_group = self.options.undo_group, .undo_stop_before = self.options.undo_stop_before });
         defer self.allocator.free(applied);
         self.inserted = true;
 
@@ -665,12 +670,13 @@ pub const SnippetSession = struct {
         if (self.snippets.items.len > 0 and self.snippets.items[0].hasPlaceholder()) {
             const selections = try self.move(true);
             defer self.allocator.free(selections);
-            if (selections.len > 0) try self.editor.setSelections(selections);
+            if (selections.len > 0) try self.editor.setSelectionsFromSnippet(selections);
         } else {
             const selections = try collapseAtEnds(self.allocator, applied);
             defer self.allocator.free(selections);
-            if (selections.len > 0) try self.editor.setSelections(selections);
+            if (selections.len > 0) try self.editor.setSelectionsFromSnippet(selections);
         }
+        if (self.options.undo_stop_after) self.editor.model.pushStackElement();
         self.editor.ensureCursorVisible();
     }
 
@@ -694,7 +700,7 @@ pub const SnippetSession = struct {
             self.allocator.free(built.edits);
         }
 
-        const applied = try self.editor.applyTextEditsWithPositions(built.edits);
+        const applied = try self.editor.applyTextEditsWithPositionsWithOptions(built.edits, .{ .undo_group = options.undo_group, .undo_stop_before = options.undo_stop_before });
         defer self.allocator.free(applied);
         for (built.snippets.items, 0..) |snippet, index| {
             snippet.initialize(applied[index].start);
@@ -718,15 +724,16 @@ pub const SnippetSession = struct {
             if (self.snippets.items.len > 0 and self.snippets.items[0].hasPlaceholder()) {
                 const selections = try self.move(null);
                 defer self.allocator.free(selections);
-                if (selections.len > 0) try self.editor.setSelections(selections);
+                if (selections.len > 0) try self.editor.setSelectionsFromSnippet(selections);
             }
         } else {
             for (built.snippets.items) |snippet| snippet.deinit();
             built.snippets.deinit(self.allocator);
             const selections = try collapseAtEnds(self.allocator, applied);
             defer self.allocator.free(selections);
-            if (selections.len > 0) try self.editor.setSelections(selections);
+            if (selections.len > 0) try self.editor.setSelectionsFromSnippet(selections);
         }
+        if (options.undo_stop_after) self.editor.model.pushStackElement();
         self.editor.ensureCursorVisible();
     }
 
@@ -734,7 +741,7 @@ pub const SnippetSession = struct {
         const selections = try self.move(true);
         defer self.allocator.free(selections);
         if (selections.len == 0) return false;
-        try self.editor.setSelections(selections);
+        try self.editor.setSelectionsFromSnippet(selections);
         self.editor.ensureCursorVisible();
         return true;
     }
@@ -747,7 +754,7 @@ pub const SnippetSession = struct {
         const selections = try self.move(false);
         defer self.allocator.free(selections);
         if (selections.len == 0) return false;
-        try self.editor.setSelections(selections);
+        try self.editor.setSelectionsFromSnippet(selections);
         self.editor.ensureCursorVisible();
         return true;
     }

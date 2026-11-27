@@ -178,13 +178,13 @@ pub fn handleKeyEvent(
         if (try controller.handleKey(event, now_ms)) return false;
     }
     if (hover) |controller| if (controller.onKeyDown(event)) return false;
-    if (suggest) |controller| {
-        if (controller.hasSnippetSession()) {
+    if (editor.getInstantiatedContribution(@import("../../../contrib/snippet/browser/snippetController2.zig").SnippetController2)) |controller| {
+        if (controller.isInSnippet()) {
             switch (event.key) {
-                .tab => if (try controller.nextSnippetPlaceholder()) return false,
-                .backtab => if (try controller.previousSnippetPlaceholder()) return false,
+                .tab => if (try controller.next()) return false,
+                .backtab => if (try controller.previous()) return false,
                 .escape => {
-                    controller.cancelSnippetSession();
+                    controller.cancel(true);
                     return false;
                 },
                 else => {},

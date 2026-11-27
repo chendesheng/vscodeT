@@ -99,6 +99,10 @@ pub const EditorScopedContext = struct {
         if (std.mem.eql(u8, key, "editorHasCodeActionsProvider")) return .{ .boolean = self.editor.has_code_action_provider };
         if (std.mem.eql(u8, key, "editorLangId")) return .{ .string = if (self.editor.getModel()) |model| model.getLanguageId() else "" };
         if (std.mem.eql(u8, key, "resourceScheme")) return .{ .string = if (self.editor.getModel()) |model| model.uri().scheme else "" };
+        if (std.mem.eql(u8, key, "inSnippetMode")) return .{ .boolean = self.editor.snippet_state.in_snippet_mode };
+        if (std.mem.eql(u8, key, "hasNextTabstop")) return .{ .boolean = self.editor.snippet_state.has_next_tabstop };
+        if (std.mem.eql(u8, key, "hasPrevTabstop")) return .{ .boolean = self.editor.snippet_state.has_prev_tabstop };
+        if (std.mem.eql(u8, key, "inSnippetChoice")) return .{ .boolean = self.editor.snippet_state.in_snippet_choice };
         return self.parent.getValue(key);
     }
 };

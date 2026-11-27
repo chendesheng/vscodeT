@@ -864,7 +864,7 @@ pub fn main(init: std.process.Init) !void {
                     }
                     if (!workbench.is_pasting and workbench.focus == .editor and !event.mods.ctrl and !event.mods.alt) {
                         if (extension_host) |ext| {
-                            const suggest_open = if (current.controllers) |c| if (c.suggest) |suggest| suggest.isOpen() or suggest.hasSnippetSession() else false else false;
+                            const suggest_open = current.editor.snippet_state.in_snippet_mode or (if (current.controllers) |c| if (c.suggest) |suggest| suggest.isOpen() else false else false);
                             if (!suggest_open and current.view.ghost_text.isVisible()) {
                                 switch (event.key) {
                                     .tab => if (try ext.inline_completions.accept()) {
