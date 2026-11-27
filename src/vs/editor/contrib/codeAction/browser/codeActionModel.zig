@@ -59,6 +59,7 @@ pub const CodeActionModel = struct {
     pending: ?Disposable = null,
     owned_actions: ?*codeAction.ManagedCodeActionSet = null,
     completion_task: dispatch.Task = .{},
+    publication_task: dispatch.Task = .{},
     mode: LightbulbMode = .on_code,
     bound: bool = false,
     can_trigger: bool = false,
@@ -79,6 +80,7 @@ pub const CodeActionModel = struct {
         self.* = .{ .allocator = a, .editor = editor, .registry = registry, .marker_service = marker_service, .configuration = configuration, .trigger_arena = .init(a), .context = context, .on_change = on_change };
         self.oracle.task = .{ .queue = queue, .context = self, .run = onAutoTrigger };
         self.completion_task = .{ .queue = queue, .context = self, .run = onCompleted };
+        self.publication_task = .{ .queue = queue, .context = self, .run = onPublish };
         errdefer self.dispose();
         try self.bind();
         return self;
@@ -160,6 +162,12 @@ pub const CodeActionModel = struct {
         self.update();
     }
 
+    pub fn setIgnoreLightbulbOff(self: *CodeActionModel, ignore: bool) void {
+        if (self.oracle.ignore_lightbulb_off == ignore) return;
+        self.oracle.ignore_lightbulb_off = ignore;
+        if (ignore) self.trigger(.{ .type = .Auto, .trigger_action = .Default });
+    }
+
     pub fn update(self: *CodeActionModel) void {
         self.clear();
         const model = self.editor.getModel() orelse return;
@@ -193,6 +201,7 @@ pub const CodeActionModel = struct {
 
     pub fn clear(self: *CodeActionModel) void {
         self.oracle.task.schedule(null);
+        self.publication_task.schedule(null);
         self.cancelPending();
         self.clearOwnedActions();
         self.can_trigger = false;
@@ -224,6 +233,8 @@ pub const CodeActionModel = struct {
         if (!self.can_trigger) return;
         const model = self.editor.getModel() orelse return;
         self.oracle.task.schedule(null);
+        self.publication_task.schedule(null);
+        const manual_to_auto = self.state == .Triggered and self.state.Triggered.trigger.type == .Invoke and trigger_value.type == .Auto;
         self.cancelPending();
         self.clearOwnedActions();
         _ = self.trigger_arena.reset(.retain_capacity);
@@ -234,7 +245,7 @@ pub const CodeActionModel = struct {
         };
         const trigger_copy = codeAction.copyTrigger(self.trigger_arena.allocator(), trigger_value) catch return;
         self.state = .{ .Triggered = .{ .trigger = trigger_copy, .position = selection.getStartPosition() } };
-        self.on_change(self.context, self.state);
+        if (manual_to_auto) self.publication_task.schedule(time.milliTimestamp() + 500) else self.on_change(self.context, self.state);
         const range = Range.init(selection.startLineNumber, selection.startColumn, selection.endLineNumber, selection.endColumn);
         const nearby = self.settingEnabledNearbyQuickfixes(model) and trigger_copy.type == .Invoke and
             (trigger_copy.trigger_action == .QuickFix or (if (trigger_copy.filter.include) |kind| kind.contains(types.CodeActionKind.QuickFix) else false));
@@ -260,7 +271,8 @@ pub const CodeActionModel = struct {
         self.pending = null;
         const set = result catch {
             self.state = .Empty;
-            self.completion_task.schedule(time.milliTimestamp());
+            self.publication_task.schedule(null);
+            self.completion_task.post();
             return;
         };
         if (self.state != .Triggered) {
@@ -271,7 +283,13 @@ pub const CodeActionModel = struct {
         self.owned_actions = set;
         // Provider completion may be synchronous, but the upstream promise
         // continuation runs after the trigger has installed its state.
-        self.completion_task.schedule(time.milliTimestamp());
+        self.completion_task.schedule(self.publication_task.at orelse time.milliTimestamp());
+    }
+
+    fn onPublish(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *CodeActionModel = @ptrCast(@alignCast(context));
+        self.on_change(self.context, self.state);
+        return false;
     }
 
     fn onCompleted(context: *anyopaque, _: i64, _: bool) bool {

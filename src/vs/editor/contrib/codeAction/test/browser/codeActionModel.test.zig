@@ -223,3 +223,26 @@ test "CodeActionModel: nearest manual quick fixes query diagnostic ends on the c
     try std.testing.expectEqualStrings("farther", result.valid_actions[1].action.title);
     try std.testing.expectEqual(@as(usize, 2), result.all_actions.len);
 }
+
+test "CodeActionModel: automatic state follows a manual trigger after the upstream delay" {
+    var f: Fixture = undefined;
+    try f.init(.{});
+    defer f.deinit();
+    try f.attach();
+    f.model.?.trigger(.{ .type = .Invoke, .trigger_action = .QuickFix });
+    f.flush();
+    try std.testing.expectEqual(languages.CodeActionTriggerType.Invoke, f.trigger_type.?);
+    const manual = f.model.?.takeCodeActions(f.result.?) orelse return error.ExpectedActionSet;
+    defer manual.dispose();
+    const before = f.triggered;
+    f.model.?.trigger(.{ .type = .Auto, .trigger_action = .Default });
+    const publication_at = f.model.?.publication_task.at orelse return error.ExpectedDelayedPublication;
+    _ = f.queue.dispatch(publication_at - 1);
+    try std.testing.expectEqual(before, f.triggered);
+    try std.testing.expectEqual(languages.CodeActionTriggerType.Invoke, f.trigger_type.?);
+    _ = f.queue.dispatch(publication_at);
+    _ = f.queue.dispatch(publication_at);
+    try std.testing.expectEqual(before + 1, f.triggered);
+    try std.testing.expectEqual(languages.CodeActionTriggerType.Auto, f.trigger_type.?);
+    try std.testing.expectEqual(@as(usize, 1), f.result.?.valid_actions.len);
+}
