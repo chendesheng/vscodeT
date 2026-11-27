@@ -715,6 +715,45 @@ pub const CodeLensProvider = struct {
     request_resolve_code_lens: ?*const fn (*anyopaque, Allocator, *TextModel, CodeLens, CodeLensResolveCallback) anyerror!?@import("../../base/common/lifecycle.zig").IDisposable = null,
 };
 
+/// Resource edit contracts from `languages.ts`. A foreign text range stays
+/// in UTF-16 until the target model is resolved; native producers use the
+/// editor's 1-based UTF-8 columns.
+pub const WorkspaceEditMetadata = struct {
+    needs_confirmation: bool = false,
+    label: []const u8 = "",
+    description: ?[]const u8 = null,
+};
+pub const WorkspaceTextEdit = struct {
+    resource: std.Uri,
+    range: ?Range = null,
+    text: []const u8 = "",
+    column_encoding: enum { utf8, utf16 } = .utf8,
+    eol: ?@import("core/misc/eolCounter.zig").EOL = null,
+    insert_as_snippet: bool = false,
+    keep_whitespace: bool = false,
+    version_id: ?u32 = null,
+    metadata: ?WorkspaceEditMetadata = null,
+};
+pub const WorkspaceFileEditOptions = struct {
+    overwrite: bool = false,
+    ignore_if_not_exists: bool = false,
+    ignore_if_exists: bool = false,
+    recursive: bool = false,
+    copy: bool = false,
+    folder: bool = false,
+    skip_trash_bin: bool = false,
+    max_size: ?usize = null,
+    contents: ?[]const u8 = null,
+};
+pub const WorkspaceFileEdit = struct {
+    old_resource: ?std.Uri = null,
+    new_resource: ?std.Uri = null,
+    options: WorkspaceFileEditOptions = .{},
+    metadata: ?WorkspaceEditMetadata = null,
+};
+pub const WorkspaceResourceEdit = union(enum) { text: WorkspaceTextEdit, file: WorkspaceFileEdit };
+pub const WorkspaceEdit = struct { edits: []const WorkspaceResourceEdit = &.{} };
+
 /// Port of the code-action contracts in `languages.ts`. Workspace edit DTOs
 /// remain at the extension-host boundary until revived by the bulk-edit service.
 pub const CodeAction = struct {
@@ -727,6 +766,7 @@ pub const CodeAction = struct {
     cache_id: ?struct { list: u32, index: u32 } = null,
     disabled: ?[]const u8 = null,
     command: ?Command = null,
+    edit: ?WorkspaceEdit = null,
     edit_json: ?std.json.Value = null,
 };
 

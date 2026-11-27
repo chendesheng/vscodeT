@@ -29,6 +29,28 @@ function activate(context) {
     const items = await vscode.commands.executeCommand('vscode.executeCodeLensProvider', vscode.Uri.parse(uri), count);
     return items.map(item => ({ title: item.command?.title, start: item.range.start.character }));
   }));
+  context.subscriptions.push(vscode.languages.registerCodeActionsProvider({ language: 'json' }, {
+    async provideCodeActions(document, range, context, token) {
+      if (token.isCancellationRequested) return [];
+      const quickfix = new vscode.CodeAction('Fixture quick fix', vscode.CodeActionKind.QuickFix);
+      quickfix.isPreferred = true;
+      const refactor = new vscode.CodeAction('Fixture refactor', vscode.CodeActionKind.Refactor);
+      refactor.disabled = { reason: 'Not available here' };
+      return [quickfix, refactor].filter(action => !context.only || context.only.contains(action.kind));
+    },
+    async resolveCodeAction(action, token) {
+      if (token.isCancellationRequested) return undefined;
+      // A command argument survives only while the provider list is cached.
+      action.command = { title: 'Fixture code action command', command: 'fixture.codeActionCommand', arguments: [action.title] };
+      return action;
+    }
+  }, { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix, vscode.CodeActionKind.Refactor] }));
+  context.subscriptions.push(vscode.commands.registerCommand('fixture.codeActionCommand', title => title));
+  context.subscriptions.push(vscode.commands.registerCommand('fixture.applyWorkspaceEdit', async uri => {
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(vscode.Uri.parse(uri), new vscode.Position(0, 0), ' ');
+    return vscode.workspace.applyEdit(edit);
+  }));
   const highlightQueries = [];
   const highlight = (kind) => new vscode.DocumentHighlight(new vscode.Range(0, 2, 0, 6), kind);
   context.subscriptions.push(vscode.languages.registerDocumentHighlightProvider({ language: 'json' }, {

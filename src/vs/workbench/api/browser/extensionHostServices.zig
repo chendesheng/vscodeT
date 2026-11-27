@@ -27,6 +27,7 @@ pub const Services = struct {
     quick_diff: @import("../../contrib/scm/common/quickDiff.zig").IQuickDiffService,
     quick_diff_models: @import("../../contrib/scm/browser/quickDiffModel.zig").IQuickDiffModelService,
     text_model_service: @import("../../../editor/common/services/resolverService.zig").ITextModelService,
+    bulk_edit: @import("../../../editor/browser/services/bulkEditService.zig").IBulkEditService,
     model_service: @import("../../../editor/common/services/modelService.zig").IModelService,
     simple_browser: *SimpleBrowserManager,
     register_extension_configuration: *const fn (*anyopaque, std.json.Value, []const u8) void,

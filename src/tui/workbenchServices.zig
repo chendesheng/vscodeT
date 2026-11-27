@@ -213,6 +213,7 @@ pub fn extensionHostServices(host: *TerminalWorkbench) ExtensionServices {
         .quick_diff = host.scm.quick_diff_api.?.*,
         .quick_diff_models = host.scm.quick_diff_model_api.?.*,
         .text_model_service = host.text_model_api,
+        .bulk_edit = host.bulk_edit_api,
         .model_service = host.model_service_api,
         .simple_browser = &host.simple_browser,
         .register_extension_configuration = Adapter.registerExtensionConfiguration,

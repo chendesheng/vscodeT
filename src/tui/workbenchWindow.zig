@@ -303,6 +303,8 @@ pub const TerminalWorkbench = struct {
     file_service_api: @import("../vs/platform/files/common/files.zig").IFileService,
     text_model_resolver: @import("../vs/workbench/services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService,
     text_model_api: @import("../vs/editor/common/services/resolverService.zig").ITextModelService,
+    bulk_edit_service: @import("../vs/workbench/contrib/bulkEdit/browser/bulkEditService.zig").BulkEditService,
+    bulk_edit_api: @import("../vs/editor/browser/services/bulkEditService.zig").IBulkEditService,
     model_service_api: @import("../vs/editor/common/services/modelService.zig").IModelService,
     /// Native file opening and event-driven reload owner.
     editor_opening: editor_service_mod.EditorOpening,
@@ -542,6 +544,8 @@ pub const TerminalWorkbench = struct {
         errdefer self.text_model_resolver.deinit();
         try self.text_model_resolver.bindFileService(self.file_service_api);
         self.text_model_api = self.text_model_resolver.interface();
+        self.bulk_edit_service = .{ .allocator = allocator, .resolver_service = self.text_model_api };
+        self.bulk_edit_api = self.bulk_edit_service.interface();
         self.model_service_api = self.text_model_resolver.modelService();
         self.git_file_provider = .init(allocator, &self.git_model, self.async_io);
         errdefer self.git_file_provider.deinit();
@@ -1262,6 +1266,7 @@ pub const TerminalWorkbench = struct {
         _ = try scm_view.on_did_change_active_repository.listen(self, onActiveScmRepositoryChanged);
         _ = try self.services.set(@import("../vs/platform/files/common/files.zig").file_service_id, &self.file_service_api);
         _ = try self.services.set(@import("../vs/editor/common/services/resolverService.zig").text_model_service_id, &self.text_model_api);
+        _ = try self.services.set(@import("../vs/editor/browser/services/bulkEditService.zig").bulk_edit_service_id, &self.bulk_edit_api);
         _ = try self.services.set(@import("../vs/editor/common/services/modelService.zig").model_service_id, &self.model_service_api);
         _ = try self.services.set(@import("../vs/workbench/contrib/scm/common/quickDiff.zig").quick_diff_service_id, self.scm.quick_diff_api.?);
         _ = try self.services.set(@import("../vs/workbench/contrib/scm/browser/quickDiffModel.zig").quick_diff_model_service_id, self.scm.quick_diff_model_api.?);

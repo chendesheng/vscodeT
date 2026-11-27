@@ -153,6 +153,7 @@ pub const Extensions = struct {
     language_features_actor: ?MainThreadLanguageFeatures = null,
     quick_diff_actor: ?MainThreadQuickDiff = null,
     document_content_actor: ?MainThreadDocumentContentProviders = null,
+    bulk_edit_actor: ?@import("mainThreadBulkEdits.zig").MainThreadBulkEdits = null,
     diagnostics_actor: ?*MainThreadDiagnostics = null,
     storage_actor: ?MainThreadStorage = null,
     statusbar_actor: ?MainThreadStatusBar = null,
@@ -338,6 +339,8 @@ pub const Extensions = struct {
             .request = documentContentRequestAsync,
         });
         errdefer self.document_content_actor.?.deinit();
+        self.bulk_edit_actor = .{ .allocator = allocator, .service = services.bulk_edit };
+        errdefer self.bulk_edit_actor.?.deinit();
         self.registerActors();
         self.initLanguageActors() catch |err| {
             std.log.warn("language feature actors unavailable: {s}", .{@errorName(err)});
@@ -359,6 +362,7 @@ pub const Extensions = struct {
         self.inline_completions.deinit();
         if (self.quick_diff_actor) |*actor| actor.deinit();
         if (self.document_content_actor) |*actor| actor.deinit();
+        if (self.bulk_edit_actor) |*actor| actor.deinit();
         self.unregisterEditorListeners();
         self.removeActiveDocument() catch {};
         self.models.deinit();
@@ -391,7 +395,9 @@ pub const Extensions = struct {
         var nid: u8 = 1;
         while (nid <= protocol.max_nid) : (nid += 1) {
             const entry = protocol.identifier(nid).?;
-            if (nid == @backingInt(protocol.MainContext.MainThreadSecretState)) {
+            if (nid == @backingInt(protocol.MainContext.MainThreadBulkEdits)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeBulkEdits });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadSecretState)) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeSecretState });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadAuthentication)) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeAuthentication });
@@ -536,6 +542,12 @@ pub const Extensions = struct {
         const key = resource.key(self.allocator) catch return null;
         defer self.allocator.free(key);
         return self.models.modelForResource(key);
+    }
+
+    fn invokeBulkEdits(context: *anyopaque, method: []const u8, args: []const rpc.Arg, _: ?@import("../../../base/common/cancellation.zig").CancellationToken, _: Allocator) anyerror!rpc.HandlerReply {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        if (self.bulk_edit_actor) |*actor| return actor.invoke(method, args);
+        return .empty;
     }
 
     fn invokeDocumentContentProviders(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
@@ -2350,6 +2362,65 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const verbose = (try hover_providers[0].provide_hover(hover_providers[0].context, model, Position.init(1, 1), .None, &verbosity_context)).?;
             try std.testing.expectEqualStrings("fixture hover verbosity 2: fixture hover", verbose.contents[0].value);
             try std.testing.expect(verbose.can_decrease_verbosity.?);
+
+            const action_model = @import("../../../editor/contrib/codeAction/browser/codeAction.zig");
+            const action_types = @import("../../../editor/contrib/codeAction/common/types.zig");
+            const ActionReceiver = struct {
+                result: ?*action_model.ManagedCodeActionSet = null,
+                failure: ?anyerror = null,
+                resolved: ?@import("../../../editor/common/languages.zig").CodeAction = null,
+                workspace_applied: ?bool = null,
+                fn ready(context: *anyopaque, value: anyerror!*action_model.ManagedCodeActionSet) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    if (value) |result| self.result = result else |err| self.failure = err;
+                }
+                fn resolvedAction(context: *anyopaque, value: anyerror!?@import("../../../editor/common/languages.zig").CodeAction) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    if (value) |action| self.resolved = action else |err| self.failure = err;
+                }
+                fn workspaceReply(context: *anyopaque, reply: rpc.Reply) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    self.workspace_applied = reply == .json and reply.json == .bool and reply.json.bool;
+                }
+            };
+            var action_receiver: ActionReceiver = .{};
+            const action_request = (try action_model.getCodeActions(allocator, &features.code_action_provider, model, Range.init(1, 1, 1, 2), .{ .type = .Invoke, .trigger_action = .QuickFix, .filter = .{ .include = action_types.CodeActionKind.QuickFix } }, .None, .{ .context = &action_receiver, .complete = ActionReceiver.ready })).?;
+            const action_deadline = time_compat.milliTimestamp() + 5_000;
+            while (action_receiver.result == null and action_receiver.failure == null and time_compat.milliTimestamp() < action_deadline) {
+                _ = extension_host.pump();
+                time_compat.sleepMillis(5);
+            }
+            if (action_receiver.result == null and action_receiver.failure == null) action_request.dispose();
+            const action_set = action_receiver.result orelse return error.ExpectedCodeAction;
+            defer action_set.dispose();
+            try std.testing.expectEqual(1, action_set.valid_actions.len);
+            try std.testing.expect(action_set.hasAutoFix());
+            const action_item = action_set.valid_actions[0];
+            try std.testing.expect(action_item.action.cache_id != null);
+            const provider = action_item.provider.?;
+            const resolve_request = (try provider.request_resolve_code_action.?(provider.context, action_set.arena.allocator(), action_item.action, .None, .{ .context = &action_receiver, .complete = ActionReceiver.resolvedAction })).?;
+            const resolve_deadline = time_compat.milliTimestamp() + 5_000;
+            while (action_receiver.resolved == null and action_receiver.failure == null and time_compat.milliTimestamp() < resolve_deadline) {
+                _ = extension_host.pump();
+                time_compat.sleepMillis(5);
+            }
+            if (action_receiver.resolved == null and action_receiver.failure == null) resolve_request.dispose();
+            try std.testing.expectEqualStrings("Fixture code action command", action_receiver.resolved.?.command.?.title);
+            var edit_scratch = std.heap.ArenaAllocator.init(allocator);
+            defer edit_scratch.deinit();
+            const resource = try std_uri.encodedResource(edit_scratch.allocator(), model.uri());
+            const workspace_request = try Extensions.requestActorAsync(extension_host, protocol.ExtHostContext.ExtHostCommands, "$executeContributedCommand", &.{ .{ .json = .{ .string = "fixture.applyWorkspaceEdit" } }, .{ .json = .{ .string = resource } } }, .{ .context = &action_receiver, .callback = ActionReceiver.workspaceReply });
+            const edit_deadline = time_compat.milliTimestamp() + 5_000;
+            while (action_receiver.workspace_applied == null and time_compat.milliTimestamp() < edit_deadline) {
+                _ = extension_host.pump();
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(5);
+            }
+            if (action_receiver.workspace_applied == null) workspace_request.dispose();
+            try std.testing.expect(action_receiver.workspace_applied orelse false);
+            try std.testing.expectEqualStrings(" {", try model.borrowLineContent(1));
+            try workbench.activeTab().?.editor.undo();
+            try std.testing.expectEqualStrings("{", try model.borrowLineContent(1));
 
             const completion_providers = try features.completion_provider.ordered(allocator, model, false);
             defer allocator.free(completion_providers);

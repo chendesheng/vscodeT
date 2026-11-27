@@ -90,7 +90,9 @@ const CodeActionState = struct {
     registration: *Registration,
     display_name: []const u8,
     extension_id: []const u8,
-    provided_kinds: []const []const u8,
+    provided_kinds: ?[]const []const u8,
+    documentation: []const languages.CodeActionDocumentation,
+    supports_resolve: bool,
 };
 const FormattingState = struct {
     registration: *Registration,
@@ -683,19 +685,29 @@ pub const MainThreadLanguageFeatures = struct {
         const selector_value = jsonArg(args, 1) orelse return error.InvalidArguments;
         const parsed = try parseSelector(arena, selector_value);
         const registration = try self.createRegistration(arena, handle);
+        errdefer {
+            _ = self.registrations.remove(handle);
+            self.destroyRegistration(registration);
+        }
         const state = try registration.arena.allocator().create(CodeActionState);
         state.* = .{
             .registration = registration,
             .display_name = try dupString(registration.arena.allocator(), stringArg(args, 3)),
             .extension_id = try dupString(registration.arena.allocator(), stringArg(args, 4)),
-            .provided_kinds = try stringArray(registration.arena.allocator(), metadataKinds(jsonArg(args, 2))),
+            .provided_kinds = if (metadataKinds(jsonArg(args, 2))) |kinds| try stringArray(registration.arena.allocator(), kinds) else null,
+            .documentation = try parseCodeActionDocumentation(registration.arena.allocator(), jsonArg(args, 2)),
+            .supports_resolve = boolArg(args, 5),
         };
         registration.disposable = try self.features.code_action_provider.register(parsed, .{
             .context = state,
             .display_name = state.display_name,
             .extension_id = state.extension_id,
             .provided_kinds = state.provided_kinds,
+            .documentation = state.documentation,
             .provide_code_actions = provideCodeActions,
+            .request_code_actions = requestCodeActions,
+            .resolve_code_action = if (state.supports_resolve) resolveCodeAction else null,
+            .request_resolve_code_action = if (state.supports_resolve) requestResolveCodeAction else null,
         });
         return .empty;
     }
@@ -1214,46 +1226,219 @@ pub const MainThreadLanguageFeatures = struct {
         return null;
     }
 
-    fn provideCodeActions(context: *anyopaque, allocator: Allocator, model: *TextModel, range: Range, action_context: languages.CodeActionContext, token: CancellationToken) anyerror!languages.CodeActionList {
+    fn codeActionArgs(a: Allocator, handle: u32, model: *TextModel, range: Range, action_context: languages.CodeActionContext) ![4]rpc.Arg {
+        var context_json: std.json.ObjectMap = .empty;
+        if (action_context.only) |only| try context_json.put(a, "only", .{ .string = only });
+        try context_json.put(a, "trigger", .{ .integer = action_context.trigger_kind });
+        return .{
+            .{ .json = .{ .integer = handle } },
+            .{ .json = try std_uri.jsonComponents(a, model.uri()) },
+            .{ .json = try rangeJson(a, model, range) },
+            .{ .json = .{ .object = context_json } },
+        };
+    }
+
+    const CodeActionRelease = struct {
+        proxy: HostProxy,
+        handle: u32,
+        cache_id: i64,
+        fn dispose(context: *anyopaque) void {
+            const self: *CodeActionRelease = @ptrCast(@alignCast(context));
+            self.proxy.notify(self.proxy.context, "$releaseCodeActions", &.{ .{ .json = .{ .integer = self.handle } }, .{ .json = .{ .integer = self.cache_id } } }) catch {};
+        }
+    };
+
+    fn parseActionCommand(a: Allocator, candidate: ?std.json.Value) !?languages.Command {
+        const value = candidate orelse return null;
+        if (value != .object) return null;
+        return .{
+            .id = try dupJsonString(a, value.object.get("id")),
+            .title = try dupJsonString(a, value.object.get("title")),
+            .arguments = if (value.object.get("arguments")) |arguments| try rpc.cloneJsonValue(a, arguments) else null,
+        };
+    }
+
+    fn parseCodeActionDocumentation(a: Allocator, metadata: ?std.json.Value) ![]const languages.CodeActionDocumentation {
+        const value = metadata orelse return &.{};
+        if (value != .object) return &.{};
+        const docs = value.object.get("documentation") orelse return &.{};
+        if (docs != .array) return &.{};
+        var result: std.ArrayList(languages.CodeActionDocumentation) = .empty;
+        for (docs.array.items) |entry| {
+            if (entry != .object) continue;
+            const command = (try parseActionCommand(a, entry.object.get("command"))) orelse continue;
+            try result.append(a, .{ .kind = try dupJsonString(a, entry.object.get("kind")), .command = command });
+        }
+        return result.items;
+    }
+
+    fn parseCodeActionList(a: Allocator, proxy: HostProxy, handle: u32, model: *TextModel, reply: std.json.Value) !languages.CodeActionList {
+        if (reply != .object) return .{};
+        var release: ?IDisposable = null;
+        if (reply.object.get("cacheId")) |cache| if (cache == .integer) {
+            const context = try a.create(CodeActionRelease);
+            context.* = .{ .proxy = proxy, .handle = handle, .cache_id = cache.integer };
+            release = .{ .context = context, .disposeFn = CodeActionRelease.dispose };
+        };
+        errdefer if (release) |disposable| disposable.dispose();
+        const actions_value = reply.object.get("actions") orelse return .{ .disposable = release };
+        if (actions_value != .array) return .{ .disposable = release };
+        var result: std.ArrayList(languages.CodeAction) = .empty;
+        const markers = @import("../../../platform/markers/common/markers.zig");
+        for (actions_value.array.items) |item| {
+            if (item != .object) continue;
+            const object = item.object;
+            var action: languages.CodeAction = .{
+                .title = try dupJsonString(a, object.get("title")),
+                .kind = try optionalJsonString(a, object.get("kind")),
+                .is_preferred = boolValue(object.get("isPreferred")),
+                .is_ai = boolValue(object.get("isAI")),
+                .disabled = try optionalJsonString(a, object.get("disabled")),
+                .edit_json = if (object.get("edit")) |edit| try rpc.cloneJsonValue(a, edit) else null,
+                .edit = if (object.get("edit")) |edit| try @import("mainThreadBulkEdits.zig").reviveWorkspaceEditDto(a, edit) else null,
+                .command = try parseActionCommand(a, object.get("command")),
+            };
+            if (object.get("cacheId")) |cache| {
+                if (cache == .array and cache.array.items.len == 2) {
+                    const list = cache.array.items[0];
+                    const index = cache.array.items[1];
+                    if (list == .integer and index == .integer and list.integer >= 0 and index.integer >= 0 and list.integer <= std.math.maxInt(u32) and index.integer <= std.math.maxInt(u32)) {
+                        action.cache_id = .{ .list = @intCast(list.integer), .index = @intCast(index.integer) };
+                    }
+                }
+            }
+            if (object.get("diagnostics")) |values| if (values == .array) {
+                var diagnostics: std.ArrayList(markers.MarkerData) = .empty;
+                for (values.array.items) |diagnostic| {
+                    if (diagnostic != .object) continue;
+                    const range = rangeFromJson(model, diagnostic) orelse continue;
+                    try diagnostics.append(a, .{
+                        .message = try dupJsonString(a, diagnostic.object.get("message")),
+                        .source = try optionalJsonString(a, diagnostic.object.get("source")),
+                        .severity = @intCast(@min(intField(diagnostic.object, "severity") orelse markers.MarkerSeverity.Error, std.math.maxInt(u32))),
+                        .start_line_number = @intCast(range.startLineNumber),
+                        .start_column = @intCast(range.startColumn),
+                        .end_line_number = @intCast(range.endLineNumber),
+                        .end_column = @intCast(range.endColumn),
+                    });
+                }
+                action.diagnostics = diagnostics.items;
+            };
+            if (object.get("ranges")) |values| if (values == .array) {
+                var ranges: std.ArrayList(Range) = .empty;
+                for (values.array.items) |value| if (rangeFromJson(model, value)) |range| try ranges.append(a, range);
+                action.ranges = ranges.items;
+            };
+            try result.append(a, action);
+        }
+        return .{ .actions = result.items, .disposable = release };
+    }
+
+    fn provideCodeActions(context: *anyopaque, allocator: Allocator, model: *TextModel, range: Range, action_context: languages.CodeActionContext, token: CancellationToken) !languages.CodeActionList {
         const state: *CodeActionState = @ptrCast(@alignCast(context));
         const self = state.registration.owner;
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
-        const scratch = arena.allocator();
-        var args = std.array_list.Managed(rpc.Arg).init(scratch);
-        try args.append(.{ .json = .{ .integer = state.registration.handle } });
-        try args.append(.{ .json = try std_uri.jsonComponents(scratch, model.uri()) });
-        try args.append(.{ .json = try rangeJson(scratch, model, range) });
-        var context_json: std.json.ObjectMap = .empty;
-        if (action_context.only) |only| try context_json.put(scratch, "only", .{ .string = try scratch.dupe(u8, only) });
-        try context_json.put(scratch, "trigger", .{ .integer = action_context.trigger_kind });
-        try args.append(.{ .json = .{ .object = context_json } });
-        const reply = self.call(scratch, "$provideCodeActions", args.items, token, timeout_default_ms) catch return .{};
-        if (reply != .object) return .{};
-        if (reply.object.get("cacheId")) |cache| {
-            if (cache == .integer) {
-                var release = [_]rpc.Arg{
-                    .{ .json = .{ .integer = state.registration.handle } },
-                    .{ .json = cache },
-                };
-                self.proxy.notify(self.proxy.context, "$releaseCodeActions", &release) catch {};
-            }
-        }
-        const actions_value = reply.object.get("actions") orelse return .{};
-        if (actions_value != .array) return .{};
-        var result = std.array_list.Managed(languages.CodeAction).init(allocator);
-        for (actions_value.array.items) |item| {
-            if (item != .object) continue;
-            const object = item.object;
-            try result.append(.{
-                .title = try dupJsonString(allocator, object.get("title")),
-                .kind = try optionalJsonString(allocator, object.get("kind")),
-                .is_preferred = boolValue(object.get("isPreferred")),
-                .disabled = try optionalJsonString(allocator, object.get("disabled")),
-                .edit_json = if (object.get("edit")) |edit| try rpc.cloneJsonValue(allocator, edit) else null,
+        const args = try codeActionArgs(arena.allocator(), state.registration.handle, model, range, action_context);
+        const reply = try self.call(arena.allocator(), "$provideCodeActions", &args, token, timeout_default_ms);
+        return parseCodeActionList(allocator, self.proxy, state.registration.handle, model, reply);
+    }
+
+    const CodeActionRequest = struct {
+        allocator: Allocator,
+        proxy: HostProxy,
+        handle: u32,
+        model: *TextModel,
+        callback: languages.CodeActionCallback,
+        fn ready(context: *anyopaque, reply: rpc.Reply) void {
+            const self: *CodeActionRequest = @ptrCast(@alignCast(context));
+            self.callback.complete(self.callback.context, switch (reply) {
+                .json => |value| parseCodeActionList(self.allocator, self.proxy, self.handle, self.model, value),
+                .err => error.RequestFailed,
+                else => .{},
             });
         }
-        return .{ .actions = try result.toOwnedSlice() };
+    };
+
+    fn requestCodeActions(context: *anyopaque, allocator: Allocator, model: *TextModel, range: Range, action_context: languages.CodeActionContext, token: CancellationToken, callback: languages.CodeActionCallback) !?IDisposable {
+        const state: *CodeActionState = @ptrCast(@alignCast(context));
+        try token.throwIfCancellationRequested();
+        const proxy = state.registration.owner.proxy;
+        if (proxy.request_async) |request| {
+            var scratch = std.heap.ArenaAllocator.init(state.registration.owner.allocator);
+            defer scratch.deinit();
+            const pending = try allocator.create(CodeActionRequest);
+            pending.* = .{ .allocator = allocator, .proxy = proxy, .handle = state.registration.handle, .model = model, .callback = callback };
+            const args = try codeActionArgs(scratch.allocator(), state.registration.handle, model, range, action_context);
+            return try request(proxy.context, "$provideCodeActions", &args, .{ .context = pending, .callback = CodeActionRequest.ready });
+        }
+        callback.complete(callback.context, provideCodeActions(context, allocator, model, range, action_context, token));
+        return null;
+    }
+
+    fn codeActionResolveArgs(a: Allocator, handle: u32, action: languages.CodeAction) ![2]rpc.Arg {
+        const cache = action.cache_id orelse return error.InvalidResult;
+        var ids = std.json.Array.init(a);
+        try ids.append(.{ .integer = cache.list });
+        try ids.append(.{ .integer = cache.index });
+        return .{ .{ .json = .{ .integer = handle } }, .{ .json = .{ .array = ids } } };
+    }
+
+    fn parseResolvedAction(a: Allocator, original: languages.CodeAction, reply: std.json.Value) !?languages.CodeAction {
+        if (reply != .object) return null;
+        var action = original;
+        if (reply.object.get("edit")) |edit| {
+            action.edit_json = try rpc.cloneJsonValue(a, edit);
+            action.edit = try @import("mainThreadBulkEdits.zig").reviveWorkspaceEditDto(a, edit);
+        }
+        if (try parseActionCommand(a, reply.object.get("command"))) |command| action.command = command;
+        return action;
+    }
+
+    fn resolveCodeAction(context: *anyopaque, allocator: Allocator, action: languages.CodeAction, token: CancellationToken) !?languages.CodeAction {
+        const state: *CodeActionState = @ptrCast(@alignCast(context));
+        const self = state.registration.owner;
+        if (action.cache_id == null) return action;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        const args = try codeActionResolveArgs(a, state.registration.handle, action);
+        const reply = try self.call(a, "$resolveCodeAction", &args, token, timeout_format_ms);
+        return parseResolvedAction(allocator, action, reply);
+    }
+
+    const ResolveCodeActionRequest = struct {
+        allocator: Allocator,
+        action: languages.CodeAction,
+        callback: languages.ResolveCodeActionCallback,
+        fn ready(context: *anyopaque, reply: rpc.Reply) void {
+            const self: *ResolveCodeActionRequest = @ptrCast(@alignCast(context));
+            self.callback.complete(self.callback.context, switch (reply) {
+                .json => |value| parseResolvedAction(self.allocator, self.action, value),
+                .err => error.RequestFailed,
+                else => null,
+            });
+        }
+    };
+
+    fn requestResolveCodeAction(context: *anyopaque, allocator: Allocator, action: languages.CodeAction, token: CancellationToken, callback: languages.ResolveCodeActionCallback) !?IDisposable {
+        const state: *CodeActionState = @ptrCast(@alignCast(context));
+        try token.throwIfCancellationRequested();
+        if (action.cache_id == null) {
+            callback.complete(callback.context, action);
+            return null;
+        }
+        const proxy = state.registration.owner.proxy;
+        if (proxy.request_async) |request| {
+            var scratch = std.heap.ArenaAllocator.init(state.registration.owner.allocator);
+            defer scratch.deinit();
+            const pending = try allocator.create(ResolveCodeActionRequest);
+            pending.* = .{ .allocator = allocator, .action = action, .callback = callback };
+            const args = try codeActionResolveArgs(scratch.allocator(), state.registration.handle, action);
+            return try request(proxy.context, "$resolveCodeAction", &args, .{ .context = pending, .callback = ResolveCodeActionRequest.ready });
+        }
+        callback.complete(callback.context, resolveCodeAction(context, allocator, action, token));
+        return null;
     }
 
     fn provideDocumentFormatting(context: *anyopaque, allocator: Allocator, model: *TextModel, options: languages.FormattingOptions, token: CancellationToken) anyerror![]languages.TextEdit {
