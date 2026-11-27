@@ -1,11 +1,62 @@
-// Local workspace file queries from ExtHostWorkspace.findFiles use the same
-// ripgrep walker, glob exclusions and result limit as native workspace search.
+// Port of local workspace data and file-query behavior from
+// `src/vs/workbench/api/browser/mainThreadWorkspace.ts`.
+// The window owns a single local workspace context; queries reuse the
+// native ripgrep walker. Remote/trust and workspace editing APIs remain gaps.
 const std = @import("std");
 const search = @import("../../services/search/common/search.zig");
 const FileWalker = @import("../../services/search/node/fileSearch.zig").FileWalker;
 const glob = @import("../../../base/common/glob.zig");
 const manager = @import("../../services/extensions/common/extensionHostManager.zig");
 const rpc = @import("../../services/extensions/common/rpcProtocol.zig");
+const std_uri = @import("../../../base/common/stdUri.zig");
+const WorkspaceContextService = @import("../../services/workspaces/common/workspaceContextService.zig").WorkspaceContextService;
+const CancellationToken = @import("../../../base/common/cancellation.zig").CancellationToken;
+
+pub fn workspaceData(arena: std.mem.Allocator, io: std.Io, context: *WorkspaceContextService) !std.json.Value {
+    if (!context.hasWorkspaceData()) return .null;
+    const workspace = context.getWorkspace();
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", arena);
+    var data: std.json.ObjectMap = .empty;
+    try data.put(arena, "id", .{ .string = workspace.id });
+    const label = workspace.name orelse if (workspace.folders.items.len == 1) workspace.folders.items[0].name else "workspace";
+    try data.put(arena, "name", .{ .string = label });
+    try data.put(arena, "transient", .{ .bool = false });
+    try data.put(arena, "isUntitled", .{ .bool = false });
+    try data.put(arena, "configuration", if (workspace.configuration) |path| try manager.fileUri(arena, try std.fs.path.resolve(arena, &.{ cwd, path })) else .null);
+    var folders = std.json.Array.init(arena);
+    for (workspace.folders.items) |folder| {
+        var value: std.json.ObjectMap = .empty;
+        try value.put(arena, "uri", try manager.fileUri(arena, try std.fs.path.resolve(arena, &.{ cwd, folder.resource })));
+        try value.put(arena, "name", .{ .string = folder.name });
+        try value.put(arena, "index", .{ .integer = @intCast(folder.index) });
+        try folders.append(.{ .object = value });
+    }
+    try data.put(arena, "folders", .{ .array = folders });
+    return .{ .object = data };
+}
+
+/// Workbench counterpart of workspaceContains.checkGlobFileExists.
+pub fn checkExists(io: std.Io, allocator: std.mem.Allocator, arena: std.mem.Allocator, args: []const rpc.Arg, token: ?CancellationToken) !bool {
+    if (args.len < 2 or args[0] != .json or args[0].json != .array or args[1] != .json or args[1].json != .array) return error.InvalidArguments;
+    for (args[0].json.array.items) |folder| {
+        const uri = try std.Uri.parse(try std_uri.encodedResourceFromJson(arena, folder));
+        if (!std.mem.eql(u8, uri.scheme, "file")) continue;
+        const path = try std_uri.fsPath(uri, arena);
+        for (args[1].json.array.items) |pattern| {
+            if (token) |cancel| if (cancel.isCancellationRequested()) return false;
+            if (pattern != .string) return error.InvalidArguments;
+            var query = try search.FileQuery.init(allocator, &.{.{ .resource = path, .name = std.fs.path.basename(path) }}, .{ .include_pattern = pattern.string, .exists = true });
+            defer query.deinit();
+            var walker = try FileWalker.init(allocator, io, &query, "rg");
+            defer walker.deinit();
+            var found = try walker.walk();
+            defer found.deinit();
+            if (token) |cancel| if (cancel.isCancellationRequested()) return false;
+            if (found.limit_hit) return true;
+        }
+    }
+    return false;
+}
 
 pub fn findFiles(io: std.Io, allocator: std.mem.Allocator, arena: std.mem.Allocator, workspace: ?[]const u8, args: []const rpc.Arg) !std.json.Value {
     var result = std.json.Array.init(arena);
@@ -13,7 +64,7 @@ pub fn findFiles(io: std.Io, allocator: std.mem.Allocator, arena: std.mem.Alloca
     const folder = args[0].json;
     const root = if (folder == .object) blk: {
         if (!std.mem.eql(u8, string(folder, "scheme") orelse "", "file")) return .{ .array = result };
-        break :blk string(folder, "path") orelse return error.InvalidArguments;
+        break :blk try std_uri.fsPath(try std.Uri.parse(try std_uri.encodedResourceFromJson(arena, folder)), arena);
     } else workspace orelse ".";
     const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", arena);
     const path = try std.fs.path.resolve(arena, &.{ cwd, root });

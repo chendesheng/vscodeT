@@ -35,6 +35,7 @@ pub const Services = struct {
     register_extension_configuration: *const fn (*anyopaque, std.json.Value, []const u8) void,
     context_keys: *const fn (*anyopaque) anyerror!*ContextKeyService,
     configuration_data: *const fn (*anyopaque, std.mem.Allocator) anyerror!std.json.Value,
+    workspace: *@import("../../services/workspaces/common/workspaceContextService.zig").WorkspaceContextService,
     workspace_folder_path: *const fn (*anyopaque) ?[]const u8,
     focused_terminal: *const fn (*anyopaque) ?*TerminalInstance,
     has_editor_focus: *const fn (*anyopaque) bool,

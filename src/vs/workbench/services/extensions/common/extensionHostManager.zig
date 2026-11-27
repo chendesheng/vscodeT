@@ -84,6 +84,7 @@ pub const Options = struct {
     host_script: []const u8,
     extensions: []const *const ExtensionDescription,
     workspace_path: ?[]const u8 = null,
+    workspace_data: ?std.json.Value = null,
     workspace_name: []const u8 = "workspace",
     /// The TUI user data directory; storage and logs follow upstream's
     /// `<userData>/User/...` and `<userData>/logs` layout.
@@ -632,7 +633,9 @@ pub fn buildInitData(
     try environment.put(arena, "skipWorkspaceStorageLock", .{ .bool = true });
     try root.put(arena, "environment", .{ .object = environment });
 
-    if (options.workspace_path) |workspace| {
+    if (options.workspace_data) |data| {
+        try root.put(arena, "workspace", data);
+    } else if (options.workspace_path) |workspace| {
         var workspace_data: std.json.ObjectMap = .empty;
         try workspace_data.put(arena, "id", .{ .string = "workspace" });
         try workspace_data.put(arena, "name", .{ .string = try arena.dupe(u8, options.workspace_name) });

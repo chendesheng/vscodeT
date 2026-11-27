@@ -132,6 +132,7 @@ pub const Extensions = struct {
     needs_render: bool = false,
     editor_service: EditorService,
     active_editor_listener: ?usize = null,
+    workspace_listener: ?usize = null,
     model_added_listener: ?usize = null,
     model_removed_listener: ?usize = null,
     visible_editors_listener: ?usize = null,
@@ -242,12 +243,9 @@ pub const Extensions = struct {
         // Fail before spawning node: without the bundle the host can never
         // connect, and the manager would otherwise wait for its socket timeout.
         std.Io.Dir.cwd().access(io, host_script, .{}) catch return error.ExtensionHostBundleMissing;
-        const workspace_path = try std.fs.path.resolve(allocator, &.{ cwd, services.workspace_folder_path(services.common.context) orelse "." });
-        defer allocator.free(workspace_path);
         self.host = try manager.HostManager.start(allocator, .{
             .host_script = host_script,
             .extensions = self.extension_ptrs,
-            .workspace_path = workspace_path,
             .workspace_name = "workspace",
             .user_data_dir = data,
             .app_root = runtime_dir,
@@ -355,6 +353,8 @@ pub const Extensions = struct {
         try self.boot(runtime_dir);
         try self.registerEditorListeners();
         errdefer self.unregisterEditorListeners();
+        self.workspace_listener = try services.workspace.on_did_change_workspace_folders.listen(self, onWorkspaceChanged);
+        errdefer if (self.workspace_listener) |listener| services.workspace.on_did_change_workspace_folders.unlisten(listener);
         self.save_participant = .{
             .allocator = allocator,
             .host = self.host,
@@ -367,6 +367,7 @@ pub const Extensions = struct {
     }
 
     pub fn deinit(self: *Extensions) void {
+        if (self.workspace_listener) |listener| self.services.workspace.on_did_change_workspace_folders.unlisten(listener);
         self.services.text_files.removeDocumentSaveParticipant(&self.save_participant);
         while (self.pending_document_saves.items.len != 0) {
             const request = self.pending_document_saves.items[self.pending_document_saves.items.len - 1];
@@ -1118,11 +1119,11 @@ pub const Extensions = struct {
         defer arena_instance.deinit();
         const arena = arena_instance.allocator();
         const cwd = try std.Io.Dir.cwd().realPathFileAlloc(self.io, ".", arena);
-        const workspace = try std.fs.path.resolve(arena, &.{ cwd, self.services.workspace_folder_path(self.services.common.context) orelse "." });
+        const workspace = try @import("mainThreadWorkspace.zig").workspaceData(arena, self.io, self.services.workspace);
         const init_data = try manager.buildInitData(arena, .{
             .host_script = "",
             .extensions = self.extension_ptrs,
-            .workspace_path = workspace,
+            .workspace_data = workspace,
             .workspace_name = "workspace",
             .user_data_dir = self.user_data_dir,
             .app_root = try std.fs.path.resolve(arena, &.{ cwd, runtime_dir }),
@@ -1137,26 +1138,11 @@ pub const Extensions = struct {
             .{ .json = .{ .integer = self.services.file_service.getCapabilities(file_resource) } },
         });
 
-        var workspace_args = std.array_list.Managed(rpc.Arg).init(arena);
-        var workspace_data: std.json.ObjectMap = .empty;
-        try workspace_data.put(arena, "id", .{ .string = "workspace" });
-        try workspace_data.put(arena, "name", .{ .string = "workspace" });
-        try workspace_data.put(arena, "transient", .{ .bool = false });
-        try workspace_data.put(arena, "configuration", .null);
-        try workspace_data.put(arena, "isUntitled", .null);
-        var folders = std.json.Array.init(arena);
-        var folder: std.json.ObjectMap = .empty;
-        try folder.put(arena, "uri", try manager.fileUri(arena, workspace));
-        try folder.put(arena, "name", .{ .string = "workspace" });
-        try folder.put(arena, "index", .{ .integer = 0 });
-        try folders.append(.{ .object = folder });
-        try workspace_data.put(arena, "folders", .{ .array = folders });
-        try workspace_args.append(.{ .json = .{ .object = workspace_data } });
-        try workspace_args.append(.{ .json = .{ .bool = true } });
+        const workspace_args = [_]rpc.Arg{ .{ .json = workspace }, .{ .json = .{ .bool = true } } };
         try self.callAndWait(
             proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostWorkspace),
             "$initializeWorkspace",
-            workspace_args.items,
+            &workspace_args,
             5_000,
             error.InitializeWorkspaceRejected,
         );
@@ -1585,8 +1571,14 @@ pub const Extensions = struct {
         self.host.executeContributedCommand(command, command_args) catch {};
     }
 
+    fn onWorkspaceChanged(_: @import("../../services/workspaces/common/workspaceContextService.zig").WorkspaceFoldersChangeEvent, self: *Extensions) !void {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const data = try @import("mainThreadWorkspace.zig").workspaceData(arena.allocator(), self.io, self.services.workspace);
+        try self.host.notify(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostWorkspace), "$acceptWorkspaceData", &.{.{ .json = data }});
+    }
+
     fn invoke(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
-        _ = token;
         if (std.mem.eql(u8, method, "$writeText")) {
             const self: *Extensions = @ptrCast(@alignCast(context));
             if (args.len != 1 or args[0] != .json or args[0].json != .string) return error.InvalidClipboardText;
@@ -1607,6 +1599,11 @@ pub const Extensions = struct {
             const self: *Extensions = @ptrCast(@alignCast(context));
             self.requestRender();
             return self.message_service.showMessage(args);
+        }
+        if (std.mem.eql(u8, method, "$checkExists")) {
+            const self: *Extensions = @ptrCast(@alignCast(context));
+            const exists = try @import("mainThreadWorkspace.zig").checkExists(self.io, self.allocator, arena, args, token);
+            return .{ .json = .{ .bool = exists } };
         }
         if (std.mem.eql(u8, method, "$startFileSearch")) {
             const self: *Extensions = @ptrCast(@alignCast(context));

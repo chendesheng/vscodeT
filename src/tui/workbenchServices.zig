@@ -222,6 +222,7 @@ pub fn extensionHostServices(host: *TerminalWorkbench) ExtensionServices {
         .register_extension_configuration = Adapter.registerExtensionConfiguration,
         .context_keys = Adapter.contextKeys,
         .configuration_data = Adapter.configurationData,
+        .workspace = host.workspace,
         .workspace_folder_path = Adapter.workspaceFolderPath,
         .focused_terminal = Adapter.focusedTerminal,
         .has_editor_focus = Adapter.hasEditorFocus,
