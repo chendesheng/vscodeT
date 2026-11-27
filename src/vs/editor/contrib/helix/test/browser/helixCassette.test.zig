@@ -19,6 +19,7 @@ test "Helix cassette: reference corpus" {
     }
 
     var ran: usize = 0;
+    var failures: usize = 0;
     for (cassettes.files) |file| {
         const item = oracle.parseCase(arena.allocator(), file.name, file.data) catch |err| {
             std.debug.print("cassette {s}: parse failed: {s}\n", .{ file.name, @errorName(err) });
@@ -33,9 +34,21 @@ test "Helix cassette: reference corpus" {
             std.debug.print("cassette {s}: expected reference \"helix\", found \"{s}\"\n", .{ item.name, case.reference });
             return error.InvalidCassette;
         }
-        if (case.states.len == 0) continue;
+        if (case.states.len == 0) {
+            std.debug.print("CASSETTE_FAILED {s} {s}: no recorded state\n", .{ "Helix", case.case });
+            failures += 1;
+            continue;
+        }
         ran += 1;
-        try runCase(case);
+        runCase(case) catch |err| {
+            std.debug.print("CASSETTE_FAILED {s} {s}: {s}\n", .{ "Helix", case.case, @errorName(err) });
+            failures += 1;
+            continue;
+        };
+    }
+    if (failures > 0) {
+        std.debug.print("\n{d} cassette failures ({s} lane, {d} run)\n", .{ failures, "Helix", ran });
+        return error.CassetteFailures;
     }
     if (ran == 0) {
         std.debug.print("\nHelix cassette: cassettes have no recorded states.\n", .{});
