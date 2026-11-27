@@ -43,9 +43,19 @@ exports.activate = context => {
   context.subscriptions.push(vscode.commands.registerCommand('fixture.outputClear', () => output.clear()));
   context.subscriptions.push(vscode.commands.registerCommand('fixture.outputHide', () => output.hide()));
   context.subscriptions.push(vscode.commands.registerCommand('fixture.outputDispose', () => output.dispose()));
-  context.subscriptions.push(vscode.commands.registerCommand('fixture.transportEcho', value => ({
-    value,
-    document: vscode.window.activeTextEditor?.document.uri.fsPath,
-    extension: context.extensionUri.fsPath
-  })));
+  context.subscriptions.push(vscode.commands.registerCommand('fixture.transportEcho', async value => {
+    const document = vscode.window.activeTextEditor.document.uri;
+    const root = vscode.Uri.file(require('node:path').dirname(document.fsPath));
+    const background = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(root, 'background.txt'));
+    let missingRejected = false;
+    try { await vscode.workspace.openTextDocument(vscode.Uri.joinPath(root, 'missing.txt')); }
+    catch { missingRejected = true; }
+    return {
+      value, document: document.fsPath, extension: context.extensionUri.fsPath,
+      background: background.getText(), missingRejected,
+      activeUnchanged: vscode.window.activeTextEditor?.document.uri.toString() === document.toString(),
+      backgroundHidden: !vscode.window.visibleTextEditors.some(editor => editor.document === background),
+      missingMirrored: vscode.workspace.textDocuments.some(doc => doc.uri.path.endsWith('/missing.txt'))
+    };
+  }));
 };

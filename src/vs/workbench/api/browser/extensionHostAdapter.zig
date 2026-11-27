@@ -273,25 +273,30 @@ pub const Extensions = struct {
         self.message_service = .{ .allocator = allocator, .notification_service = services.notification, .dialog_service = services.dialog };
         errdefer self.message_service.deinit();
         self.storage_actor = try MainThreadStorage.init(allocator);
+        errdefer self.storage_actor.?.deinit();
         self.statusbar_actor = try MainThreadStatusBar.init(allocator, services.common.statusbar, .{
             .context = self,
             .callback = requestTerminalFrame,
         });
+        errdefer self.statusbar_actor.?.deinit();
         self.commands_actor = try MainThreadCommands.init(allocator, self.host, .{
             .context = self,
             .execute = executeHostCommand,
         }, services.common.commands, self.descriptions, try services.context_keys(services.common.context));
+        errdefer self.commands_actor.?.deinit();
         self.configuration_actor = MainThreadConfiguration.init(
             allocator,
             .{ .context = self, .data = configurationDataHost },
             .{ .context = self, .notify = configurationNotifyHost },
         );
-        self.documents_actor = .{ .host = .{
+        errdefer self.configuration_actor.?.deinit();
+        self.documents_actor = .init(allocator, services.text_model_service, services.window, .{
             .context = self,
-            .open = documentsOpenHost,
+            .synchronize = documentsSynchronizeHost,
             .create = documentsCreateHost,
             .save = documentsSaveHost,
-        } };
+        });
+        errdefer self.documents_actor.?.deinit();
         self.text_editors_actor = MainThreadTextEditors.init(allocator, .{
             .context = self,
             .set_selections = textEditorSetSelectionsHost,
@@ -403,6 +408,7 @@ pub const Extensions = struct {
         if (self.quick_diff_actor) |*actor| actor.deinit();
         if (self.document_content_actor) |*actor| actor.deinit();
         if (self.bulk_edit_actor) |*actor| actor.deinit();
+        if (self.documents_actor) |*actor| actor.deinit();
         self.unregisterEditorListeners();
         self.removeActiveDocument() catch {};
         self.models.deinit();
@@ -1037,24 +1043,10 @@ pub const Extensions = struct {
         }
     };
 
-    fn documentsOpenHost(context: *anyopaque, uri: std.json.Value, options: std.json.Value, arena: Allocator) anyerror!std.json.Value {
-        _ = options;
+    fn documentsSynchronizeHost(context: *anyopaque, resolved: @import("../../../editor/common/services/resolverService.zig").IResolvedTextEditorModel) !void {
         const self: *Extensions = @ptrCast(@alignCast(context));
-        const components = try std_uri.componentsFromJson(uri, arena);
-        const key = try std_uri.resourceKeyFromComponents(arena, components);
-        if (self.models.modelForResource(key)) |model| return try std_uri.jsonComponents(arena, model.uri());
-        if (!std.mem.eql(u8, components.scheme, "file")) return .null;
-        const path = uriPath(uri) orelse return .null;
-        self.services.common.open_path(self.services.common.context, path) catch {};
-        // Make the document known before `workspace.openTextDocument`
-        // resolves; the extension host otherwise waits for the next pump.
-        self.syncActiveDocument() catch {};
-        self.requestRender();
-        // Return the resource the document mirror registered, not the caller's
-        // path spelling, so an extension-requested open joins the same
-        // document (`$tryOpenDocument` resolves to this URI).
-        const opened = self.editor_service.findOpenFileInput(self.io, path) orelse return .null;
-        return try std_uri.jsonComponents(arena, opened.editor.model.uri());
+        const document: *EditorDocument = @ptrCast(@alignCast(resolved.context));
+        try self.models.addTrackedDocument(document);
     }
 
     fn documentsCreateHost(context: *anyopaque, options: std.json.Value, arena: Allocator) anyerror!std.json.Value {
@@ -1269,8 +1261,22 @@ pub const Extensions = struct {
         rejected: anyerror,
     ) !void {
         var wait = WaitFlag{};
-        _ = try self.host.call(identifier, method, args, null, .{ .context = &wait, .callback = WaitFlag.callback });
-        try self.host.waitUntil(&wait, done, timeout_ms);
+        const request = try self.host.call(identifier, method, args, null, .{ .context = &wait, .callback = WaitFlag.callback });
+        errdefer if (!wait.done) self.host.rpc.cancel(request);
+        const deadline = time_compat.milliTimestamp() + timeout_ms;
+        // During bootstrap the native event loop has not started yet. Pump a
+        // host frame batch, then dispatch one window completion. An activation
+        // may asynchronously resolve a document before acknowledging start;
+        // waiting on only the transport would deadlock that nested RPC.
+        // Never recursively pump inside a frame callback.
+        while (!wait.done) {
+            _ = self.host.pump();
+            const now = time_compat.milliTimestamp();
+            _ = self.services.window.dispatch(now);
+            if (self.host.hasEof()) return error.HostExited;
+            if (now > deadline) return error.HostTimeout;
+            self.io.sleep(.fromMilliseconds(1), .awake) catch {};
+        }
         if (wait.failed) return rejected;
     }
 
@@ -4263,6 +4269,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             var tmp = std.testing.tmpDir(.{});
             defer tmp.cleanup();
             try tmp.dir.writeFile(io, .{ .sub_path = "transport.txt", .data = "transport fixture" });
+            try tmp.dir.writeFile(io, .{ .sub_path = "background.txt", .data = "background fixture" });
             const path = try tmp.dir.realPathFileAlloc(io, "transport.txt", allocator);
             defer allocator.free(path);
             const data = try tmp.dir.realPathFileAlloc(io, ".", allocator);
@@ -4305,6 +4312,11 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             }
             const result = try future.await(workbench.window_events.io);
             try std.testing.expectEqualStrings(payload, result.object.get("value").?.string);
+            try std.testing.expectEqualStrings("background fixture", result.object.get("background").?.string);
+            try std.testing.expect(result.object.get("missingRejected").?.bool);
+            try std.testing.expect(result.object.get("activeUnchanged").?.bool);
+            try std.testing.expect(result.object.get("backgroundHidden").?.bool);
+            try std.testing.expect(!result.object.get("missingMirrored").?.bool);
             const document = result.object.get("document").?.string;
             const extension = result.object.get("extension").?.string;
             const text_files = @import("../../services/textfile/common/textFileService.zig");
