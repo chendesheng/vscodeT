@@ -764,17 +764,18 @@ this is a one-time repository setting.
 
 ## Continuous integration
 
-GitHub Actions (`.github/workflows/ci.yml`) runs the full `zig build test`
-suite on Linux (inotify), macOS (kqueue) and Windows (`ReadDirectoryChangesW`).
-The Linux, macOS and Windows jobs initialize the
-shallow `vscode/` submodule at the pinned commit, so the tokenizer, theme and
-extension-asset tests run against the real upstream tree instead of the
-fallbacks. The Linux and macOS jobs install the `host/` npm dependencies and
-run `zig build json-server` before the tests, so the JSON language-client
-integration tests run there instead of skipping. The Windows job installs
-oniguruma with vcpkg and passes
-`-Donig-include`/`-Donig-lib` to the build; the terminal layer uses the Windows
-console API for raw mode, sizing and input polling.
+GitHub Actions (`.github/workflows/ci.yml`) runs the same native build,
+`zig build test` and full `zig build test-e2e` on Linux (inotify), macOS
+(kqueue) and Windows (`ReadDirectoryChangesW`) using a shared matrix. Every
+platform initializes the pinned `vscode/` and `vscode-textmate/` submodules,
+bundles the JSON language server, Node extension host, built-in extensions and
+TypeScript SDK, and checks that the required assets exist before testing.
+This covers real TypeScript/JavaScript tsserver behavior, JSON and other
+language servers, and native extension-host IPC on every platform. Only
+system dependency installation and library search paths differ: Windows
+uses vcpkg and `-Donig-include`/`-Donig-lib`. The terminal layer uses the
+Windows console API for raw mode, sizing and input polling. Specialized UI
+stress and strict reference-conformance reports run separately.
 
 ## Design docs
 
