@@ -10,7 +10,7 @@ const PastFutureElements = @import("./undoRedo.zig").PastFutureElements;
 const ResourceEditStackSnapshot = @import("./undoRedo.zig").ResourceEditStackSnapshot;
 const UriComparisonKeyComputer = @import("./undoRedo.zig").UriComparisonKeyComputer;
 const Disposable = @import("./undoRedo.zig").Disposable;
-const uriToString = @import("../../../editor/common/model.zig").uriToString;
+const uri_util = @import("../../../base/common/stdUri.zig");
 const UndoRedoSourceOrUri = @import("./undoRedo.zig").UndoRedoSourceOrUri;
 const Pair = @import("../../../base/common/utils.zig").Pair;
 const pair = @import("../../../base/common/utils.zig").pair;
@@ -759,7 +759,8 @@ pub const UndoRedoService = struct {
                 return String.initBorrowed(uriComparisonKeyComputer.computer.getComparisonKey(&uriComparisonKeyComputer.computer, resource));
             }
         }
-        return String.initOwned(try uriToString(resource, self._uriComparisonKeyComputers.allocator));
+        const allocator = self._uriComparisonKeyComputers.allocator;
+        return String.initOwned(ArrayList(u8).fromOwnedSlice(allocator, try uri_util.resourceKey(allocator, resource)));
     }
 
     pub fn _print(self: *UndoRedoService, label: []const u8) void {

@@ -72,3 +72,17 @@ test "UndoRedoService: mixed single and workspace elements participate in one gr
     try std.testing.expectEqual(@as(usize, 1), a.redoes);
     try std.testing.expectEqual(@as(usize, 1), b.redoes);
 }
+
+test "UndoRedoService: decoded and serialized file resources share one history" {
+    const raw: std.Uri = .{ .scheme = "file", .path = .{ .raw = "/workspace/file #.txt" } };
+    const encoded = try std.Uri.parse("file:///workspace/file%20%23.txt");
+    var probe: Probe = .{};
+    var service = UndoRedoService.init(std.testing.allocator);
+    defer service.deinit();
+    try probe.push(&service, &.{encoded}, null);
+    try std.testing.expect(try service.canUndo(.{ .uri = raw }));
+    try service.undo(.{ .uri = raw });
+    try std.testing.expectEqual(@as(usize, 1), probe.undoes);
+    try service.redo(.{ .uri = encoded });
+    try std.testing.expectEqual(@as(usize, 1), probe.redoes);
+}
