@@ -2400,6 +2400,25 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(!try runEditorCommand(editor, "unhandled.command"));
         }
 
+        // The Node host serializes VS Code URIs (including lower-cased,
+        // percent-encoded drive letters). Compare the decoded file identity.
+        fn expectFileResource(arena: Allocator, expected: std.Uri, serialized: []const u8) !void {
+            const actual = try std.Uri.parse(serialized);
+            const expected_key = try std_uri.resourceKey(arena, expected);
+            const actual_key = try std_uri.resourceKey(arena, actual);
+            const prefix = "file:///";
+            if (@import("builtin").os.tag == .windows and
+                std.mem.startsWith(u8, expected_key, prefix) and std.mem.startsWith(u8, actual_key, prefix) and
+                expected_key.len > prefix.len + 1 and actual_key.len > prefix.len + 1 and
+                expected_key[prefix.len + 1] == ':' and actual_key[prefix.len + 1] == ':')
+            {
+                try std.testing.expectEqual(std.ascii.toLower(expected_key[prefix.len]), std.ascii.toLower(actual_key[prefix.len]));
+                try std.testing.expectEqualStrings(expected_key[prefix.len + 1 ..], actual_key[prefix.len + 1 ..]);
+            } else {
+                try std.testing.expectEqualStrings(expected_key, actual_key);
+            }
+        }
+
         fn waitNavigation(workbench: *terminal_window_type) !void {
             const deadline = time_compat.milliTimestamp() + 5_000;
             while (workbench.symbol_navigation.pending_navigation != null and time_compat.milliTimestamp() < deadline) {
@@ -2777,7 +2796,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             while (time_compat.milliTimestamp() < deadline) {
                 _ = extension_host.pump();
                 if (extension_host.active) |active| {
-                    mirrored = try std.fmt.allocPrint(allocator, "file://{s}", .{active.uri});
+                    mirrored = try std_uri.resourceKeyFromComponents(allocator, .{ .scheme = "file", .path = active.uri });
                     break;
                 }
                 time_compat.sleepMillis(10);
@@ -3352,8 +3371,8 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const diffs = comparison.get("diffs").?.array.items;
             try std.testing.expectEqual(@as(usize, resources.len), diffs.len);
             for (diffs, resources) |wire, resource| {
-                try std.testing.expectEqualStrings(try std_uri.encodedResource(arena, resource.original.?), wire.object.get("original").?.string);
-                try std.testing.expectEqualStrings(try std_uri.encodedResource(arena, resource.modified.?), wire.object.get("modified").?.string);
+                try expectFileResource(arena, resource.original.?, wire.object.get("original").?.string);
+                try expectFileResource(arena, resource.modified.?, wire.object.get("modified").?.string);
             }
             const docs = state.object.get("documents").?.array.items;
             try std.testing.expectEqual(@as(usize, 7), docs.len);
@@ -3415,7 +3434,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqual(control.modified_editor, extensions.active.?.editor);
             const after = try extensions.host.requestSync(arena, command_id, "$executeContributedCommand", command_args, null, 5000);
             try std.testing.expectEqual(@as(usize, 7), after.object.get("documents").?.array.items.len);
-            try std.testing.expectEqualStrings(try std_uri.encodedResource(arena, control.modified_editor.model.uri()), after.object.get("activeDocument").?.string);
+            try expectFileResource(arena, control.modified_editor.model.uri(), after.object.get("activeDocument").?.string);
             // Exercise the main-thread move RPC, including zero-based wire
             // columns, signed append index, target-group creation, and focus
             // preservation. The real extension host must see both groups.

@@ -162,7 +162,8 @@ function activate(context) {
     return true;
   }));
   context.subscriptions.push(vscode.commands.registerCommand('fixture.saveDocument', uri => {
-    const document = vscode.workspace.textDocuments.find(value => value.uri.toString() === uri);
+    const resource = vscode.Uri.parse(uri).toString();
+    const document = vscode.workspace.textDocuments.find(value => value.uri.toString() === resource);
     return document ? document.save() : false;
   }));
   context.subscriptions.push(vscode.workspace.onWillSaveTextDocument(event => {
