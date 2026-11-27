@@ -559,6 +559,7 @@ pub const View = struct {
         errdefer self.surface.deinit();
         try editor_css.register(self.surface.document());
         try editor_css.hover.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.hoverTheme(self.theme_colors));
+        try editor_css.parameter_hints.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.parameterHintsTheme(self.theme_colors));
         try editor_css.light_bulb.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.lightBulbTheme(self.theme_colors));
         try editor_css.message.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.messageTheme(self.theme_colors));
         self.owns_surface = true;
@@ -1295,6 +1296,7 @@ pub const View = struct {
         self.theme_colors = palette;
         if (self.owns_surface) {
             editor_css.hover.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.hoverTheme(palette)) catch {};
+            editor_css.parameter_hints.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.parameterHintsTheme(palette)) catch {};
             editor_css.light_bulb.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.lightBulbTheme(palette)) catch {};
             editor_css.message.registerTheme(self.surface.document(), theme_colors_mod.ThemeColors.messageTheme(palette)) catch {};
         }

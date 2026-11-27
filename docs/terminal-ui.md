@@ -1291,10 +1291,12 @@ Library constraints:
   gets the upstream `…` suffix. The editor binds `Ctrl-Shift-[`/`]`,
   `Ctrl-K Ctrl-L`, `Ctrl-K Ctrl-0` and `Ctrl-K Ctrl-J` and registers the
   corresponding `editor.fold*`/`editor.unfold*` commands in the workbench.
-  Syntax providers, folding decorations/CSS and folding view state are not
-  ported. Fold state survives edits on the folded line; line
+  Syntax providers now feed the same folding model asynchronously. Tracked
+  folding decorations and full folding view state remain incomplete. Fold
+  state survives edits on the folded line; line
   insertions or deletions above a collapsed region re-expand it because there
   are no tracked folding decorations to shift the range.
+- Parameter hints are ported from `src/vs/editor/contrib/parameterHints/browser/`: the model handles typed triggers, retriggers, provider cancellation and overload selection, and an editor content widget paints the signature and active parameter using cell geometry. Documentation is currently plain text; rich markdown links and scrolling remain portable gaps.
 - Sticky scroll is ported from
   `src/vs/editor/contrib/stickyScroll/browser` and painted as an editor overlay
   (`stickyScrollHost.zig` in that contribution owns the editor/view-model adapter;

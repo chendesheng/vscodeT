@@ -66,6 +66,12 @@ pub const ThemeColors = struct {
         };
     }
 
+    pub fn parameterHintsTheme(palette: ?*const ThemeColors) @import("../../editor/contrib/parameterHints/browser/parameterHints_css.zig").Colors {
+        const colors = palette orelse return .{};
+        const hover = hoverTheme(palette);
+        return .{ .background = hover.background, .foreground = hover.foreground, .border = hover.border, .highlight = colors.color("editorHoverWidget.highlightForeground", .{ 75, 160, 230 }) };
+    }
+
     pub fn lightBulbTheme(palette: ?*const ThemeColors) @import("../../editor/contrib/codeAction/browser/lightBulbWidget_css.zig").Colors {
         const colors = palette orelse return .{};
         const normal = colors.color("editorLightBulb.foreground", .{ 235, 200, 62 });

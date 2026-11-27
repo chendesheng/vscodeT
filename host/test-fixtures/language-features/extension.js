@@ -216,6 +216,17 @@ function activate(context) {
       ];
     }
   }));
+  context.subscriptions.push(vscode.languages.registerSignatureHelpProvider({ language: 'json' }, {
+    async provideSignatureHelp(document, position, token, trigger) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      if (token.isCancellationRequested) return undefined;
+      const signature = new vscode.SignatureInformation('f(é, b)', 'Fixture docs');
+      signature.parameters = [new vscode.ParameterInformation([2, 3], 'First parameter'), new vscode.ParameterInformation('b', 'Second parameter')];
+      const other = new vscode.SignatureInformation('f(b)');
+      other.parameters = [new vscode.ParameterInformation('b')];
+      return { signatures: [signature, other], activeSignature: 0, activeParameter: trigger.isRetrigger ? 1 : 0 };
+    }
+  }, {triggerCharacters: ['('], retriggerCharacters: [',']}));
   const foldingChanges = new vscode.EventEmitter();
   let changedFolds = false;
   context.subscriptions.push(foldingChanges,

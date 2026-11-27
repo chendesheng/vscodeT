@@ -1386,6 +1386,7 @@ pub const Controllers = struct {
     completion_count: usize = 1,
     hover_registration: ?IDisposable = null,
     suggest: ?*SuggestController,
+    parameter_hints: ?*@import("../../../../editor/contrib/parameterHints/browser/parameterHints.zig").ParameterHintsController,
     code_lens: ?*CodeLensContribution,
     code_lens_services: ?CodeLensServices,
     code_action: ?*CodeActionController,
@@ -1466,6 +1467,7 @@ pub const Controllers = struct {
         self.hover = null;
         self.glyph_hover = null;
         self.suggest = null;
+        self.parameter_hints = null;
         self.code_lens = null;
         self.code_lens_services = null;
         self.code_action = null;
@@ -1510,6 +1512,10 @@ pub const Controllers = struct {
         errdefer self.word_highlighter.unbindHost();
 
         errdefer self.detachDeferredContributions();
+        const ParameterHintsController = @import("../../../../editor/contrib/parameterHints/browser/parameterHints.zig").ParameterHintsController;
+        self.parameter_hints = try ParameterHintsController.getOrCreate(editor, view, if (self.language_features) |features| &features.signature_help_provider else null, self.window);
+        const hints = view.terminal_view_host.options.get(.parameterHints);
+        self.parameter_hints.?.model.configure(hints.enabled, hints.cycle);
         if (editor.getInstantiatedContribution(StickyScrollController) != null) {
             try createSticky(self);
         } else try @import("../../../../editor/contrib/stickyScroll/browser/stickyScrollContribution.zig").register(editor, self, createSticky);
@@ -1751,6 +1757,7 @@ pub const Controllers = struct {
 
     pub fn attachLanguageRegistry(self: *Controllers, features: *LanguageFeaturesService) void {
         self.language_features = features;
+        if (self.parameter_hints) |hints| hints.bindRegistry(&features.signature_help_provider) catch {};
         if (self.hover != null) {
             self.hover_participant.registry = &features.hover_provider;
             self.marker_hover_participant.marker_decorations = self.view.editor.marker_decorations;
@@ -1765,6 +1772,7 @@ pub const Controllers = struct {
         self.window = window;
         self.find.attachWindow(window);
         self.word_highlighter.attachWindow(window);
+        if (self.parameter_hints) |hints| hints.attachWindow(window);
         if (self.hover) |hover| hover.attachWindow(window);
         if (self.glyph_hover) |glyph| glyph.attachWindow(window);
         if (self.sticky) |sticky| sticky.attachWindow(window);
@@ -1773,6 +1781,8 @@ pub const Controllers = struct {
     }
 
     fn detachDeferredContributions(self: *Controllers) void {
+        if (self.parameter_hints) |hints| hints.unbind();
+        self.parameter_hints = null;
         self.editor.unregisterContributionFactory(StickyScrollController, self);
         self.editor.unregisterContributionFactory(ContentHoverController, self);
         self.editor.unregisterContributionFactory(@import("../../../../editor/contrib/hover/browser/glyphHoverController.zig").GlyphHoverController, self);
@@ -1918,6 +1928,10 @@ pub const MultiDiffBindingServices = struct {
 
 fn onConfigurationChanged(context: *anyopaque, event: @import("../../../../editor/common/config/editorOptions.zig").ConfigurationChangedEvent) void {
     const self: *Controllers = @ptrCast(@alignCast(context));
+    if (event.hasChanged(.parameterHints)) if (self.parameter_hints) |hints| {
+        const settings = self.view.terminal_view_host.options.get(.parameterHints);
+        hints.model.configure(settings.enabled, settings.cycle);
+    };
     if (event.hasChanged(.find)) self.find.applyConfiguration(self.view.terminal_view_host.options.get(.find));
     if (event.hasChanged(.occurrencesHighlight) or event.hasChanged(.occurrencesHighlightDelay) or event.hasChanged(.occurrencesHighlightFromAllProviders)) self.word_highlighter.applyConfiguration(wordHighlightSettings(self.view));
     if (event.hasChanged(.hover) or event.hasChanged(.multiCursorModifier)) {

@@ -296,6 +296,9 @@ pub const GuideSetting = enum { off, on, active };
 /// Upstream `boolean | 'always'` indentation highlight setting.
 pub const GuideHighlightSetting = enum { off, on, always };
 
+/// Port of `InternalParameterHintOptions`.
+pub const InternalParameterHintOptions = struct { enabled: bool = true, cycle: bool = true };
+
 /// Port of `InternalEditorRenderLineNumbersOptions`.
 pub const RenderLineNumberFn = *const fn (line_number: usize) []const u8;
 pub const InternalEditorRenderLineNumbersOptions = struct {
@@ -548,6 +551,7 @@ pub fn OptionValueType(comptime option: EditorOption) type {
         .guides => InternalGuidesOptions,
         .find => EditorFindOptions,
         .hover => EditorHoverOptions,
+        .parameterHints => InternalParameterHintOptions,
         .lightbulb => EditorLightbulbOptions,
         .stickyScroll => EditorStickyScrollOptions,
         .rulers => []const IRulerOption,

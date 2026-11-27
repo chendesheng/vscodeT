@@ -562,6 +562,7 @@ comptime {
     _ = @import("./vs/editor/contrib/snippet/test/browser/snippetController2.test.zig");
     _ = @import("./vs/editor/contrib/snippet/test/browser/snippetController2.old.test.zig");
     _ = @import("./vs/editor/contrib/smartSelect/test/browser/smartSelect.test.zig");
+    _ = @import("./vs/editor/contrib/parameterHints/test/browser/parameterHintsModel.test.zig");
     _ = @import("./vs/editor/contrib/inPlaceReplace/test/browser/inPlaceReplace.test.zig");
     _ = @import("./vs/workbench/test/browser/parts/editor/editorGroupModel.test.zig");
     _ = @import("./vs/workbench/common/editor/diffEditorInput.zig");

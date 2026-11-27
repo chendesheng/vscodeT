@@ -3,7 +3,7 @@
 //
 // Ported features: hover, completion, definition, declaration,
 // implementation, type definition, references, document/workspace symbols, single- and
-// multi-document highlights, folding/selection ranges, CodeLens, code actions
+// multi-document highlights, folding/selection ranges, signature help, CodeLens, code actions
 // and document/range/on-type formatting. The actor stores providers by handle
 // in `LanguageFeaturesService`, converts the extension-host DTOs into editor
 // types and forwards provider calls back to `ExtHostLanguageFeatures`.
@@ -738,6 +738,7 @@ pub const MainThreadLanguageFeatures = struct {
         if (std.mem.eql(u8, method, "$registerImplementationSupport")) return self.registerLocationProvider(args, arena, .implementation);
         if (std.mem.eql(u8, method, "$registerTypeDefinitionSupport")) return self.registerLocationProvider(args, arena, .type_definition);
         if (std.mem.eql(u8, method, "$registerReferenceSupport")) return self.registerReference(args, arena);
+        if (std.mem.eql(u8, method, "$registerSignatureHelpProvider")) return self.registerSignatureHelp(args, arena);
         if (std.mem.eql(u8, method, "$registerFoldingRangeProvider")) return self.registerFoldingRange(args, arena);
         if (std.mem.eql(u8, method, "$emitFoldingRangeEvent")) {
             const handle = handleArg(args) orelse return error.InvalidArguments;
@@ -851,6 +852,28 @@ pub const MainThreadLanguageFeatures = struct {
             .context = state,
             .requires_window_fiber = self.proxy.request_async != null,
             .provide_references = provideReferences,
+        });
+        return .empty;
+    }
+
+    fn registerSignatureHelp(self: *MainThreadLanguageFeatures, args: []const rpc.Arg, arena: Allocator) !rpc.HandlerReply {
+        const handle = handleArg(args) orelse return error.InvalidArguments;
+        const selector_value = jsonArg(args, 1) orelse return error.InvalidArguments;
+        const registration = try self.createRegistration(arena, handle);
+        errdefer {
+            _ = self.registrations.remove(handle);
+            self.destroyRegistration(registration);
+        }
+        const a = registration.arena.allocator();
+        const selector = try parseSelector(a, selector_value);
+        const metadata = jsonArg(args, 2) orelse return error.InvalidArguments;
+        if (metadata != .object) return error.InvalidArguments;
+        registration.disposable = try self.features.signature_help_provider.register(selector, .{
+            .context = registration,
+            .trigger_characters = try signatureCharacters(a, metadata.object.get("triggerCharacters")),
+            .retrigger_characters = try signatureCharacters(a, metadata.object.get("retriggerCharacters")),
+            .provide_signature_help = SignatureHelpState.provide,
+            .request_signature_help = if (self.proxy.request_async != null) SignatureHelpState.request else null,
         });
         return .empty;
     }
@@ -2435,5 +2458,136 @@ const FoldingState = struct {
         pending.* = .{ .allocator = a, .callback = callback };
         const arguments = try self.args(a, model);
         return send(proxy.context, "$provideFoldingRanges", &arguments, .{ .context = pending, .callback = Pending.ready });
+    }
+};
+
+fn signatureCharacters(a: Allocator, value: ?std.json.Value) ![]const []const u8 {
+    const array = value orelse return &.{};
+    if (array != .array) return &.{};
+    var chars: std.ArrayList([]const u8) = .empty;
+    for (array.array.items) |item| if (item == .string) {
+        try chars.append(a, try a.dupe(u8, item.string));
+    };
+    return chars.items;
+}
+
+const SignatureHelpState = struct {
+    const Release = struct {
+        proxy: HostProxy,
+        handle: u32,
+        id: i64,
+        fn dispose(context: *anyopaque) void {
+            const self: *Release = @ptrCast(@alignCast(context));
+            self.proxy.notify(self.proxy.context, "$releaseSignatureHelp", &.{ .{ .json = .{ .integer = self.handle } }, .{ .json = .{ .integer = self.id } } }) catch {};
+        }
+    };
+
+    fn args(a: Allocator, registration: *Registration, model: *TextModel, position: Position, context: languages.SignatureHelpContext) ![4]rpc.Arg {
+        var dto: std.json.ObjectMap = .empty;
+        try dto.put(a, "triggerKind", .{ .integer = @backingInt(context.trigger_kind) });
+        try dto.put(a, "isRetrigger", .{ .bool = context.is_retrigger });
+        if (context.trigger_character) |char| try dto.put(a, "triggerCharacter", .{ .string = char });
+        if (context.active_signature_help) |active| if (active.dto) |raw| {
+            var copied = try rpc.cloneJsonValue(a, raw);
+            if (copied == .object) {
+                try copied.object.put(a, "activeSignature", .{ .integer = @intCast(active.active_signature) });
+                try copied.object.put(a, "activeParameter", .{ .integer = @intCast(active.active_parameter) });
+                try dto.put(a, "activeSignatureHelp", copied);
+            }
+        };
+        return .{
+            .{ .json = .{ .integer = registration.handle } },
+            .{ .json = try std_uri.jsonComponents(a, model.uri()) },
+            .{ .json = try positionJson(a, model, position) },
+            .{ .json = .{ .object = dto } },
+        };
+    }
+
+    fn documentation(a: Allocator, optional: ?std.json.Value) !?[]const u8 {
+        const value = optional orelse return null;
+        if (value == .string) return try a.dupe(u8, value.string);
+        if (value == .object) return optionalJsonString(a, value.object.get("value"));
+        return null;
+    }
+
+    fn parse(a: Allocator, proxy: HostProxy, handle: u32, value: std.json.Value) !?languages.SignatureHelpResult {
+        if (value != .object) return null;
+        var release: IDisposable = .none;
+        if (value.object.get("id")) |id| if (id == .integer) {
+            const owned = try a.create(Release);
+            owned.* = .{ .proxy = proxy, .handle = handle, .id = id.integer };
+            release = .{ .context = owned, .disposeFn = Release.dispose };
+        };
+        errdefer release.dispose();
+        const signatures = value.object.get("signatures") orelse return error.InvalidResult;
+        if (signatures != .array) return error.InvalidResult;
+        var parsed: std.ArrayList(languages.SignatureInformation) = .empty;
+        for (signatures.array.items) |signature| {
+            if (signature != .object) continue;
+            const label = signature.object.get("label") orelse continue;
+            if (label != .string) continue;
+            var parameters: std.ArrayList(languages.ParameterInformation) = .empty;
+            if (signature.object.get("parameters")) |params| if (params == .array) {
+                for (params.array.items) |parameter| {
+                    if (parameter != .object) continue;
+                    const param_label = parameter.object.get("label") orelse continue;
+                    const label_value: @FieldType(languages.ParameterInformation, "label") = switch (param_label) {
+                        .string => |text| .{ .text = try a.dupe(u8, text) },
+                        .array => |offsets| blk: {
+                            if (offsets.items.len != 2 or offsets.items[0] != .integer or offsets.items[1] != .integer) continue;
+                            const start = std.math.cast(usize, offsets.items[0].integer) orelse continue;
+                            const end = std.math.cast(usize, offsets.items[1].integer) orelse continue;
+                            break :blk .{ .offsets = .{ position_converter.columnForUtf16Offset(label.string, start +| 1) -| 1, position_converter.columnForUtf16Offset(label.string, end +| 1) -| 1 } };
+                        },
+                        else => continue,
+                    };
+                    try parameters.append(a, .{ .label = label_value, .documentation = try documentation(a, parameter.object.get("documentation")) });
+                }
+            };
+            try parsed.append(a, .{
+                .label = try a.dupe(u8, label.string),
+                .documentation = try documentation(a, signature.object.get("documentation")),
+                .parameters = parameters.items,
+                .active_parameter = intField(signature.object, "activeParameter"),
+            });
+        }
+        return .{ .value = .{
+            .signatures = parsed.items,
+            .active_signature = intField(value.object, "activeSignature") orelse 0,
+            .active_parameter = intField(value.object, "activeParameter") orelse 0,
+            .dto = try rpc.cloneJsonValue(a, value),
+        }, .release = release };
+    }
+
+    fn provide(context: *anyopaque, a: Allocator, model: *TextModel, position: Position, trigger: languages.SignatureHelpContext, token: CancellationToken) !?languages.SignatureHelpResult {
+        const registration: *Registration = @ptrCast(@alignCast(context));
+        const arguments = try args(a, registration, model, position, trigger);
+        const reply = try registration.owner.call(a, "$provideSignatureHelp", &arguments, token, timeout_default_ms);
+        return parse(a, registration.owner.proxy, registration.handle, reply);
+    }
+
+    const Pending = struct {
+        allocator: Allocator,
+        proxy: HostProxy,
+        handle: u32,
+        callback: languages.SignatureHelpCallback,
+        fn ready(context: *anyopaque, reply: rpc.Reply) void {
+            const self: *Pending = @ptrCast(@alignCast(context));
+            self.callback.complete(self.callback.context, switch (reply) {
+                .json => |value| parse(self.allocator, self.proxy, self.handle, value),
+                .err => error.RequestFailed,
+                else => @as(?languages.SignatureHelpResult, null),
+            });
+        }
+    };
+
+    fn request(context: *anyopaque, a: Allocator, model: *TextModel, position: Position, trigger: languages.SignatureHelpContext, callback: languages.SignatureHelpCallback) !IDisposable {
+        const registration: *Registration = @ptrCast(@alignCast(context));
+        const proxy = registration.owner.proxy;
+        const send = proxy.request_async orelse return error.RequestFailed;
+        const pending = try a.create(Pending);
+        pending.* = .{ .allocator = a, .proxy = proxy, .handle = registration.handle, .callback = callback };
+        const arguments = try args(a, registration, model, position, trigger);
+        return send(proxy.context, "$provideSignatureHelp", &arguments, .{ .context = pending, .callback = Pending.ready });
     }
 };

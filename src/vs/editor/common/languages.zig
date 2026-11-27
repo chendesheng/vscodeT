@@ -477,6 +477,52 @@ pub const MultiDocumentHighlightProvider = struct {
     provide_multi_document_highlights: *const fn (*anyopaque, Allocator, *TextModel, Position, []const *TextModel, CancellationToken) anyerror!?[]const MultiDocumentHighlight,
 };
 
+pub const SignatureHelpTriggerKind = enum(u8) { Invoke = 1, TriggerCharacter = 2, ContentChange = 3 };
+pub const ParameterInformation = struct {
+    // Offset labels are UTF-8 byte offsets after wire decoding.
+    label: union(enum) { text: []const u8, offsets: [2]usize },
+    documentation: ?[]const u8 = null,
+};
+pub const SignatureInformation = struct {
+    label: []const u8,
+    documentation: ?[]const u8 = null,
+    parameters: []const ParameterInformation = &.{},
+    active_parameter: ?usize = null,
+};
+pub const SignatureHelp = struct {
+    signatures: []const SignatureInformation,
+    active_signature: usize = 0,
+    active_parameter: usize = 0,
+    // The extension-host DTO preserves its cache id and original Markdown
+    // metadata when it is passed back as activeSignatureHelp.
+    dto: ?std.json.Value = null,
+};
+pub const SignatureHelpContext = struct {
+    trigger_kind: SignatureHelpTriggerKind,
+    trigger_character: ?[]const u8 = null,
+    is_retrigger: bool = false,
+    active_signature_help: ?SignatureHelp = null,
+};
+pub const SignatureHelpResult = struct {
+    value: SignatureHelp,
+    release: @import("../../base/common/lifecycle.zig").IDisposable = .none,
+    pub fn dispose(self: *SignatureHelpResult) void {
+        self.release.dispose();
+        self.release = .none;
+    }
+};
+pub const SignatureHelpCallback = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, anyerror!?SignatureHelpResult) void,
+};
+pub const SignatureHelpProvider = struct {
+    context: *anyopaque,
+    trigger_characters: []const []const u8 = &.{},
+    retrigger_characters: []const []const u8 = &.{},
+    provide_signature_help: *const fn (*anyopaque, Allocator, *TextModel, Position, SignatureHelpContext, CancellationToken) anyerror!?SignatureHelpResult,
+    request_signature_help: ?*const fn (*anyopaque, Allocator, *TextModel, Position, SignatureHelpContext, SignatureHelpCallback) anyerror!@import("../../base/common/lifecycle.zig").IDisposable = null,
+};
+
 /// Upstream FoldingRange uses one-based line numbers and an optional kind.
 pub const FoldingRangeKind = enum { comment, imports, region };
 pub const FoldingRange = struct {

@@ -14,6 +14,7 @@ const features = @import("languageFeatures.zig");
 
 pub const LanguageFeaturesService = struct {
     allocator: Allocator,
+    signature_help_provider: registry.LanguageFeatureRegistry(languages.SignatureHelpProvider),
     folding_range_provider: registry.LanguageFeatureRegistry(languages.FoldingRangeProvider),
     selection_range_provider: registry.LanguageFeatureRegistry(languages.SelectionRangeProvider),
     hover_provider: registry.LanguageFeatureRegistry(languages.HoverProvider),
@@ -35,6 +36,7 @@ pub const LanguageFeaturesService = struct {
     pub fn init(allocator: Allocator) LanguageFeaturesService {
         return .{
             .allocator = allocator,
+            .signature_help_provider = .init(allocator),
             .folding_range_provider = .init(allocator),
             .selection_range_provider = .init(allocator),
             .hover_provider = registry.LanguageFeatureRegistry(languages.HoverProvider).init(allocator),
@@ -56,6 +58,7 @@ pub const LanguageFeaturesService = struct {
     }
 
     pub fn deinit(self: *LanguageFeaturesService) void {
+        self.signature_help_provider.deinit();
         self.folding_range_provider.deinit();
         self.selection_range_provider.deinit();
         self.hover_provider.deinit();
@@ -77,6 +80,7 @@ pub const LanguageFeaturesService = struct {
 
     pub fn interface(self: *LanguageFeaturesService) features.ILanguageFeaturesService {
         return .{
+            .signature_help_provider = &self.signature_help_provider,
             .folding_range_provider = &self.folding_range_provider,
             .selection_range_provider = &self.selection_range_provider,
             .hover_provider = &self.hover_provider,

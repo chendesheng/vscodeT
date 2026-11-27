@@ -26,6 +26,7 @@ pub const zone_widget = @import("../contrib/zoneWidget/browser/zoneWidget_css.zi
 pub const peek_view = @import("../contrib/peekView/browser/media/peekViewWidget_css.zig");
 pub const diff_editor = @import("widget/diffEditor/style_css.zig");
 pub const multi_diff_editor = @import("widget/multiDiffEditor/style_css.zig");
+pub const parameter_hints = @import("../contrib/parameterHints/browser/parameterHints_css.zig");
 pub const hover = @import("../contrib/hover/browser/hover_css.zig");
 pub const hover_widget = @import("../../base/browser/ui/hover/hoverWidget_css.zig");
 pub const light_bulb = @import("../contrib/codeAction/browser/lightBulbWidget_css.zig");
@@ -55,6 +56,7 @@ pub fn register(doc: *ui.Document) !void {
     _ = try doc.registerSheet(peek_view.sheet);
     _ = try doc.registerSheet(hover_widget.sheet);
     _ = try doc.registerSheet(hover.sheet);
+    _ = try doc.registerSheet(parameter_hints.sheet);
     _ = try doc.registerSheet(light_bulb.sheet);
     _ = try doc.registerSheet(message.sheet);
     _ = try doc.registerSheet(goto_error.sheet);

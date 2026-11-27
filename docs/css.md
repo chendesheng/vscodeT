@@ -154,6 +154,7 @@ Rules:
   | `lightBulbWidget.css` | `0x0150` | centered one-cell code action control and normal, preferred and AI theme colors; icon fonts and pseudo-elements are omitted |
   | `messageController.css` | `0x0160` | model-anchored inline message and themed cell border; pixel triangle and animation are omitted |
   | `gotoErrorWidget.css` | `0x0170` | marker-navigation message, stale state, details and related-location links; cell insets replace pixel padding |
+  | `parameterHints.css` | `0x0180` | signature and overload controls, highlighted active parameter, themed border; cell sizing replaces pixel metrics |
 
   The multi-diff changed-files list's
   `media/multiDiffEditorWithFileList.css` is projected directly through the

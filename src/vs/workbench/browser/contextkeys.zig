@@ -84,6 +84,9 @@ const WindowContextKeys = struct {
     has_prev_tabstop: contextkeys.IContextKey,
     in_snippet_choice: contextkeys.IContextKey,
     message_visible: contextkeys.IContextKey,
+    editor_has_signature_help_provider: contextkeys.IContextKey,
+    parameter_hints_visible: contextkeys.IContextKey,
+    parameter_hints_multiple: contextkeys.IContextKey,
     quick_diff_decoration_count: contextkeys.IContextKey,
     dirty_diff_visible: contextkeys.IContextKey,
     active_custom_editor_id: contextkeys.IContextKey,
@@ -143,6 +146,9 @@ const WindowContextKeys = struct {
             .has_next_tabstop = try service.createKey("hasNextTabstop", .{ .boolean = false }),
             .has_prev_tabstop = try service.createKey("hasPrevTabstop", .{ .boolean = false }),
             .in_snippet_choice = try service.createKey("inSnippetChoice", .{ .boolean = false }),
+            .editor_has_signature_help_provider = try service.createKey("editorHasSignatureHelpProvider", .{ .boolean = false }),
+            .parameter_hints_visible = try service.createKey("parameterHintsVisible", .{ .boolean = false }),
+            .parameter_hints_multiple = try service.createKey("parameterHintsMultipleSignatures", .{ .boolean = false }),
             .message_visible = try service.createKey("messageVisible", .{ .boolean = false }),
             .quick_diff_decoration_count = try service.createKey("quickDiffDecorationCount", .{ .number = 0 }),
             .dirty_diff_visible = try service.createKey("dirtyDiffVisible", .{ .boolean = false }),
@@ -194,6 +200,7 @@ pub const WorkbenchContextKeysHandler = struct {
     markers_navigation_listener: ?usize = null,
     snippet_state_listener: ?usize = null,
     inline_message_listener: ?usize = null,
+    parameter_hints_listener: ?usize = null,
     code_action_provider_listener: ?usize = null,
     quick_diff_context_listener: ?usize = null,
     working_copy_service: *WorkingCopyService,
@@ -354,12 +361,15 @@ pub const WorkbenchContextKeysHandler = struct {
         errdefer active.on_did_change_snippet_state.unlisten(self.snippet_state_listener.?);
         self.inline_message_listener = try active.on_did_change_inline_message.listen(self, onInlineMessageChanged);
         errdefer active.on_did_change_inline_message.unlisten(self.inline_message_listener.?);
+        self.parameter_hints_listener = try active.on_did_change_parameter_hints.listen(self, onParameterHintsChanged);
+        errdefer active.on_did_change_parameter_hints.unlisten(self.parameter_hints_listener.?);
         self.code_action_provider_listener = try active.on_did_change_code_action_provider.listen(self, onCodeActionsChanged);
         errdefer active.on_did_change_code_action_provider.unlisten(self.code_action_provider_listener.?);
         self.quick_diff_context_listener = try active.on_did_change_quick_diff_context.listen(self, onQuickDiffContextChanged);
         self.window_keys.editor_has_code_lens_provider.set(.{ .boolean = active.has_code_lens_provider });
         self.window_keys.has_word_highlights.set(.{ .boolean = active.has_word_highlights });
         self.updateHoverState(active);
+        self.updateParameterHints(active);
         self.window_keys.markers_navigation_visible.set(.{ .boolean = active.markers_navigation_visible });
         self.updateSnippetState(active.snippet_state);
         self.window_keys.message_visible.set(.{ .boolean = active.inline_message_visible });
@@ -388,6 +398,11 @@ pub const WorkbenchContextKeysHandler = struct {
         self.updateSnippetState(.{});
         if (self.inline_message_listener) |listener| editor.on_did_change_inline_message.unlisten(listener);
         self.inline_message_listener = null;
+        if (self.parameter_hints_listener) |listener| editor.on_did_change_parameter_hints.unlisten(listener);
+        self.parameter_hints_listener = null;
+        self.window_keys.editor_has_signature_help_provider.set(.{ .boolean = false });
+        self.window_keys.parameter_hints_visible.set(.{ .boolean = false });
+        self.window_keys.parameter_hints_multiple.set(.{ .boolean = false });
         self.window_keys.message_visible.set(.{ .boolean = false });
         if (self.code_action_provider_listener) |listener| editor.on_did_change_code_action_provider.unlisten(listener);
         self.code_action_provider_listener = null;
@@ -408,6 +423,16 @@ pub const WorkbenchContextKeysHandler = struct {
 
     fn onLanguageChanged(_: ModelLanguageChangedEvent, self: *@This()) !void {
         if (self.active_editor) |editor| self.window_keys.editor_lang_id.set(.{ .string = if (self.language_visible) editor.languageId() else "" });
+    }
+
+    fn updateParameterHints(self: *@This(), editor: *Editor) void {
+        self.window_keys.editor_has_signature_help_provider.set(.{ .boolean = editor.parameter_hints_available });
+        self.window_keys.parameter_hints_visible.set(.{ .boolean = editor.parameter_hints_visible });
+        self.window_keys.parameter_hints_multiple.set(.{ .boolean = editor.parameter_hints_multiple });
+    }
+
+    fn onParameterHintsChanged(_: void, self: *@This()) !void {
+        if (self.active_editor) |editor| self.updateParameterHints(editor);
     }
 
     fn updateHoverState(self: *@This(), editor: *Editor) void {

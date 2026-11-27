@@ -96,6 +96,9 @@ pub const EditorScopedContext = struct {
     fn get(context: *anyopaque, key: []const u8) contextkey.ContextKeyValue {
         const self: *EditorScopedContext = @ptrCast(@alignCast(context));
         if (std.mem.eql(u8, key, "editorReadonly")) return .{ .boolean = self.editor.isReadOnly() };
+        if (std.mem.eql(u8, key, "editorHasSignatureHelpProvider")) return .{ .boolean = self.editor.parameter_hints_available };
+        if (std.mem.eql(u8, key, "parameterHintsVisible")) return .{ .boolean = self.editor.parameter_hints_visible };
+        if (std.mem.eql(u8, key, "parameterHintsMultipleSignatures")) return .{ .boolean = self.editor.parameter_hints_multiple };
         if (std.mem.eql(u8, key, "editorHasCodeActionsProvider")) return .{ .boolean = self.editor.has_code_action_provider };
         if (std.mem.eql(u8, key, "editorLangId")) return .{ .string = if (self.editor.getModel()) |model| model.getLanguageId() else "" };
         if (std.mem.eql(u8, key, "resourceScheme")) return .{ .string = if (self.editor.getModel()) |model| model.uri().scheme else "" };

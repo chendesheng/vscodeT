@@ -975,6 +975,7 @@ pub const Editor = struct {
     on_did_change_hover_state: Emitter(void),
     on_did_change_text_focus: Emitter(bool),
     on_did_change_inline_message: Emitter(bool),
+    on_did_change_parameter_hints: Emitter(void),
     on_did_change_markers_navigation: Emitter(bool),
     on_did_change_snippet_state: Emitter(SnippetState),
     on_did_mouse_event: Emitter(editorBrowser.EditorMouseEvent),
@@ -993,6 +994,9 @@ pub const Editor = struct {
     hover_visible: bool = false,
     hover_focused: bool = false,
     inline_message_visible: bool = false,
+    parameter_hints_available: bool = false,
+    parameter_hints_visible: bool = false,
+    parameter_hints_multiple: bool = false,
     markers_navigation_visible: bool = false,
     snippet_state: SnippetState = .{},
     screen_width: usize,
@@ -1287,6 +1291,7 @@ pub const Editor = struct {
             .on_did_change_hover_state = .init(allocator),
             .on_did_change_text_focus = .init(allocator),
             .on_did_change_inline_message = .init(allocator),
+            .on_did_change_parameter_hints = .init(allocator),
             .on_did_change_markers_navigation = .init(allocator),
             .on_did_change_snippet_state = .init(allocator),
             .on_did_mouse_event = .init(allocator),
@@ -2437,6 +2442,7 @@ pub const Editor = struct {
         self.on_did_change_hover_state.deinit();
         self.on_did_change_text_focus.deinit();
         self.on_did_change_inline_message.deinit();
+        self.on_did_change_parameter_hints.deinit();
         self.on_did_change_markers_navigation.deinit();
         self.on_did_change_snippet_state.deinit();
         self.on_did_mouse_event.deinit();
@@ -2996,6 +3002,14 @@ pub const Editor = struct {
         self.hover_visible = visible;
         self.hover_focused = focused;
         self.on_did_change_hover_state.fire({}) catch {};
+    }
+
+    pub fn setParameterHintsState(self: *Editor, available: bool, visible: bool, multiple: bool) void {
+        if (self.parameter_hints_available == available and self.parameter_hints_visible == visible and self.parameter_hints_multiple == multiple) return;
+        self.parameter_hints_available = available;
+        self.parameter_hints_visible = visible;
+        self.parameter_hints_multiple = multiple;
+        self.on_did_change_parameter_hints.fire({}) catch {};
     }
 
     pub fn setInlineMessageVisible(self: *Editor, visible: bool) void {

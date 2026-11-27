@@ -241,6 +241,15 @@ pub fn applyViewSettings(
         options.set(setting.option, setting.value);
     }
 
+    const hints: editorOptions.InternalParameterHintOptions = .{
+        .enabled = readBool(reader, "editor.parameterHints.enabled", language_id, resource) orelse true,
+        .cycle = readBool(reader, "editor.parameterHints.cycle", language_id, resource) orelse true,
+    };
+    const hints_changed = !std.meta.eql(options.get(.parameterHints), hints);
+    mark(changed, .parameterHints, hints_changed);
+    any = any or hints_changed;
+    options.set(.parameterHints, hints);
+
     const on_type = formatOnType(reader, language_id, resource);
     const on_type_changed = options.get(.formatOnType) != on_type;
     mark(changed, .formatOnType, on_type_changed);

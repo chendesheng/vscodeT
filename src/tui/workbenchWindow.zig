@@ -4163,6 +4163,7 @@ pub const TerminalWorkbench = struct {
 
     fn applyThemeToParts(self: *TerminalWorkbench, palette: ?*const theme_colors_mod.ThemeColors) void {
         editor_css.hover.registerTheme(self.editor_surface.document(), theme_colors_mod.ThemeColors.hoverTheme(palette)) catch {};
+        editor_css.parameter_hints.registerTheme(self.editor_surface.document(), theme_colors_mod.ThemeColors.parameterHintsTheme(palette)) catch {};
         editor_css.light_bulb.registerTheme(self.editor_surface.document(), theme_colors_mod.ThemeColors.lightBulbTheme(palette)) catch {};
         editor_css.message.registerTheme(self.editor_surface.document(), theme_colors_mod.ThemeColors.messageTheme(palette)) catch {};
         self.applyContextMenuTheme(palette);
