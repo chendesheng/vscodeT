@@ -498,8 +498,12 @@ pub const SearchView = struct {
     }
 
     fn onResultChanged(change: tree.ChangeEvent, self: *SearchView) !void {
-        if (change.force_update_model) {
-            self.updateSearchResultCount(self.state == .idle);
+        // Upstream refreshAndUpdateCount handles clearingAll along with other
+        // result changes. Unlike the GC-owned upstream nodes, terminal rows
+        // borrow pointers into the result tree. Refresh them synchronously
+        // before clearing input fields can emit widget/title-action callbacks.
+        if (change.force_update_model or change.clearing_all) {
+            self.updateSearchResultCount(self.state == .idle and !change.clearing_all);
             self.viewer.refreshView();
         }
     }

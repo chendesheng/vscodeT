@@ -1902,7 +1902,23 @@ test "Workbench: workspace search streams results and opens a match" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "SEARCH") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "alpha") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "2 results in 1 file") != null);
+
+    // Clearing the model frees its nodes synchronously. The result event must
+    // detach the borrowed terminal rows before another widget callback can
+    // inspect their IDs to update the title actions.
+    try std.testing.expect(view.rows.items.len > 0);
+    view.model.result.clear();
+    try std.testing.expectEqual(@as(usize, 0), view.rows.items.len);
+    try std.testing.expectEqual(@as(usize, 0), view.depths.items.len);
+    try std.testing.expect(!view.hasExpandedResults());
+    try std.testing.expect(workbench.activity_service.getContainerBadgeDescription("search") == null);
+
+    // Refill, then exercise the original clear-input path with live results.
+    try view.startSearch();
+    try waitForSearch(workbench);
+    try std.testing.expectEqual(@as(usize, 2), view.model.result.count());
     view.controller.clearResults(true);
+    try std.testing.expectEqual(@as(usize, 0), view.rows.items.len);
     try std.testing.expect(workbench.activity_service.getContainerBadgeDescription("search") == null);
 }
 
