@@ -13084,6 +13084,137 @@ test "Diff editor commands: marker hover opens related locations from both real 
     }
 }
 
+test "Diff editor commands: marker hover queries the full diagnostic and transfers quick fixes without a second invocation" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const markers = @import("../vs/platform/markers/common/markers.zig");
+    const TextModel = @import("../vs/editor/common/model/textModel.zig").TextModel;
+    const HoverController = @import("../vs/editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
+    const Disposable = @import("../vs/base/common/lifecycle.zig").IDisposable;
+    const Provider = struct {
+        calls: usize = 0,
+        cancelled: usize = 0,
+        runs: usize = 0,
+        last_model: ?*TextModel = null,
+        last_range: ?Range = null,
+        only_quickfix: bool = false,
+        callback: ?languages.CodeActionCallback = null,
+        fn provide(_: *anyopaque, _: Allocator, _: *TextModel, _: Range, _: languages.CodeActionContext, _: CancellationToken) !languages.CodeActionList {
+            return .{};
+        }
+        fn request(context: *anyopaque, _: Allocator, model: *TextModel, range: Range, action_context: languages.CodeActionContext, _: CancellationToken, callback: languages.CodeActionCallback) !?Disposable {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (action_context.trigger_kind != 1) {
+                callback.complete(callback.context, .{});
+                return null;
+            }
+            self.calls += 1;
+            self.last_model = model;
+            self.last_range = range;
+            self.only_quickfix = std.mem.eql(u8, action_context.only orelse "", "quickfix");
+            self.callback = callback;
+            return Disposable.from(@This(), self, cancel);
+        }
+        fn cancel(self: *@This()) void {
+            self.cancelled += 1;
+            self.callback = null;
+        }
+        fn resolve(self: *@This(), actions: []const languages.CodeAction) void {
+            const callback = self.callback orelse return;
+            self.callback = null;
+            callback.complete(callback.context, .{ .actions = actions });
+        }
+        fn run(context: *anyopaque) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.runs += 1;
+        }
+    };
+    const FindStatusAction = struct {
+        fn find(node: *ui.Node) ?*ui.Node {
+            if (node.getAttribute("data-hover-status-action")) |id| if (std.mem.eql(u8, id, "0")) return node;
+            var child = node.firstChild();
+            while (child) |value| : (child = value.nextSibling()) if (find(value)) |found| return found;
+            return null;
+        }
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(a, io, &tmp, "marker-fix.txt", "old line\nsecond line");
+    defer a.free(path);
+    const window = try TestWindow.init(a, io, &.{}, 120, 28);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.enableLanguageFeatures();
+    try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "old line\nsecond line", "new line\nsecond line", "Original", "Modified");
+    const tab = wb.activeTab().?;
+    const diff = tab.diff.?.widget;
+    var options = diff.options;
+    options.read_only = false;
+    _ = try diff.updateOptions(options);
+    var provider: Provider = .{};
+    try wb.commands.registerCommand(.{ .id = "test.markerQuickFix", .context = &provider, .run = Provider.run }, .{ .id = "test.markerQuickFix", .title = "Fix diagnostic" }, .{ .show_in_palette = false });
+    defer wb.commands.unregister("test.markerQuickFix");
+    const registered = try wb.language_features.?.code_action_provider.register(.{ .language = "*" }, .{ .context = &provider, .provide_code_actions = Provider.provide, .request_code_actions = Provider.request, .provided_kinds = &.{ "quickfix", "refactor" } });
+    defer registered.dispose();
+    const range = Range.init(1, 2, 2, 4);
+    for ([_]*Editor{ diff.original_editor, diff.modified_editor }) |editor| {
+        var resource = try markers.Resource.fromUri(a, editor.model.uri());
+        defer resource.deinit(a);
+        try wb.marker_service.?.changeOne("marker-fix", resource, &.{.{ .message = "Fix this diagnostic", .severity = markers.MarkerSeverity.Error, .start_line_number = 1, .start_column = 2, .end_line_number = 2, .end_column = 4 }}, null);
+    }
+    var frame: std.Io.Writer.Allocating = .init(a);
+    defer frame.deinit();
+    try diff.switchSide();
+    try renderFrame(wb, &frame.writer);
+    const original = diff.original_editor.getContribution(HoverController).?;
+    original.showContentHover(Range.init(1, 2, 1, 3), .immediate, .keyboard, true);
+    try std.testing.expect(original.widget().isVisible());
+    try std.testing.expectEqual(@as(usize, 0), provider.calls);
+    try std.testing.expect(!original.widget().widget.rendered.?.status_bar.hasContent());
+    original.hideContentHover();
+    try diff.switchSide();
+    try renderFrame(wb, &frame.writer);
+    const modified = diff.modified_editor.getContribution(HoverController).?;
+    modified.showContentHover(Range.init(1, 2, 1, 3), .immediate, .keyboard, true);
+    try std.testing.expectEqual(@as(usize, 1), provider.calls);
+    try std.testing.expectEqual(diff.modifiedModel(), provider.last_model.?);
+    try std.testing.expectEqual(range, provider.last_range.?);
+    try std.testing.expect(provider.only_quickfix);
+    const status = modified.widget().widget.rendered.?.status_bar;
+    try std.testing.expectEqualStrings(" ", status.message.?);
+    const checking = time_compat.milliTimestamp() + 250;
+    for (0..64) |_| {
+        if (std.mem.eql(u8, status.message orelse "", "Checking for quick fixes...")) break;
+        _ = wb.window_events.dispatch(checking);
+    }
+    try std.testing.expectEqualStrings("Checking for quick fixes...", status.message.?);
+    provider.resolve(&.{ .{ .title = "Fix diagnostic", .kind = "quickfix", .command = .{ .id = "test.markerQuickFix", .title = "Fix diagnostic" } }, .{ .title = "Not a quick fix", .kind = "refactor" } });
+    try std.testing.expect(status.message == null);
+    try std.testing.expectEqual(@as(usize, 1), status.actions.items.len);
+    try std.testing.expectEqualStrings("Quick Fix...", status.actions.items[0].label);
+    try renderFrame(wb, &frame.writer);
+    const button = FindStatusAction.find(modified.widget().widget.root.?) orelse return error.MissingQuickFixStatusButton;
+    var click: ui.MouseEvent = .{ .kind = .click, .x = 0, .y = 0 };
+    button.document.dispatchMouse(button, &click);
+    const menu = wb.context_menu_service.current orelse return error.MissingQuickFixMenu;
+    try std.testing.expectEqualStrings("Fix diagnostic", menu.items.items[1].label);
+    try std.testing.expectEqual(@as(usize, 1), provider.calls);
+    try wb.commands.execute("acceptSelectedCodeAction");
+    try std.testing.expectEqual(@as(usize, 1), provider.runs);
+    modified.hideContentHover();
+    modified.showContentHover(Range.init(1, 2, 1, 3), .immediate, .keyboard, true);
+    try std.testing.expect(provider.callback != null);
+    modified.hideContentHover();
+    try std.testing.expect(provider.callback == null and provider.cancelled == 1);
+    modified.showContentHover(Range.init(1, 2, 1, 3), .immediate, .keyboard, true);
+    provider.resolve(&.{});
+    try std.testing.expectEqualStrings("No quick fixes available", modified.widget().widget.rendered.?.status_bar.message.?);
+    modified.hideContentHover();
+    modified.showContentHover(Range.init(1, 2, 1, 3), .immediate, .keyboard, true);
+    try std.testing.expectEqualStrings("No quick fixes available", modified.widget().widget.rendered.?.status_bar.message.?);
+    modified.hideContentHover();
+}
+
 test "Word highlights drive the active editor context and upstream F7 action before rendering" {
     const a = std.testing.allocator;
     const io = std.testing.io;

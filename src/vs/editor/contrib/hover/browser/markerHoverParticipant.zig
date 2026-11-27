@@ -29,6 +29,20 @@ const IEditorHoverRenderContext = hoverTypes.IEditorHoverRenderContext;
 
 const markdown = @import("../../../common/markdown/markdownTerminalRenderer.zig");
 const Position = @import("../../../common/core/position.zig").Position;
+const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const codeAction = @import("../../codeAction/browser/codeAction.zig");
+const action_types = @import("../../codeAction/common/types.zig");
+const CodeActionController = @import("../../codeAction/browser/codeActionController.zig").CodeActionController;
+const dispatch = @import("../../../../base/common/windowDispatch.zig");
+const Disposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
+const markerCodeActionTrigger: action_types.CodeActionTrigger = .{ .type = .Invoke, .filter = .{ .include = action_types.CodeActionKind.QuickFix }, .trigger_action = .QuickFixHover };
+
+pub const CodeActionServices = struct {
+    editor: *Editor,
+    registry: *@import("../../../common/languageFeatureRegistry.zig").LanguageFeatureRegistry(@import("../../../common/languages.zig").CodeActionProvider),
+    window: *dispatch.Queue,
+};
+
 /// Narrow adapter for IOpenerService. Related positions retain UTF-16 columns
 /// until the target resource resolves, just as in the diagnostic DTO.
 pub const Opener = @import("../../../../platform/opener/common/opener.zig").IOpenerService;
@@ -52,6 +66,8 @@ pub const MarkerHoverParticipant = struct {
     model: *TextModel,
     marker_decorations: ?*MarkerDecorationsService,
     opener: ?Opener = null,
+    code_actions: ?CodeActionServices = null,
+    recent_marker_code_actions_info: ?struct { key: []u8, has_code_actions: bool } = null,
     /// Payloads of the current hover computation.
     parts_arena: std.heap.ArenaAllocator,
     /// Parsed rows of the currently rendered hover.
@@ -73,6 +89,7 @@ pub const MarkerHoverParticipant = struct {
     }
 
     pub fn deinit(self: *MarkerHoverParticipant) void {
+        if (self.recent_marker_code_actions_info) |recent| self.allocator.free(recent.key);
         self.parts_arena.deinit();
         self.rendered_arena.deinit();
     }
@@ -156,7 +173,6 @@ pub const MarkerHoverParticipant = struct {
         render_context: *const IEditorHoverRenderContext,
         hover_parts: []const IHoverPart,
     ) ![]const IRenderedHoverPart {
-        _ = render_context;
         const self: *MarkerHoverParticipant = @ptrCast(@alignCast(context));
         _ = self.rendered_arena.reset(.retain_capacity);
         const allocator = self.rendered_arena.allocator();
@@ -186,6 +202,12 @@ pub const MarkerHoverParticipant = struct {
             });
         }
         self.rendered = try rendered.toOwnedSlice();
+        if (sorted.len > 0) {
+            const hover: *const MarkerHover = @ptrCast(@alignCast(sorted[0].data orelse return self.rendered));
+            if (self.code_actions) |services| if (!services.editor.isReadOnly()) {
+                try MarkerStatus.start(self, services, render_context.*, hover);
+            };
+        }
         return self.rendered;
     }
 
@@ -206,6 +228,119 @@ pub const MarkerHoverParticipant = struct {
         _ = self.parts_arena.reset(.retain_capacity);
         _ = self.rendered_arena.reset(.retain_capacity);
         self.rendered = &.{};
+    }
+};
+
+/// The rendered result owns the status query and its result set. Re-render,
+/// hiding or swapping a model cancels pending work and drops provider state.
+const MarkerStatus = struct {
+    participant: *MarkerHoverParticipant,
+    services: CodeActionServices,
+    context: IEditorHoverRenderContext,
+    key: []u8,
+    timer: dispatch.Task = .{},
+    pending: ?Disposable = null,
+    actions: ?*codeAction.ManagedCodeActionSet = null,
+    ai_index: ?usize = null,
+
+    fn start(participant: *MarkerHoverParticipant, services: CodeActionServices, context: IEditorHoverRenderContext, hover: *const MarkerHover) !void {
+        const register = context.add_disposable orelse return;
+        if (context.status_bar.set_message == null) return;
+        const a = participant.allocator;
+        const self = try a.create(MarkerStatus);
+        errdefer a.destroy(self);
+        const r = hover.marker_range orelse hover.range;
+        const source = hover.source orelse "";
+        const code = hover.code orelse "";
+        const key = try std.fmt.allocPrint(a, "{d}:{s}{d}:{s}{d}:{s}:{d}:{d}:{d}:{d}:{d}", .{ source.len, source, code.len, code, hover.message.len, hover.message, hover.severity, r.startLineNumber, r.startColumn, r.endLineNumber, r.endColumn });
+        errdefer a.free(key);
+        self.* = .{ .participant = participant, .services = services, .context = context, .key = key };
+        self.timer = .{ .queue = services.window, .context = self, .run = showChecking };
+        try register(context.context, Disposable.from(MarkerStatus, self, dispose));
+        // Once registered, the rendered owner is responsible for cleanup.
+        var recent_no_actions = false;
+        if (participant.recent_marker_code_actions_info) |recent| {
+            if (std.mem.eql(u8, recent.key, key)) {
+                recent_no_actions = !recent.has_code_actions;
+            } else {
+                a.free(recent.key);
+                participant.recent_marker_code_actions_info = null;
+            }
+        }
+        self.setMessage(if (recent_no_actions) "No quick fixes available" else " ");
+        if (!recent_no_actions) self.timer.schedule(@import("../../../../base/common/timeCompat.zig").milliTimestamp() + 200);
+        self.pending = codeAction.getCodeActions(a, services.registry, participant.model, r, markerCodeActionTrigger, .None, .{ .context = self, .complete = completed }) catch |err| blk: {
+            completed(self, err);
+            break :blk null;
+        };
+    }
+
+    fn setMessage(self: *MarkerStatus, message: ?[]const u8) void {
+        self.context.status_bar.set_message.?(self.context.status_bar.context, message);
+    }
+
+    fn showChecking(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *MarkerStatus = @ptrCast(@alignCast(context));
+        self.setMessage("Checking for quick fixes...");
+        self.context.callOnContentsChanged();
+        return true;
+    }
+
+    fn completed(context: *anyopaque, reply: anyerror!*codeAction.ManagedCodeActionSet) void {
+        const self: *MarkerStatus = @ptrCast(@alignCast(context));
+        self.pending = null;
+        self.timer.schedule(null);
+        const set = reply catch {
+            self.setMessage(null);
+            self.context.callOnContentsChanged();
+            return;
+        };
+        const has_actions = set.valid_actions.len > 0;
+        const participant = self.participant;
+        if (participant.allocator.dupe(u8, self.key)) |owned| {
+            if (participant.recent_marker_code_actions_info) |old| participant.allocator.free(old.key);
+            participant.recent_marker_code_actions_info = .{ .key = owned, .has_code_actions = has_actions };
+        } else |_| {}
+        if (!has_actions) {
+            set.dispose();
+            self.setMessage("No quick fixes available");
+        } else {
+            self.actions = set;
+            self.setMessage(null);
+            const status_bar = self.context.status_bar;
+            _ = status_bar.add_action(status_bar.context, .{ .label = "Quick Fix...", .command_id = codeAction.quickFixCommandId, .run_context = self, .run_at = showQuickFixes });
+            for (set.valid_actions, 0..) |item, index| if (item.action.is_ai) {
+                self.ai_index = index;
+                _ = status_bar.add_action(status_bar.context, .{ .label = item.action.title, .command_id = if (item.action.command) |cmd| cmd.id else "", .run_context = self, .run = applyAI });
+                break;
+            };
+        }
+        self.context.callOnContentsChanged();
+    }
+
+    fn showQuickFixes(context: ?*anyopaque, node: *ui.Node) void {
+        const self: *MarkerStatus = @ptrCast(@alignCast(context orelse return));
+        const controller = self.services.editor.getContribution(CodeActionController) orelse return;
+        const actions = self.actions orelse return;
+        self.actions = null;
+        controller.showCodeActions(markerCodeActionTrigger, actions, controller.anchorForHoverTarget(node));
+    }
+
+    fn applyAI(context: ?*anyopaque) void {
+        const self: *MarkerStatus = @ptrCast(@alignCast(context orelse return));
+        const controller = self.services.editor.getContribution(CodeActionController) orelse return;
+        const actions = self.actions orelse return;
+        self.actions = null;
+        controller.applyHoverCodeAction(actions, self.ai_index orelse return);
+    }
+
+    fn dispose(self: *MarkerStatus) void {
+        self.timer.schedule(null);
+        if (self.pending) |pending| pending.dispose();
+        if (self.actions) |set| set.dispose();
+        const a = self.participant.allocator;
+        a.free(self.key);
+        a.destroy(self);
     }
 };
 

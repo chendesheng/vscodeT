@@ -1554,6 +1554,7 @@ pub const Controllers = struct {
             editor.marker_decorations,
         );
         self.marker_hover_participant.opener = self.hover_opener;
+        if (self.code_action_services) |services| self.marker_hover_participant.code_actions = .{ .editor = self.editor, .registry = services.registry, .window = services.window };
         errdefer self.marker_hover_participant.deinit();
         self.participants = .{
             self.marker_hover_participant.interface(),
@@ -1627,6 +1628,7 @@ pub const Controllers = struct {
         if (self.editor.getInstantiatedContribution(CodeActionController) != null) {
             try createCodeAction(self);
         } else try CodeActionController.registerFactory(self.editor, self, createCodeAction);
+        if (self.hover != null) self.marker_hover_participant.code_actions = .{ .editor = self.editor, .registry = services.registry, .window = services.window };
     }
 
     pub fn attachHoverOpener(self: *Controllers, opener: MarkerHoverParticipantOpener) void {
@@ -1642,6 +1644,10 @@ pub const Controllers = struct {
     }
 
     pub fn detachCodeActionServices(self: *Controllers) void {
+        if (self.hover) |hover| {
+            hover.hideContentHover();
+            self.marker_hover_participant.code_actions = null;
+        }
         self.editor.unregisterContributionFactory(CodeActionController, self);
         if (self.code_action) |controller| controller.unbind();
         self.code_action = null;

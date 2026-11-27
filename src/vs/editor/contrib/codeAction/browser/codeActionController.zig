@@ -135,6 +135,36 @@ pub const CodeActionController = struct {
         if (self.model) |model| model.trigger(.{ .type = .Invoke, .trigger_action = source, .filter = filter, .auto_apply = auto_apply, .context = .{ .not_available_message = not_available, .position = self.editor.modelCursorPosition() } });
     }
 
+    /// Upstream `showCodeActions` receives the already resolved set from the
+    /// marker hover. Transfer ownership rather than querying providers again
+    /// at the cursor (which may not even be inside the diagnostic range).
+    pub fn showCodeActions(self: *CodeActionController, _: types.CodeActionTrigger, actions: *codeAction.ManagedCodeActionSet, at: menu.Anchor) void {
+        if (!self.bound or !self.editor.hasModel() or self.editor.isReadOnly()) {
+            actions.dispose();
+            return;
+        }
+        self.clearActive();
+        self.active = actions;
+        self.showCodeActionList(at, false, false) catch |err| self.showMessage(@errorName(err));
+    }
+
+    pub fn anchorForHoverTarget(self: *const CodeActionController, target: *@import("ui").Node) menu.Anchor {
+        const view = self.view orelse return .{ .x = 0, .y = 0 };
+        const mount = view.surfaceContext();
+        const rect = target.asElement().rect;
+        return .{ .x = mount.x + @as(usize, @intFromFloat(@max(0, rect.x))), .y = mount.y + @as(usize, @intFromFloat(@max(0, rect.bottom()))) };
+    }
+
+    pub fn applyHoverCodeAction(self: *CodeActionController, actions: *codeAction.ManagedCodeActionSet, index: usize) void {
+        if (!self.bound or !self.editor.hasModel() or self.editor.isReadOnly() or index >= actions.valid_actions.len) {
+            actions.dispose();
+            return;
+        }
+        self.clearActive();
+        self.active = actions;
+        self.applyCodeAction(actions.valid_actions[index], false, false);
+    }
+
     fn onState(context: *anyopaque, state: model_mod.CodeActionsState) void {
         const self: *CodeActionController = @ptrCast(@alignCast(context));
         switch (state) {
