@@ -59,10 +59,13 @@ Adding or removing a cassette requires regenerating the embedded index:
 python3 scripts/oracle/generate_cassette_index.py
 ```
 
-v1 compares text, cursor, final mode, and (Helix) selection count. Vim visual
-ranges, Helix selection ranges, and registers are recorded where easy but are
-not asserted yet. Unicode, tabs, soft wrap, prompts, and tree-sitter text
-objects are outside the first corpus.
+v1 compares text, cursor, final mode, and (Helix) selection count. A cassette
+may set `"assert_cursor": false` with a `"cursor_gap"` explanation when the
+reference cursor representation does not map onto the native engine yet; text,
+mode and selection count are still asserted. Vim visual ranges, Helix selection
+ranges, and registers are recorded where easy but are not asserted yet.
+Unicode, tabs, soft wrap, prompts, and tree-sitter text objects are outside the
+first corpus.
 
 ## CI cost and limits
 

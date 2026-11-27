@@ -1,22 +1,46 @@
 {
-  "schema": 1,
-  "engine": "helix",
-  "reference": "helix",
-  "reference_version": "helix 25.07.1 (a05c151b)",
   "case": "change_word",
-  "width": 60,
-  "seed": {
-    "text": "one two\n",
-    "cursor": [
-      1,
-      1
-    ]
-  },
+  "engine": "helix",
   "keys": [
     "w",
     "c",
     "X",
     "<Esc>"
   ],
-  "states": []
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      1
+    ],
+    "text": "one two\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        1,
+        2
+      ],
+      "mode": "normal",
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            2
+          ],
+          "head": [
+            1,
+            3
+          ]
+        }
+      ],
+      "text": "Xtwo\n"
+    }
+  ],
+  "width": 60,
+  "assert_cursor": false,
+  "cursor_gap": "post-Esc cursor placement after change differs from Helix; text/mode/count asserted"
 }

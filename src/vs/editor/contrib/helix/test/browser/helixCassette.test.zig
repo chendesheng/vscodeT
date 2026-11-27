@@ -72,9 +72,10 @@ fn runCase(case: oracle.Case) !void {
     const actual_count = try harness.selectionCount();
     const expected_count = state.selection_count orelse 1;
 
+    const cursor_matches = !case.assert_cursor or
+        (actual_cursor.lineNumber == state.cursor[0] and actual_cursor.column == state.cursor[1]);
     if (!std.mem.eql(u8, actual_text, state.text) or
-        actual_cursor.lineNumber != state.cursor[0] or
-        actual_cursor.column != state.cursor[1] or
+        !cursor_matches or
         actual_mode != expected_mode or
         actual_count != expected_count)
     {

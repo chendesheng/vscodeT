@@ -229,3 +229,11 @@ documents, a single starting cursor, final normal mode, and the selection
 count. Helix selection ranges and registers are recorded raw but not asserted
 yet. See [scripts/oracle/README.md](scripts/oracle/README.md) for the
 `check`/`record` workflow and artifact flow.
+
+Cassettes whose reference text/mode/count match but whose cursor placement does
+not (insert/change after `<Esc>`, undo, paste) set `assert_cursor: false` and a
+`cursor_gap` reason; the edit itself is still asserted. The first corpus also
+documents, by exclusion, known gaps in word motion/count cursor placement,
+select-mode delete behavior, line-extend deletion and undo cursor restoration.
+Those need engine fixes before their reference cases can be committed without a
+gap.

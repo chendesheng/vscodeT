@@ -1,20 +1,42 @@
 {
-  "schema": 1,
-  "engine": "helix",
-  "reference": "helix",
-  "reference_version": "helix 25.07.1 (a05c151b)",
   "case": "word_select_delete",
-  "width": 60,
-  "seed": {
-    "text": "one two three\n",
-    "cursor": [
-      1,
-      1
-    ]
-  },
+  "engine": "helix",
   "keys": [
     "w",
     "d"
   ],
-  "states": []
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      1
+    ],
+    "text": "one two three\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        1,
+        1
+      ],
+      "mode": "normal",
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            1
+          ],
+          "head": [
+            1,
+            2
+          ]
+        }
+      ],
+      "text": "two three\n"
+    }
+  ],
+  "width": 60
 }

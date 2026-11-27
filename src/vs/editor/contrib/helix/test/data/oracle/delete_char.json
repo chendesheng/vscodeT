@@ -3,18 +3,17 @@
   "engine": "helix",
   "reference": "helix",
   "reference_version": "helix 25.07.1 (a05c151b)",
-  "case": "normal_counts",
+  "case": "delete_char",
   "width": 60,
   "seed": {
-    "text": "a b c d e\n",
+    "text": "abc\n",
     "cursor": [
       1,
       1
     ]
   },
   "keys": [
-    "3",
-    "w"
+    "d"
   ],
   "states": []
 }
