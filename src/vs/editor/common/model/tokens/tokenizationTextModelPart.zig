@@ -144,6 +144,12 @@ pub const TokenizationTextModelPart = struct {
         return try self._semanticTokens.addSparseTokens(lineNumber, syntacticTokens);
     }
 
+    /// A line with no cached syntax or semantic tokens is represented by a
+    /// single default token (model language, Other, balanced brackets).
+    pub fn hasDefaultTokens(self: *const TokenizationTextModelPart, lineNumber: usize) bool {
+        return self._semanticTokens.isEmpty() and self.tokens.hasDefaultTokens(lineNumber);
+    }
+
     fn _emitModelTokensChangedEvent(self: *TokenizationTextModelPart, e: ModelTokensChangedEvent) void {
         if (!self.textModel()._isDisposing()) {
             self._onDidChangeTokens.fire(e) catch {};

@@ -116,6 +116,9 @@ pub const Command = union(enum) {
 /// cross-thread hand-off; the atomics only let the renderer decide whether it
 /// needs to keep polling while the worker is still tokenizing.
 pub const Context = struct {
+    /// Shared, thread-safe allocator for commands, results and the worker.
+    /// Their ownership crosses the queue, so both ends must use this heap.
+    allocator: Allocator,
     io: Io,
     commands: *CommandQueue,
     results: *ResultQueue,
@@ -129,7 +132,7 @@ pub const Context = struct {
         self.commands.putOneUncancelable(self.io, command) catch {
             _ = self.command_count.fetchSub(1, .seq_cst);
             var owned = command;
-            owned.deinit(std.heap.page_allocator);
+            owned.deinit(self.allocator);
         };
     }
 
@@ -160,7 +163,7 @@ pub const Context = struct {
         if (count == 0) {
             _ = self.results_pending.fetchSub(1, .seq_cst);
             var owned = result;
-            owned.deinit(std.heap.page_allocator);
+            owned.deinit(self.allocator);
         } else self.delivery.post();
     }
 

@@ -180,14 +180,14 @@ test "bracket pairs: colorization decorations ignore the decoration owner" {
     try std.testing.expectEqual(@as(usize, 2), count);
 }
 
-test "bracket pairs: tokenization completion replaces the fast initial tree" {
+test "bracket pairs: background tokenization maintains two trees and switches without rebuilding" {
     const allocator = std.testing.allocator;
     var brackets = [_]CharacterPair{.{ "{", "}" }};
     var text = ArrayList(u8).init(allocator);
     defer text.deinit();
-    // 501 lines: a brace inside a string, then a real pair spanning the
-    // document. Above 500 lines the first tree is the fast, token-agnostic one.
-    try text.appendSlice("\"{\"\n{\n");
+    // 501 lines: a pair inside a string, then a real pair spanning the
+    // document. With no available tokens the first tree is token-agnostic.
+    try text.appendSlice("\"{}\"\n{\n");
     for (0..498) |_| try text.appendSlice("x\n");
     try text.appendSlice("}\n");
     var fixture = try Fixture.init(allocator, text.items, makeConfig(&brackets, &brackets));
@@ -195,17 +195,53 @@ test "bracket pairs: tokenization completion replaces the fast initial tree" {
 
     var fast = try bracketClasses(allocator, fixture.ctx.model);
     defer fast.deinit();
-    // The fast tokenizer does not know the first brace is inside a string.
-    try std.testing.expectEqual(@as(usize, 3), fast.items.len);
+    // The fast tokenizer does not know the first pair is inside a string.
+    try std.testing.expectEqual(@as(usize, 4), fast.items.len);
+    const part = fixture.ctx.model.bracketPairs();
+    const first_root = part.bracketPairsTree.?.visibleDocument().root;
+    try std.testing.expectEqual(first_root, part.bracketPairsTree.?.astWithTokens.root);
+    var changes: usize = 0;
+    try part.onDidChangeWithContext(&changes, struct {
+        fn onChange(_: void, count: *usize) !void {
+            count.* += 1;
+        }
+    }.onChange);
 
-    // Tokenizing every line completes background tokenization, which rebuilds
-    // the tree token-aware and invalidates the colorization decorations.
+    // Token changes are queued only for the hidden token-aware tree. A query
+    // flushes both queues, but must still return the original visible tree.
+    fixture.ctx.model.forceTokenization(1);
+    try std.testing.expectEqual(@as(usize, 0), changes);
+    try std.testing.expect(part.bracketPairsTree.?.queuedTextEdits.items.len > 0);
+    try std.testing.expectEqual(@as(usize, 0), part.bracketPairsTree.?.queuedTextEditsForInitialAstWithoutTokens.items.len);
+    var partial = try bracketClasses(allocator, fixture.ctx.model);
+    defer partial.deinit();
+    try std.testing.expectEqual(@as(usize, 4), partial.items.len);
+    try std.testing.expectEqual(first_root, part.bracketPairsTree.?.visibleDocument().root);
+    try std.testing.expect(first_root != part.bracketPairsTree.?.astWithTokens.root);
+
+    // Content changes are queued for both trees, and both are updated even
+    // while the initial tree stays visible.
+    try fixture.ctx.applyEdit(Range.init(3, 1, 3, 1), "{}");
+    try std.testing.expect(part.bracketPairsTree.?.queuedTextEdits.items.len > 0);
+    try std.testing.expect(part.bracketPairsTree.?.queuedTextEditsForInitialAstWithoutTokens.items.len > 0);
+    var edited = try bracketClasses(allocator, fixture.ctx.model);
+    defer edited.deinit();
+    try std.testing.expectEqual(@as(usize, 6), edited.items.len);
+    try std.testing.expect(!part.isDirty());
+    const token_root = part.bracketPairsTree.?.astWithTokens.root;
+    const before_completion = changes;
+
+    // Completion drops the initial reference and publishes the switch. It
+    // must not synchronously reparse; pending token edits flush on access.
     fixture.ctx.model.forceTokenization(fixture.ctx.model.getLineCount());
+    try std.testing.expect(part.bracketPairsTree.?.initialAstWithoutTokens == null);
+    try std.testing.expectEqual(token_root, part.bracketPairsTree.?.astWithTokens.root);
+    try std.testing.expectEqual(before_completion + 1, changes);
     var token_aware = try bracketClasses(allocator, fixture.ctx.model);
     defer token_aware.deinit();
-    try std.testing.expectEqual(@as(usize, 2), token_aware.items.len);
+    try std.testing.expectEqual(@as(usize, 4), token_aware.items.len);
     try std.testing.expectEqualStrings("bracket-highlighting-0", token_aware.items[0]);
-    try std.testing.expectEqualStrings("bracket-highlighting-0", token_aware.items[1]);
+    try std.testing.expectEqualStrings("bracket-highlighting-0", token_aware.items[3]);
 }
 
 test "bracket pairs: angle brackets are parsed but not colorized by default" {
@@ -323,9 +359,7 @@ test "bracket pairs: unmatched closing query waits for tokenization" {
     var fixture = try Fixture.init(allocator, "\"}\"\n}", makeConfig(&brackets, &brackets));
     defer fixture.deinit();
 
-    // The query must not act on lines whose tokens are still unknown. (Small
-    // documents are eagerly tokenized when the AST is built, so query before
-    // building it here.)
+    // The query must not act on lines whose tokens are still unknown.
     try std.testing.expect(!fixture.ctx.model.hasUnmatchedClosingBracketAfter(Position.init(1, 1), "{"));
 
     fixture.ctx.model.forceTokenization(2);

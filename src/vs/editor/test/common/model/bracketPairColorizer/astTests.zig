@@ -194,6 +194,59 @@ test "ast: incremental parse with an edit" {
     doc1.deinit();
 }
 
+fn containsNode(root: *tree.AstNode, target: *tree.AstNode) bool {
+    if (root == target) return true;
+    for (0..root.childrenLength()) |i| {
+        if (root.child(i)) |child| {
+            if (containsNode(child, target)) return true;
+        }
+    }
+    return false;
+}
+
+test "ast: incremental parsing shares unchanged subtrees and releases old documents" {
+    const allocator = std.testing.allocator;
+    const lang = "astReuseLanguage";
+    try TokenizationRegistry.instance.register(lang, Support.interface());
+    defer TokenizationRegistry.instance.unregister(lang);
+    var text = std.array_list.Managed(u8).init(allocator);
+    defer text.deinit();
+    for (0..80) |_| try text.appendSlice("{[]}\n");
+    var ctx = try TestModel.init(allocator, text.items, lang);
+    defer ctx.deinit();
+    var brackets = [_]CharacterPair{ .{ "{", "}" }, .{ "[", "]" } };
+    var config = @import("../../../../common/languages/languageConfiguration.zig").empty();
+    config.brackets = &brackets;
+    try ctx.languageService.registerLanguageConfiguration(lang, config);
+    ctx.model.forceTokenization(ctx.model.getLineCount());
+    var ids = tree.StringIdProvider.init(allocator);
+    defer ids.deinit();
+    var doc = try tree.parseDocument(allocator, ctx.model, ctx.languageConfigurationService, &ids);
+    defer doc.deinit();
+    const initial_nodes = doc.root.region.?.live_nodes;
+    var first = doc.root;
+    while (first.kind == .list) first = first.child(0).?;
+    const Edit = @import("../../../../common/model/bracketPairsTextModelPart/bracketPairsTree/beforeEditPositionMapper.zig").TextEditInfo;
+    const Range = @import("../../../../common/core/range.zig").Range;
+    const line = ctx.model.getLineCount();
+    for (0..20) |i| {
+        try ctx.applyEdit(Range.init(line, i + 1, line, i + 1), "x");
+        ctx.model.forceTokenization(line);
+        const position = tree.toLength(line - 1, i);
+        const edit = Edit.init(position, position, tree.toLength(0, 1));
+        const old_length = doc.root.length;
+        const next = try tree.parseDocumentIncremental(allocator, ctx.model, ctx.languageConfigurationService, &.{edit}, doc.root, &ids);
+        try std.testing.expectEqual(old_length, doc.root.length);
+        try std.testing.expect(containsNode(next.root, first));
+        // A local edit creates only the affected paths, not a document-sized
+        // clone of the cached nodes.
+        try std.testing.expect(next.root.region.?.live_nodes < initial_nodes / 4);
+        doc.deinit();
+        doc = next;
+        try std.testing.expectEqual(tree.toLength(line - 1, i + 1), doc.root.length);
+    }
+}
+
 test "ast: combine sequential edits" {
     const allocator = std.testing.allocator;
     const combine = @import("../../../../common/model/bracketPairsTextModelPart/bracketPairsTree/combineTextEditInfos.zig").combineTextEditInfos;

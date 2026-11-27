@@ -1,7 +1,9 @@
 // Port of `src/vs/editor/common/model/bracketPairsTextModelPart/bracketPairsTree/ast.ts`.
 //
-// Node lengths are UTF-8 byte lengths; the AST is immutable from the query
-// side and built from the parser's arena.
+// Node lengths are UTF-8 byte lengths. Native ownership adaptation:
+// cached subtrees are reference-counted, and a parser region is reclaimed
+// when its last live node is released. The 2-3 tree's mutable path is
+// copied only when shared, analogous to upstream's immutable list nodes.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -52,12 +54,91 @@ pub const ListData = struct {
     cached_min_indentation: i64 = -1,
 };
 
+/// Storage for one parse operation. Nodes can outlive its document through
+/// shared subtrees, but a region never retains an entire previous document.
+/// During parsing we track retained nodes from older regions so an allocation
+/// failure can dispose the uncommitted arena without leaking references.
+pub const NodeRegion = struct {
+    allocator: Allocator,
+    arena: std.heap.ArenaAllocator,
+    live_nodes: usize = 0,
+    parsing: bool = true,
+    external_refs: std.AutoHashMap(*AstNode, usize),
+
+    pub fn create(allocator: Allocator) !*NodeRegion {
+        const self = try allocator.create(NodeRegion);
+        self.* = .{ .allocator = allocator, .arena = .init(allocator), .external_refs = .init(allocator) };
+        return self;
+    }
+
+    pub fn retain(self: *NodeRegion, node: *AstNode) !*AstNode {
+        std.debug.assert(self.parsing and node.region != null);
+        if (node.region != self) {
+            const entry = try self.external_refs.getOrPut(node);
+            if (!entry.found_existing) entry.value_ptr.* = 0;
+            entry.value_ptr.* += 1;
+        }
+        node.refs += 1;
+        return node;
+    }
+
+    fn releaseDuringParse(self: *NodeRegion, node: *AstNode) void {
+        if (node.region != self) {
+            const count = self.external_refs.getPtr(node).?;
+            count.* -= 1;
+            if (count.* == 0) _ = self.external_refs.remove(node);
+        }
+        node.release();
+    }
+
+    pub fn commit(self: *NodeRegion) void {
+        self.external_refs.deinit();
+        self.parsing = false;
+        if (self.live_nodes == 0) self.destroy();
+    }
+
+    pub fn abort(self: *NodeRegion) void {
+        var entries = self.external_refs.iterator();
+        while (entries.next()) |entry| {
+            for (0..entry.value_ptr.*) |_| entry.key_ptr.*.release();
+        }
+        self.external_refs.deinit();
+        self.destroy();
+    }
+
+    fn destroy(self: *NodeRegion) void {
+        const allocator = self.allocator;
+        self.arena.deinit();
+        allocator.destroy(self);
+    }
+};
+
 pub const AstNode = struct {
     kind: NodeKind,
     length: Length,
     list_height: u32,
     missing: SmallImmutableSet,
     data: Data,
+    region: ?*NodeRegion = null,
+    refs: usize = 1,
+
+    pub fn release(self: *AstNode) void {
+        const region = self.region orelse return;
+        std.debug.assert(self.refs > 0);
+        self.refs -= 1;
+        if (self.refs != 0) return;
+        switch (self.data) {
+            .pair => |pair| {
+                pair.opening.release();
+                if (pair.child) |child_node| child_node.release();
+                if (pair.closing) |closing| closing.release();
+            },
+            .list => |list| for (list.children.items) |child_node| child_node.release(),
+            else => {},
+        }
+        region.live_nodes -= 1;
+        if (region.live_nodes == 0 and !region.parsing) region.destroy();
+    }
 
     pub fn childrenLength(self: *const AstNode) usize {
         return switch (self.data) {
@@ -86,6 +167,8 @@ pub const AstNode = struct {
     pub fn clone(self: *const AstNode, allocator: Allocator) !*AstNode {
         const node = try allocator.create(AstNode);
         node.* = self.*;
+        node.region = null;
+        node.refs = 1;
         switch (self.data) {
             .text => {},
             .bracket => {},
@@ -118,30 +201,46 @@ pub const AstNode = struct {
         list.cached_min_indentation = -1;
     }
 
-    pub fn toMutable(self: *AstNode) *AstNode {
-        return self;
+    /// Consumes one reference. A shared list copies its immediate children,
+    /// not the subtrees beneath them.
+    pub fn toMutable(self: *AstNode, allocator: Allocator, region: ?*NodeRegion) !*AstNode {
+        const owner = region orelse return self;
+        if (self.region == owner and self.refs == 1) return self;
+        const list = self.data.list;
+        var children = ArrayList(*AstNode).init(allocator);
+        try children.ensureTotalCapacity(@max(@as(usize, 3), list.children.items.len));
+        for (list.children.items) |child_node| children.appendAssumeCapacity(try owner.retain(child_node));
+        const node = try allocator.create(AstNode);
+        node.* = self.*;
+        node.region = owner;
+        node.refs = 1;
+        node.data.list.children = children;
+        node.data.list.mutable = true;
+        owner.live_nodes += 1;
+        owner.releaseDuringParse(self);
+        return node;
     }
 
-    pub fn makeLastElementMutable(self: *AstNode) ?*AstNode {
-        return switch (self.data) {
-            .list => |list| if (list.children.items.len > 0) list.children.items[list.children.items.len - 1] else null,
-            else => null,
-        };
+    pub fn makeLastElementMutable(self: *AstNode, allocator: Allocator, region: ?*NodeRegion) !?*AstNode {
+        if (self.data != .list or self.data.list.children.items.len == 0) return null;
+        const item = &self.data.list.children.items[self.data.list.children.items.len - 1];
+        if (item.*.data == .list) item.* = try item.*.toMutable(allocator, region);
+        return item.*;
     }
 
-    pub fn makeFirstElementMutable(self: *AstNode) ?*AstNode {
-        return switch (self.data) {
-            .list => |list| if (list.children.items.len > 0) list.children.items[0] else null,
-            else => null,
-        };
+    pub fn makeFirstElementMutable(self: *AstNode, allocator: Allocator, region: ?*NodeRegion) !?*AstNode {
+        if (self.data != .list or self.data.list.children.items.len == 0) return null;
+        const item = &self.data.list.children.items[0];
+        if (item.*.data == .list) item.* = try item.*.toMutable(allocator, region);
+        return item.*;
     }
 
     pub fn appendChildOfSameHeight(self: *AstNode, node: *AstNode) void {
         const list = &self.data.list;
         list.children.append(node) catch return;
-        self.length = lengthAdd(self.length, node.length);
-        self.missing = self.missing.merge(node.missing);
-        list.cached_min_indentation = -1;
+        // A descendant may have split immediately before insertion, so
+        // upstream recomputes from the current children, not the old length.
+        self.recomputeList();
     }
 
     pub fn unappendChild(self: *AstNode) ?*AstNode {
@@ -155,9 +254,7 @@ pub const AstNode = struct {
     pub fn prependChildOfSameHeight(self: *AstNode, node: *AstNode) void {
         const list = &self.data.list;
         list.children.insert(0, node) catch return;
-        self.length = lengthAdd(node.length, self.length);
-        self.missing = node.missing.merge(self.missing);
-        list.cached_min_indentation = -1;
+        self.recomputeList();
     }
 
     pub fn unprependChild(self: *AstNode) ?*AstNode {
@@ -266,12 +363,22 @@ pub fn allocNode(allocator: Allocator) !*AstNode {
 }
 
 pub fn makeText(allocator: Allocator, length: Length) !*AstNode {
+    return makeTextIn(allocator, length, null);
+}
+
+pub fn makeTextIn(allocator: Allocator, length: Length, region: ?*NodeRegion) !*AstNode {
     const node = try allocNode(allocator);
     node.* = .{ .kind = .text, .length = length, .list_height = 0, .missing = SmallImmutableSet.empty(), .data = .{ .text = {} } };
+    node.region = region;
+    if (region) |owner| owner.live_nodes += 1;
     return node;
 }
 
 pub fn makeBracket(allocator: Allocator, token: Token) !*AstNode {
+    return makeBracketIn(allocator, token, null);
+}
+
+pub fn makeBracketIn(allocator: Allocator, token: Token, region: ?*NodeRegion) !*AstNode {
     const node = try allocNode(allocator);
     node.* = .{
         .kind = .bracket,
@@ -284,10 +391,16 @@ pub fn makeBracket(allocator: Allocator, token: Token) !*AstNode {
             .colorized_bracket_ids = token.colorized_bracket_ids,
         } },
     };
+    node.region = region;
+    if (region) |owner| owner.live_nodes += 1;
     return node;
 }
 
 pub fn makeInvalid(allocator: Allocator, token: Token) !*AstNode {
+    return makeInvalidIn(allocator, token, null);
+}
+
+pub fn makeInvalidIn(allocator: Allocator, token: Token, region: ?*NodeRegion) !*AstNode {
     const node = try allocNode(allocator);
     node.* = .{
         .kind = .invalid_bracket,
@@ -296,10 +409,16 @@ pub fn makeInvalid(allocator: Allocator, token: Token) !*AstNode {
         .missing = token.bracket_ids,
         .data = .{ .invalid_bracket = .{ .info = token.bracket.?, .missing = token.bracket_ids } },
     };
+    node.region = region;
+    if (region) |owner| owner.live_nodes += 1;
     return node;
 }
 
 pub fn makePair(allocator: Allocator, opening: *AstNode, child: *AstNode, closing: ?*AstNode) !*AstNode {
+    return makePairIn(allocator, opening, child, closing, null);
+}
+
+pub fn makePairIn(allocator: Allocator, opening: *AstNode, child: *AstNode, closing: ?*AstNode, region: ?*NodeRegion) !*AstNode {
     const node = try allocNode(allocator);
     var length = opening.length;
     length = lengthAdd(length, child.length);
@@ -311,11 +430,18 @@ pub fn makePair(allocator: Allocator, opening: *AstNode, child: *AstNode, closin
         .missing = child.missing,
         .data = .{ .pair = .{ .opening = opening, .child = child, .closing = closing } },
     };
+    node.region = region;
+    if (region) |owner| owner.live_nodes += 1;
     return node;
 }
 
 pub fn makeList(allocator: Allocator, items: []const *AstNode, height: u32) !*AstNode {
+    return makeListIn(allocator, items, height, null);
+}
+
+pub fn makeListIn(allocator: Allocator, items: []const *AstNode, height: u32, region: ?*NodeRegion) !*AstNode {
     var children = ArrayList(*AstNode).init(allocator);
+    if (items.len > 0) try children.ensureTotalCapacity(@max(@as(usize, 3), items.len));
     try children.appendSlice(items);
     var length: Length = 0;
     var missing = SmallImmutableSet.empty();
@@ -331,6 +457,8 @@ pub fn makeList(allocator: Allocator, items: []const *AstNode, height: u32) !*As
         .missing = missing,
         .data = .{ .list = .{ .children = children, .mutable = true } },
     };
+    node.region = region;
+    if (region) |owner| owner.live_nodes += 1;
     return node;
 }
 
@@ -340,6 +468,10 @@ pub fn makeEmptyList(allocator: Allocator) !*AstNode {
 
 /// Upstream `ListAstNode.create23`.
 pub fn create23(allocator: Allocator, item1: *AstNode, item2: *AstNode, item3: ?*AstNode) !*AstNode {
+    return create23In(allocator, item1, item2, item3, null);
+}
+
+pub fn create23In(allocator: Allocator, item1: *AstNode, item2: *AstNode, item3: ?*AstNode, region: ?*NodeRegion) !*AstNode {
     if (item1.list_height != item2.list_height) return error.InvalidListHeights;
     if (item3) |third| {
         if (item1.list_height != third.list_height) return error.InvalidListHeights;
@@ -352,5 +484,5 @@ pub fn create23(allocator: Allocator, item1: *AstNode, item2: *AstNode, item3: ?
         items[2] = third;
         count = 3;
     }
-    return try makeList(allocator, items[0..count], item1.list_height + 1);
+    return try makeListIn(allocator, items[0..count], item1.list_height + 1, region);
 }

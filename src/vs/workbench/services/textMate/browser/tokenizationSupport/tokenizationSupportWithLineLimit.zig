@@ -22,7 +22,7 @@ pub const TokenizationSupportWithLineLimit = struct {
     limit: usize,
 
     pub fn interface(self: *TokenizationSupportWithLineLimit) languages.ITokenizationSupport {
-        return .{ .context = self, .vtable = &.{ .getInitialState = getInitialState, .tokenizeEncoded = tokenizeEncoded } };
+        return .{ .context = self, .vtable = &.{ .getInitialState = getInitialState, .tokenizeEncoded = tokenizeEncoded, .tokenizeEncodedWithStateAllocator = tokenizeEncodedWithStateAllocator } };
     }
 
     fn getInitialState(context: *anyopaque, allocator: std.mem.Allocator) !languages.IState {
@@ -34,6 +34,12 @@ pub const TokenizationSupportWithLineLimit = struct {
         const self: *TokenizationSupportWithLineLimit = @ptrCast(@alignCast(context));
         if (atLimit(line, self.limit)) return nullTokenizeEncoded(allocator, self.encoded_language_id, state);
         return self.actual.tokenizeEncoded(allocator, line, has_eol, state);
+    }
+
+    fn tokenizeEncodedWithStateAllocator(context: *anyopaque, scratch: std.mem.Allocator, state_allocator: std.mem.Allocator, line: []const u8, has_eol: bool, state: languages.IState) !languages.EncodedTokenizationResult {
+        const self: *TokenizationSupportWithLineLimit = @ptrCast(@alignCast(context));
+        if (atLimit(line, self.limit)) return nullTokenizeEncoded(scratch, self.encoded_language_id, state);
+        return self.actual.tokenizeEncodedWithStateAllocator(scratch, state_allocator, line, has_eol, state);
     }
 };
 

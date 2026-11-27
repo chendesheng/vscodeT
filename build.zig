@@ -1019,7 +1019,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
             bench_file,
             "src/tests.zig",
         ),
-        .filters = &.{"benchmark:"},
+        .filters = &.{b.option([]const u8, "bench-filter", "Filter file-open performance benchmarks") orelse "benchmark:"},
     });
     const run_bench_tests = b.addRunArtifact(bench_tests);
     const bench_test_step = b.step("bench-open", "Run the Debug open/edit benchmarks");

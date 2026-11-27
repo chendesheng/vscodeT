@@ -53,6 +53,14 @@ pub const ContiguousTokensStore = struct {
         return self._lineTokens.items.len > 0;
     }
 
+    /// The exact condition under which tokensForLine synthesizes a single
+    /// default token. A synchronous reader need not allocate that token.
+    pub fn hasDefaultTokens(self: *const ContiguousTokensStore, lineIndex: usize) bool {
+        if (lineIndex >= self._len) return true;
+        const cached = self._lineTokens.items[lineIndex] orelse return true;
+        return cached.items.len == 0;
+    }
+
     /// Takes ownership of `lineText`.
     pub fn getTokens(self: *ContiguousTokensStore, topLevelLanguageId: []const u8, lineIndex: usize, lineText: ArrayList(u8)) !LineTokens {
         errdefer lineText.deinit();
@@ -67,13 +75,9 @@ pub const ContiguousTokensStore = struct {
         var tokens = ArrayList(TokenPacked).init(self._lineTokens.allocator);
         errdefer tokens.deinit();
 
-        if (lineIndex < self._len) {
-            if (self._lineTokens.items[lineIndex]) |cached| {
-                if (cached.items.len > 0) {
-                    try tokens.appendSlice(cached.items);
-                    return tokens;
-                }
-            }
+        if (!self.hasDefaultTokens(lineIndex)) {
+            try tokens.appendSlice(self._lineTokens.items[lineIndex].?.items);
+            return tokens;
         }
 
         const encodedLanguageId = try self._languageIdCodec.encodeLanguageId(topLevelLanguageId);

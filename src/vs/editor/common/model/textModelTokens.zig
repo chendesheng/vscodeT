@@ -444,7 +444,7 @@ pub const TokenizationStateStore = struct {
 /// arena and copied by the caller before the next reset; the end state is
 /// cloned into the long-lived state arena so it survives the reset.
 fn safeTokenize(scratch: Allocator, state_allocator: Allocator, languageIdCodec: *LanguageIdCodec, languageId: []const u8, tokenizationSupport: ITokenizationSupport, text: []const u8, hasEOL: bool, state: IState) !EncodedTokenizationResult {
-    var r: ?EncodedTokenizationResult = tokenizationSupport.tokenizeEncoded(scratch, text, hasEOL, state) catch null;
+    var r: ?EncodedTokenizationResult = tokenizationSupport.tokenizeEncodedWithStateAllocator(scratch, state_allocator, text, hasEOL, state) catch null;
     if (r == null) {
         r = try nullTokenizeEncoded(scratch, @fromBackingInt(@intCast(try languageIdCodec.encodeLanguageId(languageId))), state);
     }

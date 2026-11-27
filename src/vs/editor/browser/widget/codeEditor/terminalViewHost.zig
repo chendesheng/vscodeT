@@ -1514,8 +1514,8 @@ test "TerminalViewHost: margin geometry does not materialize bracket decorations
     const host = try TerminalViewHost.init(a, editor);
     defer host.deinit();
     const brackets = editor.model.bracketPairs();
-    try std.testing.expect(brackets._dirty);
+    try std.testing.expect(!brackets.hasDocument());
     host.prepareFrame();
-    try std.testing.expect(brackets._dirty);
+    try std.testing.expect(!brackets.hasDocument());
     try std.testing.expectEqual(@as(usize, 1), editor.lineDecorationsWidth());
 }

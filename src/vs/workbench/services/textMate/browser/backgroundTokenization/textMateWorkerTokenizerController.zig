@@ -97,10 +97,10 @@ pub const Controller = struct {
 
         var text = try model.getValue(.TextDefined, false);
         defer text.deinit();
-        const owned_text = try std.heap.page_allocator.dupe(u8, text.items);
-        errdefer std.heap.page_allocator.free(owned_text);
-        const language_id = try std.heap.page_allocator.dupe(u8, model.getLanguageId());
-        errdefer std.heap.page_allocator.free(language_id);
+        const owned_text = try allocator.dupe(u8, text.items);
+        errdefer allocator.free(owned_text);
+        const language_id = try allocator.dupe(u8, model.getLanguageId());
+        errdefer allocator.free(language_id);
 
         host.enqueue(host.context, .{ .accept_new_model = .{
             .controller_id = id,
@@ -130,7 +130,7 @@ pub const Controller = struct {
     /// Applies one worker result. Takes ownership of `result` (including its
     /// serialized tokens and state diffs).
     pub fn applyResult(self: *Controller, result: *protocol.TokensAndStates) void {
-        defer result.deinit(std.heap.page_allocator);
+        defer result.deinit(self.allocator);
         if (self.disposed or result.controller_id != self.id) return;
 
         // Apply changes the worker has already incorporated to the local
@@ -296,16 +296,16 @@ pub const Controller = struct {
             return;
         };
 
-        const changes = std.heap.page_allocator.alloc(protocol.Change, event.changes.items.len) catch return;
+        const changes = self.allocator.alloc(protocol.Change, event.changes.items.len) catch return;
         var built: usize = 0;
         for (event.changes.items, 0..) |change, i| {
-            const text = std.heap.page_allocator.dupe(u8, change.text.items()) catch break;
+            const text = self.allocator.dupe(u8, change.text.items()) catch break;
             changes[i] = .{ .range = change.range, .text = text };
             built += 1;
         }
         if (built != event.changes.items.len) {
-            for (changes[0..built]) |*change| change.deinit(std.heap.page_allocator);
-            std.heap.page_allocator.free(changes);
+            for (changes[0..built]) |*change| change.deinit(self.allocator);
+            self.allocator.free(changes);
             return;
         }
         self.host.enqueue(self.host.context, .{ .accept_model_changed = .{

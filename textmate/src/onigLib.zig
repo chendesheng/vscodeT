@@ -257,7 +257,7 @@ pub const OnigScanner = struct {
         const base = string.content.ptr;
         const end = base + string.content.len;
 
-        var best: ?Match = null;
+        var best_index: ?usize = null;
         var best_utf8_start: usize = 0;
 
         for (self.regexes, self.regions, 0..) |regex, region, regex_index| {
@@ -272,36 +272,32 @@ pub const OnigScanner = struct {
             );
             if (status < 0) continue; // ONIG_MISMATCH or a search error
 
-            const num_regs: usize = @intCast(region.num_regs);
-            const captures = try self.allocator.alloc(CaptureIndex, num_regs);
-            errdefer self.allocator.free(captures);
-
-            var i: usize = 0;
-            while (i < num_regs) : (i += 1) {
-                const raw_start = region.beg[i];
-                const raw_end = region.end[i];
-                const capture_start = if (raw_start < 0) 0 else string.utf8ToUtf16(@intCast(raw_start));
-                const capture_end = if (raw_end < 0) 0 else string.utf8ToUtf16(@intCast(raw_end));
-                captures[i] = .{
-                    .start = capture_start,
-                    .end = capture_end,
-                    .length = if (capture_end >= capture_start) capture_end - capture_start else 0,
-                };
-            }
-
             const location: usize = if (region.beg[0] < 0) 0 else @intCast(region.beg[0]);
-            if (best == null or location < best_utf8_start) {
-                if (best) |previous| previous.deinit(self.allocator);
-                best = .{ .index = regex_index, .capture_indices = captures };
+            if (best_index == null or location < best_utf8_start) {
+                best_index = regex_index;
                 best_utf8_start = location;
-            } else {
-                self.allocator.free(captures);
             }
 
             if (location == utf8_start) break;
         }
 
-        return best;
+        // Each regex has its own persistent OnigRegion. Allocate and convert
+        // the captures only for the winning match, like the upstream scanner.
+        const index = best_index orelse return null;
+        const region = self.regions[index];
+        const captures = try self.allocator.alloc(CaptureIndex, @intCast(region.num_regs));
+        for (captures, 0..) |*capture, i| {
+            const raw_start = region.beg[i];
+            const raw_end = region.end[i];
+            const capture_start = if (raw_start < 0) 0 else string.utf8ToUtf16(@intCast(raw_start));
+            const capture_end = if (raw_end < 0) 0 else string.utf8ToUtf16(@intCast(raw_end));
+            capture.* = .{
+                .start = capture_start,
+                .end = capture_end,
+                .length = if (capture_end >= capture_start) capture_end - capture_start else 0,
+            };
+        }
+        return .{ .index = index, .capture_indices = captures };
     }
 };
 
@@ -386,6 +382,26 @@ test "onig scanner returns utf16 captures" {
     try std.testing.expectEqual(@as(usize, 0), found.index);
     try std.testing.expectEqual(@as(usize, 2), found.capture_indices[0].start);
     try std.testing.expectEqual(@as(usize, 4), found.capture_indices[0].end);
+    try std.testing.expectEqual(@as(usize, 3), found.capture_indices[1].start);
+    try std.testing.expectEqual(@as(usize, 4), found.capture_indices[1].end);
+}
+
+test "onig scanner allocates captures only for the earliest match" {
+    const allocator = std.testing.allocator;
+    var lib = OnigLib.init(allocator);
+    const onig = lib.interface();
+    const scanner = try onig.createOnigScanner(&.{ "(z)", "(b)", "(b)" });
+    defer scanner.deinit();
+    const string = try onig.createOnigString("😀abz");
+    defer string.deinit();
+    // The first expression matches, but loses to the earlier second match.
+    // The third ties and must not replace it. One allocation is sufficient.
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 1 });
+    scanner.allocator = failing.allocator();
+    defer scanner.allocator = allocator;
+    const found = (try scanner.findNextMatchSync(string, 0, FindOption.none)).?;
+    defer found.deinit(failing.allocator());
+    try std.testing.expectEqual(@as(usize, 1), found.index);
     try std.testing.expectEqual(@as(usize, 3), found.capture_indices[1].start);
     try std.testing.expectEqual(@as(usize, 4), found.capture_indices[1].end);
 }

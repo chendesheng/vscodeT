@@ -269,7 +269,7 @@ pub const Tokenizer = struct {
         if (@import("../../tokenizationSupport/tokenizationSupportWithLineLimit.zig").atLimit(line, self.max_tokenization_line_length)) {
             result = nullTokenizeEncoded(scratch, @fromBackingInt(@intCast(self.encoded_language_id)), state) catch null;
         } else if (self.tokenizer != null) {
-            result = support.tokenizeEncoded(scratch, line, true, state) catch null;
+            result = support.tokenizeEncodedWithStateAllocator(scratch, state_allocator, line, true, state) catch null;
         }
         if (result == null) {
             result = nullTokenizeEncoded(scratch, @fromBackingInt(@intCast(self.encoded_language_id)), state) catch null;

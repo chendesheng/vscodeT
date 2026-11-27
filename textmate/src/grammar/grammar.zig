@@ -2,8 +2,10 @@
 // (microsoft/vscode-textmate v9.3.2).
 //
 // Adaptation notes:
-//  * `Grammar` owns an arena for its cloned raw grammar, rule objects,
-//    attributed scope stacks and state stacks. Token arrays use a separate
+//  * `Grammar` owns an arena for its cloned raw grammar and rule objects.
+//    The standalone API keeps states there by default; an editor model can
+//    supply its own state allocator so its states are reclaimed on close.
+//    Token arrays use a separate
 //    scratch arena that is reset at the start of every `tokenizeLine*` call;
 //    the returned tokens are valid until the next call on the same grammar.
 //  * TypeScript callbacks/interfaces become explicit function-pointer
@@ -360,7 +362,21 @@ pub const Grammar = struct {
         prev_state: ?*StateStackImpl,
         time_limit: i64,
     ) !ITokenizeLineResult {
-        const result = try self.tokenizeInternal(line_text, prev_state, false, time_limit);
+        return self.tokenizeLineWithStateAllocator(line_text, prev_state, time_limit, self.arena.allocator());
+    }
+
+    /// Syntax state belongs to the consumer that retains it (e.g. a document
+    /// tokenization store), not necessarily to the shared grammar. All prior
+    /// states supplied to this call must remain alive until its result is
+    /// released, since immutable parent frames may be shared.
+    pub fn tokenizeLineWithStateAllocator(
+        self: *Grammar,
+        line_text: []const u8,
+        prev_state: ?*StateStackImpl,
+        time_limit: i64,
+        state_allocator: Allocator,
+    ) !ITokenizeLineResult {
+        const result = try self.tokenizeInternal(line_text, prev_state, false, time_limit, state_allocator);
         return .{
             .tokens = result.token_handler.getTokenResult(result.rule_stack, result.line_length),
             .fonts = result.token_handler.getFontResult(),
@@ -375,7 +391,7 @@ pub const Grammar = struct {
         prev_state: ?*StateStackImpl,
         time_limit: i64,
     ) !ITokenizeLineResult2 {
-        const result = try self.tokenizeInternal(line_text, prev_state, true, time_limit);
+        const result = try self.tokenizeInternal(line_text, prev_state, true, time_limit, self.arena.allocator());
         return .{
             .tokens = result.token_handler.getBinaryTokenResult(result.rule_stack, result.line_length),
             .fonts = result.token_handler.getFontResult(),
@@ -397,6 +413,7 @@ pub const Grammar = struct {
         prev_state: ?*StateStackImpl,
         emit_binary: bool,
         time_limit: i64,
+        state_allocator: Allocator,
     ) !InternalResult {
         _ = self.token_arena.reset(.retain_capacity);
         _ = self.line_arena.reset(.retain_capacity);
@@ -465,9 +482,9 @@ pub const Grammar = struct {
             time_limit,
         );
 
-        var copy_context = CopyContext.init(self.allocator);
+        var copy_context = CopyContext.init(line_alloc);
         defer copy_context.deinit();
-        const persistent_stack = (try copyStateStack(&copy_context, self.arena.allocator(), outcome.stack)).?;
+        const persistent_stack = (try copyStateStack(&copy_context, state_allocator, outcome.stack)).?;
 
         return .{
             .line_length = line_length,
@@ -1435,4 +1452,19 @@ test "grammar tokenizes a simple match rule" {
     try std.testing.expectEqualStrings("foo", "foo");
     try std.testing.expectEqual(@as(usize, 0), result.tokens[0].start_index);
     try std.testing.expectEqual(@as(usize, 3), result.tokens[0].end_index);
+
+    // Model-owned line states do not accumulate in a shared grammar's arena
+    // when a sequence of documents uses it.
+    const grammar_capacity = grammar.arena.queryCapacity();
+    {
+        var document_state = std.heap.ArenaAllocator.init(allocator);
+        defer document_state.deinit();
+        for (0..200) |_| {
+            _ = try grammar.tokenizeLineWithStateAllocator("foo", null, 0, document_state.allocator());
+        }
+        try std.testing.expect(document_state.queryCapacity() > 0);
+        try std.testing.expectEqual(grammar_capacity, grammar.arena.queryCapacity());
+    }
+    const reopened = try grammar.tokenizeLine("foo", null, 0);
+    try std.testing.expectEqual(@as(usize, 1), reopened.tokens.len);
 }

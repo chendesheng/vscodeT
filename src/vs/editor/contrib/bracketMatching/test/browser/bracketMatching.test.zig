@@ -263,3 +263,24 @@ test "bracket matching: updateBrackets caches and only matches collapsed selecti
     const data2 = try fixture.controller.updateBrackets(&non_empty);
     try std.testing.expectEqual(@as(usize, 0), data2.len);
 }
+
+test "bracket matching: a query does not force syntax tokens outside the viewport" {
+    const allocator = std.testing.allocator;
+    var text = ArrayList(u8).init(allocator);
+    defer text.deinit();
+    try text.appendSlice("(a)\n");
+    for (0..600) |_| try text.appendSlice("{b}\n");
+    var fixture = try Fixture.init(allocator, text.items);
+    defer fixture.deinit();
+    const model = fixture.ctx.model;
+    model.forceTokenization(1);
+    const last_line = model.getLineCount();
+    try std.testing.expect(!model.hasAccurateTokensForLine(last_line));
+    const selections = [_]Selection{Selection.init(1, 2, 1, 2)};
+    const data = try fixture.controller.updateBrackets(&selections);
+    try std.testing.expect(data[0].brackets != null);
+    try std.testing.expect(!model.hasAccurateTokensForLine(last_line));
+    try fixture.ctx.applyEdit(Range.init(1, 2, 1, 2), "x");
+    _ = try fixture.controller.updateBrackets(&selections);
+    try std.testing.expect(!model.hasAccurateTokensForLine(last_line));
+}

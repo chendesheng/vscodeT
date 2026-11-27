@@ -1,8 +1,7 @@
 // Port of the `Basic` case from
 // `src/vs/editor/test/common/model/bracketPairColorizer/tokenizer.test.ts`.
 //
-// The port's Tokenizer precomputes the document tokens and exposes the same
-// peek/read/skip stream. The custom document below reproduces upstream's
+// The tokenizer exposes the peek/read/skip stream. The custom document below reproduces upstream's
 // TokenizedDocument for the two lines of the test.
 
 const std = @import("std");
@@ -91,7 +90,7 @@ test "bracket tokenizer: Basic" {
 
     var tokenizer = Tokenizer.init(allocator, ctx.model, ctx.languageConfigurationService, &ids, &bracket_map);
     defer tokenizer.deinit();
-    try tokenizer.tokenize();
+    tokenizer.enableLazy(false);
 
     const Expected = struct {
         text: []const u8,
@@ -114,7 +113,9 @@ test "bracket tokenizer: Basic" {
 
     var offset: tree.Length = 0;
     var index: usize = 0;
-    while (tokenizer.read()) |token| : (index += 1) {
+    while (true) : (index += 1) {
+        try tokenizer.prepare();
+        const token = tokenizer.read() orelse break;
         try std.testing.expect(index < expected.len);
         const want = expected[index];
         var text = try ctx.model.getValueInRange(tree.lengthsToRange(offset, tree.lengthAdd(offset, token.length)), .LF);
@@ -136,4 +137,20 @@ test "bracket tokenizer: Basic" {
         offset = tree.lengthAdd(offset, token.length);
     }
     try std.testing.expectEqual(expected.len, index);
+
+    // A reused AST subtree can jump across an entire line without producing
+    // its tokens. The following match still respects token metadata.
+    var seeking = Tokenizer.init(allocator, ctx.model, ctx.languageConfigurationService, &ids, &bracket_map);
+    defer seeking.deinit();
+    seeking.enableLazy(false);
+    seeking.skip(tree.toLength(1, 0));
+    try std.testing.expectEqual(@as(usize, 0), seeking.tokens.items.len);
+    try seeking.prepare();
+    const text_token = seeking.read().?;
+    try std.testing.expectEqual(tokenizer_mod.TokenKind.text, text_token.kind);
+    try std.testing.expectEqual(tree.toLength(0, 6), text_token.length);
+    const closing = seeking.read().?;
+    try std.testing.expectEqual(tokenizer_mod.TokenKind.closing_bracket, closing.kind);
+    try seeking.prepare();
+    try std.testing.expect(seeking.read() == null);
 }

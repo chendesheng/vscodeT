@@ -2,11 +2,8 @@
 //
 // The AST-backed queries and the upstream fallback matching/search helpers are
 // both ported. Terminal adaptation: bracket colorization and guides consume the
-// same AST. The view prepares it before resolving decorations; a large
-// document's initial build is deferred to the maintenance pass. Small documents
-// are tokenized eagerly so their first tree sees string/comment tokens; larger
-// ones start from upstream's fast tree and are rebuilt token-aware when the
-// background tokenizer completes. The AST resolves language configurations
+// same `BracketPairsTree`, whose initial and token-aware ASTs are maintained
+// independently until background tokenization completes. The AST resolves language configurations
 // through the resolved `LanguageConfigurationService`, as upstream does; the
 // upstream fallback matcher is used only above the AST size limit.
 const std = @import("std");
@@ -18,8 +15,6 @@ const Range = range_module.Range;
 const Position = @import("../../core/position.zig").Position;
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
 const tree = @import("./bracketPairsTree/bracketPairsTree.zig");
-const TextEditInfo = @import("./bracketPairsTree/beforeEditPositionMapper.zig").TextEditInfo;
-const combineTextEditInfos = @import("./bracketPairsTree/combineTextEditInfos.zig").combineTextEditInfos;
 const ModelContentChangedEvent = @import("../../textModelEvents.zig").ModelContentChangedEvent;
 const LanguageConfigurationServiceChangeEvent = @import("../../languages/languageConfigurationRegistry.zig").LanguageConfigurationServiceChangeEvent;
 const LanguageConfigurationService = @import("../../languages/languageConfigurationRegistry.zig").LanguageConfigurationService;
@@ -75,18 +70,8 @@ pub const BracketPairsTextModelPart = struct {
     allocator: Allocator,
     textModel: *TextModel,
     languageConfigurationService: *LanguageConfigurationService,
-    _brackets: ArrayList(BracketInfo),
-    _dirty: bool,
-    _fullRebuild: bool,
-    _building: bool,
-    _document: ?tree.ParsedDocument,
-    /// Whether the current document was parsed without token metadata. Such a
-    /// tree has to be rebuilt when background tokenization completes.
-    _uses_fast_tokens: bool,
-    _queuedEdits: ArrayList(TextEditInfo),
-    /// Stable opening-bracket ids for the lifetime of this tree, matching
-    /// upstream's single `DenseKeyProvider`.
-    _ids: tree.StringIdProvider,
+    bracketPairsTree: ?tree.BracketPairsTree,
+    bracketsRequested: bool,
     _onDidChange: Emitter(void),
 
     pub fn init(allocator: Allocator, textModel: *TextModel, languageConfigurationService: *LanguageConfigurationService) Self {
@@ -94,23 +79,14 @@ pub const BracketPairsTextModelPart = struct {
             .allocator = allocator,
             .textModel = textModel,
             .languageConfigurationService = languageConfigurationService,
-            ._brackets = ArrayList(BracketInfo).init(allocator),
-            ._dirty = true,
-            ._fullRebuild = true,
-            ._building = false,
-            ._document = null,
-            ._uses_fast_tokens = true,
-            ._queuedEdits = ArrayList(TextEditInfo).init(allocator),
-            ._ids = tree.StringIdProvider.init(allocator),
+            .bracketPairsTree = null,
+            .bracketsRequested = false,
             ._onDidChange = Emitter(void).init(allocator),
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self._brackets.deinit();
-        self._queuedEdits.deinit();
-        self._ids.deinit();
-        if (self._document) |*doc| doc.deinit();
+        if (self.bracketPairsTree) |*pairs| pairs.deinit();
         self._onDidChange.deinit();
     }
 
@@ -142,243 +118,82 @@ pub const BracketPairsTextModelPart = struct {
 
     /// Whether an AST has been built already.
     pub fn hasDocument(self: *const Self) bool {
-        return self._document != null;
+        return self.bracketPairsTree != null;
     }
 
     pub fn handleDidChangeContent(self: *Self, change: ModelContentChangedEvent) void {
-        if (self._fullRebuild or self._document == null) return;
-        var edits = ArrayList(TextEditInfo).init(self.allocator);
-        defer edits.deinit();
-        for (change.changes.items) |c| {
-            edits.append(.{
-                .startOffset = tree.toLength(c.range.startLineNumber - 1, c.range.startColumn - 1),
-                .endOffset = tree.toLength(c.range.endLineNumber - 1, c.range.endColumn - 1),
-                .newLength = tree.lengthOfString(c.text.items()),
-            }) catch {
-                self.markDirty();
-                return;
-            };
-        }
-        std.mem.reverse(TextEditInfo, edits.items);
-        if (self._queuedEdits.items.len == 0) {
-            self._queuedEdits.appendSlice(edits.items) catch {
-                self.markDirty();
-                return;
-            };
-        } else {
-            const combined = combineTextEditInfos(self.allocator, self._queuedEdits.items, edits.items) catch {
-                self.markDirty();
-                return;
-            };
-            self._queuedEdits.deinit();
-            self._queuedEdits = combined;
-        }
-        self._dirty = true;
-        if (!self._uses_fast_tokens) {
-            // Upstream fires when the token-aware tree is current; consumers
-            // (colorisation, guides) then know the tree must be rebuilt.
-            self._onDidChange.fire({}) catch {};
-        }
+        if (self.bracketPairsTree) |*pairs| pairs.handleContentChanged(change) catch self.markDirty();
     }
 
     pub fn handleDidChangeOptions(self: *Self) void {
-        self.markDirty();
-        self._onDidChange.fire({}) catch {};
+        self.resetBracketPairsTree();
     }
 
     pub fn handleDidChangeLanguage(self: *Self) void {
-        self.markDirty();
-        self._onDidChange.fire({}) catch {};
+        self.resetBracketPairsTree();
     }
 
-    /// Upstream invalidates the tree when a language configuration changes.
     /// Any changed language can affect this document (its own language or an
-    /// embedded one), so the port conservatively rebuilds.
+    /// embedded one), so the port conservatively resets the existing tree.
     pub fn handleLanguageConfigurationServiceChange(self: *Self, e: LanguageConfigurationServiceChangeEvent) void {
         _ = e;
-        self.markDirty();
-        self._onDidChange.fire({}) catch {};
+        self.resetBracketPairsTree();
     }
 
-    /// Upstream `handleDidChangeBackgroundTokenizationState`: the fast initial
-    /// tree is only a lower-fidelity stand-in, so replace it with the
-    /// token-aware tree once the background tokenizer has seen every line.
     pub fn handleDidChangeBackgroundTokenizationState(self: *Self) void {
-        if (!self.textModel.getOptions().bracketPairColorizationOptions.enabled) return;
-        const had_document = self._document != null;
-        self.markDirty();
-        if (had_document) {
-            // Running from the idle maintenance pass: update now so the view
-            // never repaints with the fast tree's colors once accurate tokens
-            // are available.
-            self.updateNow() catch {
-                self._onDidChange.fire({}) catch {};
-            };
-        } else {
-            self._onDidChange.fire({}) catch {};
-        }
+        if (self.bracketPairsTree) |*pairs| pairs.handleDidChangeBackgroundTokenizationState();
     }
 
-    /// Upstream `handleDidChangeTokens`: queue a same-length reparse of every
-    /// retokenized line range. While the initial fast tree is still in use,
-    /// token updates cannot change it; the background-tokenization completion
-    /// event performs the one-time switch to the token-aware tree instead.
     pub fn handleDidChangeTokens(self: *Self, event: ModelTokensChangedEvent) void {
-        if (self._uses_fast_tokens) {
-            if (self.textModel.getBackgroundTokenizationState() != .Completed) return;
-            self.markDirty();
-            self._onDidChange.fire({}) catch {};
-            return;
-        }
-        if (self._document == null or event.ranges.len == 0) return;
-
-        var edits = ArrayList(TextEditInfo).init(self.allocator);
-        defer edits.deinit();
-        for (event.ranges) |range| {
-            if (range.fromLineNumber == 0 or range.toLineNumber < range.fromLineNumber) continue;
-            edits.append(.{
-                .startOffset = tree.toLength(range.fromLineNumber - 1, 0),
-                .endOffset = tree.toLength(range.toLineNumber, 0),
-                .newLength = tree.toLength(range.toLineNumber - range.fromLineNumber + 1, 0),
-            }) catch {
-                self.markDirty();
-                return;
-            };
-        }
-        if (edits.items.len == 0) return;
-        if (self._queuedEdits.items.len == 0) {
-            self._queuedEdits.appendSlice(edits.items) catch {
-                self.markDirty();
-                return;
-            };
-        } else {
-            const combined = combineTextEditInfos(self.allocator, self._queuedEdits.items, edits.items) catch {
-                self.markDirty();
-                return;
-            };
-            self._queuedEdits.deinit();
-            self._queuedEdits = combined;
-        }
-        self._dirty = true;
-        if (!self._uses_fast_tokens) {
-            // Upstream fires when the token-aware tree is current; consumers
-            // (colorisation, guides) then know the tree must be rebuilt.
-            self._onDidChange.fire({}) catch {};
-        }
+        if (self.bracketPairsTree) |*pairs| pairs.handleDidChangeTokens(event) catch self.markDirty();
     }
 
+    /// A tokenization reset or failed queue allocation invalidates the tree.
+    /// Recreate it lazily at the next query; do not retain outdated roots.
     pub fn markDirty(self: *Self) void {
-        self._dirty = true;
-        self._fullRebuild = true;
-        self._queuedEdits.clearRetainingCapacity();
+        if (self.bracketPairsTree) |*pairs| pairs.deinit();
+        self.bracketPairsTree = null;
+    }
+
+    fn resetBracketPairsTree(self: *Self) void {
+        self.markDirty();
+        self.updateBracketPairsTree() catch {};
     }
 
     pub fn isDirty(self: *const Self) bool {
-        return self._dirty;
+        return if (self.bracketPairsTree) |*pairs| pairs.isDirty() else true;
     }
 
-    /// Builds/refreshes the AST immediately. Used by the deferred
-    /// bracket-guide pass in the terminal main loop.
     pub fn updateNow(self: *Self) !void {
         try self.ensureUpToDate();
     }
 
-    fn ensureUpToDate(self: *Self) !void {
-        if (self._building) {
-            self._dirty = true;
-            return;
-        }
-        if (!self._dirty) return;
-        self._dirty = false;
-        self._building = true;
-        defer self._building = false;
-        self._brackets.clearRetainingCapacity();
-
-        const full_rebuild = self._fullRebuild or self._document == null;
-        const colorization_enabled = self.textModel.getOptions().bracketPairColorizationOptions.enabled;
-        if (full_rebuild) {
-            if (colorization_enabled and self.textModel.getLineCount() <= tree.eager_build_line_count and
-                !tree.allLinesHaveAccurateTokens(self.textModel))
-            {
-                // Eager whole-document tokenization is only affordable for
-                // small documents; above the threshold the fast initial tree
-                // is used until the background tokenizer completes.
-                self.textModel.forceTokenization(self.textModel.getLineCount());
-            }
-            self._uses_fast_tokens = colorization_enabled and
-                !tree.allLinesHaveAccurateTokens(self.textModel) and
-                self.textModel.getBackgroundTokenizationState() != .Completed;
-        }
-
-        var doc: tree.ParsedDocument = undefined;
-        if (full_rebuild) {
-            doc = tree.parseDocument(self.allocator, self.textModel, self.languageConfigurationService, &self._ids) catch |err| {
-                self._dirty = true;
-                return err;
-            };
-        } else {
-            doc = tree.parseDocumentIncremental(self.allocator, self.textModel, self.languageConfigurationService, self._queuedEdits.items, self._document.?.root, &self._ids) catch blk: {
-                break :blk try tree.parseDocument(self.allocator, self.textModel, self.languageConfigurationService, &self._ids);
-            };
-        }
-        if (self._document) |*old| old.deinit();
-        self._document = doc;
-        self._dirty = false;
-        self._fullRebuild = false;
-        self._queuedEdits.clearRetainingCapacity();
-        var counts = std.StringHashMap(usize).init(self.allocator);
-        defer counts.deinit();
-        try self.walk(doc.root, 0, 0, &counts);
-
-        std.sort.heap(BracketInfo, self._brackets.items, {}, struct {
-            fn lessThan(_: void, a: BracketInfo, b: BracketInfo) bool {
-                return a._startOffset < b._startOffset;
-            }
-        }.lessThan);
-        self._onDidChange.fire({}) catch {};
+    fn forwardTreeChange(_: void, self: *Self) !void {
+        try self._onDidChange.fire({});
     }
 
-    fn walk(self: *Self, node: *tree.AstNode, nodeOffset: tree.Length, depth: usize, counts: *std.StringHashMap(usize)) !void {
-        switch (node.data) {
-            .text => {},
-            .invalid_bracket => |invalid| {
-                const range = tree.lengthsToRange(nodeOffset, tree.lengthAdd(nodeOffset, node.length));
-                try self.appendBracketInfo(invalid.info, range, @intCast(depth), 0, true);
-            },
-            .bracket => {
-                const range = tree.lengthsToRange(nodeOffset, tree.lengthAdd(nodeOffset, node.length));
-                try self.appendBracketInfo(node.data.bracket.info, range, @intCast(depth), 0, false);
-            },
-            .pair => |pair| {
-                const open = pair.opening;
-                const info = open.data.bracket.info;
-                const equalLevel = counts.get(info.bracket_text) orelse 0;
-                const openingRange = tree.lengthsToRange(nodeOffset, tree.lengthAdd(nodeOffset, open.length));
-                try self.appendBracketInfo(info, openingRange, @intCast(depth), equalLevel, false);
-                try counts.put(info.bracket_text, equalLevel + 1);
-                defer counts.put(info.bracket_text, equalLevel) catch {};
-                var offset = tree.lengthAdd(nodeOffset, open.length);
-                if (pair.child) |child| {
-                    try self.walk(child, offset, depth + 1, counts);
-                    offset = tree.lengthAdd(offset, child.length);
-                }
-
-                var closingRange: ?Range = null;
-                if (pair.closing) |closing| {
-                    const closeInfo = closing.data.bracket.info;
-                    closingRange = tree.lengthsToRange(offset, tree.lengthAdd(offset, closing.length));
-                    try self.appendBracketInfo(closeInfo, closingRange.?, @intCast(depth), equalLevel, false);
-                    offset = tree.lengthAdd(offset, closing.length);
-                }
-            },
-            .list => |list| {
-                var offset = nodeOffset;
-                for (list.children.items) |child| {
-                    try self.walk(child, offset, depth, counts);
-                    offset = tree.lengthAdd(offset, child.length);
-                }
-            },
+    fn updateBracketPairsTree(self: *Self) !void {
+        if (self.bracketsRequested and self.canBuildAst()) {
+            if (self.bracketPairsTree == null) {
+                self.bracketPairsTree = try tree.BracketPairsTree.init(self.allocator, self.textModel, self.languageConfigurationService);
+                errdefer self.markDirty();
+                try self.bracketPairsTree.?.onDidChange.event(self, forwardTreeChange);
+                self._onDidChange.fire({}) catch {};
+            }
+        } else if (self.bracketPairsTree != null) {
+            self.markDirty();
+            self._onDidChange.fire({}) catch {};
         }
+    }
+
+    fn ensureUpToDate(self: *Self) !void {
+        self.bracketsRequested = true;
+        try self.updateBracketPairsTree();
+        if (self.bracketPairsTree) |*pairs| try pairs.flushQueue();
+    }
+
+    fn visibleDocument(self: *const Self) ?tree.ParsedDocument {
+        return if (self.bracketPairsTree) |*pairs| pairs.visibleDocument() else null;
     }
 
     fn pairClosesColorized(pair: tree.PairData) bool {
@@ -388,24 +203,10 @@ pub const BracketPairsTextModelPart = struct {
         return true;
     }
 
-    fn appendBracketInfo(self: *Self, info: tree.BracketInfo, range: Range, depth: isize, equalLevel: usize, invalid: bool) !void {
-        try self._brackets.append(.{
-            .range = range,
-            .nestingLevel = depth,
-            .nestingLevelOfEqualBracketType = equalLevel,
-            .isInvalid = invalid,
-            .isColorized = info.colorized,
-            .bracketText = info.bracket_text,
-            .languageId = info.language_id,
-            ._startOffset = self.textModel.getOffsetAt(range.startPosition()),
-            ._endOffset = self.textModel.getOffsetAt(range.endPosition()),
-        });
-    }
-
     pub fn getBracketPairsInRange(self: *Self, range: Range) !ArrayList(BracketPairInfo) {
         if (!self.canBuildAst()) return ArrayList(BracketPairInfo).init(self.allocator);
         try self.ensureUpToDate();
-        const document = self._document orelse return ArrayList(BracketPairInfo).init(self.allocator);
+        const document = self.visibleDocument() orelse return ArrayList(BracketPairInfo).init(self.allocator);
         var result = ArrayList(BracketPairInfo).init(self.allocator);
         errdefer result.deinit();
         var counts = std.StringHashMap(usize).init(self.allocator);
@@ -427,7 +228,7 @@ pub const BracketPairsTextModelPart = struct {
         if (!self.canBuildAst()) return ArrayList(BracketPairWithMinIndentationInfo).init(self.allocator);
         try self.ensureUpToDate();
 
-        const document = self._document orelse return ArrayList(BracketPairWithMinIndentationInfo).init(self.allocator);
+        const document = self.visibleDocument() orelse return ArrayList(BracketPairWithMinIndentationInfo).init(self.allocator);
         var result = ArrayList(BracketPairWithMinIndentationInfo).init(self.allocator);
         errdefer result.deinit();
         var counts = std.StringHashMap(usize).init(self.allocator);
@@ -541,7 +342,7 @@ pub const BracketPairsTextModelPart = struct {
     pub fn getBracketsInRange(self: *Self, range: Range, onlyColorized: bool) !ArrayList(BracketInfo) {
         if (!self.canBuildAst()) return ArrayList(BracketInfo).init(self.allocator);
         try self.ensureUpToDate();
-        const document = self._document orelse return ArrayList(BracketInfo).init(self.allocator);
+        const document = self.visibleDocument() orelse return ArrayList(BracketInfo).init(self.allocator);
 
         const start_offset = tree.positionToLength(range.getStartPosition());
         const end_offset = tree.positionToLength(range.getEndPosition());
@@ -718,17 +519,34 @@ pub const BracketPairsTextModelPart = struct {
     pub fn hasUnmatchedClosingBracketAfter(self: *Self, position: Position, openingBracket: []const u8) bool {
         if (!self.canBuildAst()) return false;
         // The query is only meaningful once the AST can see every line.
-        var line_number: usize = 1;
-        while (line_number <= self.textModel.getLineCount()) : (line_number += 1) {
-            if (!self.textModel.hasAccurateTokensForLine(line_number)) return false;
-        }
+        if (!tree.allLinesHaveAccurateTokens(self.textModel)) return false;
         self.ensureUpToDate() catch return false;
-        const offset = self.textModel.getOffsetAt(position);
-        for (self._brackets.items) |bracket| {
-            if (!bracket.isInvalid or bracket._startOffset < offset) continue;
-            if (isClosingBracketOf(self.languageConfigurationService, bracket.languageId, openingBracket, bracket.bracketText)) return true;
+        const document = (self.bracketPairsTree orelse return false).astWithTokens;
+        return self.hasUnmatchedAfter(document.root, 0, tree.positionToLength(position), openingBracket);
+    }
+
+    /// Query the bracket tree directly rather than rebuilding a second flat
+    /// list of every bracket on each edit. The node's missing set identifies
+    /// subtrees which cannot contain any unexpected closing bracket.
+    fn hasUnmatchedAfter(self: *Self, node: *tree.AstNode, offset: tree.Length, position: tree.Length, opening: []const u8) bool {
+        if (node.missing.isEmpty() or tree.lengthLessThanEqual(tree.lengthAdd(offset, node.length), position)) return false;
+        switch (node.data) {
+            .invalid_bracket => |invalid| return tree.lengthLessThanEqual(position, offset) and
+                isClosingBracketOf(self.languageConfigurationService, invalid.info.language_id, opening, invalid.info.bracket_text),
+            .pair => |pair| return if (pair.child) |child|
+                self.hasUnmatchedAfter(child, tree.lengthAdd(offset, pair.opening.length), position, opening)
+            else
+                false,
+            .list => |list| {
+                var child_offset = offset;
+                for (list.children.items) |child| {
+                    if (self.hasUnmatchedAfter(child, child_offset, position, opening)) return true;
+                    child_offset = tree.lengthAdd(child_offset, child.length);
+                }
+                return false;
+            },
+            .text, .bracket => return false,
         }
-        return false;
     }
 
     pub fn findMatchingBracketUp(self: *Self, bracket: []const u8, position: Position, maxDuration: ?i64) ?Range {
@@ -751,7 +569,7 @@ pub const BracketPairsTextModelPart = struct {
     pub fn findPrevBracket(self: *Self, position: Position) ?BracketInfo {
         if (self.useFallbackMatcher()) return self.findPrevBracketFallback(position);
         self.ensureUpToDate() catch return null;
-        const document = self._document orelse return null;
+        const document = self.visibleDocument() orelse return null;
         return self.getFirstBracketBefore(
             document.root,
             0,
@@ -763,7 +581,7 @@ pub const BracketPairsTextModelPart = struct {
     pub fn findNextBracket(self: *Self, position: Position) ?BracketInfo {
         if (self.useFallbackMatcher()) return self.findNextBracketFallback(position);
         self.ensureUpToDate() catch return null;
-        const document = self._document orelse return null;
+        const document = self.visibleDocument() orelse return null;
         return self.getFirstBracketAfter(
             document.root,
             0,

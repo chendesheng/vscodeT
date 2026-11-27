@@ -11,6 +11,7 @@
 // UTF-8 byte offsets for the editor and keeps the editor's existing Dark+
 // `TokenTheme`/TokenMetadata pipeline.
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
 const tm = @import("vscode_textmate");
@@ -27,6 +28,11 @@ const tokenization = @import("../../languages/supports/tokenization.zig");
 const toStandardTokenType = tokenization.toStandardTokenType;
 const vscode_syntax = @import("vscode-syntax");
 const time_compat = @import("../../../../base/common/timeCompat.zig");
+// A grammar owns many small regex/capture and raw-grammar allocations.
+// Mapping a whole OS page for each one dominated memory and system calls in
+// the native allocation profile. The process-lifetime registry uses the
+// platform's general-purpose allocator instead.
+const registry_allocator = if (builtin.target.cpu.arch.isWasm()) std.heap.wasm_allocator else std.heap.smp_allocator;
 
 var initialized = false;
 var onig_lib: tm_main.OnigLib = undefined;
@@ -69,8 +75,8 @@ var grammar_load_mutex: std.Io.Mutex = .init;
 
 fn ensureInitialized() !void {
     if (initialized) return;
-    onig_lib = tm_main.OnigLib.init(std.heap.page_allocator);
-    registry = try tm_main.Registry.init(std.heap.page_allocator, .{
+    onig_lib = tm_main.OnigLib.init(registry_allocator);
+    registry = try tm_main.Registry.init(registry_allocator, .{
         .onig_lib = onig_lib.interface(),
         .context = &loader_context,
         .load_grammar = loadGrammar,
@@ -84,19 +90,19 @@ fn ensureInitialized() !void {
 pub fn registerGrammar(language: []const u8, scope: []const u8, data: []const u8) void {
     dynamic_grammars_mutex.lockUncancelable(time_compat.io);
     defer dynamic_grammars_mutex.unlock(time_compat.io);
-    if (dynamic_grammars == null) dynamic_grammars = std.array_list.Managed(DynamicGrammar).init(std.heap.page_allocator);
+    if (dynamic_grammars == null) dynamic_grammars = std.array_list.Managed(DynamicGrammar).init(registry_allocator);
     const list = &dynamic_grammars.?;
     for (list.items) |*entry| {
         if (!std.mem.eql(u8, entry.language, language)) continue;
         // Keep the old allocations alive: a worker thread may still be
         // parsing them. Grammar re-registration is rare and process-lifetime.
-        entry.scope = std.heap.page_allocator.dupe(u8, scope) catch return;
-        entry.data = std.heap.page_allocator.dupe(u8, data) catch return;
+        entry.scope = registry_allocator.dupe(u8, scope) catch return;
+        entry.data = registry_allocator.dupe(u8, data) catch return;
         return;
     }
-    const scope_copy = std.heap.page_allocator.dupe(u8, scope) catch return;
-    const data_copy = std.heap.page_allocator.dupe(u8, data) catch return;
-    const language_copy = std.heap.page_allocator.dupe(u8, language) catch return;
+    const scope_copy = registry_allocator.dupe(u8, scope) catch return;
+    const data_copy = registry_allocator.dupe(u8, data) catch return;
+    const language_copy = registry_allocator.dupe(u8, language) catch return;
     list.append(.{ .language = language_copy, .scope = scope_copy, .data = data_copy }) catch {};
 }
 
@@ -126,7 +132,7 @@ fn loadGrammar(_: *anyopaque, scope: []const u8) anyerror!?*tm_raw.RawGrammar {
     grammar_load_mutex.lockUncancelable(time_compat.io);
     defer grammar_load_mutex.unlock(time_compat.io);
     const dynamic_data = if (dynamicGrammarForScope(scope)) |entry| entry.data else null;
-    const allocator = std.heap.page_allocator;
+    const allocator = registry_allocator;
     const grammar = scopes.forScope(loader_context.grammars, scope);
     // The vendored YAML fallback covers the upstream parser limitation
     // documented alongside the bundled syntax assets.
@@ -149,8 +155,8 @@ fn loadGrammar(_: *anyopaque, scope: []const u8) anyerror!?*tm_raw.RawGrammar {
 fn installMarkdownCodeFences(markdown: *tm_raw.RawGrammar) !void {
     if (fence_grammar == null) {
         const fence_data = vscode_syntax.dataForScope("markdown.code.fences") orelse return;
-        const raw = try std.heap.page_allocator.create(tm_raw.RawGrammar);
-        raw.* = try tm.parseRawGrammar.parseRawGrammar(std.heap.page_allocator, fence_data, "embedded.json");
+        const raw = try registry_allocator.create(tm_raw.RawGrammar);
+        raw.* = try tm.parseRawGrammar.parseRawGrammar(registry_allocator, fence_data, "embedded.json");
         fence_grammar = raw;
     }
 
@@ -238,6 +244,11 @@ const TextMateSupport = struct {
     }
 
     fn tokenizeEncoded(ctx: *anyopaque, allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult {
+        const self: *TextMateSupport = @ptrCast(@alignCast(ctx));
+        return tokenizeEncodedWithStateAllocator(ctx, allocator, self.grammar.arena.allocator(), line, hasEOL, state);
+    }
+
+    fn tokenizeEncodedWithStateAllocator(ctx: *anyopaque, allocator: Allocator, state_allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult {
         _ = hasEOL;
         const self: *TextMateSupport = @ptrCast(@alignCast(ctx));
         const input: ?*TextMateState = if (state.vtable == &TextMateState.vtable)
@@ -248,7 +259,7 @@ const TextMateSupport = struct {
         // Upstream limits a line to 500 ms. A partial tokenization keeps the
         // input state so following lines are not derived from truncated token
         // state.
-        const result = try self.grammar.tokenizeLine(line, previous, 500);
+        const result = try self.grammar.tokenizeLineWithStateAllocator(line, previous, 500, state_allocator);
 
         var end_state = state;
         if (!result.stopped_early) {
@@ -277,6 +288,7 @@ const TextMateSupport = struct {
     pub const vtable = ITokenizationSupport.VTable{
         .getInitialState = getInitialState,
         .tokenizeEncoded = tokenizeEncoded,
+        .tokenizeEncodedWithStateAllocator = tokenizeEncodedWithStateAllocator,
         .dispose = dispose,
     };
 };

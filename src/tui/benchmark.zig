@@ -46,6 +46,150 @@ const Stage = struct {
     us: i64,
 };
 
+/// Measures requests to the application's allocator, including backing blocks
+/// requested by arenas. Counters are atomic because the workbench can pass
+/// the same allocator to background tasks. Arena-internal suballocations and
+/// libc/Oniguruma allocations are not counted.
+const AllocationCounter = struct {
+    child: Allocator,
+    allocs: std.atomic.Value(usize) = .init(0),
+    grows: std.atomic.Value(usize) = .init(0),
+    frees: std.atomic.Value(usize) = .init(0),
+    requested: std.atomic.Value(usize) = .init(0),
+    live: std.atomic.Value(usize) = .init(0),
+
+    const Snapshot = struct {
+        allocs: usize,
+        grows: usize,
+        frees: usize,
+        requested: usize,
+        live: usize,
+        us: i64,
+    };
+
+    fn snapshot(self: *const AllocationCounter) Snapshot {
+        return .{
+            .allocs = self.allocs.load(.monotonic),
+            .grows = self.grows.load(.monotonic),
+            .frees = self.frees.load(.monotonic),
+            .requested = self.requested.load(.monotonic),
+            .live = self.live.load(.monotonic),
+            .us = nowUs(time_compat.io),
+        };
+    }
+
+    fn report(self: *const AllocationCounter, name: []const u8, before: Snapshot) void {
+        const after = self.snapshot();
+        std.debug.print("[alloc] {s}: {d}us allocs={d} grows={d} frees={d} requested={d} live_delta={d} live={d}\n", .{
+            name,                       after.us - before.us,               after.allocs - before.allocs,                                     after.grows - before.grows,
+            after.frees - before.frees, after.requested - before.requested, @as(i64, @intCast(after.live)) - @as(i64, @intCast(before.live)), after.live,
+        });
+    }
+
+    fn allocator(self: *AllocationCounter) Allocator {
+        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, return_address: usize) ?[*]u8 {
+        const self: *AllocationCounter = @ptrCast(@alignCast(ctx));
+        const result = self.child.rawAlloc(len, alignment, return_address);
+        if (result != null) {
+            _ = self.allocs.fetchAdd(1, .monotonic);
+            _ = self.requested.fetchAdd(len, .monotonic);
+            _ = self.live.fetchAdd(len, .monotonic);
+        }
+        return result;
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, return_address: usize) bool {
+        const self: *AllocationCounter = @ptrCast(@alignCast(ctx));
+        const ok = self.child.rawResize(memory, alignment, new_len, return_address);
+        if (ok) self.accountResize(memory.len, new_len);
+        return ok;
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, return_address: usize) ?[*]u8 {
+        const self: *AllocationCounter = @ptrCast(@alignCast(ctx));
+        const result = self.child.rawRemap(memory, alignment, new_len, return_address);
+        if (result != null) self.accountResize(memory.len, new_len);
+        return result;
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, return_address: usize) void {
+        const self: *AllocationCounter = @ptrCast(@alignCast(ctx));
+        _ = self.frees.fetchAdd(1, .monotonic);
+        _ = self.live.fetchSub(memory.len, .monotonic);
+        self.child.rawFree(memory, alignment, return_address);
+    }
+
+    fn accountResize(self: *AllocationCounter, before: usize, after: usize) void {
+        if (after > before) {
+            _ = self.grows.fetchAdd(1, .monotonic);
+            _ = self.requested.fetchAdd(after - before, .monotonic);
+            _ = self.live.fetchAdd(after - before, .monotonic);
+        } else {
+            _ = self.live.fetchSub(before - after, .monotonic);
+        }
+    }
+};
+
+test "benchmark: allocation profile" {
+    if (!enabled()) return error.SkipZigTest;
+    const io = time_compat.io;
+    const path = benchFile();
+    try std.Io.Dir.cwd().access(io, path, .{});
+    var backing: std.heap.DebugAllocator(.{ .stack_trace_frames = 0 }) = .{};
+    defer _ = backing.deinit();
+    var counter = AllocationCounter{ .child = backing.allocator() };
+    const allocator = counter.allocator();
+    const initial = counter.snapshot();
+    {
+        var surface: ui.Surface = undefined;
+        try terminal_workbench.initWindowSurface(&surface, allocator, 140, 44);
+        defer surface.deinit();
+        const workbench = try @import("app.zig").startWorkbench(allocator, io, &surface, &.{path}, null);
+        defer workbench.deinit();
+        const tab = workbench.activeTab() orelse return error.TestUnexpectedResult;
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        defer out.deinit();
+        counter.report("open-model-and-workbench", initial);
+
+        var before = counter.snapshot();
+        try tab.view.refresh();
+        try renderFrame(workbench, &out.writer);
+        out.clearRetainingCapacity();
+        counter.report("first-frame", before);
+
+        before = counter.snapshot();
+        for (0..10) |_| {
+            _ = tab.editor.scrollViewLines(3);
+            try tab.view.refresh();
+            try renderFrame(workbench, &out.writer);
+            out.clearRetainingCapacity();
+        }
+        counter.report("scroll-10", before);
+
+        before = counter.snapshot();
+        for (0..10) |_| {
+            try tab.editor.moveDown(false);
+            try tab.view.refresh();
+            try renderFrame(workbench, &out.writer);
+            out.clearRetainingCapacity();
+        }
+        counter.report("cursor-10", before);
+
+        before = counter.snapshot();
+        for (0..3) |_| {
+            try tab.editor.insertText("x");
+            try tab.view.refresh();
+            try renderFrame(workbench, &out.writer);
+            out.clearRetainingCapacity();
+        }
+        counter.report("edit-3", before);
+    }
+    counter.report("open-through-disposal", initial);
+}
+
 fn printStages(iteration: usize, stages: []const Stage, extra: []const u8) void {
     std.debug.print("[bench] iteration {d}", .{iteration});
     for (stages) |stage| std.debug.print(" {s}={d}us", .{ stage.name, stage.us });

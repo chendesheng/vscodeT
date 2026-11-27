@@ -221,6 +221,9 @@ pub const ITokenizationSupport = struct {
         getInitialState: *const fn (context: *anyopaque, allocator: Allocator) anyerror!IState,
         tokenize: ?*const fn (context: *anyopaque, allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!TokenizationResult = null,
         tokenizeEncoded: *const fn (context: *anyopaque, allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult,
+        /// Native lifetime adaptation: a stateful tokenizer may allocate
+        /// retained state in the model's arena instead of its shared grammar.
+        tokenizeEncodedWithStateAllocator: ?*const fn (context: *anyopaque, scratch: Allocator, state_allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult = null,
         // Can be null if default background tokenization should be used.
         createBackgroundTokenizer: ?*const fn (context: *anyopaque, textModel: *TextModel, store: IBackgroundTokenizationStore) IBackgroundTokenizer = null,
         dispose: ?*const fn (context: *anyopaque) void = null,
@@ -232,6 +235,11 @@ pub const ITokenizationSupport = struct {
 
     pub fn tokenizeEncoded(self: ITokenizationSupport, allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult {
         return self.vtable.tokenizeEncoded(self.context, allocator, line, hasEOL, state);
+    }
+
+    pub fn tokenizeEncodedWithStateAllocator(self: ITokenizationSupport, scratch: Allocator, state_allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult {
+        if (self.vtable.tokenizeEncodedWithStateAllocator) |tokenize_fn| return tokenize_fn(self.context, scratch, state_allocator, line, hasEOL, state);
+        return self.tokenizeEncoded(scratch, line, hasEOL, state);
     }
 
     pub fn createBackgroundTokenizer(self: ITokenizationSupport, textModel: *TextModel, store: IBackgroundTokenizationStore) ?IBackgroundTokenizer {

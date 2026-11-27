@@ -42,6 +42,7 @@ pub const Factory = struct {
         self.command_queue = protocol.CommandQueue.init(&self.command_buffer);
         self.result_queue = protocol.ResultQueue.init(&self.result_buffer);
         self.context = .{
+            .allocator = allocator,
             .io = self.io,
             .commands = &self.command_queue,
             .results = &self.result_queue,
@@ -93,13 +94,13 @@ pub const Factory = struct {
         while (true) {
             const count = self.command_queue.getUncancelable(self.io, &commands, 0) catch break;
             if (count == 0) break;
-            for (commands[0..count]) |*command| command.deinit(std.heap.page_allocator);
+            for (commands[0..count]) |*command| command.deinit(self.allocator);
         }
         var results: [32]protocol.TokensAndStates = undefined;
         while (true) {
             const count = self.result_queue.getUncancelable(self.io, &results, 0) catch break;
             if (count == 0) break;
-            for (results[0..count]) |*result| result.deinit(std.heap.page_allocator);
+            for (results[0..count]) |*result| result.deinit(self.allocator);
         }
     }
 
@@ -144,7 +145,7 @@ pub const Factory = struct {
         const self: *Factory = @ptrCast(@alignCast(context));
         if (self.disabled) {
             var owned = command;
-            owned.deinit(std.heap.page_allocator);
+            owned.deinit(self.allocator);
             return;
         }
         self.context.enqueue(command);
@@ -172,7 +173,7 @@ pub const Factory = struct {
                     controller.applyResult(result);
                     changed = true;
                 } else {
-                    result.deinit(std.heap.page_allocator);
+                    result.deinit(self.allocator);
                 }
             }
         }

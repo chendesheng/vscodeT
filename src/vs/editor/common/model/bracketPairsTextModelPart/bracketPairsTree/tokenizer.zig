@@ -18,6 +18,7 @@ const lengthDiff = length_mod.lengthDiff;
 const lengthBetween = length_mod.lengthBetween;
 const lengthIsZero = length_mod.lengthIsZero;
 const lengthLessThan = length_mod.lengthLessThan;
+const lengthToPosition = length_mod.lengthToPosition;
 const set_mod = @import("./smallImmutableSet.zig");
 const SmallImmutableSet = set_mod.SmallImmutableSet;
 const brackets_mod = @import("./brackets.zig");
@@ -72,6 +73,13 @@ pub const Token = struct {
 };
 
 pub const Tokenizer = struct {
+    const CachedToken = struct {
+        language: []const u8,
+        text: []const u8,
+        opening: bool,
+        token: Token,
+    };
+
     allocator: Allocator,
     model: *TextModel,
     languageConfigurationService: *LanguageConfigurationService,
@@ -82,6 +90,9 @@ pub const Tokenizer = struct {
     tokenIndex: usize = 0,
     tokenOffset: Length = 0,
     offset: Length = 0,
+    lazy: bool = false,
+    lazy_fast: bool = false,
+    cached_tokens: std.ArrayList(CachedToken) = .empty,
 
     pub fn init(allocator: Allocator, model: *TextModel, languageConfigurationService: *LanguageConfigurationService, ids: *StringIdProvider, brackets: *std.StringHashMap(LanguageBrackets)) Tokenizer {
         return .{
@@ -97,6 +108,7 @@ pub const Tokenizer = struct {
 
     pub fn deinit(self: *Tokenizer) void {
         self.tokens.deinit();
+        self.cached_tokens.deinit(self.allocator);
     }
 
     /// A tokenizer over an already tokenized stream, without a text model.
@@ -131,11 +143,24 @@ pub const Tokenizer = struct {
 
     pub fn read(self: *Tokenizer) ?Token {
         const token = self.remaining() orelse return null;
-        self.skip(token.length);
+        self.advanceBuffered(token.length);
         return token;
     }
 
     pub fn skip(self: *Tokenizer, length: Length) void {
+        if (self.lazy) {
+            // Upstream TextBufferTokenizer.skip seeks directly to the new
+            // line/column; cached AST subtrees are never tokenized.
+            self.offset = lengthAdd(self.offset, length);
+            self.tokens.clearRetainingCapacity();
+            self.tokenIndex = 0;
+            self.tokenOffset = 0;
+            return;
+        }
+        self.advanceBuffered(length);
+    }
+
+    fn advanceBuffered(self: *Tokenizer, length: Length) void {
         var remainingLength = length;
         while (remainingLength != 0) {
             if (self.tokenIndex >= self.tokens.items.len) return;
@@ -154,6 +179,30 @@ pub const Tokenizer = struct {
         }
     }
 
+    /// The parser asks for tokens only when no old AST node can be reused.
+    /// Keep a small line-local buffer, not a whole-document token array.
+    pub fn enableLazy(self: *Tokenizer, fast: bool) void {
+        self.lazy = true;
+        self.lazy_fast = fast;
+    }
+
+    pub fn prepare(self: *Tokenizer) !void {
+        if (!self.lazy or self.remaining() != null) return;
+        self.tokens.clearRetainingCapacity();
+        self.tokenIndex = 0;
+        self.tokenOffset = 0;
+        self.cursor = lengthToPosition(self.offset);
+        const line_count = self.model.getLineCount();
+        var line = self.cursor.lineNumber;
+        var start = self.cursor.column - 1;
+        while (line <= line_count) : (line += 1) {
+            try self.scanLine(line, start, self.lazy_fast);
+            if (self.tokens.items.len != 0) return;
+            start = 0;
+        }
+        try self.emitText(Position.init(line_count, self.model.getLineMaxColumn(line_count)));
+    }
+
     pub fn textLengthUntil(self: *Tokenizer, position: Position) Length {
         return lengthBetween(self.cursor, position);
     }
@@ -166,121 +215,80 @@ pub const Tokenizer = struct {
         }
     }
 
-    /// Upstream's `FastTokenizer`: an initial AST without token metadata.
-    /// It scans the text with the language's bracket regexes and deliberately
-    /// ignores string/comment token types. VS Code uses it for the first
-    /// bracket colorization/guide pass and switches to the token-aware tree
-    /// when background tokenization completes; the terminal has no
-    /// whole-document background tokenizer, so this remains the guide tree.
+    /// Upstream's FastTokenizer and TextBufferTokenizer share bracket lookup
+    /// and matching. The eager methods remain available for tokenizer tests.
     pub fn tokenizeFast(self: *Tokenizer) !void {
-        const line_count = self.model.getLineCount();
-        var line_number: usize = 1;
-        while (line_number <= line_count) : (line_number += 1) {
-            var line_content = try self.model.getLineContent(line_number);
-            defer line_content.deinit();
-            const text = line_content.items;
-            if (text.len == 0) continue;
-
-            const language = self.model.getLanguageId();
-            const defs = try self.getBrackets(language);
-            if (defs.defs.items.len == 0) continue;
-
-            var pos: usize = 0;
-            while (pos < text.len) {
-                if (matchAt(text, pos, text.len, defs, true)) |open| {
-                    if (matchAt(text, pos, text.len, defs, false)) |close| {
-                        if (close.len >= open.len) {
-                            try self.emitBracket(line_number, pos, close, false, language);
-                            pos += close.len;
-                            continue;
-                        }
-                    }
-                    try self.emitBracket(line_number, pos, open, true, language);
-                    pos += open.len;
-                    continue;
-                }
-                if (matchAt(text, pos, text.len, defs, false)) |close| {
-                    try self.emitBracket(line_number, pos, close, false, language);
-                    pos += close.len;
-                    continue;
-                }
-                pos += utf8Len(text[pos..]);
-            }
-        }
-
-        const end = Position.init(line_count, self.model.getLineMaxColumn(line_count));
-        try self.emitText(end);
+        try self.tokenizeAll(true);
     }
 
     pub fn tokenize(self: *Tokenizer) !void {
-        var lineNumber: usize = 1;
-        while (lineNumber <= self.model.getLineCount()) : (lineNumber += 1) {
-            var lineContent = try self.model.getLineContent(lineNumber);
-            defer lineContent.deinit();
-            var lineTokens = try self.model.tokenization().getLineTokens(lineNumber);
-            defer lineTokens.deinit();
-            const text = lineContent.items;
-            if (text.len == 0) continue;
+        try self.tokenizeAll(false);
+    }
 
-            var tokenIndex: usize = 0;
-            var pos: usize = 0;
-            while (pos < text.len) {
-                const hasTokens = lineTokens.getCount() > 0;
-                if (hasTokens) {
-                    while (tokenIndex + 1 < lineTokens.getCount() and lineTokens.getEndOffset(tokenIndex) <= pos) tokenIndex += 1;
-                    // Upstream merges adjacent runs with identical metadata:
-                    // identifiers are often split into several tokens, and a
-                    // word bracket such as `begin` must match across them.
-                    while (tokenIndex + 1 < lineTokens.getCount() and
-                        lineTokens.getMetadata(tokenIndex) == lineTokens.getMetadata(tokenIndex + 1))
-                    {
-                        tokenIndex += 1;
-                    }
-                }
-                const token_end = if (hasTokens) @min(lineTokens.getEndOffset(tokenIndex), text.len) else text.len;
-                if (token_end <= pos) break;
-                if (!hasTokens or lineTokens.getStandardTokenType(tokenIndex) != .Other or !lineTokens.getMetadata(tokenIndex).balancedBrackets) {
-                    pos = token_end;
-                    continue;
-                }
-                const tokenLanguage = lineTokens.getLanguageId(tokenIndex);
-                // Port adaptation: TextMate tokens leave the language id at
-                // `nullLanguage`; use the model language for those tokens, as
-                // the upstream fallback matcher does.
-                const language = if (std.mem.eql(u8, tokenLanguage, NULL_LANGUAGE_ID))
-                    self.model.getLanguageId()
-                else
-                    tokenLanguage;
-                const defs = try self.getBrackets(language);
-                if (defs.defs.items.len == 0) {
-                    pos = token_end;
-                    continue;
-                }
-                while (pos < token_end) {
-                    if (matchAt(text, pos, token_end, defs, true)) |open| {
-                        if (matchAt(text, pos, token_end, defs, false)) |close| {
-                            if (close.len >= open.len) {
-                                try self.emitBracket(lineNumber, pos, close, false, language);
-                                pos += close.len;
-                                continue;
-                            }
-                        }
-                        try self.emitBracket(lineNumber, pos, open, true, language);
-                        pos += open.len;
-                        continue;
-                    }
-                    if (matchAt(text, pos, token_end, defs, false)) |close| {
-                        try self.emitBracket(lineNumber, pos, close, false, language);
-                        pos += close.len;
-                        continue;
-                    }
-                    pos += utf8Len(text[pos..]);
-                }
-            }
+    fn tokenizeAll(self: *Tokenizer, fast: bool) !void {
+        const line_count = self.model.getLineCount();
+        for (1..line_count + 1) |line| try self.scanLine(line, 0, fast);
+        try self.emitText(Position.init(line_count, self.model.getLineMaxColumn(line_count)));
+    }
+
+    fn scanLine(self: *Tokenizer, line_number: usize, start: usize, fast: bool) !void {
+        // TextBufferTokenizer's default token covers the entire line with
+        // balanced-bracket metadata. Scan its borrowed content directly
+        // rather than allocating the identical synthetic token and line copy.
+        if (fast or self.model.tokenization().hasDefaultTokens(line_number)) {
+            const text = try self.model.borrowLineContent(line_number);
+            try self.scanRange(line_number, text, @min(start, text.len), text.len, self.model.getLanguageId());
+            return;
         }
 
-        const end = Position.init(self.model.getLineCount(), self.model.getLineMaxColumn(self.model.getLineCount()));
-        try self.emitText(end);
+        var line_tokens = try self.model.tokenization().getLineTokens(line_number);
+        defer line_tokens.deinit();
+        const text = line_tokens.getLineContent();
+        var pos = @min(start, text.len);
+        var token_index: usize = 0;
+        while (pos < text.len) {
+            const has_tokens = line_tokens.getCount() > 0;
+            if (has_tokens) {
+                while (token_index + 1 < line_tokens.getCount() and line_tokens.getEndOffset(token_index) <= pos) token_index += 1;
+                // Merge adjacent metadata-identical runs like upstream.
+                while (token_index + 1 < line_tokens.getCount() and
+                    line_tokens.getMetadata(token_index) == line_tokens.getMetadata(token_index + 1))
+                {
+                    token_index += 1;
+                }
+            }
+            const token_end = if (has_tokens) @min(line_tokens.getEndOffset(token_index), text.len) else text.len;
+            if (token_end <= pos) break;
+            if (has_tokens and line_tokens.getStandardTokenType(token_index) == .Other and line_tokens.getMetadata(token_index).balancedBrackets) {
+                const token_language = line_tokens.getLanguageId(token_index);
+                const language = if (std.mem.eql(u8, token_language, NULL_LANGUAGE_ID)) self.model.getLanguageId() else token_language;
+                try self.scanRange(line_number, text, pos, token_end, language);
+            }
+            pos = token_end;
+        }
+    }
+
+    fn scanRange(self: *Tokenizer, line_number: usize, text: []const u8, start: usize, end: usize, language: []const u8) !void {
+        const defs = try self.getBrackets(language);
+        if (defs.defs.items.len == 0) return;
+        var pos = start;
+        while (pos < end) {
+            if (defs.start_bytes.isSet(std.ascii.toLower(text[pos]))) {
+                const open = matchAt(text, pos, end, defs, true);
+                const close = matchAt(text, pos, end, defs, false);
+                if (close != null and (open == null or close.?.len >= open.?.len)) {
+                    try self.emitBracket(line_number, pos, close.?, false, language);
+                    pos += close.?.len;
+                    continue;
+                }
+                if (open) |bracket| {
+                    try self.emitBracket(line_number, pos, bracket, true, language);
+                    pos += bracket.len;
+                    continue;
+                }
+            }
+            pos += utf8Len(text[pos..]);
+        }
     }
 
     pub fn getBrackets(self: *Tokenizer, language: []const u8) !*LanguageBrackets {
@@ -291,11 +299,23 @@ pub const Tokenizer = struct {
         return self.brackets.getPtr(language).?;
     }
 
+    /// Like upstream BracketTokens, construct metadata once per distinct
+    /// language/delimiter rather than formatting and allocating its dense key
+    /// for each bracket in the document.
+    fn cachedToken(self: *Tokenizer, language: []const u8, defs: *LanguageBrackets, text: []const u8, opening: bool) !Token {
+        for (self.cached_tokens.items) |entry| {
+            if (entry.opening == opening and std.mem.eql(u8, entry.text, text) and std.mem.eql(u8, entry.language, language)) return entry.token;
+        }
+        const token = (try tokenForText(self.allocator, self.ids, language, defs, text, opening)) orelse return error.Unexpected;
+        try self.cached_tokens.append(self.allocator, .{ .language = language, .text = text, .opening = opening, .token = token });
+        return token;
+    }
+
     pub fn emitBracket(self: *Tokenizer, lineNumber: usize, pos: usize, bracketText: []const u8, isOpening: bool, language: []const u8) !void {
         const start = Position.init(lineNumber, pos + 1);
         try self.emitText(start);
         const defs = try self.getBrackets(language);
-        const token = (try tokenForText(self.allocator, self.ids, language, defs, bracketText, isOpening)) orelse return error.Unexpected;
+        const token = try self.cachedToken(language, defs, bracketText, isOpening);
         try self.tokens.append(token);
         self.cursor = Position.init(lineNumber, pos + 1 + bracketText.len);
     }

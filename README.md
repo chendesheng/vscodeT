@@ -173,13 +173,10 @@ keeps its immutable text while edits invalidate the tree’s reference.
 - Folding is scheduled like upstream: a 200 ms minimum debounce, coalesced while
   typing, and driven by the main-loop tick. Fold commands and gutter clicks
   still compute immediately.
-- Large documents defer the initial bracket-pair AST/guide/colorization build
-  (another whole-document pass) until the debounced main-loop tick. Bracket
-  matching uses the ported upstream fallback matcher when bracket-pair
-  colorization is disabled, and the AST otherwise, as upstream does. The
-  deferral keeps first paint and key echo fast, but the one-time AST build can
-  cause a brief pause when the app is idle after opening or editing a large
-  file.
+- Bracket matching queries the model without forcing whole-document syntax
+  tokenization. The initial bracket tree scans text or already available
+  tokens; subsequent edits reuse unchanged subtrees and seek past them without
+  scanning their text. See [the large-file allocation profile](docs/perf/2026-11-28/README.md).
 - Visible-line tokens are forced synchronously for the viewport. An incremental
   scroll tokenizes only the new lines; a jump tokenizes the visible range from
   a guessed start state instead of walking every line from the first invalid
@@ -1821,11 +1818,15 @@ Bracket-pair colorization:
   `editorBracketHighlight.unexpectedBracket.foreground`. When the active theme
   does not define the ids (the default themes do not), the scheme-specific
   upstream defaults are used.
-- Small documents (at most 500 lines) are tokenized eagerly for the first AST so
-  strings/comments are respected immediately. Larger documents start from
-  upstream's fast initial tree and are rebuilt token-aware when the background
-  tokenizer completes. Content edits and retokenized line ranges are queued as
-  same-length edits for the incremental parser, like upstream.
+- `BracketPairsTree` owns the initial and token-aware ASTs and their separate
+  edit queues, as upstream does. The first AST consumes available tokens, or
+  the fast tokenizer if there are none. Both trees initially share a root;
+  token changes affect only the token-aware tree and content changes affect
+  both. Queries flush pending changes incrementally while displaying the
+  initial tree. Background completion releases the initial reference and emits
+  the change event, rather than forcing a full reparse. Unchanged subtrees
+  are shared with explicit ownership; the tokenizer reads lines lazily and
+  skips reused nodes. See the [two-tree follow-up profile](docs/perf/2026-11-28/README.md#two-tree-follow-up).
 - Language configurations are registered on `LanguageService` with
   `registerLanguageConfiguration` and promoted on first use into the ported
   `LanguageConfigurationRegistry`, which implements upstream priority merging,

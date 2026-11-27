@@ -97,7 +97,13 @@ deliberate adaptations are:
 - **Oniguruma binding.** `onigLib.zig` keeps the `IOnigLib`/`OnigScanner`/
   `OnigString` contract and provides a libonig-backed implementation. The
   upstream tests use `vscode-oniguruma` WASM; this package uses the same
-  Oniguruma engine through the system library.
+  Oniguruma engine through the system library. Capture arrays are allocated
+  only for the winning expression, rather than for competing regex matches.
+- **State ownership.** The editor passes a document-owned allocator for
+  retained state stacks; closing the document releases those allocations
+  without destroying its shared grammar. The standalone API retains its
+  grammar-owned default. Superseded states in document arenas can remain until
+  the arena is released; this is not yet equivalent to per-object GC.
 - **UTF-16 indices.** vscode-textmate indexes JavaScript strings in UTF-16 code
   units. `OnigString` builds the same UTF-16↔UTF-8 offset maps as
   `vscode-oniguruma` and exposes UTF-16 capture indices. ASCII strings use the

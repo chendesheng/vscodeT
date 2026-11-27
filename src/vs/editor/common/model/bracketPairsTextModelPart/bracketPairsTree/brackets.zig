@@ -17,6 +17,7 @@ pub const BracketDef = struct {
 pub const LanguageBrackets = struct {
     defs: ArrayList(BracketDef),
     all: ArrayList([]const u8),
+    start_bytes: std.StaticBitSet(256),
 };
 
 pub fn buildLanguageBrackets(allocator: Allocator, config: LanguageConfiguration) !LanguageBrackets {
@@ -42,7 +43,9 @@ pub fn buildLanguageBrackets(allocator: Allocator, config: LanguageConfiguration
             try addBracketDef(&defs, &all, pair[0], pair[1], true);
         }
     }
-    return .{ .defs = defs, .all = all };
+    var start_bytes: std.StaticBitSet(256) = .empty;
+    for (all.items) |text| start_bytes.set(std.ascii.toLower(text[0]));
+    return .{ .defs = defs, .all = all, .start_bytes = start_bytes };
 }
 
 fn addBracketDef(defs: *ArrayList(BracketDef), all: *ArrayList([]const u8), open: []const u8, close: []const u8, colorized: bool) !void {

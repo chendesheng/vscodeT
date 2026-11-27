@@ -491,6 +491,10 @@ pub const TokenizerSyntaxTokenBackend = struct {
         return self._tokens.hasTokens();
     }
 
+    pub fn hasDefaultTokens(self: *const TokenizerSyntaxTokenBackend, lineNumber: usize) bool {
+        return self._tokens.hasDefaultTokens(lineNumber - 1);
+    }
+
     pub fn textModel(self: *TokenizerSyntaxTokenBackend) *TextModel {
         return self.super.textModel();
     }

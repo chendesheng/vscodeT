@@ -62,25 +62,9 @@ pub const BracketMatchingController = struct {
         return self.model.bracketPairs();
     }
 
-    /// The AST parser consumes token metadata and the headless tests do not
-    /// attach a view, so tokenize the model before querying the AST.
-    fn ensureTokenized(self: *BracketMatchingController) void {
-        var line_number: usize = 1;
-        while (line_number <= self.model.getLineCount()) : (line_number += 1) {
-            if (!self.model.hasAccurateTokensForLine(line_number)) {
-                self.model.forceTokenization(line_number);
-            }
-        }
-    }
-
-    fn ensureAstTokens(self: *BracketMatchingController) void {
-        if (!self.model.bracketPairs().useFallbackMatcher()) self.ensureTokenized();
-    }
-
     /// Finds matching brackets for the start position of `selection` and moves
     /// the cursor to the other bracket.
     pub fn jumpToBracket(self: *BracketMatchingController, selection: Selection) ?Selection {
-        self.ensureAstTokens();
         const position = selection.getStartPosition();
         const brackets = self.modelBrackets().matchBracket(position, 20);
         var new_position: ?Position = null;
@@ -111,7 +95,6 @@ pub const BracketMatchingController = struct {
         selection: Selection,
         select_brackets: bool,
     ) ?Selection {
-        self.ensureAstTokens();
         const position = selection.getStartPosition();
         var brackets = self.modelBrackets().matchBracket(position, 20);
 
@@ -166,7 +149,6 @@ pub const BracketMatchingController = struct {
 
     /// Returns the two bracket ranges to delete for `selection`, if any.
     pub fn removeBracketsForSelection(self: *BracketMatchingController, selection: Selection) ?Brackets {
-        self.ensureAstTokens();
         const position = selection.getPosition();
         var brackets = self.modelBrackets().matchBracket(position, 20);
         if (brackets == null) {
@@ -213,17 +195,15 @@ pub const BracketMatchingController = struct {
             }.lessThan);
         }
 
-        // A redraw with the same version and cursor positions cannot change the
-        // matches. Returning the cache here also avoids forcing every line's
-        // tokens on hover/resize frames; tokenization is only needed when the
-        // document or the cursor actually changed.
+        // A redraw with the same version and cursor positions reuses the
+        // previous matches, as upstream does. Bracket queries consume the
+        // model's initial or token-aware tree; they never force TextMate.
         if (self.last_version_id == version_id and
             samePositions(positions.items, self.last_brackets_data.items))
         {
             return self.last_brackets_data.items;
         }
 
-        if (self.last_version_id != version_id) self.ensureAstTokens();
         self.match_generation += 1;
 
         var previous = ArrayList(BracketsData).init(self.allocator);

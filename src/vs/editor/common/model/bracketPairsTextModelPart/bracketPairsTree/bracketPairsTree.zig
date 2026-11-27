@@ -1,7 +1,7 @@
 // Port of `src/vs/editor/common/model/bracketPairsTextModelPart/bracketPairsTree/bracketPairsTree.ts`.
 //
-// The port keeps the bracket-pair tree, document parsing and query logic in
-// this file; the upstream modules `ast.ts`, `brackets.ts`, `length.ts`,
+// Owns the two ASTs and their edit queues, as upstream does. The upstream
+// modules `ast.ts`, `brackets.ts`, `length.ts`,
 // `parser.ts`, `smallImmutableSet.ts` and `tokenizer.ts` live in their own
 // files. Colors are UTF-8 byte lengths, not UTF-16 code units.
 const std = @import("std");
@@ -16,6 +16,10 @@ const CursorColumns = @import("../../../core/cursorColumns.zig").CursorColumns;
 const BeforeEditPositionMapper = @import("./beforeEditPositionMapper.zig").BeforeEditPositionMapper;
 const TextEditInfo = @import("./beforeEditPositionMapper.zig").TextEditInfo;
 const NodeReader = @import("./nodeReader.zig").NodeReader;
+const combineTextEditInfos = @import("./combineTextEditInfos.zig").combineTextEditInfos;
+const ModelContentChangedEvent = @import("../../../textModelEvents.zig").ModelContentChangedEvent;
+const ModelTokensChangedEvent = @import("../../../textModelEvents.zig").ModelTokensChangedEvent;
+const Emitter = @import("../../../../../base/common/event.zig").Emitter;
 
 const length_mod = @import("./length.zig");
 pub const factor = length_mod.factor;
@@ -75,20 +79,137 @@ pub const makeEmptyList = ast.makeEmptyList;
 const Parser = @import("./parser.zig").Parser;
 
 pub const ParsedDocument = struct {
-    arena: std.heap.ArenaAllocator,
     root: *AstNode,
 
+    pub fn retain(self: ParsedDocument) ParsedDocument {
+        self.root.refs += 1;
+        return self;
+    }
+
     pub fn deinit(self: *ParsedDocument) void {
-        self.arena.deinit();
+        self.root.release();
     }
 };
 
-/// Terminal adaptation: at or below this many lines the bracket AST may
-/// tokenize the whole document so its first pass already respects
-/// string/comment tokens. Above it the view defers the initial build and the
-/// parser starts from upstream's fast, token-agnostic tree until the
-/// background tokenizer completes.
-pub const eager_build_line_count: usize = 500;
+pub const BracketPairsTree = struct {
+    allocator: Allocator,
+    textModel: *TextModel,
+    languageConfigurationService: *LanguageConfigurationService,
+    initialAstWithoutTokens: ?ParsedDocument,
+    astWithTokens: ParsedDocument,
+    queuedTextEditsForInitialAstWithoutTokens: ArrayList(TextEditInfo),
+    queuedTextEdits: ArrayList(TextEditInfo),
+    ids: StringIdProvider,
+    onDidChange: Emitter(void),
+
+    pub fn init(allocator: Allocator, model: *TextModel, service: *LanguageConfigurationService) !BracketPairsTree {
+        var ids = StringIdProvider.init(allocator);
+        errdefer ids.deinit();
+        const has_tokens = model.tokenization().getHasTokens();
+        const initial = try parseDocumentFromTextBuffer(allocator, model, service, &.{}, null, &ids, !has_tokens);
+        // Both trees initially own a reference to the same immutable root.
+        // Subsequent parses share cached subtrees and copy changed paths.
+        const needs_initial = !has_tokens or model.getBackgroundTokenizationState() != .Completed;
+        return .{
+            .allocator = allocator,
+            .textModel = model,
+            .languageConfigurationService = service,
+            .initialAstWithoutTokens = if (needs_initial) initial.retain() else null,
+            .astWithTokens = initial,
+            .queuedTextEditsForInitialAstWithoutTokens = .init(allocator),
+            .queuedTextEdits = .init(allocator),
+            .ids = ids,
+            .onDidChange = .init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *BracketPairsTree) void {
+        if (self.initialAstWithoutTokens) |*initial| initial.deinit();
+        self.astWithTokens.deinit();
+        self.queuedTextEditsForInitialAstWithoutTokens.deinit();
+        self.queuedTextEdits.deinit();
+        self.ids.deinit();
+        self.onDidChange.deinit();
+    }
+
+    pub fn handleDidChangeBackgroundTokenizationState(self: *BracketPairsTree) void {
+        if (self.textModel.getBackgroundTokenizationState() != .Completed) return;
+        if (self.initialAstWithoutTokens) |*initial| {
+            initial.deinit();
+            self.initialAstWithoutTokens = null;
+            self.onDidChange.fire({}) catch {};
+        }
+    }
+
+    pub fn handleDidChangeTokens(self: *BracketPairsTree, event: ModelTokensChangedEvent) !void {
+        var edits = ArrayList(TextEditInfo).init(self.allocator);
+        defer edits.deinit();
+        for (event.ranges) |range| {
+            if (range.fromLineNumber == 0 or range.toLineNumber < range.fromLineNumber) continue;
+            try edits.append(.{
+                .startOffset = toLength(range.fromLineNumber - 1, 0),
+                .endOffset = toLength(range.toLineNumber, 0),
+                .newLength = toLength(range.toLineNumber - range.fromLineNumber + 1, 0),
+            });
+        }
+        try self.handleEdits(edits.items, true);
+        if (self.initialAstWithoutTokens == null) self.onDidChange.fire({}) catch {};
+    }
+
+    pub fn handleContentChanged(self: *BracketPairsTree, change: ModelContentChangedEvent) !void {
+        var edits = ArrayList(TextEditInfo).init(self.allocator);
+        defer edits.deinit();
+        for (change.changes.items) |c| {
+            try edits.append(.{
+                .startOffset = toLength(c.range.startLineNumber - 1, c.range.startColumn - 1),
+                .endOffset = toLength(c.range.endLineNumber - 1, c.range.endColumn - 1),
+                .newLength = lengthOfString(c.text.items()),
+            });
+        }
+        std.mem.reverse(TextEditInfo, edits.items);
+        try self.handleEdits(edits.items, false);
+    }
+
+    fn appendEdits(self: *BracketPairsTree, queue: *ArrayList(TextEditInfo), edits: []const TextEditInfo) !void {
+        if (edits.len == 0) return;
+        if (queue.items.len == 0) return queue.appendSlice(edits);
+        const combined = try combineTextEditInfos(self.allocator, queue.items, edits);
+        queue.deinit();
+        queue.* = combined;
+    }
+
+    fn handleEdits(self: *BracketPairsTree, edits: []const TextEditInfo, tokenChange: bool) !void {
+        try self.appendEdits(&self.queuedTextEdits, edits);
+        if (self.initialAstWithoutTokens != null and !tokenChange) {
+            try self.appendEdits(&self.queuedTextEditsForInitialAstWithoutTokens, edits);
+        }
+    }
+
+    pub fn isDirty(self: *const BracketPairsTree) bool {
+        return self.queuedTextEdits.items.len != 0 or self.queuedTextEditsForInitialAstWithoutTokens.items.len != 0;
+    }
+
+    pub fn flushQueue(self: *BracketPairsTree) !void {
+        if (self.queuedTextEdits.items.len != 0) {
+            const next = try parseDocumentFromTextBuffer(self.allocator, self.textModel, self.languageConfigurationService, self.queuedTextEdits.items, self.astWithTokens.root, &self.ids, false);
+            self.astWithTokens.deinit();
+            self.astWithTokens = next;
+            self.queuedTextEdits.clearRetainingCapacity();
+        }
+        if (self.queuedTextEditsForInitialAstWithoutTokens.items.len != 0) {
+            if (self.initialAstWithoutTokens) |*initial| {
+                const next = try parseDocumentFromTextBuffer(self.allocator, self.textModel, self.languageConfigurationService, self.queuedTextEditsForInitialAstWithoutTokens.items, initial.root, &self.ids, false);
+                initial.deinit();
+                initial.* = next;
+            }
+            self.queuedTextEditsForInitialAstWithoutTokens.clearRetainingCapacity();
+        }
+    }
+
+    pub fn visibleDocument(self: *const BracketPairsTree) ParsedDocument {
+        return self.initialAstWithoutTokens orelse self.astWithTokens;
+    }
+};
 
 /// Token state is contiguous, so the last line being accurate means every
 /// earlier line is accurate too.
@@ -102,19 +223,28 @@ pub fn parseDocument(allocator: Allocator, model: *TextModel, languageConfigurat
 
 /// Parses an already tokenized stream. Takes ownership of `tokens`.
 pub fn parseTokens(allocator: Allocator, tokens: ArrayList(Token)) !ParsedDocument {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    errdefer arena.deinit();
     var tokenizer = Tokenizer.initFromTokens(allocator, tokens);
     defer tokenizer.deinit();
-    var parser = Parser{ .allocator = arena.allocator(), .tokenizer = &tokenizer };
+    const region = try ast.NodeRegion.create(allocator);
+    errdefer region.abort();
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    var parser = Parser{ .allocator = region.arena.allocator(), .scratch = scratch.allocator(), .region = region, .tokenizer = &tokenizer };
     const root = try parser.parseList(SmallImmutableSet.empty(), 0);
-    return .{ .arena = arena, .root = root };
+    region.commit();
+    return .{ .root = root };
 }
 
 pub fn parseDocumentIncremental(allocator: Allocator, model: *TextModel, languageConfigurationService: *LanguageConfigurationService, edits: []const TextEditInfo, oldRoot: ?*AstNode, ids: *StringIdProvider) !ParsedDocument {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    errdefer arena.deinit();
-    const a = arena.allocator();
+    return parseDocumentFromTextBuffer(allocator, model, languageConfigurationService, edits, oldRoot, ids, oldRoot == null and !model.tokenization().getHasTokens());
+}
+
+fn parseDocumentFromTextBuffer(allocator: Allocator, model: *TextModel, languageConfigurationService: *LanguageConfigurationService, edits: []const TextEditInfo, oldRoot: ?*AstNode, ids: *StringIdProvider, use_fast: bool) !ParsedDocument {
+    const region = try ast.NodeRegion.create(allocator);
+    errdefer region.abort();
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    const a = region.arena.allocator();
 
     // Bracket ids must stay stable for the lifetime of the tree: cached nodes
     // carry ids and `canBeReused` compares them against freshly tokenized text.
@@ -130,31 +260,19 @@ pub fn parseDocumentIncremental(allocator: Allocator, model: *TextModel, languag
 
     var tokenizer = Tokenizer.init(allocator, model, languageConfigurationService, ids, &brackets);
     defer tokenizer.deinit();
-    // Terminal adaptation: colorization consumes token types. The fast tree is
-    // only used for the *initial* build while tokens are incomplete; once an
-    // AST exists, incremental parses stay token-aware (missing tokens for the
-    // edited lines simply act as "balanced" until their token update is
-    // queued). Small documents are tokenized eagerly by the model, so their
-    // first tree already sees accurate tokens. With colorization off there is
-    // no token consumer beyond guides, so keep the fast tree.
-    const use_fast = !model.getOptions().bracketPairColorizationOptions.enabled or
-        (oldRoot == null and
-            !allLinesHaveAccurateTokens(model) and
-            model.getBackgroundTokenizationState() != .Completed);
-    if (use_fast) {
-        try tokenizer.tokenizeFast();
-    } else {
-        try tokenizer.tokenize();
-    }
+    // The initial tree can be built without syntax tokens. On an incremental
+    // parse TextBufferTokenizer reads only the ranges the parser cannot reuse.
+    tokenizer.enableLazy(use_fast);
 
-    var parser = Parser{ .allocator = a, .tokenizer = &tokenizer };
+    var parser = Parser{ .allocator = a, .scratch = scratch.allocator(), .region = region, .tokenizer = &tokenizer };
     if (oldRoot) |root_| {
         parser.oldRoot = root_;
-        parser.oldReader = NodeReader.init(a, root_);
-        parser.positionMapper = try BeforeEditPositionMapper.init(a, edits);
+        parser.oldReader = NodeReader.init(parser.scratch, root_);
+        parser.positionMapper = try BeforeEditPositionMapper.init(parser.scratch, edits);
     }
     const root = try parser.parseList(SmallImmutableSet.empty(), 0);
-    return .{ .arena = arena, .root = root };
+    region.commit();
+    return .{ .root = root };
 }
 
 test "bracketPairsTree: lengthOfString treats CRLF as one line break" {
