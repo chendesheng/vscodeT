@@ -4642,6 +4642,29 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                         try std.testing.expect(probe.completion_found orelse false);
                         try std.testing.expect(probe.symbol_found orelse false);
                         try std.testing.expect((probe.highlight_count orelse 0) >= 2);
+                        const RangeSemanticProbe = struct {
+                            ready: bool = false,
+                            has_tokens: bool = false,
+                            fn complete(context: *anyopaque, value: anyerror!?@import("../../../editor/common/languages.zig").SemanticTokensResult) void {
+                                const self: *@This() = @ptrCast(@alignCast(context));
+                                self.ready = true;
+                                if (value) |response| {
+                                    if (response) |result| self.has_tokens = result.payload == .full and result.payload.full.len >= 5;
+                                } else |_| {}
+                            }
+                        };
+                        var range_semantic: RangeSemanticProbe = .{};
+                        const range_providers = try features.document_range_semantic_tokens_provider.ordered(probe_allocator, model, false);
+                        try std.testing.expect(range_providers.len > 0);
+                        const range_provider = range_providers[0];
+                        const range_request = try range_provider.request_document_range_semantic_tokens(range_provider.context, probe_allocator, model, Range.init(2, 1, 3, model.getLineMaxColumn(3)), .{ .context = &range_semantic, .complete = RangeSemanticProbe.complete });
+                        const range_deadline = time_compat.milliTimestamp() + 5000;
+                        while (!range_semantic.ready and time_compat.milliTimestamp() < range_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                            time_compat.sleepMillis(10);
+                        }
+                        if (!range_semantic.ready) range_request.dispose();
+                        try std.testing.expect(range_semantic.ready and range_semantic.has_tokens);
                         try selection_editor.setCursorPosition(Position.init(3, 32));
                         try selection_editor.growSelection(true);
                         try std.testing.expect(selection_editor.smart_select.pending != null);
