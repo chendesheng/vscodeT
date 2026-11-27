@@ -8,9 +8,9 @@
 // `_renderNormalDecoration`). The terminal view maps whole-line classes to row
 // backgrounds and range classes to cell flags/styles; marker squiggles and the
 // Problems range highlight use the same path. Exact DOM clipping stays at the
-// paint boundary, and the `shouldFillLineOnLineBreak` wrap decoration is not
-// representable as cells and is not ported. The header of this file and
-// `docs/terminal-ui.md` document that substitution.
+// paint boundary. A range with `shouldFillLineOnLineBreak` extending into
+// the next line uses an unbounded end, clipped to the visible cell grid by
+// the terminal view host.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
@@ -33,7 +33,7 @@ const ViewModelDecoration = view_model_decoration.ViewModelDecoration;
 /// are 0-based cell columns, matching `ViewLine`'s paint flags.
 pub const CellRange = struct {
     start: usize,
-    end: usize,
+    end: usize, // maxInt(usize) means through the end of the painted row.
 };
 
 /// One class applied to a visible line.
@@ -213,6 +213,7 @@ pub const DecorationsOverlay = struct {
     ) void {
         var prev_class: ?[]const u8 = null;
         var prev_show_if_collapsed = false;
+        var prev_should_fill_line_on_line_break = false;
         var prev_range: ?Range = null;
 
         for (decorations) |decoration| {
@@ -237,14 +238,15 @@ pub const DecorationsOverlay = struct {
                 continue;
             }
             if (prev_class != null) {
-                renderNormalDecoration(context, prev_range.?, prev_class.?, prev_show_if_collapsed, visible_start, output);
+                renderNormalDecoration(context, prev_range.?, prev_class.?, prev_should_fill_line_on_line_break, prev_show_if_collapsed, visible_start, output);
             }
             prev_class = class_name;
             prev_show_if_collapsed = show_if_collapsed;
+            prev_should_fill_line_on_line_break = decoration.options.shouldFillLineOnLineBreak orelse false;
             prev_range = range;
         }
         if (prev_class != null) {
-            renderNormalDecoration(context, prev_range.?, prev_class.?, prev_show_if_collapsed, visible_start, output);
+            renderNormalDecoration(context, prev_range.?, prev_class.?, prev_should_fill_line_on_line_break, prev_show_if_collapsed, visible_start, output);
         }
     }
 
@@ -252,6 +254,7 @@ pub const DecorationsOverlay = struct {
         context: *const RenderingContext,
         range: Range,
         class_name: []const u8,
+        should_fill_line_on_line_break: bool,
         show_if_collapsed: bool,
         visible_start: usize,
         output: []LineDecorations,
@@ -269,6 +272,9 @@ pub const DecorationsOverlay = struct {
                     // Upstream expands a collapsed range so the decoration is
                     // still visible; the terminal equivalent is one cell.
                     end = start + 1;
+                }
+                if (should_fill_line_on_line_break and line.continuesOnNextLine and line.ranges.len == 1) {
+                    end = std.math.maxInt(usize);
                 }
                 output[line_index].append(.{
                     .class_name = class_name,
@@ -457,7 +463,7 @@ const Harness = struct {
                 .outsideRenderedLine = false,
                 .lineNumber = line,
                 .ranges = self.stub_ranges[count .. count + 1],
-                .continuesOnNextLine = false,
+                .continuesOnNextLine = line < range.endLineNumber,
             };
             count += 1;
         }
@@ -614,4 +620,23 @@ test "decorations: invalidates on decoration, line and zone events" {
         .scrollHeightChanged = false,
         .scrollTopChanged = false,
     }) == false);
+}
+
+test "decorations: fill line on line break only on continuing rows" {
+    var options = model.ModelDecorationOptions.init("char-insert", .AlwaysGrowsWhenTypingAtEdges);
+    options.className = "char-insert";
+    options.shouldFillLineOnLineBreak = true;
+    const decorations = [_]ViewModelDecoration{
+        .{ .range = Range.init(1, 3, 2, 2), .options = &options },
+    };
+    var harness: Harness = undefined;
+    try harness.init(testing.allocator, 2, 1, 2, &decorations);
+    defer harness.deinit();
+    harness.overlay.prepareRender(&harness.rendering);
+    const first = harness.overlay.renderedLine(1)[0].cell_range.?;
+    const second = harness.overlay.renderedLine(2)[0].cell_range.?;
+    try testing.expectEqual(@as(usize, 2), first.start);
+    try testing.expectEqual(std.math.maxInt(usize), first.end);
+    try testing.expectEqual(@as(usize, 0), second.start);
+    try testing.expectEqual(@as(usize, 1), second.end);
 }

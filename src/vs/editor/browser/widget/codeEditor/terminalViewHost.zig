@@ -838,7 +838,11 @@ pub const TerminalViewHost = struct {
         var flags_len = @max(line_width, 1);
         for (self.decorationsForLine(view_line)) |decoration| {
             const range = decoration.cell_range orelse continue;
-            flags_len = @max(flags_len, @min(range.end, args.width_cells));
+            const end = if (range.end == std.math.maxInt(usize))
+                @min(args.width_cells, editor.scrollLeft() +| args.text_width)
+            else
+                @min(range.end, args.width_cells);
+            flags_len = @max(flags_len, end);
         }
         // Upstream's selection overlay can extend one character past the text
         // when the range crosses a newline. Keep that cell in the flag buffer so

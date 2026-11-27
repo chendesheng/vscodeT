@@ -1744,9 +1744,9 @@ pub const View = struct {
         if (!moved and !active) return null;
 
         const border = if (active)
-            themedColor(self.theme_colors, "diffEditor.moveActive.border", .{ 255, 165, 0 })
+            themedColor(self.theme_colors, @import("../vs/editor/browser/widget/diffEditor/registrations.contribution.zig").diffMoveBorderActive, .{ 255, 165, 0 })
         else
-            themedColor(self.theme_colors, "diffEditor.move.border", .{ 139, 139, 139 });
+            themedColor(self.theme_colors, @import("../vs/editor/browser/widget/diffEditor/registrations.contribution.zig").diffMoveBorder, .{ 139, 139, 139 });
         return .{ .border_color = border };
     }
 
@@ -2834,19 +2834,27 @@ fn colorForToken(foreground: u9) ?[3]u8 {
 /// `DecorationsOverlay`.
 fn lineBackground(decorations: []const @import("../vs/editor/browser/viewParts/decorations/decorations.zig").LineDecoration, palette: ?*const theme_colors_mod.ThemeColors) ?ui.Color {
     var result: ?ui.Color = null;
+    var char_background: ?ui.Color = null;
     for (decorations) |decoration| {
+        if (!decoration.whole_line) continue;
         var iterator = std.mem.tokenizeScalar(u8, decoration.class_name, ' ');
         while (iterator.next()) |class_name| {
             if (std.mem.eql(u8, class_name, "line-insert")) {
                 result = themedColor(palette, "diffEditor.insertedLineBackground", diff_insert_line_background);
             } else if (std.mem.eql(u8, class_name, "line-delete")) {
                 result = themedColor(palette, "diffEditor.removedLineBackground", diff_delete_line_background);
+            } else if (std.mem.eql(u8, class_name, "char-insert")) {
+                char_background = themedColor(palette, "diffEditor.insertedTextBackground", diff_insert_char_background);
+            } else if (std.mem.eql(u8, class_name, "char-delete")) {
+                char_background = themedColor(palette, "diffEditor.removedTextBackground", diff_delete_char_background);
             } else if (std.mem.eql(u8, class_name, "diff-filler")) {
                 result = themedColor(palette, "diffEditor.diagonalFill", diff_filler_background);
             }
         }
     }
-    return result;
+    // Whole-line character decoration overlays the line tint in the browser.
+    // Cells cannot blend two backgrounds; use the resolved character tint.
+    return if (char_background) |background| background else result;
 }
 
 /// Parses the normalizer's merged class-name string (`"c1 c2"`) into cell
@@ -6227,6 +6235,32 @@ test "View: char-insert and char-delete inline classes paint cell backgrounds" {
     // The neighbouring character keeps the plain background (the current line
     // itself carries the cursor-line highlight).
     try std.testing.expectEqual(@as(u32, 0), grid.bg[grid.index(gutter, 1)]);
+}
+
+test "View: char-insert fills the rest of a continuing row but not the final row" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "abcd\nsecond", "test.txt", 20, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    var options = @import("../vs/editor/browser/widget/diffEditor/registrations.contribution.zig").diffAddDecoration;
+    const deltas = [_]ModelDeltaDecoration{.{ .range = Range.init(1, 2, 2, 3), .options = &options }};
+    const ids = try editor.model.deltaDecorations(&.{}, &deltas, 61);
+    defer allocator.free(ids);
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try view.paint();
+    const grid = view.grid();
+    const gutter = editor.gutterWidth();
+    const expected = ui.cell.packColor(color(diff_insert_char_background));
+    try std.testing.expectEqual(expected, grid.bg[grid.index(gutter + 1, 0)]);
+    try std.testing.expectEqual(expected, grid.bg[grid.index(gutter + 8, 0)]);
+    try std.testing.expect(grid.bg[grid.index(gutter, 0)] != expected);
+    try std.testing.expectEqual(expected, grid.bg[grid.index(gutter + 1, 1)]);
+    try std.testing.expect(grid.bg[grid.index(gutter + 3, 1)] != expected);
+    try std.testing.expect(grid.bg[grid.index(gutter + 8, 1)] != expected);
 }
 
 test "View: quick-diff gutter marker" {

@@ -1273,6 +1273,25 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(grid.attrs[grid.index(old_start, 0)] & ui.cell.Attr.strikethrough != 0);
         }
 
+        test "diffEditorWidget: pure insertions and deletions paint character tint across the entire real row" {
+            const allocator = testing.allocator;
+            const io = Io.Threaded.global_single_threaded.io();
+            const colors = @import("../../../browser/widget/diffEditor/components/diffEditorDecorations.zig");
+            for ([_]bool{ true, false }) |insert| {
+                const widget = try DiffEditorWidget.create(View.init, allocator, io, "a.txt", "b.txt", if (insert) "a\nc" else "a\nb\nc", if (insert) "a\nb\nc" else "a\nc", "Original", "Modified", 80, 8, .{});
+                defer widget.destroy();
+                const editor = if (insert) widget.modified_editor else widget.original_editor;
+                const view = if (insert) widget.modified_view else widget.original_view;
+                try view.paint();
+                const grid = view.grid();
+                const rgb = if (insert) colors.inserted_text_background else colors.removed_text_background;
+                const expected = ui.cell.packColor(.{ .r = rgb[0], .g = rgb[1], .b = rgb[2] });
+                const start = editor.gutterWidth();
+                try testing.expectEqual(expected, grid.bg[grid.index(start, 1)]);
+                try testing.expectEqual(expected, grid.bg[grid.index(start + 5, 1)]);
+            }
+        }
+
         test "diffEditorWidget: empty character ranges paint one marker cell when enabled" {
             const allocator = testing.allocator;
             const io = Io.Threaded.global_single_threaded.io();

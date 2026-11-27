@@ -1,4 +1,4 @@
-// Port of the decoration subset of
+// Port of
 // `src/vs/editor/browser/widget/diffEditor/components/diffEditorDecorations.ts`.
 //
 // Terminal adaptation: model decorations retain their real model ranges.
@@ -14,7 +14,7 @@ const text_model = @import("../../../../common/model/textModel.zig");
 const range_mapping = @import("../../../../common/diff/rangeMapping.zig");
 const Range = @import("../../../../common/core/range.zig").Range;
 const zones = @import("./diffEditorViewZones/diffEditorViewZones.zig");
-const overview_feature = @import("../features/overviewRulerFeature.zig");
+const registrations = @import("../registrations.contribution.zig");
 
 pub const ModelDecorationOptions = model_mod.ModelDecorationOptions;
 pub const ModelDeltaDecoration = model_mod.ModelDeltaDecoration;
@@ -53,6 +53,8 @@ pub const DiffEditorDecorations = struct {
     line_delete: ModelDecorationOptions,
     char_insert: ModelDecorationOptions,
     char_delete: ModelDecorationOptions,
+    whole_line_char_insert: ModelDecorationOptions,
+    whole_line_char_delete: ModelDecorationOptions,
     char_insert_empty: ModelDecorationOptions,
     char_delete_empty: ModelDecorationOptions,
     moved_original: ModelDecorationOptions,
@@ -79,6 +81,8 @@ pub const DiffEditorDecorations = struct {
             .line_delete = undefined,
             .char_insert = undefined,
             .char_delete = undefined,
+            .whole_line_char_insert = undefined,
+            .whole_line_char_delete = undefined,
             .char_insert_empty = undefined,
             .char_delete_empty = undefined,
             .moved_original = undefined,
@@ -124,22 +128,20 @@ pub const DiffEditorDecorations = struct {
     }
 
     fn buildOptions(self: *DiffEditorDecorations) void {
-        self.line_insert = createWholeLine("line-insert", overview_feature.inserted_foreground, self.config.render_overview_ruler);
-        self.line_delete = createWholeLine("line-delete", overview_feature.removed_foreground, self.config.render_overview_ruler);
-        self.line_insert.marginClassName = "gutter-insert";
-        self.line_delete.marginClassName = "gutter-delete";
-        if (self.config.render_indicators) {
-            self.line_insert.linesDecorationsClassName = "insert-sign codicon codicon-diff-insert";
-            self.line_delete.linesDecorationsClassName = "delete-sign codicon codicon-diff-remove";
-        }
-        self.char_insert = createRange("char-insert");
-        self.char_delete = createRange("char-delete");
-        self.char_insert_empty = createRange("char-insert diff-range-empty");
-        self.char_delete_empty = createRange("char-delete diff-range-empty");
-        // The browser paints a three-pixel border at a zero-width range.
-        // Reuse the overlay's one-cell collapsed-range support at the terminal boundary.
-        self.char_insert_empty.showIfCollapsed = true;
-        self.char_delete_empty.showIfCollapsed = true;
+        self.line_insert = if (self.config.render_indicators)
+            registrations.diffLineAddDecorationBackgroundWithIndicator(self.config.render_overview_ruler)
+        else
+            registrations.diffLineAddDecorationBackground(self.config.render_overview_ruler);
+        self.line_delete = if (self.config.render_indicators)
+            registrations.diffLineDeleteDecorationBackgroundWithIndicator(self.config.render_overview_ruler)
+        else
+            registrations.diffLineDeleteDecorationBackground(self.config.render_overview_ruler);
+        self.char_insert = registrations.diffAddDecoration;
+        self.char_delete = registrations.diffDeleteDecoration;
+        self.whole_line_char_insert = registrations.diffWholeLineAddDecoration;
+        self.whole_line_char_delete = registrations.diffWholeLineDeleteDecoration;
+        self.char_insert_empty = registrations.diffAddDecorationEmpty;
+        self.char_delete_empty = registrations.diffDeleteDecorationEmpty;
         self.moved_original = createMovedBlock("movedOriginal");
         self.moved_modified = createMovedBlock("movedModified");
         self.moved_original_active = createMovedBlock("movedOriginal currentMove");
@@ -200,7 +202,11 @@ pub const DiffEditorDecorations = struct {
             const change = mapping.line_range_mapping;
             if (change.original.toInclusiveRange()) |range| try original_decorations.append(.{ .range = range, .options = &self.line_delete });
             if (change.modified.toInclusiveRange()) |range| try modified_decorations.append(.{ .range = range, .options = &self.line_insert });
-            if (change.original.isEmpty() or change.modified.isEmpty()) continue;
+            if (change.original.isEmpty() or change.modified.isEmpty()) {
+                if (change.original.toInclusiveRange()) |range| try original_decorations.append(.{ .range = range, .options = &self.whole_line_char_delete });
+                if (change.modified.toInclusiveRange()) |range| try modified_decorations.append(.{ .range = range, .options = &self.whole_line_char_insert });
+                continue;
+            }
             const use_inline = self.config.use_true_inline_view and zones.allowsTrueInlineDiffRendering(change);
             for (change.inner_changes orelse &.{}) |inner| {
                 if (change.original.contains(inner.originalRange.startLineNumber)) {
@@ -257,23 +263,6 @@ fn createMovedBlock(class_name: []const u8) ModelDecorationOptions {
     var options = ModelDecorationOptions.init("moved", .AlwaysGrowsWhenTypingAtEdges);
     options.blockClassName = class_name;
     options.blockPadding = .{ 1, 0, 1, 1 };
-    return options;
-}
-
-fn createWholeLine(class_name: []const u8, color: [3]u8, overview: bool) ModelDecorationOptions {
-    var options = ModelDecorationOptions.init(class_name, .AlwaysGrowsWhenTypingAtEdges);
-    options.className = class_name;
-    options.isWholeLine = true;
-    if (overview) {
-        options.overviewRuler = .{ .position = .Left, .color = color };
-    }
-    return options;
-}
-
-fn createRange(class_name: []const u8) ModelDecorationOptions {
-    var options = ModelDecorationOptions.init(class_name, .AlwaysGrowsWhenTypingAtEdges);
-    options.className = class_name;
-    options.inlineClassName = class_name;
     return options;
 }
 
@@ -435,4 +424,42 @@ test "diffEditorDecorations: detach clears both sides" {
     const original = try fixture.original.model.getAllDecorations(200, false);
     defer allocator.free(original);
     try testing.expectEqual(@as(usize, 0), original.len);
+}
+
+test "diffEditorDecorations: pure insertion and deletion have both whole-line variants" {
+    const allocator = testing.allocator;
+    for ([_]bool{ true, false }) |insert| {
+        var fixture = try createModels(allocator, if (insert) "a\nc" else "a\nb\nc", if (insert) "a\nb\nc" else "a\nc");
+        defer {
+            fixture.state.deinit(allocator);
+            diff_provider.deinitDiff(allocator, &fixture.diff);
+            fixture.modified.deinit();
+            fixture.original.deinit();
+        }
+        var decorations = DiffEditorDecorations.init(allocator, fixture.original.model, fixture.modified.model, 200, 201, .{});
+        defer decorations.deinit();
+        try decorations.update(&fixture.state, false);
+        const actual = if (insert) try fixture.modified.model.getAllDecorations(201, false) else try fixture.original.model.getAllDecorations(200, false);
+        defer allocator.free(actual);
+        try testing.expectEqual(@as(usize, 2), actual.len);
+        var line = false;
+        var char = false;
+        for (actual) |decoration| {
+            try testing.expect(decoration.options.isWholeLine orelse false);
+            const name = decoration.options.className.?;
+            if (std.mem.eql(u8, name, if (insert) "line-insert" else "line-delete")) {
+                line = true;
+                try testing.expect(decoration.options.linesDecorationsClassName != null);
+            }
+            if (std.mem.eql(u8, name, if (insert) "char-insert" else "char-delete")) {
+                char = true;
+                try testing.expect(decoration.options.inlineClassName == null);
+            }
+        }
+        try testing.expect(line and char);
+        try testing.expectEqual(@as(usize, 0), if (insert) decorations.originalDecorationCount() else decorations.modifiedDecorationCount());
+    }
+    try testing.expect(registrations.diffAddDecoration.shouldFillLineOnLineBreak orelse false);
+    try testing.expect(registrations.diffDeleteDecoration.shouldFillLineOnLineBreak orelse false);
+    try testing.expect(registrations.diffAddDecorationEmpty.showIfCollapsed orelse false);
 }
