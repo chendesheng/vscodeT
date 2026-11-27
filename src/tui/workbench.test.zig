@@ -10546,7 +10546,6 @@ test "Diff editor commands: workspace text and file edit groups share real model
     const a = std.testing.allocator;
     const io = std.testing.io;
     const bulk = @import("../vs/editor/browser/services/bulkEditService.zig");
-    const languages = @import("../vs/editor/common/languages.zig");
     const Probe = struct {
         result: ?bulk.IBulkEditResult = null,
         failure: ?anyerror = null,
@@ -10563,7 +10562,9 @@ test "Diff editor commands: workspace text and file edit groups share real model
     defer window.deinit();
     const wb = window.workbench;
     const model = wb.activeTab().?.editor.model;
-    const directory = std.fs.path.dirname(path).?;
+    const absolute = try @import("../vs/workbench/services/textfile/common/textFileService.zig").absolutePath(a, io, path);
+    defer a.free(absolute);
+    const directory = std.fs.path.dirname(absolute).?;
     const created_path = try std.fs.path.join(a, &.{ directory, "created.txt" });
     defer a.free(created_path);
     const moved_path = try std.fs.path.join(a, &.{ directory, "moved.txt" });

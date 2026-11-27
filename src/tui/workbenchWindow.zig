@@ -302,9 +302,12 @@ pub const TerminalWorkbench = struct {
     disk_files: @import("../vs/platform/files/common/fileService.zig").DiskFileService,
     text_file_service: text_files.TextFileService,
     resource_file_service: @import("../vs/platform/files/common/fileService.zig").ProviderFileService,
+    disk_resource_provider: @import("../vs/platform/files/node/diskFileSystemProvider.zig").DiskFileSystemProvider,
+    disk_resource_registration: @import("../vs/base/common/lifecycle.zig").IDisposable,
     file_service_api: @import("../vs/platform/files/common/files.zig").IFileService,
     working_copy_file_service: @import("../vs/workbench/services/workingCopy/common/workingCopyFileService.zig").WorkingCopyFileService,
     working_copy_file_api: @import("../vs/workbench/services/workingCopy/common/workingCopyFileService.zig").IWorkingCopyFileService,
+    text_file_model_manager: @import("../vs/workbench/services/textfile/common/textFileEditorModelManager.zig").TextFileEditorModelManager,
     text_model_resolver: @import("../vs/workbench/services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService,
     text_model_api: @import("../vs/editor/common/services/resolverService.zig").ITextModelService,
     bulk_edit_service: @import("../vs/workbench/contrib/bulkEdit/browser/bulkEditService.zig").BulkEditService,
@@ -548,6 +551,10 @@ pub const TerminalWorkbench = struct {
         self.resource_file_service = .init(allocator);
         errdefer self.resource_file_service.deinit();
         self.file_service_api = self.resource_file_service.interface();
+        self.disk_resource_provider = .init(allocator, self.async_io);
+        errdefer self.disk_resource_provider.deinit();
+        self.disk_resource_registration = try self.file_service_api.registerProvider("file", self.disk_resource_provider.interface());
+        errdefer self.disk_resource_registration.dispose();
         self.working_copy_file_service = .init(allocator, self.file_service_api, &self.working_copy_service);
         errdefer self.working_copy_file_service.deinit();
         self.working_copy_file_api = self.working_copy_file_service.interface();
@@ -556,6 +563,10 @@ pub const TerminalWorkbench = struct {
         try self.text_model_resolver.bindFileService(self.file_service_api);
         _ = try self.text_model_resolver.undoRedoStore();
         self.text_model_api = self.text_model_resolver.interface();
+        const FileModelAccessAdapter = @import("../vs/workbench/services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService.FileModelAccessAdapter;
+        self.text_file_model_manager = .init(allocator, self.file_service_api, (FileModelAccessAdapter{ .service = &self.text_model_resolver }).interface());
+        errdefer self.text_file_model_manager.deinit();
+        try self.text_file_model_manager.bind(self.working_copy_file_api);
         self.bulk_edit_service = .{ .allocator = allocator, .resolver_service = self.text_model_api, .file_services = .{ .files = self.file_service_api, .working_copies = self.working_copy_file_api, .undo_redo = &self.text_model_resolver.undo_store.?.service } };
         self.bulk_edit_api = self.bulk_edit_service.interface();
         self.model_service_api = self.text_model_resolver.modelService();
@@ -1801,6 +1812,7 @@ pub const TerminalWorkbench = struct {
 
     pub fn deinit(self: *TerminalWorkbench) void {
         self.deinitBulkEditPreview();
+        self.text_file_model_manager.deinit();
         self.accessible_view.deinit();
         self.sidebar_part.setFocused(false);
         for (self.focus_subscriptions) |subscription| if (subscription) |value| value.dispose();
@@ -1915,6 +1927,8 @@ pub const TerminalWorkbench = struct {
         self.word_highlight_session.deinit();
         self.code_editors.deinit();
         self.working_copy_file_service.deinit();
+        self.disk_resource_registration.dispose();
+        self.disk_resource_provider.deinit();
         self.resource_file_service.deinit();
         self.window_events.deinitWindowEvents();
         if (self.layout.main_container) |main| main.document.destroy(main);

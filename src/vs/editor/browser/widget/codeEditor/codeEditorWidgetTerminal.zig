@@ -578,6 +578,29 @@ pub const EditorDocument = struct {
         return self.model.getAlternativeVersionId() != self.saved_version;
     }
 
+    /// The text-file model owner uses a soft revert during move/delete:
+    /// preserve the bytes until the operation completes, only update dirty state.
+    pub fn setFileDirty(self: *EditorDocument, dirty: bool) void {
+        if (dirty == self.isDirty()) return;
+        self.saved_version = if (dirty) 0 else self.model.getAlternativeVersionId();
+        self.refreshDirtyState();
+    }
+
+    /// A working-copy file-operation result replaces the resolved contents
+    /// without clearing the workspace file undo element that caused it.
+    pub fn applyFileOperationContents(self: *EditorDocument, text: []const u8, encoding: encoding_mod.Encoding, dirty: bool) !void {
+        self.setEncoding(encoding);
+        var current = try self.model.getValue(.TextDefined, true);
+        defer current.deinit();
+        if (!std.mem.eql(u8, current.items, text)) {
+            var operations = [_]IdentifiedSingleEditOperation{.init(self.model.getFullModelRange(), if (text.len == 0) null else String.initBorrowed(text))};
+            _ = try self.model.applyEdits(&operations, false);
+        }
+        self.setFileDirty(dirty);
+        self.clearConflict();
+        self.refreshDirtyState();
+    }
+
     /// Update a generated or virtual resource without replacing the shared
     /// document. All retained editor views observe the model's content event.
     pub fn replaceGeneratedContents(self: *EditorDocument, text: []const u8) !bool {

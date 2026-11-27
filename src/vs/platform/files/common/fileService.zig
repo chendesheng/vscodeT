@@ -97,7 +97,7 @@ pub const DiskFileService = struct {
     }
 
     pub fn rename(self: *DiskFileService, from: []const u8, to: []const u8) !void {
-        try Io.Dir.renameAbsolute(from, to, self.io);
+        try Io.Dir.cwd().rename(from, Io.Dir.cwd(), to, self.io);
         self.notify(from, .DELETED);
         self.notify(to, .ADDED);
     }

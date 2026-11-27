@@ -321,3 +321,27 @@ test "stdUri: encoded model resource normalizes a native drive without losing re
     try std.testing.expectEqualStrings("/C:/repo/a #b.txt", try path(parsed, arena.allocator()));
     try std.testing.expectEqualStrings("", try authority(parsed, arena.allocator()));
 }
+
+/// Maps a resource affected by a file/folder move to its corresponding
+/// target. Equality/parent checks and native path spelling are shared by the
+/// editor-input and text-file working-copy owners.
+pub fn mapMovedResource(allocator: Allocator, resource: std.Uri, source: std.Uri, target: std.Uri, ignore_case: bool) !?std.Uri {
+    if (!try isEqualOrParent(resource, source, allocator, ignore_case)) return null;
+    const is_file = std.mem.eql(u8, source.scheme, "file");
+    const source_path = if (is_file) try fsPath(source, allocator) else try path(source, allocator);
+    const resource_path = if (is_file) try fsPath(resource, allocator) else try path(resource, allocator);
+    const separators = if (is_file and builtin.os.tag == .windows) "/\\" else "/";
+    const trimmed = std.mem.trimEnd(u8, source_path, separators);
+    if (pathEquals(resource_path, trimmed, ignore_case) or pathEquals(resource_path, source_path, ignore_case)) return try clone(allocator, target);
+    const relative = std.mem.trimStart(u8, resource_path[trimmed.len..], separators);
+    var result = try clone(allocator, target);
+    if (std.mem.eql(u8, target.scheme, "file")) {
+        result.path = .{ .raw = try std.fs.path.join(allocator, &.{ try fsPath(target, allocator), relative }) };
+        // Native paths include a UNC authority in their path spelling.
+        if (builtin.os.tag == .windows) result.host = null;
+    } else {
+        const base_path = std.mem.trimEnd(u8, try path(target, allocator), "/");
+        result.path = .{ .raw = try std.mem.concat(allocator, u8, &.{ base_path, "/", relative }) };
+    }
+    return result;
+}

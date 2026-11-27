@@ -146,12 +146,15 @@ pub const WorkingCopyFileService = struct {
         }
         const event: WorkingCopyFileEvent = .{ .correlation_id = self.correlation_id, .operation = operations.kind(), .files = pairs, .undo_info = info };
         self.correlation_id += 1;
-        try self.on_will_run.fire(event);
+        self.on_will_run.fire(event) catch |err| {
+            self.on_did_fail.fire(event) catch {};
+            return err;
+        };
         self.perform(operations) catch |err| {
             self.on_did_fail.fire(event) catch {};
             return err;
         };
-        try self.on_did_run.fire(event);
+        self.on_did_run.fire(event) catch {};
     }
 
     fn validateTarget(self: *WorkingCopyFileService, resource: Uri, overwrite: bool) !void {

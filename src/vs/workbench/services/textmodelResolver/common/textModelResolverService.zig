@@ -747,6 +747,71 @@ pub const TextModelResolverService = struct {
         return self.collection.interface();
     }
 
+    /// Adapter for the text-file model manager. All operations address the
+    /// same collection entries as normal model resolution; no parallel model
+    /// registry or second document is created for a renamed file.
+    pub const FileModelAccessAdapter = struct {
+        const manager = @import("../../textfile/common/textFileEditorModelManager.zig");
+        service: *TextModelResolverService,
+
+        pub fn interface(self: FileModelAccessAdapter) manager.ITextFileModelAccess {
+            return .{ .context = self.service, .get_models = getModels, .acquire = acquire, .resolve = resolveModel };
+        }
+        fn adapt(document: *EditorDocument) manager.FileModel {
+            const Callbacks = struct {
+                fn doc(context: *anyopaque) *EditorDocument {
+                    return @ptrCast(@alignCast(context));
+                }
+                fn dirty(context: *anyopaque) bool {
+                    return doc(context).isDirty();
+                }
+                fn setDirty(context: *anyopaque, value: bool) void {
+                    doc(context).setFileDirty(value);
+                }
+                fn getEncoding(context: *anyopaque) encoding.Encoding {
+                    return doc(context).encoding;
+                }
+                fn update(context: *anyopaque, text: []const u8, charset: encoding.Encoding, dirty_value: bool) !void {
+                    try doc(context).applyFileOperationContents(text, charset, dirty_value);
+                }
+                fn setLanguage(context: *anyopaque, language: []const u8) !void {
+                    try doc(context).setLanguage(language);
+                }
+            };
+            return .{ .context = document, .text = document.model, .is_dirty = Callbacks.dirty, .set_dirty = Callbacks.setDirty, .get_encoding = Callbacks.getEncoding, .update = Callbacks.update, .set_language = Callbacks.setLanguage };
+        }
+        fn getModels(context: *anyopaque, a: Allocator) ![]manager.FileModel {
+            const service: *TextModelResolverService = @ptrCast(@alignCast(context));
+            var result: std.ArrayList(manager.FileModel) = .empty;
+            errdefer result.deinit(a);
+            var iterator = service.collection.entries.valueIterator();
+            while (iterator.next()) |value| {
+                const entry = value.*;
+                if (entry.readonly or std.mem.eql(u8, entry.document.model.uri().scheme, "untitled")) continue;
+                try result.append(a, adapt(entry.document));
+            }
+            return result.toOwnedSlice(a);
+        }
+        fn acquire(context: *anyopaque, uri: std.Uri) !?manager.FileModelReference {
+            const service: *TextModelResolverService = @ptrCast(@alignCast(context));
+            var reference = (try service.acquireExisting(uri)) orelse return null;
+            if (reference.object.isReadonly()) {
+                reference.dispose();
+                return null;
+            }
+            return .{ .model = adapt(documentOf(reference)), .release = reference.release };
+        }
+        fn resolveModel(context: *anyopaque, uri: std.Uri, text: []const u8) !manager.FileModelReference {
+            const service: *TextModelResolverService = @ptrCast(@alignCast(context));
+            var arena = std.heap.ArenaAllocator.init(service.allocator);
+            defer arena.deinit();
+            var reference = try service.createResolvedModelReference(uri, try uri_util.fsPath(uri, arena.allocator()), text, false);
+            errdefer reference.dispose();
+            if (reference.object.isReadonly()) return error.ReadOnlyResource;
+            return .{ .model = adapt(documentOf(reference)), .release = reference.release };
+        }
+    };
+
     pub fn documentOf(reference: resolver.ModelReference) *EditorDocument {
         return @ptrCast(@alignCast(reference.object.context));
     }
