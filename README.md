@@ -506,7 +506,9 @@ parameters in an editor content widget. Rich documentation and scrolling
 remain outstanding. Rename Symbol (`F2`) prepares the symbol with its provider
 and applies workspace edits or opens the existing refactoring preview. Semantic
 tokens are applied to the normal syntax-token pipeline with document and
-viewport-range providers, including theme rules and incremental result IDs. The
+viewport-range providers, including theme rules and incremental result IDs.
+Inlay hints display themed, tracked injected text, support provider resolution
+and hover, and navigate on modifier-click without modifying document text. The
 negotiated capabilities are recorded in
 [the reference capture](docs/zig-zls-reference-capabilities.json). The full LSP capability matrix
 is still in progress; see [the integration plan](docs/zig-extension-lsp-plan.md).

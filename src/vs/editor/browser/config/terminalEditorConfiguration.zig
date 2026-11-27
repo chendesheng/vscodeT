@@ -250,6 +250,17 @@ pub fn applyViewSettings(
     any = any or hints_changed;
     options.set(.parameterHints, hints);
 
+    const inlay_enabled = readString(reader, "editor.inlayHints.enabled", language_id, resource) orelse "on";
+    const inlay: editorOptions.EditorInlayHintsOptions = .{
+        .enabled = std.meta.stringToEnum(editorOptions.InlayHintsEnabled, inlay_enabled) orelse .on,
+        .padding = readBool(reader, "editor.inlayHints.padding", language_id, resource) orelse false,
+        .maximum_length = @intCast(@max(0, readInt(reader, "editor.inlayHints.maximumLength", language_id, resource) orelse 43)),
+    };
+    const inlay_changed = !std.meta.eql(options.get(.inlayHints), inlay);
+    mark(changed, .inlayHints, inlay_changed);
+    any = any or inlay_changed;
+    options.set(.inlayHints, inlay);
+
     const on_type = formatOnType(reader, language_id, resource);
     const on_type_changed = options.get(.formatOnType) != on_type;
     mark(changed, .formatOnType, on_type_changed);

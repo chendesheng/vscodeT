@@ -2004,8 +2004,10 @@ through the shared bulk-edit service, including the fixture’s refactoring
 preview and discard flow. New-symbol-name suggestions and full upstream rename
 controller behavior remain outstanding. Document/range semantic tokens now
 use the existing sparse token store, shared theme palette, version cancellation,
-provider changes and binary deltas. Remaining portable gaps include inlay hints
-and full upstream semantic-token controller fidelity; the
+provider changes and binary deltas. Inlay hints now use the injected-text view
+projection, resolve label parts and tooltips, and support modifier-click
+locations/commands. Right-click symbol-navigation menus, target-location hover
+and full upstream controller fidelity remain outstanding; the
 full advertised ZLS capability matrix is not yet verified.
 
 ## 16. Deferred / explicit limitations

@@ -41,6 +41,7 @@ const theme_colors_mod = @import("../../themeColors.zig");
 const languages = @import("../../../../editor/common/languages.zig");
 const hoverTypes = @import("../../../../editor/contrib/hover/browser/hoverTypes.zig");
 const ContentHoverController = @import("../../../../editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
+const InlayHintsHover = @import("../../../../editor/contrib/inlayHints/browser/inlayHintsHover.zig").InlayHintsHover;
 const MarkdownHoverParticipant = @import("../../../../editor/contrib/hover/browser/markdownHoverParticipant.zig").MarkdownHoverParticipant;
 const MarkerHoverParticipant = @import("../../../../editor/contrib/hover/browser/markerHoverParticipant.zig").MarkerHoverParticipant;
 const WordHighlighterContribution = @import("../../../../editor/contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
@@ -211,6 +212,7 @@ pub const Tab = struct {
     code_action_services: ?CodeActionServices = null,
     rename_services: ?RenameServices = null,
     semantic_tokens_services: ?SemanticTokensServices = null,
+    inlay_hints_services: ?InlayHintsServices = null,
     hover_opener: ?MarkerHoverParticipantOpener = null,
     hover_menus: ?MarkerHoverMenuServices = null,
     marker_navigation_services: ?MarkerNavigationServices = null,
@@ -538,6 +540,14 @@ pub const Tab = struct {
         if (self.original_controllers) |controllers| controllers.attachCodeLensServices(services) catch {};
     }
 
+    pub fn attachInlayHintsServices(self: *Tab, services: InlayHintsServices) void {
+        if (self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
+        self.inlay_hints_services = services;
+        self.ensureControllers() catch return;
+        if (self.controllers) |controllers| controllers.attachInlayHintsServices(services) catch {};
+        if (self.original_controllers) |controllers| controllers.attachInlayHintsServices(services) catch {};
+    }
+
     pub fn attachSemanticTokensServices(self: *Tab, services: SemanticTokensServices) void {
         if (self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
         self.semantic_tokens_services = services;
@@ -631,6 +641,7 @@ pub const Tab = struct {
         if (self.code_action_services) |services| try controllers.attachCodeActionServices(services);
         if (self.rename_services) |services| try controllers.attachRenameServices(services);
         if (self.semantic_tokens_services) |services| try controllers.attachSemanticTokensServices(services);
+        if (self.inlay_hints_services) |services| try controllers.attachInlayHintsServices(services);
         if (self.hover_opener) |opener| if (self.hover_menus) |menus| controllers.attachHoverServices(opener, menus);
         if (self.marker_navigation_services) |services| try controllers.attachMarkerNavigationServices(services);
         return controllers;
@@ -1367,6 +1378,8 @@ fn SuggestControllerHostForView(view: *View) @import("../../../../editor/contrib
 }
 
 const CodeActionController = @import("../../../../editor/contrib/codeAction/browser/codeActionController.zig").CodeActionController;
+const InlayHintsServices = @import("../../../../editor/contrib/inlayHints/browser/inlayHintsController.zig").Services;
+const InlayHintsController = @import("../../../../editor/contrib/inlayHints/browser/inlayHintsController.zig").InlayHintsController;
 const SemanticTokensServices = @import("../../../../editor/contrib/semanticTokens/browser/viewportSemanticTokens.zig").Services;
 const ViewportSemanticTokensContribution = @import("../../../../editor/contrib/semanticTokens/browser/viewportSemanticTokens.zig").ViewportSemanticTokensContribution;
 const RenameServices = @import("../../../../editor/contrib/rename/browser/rename.zig").Services;
@@ -1401,7 +1414,8 @@ pub const Controllers = struct {
     hover_providers: [1]languages.HoverProvider,
     hover_participant: MarkdownHoverParticipant,
     marker_hover_participant: MarkerHoverParticipant,
-    participants: [2]hoverTypes.IEditorHoverParticipant,
+    inlay_hover_participant: InlayHintsHover,
+    participants: [3]hoverTypes.IEditorHoverParticipant,
     hover: ?*ContentHoverController,
     glyph_hover: ?*@import("../../../../editor/contrib/hover/browser/glyphHoverController.zig").GlyphHoverController,
     word_highlighter: *WordHighlighterContribution,
@@ -1416,6 +1430,7 @@ pub const Controllers = struct {
     code_action: ?*CodeActionController,
     rename: ?*RenameController,
     viewport_semantic_tokens: ?*ViewportSemanticTokensContribution,
+    inlay_hints: ?*InlayHintsController,
     code_action_services: ?CodeActionServices,
     hover_opener: ?MarkerHoverParticipantOpener,
     hover_menus: ?MarkerHoverMenuServices,
@@ -1478,7 +1493,10 @@ pub const Controllers = struct {
             if (self.glyph_hover) |glyph| glyph.setTheme(.{}, null);
             self.find.setTheme(.{});
         }
-        if (self.hover != null) self.hover_participant.setCodeBackground(code_background);
+        if (self.hover != null) {
+            self.hover_participant.setCodeBackground(code_background);
+            self.inlay_hover_participant.setCodeBackground(code_background);
+        }
         if (self.code_lens) |lens| lens.setColors(Tab.codeLensColors(palette));
         if (self.marker_navigation) |controller| if (controller.widget) |widget| widget.applyTheme();
     }
@@ -1499,6 +1517,7 @@ pub const Controllers = struct {
         self.code_action = null;
         self.rename = null;
         self.viewport_semantic_tokens = null;
+        self.inlay_hints = null;
         self.code_action_services = null;
         self.hover_opener = null;
         self.hover_menus = null;
@@ -1613,9 +1632,12 @@ pub const Controllers = struct {
         self.marker_hover_participant.menus = self.hover_menus;
         if (self.code_action_services) |services| self.marker_hover_participant.code_actions = .{ .editor = self.editor, .registry = services.registry, .window = services.window };
         errdefer self.marker_hover_participant.deinit();
+        self.inlay_hover_participant = InlayHintsHover.init(editor);
+        errdefer self.inlay_hover_participant.deinit();
         self.participants = .{
             self.marker_hover_participant.interface(),
             self.hover_participant.interface(),
+            self.inlay_hover_participant.interface(),
         };
 
         const settings = hoverSettings(view);
@@ -1677,6 +1699,13 @@ pub const Controllers = struct {
         if (self.widgets_attached) try view.addContentWidget(suggest.widgetInterface());
         self.suggest = suggest;
         self.setThemeColors(view.themeColors());
+    }
+
+    pub fn attachInlayHintsServices(self: *Controllers, services: InlayHintsServices) !void {
+        if (self.inlay_hints != null) return;
+        const opts = &self.view.terminal_view_host.options;
+        self.inlay_hints = try InlayHintsController.getOrCreate(self.editor, services, opts.get(.inlayHints));
+        self.inlay_hints.?.configure(opts.get(.inlayHints), opts.get(.multiCursorModifier) != .alt_key);
     }
 
     pub fn attachSemanticTokensServices(self: *Controllers, services: SemanticTokensServices) !void {
@@ -1844,6 +1873,7 @@ pub const Controllers = struct {
             if (self.hover_registration) |registration| registration.dispose();
             self.hover_registration = null;
             self.marker_hover_participant.deinit();
+            self.inlay_hover_participant.deinit();
             self.hover_participant.deinit();
             self.hover_provider.deinit();
             self.hover = null;
@@ -1859,6 +1889,8 @@ pub const Controllers = struct {
     }
 
     pub fn deinit(self: *Controllers) void {
+        if (self.inlay_hints) |controller| controller.unbind();
+        self.inlay_hints = null;
         if (self.viewport_semantic_tokens) |contribution| contribution.unbind();
         self.viewport_semantic_tokens = null;
         if (self.rename) |rename| rename.unbind();
@@ -1950,6 +1982,10 @@ pub const MultiDiffBindingServices = struct {
             self.original.attachMarkerNavigationServices(services) catch {};
             self.modified.attachMarkerNavigationServices(services) catch {};
         }
+        if (host.inlay_hints) |services| {
+            self.original.attachInlayHintsServices(services) catch {};
+            self.modified.attachInlayHintsServices(services) catch {};
+        }
         if (host.semantic_tokens) |services| {
             self.original.attachSemanticTokensServices(services) catch {};
             self.modified.attachSemanticTokensServices(services) catch {};
@@ -1978,6 +2014,10 @@ pub const MultiDiffBindingServices = struct {
 
 fn onConfigurationChanged(context: *anyopaque, event: @import("../../../../editor/common/config/editorOptions.zig").ConfigurationChangedEvent) void {
     const self: *Controllers = @ptrCast(@alignCast(context));
+    if (event.hasChanged(.inlayHints) or event.hasChanged(.multiCursorModifier)) if (self.inlay_hints) |controller| {
+        const opts = &self.view.terminal_view_host.options;
+        controller.configure(opts.get(.inlayHints), opts.get(.multiCursorModifier) != .alt_key);
+    };
     if (event.hasChanged(.parameterHints)) if (self.parameter_hints) |hints| {
         const settings = self.view.terminal_view_host.options.get(.parameterHints);
         hints.model.configure(settings.enabled, settings.cycle);

@@ -77,6 +77,7 @@ const supported_options = [_]EditorOption{
     .foldingImportsByDefault,
     .foldingMaximumRegions,
     .parameterHints,
+    .inlayHints,
     .effectiveEditContext,
     .effectiveAllowVariableFonts,
     .allowVariableFonts,
@@ -171,6 +172,7 @@ pub fn optionField(comptime option: EditorOption) []const u8 {
         .foldingImportsByDefault => "folding_imports_by_default",
         .foldingMaximumRegions => "folding_maximum_regions",
         .parameterHints => "parameter_hints",
+        .inlayHints => "inlay_hints",
         .effectiveEditContext => "effective_edit_context",
         .effectiveAllowVariableFonts => "effective_allow_variable_fonts",
         .allowVariableFonts => "allow_variable_fonts",
@@ -268,6 +270,7 @@ pub const ComputedEditorOptions = struct {
     folding_imports_by_default: bool = false,
     folding_maximum_regions: i32 = 5000,
     parameter_hints: editorOptions.InternalParameterHintOptions = .{},
+    inlay_hints: editorOptions.EditorInlayHintsOptions = .{},
     occurrences_highlight_from_all_providers: bool = false,
     effective_edit_context: bool = false,
     effective_allow_variable_fonts: bool = false,
@@ -432,13 +435,15 @@ test "ComputedEditorOptions exposes the supported options" {
         _ = options.read(option);
         _ = view.get(option);
     }
-    try std.testing.expectEqual(@as(usize, 86), supported_options.len);
+    try std.testing.expectEqual(@as(usize, 87), supported_options.len);
     try std.testing.expectEqual(editorOptions.FoldingStrategy.auto, options.get(.foldingStrategy));
     try std.testing.expect(options.get(.foldingHighlight));
     try std.testing.expect(!options.get(.foldingImportsByDefault));
     try std.testing.expectEqual(@as(i32, 5000), options.get(.foldingMaximumRegions));
     try std.testing.expect(options.get(.parameterHints).enabled);
     try std.testing.expect(options.get(.parameterHints).cycle);
+    try std.testing.expectEqual(editorOptions.InlayHintsEnabled.on, options.get(.inlayHints).enabled);
+    try std.testing.expectEqual(@as(usize, 43), options.get(.inlayHints).maximum_length);
     try std.testing.expect(options.get(.codeLens));
     try std.testing.expect(!options.get(.formatOnType));
     try std.testing.expectEqual(editorOptions.OccurrencesHighlight.single_file, options.get(.occurrencesHighlight));

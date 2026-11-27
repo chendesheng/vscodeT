@@ -297,6 +297,11 @@ pub const GuideSetting = enum { off, on, active };
 pub const GuideHighlightSetting = enum { off, on, always };
 
 /// Port of `InternalParameterHintOptions`.
+pub const InlayHintsEnabled = enum { on, off, offUnlessPressed, onUnlessPressed };
+/// Fixed terminal cells omit font family and font size; the other upstream
+/// inlay-hint options govern visibility, padding and per-line label length.
+pub const EditorInlayHintsOptions = struct { enabled: InlayHintsEnabled = .on, padding: bool = false, maximum_length: usize = 43 };
+
 pub const InternalParameterHintOptions = struct { enabled: bool = true, cycle: bool = true };
 
 /// Port of `InternalEditorRenderLineNumbersOptions`.
@@ -552,6 +557,7 @@ pub fn OptionValueType(comptime option: EditorOption) type {
         .find => EditorFindOptions,
         .hover => EditorHoverOptions,
         .parameterHints => InternalParameterHintOptions,
+        .inlayHints => EditorInlayHintsOptions,
         .lightbulb => EditorLightbulbOptions,
         .stickyScroll => EditorStickyScrollOptions,
         .rulers => []const IRulerOption,

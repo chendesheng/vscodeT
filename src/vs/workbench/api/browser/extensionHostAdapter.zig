@@ -2856,6 +2856,74 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                 time_compat.sleepMillis(10);
             }
             try std.testing.expect(inlay_probe.changed);
+            const InlayHintsController = @import("../../../editor/contrib/inlayHints/browser/inlayHintsController.zig").InlayHintsController;
+            const inlay_controller = selection_editor.getInstantiatedContribution(InlayHintsController).?;
+            const injected_deadline = time_compat.milliTimestamp() + 5000;
+            while (inlay_controller.parts.len == 0 and time_compat.milliTimestamp() < injected_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(inlay_controller.parts.len > 0);
+            const inlay_view_position = selection_editor.viewPositionOfModelPosition(Position.init(2, 1));
+            const injected_line = try selection_editor.viewLineData(inlay_view_position.lineNumber);
+            try std.testing.expect(std.mem.indexOf(u8, injected_line.content, "fixtureHint") != null);
+            try std.testing.expect(std.mem.indexOf(u8, try model.borrowLineContent(2), "fixtureHint") == null);
+            var hit_found = false;
+            const hint_column = std.mem.indexOf(u8, injected_line.content, "fixtureHint").? + 2;
+            if (try selection_editor.injectedTextAtViewPoint(inlay_view_position.lineNumber, hint_column)) |injection| {
+                hit_found = injection.options.attachedData != null;
+            }
+            try std.testing.expect(hit_found);
+            const hint_view = workbench.activeTab().?.view;
+            const HoverController = @import("../../../editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
+            const hint_hover = selection_editor.getContribution(HoverController) orelse return error.HoverControllerMissing;
+            const settled_deadline = time_compat.milliTimestamp() + 5000;
+            while ((inlay_controller.pending != null or inlay_controller.timer.at != null) and time_compat.milliTimestamp() < settled_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            var mouse: @import("ui").MouseEvent = .{ .kind = .move };
+            var hint_cell: ?struct { x: usize, y: usize } = null;
+            outer: for (0..selection_editor.screen_height) |y| {
+                for (selection_editor.gutterWidth()..selection_editor.screen_width) |x| {
+                    mouse.x = x;
+                    mouse.y = y;
+                    const target = try hint_view.mouseTargetAt(x, y);
+                    if (inlay_controller.partAt(.{ .target = target, .event = &mouse }) != null) {
+                        hint_cell = .{ .x = x, .y = y };
+                        break :outer;
+                    }
+                }
+            }
+            const cell = hint_cell orelse return error.InlayMouseTargetUnavailable;
+            mouse.x = cell.x;
+            mouse.y = cell.y;
+            const input_dispatch = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminalInput.zig");
+            _ = try input_dispatch.handleMouseEvent(hint_view, hint_hover, null, selection_editor, &mouse);
+            const hint_hover_deadline = time_compat.milliTimestamp() + 5000;
+            var tooltip_found = false;
+            while (!tooltip_found and time_compat.milliTimestamp() < hint_hover_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                for (0..12) |index| {
+                    if (hint_hover.wrapper.getAccessibleWidgetContentAtIndex(@intCast(index))) |content| {
+                        if (std.mem.indexOf(u8, content, "Resolved inlay tooltip") != null) tooltip_found = true;
+                    }
+                }
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(tooltip_found);
+            hint_hover.hideContentHover();
+            try selection_editor.setCursorPosition(Position.init(1, 1));
+            var click: @import("ui").MouseEvent = .{ .kind = .down, .button = .left, .x = cell.x, .y = cell.y, .mods = .{ .ctrl = true } };
+            _ = try input_dispatch.handleMouseEvent(hint_view, hint_hover, null, selection_editor, &click);
+            click = .{ .kind = .up, .button = .left, .x = cell.x, .y = cell.y, .mods = .{ .ctrl = true } };
+            _ = try input_dispatch.handleMouseEvent(hint_view, hint_hover, null, selection_editor, &click);
+            const link_deadline = time_compat.milliTimestamp() + 5000;
+            while (selection_editor.modelCursorPosition().lineNumber != 2 and time_compat.milliTimestamp() < link_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expectEqual(@as(usize, 2), selection_editor.modelCursorPosition().lineNumber);
 
             const action_model = @import("../../../editor/contrib/codeAction/browser/codeAction.zig");
             const action_types = @import("../../../editor/contrib/codeAction/common/types.zig");
@@ -4086,6 +4154,14 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                         try std.testing.expect(std.mem.indexOf(u8, signature_help.signatures[0].label, "value") != null);
                         try std.testing.expect(selection_editor.parameter_hints_visible);
                         try workbench.commands.execute("closeParameterHints");
+                        const InlayHintsController = @import("../../../editor/contrib/inlayHints/browser/inlayHintsController.zig").InlayHintsController;
+                        const inlay_controller = selection_editor.getInstantiatedContribution(InlayHintsController).?;
+                        const zls_inlay_deadline = time_compat.milliTimestamp() + 5000;
+                        while (inlay_controller.parts.len == 0 and time_compat.milliTimestamp() < zls_inlay_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                            time_compat.sleepMillis(10);
+                        }
+                        try std.testing.expect(inlay_controller.parts.len > 0);
                         const semantic_deadline = time_compat.milliTimestamp() + 5000;
                         while (!model.hasCompleteSemanticTokens() and time_compat.milliTimestamp() < semantic_deadline) {
                             _ = workbench.window_events.dispatch(time_compat.milliTimestamp());

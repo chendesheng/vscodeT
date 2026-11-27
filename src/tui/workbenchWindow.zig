@@ -3028,6 +3028,10 @@ pub const TerminalWorkbench = struct {
         }.execute };
     }
 
+    fn inlayHintsServices(self: *TerminalWorkbench, features: *LanguageFeaturesService) @import("../vs/editor/contrib/inlayHints/browser/inlayHintsController.zig").Services {
+        return .{ .registry = &features.inlay_hints_provider, .window = &self.window_events, .opener = (editor_service_mod.EditorOpening.OpenerAdapter{ .opening = &self.editor_opening }).interface(), .commands = self.providerCommandHost() };
+    }
+
     fn semanticTokensServices(self: *TerminalWorkbench, features: *LanguageFeaturesService) ?@import("../vs/editor/contrib/semanticTokens/browser/viewportSemanticTokens.zig").Services {
         return .{ .registry = &features.document_range_semantic_tokens_provider, .document = self.document_semantic_tokens orelse return null, .window = &self.window_events };
     }
@@ -3055,6 +3059,7 @@ pub const TerminalWorkbench = struct {
         tab.attachCodeActionServices(self.codeActionServices(features));
         tab.attachRenameServices(self.renameServices(features));
         if (self.semanticTokensServices(features)) |services| tab.attachSemanticTokensServices(services);
+        tab.attachInlayHintsServices(self.inlayHintsServices(features));
         if (self.markerNavigationServices()) |services| tab.attachMarkerNavigationServices(services);
         const cache = self.code_lens_cache orelse return;
         tab.attachCodeLensServices(features, cache, self.providerCommandHost(), &self.window_events);
@@ -3064,7 +3069,7 @@ pub const TerminalWorkbench = struct {
         const features = self.language_features orelse return;
         widget.original_editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
         widget.modified_editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
-        widget.attachNativeLanguageServices(.{ .features = features, .cache = self.code_lens_cache, .commands = self.providerCommandHost(), .code_actions = self.codeActionServices(features), .rename = self.renameServices(features), .semantic_tokens = self.semanticTokensServices(features), .opener = (editor_service_mod.EditorOpening.OpenerAdapter{ .opening = &self.editor_opening }).interface(), .hover_menus = .{ .menus = &self.menu_service, .parent_context = self.core.context_keys.getContext() }, .marker_navigation = self.markerNavigationServices(), .window = &self.window_events });
+        widget.attachNativeLanguageServices(.{ .features = features, .cache = self.code_lens_cache, .commands = self.providerCommandHost(), .code_actions = self.codeActionServices(features), .rename = self.renameServices(features), .semantic_tokens = self.semanticTokensServices(features), .inlay_hints = self.inlayHintsServices(features), .opener = (editor_service_mod.EditorOpening.OpenerAdapter{ .opening = &self.editor_opening }).interface(), .hover_menus = .{ .menus = &self.menu_service, .parent_context = self.core.context_keys.getContext() }, .marker_navigation = self.markerNavigationServices(), .window = &self.window_events });
     }
 
     fn markerNavigationServices(self: *TerminalWorkbench) ?@import("../vs/editor/contrib/gotoError/browser/gotoError.zig").Services {
