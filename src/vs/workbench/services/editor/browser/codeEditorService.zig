@@ -12,6 +12,7 @@ pub const CodeEditorService = struct {
     part: *EditorPart,
     allocator: std.mem.Allocator,
     editors: std.ArrayList(*Editor) = .empty,
+    opening: ?struct { context: *anyopaque, open: *const fn (*anyopaque, service.OpenCodeEditorOptions) anyerror!void } = null,
 
     pub fn init(allocator: std.mem.Allocator, part: *EditorPart) CodeEditorService {
         return .{ .allocator = allocator, .part = part };
@@ -22,7 +23,13 @@ pub const CodeEditorService = struct {
     }
 
     pub fn interface(self: *CodeEditorService) service.ICodeEditorService {
-        return .{ .context = self, .focused = focusedEditor, .active = activeEditor, .focused_diff = focusedDiffEditor, .add_code_editor = addCodeEditor, .remove_code_editor = removeCodeEditor, .list_code_editors = listCodeEditors };
+        return .{ .context = self, .focused = focusedEditor, .active = activeEditor, .focused_diff = focusedDiffEditor, .add_code_editor = addCodeEditor, .remove_code_editor = removeCodeEditor, .list_code_editors = listCodeEditors, .open_code_editor = openCodeEditor };
+    }
+
+    fn openCodeEditor(context: *anyopaque, options: service.OpenCodeEditorOptions) !void {
+        const self: *CodeEditorService = @ptrCast(@alignCast(context));
+        const opening = self.opening orelse return error.EditorOpeningUnavailable;
+        try opening.open(opening.context, options);
     }
 
     fn addCodeEditor(context: *anyopaque, editor: *Editor) !void {

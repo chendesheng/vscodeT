@@ -3,6 +3,17 @@
 const Editor = @import("../widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const IDiffEditor = @import("../editorBrowser.zig").IDiffEditor;
 const ServiceIdentifier = @import("../../../platform/instantiation/common/instantiation.zig").ServiceIdentifier;
+const std = @import("std");
+const Range = @import("../../common/core/range.zig").Range;
+
+/// Terminal continuation counterpart of upstream openCodeEditor's promise.
+/// The callback receives the actual mounted text editor after URI resolution.
+pub const OpenCodeEditorOptions = struct {
+    resource: std.Uri,
+    selection: Range,
+    pinned: bool = false,
+    on_opened: ?*const fn (*Editor) void = null,
+};
 
 pub const ICodeEditorService = struct {
     context: *anyopaque,
@@ -12,6 +23,7 @@ pub const ICodeEditorService = struct {
     add_code_editor: ?*const fn (*anyopaque, *Editor) anyerror!void = null,
     remove_code_editor: ?*const fn (*anyopaque, *Editor) void = null,
     list_code_editors: ?*const fn (*anyopaque) []const *Editor = null,
+    open_code_editor: ?*const fn (*anyopaque, OpenCodeEditorOptions) anyerror!void = null,
 
     pub fn addCodeEditor(self: ICodeEditorService, editor: *Editor) !void {
         if (self.add_code_editor) |add| try add(self.context, editor);
@@ -37,6 +49,11 @@ pub const ICodeEditorService = struct {
 
     pub fn getActiveCodeEditor(self: ICodeEditorService) ?*Editor {
         return self.active(self.context);
+    }
+
+    pub fn openCodeEditor(self: ICodeEditorService, options: OpenCodeEditorOptions) !void {
+        const open = self.open_code_editor orelse return error.EditorOpeningUnavailable;
+        try open(self.context, options);
     }
 };
 pub const code_editor_service_id = ServiceIdentifier(ICodeEditorService, "codeEditorService");

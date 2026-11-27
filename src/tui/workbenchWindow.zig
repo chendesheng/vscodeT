@@ -1300,6 +1300,7 @@ pub const TerminalWorkbench = struct {
         _ = try self.services.set(editor_groups.editor_groups_service_id, &self.editor_groups_api);
         _ = try self.services.set(code_editor_service.code_editor_service_id, &self.code_editor_api);
         self.editors = .{ .part = self.part, .opening = &self.editor_opening };
+        self.code_editors.opening = .{ .context = &self.editor_opening, .open = editor_service_mod.EditorOpening.requestOpenCodeEditor };
         self.editor_api = self.editors.interface();
         _ = try self.services.set(@import("../vs/workbench/services/editor/common/editorService.zig").editor_service_id, &self.editor_api);
         const scm_view = try self.scm.ensureViewService(self.editor_api);

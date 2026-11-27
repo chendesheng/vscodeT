@@ -543,7 +543,7 @@ pub const EditorOpening = struct {
     pending_resource_open: ?struct {
         request: @import("../../../../editor/common/services/resolverService.zig").ModelReferenceRequest,
         label: []u8,
-        selection_utf16: ?@import("../../../../editor/common/core/position.zig").Position = null,
+        options: OpenOptions = .{},
     } = null,
     pending_link_open: ?struct {
         encoded_uri: []u8,
@@ -1373,10 +1373,12 @@ pub const EditorOpening = struct {
             if (self.language_features.*) |features| tab.attachLanguageRegistry(features);
             try tab.ensureControllers();
             if (options.selection_utf16) |position| try revealUtf16Position(tab.editor, position);
+            if (options.selection_model) |selection| try tab.editor.setSelection(selection);
             if (!opened.is_new and !options.preserve_focus) tab.focusEditor();
         }
         try self.history.add(path);
         self.pruneTabs(opened.pane);
+        if (opened.tab) |tab| if (options.on_text_editor_opened) |callback| callback(tab.editor);
     }
 
     fn revealUtf16Position(editor: *Editor, position: @import("../../../../editor/common/core/position.zig").Position) !void {
@@ -1568,19 +1570,31 @@ pub const EditorOpening = struct {
     /// virtual resources resolve through ITextModelService in the same way
     /// as opening the original side of a diff.
     pub fn requestOpenResourceUriAt(self: *EditorOpening, resource: std.Uri, label: []const u8, selection: ?@import("../../../../editor/common/core/position.zig").Position) !void {
+        try self.requestOpenResourceUriWithOptions(resource, label, .{ .force_text = selection != null, .selection_utf16 = selection });
+    }
+
+    pub fn requestOpenCodeEditor(context: *anyopaque, request: @import("../../../../editor/browser/services/codeEditorService.zig").OpenCodeEditorOptions) !void {
+        const self: *EditorOpening = @ptrCast(@alignCast(context));
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const path = try resource_uri.path(request.resource, arena.allocator());
+        try self.requestOpenResourceUriWithOptions(request.resource, std.fs.path.basename(path), .{ .pinned = request.pinned, .force_text = true, .selection_model = request.selection, .on_text_editor_opened = request.on_opened });
+    }
+
+    fn requestOpenResourceUriWithOptions(self: *EditorOpening, resource: std.Uri, label: []const u8, options: OpenOptions) !void {
         self.cancelPendingOpen();
         self.cancelPendingDiff();
         if (std.mem.eql(u8, resource.scheme, "file")) {
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
             const path = try @import("../../../../base/common/stdUri.zig").fsPath(resource, arena.allocator());
-            self.requestOpenPathWithOptions(path, .{ .force_text = selection != null, .selection_utf16 = selection });
+            self.requestOpenPathWithOptions(path, options);
             return;
         }
         const owned_label = try self.allocator.dupe(u8, label);
         errdefer self.allocator.free(owned_label);
         const request = try self.text_model_resolver.createModelReference(resource, .{ .context = self, .complete = resourceOpenCompleted });
-        self.pending_resource_open = .{ .request = request, .label = owned_label, .selection_utf16 = selection };
+        self.pending_resource_open = .{ .request = request, .label = owned_label, .options = options };
         self.setStatusHint("Opening {s}...", .{label});
     }
 
@@ -1596,11 +1610,11 @@ pub const EditorOpening = struct {
         self.pending_resource_open = null;
         defer self.allocator.free(pending.label);
         self.clearStatusHint();
-        self.finishResourceOpen(result, pending.label, pending.selection_utf16) catch |err| self.setStatusHint("Open failed: {s}", .{@errorName(err)});
+        self.finishResourceOpen(result, pending.label, pending.options) catch |err| self.setStatusHint("Open failed: {s}", .{@errorName(err)});
         self.host.request_frame(self.host.context);
     }
 
-    fn finishResourceOpen(self: *EditorOpening, result: @import("../../../../editor/common/services/resolverService.zig").ModelReferenceResult, label: []const u8, selection: ?@import("../../../../editor/common/core/position.zig").Position) !void {
+    fn finishResourceOpen(self: *EditorOpening, result: @import("../../../../editor/common/services/resolverService.zig").ModelReferenceResult, label: []const u8, options: OpenOptions) !void {
         const reference = switch (result) {
             .resolved => |value| value,
             .failure => |err| return err,
@@ -1608,7 +1622,11 @@ pub const EditorOpening = struct {
         const input = try text_diff_editor_mod.TextResourceEditorInput.initFromReference(self.allocator, reference, label);
         defer input.destroy();
         try self.openTextResourceInput(input);
-        if (selection) |position| if (self.part.activeView()) |pane| if (pane.activeTab()) |tab| try revealUtf16Position(tab.editor, position);
+        if (self.part.activeView()) |pane| if (pane.activeTab()) |tab| {
+            if (options.selection_utf16) |position| try revealUtf16Position(tab.editor, position);
+            if (options.selection_model) |selection| try tab.editor.setSelection(selection);
+            if (options.on_text_editor_opened) |callback| callback(tab.editor);
+        };
     }
 
     fn cancelPendingOpen(self: *EditorOpening) void {

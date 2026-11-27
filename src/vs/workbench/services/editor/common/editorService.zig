@@ -23,6 +23,8 @@ pub const OpenOptions = struct {
     /// Location DTOs use one-based UTF-16 columns. Convert after the file's
     /// actual model resolves, not at the caller or against a different model.
     selection_utf16: ?@import("../../../../editor/common/core/position.zig").Position = null,
+    selection_model: ?@import("../../../../editor/common/core/range.zig").Range = null,
+    on_text_editor_opened: ?*const fn (*@import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor) void = null,
 };
 
 /// Upstream IEditorCloseEvent, with the native pinned state retained for
