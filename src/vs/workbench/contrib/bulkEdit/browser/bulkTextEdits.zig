@@ -25,7 +25,10 @@ const columns = @import("../../../api/common/positionConverter.zig");
 const bulk = @import("../../../../editor/browser/services/bulkEditService.zig");
 const SnippetParser = @import("../../../../editor/contrib/snippet/browser/snippetParser.zig");
 const Edit = languages.WorkspaceTextEdit;
-const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const editor_mod = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
+const Editor = editor_mod.Editor;
+const SnippetController2 = @import("../../../../editor/contrib/snippet/browser/snippetController2.zig").SnippetController2;
+const SnippetEdit = @import("../../../../editor/contrib/snippet/browser/snippetSession.zig").SnippetEdit;
 
 pub const ModelEditTask = struct {
     owner: *BulkTextEdits,
@@ -36,6 +39,8 @@ pub const ModelEditTask = struct {
     pending: ?resolver.ModelReferenceRequest = null,
     done: bool = false,
     operations: []model_types.IdentifiedSingleEditOperation = &.{},
+    editor_edits: []editor_mod.TextEdit = &.{},
+    snippet_edits: []SnippetEdit = &.{},
     eol: ?@import("../../../../editor/common/core/misc/eolCounter.zig").EOL = null,
     before_selections: ?[]Selection = null,
 
@@ -63,6 +68,9 @@ pub const ModelEditTask = struct {
             self.before_selections = try a.dupe(Selection, selections);
         }
         var operations: std.ArrayList(model_types.IdentifiedSingleEditOperation) = .empty;
+        var editor_edits: std.ArrayList(editor_mod.TextEdit) = .empty;
+        var snippet_edits: std.ArrayList(SnippetEdit) = .empty;
+        var has_snippets = false;
         for (self.edits.items) |edit| {
             if (edit.version_id) |version| if (model.getVersionId() != version) return error.ModelVersionMismatch;
             if (edit.eol) |eol| self.eol = eol;
@@ -72,6 +80,15 @@ pub const ModelEditTask = struct {
             if (normalized.startLineNumber == normalized.endLineNumber and normalized.startColumn == normalized.endColumn and edit.text.len == 0) continue;
             const text = if (edit.insert_as_snippet) try SnippetParser.asInsertText(a, edit.text) else edit.text;
             try operations.append(a, .init(normalized, String.initBorrowed(text)));
+            if (self.before_selections != null) {
+                try editor_edits.append(a, .{ .range = normalized, .text = text });
+                has_snippets = has_snippets or edit.insert_as_snippet;
+                try snippet_edits.append(a, .{
+                    .range = normalized,
+                    .template = if (edit.insert_as_snippet) edit.text else try SnippetParser.escape(a, edit.text),
+                    .keep_whitespace = edit.keep_whitespace,
+                });
+            }
         }
         std.mem.sort(model_types.IdentifiedSingleEditOperation, operations.items, {}, struct {
             fn less(_: void, left: model_types.IdentifiedSingleEditOperation, right: model_types.IdentifiedSingleEditOperation) bool {
@@ -82,6 +99,8 @@ pub const ModelEditTask = struct {
             if (range_mod.areIntersecting(&left.range, &right.range)) return error.OverlappingEdits;
         }
         self.operations = operations.items;
+        self.editor_edits = editor_edits.items;
+        if (has_snippets) self.snippet_edits = snippet_edits.items;
     }
 
     fn getBeforeCursorState(self: *ModelEditTask) ?[]Selection {
@@ -101,7 +120,21 @@ pub const ModelEditTask = struct {
 
     fn apply(self: *ModelEditTask, group: *UndoRedoGroup) !void {
         const model = self.reference.?.object.textEditorModel;
-        if (self.operations.len > 0) _ = try model.pushEditOperations(self.getBeforeCursorState(), self.operations, null, group);
+        if (self.operations.len > 0) {
+            if (self.getEditor()) |editor| {
+                if (self.snippet_edits.len > 0) {
+                    const controller = try SnippetController2.getOrCreate(editor);
+                    try controller.apply(self.snippet_edits, .{ .undo_stop_before = false, .undo_stop_after = false, .undo_group = group });
+                } else if (self.editor_edits.len > 0) {
+                    const positions = try editor.applyTextEditsWithPositionsWithOptions(self.editor_edits, .{ .undo_stop_before = false, .undo_group = group });
+                    editor.allocator.free(positions);
+                } else {
+                    _ = try model.pushEditOperations(null, self.operations, null, group);
+                }
+            } else {
+                _ = try model.pushEditOperations(null, self.operations, null, group);
+            }
+        }
         if (self.eol) |eol| try model.pushEOLWithGroup(eol, group);
     }
 };

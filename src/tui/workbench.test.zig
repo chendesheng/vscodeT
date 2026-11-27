@@ -10660,6 +10660,94 @@ test "Diff editor commands: multi-resource text edit installs one labeled worksp
     try std.testing.expectEqualStrings("replaced second", try right.borrowLineContent(1));
 }
 
+test "Diff editor commands: active workspace snippet edits preserve tabstops and one workspace undo element" {
+    const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const bulk = @import("../vs/editor/browser/services/bulkEditService.zig");
+    const Probe = struct {
+        result: ?bulk.IBulkEditResult = null,
+        failure: ?anyerror = null,
+        fn complete(context: *anyopaque, reply: anyerror!bulk.IBulkEditResult) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (reply) |value| self.result = value else |err| self.failure = err;
+        }
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = root_buffer[0..try tmp.dir.realPath(io, &root_buffer)];
+    if (!try runGitTest(a, root, &.{"init"})) return error.SkipZigTest;
+    _ = try runGitTest(a, root, &.{ "config", "user.name", "Test User" });
+    _ = try runGitTest(a, root, &.{ "config", "user.email", "test@example.com" });
+    try std.testing.expect(try runGitTest(a, root, &.{ "config", "core.autocrlf", "false" }));
+    try tmp.dir.writeFile(io, .{ .sub_path = "first.txt", .data = "original\nplain" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "second.txt", .data = "second" });
+    try std.testing.expect(try runGitTest(a, root, &.{ "add", "first.txt", "second.txt" }));
+    try std.testing.expect(try runGitTest(a, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "base" }));
+    try tmp.dir.writeFile(io, .{ .sub_path = "first.txt", .data = "working\nplain" });
+    const first_path = try std.fs.path.join(a, &.{ root, "first.txt" });
+    defer a.free(first_path);
+    const second_path = try std.fs.path.join(a, &.{ root, "second.txt" });
+    defer a.free(second_path);
+    const window = try TestWindow.init(a, io, &.{second_path}, 100, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.enableLanguageFeatures();
+    const second = wb.activeTab().?.editor.model;
+    try wb.initSidebar(root);
+    pumpSidebarForTests(wb);
+    try wb.initGit();
+    try wb.openDiff(first_path, .head, .working);
+    try pumpDiffForTests(wb);
+    const widget = wb.activeTab().?.diff.?.widget;
+    const editor = widget.modified_editor;
+    const first = editor.model;
+    widget.setFocus(.modified);
+    try std.testing.expect(!editor.isReadOnly());
+    const edits = [_]languages.WorkspaceResourceEdit{
+        .{ .text = .{ .resource = first.uri(), .range = Range.init(1, 1, 1, 8), .text = "${1:name} ${2:value}$0", .insert_as_snippet = true } },
+        .{ .text = .{ .resource = first.uri(), .range = Range.init(2, 1, 2, 6), .text = "$price", .keep_whitespace = true } },
+        .{ .text = .{ .resource = second.uri(), .text = "${1:inactive}$0", .insert_as_snippet = true } },
+    };
+    var probe: Probe = .{};
+    _ = try wb.bulk_edit_api.apply(.{ .edits = &edits }, .{ .editor = editor, .label = "Snippet refactor" }, .{ .context = &probe, .complete = Probe.complete });
+    for (0..5000) |_| {
+        if (probe.result != null or probe.failure != null) break;
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        time_compat.sleepMillis(1);
+    }
+    if (probe.failure) |err| return err;
+    try std.testing.expect(probe.result.?.is_applied);
+    try std.testing.expectEqualStrings("name value", try first.borrowLineContent(1));
+    try std.testing.expectEqualStrings("$price", try first.borrowLineContent(2));
+    try std.testing.expectEqualStrings("inactive", try second.borrowLineContent(1));
+    try std.testing.expectEqualStrings("original", try widget.original_editor.model.borrowLineContent(1));
+    try std.testing.expect(editor.snippet_state.in_snippet_mode);
+    try std.testing.expectEqual(Selection.init(1, 1, 1, 5), editor.modelSelection());
+    try std.testing.expect(wb.context_keys.?.interface().getContextKeyValue("inSnippetMode").boolean);
+    try std.testing.expect(!(wb.context_keys.?.interface().getContextKeyValue("hasPrevTabstop").boolean));
+    try wb.commands.execute("jumpToNextSnippetPlaceholder");
+    try std.testing.expectEqual(Selection.init(1, 6, 1, 11), editor.modelSelection());
+    try std.testing.expect(editor.snippet_state.has_prev_tabstop);
+    try wb.commands.execute("jumpToPrevSnippetPlaceholder");
+    try std.testing.expectEqual(Selection.init(1, 1, 1, 5), editor.modelSelection());
+    const service = first.getUndoRedoService();
+    const entry = (try service.getLastElement(first.uri())).?;
+    try std.testing.expect(entry.* == .multiModel);
+    try std.testing.expectEqual(entry, (try service.getLastElement(second.uri())).?);
+    try std.testing.expectEqualStrings("Snippet refactor", entry.label());
+    try first.undo();
+    try std.testing.expect(!editor.snippet_state.in_snippet_mode);
+    try std.testing.expectEqualStrings("working", try first.borrowLineContent(1));
+    try std.testing.expectEqualStrings("plain", try first.borrowLineContent(2));
+    try std.testing.expectEqualStrings("second", try second.borrowLineContent(1));
+    try second.redo();
+    try std.testing.expectEqualStrings("name value", try first.borrowLineContent(1));
+    try std.testing.expectEqualStrings("$price", try first.borrowLineContent(2));
+    try std.testing.expectEqualStrings("inactive", try second.borrowLineContent(1));
+}
+
 test "Diff editor commands: refactor auto-save saves only affected mounted and unmounted working copies" {
     const a = std.testing.allocator;
     const io = std.testing.io;
