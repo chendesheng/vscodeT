@@ -42,7 +42,7 @@ test "MultiDiffEditor Actions: groups the view modes and positions in the editor
         if (entry == .submenu and std.mem.eql(u8, entry.submenu.submenu.id, "MultiDiffEditorFilesViewAndPosition")) break entry.submenu;
     } else return error.FilesViewSubmenuMissing;
     try std.testing.expectEqualStrings("z_files", submenu.group);
-    const expected = [_]struct { id: []const u8, group: []const u8, order: i64, toggled: []const u8 }{
+    const expected = [_]struct { id: []const u8, group: []const u8, order: f64, toggled: []const u8 }{
         .{ .id = "multiDiffEditor.viewFileListAsList", .group = "1_view", .order = 1, .toggled = "multiDiffEditorFileListViewMode == 'list'" },
         .{ .id = "multiDiffEditor.viewFileListAsTree", .group = "1_view", .order = 2, .toggled = "multiDiffEditorFileListViewMode == 'tree'" },
         .{ .id = "multiDiffEditor.positionFileListLeft", .group = "2_position", .order = 1, .toggled = "multiDiffEditorFileListPosition == 'left'" },
@@ -65,7 +65,7 @@ test "MultiDiffEditor Actions: groups the view modes and positions in the editor
     const toggle = try findAction(common.TOGGLE_MULTI_DIFF_EDITOR_FILE_LIST_COMMAND_ID);
     try std.testing.expectEqualStrings("list-flat", toggle.command.icon.?);
     try std.testing.expectEqual(@as(usize, 1), toggle.menus.len);
-    try std.testing.expectEqual(@as(i64, 100001), toggle.menus[0].order);
+    try std.testing.expectEqual(@as(f64, 100001), toggle.menus[0].order);
     try checkKeys(toggle.command.precondition.?, &.{ "activeEditor", "config.multiDiffEditor.experimental.fileList", "isSessionsWindow", "multiDiffEditorFileListAvailable" });
 }
 

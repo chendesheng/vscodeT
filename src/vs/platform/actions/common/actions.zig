@@ -298,7 +298,7 @@ pub const IMenuItem = struct {
     /// Item is hidden when this expression returns false.
     when: ?*const contextkey.Expr = null,
     group: []const u8 = "",
-    order: i64 = 0,
+    order: f64 = 0,
     is_hidden_by_default: bool = false,
 };
 
@@ -310,7 +310,7 @@ pub const ISubmenuItem = struct {
     /// Submenu is checked when this expression returns true.
     toggled: ?*const contextkey.Expr = null,
     group: []const u8 = "",
-    order: i64 = 0,
+    order: f64 = 0,
     is_selection: bool = false,
 };
 
@@ -570,7 +570,7 @@ pub const ActionRegistries = struct {
 pub const MenuRegistration = struct {
     id: MenuId,
     group: []const u8 = "",
-    order: i64 = 0,
+    order: f64 = 0,
     when: ?*const contextkey.Expr = null,
     // Represents the upstream menu item's explicit precondition: null.
     omit_precondition: bool = false,
@@ -762,7 +762,7 @@ test "Action2 registers command, keybinding and menu contribution" {
     const items = menu_registry.getMenuItems(menu_ids.CommandPalette);
     try std.testing.expectEqual(@as(usize, 1), items.len);
     try std.testing.expectEqualStrings("Test Action", items[0].command.command.title);
-    try std.testing.expectEqual(@as(i64, 5), items[0].command.order);
+    try std.testing.expectEqual(@as(f64, 5), items[0].command.order);
 
     var hidden = descriptor;
     hidden.command = .{ .id = "test.internal", .title = "Internal" };

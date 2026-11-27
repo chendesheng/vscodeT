@@ -42,7 +42,7 @@ fn directional(comptime operation: fn (*Editor, bool) anyerror!void, comptime di
     }.run;
 }
 
-fn lineAction(comptime id: []const u8, comptime title: []const u8, comptime operation: fn (*Editor) anyerror!void, comptime menu_order: ?i64, comptime key: ?bindings.IKeybindings) actions.Action2 {
+fn lineAction(comptime id: []const u8, comptime title: []const u8, comptime operation: fn (*Editor) anyerror!void, comptime menu_order: ?f64, comptime key: ?bindings.IKeybindings) actions.Action2 {
     return .{
         .command = .{ .id = id, .title = title, .category = "Editor", .precondition = &writable },
         .f1 = true,

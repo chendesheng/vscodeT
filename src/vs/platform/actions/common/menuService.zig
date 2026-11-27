@@ -790,7 +790,7 @@ fn titleOf(entry: *const MenuEntry) []const u8 {
     };
 }
 
-fn orderOf(entry: *const MenuEntry) i64 {
+fn orderOf(entry: *const MenuEntry) f64 {
     return switch (entry.*) {
         .command => |item| item.order,
         .submenu => |item| item.order,
@@ -2273,6 +2273,8 @@ test "menu items sort by order before title inside a group" {
     try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "c", .title = "zzz" }, .group = "Hello", .order = -1 });
     try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "d", .title = "yyy" }, .group = "Hello", .order = -1 });
 
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "e", .title = "aaa" }, .group = "Hello", .order = 0.1 });
+
     const Context = struct {
         fn context() contextkey.IContext {
             return .{ .context = @ptrFromInt(1), .get_value = getValue };
@@ -2288,7 +2290,7 @@ test "menu items sort by order before title inside a group" {
     }
     const ids = try actionIds(allocator, menu.getActions()[0]);
     defer allocator.free(ids);
-    try std.testing.expectEqualSlices([]const u8, &.{ "d", "c", "b", "a" }, ids);
+    try std.testing.expectEqualSlices([]const u8, &.{ "d", "c", "b", "e", "a" }, ids);
 }
 
 test "menu navigation group sorts by explicit order" {
