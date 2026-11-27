@@ -10,6 +10,7 @@
 //! built-in textual/token-kind fallback is the established terminal-only
 //! behavior; the caller copies the result before releasing its request arena.
 const std = @import("std");
+const std_uri = @import("../../../../base/common/stdUri.zig");
 const Allocator = std.mem.Allocator;
 
 const Position = @import("../../../common/core/position.zig").Position;
@@ -199,7 +200,7 @@ test "tui hover provider: forwards JSON hover from a local schema" {
     });
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path_length = try tmp.dir.realPathFile(@import("../../../../base/common/timeCompat.zig").io, "schema.json", &path_buffer);
-    const schema_uri = try std.fmt.allocPrint(allocator, "file://{s}", .{path_buffer[0..path_length]});
+    const schema_uri = try std_uri.encodedResource(allocator, .{ .scheme = "file", .path = .{ .raw = path_buffer[0..path_length] } });
     defer allocator.free(schema_uri);
     const text = try std.fmt.allocPrint(allocator, "{{\n  \"$schema\": \"{s}\",\n  \"name\": \"demo\"\n}}\n", .{schema_uri});
     defer allocator.free(text);

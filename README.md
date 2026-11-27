@@ -454,6 +454,11 @@ extension host itself is reused, not vendored: the launcher in
 `host/extensionHost.ts` bundles the module graph reachable from the pinned
 tree's `src/vs/workbench/api/common/extensionHostMain.ts` with esbuild, so a
 full VS Code `out/` build is not required.
+The local transport follows VS Code's IPC endpoint contract: Unix domain sockets
+on macOS/Linux and native named pipes on Windows. The Node launcher and WindowIo
+RPC dispatch are shared. Windows CI includes a pinned Node-host startup and
+extension activation/RPC interop test; the integrated terminal's PTY support is
+still a separate platform gap.
 
 The bundle must come from the **pinned VS Code 1.147.0** tree (commit
 `e31c2e5`): the Zig workbench's generated RPC actor table only matches that
@@ -482,8 +487,8 @@ runtime and the built-in catalog are passed to the extension host.
 
 `zig build json-server` builds and installs the optional standalone JSON server.
 The intermediate bundles under `host/dist` are also used by the repository's
-interop tests. The host transport currently supports macOS and Linux.
-Windows requires a local IPC transport and a native launcher.
+interop tests. The host transports use Unix sockets on macOS/Linux and Windows
+named pipes, with a shared Node launcher.
 
 Markdown preview uses KaTeX from the optional host to render Greek symbols,
 roots, fractions and scripts in inline, display and fenced math. Unsupported
@@ -760,17 +765,18 @@ this is a one-time repository setting.
 
 ## Continuous integration
 
-GitHub Actions (`.github/workflows/ci.yml`) runs the full `zig build test`
-suite on Linux (inotify), macOS (kqueue) and Windows (`ReadDirectoryChangesW`).
-The Linux, macOS and Windows jobs initialize the
-shallow `vscode/` submodule at the pinned commit, so the tokenizer, theme and
-extension-asset tests run against the real upstream tree instead of the
-fallbacks. The Linux and macOS jobs install the `host/` npm dependencies and
-run `zig build json-server` before the tests, so the JSON language-client
-integration tests run there instead of skipping. The Windows job installs
-oniguruma with vcpkg and passes
-`-Donig-include`/`-Donig-lib` to the build; the terminal layer uses the Windows
-console API for raw mode, sizing and input polling.
+GitHub Actions (`.github/workflows/ci.yml`) runs the same native build,
+`zig build test` and full `zig build test-e2e` on Linux (inotify), macOS
+(kqueue) and Windows (`ReadDirectoryChangesW`) using a shared matrix. Every
+platform initializes the pinned `vscode/` and `vscode-textmate/` submodules,
+bundles the JSON language server, Node extension host, built-in extensions and
+TypeScript SDK, and checks that the required assets exist before testing.
+This covers real TypeScript/JavaScript tsserver behavior, JSON and other
+language servers, and native extension-host IPC on every platform. Only
+system dependency installation and library search paths differ: Windows
+uses vcpkg and `-Donig-include`/`-Donig-lib`. The terminal layer uses the
+Windows console API for raw mode, sizing and input polling. Specialized UI
+stress and strict reference-conformance reports run separately.
 
 ## Design docs
 

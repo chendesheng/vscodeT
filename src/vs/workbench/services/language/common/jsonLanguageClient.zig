@@ -5,6 +5,7 @@
 // terminal event loop. The native window may await a response from a fiber;
 // the reader only posts readiness and never accesses editor state.
 const std = @import("std");
+const std_uri = @import("../../../../base/common/stdUri.zig");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -892,7 +893,7 @@ test "JSON language client hover uses a local schema" {
     });
     var schema_path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const schema_path_length = try tmp.dir.realPathFile(time_compat.io, "schema.json", &schema_path_buffer);
-    const schema_uri = try std.fmt.allocPrint(allocator, "file://{s}", .{schema_path_buffer[0..schema_path_length]});
+    const schema_uri = try std_uri.encodedResource(allocator, .{ .scheme = "file", .path = .{ .raw = schema_path_buffer[0..schema_path_length] } });
     defer allocator.free(schema_uri);
 
     const text = try std.fmt.allocPrint(allocator, "{{\n  \"$schema\": \"{s}\",\n  \"name\": \"demo\"\n}}\n", .{schema_uri});
@@ -924,7 +925,7 @@ test "JSON language client applies json.schemas associations" {
     });
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path_length = try tmp.dir.realPathFile(time_compat.io, "schema.json", &path_buffer);
-    const schema_uri = try std.fmt.allocPrint(allocator, "file://{s}", .{path_buffer[0..path_length]});
+    const schema_uri = try std_uri.encodedResource(allocator, .{ .scheme = "file", .path = .{ .raw = path_buffer[0..path_length] } });
     defer allocator.free(schema_uri);
 
     var arena = std.heap.ArenaAllocator.init(allocator);

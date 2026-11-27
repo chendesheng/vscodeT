@@ -738,6 +738,7 @@ comptime {
     _ = @import("./vs/workbench/browser/quickaccess.zig");
     _ = @import("./vs/workbench/api/browser/extensionHostAdapter.zig").Tests(@import("./tui/workbench.zig").TerminalWorkbench, @import("./tui/editorView.zig").View.createHandle);
     _ = @import("./vs/workbench/api/test/browser/mainThreadDiagnostics.test.zig");
+    _ = @import("./vs/workbench/api/test/browser/mainThreadDocumentsAndEditors.test.zig");
     _ = @import("./vs/workbench/api/test/browser/mainThreadDocumentContentProviders.test.zig");
     _ = @import("./vs/workbench/api/test/browser/mainThreadMessageService.test.zig");
     _ = @import("./vs/workbench/api/common/keyInput.zig");
@@ -758,6 +759,7 @@ comptime {
     _ = @import("./vs/workbench/contrib/vim/test/browser/vimExtension.test.zig").Tests(@import("./tui/workbench.zig").TerminalWorkbench, @import("./tui/editorView.zig").View.createHandle);
     _ = @import("./vs/workbench/contrib/vim/test/browser/vimRuntime.test.zig").Tests(@import("./tui/workbench.zig").TerminalWorkbench, @import("./tui/editorView.zig").View.createHandle);
     _ = @import("./vs/workbench/services/extensions/test/common/rpcProtocol.test.zig");
+    _ = @import("./vs/base/parts/ipc/test/node/ipc.net.test.zig");
     _ = @import("./vs/workbench/services/extensions/test/common/extensionHostManager.test.zig");
     _ = @import("./vs/workbench/services/extensions/common/extensionService.zig");
     _ = @import("./vs/platform/environment/common/environmentService.zig");

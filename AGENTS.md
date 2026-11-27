@@ -454,6 +454,20 @@ Portable editor actions use `src/vs/editor/browser/editorExtensions.zig`:
 
 ## Tests
 
+### Cross-platform CI parity
+
+- Native CI must run the same build and test targets on Linux, macOS, and
+  Windows through a shared matrix. Only system dependency installation and
+  platform-specific dependency paths may differ between native jobs.
+- Provision the same test runtime assets on every platform, including the
+  JSON language server, pinned Node extension host, built-in extensions, and
+  TypeScript SDK/tsserver. Run the complete `zig build test` and
+  `zig build test-e2e` suites; do not substitute an OS-specific test filter or
+  silently skip tests due to missing bundles. A platform-specific test skip
+  must correspond to a documented genuine platform limitation, not a missing
+  CI setup step. Special-purpose reporting jobs are not substitutes for this
+  shared native validation.
+
 ### Test placement
 
 Keep the upstream file/folder structure exactly:

@@ -72,7 +72,7 @@ These are not all entries in the server's `initialize` response, but they suppor
 
 Optional provider resolution, semantic-token delta updates and range formatting are not required to demonstrate this ZLS version's advertised behavior. Preserve existing support and port the upstream lifecycle of the provider contracts touched by this work, including optional resolution, release and change events; cover those paths with the mock client without misrepresenting them as negotiated ZLS features.
 
-Not included: LSP features ZLS does not advertise (code lens, document links/colors, call/type hierarchy, linked editing, inline values, notebooks), and independent non-LSP features of the Zig extension (its test runner, debug, tasks/build-on-save, terminal integration, code lens). Startup APIs used by the actual extension remain in scope even if they also support an excluded feature. No marketplace, remote extension host, workspace trust/sandbox, or Windows host transport.
+Not included: LSP features ZLS does not advertise (code lens, document links/colors, call/type hierarchy, linked editing, inline values, notebooks), and independent non-LSP features of the Zig extension (its test runner, debug, tasks/build-on-save, terminal integration, code lens). Startup APIs used by the actual extension remain in scope even if they also support an excluded feature. No marketplace, remote extension host, or workspace trust/sandbox. The local Windows named-pipe host transport is shared infrastructure; Windows LSP provider behavior requires its own interoperability validation.
 
 ## Assumptions
 

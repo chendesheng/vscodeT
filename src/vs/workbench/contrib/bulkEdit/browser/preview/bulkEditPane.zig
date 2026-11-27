@@ -221,7 +221,8 @@ pub const BulkEditPane = struct {
     }
     fn activate(context: ?*anyopaque, element: *tree.Element) void {
         const self: *BulkEditPane = @ptrCast(@alignCast(context orelse return));
-        self.openElement(element) catch {
+        self.openElement(element) catch |err| {
+            std.log.warn("Unable to open refactoring preview: {s}", .{@errorName(err)});
             self.status = "Unable to open refactoring preview";
             self.host.changed(self.host.context);
         };

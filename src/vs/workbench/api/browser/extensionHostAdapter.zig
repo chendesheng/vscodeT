@@ -1105,7 +1105,7 @@ pub const Extensions = struct {
     }
 
     fn boot(self: *Extensions, runtime_dir: []const u8) !void {
-        try self.host.expectControl(2, 10_000);
+        try self.host.expectControl(2, manager.startup_timeout_ms);
         var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_instance.deinit();
         const arena = arena_instance.allocator();
@@ -1121,7 +1121,7 @@ pub const Extensions = struct {
             .parent_pid = @intCast(manager.currentProcessId()),
         });
         try self.host.sendInitData(init_data);
-        try self.host.expectControl(1, 10_000);
+        try self.host.expectControl(1, manager.startup_timeout_ms);
 
         var workspace_args = std.array_list.Managed(rpc.Arg).init(arena);
         var workspace_data: std.json.ObjectMap = .empty;
@@ -2400,6 +2400,25 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(!try runEditorCommand(editor, "unhandled.command"));
         }
 
+        // The Node host serializes VS Code URIs (including lower-cased,
+        // percent-encoded drive letters). Compare the decoded file identity.
+        fn expectFileResource(arena: Allocator, expected: std.Uri, serialized: []const u8) !void {
+            const actual = try std.Uri.parse(serialized);
+            const expected_key = try std_uri.resourceKey(arena, expected);
+            const actual_key = try std_uri.resourceKey(arena, actual);
+            const prefix = "file:///";
+            if (@import("builtin").os.tag == .windows and
+                std.mem.startsWith(u8, expected_key, prefix) and std.mem.startsWith(u8, actual_key, prefix) and
+                expected_key.len > prefix.len + 1 and actual_key.len > prefix.len + 1 and
+                expected_key[prefix.len + 1] == ':' and actual_key[prefix.len + 1] == ':')
+            {
+                try std.testing.expectEqual(std.ascii.toLower(expected_key[prefix.len]), std.ascii.toLower(actual_key[prefix.len]));
+                try std.testing.expectEqualStrings(expected_key[prefix.len + 1 ..], actual_key[prefix.len + 1 ..]);
+            } else {
+                try std.testing.expectEqualStrings(expected_key, actual_key);
+            }
+        }
+
         fn waitNavigation(workbench: *terminal_window_type) !void {
             const deadline = time_compat.milliTimestamp() + 5_000;
             while (workbench.symbol_navigation.pending_navigation != null and time_compat.milliTimestamp() < deadline) {
@@ -2777,7 +2796,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             while (time_compat.milliTimestamp() < deadline) {
                 _ = extension_host.pump();
                 if (extension_host.active) |active| {
-                    mirrored = try std.fmt.allocPrint(allocator, "file://{s}", .{active.uri});
+                    mirrored = try std_uri.resourceKeyFromComponents(allocator, .{ .scheme = "file", .path = active.uri });
                     break;
                 }
                 time_compat.sleepMillis(10);
@@ -3352,8 +3371,8 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const diffs = comparison.get("diffs").?.array.items;
             try std.testing.expectEqual(@as(usize, resources.len), diffs.len);
             for (diffs, resources) |wire, resource| {
-                try std.testing.expectEqualStrings(try std_uri.encodedResource(arena, resource.original.?), wire.object.get("original").?.string);
-                try std.testing.expectEqualStrings(try std_uri.encodedResource(arena, resource.modified.?), wire.object.get("modified").?.string);
+                try expectFileResource(arena, resource.original.?, wire.object.get("original").?.string);
+                try expectFileResource(arena, resource.modified.?, wire.object.get("modified").?.string);
             }
             const docs = state.object.get("documents").?.array.items;
             try std.testing.expectEqual(@as(usize, 7), docs.len);
@@ -3415,7 +3434,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqual(control.modified_editor, extensions.active.?.editor);
             const after = try extensions.host.requestSync(arena, command_id, "$executeContributedCommand", command_args, null, 5000);
             try std.testing.expectEqual(@as(usize, 7), after.object.get("documents").?.array.items.len);
-            try std.testing.expectEqualStrings(try std_uri.encodedResource(arena, control.modified_editor.model.uri()), after.object.get("activeDocument").?.string);
+            try expectFileResource(arena, control.modified_editor.model.uri(), after.object.get("activeDocument").?.string);
             // Exercise the main-thread move RPC, including zero-based wire
             // columns, signed append index, target-group creation, and focus
             // preservation. The real extension host must see both groups.
@@ -4018,6 +4037,63 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             }
             try std.testing.expect(contribution.pending == null);
             try std.testing.expectEqualStrings("{;;x}", try editor.model.borrowLineContent(1));
+        }
+
+        test "Extensions: transport activates an extension and exchanges a large RPC" {
+            if (!build_options.e2e) return error.SkipZigTest;
+            const allocator = std.testing.allocator;
+            const io = time_compat.io;
+            std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try tmp.dir.writeFile(io, .{ .sub_path = "transport.txt", .data = "transport fixture" });
+            const path = try tmp.dir.realPathFileAlloc(io, "transport.txt", allocator);
+            defer allocator.free(path);
+            const data = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+            defer allocator.free(data);
+            const window = try TestWindow.init(allocator, io, &.{path}, 80, 24);
+            defer window.deinit();
+            const workbench = window.workbench;
+            const ext = try Extensions.init(allocator, io, workbench.extensionHostServices(), &.{.{ .path = "host/test-fixtures/transport", .is_under_development = true }}, data, "host/dist");
+            defer ext.deinit();
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            const payload = try a.alloc(u8, 192 * 1024);
+            for (payload, 0..) |*byte, i| byte.* = @intCast('a' + i % 26);
+            const Probe = struct {
+                host: *manager.HostManager,
+                queue: *@import("../../../base/common/windowDispatch.zig").Queue,
+                arena: std.mem.Allocator,
+                payload: []const u8,
+                done: bool = false,
+
+                fn run(self: *@This()) anyerror!std.json.Value {
+                    defer self.done = true;
+                    const activation = proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostExtensionService);
+                    _ = try self.host.requestAwait(self.queue, self.arena, activation, "$activateByEvent", &.{ .{ .json = .{ .string = "*" } }, .{ .json = .{ .integer = 0 } } }, null, 10_000);
+                    const command = proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands);
+                    return self.host.requestAwait(self.queue, self.arena, command, "$executeContributedCommand", &.{ .{ .json = .{ .string = "fixture.transportEcho" } }, .{ .json = .{ .string = self.payload } } }, null, 10_000);
+                }
+            };
+            var probe: Probe = .{ .host = ext.host, .queue = &workbench.window_events, .arena = a, .payload = payload };
+            var future = try workbench.window_events.io.concurrent(Probe.run, .{&probe});
+            const deadline = time_compat.milliTimestamp() + 20_000;
+            while (!probe.done and time_compat.milliTimestamp() < deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(1);
+            }
+            if (!probe.done) {
+                _ = future.cancel(workbench.window_events.io) catch {};
+                return error.TransportTimeout;
+            }
+            const result = try future.await(workbench.window_events.io);
+            try std.testing.expectEqualStrings(payload, result.object.get("value").?.string);
+            const document = result.object.get("document").?.string;
+            const extension = result.object.get("extension").?.string;
+            const text_files = @import("../../services/textfile/common/textFileService.zig");
+            try std.testing.expect(text_files.samePath(allocator, io, path, document));
+            try std.testing.expect(text_files.samePath(allocator, io, "host/test-fixtures/transport", extension));
         }
 
         test "Extensions: task activation and provider results resume on the window" {

@@ -53,22 +53,32 @@ seed text/cursor, key tokens, and reference states. The Zig replay tests live
 in the engines' `test/browser/*Cassette.test.zig` files; the shared parser is
 `src/vs/editor/test/common/oracleCassette.zig`.
 
+Filenames must be lowercase ASCII (`a-z`, `0-9`, `_`, plus `.json`) so they
+work on case-insensitive macOS and Windows filesystems. Distinguish uppercase
+key cases with names such as `append_upper_a.json`, while keeping the original
+case-sensitive `case` ID (`append_A`) and key tokens (`A`) unchanged.
+The Neovim recorder accepts the original ID or the portable filename stem;
+both recorders preserve the input filename in their output.
+
 Adding or removing a cassette requires regenerating the embedded index:
 
 ```sh
 python3 scripts/oracle/generate_cassette_index.py
+python3 scripts/oracle/generate_cassette_index.py --check
 ```
 
-The corpus is a curated set plus generated coverage variants (300+ Vim and 162
+The index check validates the Git index as well as the directory, so it rejects
+case aliases even if a case-insensitive checkout hides one of them.
+
+The corpus is a curated set plus generated coverage variants (329 Vim and 162
 Helix cassettes). `zig build test-oracle-helix` runs the strict Helix lane;
-`zig build test-oracle` runs both lanes.
-The replay asserts every recorded field: text, mode, selection count, the raw
-anchor/head `selections` ranges and the cursor set. The cursor is the
-reference's `Range::cursor()` value (previous grapheme of a forward head,
-otherwise the head), and seeds use the reference's one-grapheme ranges. The
-Helix lane (162/162) gates CI; the Vim lane keeps its CI job non-blocking while
-its known divergences are fixed. Cases are not removed or weakened to make
-either lane green.
+`zig build test-oracle` runs both lanes. The replay asserts every recorded
+field: text, mode, selection count, the raw anchor/head `selections` ranges and
+the cursor set. The cursor is the reference's `Range::cursor()` value (previous
+grapheme of a forward head, otherwise the head), and seeds use the reference's
+one-grapheme ranges. The Helix lane (162/162) gates CI; the Vim lane keeps its
+CI job non-blocking while its known divergences are fixed. Cases are not
+removed or weakened to make either lane green.
 
 ## CI cost and limits
 

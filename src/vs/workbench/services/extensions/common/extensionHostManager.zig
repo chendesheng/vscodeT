@@ -1,15 +1,16 @@
 // Workbench-side owner of the Node extension host process.
 //
-// Transport adaptation: the pinned launcher uses dedicated fd 3/4 by default;
-// the editor creates a Unix socket pair instead and passes the path through
-// VSCODE_EXTENSION_HOST_SOCKET. This keeps stdout/stderr free for the host and
-// extension code without needing raw fork/exec fd plumbing in Zig. The frame
-// and RPC bytes are unchanged (docs/extensions.md §5).
+// Transport adaptation of VS Code's IPCExtHostConnection: a local Unix socket
+// or Windows named pipe carries the existing framed RPC stream. The pinned
+// desktop Electron MessagePort is not available in a standalone Zig process.
+// The transport and RPC bytes are independent (docs/extensions.md §5).
 //
 // The reader thread only copies complete frames into a queue. `pump()` runs on
 // the TUI thread and is the only place that dispatches RPC messages.
 const std = @import("std");
 const builtin = @import("builtin");
+const ipc = @import("../../../../base/parts/ipc/node/ipc.net.zig");
+const std_uri = @import("../../../../base/common/stdUri.zig");
 const time_compat = @import("../../../../base/common/timeCompat.zig");
 const Allocator = std.mem.Allocator;
 const rpcProtocol = @import("rpcProtocol.zig");
@@ -17,6 +18,10 @@ const proxyIdentifier = @import("proxyIdentifier.zig");
 const protocol = @import("../../../api/common/extHost.protocol.zig");
 
 pub const max_frame_size: usize = 64 * 1024 * 1024;
+// LocalProcessExtensionHost._establishProtocol/_performHandshake allow 60s
+// for connection and each handshake phase; the 10s upstream notification is
+// a warning, not a deadline that terminates a slow-starting host.
+pub const startup_timeout_ms: u32 = 60_000;
 
 /// The manager creates its own `Io` for the host transport, and that `Io` must
 /// carry the process environment: `std.process.spawn` resolves `node` against
@@ -33,9 +38,7 @@ fn processEnviron() std.process.Environ {
 }
 
 /// `std.os.linux.getpid` type-checks on every target but issues a Linux
-/// syscall, which traps with SIGSYS on other kernels. The extension host is
-/// Unix-only today, but the process id is also used by the socket name on
-/// every platform the manager builds for.
+/// syscall, which traps with SIGSYS on other kernels.
 pub fn currentProcessId() u32 {
     return switch (builtin.os.tag) {
         .linux => @intCast(std.os.linux.getpid()),
@@ -46,7 +49,6 @@ pub fn currentProcessId() u32 {
 }
 
 pub const ExtensionHostError = error{
-    UnsupportedPlatform,
     HostExited,
     HostTimeout,
     InvalidFrame,
@@ -91,21 +93,23 @@ pub const Options = struct {
 };
 
 const SendContext = struct {
-    stream: std.Io.net.Stream,
+    stream: ipc.Connection,
     io: std.Io,
     mutex: std.Io.Mutex = .init,
 
     fn send(context: *anyopaque, payload: []const u8) void {
         const self: *SendContext = @ptrCast(@alignCast(context));
+        self.write(payload) catch {};
+    }
+
+    fn write(self: *SendContext, payload: []const u8) !void {
+        if (payload.len > max_frame_size) return ExtensionHostError.FrameTooLarge;
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         var length: [4]u8 = undefined;
         std.mem.writeInt(u32, &length, @intCast(payload.len), .big);
-        var buffer: [4096]u8 = undefined;
-        var writer = self.stream.writer(self.io, &buffer);
-        writer.interface.writeAll(&length) catch return;
-        writer.interface.writeAll(payload) catch return;
-        writer.interface.flush() catch return;
+        try self.stream.writeAll(self.io, &length);
+        try self.stream.writeAll(self.io, payload);
     }
 
     fn transport(self: *SendContext) rpcProtocol.Transport {
@@ -113,14 +117,57 @@ const SendContext = struct {
     }
 };
 
+/// Port of IPCExtHostConnection's environment contract and the standalone
+/// process-launch boundary. Electron's utility process is not required.
+fn spawnHost(allocator: Allocator, io: std.Io, options: Options, endpoint: []const u8) !std.process.Child {
+    var env = try processEnviron().createMap(allocator);
+    defer env.deinit();
+    _ = env.swapRemove("VSCODE_EXTHOST_WILL_SEND_SOCKET");
+    _ = env.swapRemove("VSCODE_WILL_SEND_MESSAGE_PORT");
+    try env.put("VSCODE_EXTHOST_IPC_HOOK", endpoint);
+    const stderr_path = try std.fs.path.join(allocator, &.{ options.user_data_dir, "logs", "extension-host.log" });
+    defer allocator.free(stderr_path);
+    if (std.fs.path.dirname(stderr_path)) |directory| try std.Io.Dir.cwd().createDirPath(io, directory);
+
+    if (builtin.os.tag == .windows) {
+        // Keep both output streams off the terminal and separate from IPC.
+        // Separate files avoid two independently opened file offsets writing
+        // over each other on Windows. No command interpreter is involved.
+        const stdout_path = try std.fs.path.join(allocator, &.{ options.user_data_dir, "logs", "extension-host.stdout.log" });
+        defer allocator.free(stdout_path);
+        const stderr = try std.Io.Dir.cwd().createFile(io, stderr_path, .{});
+        defer stderr.close(io);
+        const stdout = try std.Io.Dir.cwd().createFile(io, stdout_path, .{});
+        defer stdout.close(io);
+        return std.process.spawn(io, .{
+            .argv = &.{ options.node_path, options.host_script },
+            .environ_map = &env,
+            .stdin = .ignore,
+            .stdout = .{ .file = stdout },
+            .stderr = .{ .file = stderr },
+            .create_no_window = true,
+        });
+    }
+
+    // Retain the existing POSIX launcher workaround: posix_spawn with
+    // .file/.pipe returned EBADF in the live TUI's shared fd table. Only the
+    // shell handles stdout/stderr redirection; IPC is independent of it.
+    return std.process.spawn(io, .{
+        .argv = &.{ "/bin/sh", "-c", "exec \"$0\" \"$1\" </dev/null >>\"$2\" 2>&1", options.node_path, options.host_script, stderr_path },
+        .environ_map = &env,
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    });
+}
+
 pub const HostManager = struct {
     allocator: Allocator,
     child: std.process.Child,
-    server: std.Io.net.Server,
-    stream: std.Io.net.Stream,
+    server: ipc.Server,
+    stream: ipc.Connection,
     io_state: std.Io.Threaded,
     io: std.Io,
-    socket_path: []u8,
     sender: *SendContext,
     rpc: rpcProtocol.RpcProtocol,
     queue: std.array_list.Managed([]u8),
@@ -133,10 +180,6 @@ pub const HostManager = struct {
     stopped: bool = false,
 
     pub fn start(allocator: Allocator, options: Options) !*HostManager {
-        // The transport is a Unix socket and the launcher runs through
-        // /bin/sh; neither exists on Windows. The app treats this error as
-        // "extensions disabled" and keeps running.
-        if (comptime builtin.os.tag == .windows) return ExtensionHostError.UnsupportedPlatform;
         const self = try allocator.create(HostManager);
         errdefer allocator.destroy(self);
         self.* = .{
@@ -144,7 +187,6 @@ pub const HostManager = struct {
             .child = undefined,
             .server = undefined,
             .stream = undefined,
-            .socket_path = undefined,
             .sender = undefined,
             .rpc = undefined,
             .queue = .init(allocator),
@@ -154,11 +196,8 @@ pub const HostManager = struct {
         self.io_state = std.Io.Threaded.init(std.heap.page_allocator, .{ .environ = processEnviron() });
         self.io = self.io_state.io();
 
-        self.socket_path = try std.fmt.allocPrint(allocator, "/tmp/zig-vscode-ext-{d}-{d}.sock", .{
-            currentProcessId(),
-            time_compat.milliTimestamp(),
-        });
-        errdefer allocator.free(self.socket_path);
+        errdefer self.io_state.deinit();
+        errdefer self.queue.deinit();
 
         for (options.extensions) |extension| {
             const extension_storage = try std.fs.path.join(allocator, &.{ options.user_data_dir, "User", "globalStorage", extension.identifier });
@@ -166,48 +205,24 @@ pub const HostManager = struct {
             std.Io.Dir.cwd().createDirPath(self.io, extension_storage) catch {};
         }
 
-        const address = std.Io.net.UnixAddress.init(self.socket_path) catch return ExtensionHostError.SocketSetupFailed;
-        self.server = address.listen(self.io, .{}) catch return ExtensionHostError.SocketSetupFailed;
+        self.server = ipc.Server.listen(allocator, self.io, processEnviron()) catch return ExtensionHostError.SocketSetupFailed;
+        errdefer self.server.deinit(self.io);
 
-        const stderr_path = try std.fs.path.join(allocator, &.{ options.user_data_dir, "logs", "extension-host.log" });
-        if (std.fs.path.dirname(stderr_path)) |directory| {
-            std.Io.Dir.cwd().createDirPath(self.io, directory) catch {};
-        }
-        defer allocator.free(stderr_path);
-        // Spawn through the shell and redirect there. Zig's posix_spawn path
-        // returns EBADF for `.pipe`/`.file` stdio in the interactive TUI (the
-        // JSON client and terminal setup share the process fd table); the
-        // shell only needs inherited descriptors, which always work.
-        self.child = std.process.spawn(self.io, .{
-            .argv = &.{
-                "/bin/sh",
-                "-c",
-                "exec \"$0\" \"$1\" --socket \"$2\" </dev/null >>\"$3\" 2>&1",
-                options.node_path,
-                options.host_script,
-                self.socket_path,
-                stderr_path,
-            },
-            .stdin = .inherit,
-            .stdout = .inherit,
-            .stderr = .inherit,
-        }) catch return ExtensionHostError.HostExited;
+        self.child = spawnHost(allocator, self.io, options, self.server.path) catch return ExtensionHostError.HostExited;
+        errdefer if (self.child.id != null) self.child.kill(self.io);
 
-        // Bound the accept so a host that dies before connecting does not
-        // hang the editor forever.
-        var poll_fds = [_]std.posix.pollfd{.{
-            .fd = self.server.socket.handle,
-            .events = std.posix.POLL.IN,
-            .revents = 0,
-        }};
-        const ready = std.posix.poll(&poll_fds, 10_000) catch 0;
-        if (ready == 0) return ExtensionHostError.HostTimeout;
-        const connection = self.server.accept(self.io) catch return ExtensionHostError.HostExited;
-        self.stream = connection;
+        // A dead or stalled child cannot hold the workbench at startup.
+        self.stream = self.server.accept(self.io, startup_timeout_ms) catch |err| switch (err) {
+            error.Timeout => return ExtensionHostError.HostTimeout,
+            else => return ExtensionHostError.HostExited,
+        };
+        errdefer self.stream.close(self.io);
 
         self.sender = try allocator.create(SendContext);
+        errdefer allocator.destroy(self.sender);
         self.sender.* = .{ .stream = self.stream, .io = self.io };
         self.rpc = rpcProtocol.RpcProtocol.init(allocator, self.sender.transport());
+        errdefer self.rpc.deinit();
         self.reader = try std.Thread.spawn(.{}, readerLoop, .{self});
         self.started = true;
         return self;
@@ -218,8 +233,6 @@ pub const HostManager = struct {
         self.failAwaiters();
         self.rpc.deinit();
         self.server.deinit(self.io);
-        std.Io.Dir.deleteFileAbsolute(self.io, self.socket_path) catch {};
-        self.allocator.free(self.socket_path);
         self.allocator.destroy(self.sender);
         for (self.queue.items) |frame| self.allocator.free(frame);
         self.queue.deinit();
@@ -236,7 +249,7 @@ pub const HostManager = struct {
             self.sendRawFrame(&terminate) catch {};
         }
         if (self.reader) |thread| {
-            self.stream.shutdown(self.io, .both) catch {};
+            self.stream.shutdown(self.io);
             thread.join();
             self.stream.close(self.io);
             self.reader = null;
@@ -251,13 +264,7 @@ pub const HostManager = struct {
         defer buffer.deinit();
         var chunk: [16 * 1024]u8 = undefined;
         while (true) {
-            var iovec = [_][]u8{&chunk};
-            // `Stream.read` destructures the `net_read` result as a tuple in
-            // this Zig std snapshot, which no longer type-checks; the
-            // control-data variant returns the `ReadResult` struct directly.
-            var control: [0]u8 = undefined;
-            const result = self.stream.readWithControl(self.io, &iovec, &control) catch break;
-            const count = result.data_len;
+            const count = self.stream.read(self.io, &chunk) catch break;
             if (count == 0) break;
             buffer.appendSlice(chunk[0..count]) catch break;
             while (buffer.items.len >= 4) {
@@ -346,7 +353,7 @@ pub const HostManager = struct {
     }
 
     pub fn sendRawFrame(self: *HostManager, payload: []const u8) !void {
-        SendContext.send(self.sender, payload);
+        try self.sender.write(payload);
     }
 
     pub fn expectControl(self: *HostManager, value: u8, timeout_ms: u32) !void {
@@ -597,14 +604,7 @@ pub const noop_callback = rpcProtocol.ReplyCallback{
 };
 
 pub fn fileUri(arena: Allocator, path: []const u8) !std.json.Value {
-    var object: std.json.ObjectMap = .empty;
-    try object.put(arena, "$mid", .{ .integer = 1 });
-    try object.put(arena, "scheme", .{ .string = "file" });
-    try object.put(arena, "authority", .{ .string = "" });
-    try object.put(arena, "path", .{ .string = try arena.dupe(u8, path) });
-    try object.put(arena, "query", .{ .string = "" });
-    try object.put(arena, "fragment", .{ .string = "" });
-    return .{ .object = object };
+    return std_uri.jsonComponents(arena, .{ .scheme = "file", .path = .{ .raw = path } });
 }
 
 pub fn buildInitData(

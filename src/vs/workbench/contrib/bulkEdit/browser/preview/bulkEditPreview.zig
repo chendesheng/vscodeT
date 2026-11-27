@@ -396,8 +396,13 @@ pub const BulkEditPreviewProvider = struct {
 
     pub fn asPreviewUri(self: *BulkEditPreviewProvider, original: std.Uri) !std.Uri {
         const a = self.arena.allocator();
-        const path = try uri_util.path(original, a);
         const encoded = try uri_util.encodedResource(a, original);
+        // VS Code's URI.path already has a slash-prefixed drive/UNC path.
+        // Native text models may instead store a Windows filesystem path.
+        // Normalize at the shared URI boundary before changing the scheme
+        // and authority; otherwise the drive letter is parsed as a port.
+        const canonical = if (std.mem.eql(u8, original.scheme, "file")) try std.Uri.parse(encoded) else original;
+        const path = try uri_util.path(canonical, a);
         return .{ .scheme = Schema, .host = .{ .raw = self.instance_id }, .path = .{ .raw = if (std.mem.eql(u8, original.scheme, "untitled")) try std.fmt.allocPrint(a, "/{s}", .{path}) else path }, .query = .{ .raw = encoded } };
     }
 

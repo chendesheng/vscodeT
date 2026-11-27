@@ -1,7 +1,7 @@
 // Node launcher for the pinned VS Code extension host (docs/extensions.md §6).
 //
 // This replaces `src/vs/workbench/api/node/extensionHostProcess.ts`: it owns
-// the fd 3/4 transport, the Ready/init-data/Initialized handshake and the
+// the local IPC transport (with legacy fd 3/4 fallback), the handshake and the
 // trimmed service registrations, then hands the RPC stream to the unmodified
 // upstream `ExtensionHostMain`. It does not vendor VS Code sources.
 //
@@ -13,6 +13,7 @@ import * as fs from 'node:fs';
 import * as net from 'node:net';
 import { ExtensionHostMain } from '../vscode/src/vs/workbench/api/common/extensionHostMain.js';
 import type { IMessagePassingProtocol } from '../vscode/src/vs/base/parts/ipc/common/ipc.js';
+import { ExtHostConnectionType, IPCExtHostConnection, readExtHostConnection } from '../vscode/src/vs/workbench/services/extensions/common/extensionHostEnv.js';
 import type { IExtensionHostInitData } from '../vscode/src/vs/workbench/services/extensions/common/extensionHostProtocol.js';
 import { Promises } from '../vscode/src/vs/base/node/pfs.js';
 import '../vscode/src/vs/workbench/api/common/extHost.common.services.js';
@@ -149,7 +150,10 @@ class HostProtocol implements IMessagePassingProtocol {
 }
 
 const socketArg = process.argv.indexOf('--socket');
-const socketPath = socketArg >= 0 ? process.argv[socketArg + 1] : process.env.VSCODE_EXTENSION_HOST_SOCKET;
+const connection = process.env[IPCExtHostConnection.ENV_KEY] ? readExtHostConnection(process.env) : undefined;
+const socketPath = connection?.type === ExtHostConnectionType.IPC
+	? connection.pipeName
+	: socketArg >= 0 ? process.argv[socketArg + 1] : process.env.VSCODE_EXTENSION_HOST_SOCKET;
 let writer: FrameWriter;
 let inputStream: { on(event: string, listener: (...args: any[]) => void): unknown; on(event: 'end', listener: () => void): unknown };
 if (socketPath) {

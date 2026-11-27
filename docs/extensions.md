@@ -2,7 +2,7 @@
 
 The native TUI installs and scans 87 desktop extension manifests. Its built-in catalog supplies language associations, TextMate grammars and injections, editing rules, snippets, color themes and language-specific settings. The extension host runs upstream language services over local IPC on macOS and Linux. The inventory records implementation and verification for each package. [Built-in extension status](vscode-builtin-extension-status.md)
 
-`zig build host` builds the pinned TypeScript, HTML, CSS, Emmet, PHP, Git Base, Search Result, configuration and manifest authoring, Merge Conflict, Simple Browser, npm, Grunt, Gulp and Jake packages. An optional adapter connects GitHub's Copilot Language Server to the terminal editor. `zig build test-e2e` exercises the provider bridge. Configuration writes, extension keybindings, several main-thread APIs and Windows IPC remain incomplete.
+`zig build host` builds the pinned TypeScript, HTML, CSS, Emmet, PHP, Git Base, Search Result, configuration and manifest authoring, Merge Conflict, Simple Browser, npm, Grunt, Gulp and Jake packages. An optional adapter connects GitHub's Copilot Language Server to the terminal editor. `zig build test-e2e` exercises the provider bridge. Configuration writes, extension keybindings and several main-thread APIs remain incomplete. The local extension-host IPC uses Unix sockets or Windows named pipes.
 
 Upstream reference: `vscode/`, the shallow git submodule, at **1.147.0**,
 commit `e31c2e52f563620846caab877103f630ea361b9c`. The actor table, method
@@ -85,17 +85,21 @@ contribution points, TUI wiring) to Zig.**
    clear message.
 
 3. **The transport is ours, the messages are not.** The launcher speaks
-   `[u32 big-endian length][payload]` over **dedicated file descriptors**
-   (3 and 4), not the host's stdin/stdout. The payload is a byte-for-byte RPC
+   `[u32 big-endian length][payload]` over a **dedicated local IPC stream**,
+   not the host's stdin/stdout. The payload is a byte-for-byte RPC
    message as defined by `rpcProtocol.ts`; nothing inside the message
    changes. stdin/stdout remain available to the host, extension code and
    child processes without corrupting the RPC stream.
 
-   Implementation note: the Zig manager creates a Unix socket and passes
-   `--socket <path>` to the launcher, which supports the same framed stream.
-   Zig 0.17's `std.process.spawn` has no arbitrary-fd mapping, so this keeps
-   stdout isolation without a manual fork/exec. fd 3/4 remains the launcher
-   default for other callers and for the Node harness.
+   Implementation note: the Zig manager uses the pinned VS Code
+   `IPCExtHostConnection` environment contract (`VSCODE_EXTHOST_IPC_HOOK`).
+   Its shared `base/parts/ipc/node/ipc.net.zig` boundary creates a random
+   Unix domain socket on macOS/Linux or a duplex, byte-mode named pipe on
+   Windows. The Node launcher uses `net.createConnection()` for both. Windows
+   starts Node directly and writes stdout and stderr to separate log files;
+   Unix retains the existing shell-only stdio redirection workaround. The
+   private frame transport remains independent of output. Legacy `--socket`
+   and fd 3/4 are still supported by the launcher for existing callers.
 
 4. **Zig owns the workbench side.** `rpcProtocol.zig`, the `MainThread*`
    actors, the manifest scanner, the contribution registry, and the TUI
@@ -113,13 +117,11 @@ contribution points, TUI wiring) to Zig.**
    manifest used to decide whether a request is supported, and asserts the
    count fits in a `u8`.
 
-6. **The editor loop stays single-threaded.** A reader thread drains fd 3 into
-   a frame queue and writes one byte to a self-pipe; `app.zig` polls stdin,
-   the existing file-watcher source and the self-pipe together and calls
-   `pump()`. Replies are callbacks, not promises; requests that need user
-   input (quick pick, input box) stay pending until the TUI answers. `pump()`
-   must also run on host-death and timer events, not only when a frame
-   arrives.
+6. **The editor loop stays on its owning thread.** A reader thread drains
+   the local IPC stream into a frame queue and posts the window's readiness
+   task. The normal dispatcher calls `pump()` for messages and host EOF;
+   a waiting WindowIo fiber resumes there. User-input requests stay pending
+   until the TUI answers.
 
 7. **JSON is the type system.** Message arguments are `std.json.Value`;
    handlers decode them and reply with JSON. `Uri` travels as
@@ -359,7 +361,7 @@ gaps are called out where they affect an actor in §9-§13 and in §16.
 │                                                ├─ RpcProtocol        │
 │                                                └─ MainThread* actors │
 └──────────────────────────────┬──────────────────────────────────────┘
-                fd 3 / fd 4: [u32 BE len][RPC message]
+         Unix socket / Windows named pipe: [u32 BE len][RPC message]
 ┌──────────────────────────────▼──────────────────────────────────────┐
 │ node host/extensionHost.js   (launcher, replaces the 475-line file) │
 │   └─ upstream ExtensionHostMain                                     │
@@ -369,11 +371,10 @@ gaps are called out where they affect an actor in §9-§13 and in §16.
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-The launcher reserves fd 3 for host→workbench frames and fd 4 for
-workbench→host frames, or uses a socketpair on POSIX. The host's stdin and
-stdout are left alone; the launcher redirects its own bootstrap logging to
-stderr or a log file. This is the only way to coexist with extension code
-that writes to stdout or spawns children with inherited stdio.
+The launcher connects to the workbench's local duplex IPC endpoint; the
+legacy fd 3/4 fallback is also supported. Bootstrap logging goes to stderr,
+which the workbench redirects to a log file. Stdio never carries RPC frames,
+so extension output cannot corrupt the protocol.
 
 Activation stays host side, as upstream: the workbench sends
 `$activateByEvent` or `$activate`, and the host's `ExtensionsActivator`
@@ -1593,15 +1594,16 @@ extension from the editor's files or from the host process.
 
 ## 13. Lifecycle, restart and shutdown
 
-- **Spawn.** The launcher is spawned with fd 3/4 pipes, stderr piped for
-  logs, stdin either inherited or `/dev/null`. The editor keeps the child pid.
+- **Spawn.** Create the random IPC endpoint, launch the Node process with
+  `VSCODE_EXTHOST_IPC_HOOK`, redirect its stdio, and accept the connection with
+  a timeout. The editor owns the child process and the accepted connection.
 - **Read.** The reader thread reads frames, validates the length cap, copies
-  the payload into the frame queue, and signals the self-pipe. Partial reads
-  and multiple frames per read are both normal.
+  the payload into the frame queue, and posts the window readiness task.
+  Partial reads and multiple frames per read are both normal.
 - **Write.** The main thread queues frames; the writer handles partial writes
   and backpressure. Request IDs are assigned on send; a reply that arrives
   after cancellation is dropped or resolved as canceled.
-- **Crash.** EOF on fd 3 means the host is gone. Reject all pending replies as
+- **Crash.** EOF on the IPC stream means the host is gone. Reject all pending replies as
   canceled, mark the host unavailable, and attempt one restart after
   re-reading the extension list. On restart: send init data again, re-send
   `$initializeWorkspace`, `$initializeConfiguration`, `$startExtensionHost`
@@ -2022,9 +2024,10 @@ generic fallback.
 - Semver ranges. Extension versions are ordered by a numeric/prerelease
   subset for duplicate-id merging, and `engines.vscode` compatibility is
   checked for presence only (§18.1).
-- Named-pipe transport and `PersistentProtocol`; the launcher's private
-  fd/handle pair is the only transport. On Windows the same frames travel
-  over inherited handles rather than POSIX fd numbers.
+- The Electron desktop MessagePort and the reconnectable `PersistentProtocol`
+  are not ported. The native local extension-host connection uses VS Code's
+  named-pipe/domain-socket endpoint contract with the existing private framing.
+  The same RPC payloads travel on both platforms.
 - Arbitrary theme scopes/modifiers; the TUI maps resolved token styles to the
   ANSI palette and documents the approximation.
 
