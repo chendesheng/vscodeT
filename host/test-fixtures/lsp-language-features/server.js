@@ -87,7 +87,13 @@ connection.onReferences(({ textDocument }) => { bump('references'); return [loca
 connection.onDocumentHighlight(() => { bump('highlight'); return [{ range: alphaRange, kind: DocumentHighlightKind.Read }, { range: betaRange, kind: DocumentHighlightKind.Write }]; });
 connection.onDocumentSymbol(() => { bump('documentSymbol'); return [{ name: 'alpha', kind: SymbolKind.Function, range: { start: pos(0, 0), end: pos(2, 1) }, selectionRange: alphaRange }]; });
 connection.onWorkspaceSymbol(({ query }) => { bump('workspaceSymbol'); return lastUri && 'MockWorkspaceSymbol'.toLowerCase().includes(query.toLowerCase()) ? [{ name: 'MockWorkspaceSymbol', kind: SymbolKind.Function, location: location(lastUri, betaRange) }] : []; });
-connection.onCodeAction(({ textDocument }) => { bump('codeAction'); return [{ title: 'Mock quick fix', kind: CodeActionKind.QuickFix, edit: { changes: { [textDocument.uri]: [{ range: alphaRange, newText: 'fixed' }] } } }]; });
+connection.onCodeAction(({ textDocument, context }) => {
+  bump('codeAction');
+  // The actual ExtHostLanguageFeatures adapter must collect diagnostics that
+  // intersect the requested range from its registered DiagnosticCollection.
+  if (!context.diagnostics.some(diagnostic => diagnostic.message === 'Mock diagnostic')) return [];
+  return [{ title: 'Mock quick fix', kind: CodeActionKind.QuickFix, edit: { changes: { [textDocument.uri]: [{ range: alphaRange, newText: 'fixed' }] } } }];
+});
 connection.onDocumentFormatting(() => { bump('format'); return [{ range: range(1, 0, 2), newText: '    ' }]; });
 connection.onPrepareRename(() => { bump('prepareRename'); return { range: alphaRange, placeholder: 'alpha' }; });
 connection.onRenameRequest(({ textDocument, newName }) => { bump('rename'); return { changes: { [textDocument.uri]: [{ range: alphaRange, newText: newName }] } }; });
