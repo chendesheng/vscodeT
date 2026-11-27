@@ -209,12 +209,11 @@ pub const Extensions = struct {
         }
         const extension_ptrs = try allocator.alloc(*const manager.ExtensionDescription, owned_descriptions.len);
         errdefer allocator.free(extension_ptrs);
-        for (owned_descriptions, 0..) |*description, index| {
-            extension_ptrs[index] = description;
-            // Extension settings are part of the workbench configuration that
-            // the host receives during `$initializeConfiguration`.
-            services.register_extension_configuration(services.common.context, description.manifest, description.identifier);
-        }
+        for (owned_descriptions, 0..) |*description, index| extension_ptrs[index] = description;
+        // Upstream configurationExtensionPoint applies one registry delta for
+        // all added extensions. Rebuild the effective configuration once,
+        // before `$initializeConfiguration`, not after each manifest.
+        services.register_extension_configurations(services.common.context, owned_descriptions);
 
         const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
         defer allocator.free(cwd);

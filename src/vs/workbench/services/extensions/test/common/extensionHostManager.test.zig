@@ -218,6 +218,37 @@ fn emptyConfig(arena: std.mem.Allocator) !std.json.Value {
     return .{ .object = root };
 }
 
+test "Extensions: transport connects a legacy socket-argument launcher" {
+    if (!build_options.e2e) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    const io = time_compat.io;
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(root);
+    // A previously installed bundle recognizes --socket but not the pinned
+    // VS Code IPC hook. Exercise that transport without depending on a bundle.
+    try temp.dir.writeFile(io, .{ .sub_path = "legacy.mjs", .data =
+        \\import { createConnection } from 'node:net';
+        \\const arg = process.argv.indexOf('--socket');
+        \\if (arg < 0 || process.argv[arg + 1] !== process.env.VSCODE_EXTHOST_IPC_HOOK) process.exit(1);
+        \\const socket = createConnection(process.argv[arg + 1]);
+        \\socket.on('connect', () => socket.write(Buffer.from([0, 0, 0, 1, 2])));
+        \\socket.on('data', () => {});
+    });
+    const script = try temp.dir.realPathFileAlloc(io, "legacy.mjs", a);
+    defer a.free(script);
+    const host = try manager.HostManager.start(a, .{
+        .host_script = script,
+        .extensions = &.{},
+        .user_data_dir = root,
+        .app_root = root,
+        .parent_pid = manager.currentProcessId(),
+    });
+    defer host.deinit();
+    try host.expectControl(2, 1_000);
+}
+
 test "Extensions: transport connects the pinned Node host and initializes" {
     if (!build_options.e2e) return error.SkipZigTest;
     const a = std.testing.allocator;

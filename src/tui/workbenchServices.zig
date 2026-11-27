@@ -159,8 +159,8 @@ pub fn extensionHostServices(host: *TerminalWorkbench) ExtensionServices {
         fn watcher(context: *anyopaque) !*@import("../vs/platform/files/node/watcher/fileWatcherService.zig").FileWatcherService {
             return get(context).ensureFileService();
         }
-        fn registerExtensionConfiguration(context: *anyopaque, manifest: std.json.Value, id: []const u8) void {
-            get(context).registerExtensionConfiguration(manifest, id);
+        fn registerExtensionConfigurations(context: *anyopaque, descriptions: []const @import("../vs/workbench/services/extensions/common/extensionHostManager.zig").ExtensionDescription) void {
+            get(context).registerExtensionConfigurations(descriptions);
         }
         fn contextKeys(context: *anyopaque) !*ContextKeyService {
             return get(context).ensureContextKeys();
@@ -227,7 +227,7 @@ pub fn extensionHostServices(host: *TerminalWorkbench) ExtensionServices {
         .bulk_edit = host.bulk_edit_api,
         .model_service = host.model_service_api,
         .simple_browser = &host.simple_browser,
-        .register_extension_configuration = Adapter.registerExtensionConfiguration,
+        .register_extension_configurations = Adapter.registerExtensionConfigurations,
         .context_keys = Adapter.contextKeys,
         .configuration = host.configuration_api,
         .configuration_data = Adapter.configurationData,

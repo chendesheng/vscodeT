@@ -3111,10 +3111,15 @@ pub const TerminalWorkbench = struct {
         self.ensureConfiguration() catch {};
     }
 
-    /// Registers `contributes.configuration` defaults from one extension
-    /// manifest and reloads the effective configuration.
-    pub fn registerExtensionConfiguration(self: *TerminalWorkbench, manifest: std.json.Value, extension_id: []const u8) void {
+    /// Apply the extension-point delta before rebuilding the effective model.
+    pub fn registerExtensionConfigurations(self: *TerminalWorkbench, descriptions: []const @import("../vs/workbench/services/extensions/common/extensionHostManager.zig").ExtensionDescription) void {
         self.ensureConfigurationReady();
+        const config = self.configuration orelse return;
+        for (descriptions) |description| self.registerExtensionConfiguration(description.manifest, description.identifier);
+        config.reload() catch {};
+    }
+
+    fn registerExtensionConfiguration(self: *TerminalWorkbench, manifest: std.json.Value, extension_id: []const u8) void {
         const config = self.configuration orelse return;
         if (self.declarative) |catalog| {
             for (catalog.extensions) |extension| {
@@ -3125,12 +3130,10 @@ pub const TerminalWorkbench = struct {
                 if (points != .object) return;
                 const properties = points.object.get("configuration") orelse return;
                 configuration_extension_point.registerConfigurationValue(config.registry, properties, extension_id) catch return;
-                config.reload() catch {};
                 return;
             }
         }
         configuration_extension_point.registerManifest(config.registry, manifest, extension_id) catch return;
-        config.reload() catch {};
     }
 
     /// Effective configuration data for the extension host's

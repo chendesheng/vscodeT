@@ -232,6 +232,22 @@ fn emitStyle(
     };
     if (current.eql(wanted) and (any_style.* or PaintStyle.eql(wanted, .{}))) return;
 
+    // Syntax highlighting usually changes just the foreground. Keep the
+    // background, attributes and border pen intact instead of resetting and
+    // re-emitting their escapes for every token. The row prefix has already
+    // established the default rendition.
+    if (current.attrs == wanted.attrs) {
+        if (wanted.fg != current.fg) {
+            if (wanted.fg == 0) try out.appendSlice(allocator, "\x1b[39m") else try writeColor(allocator, out, wanted.fg, true, depth);
+        }
+        if (wanted.bg != current.bg) {
+            if (wanted.bg == 0) try out.appendSlice(allocator, "\x1b[49m") else try writeColor(allocator, out, wanted.bg, false, depth);
+        }
+        current.* = wanted;
+        any_style.* = true;
+        return;
+    }
+
     try out.appendSlice(allocator, "\x1b[0m");
     current_pen.* = 0;
     if (wanted.fg != 0) try writeColor(allocator, out, wanted.fg, true, depth);
@@ -282,12 +298,17 @@ fn writeColor(
     const rgb = cell.unpackColor(value);
     switch (depth) {
         .rgb => {
-            try appendPrint(
-                out,
-                allocator,
-                "\x1b[{d};2;{d};{d};{d}m",
-                .{ if (foreground) @as(u8, 38) else 48, rgb.r, rgb.g, rgb.b },
-            );
+            // RGB channels have at most three decimal digits. Avoid invoking
+            // the general-purpose formatter and its Writer for every SGR.
+            var buf: [19]u8 = undefined;
+            @memcpy(buf[0..7], if (foreground) "\x1b[38;2;" else "\x1b[48;2;");
+            var len: usize = 7;
+            for ([_]u8{ rgb.r, rgb.g, rgb.b }, 0..) |channel, i| {
+                len += writeDecimalByte(buf[len..], channel);
+                buf[len] = if (i == 2) 'm' else ';';
+                len += 1;
+            }
+            try out.appendSlice(allocator, buf[0..len]);
         },
         .ansi256 => {
             try appendPrint(
@@ -306,6 +327,20 @@ fn writeColor(
             try appendPrint(out, allocator, "\x1b[{d}m", .{code});
         },
     }
+}
+
+fn writeDecimalByte(buf: []u8, value: u8) usize {
+    var len: usize = 0;
+    if (value >= 100) {
+        buf[len] = '0' + value / 100;
+        len += 1;
+    }
+    if (value >= 10) {
+        buf[len] = '0' + (value / 10) % 10;
+        len += 1;
+    }
+    buf[len] = '0' + value % 10;
+    return len + 1;
 }
 
 const ansi_palette = [_][3]u8{

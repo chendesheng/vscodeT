@@ -132,6 +132,11 @@ keeps its immutable text while edits invalidate the tree’s reference.
   width-only resize reuses previous break positions. Wrapping reads the model’s cached
   last-visited line. The first-frame log
   includes the active editor's full wrapping pass count.
+- Extension configuration contributions are applied as one delta before the
+  host reads the effective configuration. The local IPC launcher also passes
+  its endpoint through the legacy `--socket` argument so a previously
+  installed host bundle can still connect after the upstream IPC environment
+  migration. See the [2026-11-27 startup and scrolling profile](docs/perf/2026-11-27/README.md).
 - The overview ruler is a view part. Changes to its markers, cursor, or geometry
   update its retained rows. Scrolling moves the thumb over those rows.
   JSON/JSONC document synchronization follows model events, so opening a
@@ -161,6 +166,10 @@ keeps its immutable text while edits invalidate the tree’s reference.
 - The Unicode line-break property tables are decoded at compile time instead
   of rebuilt on every `layoutTree` call, which removes a fixed per-layout cost
   from every surface. The paint path also has an ASCII fast path.
+- Color-only ANSI transitions preserve the other rendition attributes and
+  border pen. Changing a syntax token's foreground no longer resends the
+  same background, and RGB values use bounded decimal encoding rather than
+  generic formatting.
 - Folding is scheduled like upstream: a 200 ms minimum debounce, coalesced while
   typing, and driven by the main-loop tick. Fold commands and gutter clicks
   still compute immediately.

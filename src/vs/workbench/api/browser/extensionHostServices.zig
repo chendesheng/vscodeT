@@ -37,7 +37,7 @@ pub const Services = struct {
     bulk_edit: @import("../../../editor/browser/services/bulkEditService.zig").IBulkEditService,
     model_service: @import("../../../editor/common/services/modelService.zig").IModelService,
     simple_browser: *SimpleBrowserManager,
-    register_extension_configuration: *const fn (*anyopaque, std.json.Value, []const u8) void,
+    register_extension_configurations: *const fn (*anyopaque, []const @import("../../services/extensions/common/extensionHostManager.zig").ExtensionDescription) void,
     context_keys: *const fn (*anyopaque) anyerror!*ContextKeyService,
     configuration: @import("../../../platform/configuration/common/configuration.zig").IConfigurationService,
     configuration_data: *const fn (*anyopaque, std.mem.Allocator) anyerror!std.json.Value,

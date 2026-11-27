@@ -141,7 +141,10 @@ fn spawnHost(allocator: Allocator, io: std.Io, options: Options, endpoint: []con
         const stdout = try std.Io.Dir.cwd().createFile(io, stdout_path, .{});
         defer stdout.close(io);
         return std.process.spawn(io, .{
-            .argv = &.{ options.node_path, options.host_script },
+            // Keep the launcher's legacy argument while installed bundles can
+            // predate the upstream IPC environment contract. Both designate
+            // the same random endpoint, not a second transport.
+            .argv = &.{ options.node_path, options.host_script, "--socket", endpoint },
             .environ_map = &env,
             .stdin = .ignore,
             .stdout = .{ .file = stdout },
@@ -154,7 +157,7 @@ fn spawnHost(allocator: Allocator, io: std.Io, options: Options, endpoint: []con
     // .file/.pipe returned EBADF in the live TUI's shared fd table. Only the
     // shell handles stdout/stderr redirection; IPC is independent of it.
     return std.process.spawn(io, .{
-        .argv = &.{ "/bin/sh", "-c", "exec \"$0\" \"$1\" </dev/null >>\"$2\" 2>&1", options.node_path, options.host_script, stderr_path },
+        .argv = &.{ "/bin/sh", "-c", "exec \"$0\" \"$1\" --socket \"$3\" </dev/null >>\"$2\" 2>&1", options.node_path, options.host_script, stderr_path, endpoint },
         .environ_map = &env,
         .stdin = .inherit,
         .stdout = .inherit,

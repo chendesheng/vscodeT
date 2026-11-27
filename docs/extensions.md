@@ -99,7 +99,10 @@ contribution points, TUI wiring) to Zig.**
    starts Node directly and writes stdout and stderr to separate log files;
    Unix retains the existing shell-only stdio redirection workaround. The
    private frame transport remains independent of output. Legacy `--socket`
-   and fd 3/4 are still supported by the launcher for existing callers.
+   and fd 3/4 are still supported by the launcher for existing callers. The
+   manager also passes the same endpoint as `--socket` so an installed bundle
+   from before the environment-contract migration can still connect rather
+   than falling back to fd 3/4 and waiting out the connection deadline.
 
 4. **Zig owns the workbench side.** `rpcProtocol.zig`, the `MainThread*`
    actors, the manifest scanner, the contribution registry, and the TUI

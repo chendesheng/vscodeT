@@ -394,6 +394,38 @@ test "Workbench: declarative markdown configuration applies to open tabs" {
     try std.testing.expect(config.folding.?.offSide orelse false);
 }
 
+test "Workbench: extension configuration contributions reload as one delta" {
+    const a = std.testing.allocator;
+    const window = try TestWindow.init(a, time_compat.io, &.{}, 40, 9);
+    defer window.deinit();
+    const workbench = window.workbench;
+    workbench.ensureConfigurationReady();
+    const config = workbench.configuration.?;
+    const Change = @import("../vs/platform/configuration/common/configuration.zig").Change;
+    const Listener = struct {
+        count: usize = 0,
+        fn changed(_: Change, self: *@This()) !void {
+            self.count += 1;
+        }
+    };
+    var listener = Listener{};
+    const id = try config.listenConfigurationChange(&listener, Listener.changed);
+    defer config.unlistenConfigurationChange(id);
+    const first = try std.json.parseFromSlice(std.json.Value, a, "{\"contributes\":{\"configuration\":{\"properties\":{\"test.first\":{\"type\":\"boolean\",\"default\":true}}}}}", .{});
+    defer first.deinit();
+    const second = try std.json.parseFromSlice(std.json.Value, a, "{\"contributes\":{\"configuration\":{\"properties\":{\"test.second\":{\"type\":\"boolean\",\"default\":true}}}}}", .{});
+    defer second.deinit();
+    const Description = @import("../vs/workbench/services/extensions/common/extensionHostManager.zig").ExtensionDescription;
+    const descriptions = [_]Description{
+        .{ .path = "", .parsed = first, .manifest = first.value, .identifier = "test.one", .activation_events = &.{} },
+        .{ .path = "", .parsed = second, .manifest = second.value, .identifier = "test.two", .activation_events = &.{} },
+    };
+    workbench.registerExtensionConfigurations(&descriptions);
+    try std.testing.expectEqual(@as(usize, 1), listener.count);
+    try std.testing.expect(config.getBool("test.first", false));
+    try std.testing.expect(config.getBool("test.second", false));
+}
+
 test "Workbench: resource tab focus option is ORed with the global toggle" {
     const a = std.testing.allocator;
     const io = std.testing.io;

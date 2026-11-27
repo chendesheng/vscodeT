@@ -569,8 +569,9 @@ The encoder follows TermDOM's `generateANSI`:
 - Choose the cheapest forward cursor move: `\r`, `\n`, CUD, CUF, or CUP.
 - Batch printable ASCII into one run; emit non-ASCII and wide glyphs
   individually.
-- Emit a style reset plus the needed SGR attributes when the style changes
-  (the escape cache and truly minimal diffs are a later optimization).
+- Emit a style reset plus the needed SGR attributes when non-color attributes
+  change. Color-only transitions emit only the changed foreground/background
+  (39/49 restore the terminal defaults) and leave the border pen intact.
 - Before a cell whose border set changed, emit the cell-border pen: clear the
   old segments and set the new groups. SGR 0 clears the pen, so a style reset
   re-emits it; every changed row starts with SGR 0 before `EL`, which makes the

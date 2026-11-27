@@ -47,6 +47,25 @@ test "ansi: a vanished cell erases its row" {
     try std.testing.expect(std.mem.indexOf(u8, out, "x") == null);
 }
 
+test "ansi: color-only changes preserve background and reset individual colors" {
+    const allocator = std.testing.allocator;
+    var grid = try CellGrid.init(allocator, 4, 1);
+    defer grid.deinit();
+    const bg = cell.packColor(.{ .r = 255, .g = 128, .b = 100 });
+    const fg = cell.packColor(.{ .r = 0, .g = 9, .b = 10 });
+    const second_fg = cell.packColor(.{ .r = 99, .g = 100, .b = 255 });
+    grid.putCodepoint(0, 0, 'a', 1, .{ .fg = fg, .bg = bg });
+    grid.putCodepoint(1, 0, 'b', 1, .{ .fg = second_fg, .bg = bg });
+    grid.putCodepoint(2, 0, 'c', 1, .{ .bg = bg });
+    grid.putCodepoint(3, 0, 'd', 1, .{});
+    const out = try encode(allocator, null, &grid, .{ .synchronized = false });
+    defer allocator.free(out);
+    try std.testing.expectEqualStrings(
+        "\x1b[0m\x1b[1;1H\x1b[K\x1b[38;2;0;9;10m\x1b[48;2;255;128;100ma\x1b[38;2;99;100;255mb\x1b[39mc\x1b[49md\x1b[0m\x1b[0m",
+        out,
+    );
+}
+
 test "ansi: cell borders ride the pen on changed cells" {
     const allocator = std.testing.allocator;
     var next = try CellGrid.init(allocator, 3, 1);
