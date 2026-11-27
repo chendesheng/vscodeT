@@ -19,6 +19,7 @@ const WindowQueue = @import("../../../base/common/windowDispatch.zig").Queue;
 pub const Services = struct {
     common: common.Services,
     window: *WindowQueue,
+    output_service: *@import("../../contrib/output/browser/outputServices.zig").OutputService,
     logger_service: *@import("../../../platform/log/common/fileLog.zig").FileLoggerService,
     file_service: @import("../../../platform/files/common/files.zig").IFileService,
     language_status: @import("../../services/languageStatus/common/languageStatusService.zig").ILanguageStatusService,

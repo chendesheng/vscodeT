@@ -406,7 +406,7 @@ fn paintOverlaysAndStatus(self: *Workbench) !void {
 /// like the upstream panel's container hosting the terminal view.
 fn renderPanel(self: *Workbench) !void {
     const rect = self.geometry().panelRect();
-    const focused = self.focus == .terminal or self.focus == .problems or self.focus == .bulk_edit;
+    const focused = self.focus == .terminal or self.focus == .problems or self.focus == .bulk_edit or self.focus == .output;
     var badge_buf: [48]u8 = undefined;
     var badges: [1]panel_part_mod.Badge = undefined;
     const badge_slice = panelBadges(self, &badge_buf, &badges);
@@ -427,6 +427,8 @@ fn renderPanel(self: *Workbench) !void {
         } else {
             renderPlaceholder(self, content, focused);
         }
+    } else if (std.mem.eql(u8, active_id, @import("../vs/workbench/services/output/common/output.zig").OUTPUT_VIEW_ID)) {
+        if (self.output_view) |*view| view.render(&self.frame.next, content, self.focus == .output, self.theme_palette);
     } else if (std.mem.eql(u8, active_id, BulkEditPane.ID)) {
         if (self.bulk_edit_preview) |*view| view.render(&self.frame.next, content, self.focus == .bulk_edit, self.theme_palette) else renderPlaceholder(self, content, focused);
     } else if (std.mem.eql(u8, active_id, PROBLEMS_CONTAINER_ID)) {
@@ -2130,6 +2132,13 @@ pub fn handlePanelMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         if (self.bulk_edit_preview) |*view| _ = view.handleMouse(event);
         return true;
     }
+    if (std.mem.eql(u8, self.geometry().activePanelId(), @import("../vs/workbench/services/output/common/output.zig").OUTPUT_VIEW_ID)) {
+        if (event.kind == .down) self.setFocus(.output);
+        if (self.output_view) |*view| {
+            if (event.kind == .wheel) view.scrollBy(-@as(isize, event.delta_y));
+        }
+        return true;
+    }
     if (std.mem.eql(u8, self.geometry().activePanelId(), PROBLEMS_CONTAINER_ID)) {
         if (event.kind == .down) {
             self.setFocus(.problems);
@@ -2153,6 +2162,15 @@ pub fn handlePanelKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
             return true;
         }
         if (self.bulk_edit_preview) |*view| return view.handleKey(event);
+        return false;
+    }
+    if (self.focus == .output and std.mem.eql(u8, self.geometry().activePanelId(), @import("../vs/workbench/services/output/common/output.zig").OUTPUT_VIEW_ID)) {
+        if (event.key == .escape) {
+            if (self.layout.isZenModeActive()) return false;
+            self.focusEditor();
+            return true;
+        }
+        if (self.output_view) |*view| return view.handleKey(event);
         return false;
     }
     if (self.focus != .problems) return false;

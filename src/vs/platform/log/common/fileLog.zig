@@ -169,9 +169,15 @@ pub const FileLoggerService = struct {
         return .{ .allocator = allocator, .files = files, .loggers = .init(allocator), .on_did_change_loggers = .init(allocator) };
     }
 
-    pub fn deinit(self: *FileLoggerService) void {
+    pub fn clear(self: *FileLoggerService) void {
         var entries = self.loggers.valueIterator();
         while (entries.next()) |entry| self.destroy(entry.*);
+        self.loggers.clearRetainingCapacity();
+        self.on_did_change_loggers.fire({}) catch {};
+    }
+
+    pub fn deinit(self: *FileLoggerService) void {
+        self.clear();
         self.loggers.deinit();
         self.on_did_change_loggers.deinit();
     }

@@ -2497,3 +2497,11 @@ text editor and model language, with severity ordering and a progress indicator
 for busy items. The terminal's status bar exposes the combined tooltip as plain
 text rather than browser DOM/animated codicons. Dedicated status pinning and
 interactive tooltip links/commands remain portable work, not terminal limits.
+
+### Extension Output channels
+
+The Output panel selects a file-backed channel and follows channel visibility and
+model-change events. Up/down and Page Up/Down scroll, Home/End jump, and left/right
+cycle channels when the panel has focus. The terminal currently paints a read-only
+file slice instead of mounting an editor; editor-backed selection, links,
+filtering and the channel dropdown remain portable work.

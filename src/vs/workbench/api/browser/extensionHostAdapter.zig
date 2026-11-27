@@ -153,6 +153,7 @@ pub const Extensions = struct {
     scroll_listener_editor: ?*Editor = null,
     inline_completions: @import("inlineCompletionSession.zig").Session = undefined,
     language_features_actor: ?MainThreadLanguageFeatures = null,
+    output_actor: ?@import("mainThreadOutputService.zig").MainThreadOutputService = null,
     languages_actor: ?@import("mainThreadLanguages.zig").MainThreadLanguages = null,
     quick_diff_actor: ?MainThreadQuickDiff = null,
     document_content_actor: ?MainThreadDocumentContentProviders = null,
@@ -348,6 +349,9 @@ pub const Extensions = struct {
         errdefer self.bulk_edit_actor.?.deinit();
         self.languages_actor = .init(allocator, services.language_status);
         errdefer self.languages_actor.?.deinit();
+        self.output_actor = .init(allocator, services.output_service, services.views, .{ .context = self, .set_visible_channel = setVisibleOutputChannel });
+        errdefer self.output_actor.?.deinit();
+        try self.output_actor.?.attach();
         self.registerActors();
         self.initLanguageActors() catch |err| {
             std.log.warn("language feature actors unavailable: {s}", .{@errorName(err)});
@@ -401,6 +405,8 @@ pub const Extensions = struct {
         }
         if (self.language_features_actor) |*actor| actor.deinit();
         if (self.languages_actor) |*actor| actor.deinit();
+        if (self.output_actor) |*actor| actor.deinit();
+        self.services.logger_service.clear();
         if (self.storage_actor) |*actor| actor.deinit();
         if (self.statusbar_actor) |*actor| actor.deinit();
         if (self.commands_actor) |*actor| actor.deinit();
@@ -440,6 +446,8 @@ pub const Extensions = struct {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeDocumentContentProviders });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadQuickDiff)) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeQuickDiff });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadOutputService)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeOutput });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadLogger)) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeLogger });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadLanguages)) {
@@ -617,6 +625,17 @@ pub const Extensions = struct {
         const self: *Extensions = @ptrCast(@alignCast(context));
         if (self.diagnostics_actor) |actor| return actor.invoke(method, args, arena);
         return .empty;
+    }
+
+    fn setVisibleOutputChannel(context: *anyopaque, id: ?[]const u8) !void {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        try self.host.notify(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostOutputService), "$setVisibleChannel", &.{.{ .json = if (id) |value| .{ .string = value } else .null }});
+    }
+
+    fn invokeOutput(context: *anyopaque, method: []const u8, args: []const rpc.Arg, _: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        if (self.output_actor) |*actor| return actor.invoke(method, args, arena);
+        return .{ .err = .{ .name = "Unavailable", .message = method } };
     }
 
     fn invokeLogger(context: *anyopaque, method: []const u8, args: []const rpc.Arg, _: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
@@ -3641,6 +3660,26 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                         hover_received = false;
                     } else {
                         try std.testing.expect(workbench.statusbar.model().findEntry("status.languageStatus") != null);
+                        // Invoke the real extension's output command, not a
+                        // workbench-only log viewer shortcut.
+                        try workbench.commands.execute("zig.zls.openOutput");
+                        const output_id = @import("../../services/output/common/output.zig").OUTPUT_VIEW_ID;
+                        const output_deadline = time_compat.milliTimestamp() + 5_000;
+                        while (time_compat.milliTimestamp() < output_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                            if (workbench.output_service.active) |channel| {
+                                if (workbench.views_api.isViewVisible(output_id) and
+                                    std.mem.endsWith(u8, channel.descriptor.id, ".ZLS language server.log") and
+                                    std.mem.indexOf(u8, channel.model.content, "Received response 'initialize") != null) break;
+                            }
+                            time_compat.sleepMillis(20);
+                        }
+                        try std.testing.expect(workbench.views_api.isViewVisible(output_id));
+                        const output_channel = workbench.output_service.active orelse return error.ZlsOutputNotReceived;
+                        try std.testing.expect(std.mem.endsWith(u8, output_channel.descriptor.id, ".ZLS language server.log"));
+                        try std.testing.expect(std.mem.indexOf(u8, output_channel.model.content, "Received response 'initialize") != null);
+                        try workbench.views_api.closeView(output_id);
+                        try std.testing.expect(!workbench.views_api.isViewVisible(output_id));
                         model.setLanguage("plaintext");
                         try std.testing.expect(workbench.statusbar.model().findEntry("status.languageStatus") == null);
                         return;
@@ -4236,6 +4275,35 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const text_files = @import("../../services/textfile/common/textFileService.zig");
             try std.testing.expect(text_files.samePath(allocator, io, path, document));
             try std.testing.expect(text_files.samePath(allocator, io, "host/test-fixtures/transport", extension));
+
+            // A real OutputChannel uses the registered file-backed channel,
+            // byte offsets, and panel visibility instead of a log-only stub.
+            const output_id = @import("../../services/output/common/output.zig").OUTPUT_VIEW_ID;
+            const channel_id = "extension-output-vscode-textbuffer.transport-fixture-#1-Transport Output";
+            const steps = [_]struct { command: []const u8, content: ?[]const u8, visible: bool }{
+                .{ .command = "fixture.outputWrite", .content = "firsté\n", .visible = true },
+                .{ .command = "fixture.outputReplace", .content = "replacement\n", .visible = true },
+                .{ .command = "fixture.outputClear", .content = "", .visible = true },
+                .{ .command = "fixture.outputHide", .content = "", .visible = false },
+                .{ .command = "fixture.outputDispose", .content = null, .visible = false },
+            };
+            for (steps) |step| {
+                try ext.host.executeContributedCommand(step.command, &.{});
+                const output_deadline = time_compat.milliTimestamp() + 5000;
+                var matched = false;
+                while (time_compat.milliTimestamp() < output_deadline) {
+                    _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                    const channel = workbench.output_service.getChannel(channel_id);
+                    const content_matches = if (step.content) |expected| channel != null and std.mem.eql(u8, expected, channel.?.model.content) else channel == null;
+                    if (content_matches and workbench.views_api.isViewVisible(output_id) == step.visible) {
+                        matched = true;
+                        break;
+                    }
+                    time_compat.sleepMillis(10);
+                }
+                if (!matched) std.debug.print("Output fixture step failed: {s}\n", .{step.command});
+                try std.testing.expect(matched);
+            }
         }
 
         test "Extensions: task activation and provider results resume on the window" {

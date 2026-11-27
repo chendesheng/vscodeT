@@ -52,6 +52,7 @@ pub fn registerViewContainers(registry: *@import("common/views.zig").ViewContain
     try @import("contrib/search/browser/search.contribution.zig").registerViewContainer(registry);
     try @import("contrib/scm/browser/scm.contribution.zig").registerViewContainer(registry);
     try @import("contrib/markers/browser/markers.contribution.zig").registerViewContainer(registry);
+    try @import("contrib/output/browser/output.contribution.zig").registerViewContainer(registry);
     try @import("contrib/terminal/browser/terminal.contribution.zig").registerViewContainer(registry);
     try @import("contrib/extensions/browser/extensions.contribution.zig").registerViewContainer(registry);
     try @import("contrib/bulkEdit/browser/preview/bulkEdit.contribution.zig").registerViewContainer(registry);
@@ -145,6 +146,7 @@ pub fn registerActions(commands: *CommandRegistry, instantiation: *Instantiation
     try commands.registerAction(instantiation, scm_contribution.show_scm_action);
     for (@import("contrib/extensions/browser/extensions.contribution.zig").actions) |action| try commands.registerAction(instantiation, action);
     for (markers_contribution.view_actions) |action| try commands.registerAction(instantiation, action);
+    for (@import("contrib/output/browser/output.contribution.zig").view_actions) |action| try commands.registerAction(instantiation, action);
     try commands.registerAction(instantiation, panel_actions.toggle_panel_action);
     try panel_actions.registerPanelTitle(&commands.menus);
     try commands.registerAction(instantiation, zen_mode_contribution.toggle_action);

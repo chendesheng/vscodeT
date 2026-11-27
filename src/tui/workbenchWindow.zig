@@ -221,7 +221,7 @@ pub const SplitDirection = grid_mod.Orientation;
 /// Target selector shared by the move/copy editor and group commands, port of
 /// upstream `SelectedEditorsMoveCopyArguments.to`.
 pub const GroupLocation = editor_groups.GroupLocation;
-pub const Focus = enum { editor, sidebar, statusbar, breadcrumbs, terminal, problems, bulk_edit };
+pub const Focus = enum { editor, sidebar, statusbar, breadcrumbs, terminal, problems, bulk_edit, output };
 
 /// Handles for the context keys the workbench maintains. User keybindings use
 /// them in `when` clauses; keys the terminal cannot know stay undefined, which
@@ -309,6 +309,8 @@ pub const TerminalWorkbench = struct {
     disk_resource_provider: @import("../vs/platform/files/node/diskFileSystemProvider.zig").DiskFileSystemProvider,
     disk_resource_registration: @import("../vs/base/common/lifecycle.zig").IDisposable,
     extension_logger_service: @import("../vs/platform/log/common/fileLog.zig").FileLoggerService,
+    output_service: @import("../vs/workbench/contrib/output/browser/outputServices.zig").OutputService,
+    output_view: ?@import("../vs/workbench/contrib/output/browser/outputView.zig").OutputViewPane,
     file_service_api: @import("../vs/platform/files/common/files.zig").IFileService,
     working_copy_file_service: @import("../vs/workbench/services/workingCopy/common/workingCopyFileService.zig").WorkingCopyFileService,
     working_copy_file_api: @import("../vs/workbench/services/workingCopy/common/workingCopyFileService.zig").IWorkingCopyFileService,
@@ -579,6 +581,10 @@ pub const TerminalWorkbench = struct {
         errdefer self.disk_resource_provider.deinit();
         self.disk_resource_registration = try self.file_service_api.registerProvider("file", self.disk_resource_provider.interface());
         errdefer self.disk_resource_registration.dispose();
+        self.output_service = .init(allocator, self.file_service_api, &self.extension_logger_service);
+        errdefer self.output_service.deinit();
+        try self.output_service.attach();
+        self.output_view = null;
         self.working_copy_file_service = .init(allocator, self.file_service_api, &self.working_copy_service);
         errdefer self.working_copy_file_service.deinit();
         self.working_copy_file_api = self.working_copy_file_service.interface();
@@ -1318,6 +1324,7 @@ pub const TerminalWorkbench = struct {
         self.window_views.attach(self.pane_composite_api, self.layout_api);
         for ([_]ViewRegistration{
             ViewRegistration.valueSlot(MarkersView, &self.problems_view, .{ .container = PROBLEMS_CONTAINER_ID }),
+            ViewRegistration.valueSlot(@import("../vs/workbench/contrib/output/browser/outputView.zig").OutputViewPane, &self.output_view, .{ .container = @import("../vs/workbench/services/output/common/output.zig").OUTPUT_VIEW_ID }),
             ViewRegistration.valueSlot(BulkEditPane, &self.bulk_edit_preview, .{ .container = BulkEditPane.ID }),
             ViewRegistration.pointerSlot(SearchView, &self.search_window.view, .{ .container = "search" }),
             ViewRegistration.pointerSlot(OutlinePane, &self.outline_view, .{ .descriptor = "outline" }),
@@ -1326,6 +1333,12 @@ pub const TerminalWorkbench = struct {
             ViewRegistration.pointerSlot(extensions_views.ExtensionsListView, &self.extensions_list, .{ .container = extensions_views.ExtensionsListView.ID }),
         }) |registration| try self.window_views.registerView(registration);
         self.views_api = self.window_views.interface();
+        self.output_view = .{ .service = &self.output_service, .views = self.views_api, .pane = &self.panel_part.pane, .layout = self.layout_api, .host = .{ .context = self, .changed = outputViewChanged } };
+        errdefer {
+            self.output_view.?.deinit();
+            self.output_view = null;
+        }
+        try self.output_view.?.attach();
         _ = try self.services.set(views_service.views_service_id, &self.views_api);
         self.editor_groups_api = self.part.interface();
         _ = try self.services.set(editor_groups.editor_groups_service_id, &self.editor_groups_api);
@@ -1692,6 +1705,8 @@ pub const TerminalWorkbench = struct {
         self.activity_service.deinit();
         self.core.disposeNotifications();
         self.host_service.deinit();
+        if (self.output_view) |*view| view.deinit();
+        self.output_view = null;
         self.language_status.deinit();
         self.statusbar.deinit();
         self.notification_service.deinit();
@@ -1981,6 +1996,7 @@ pub const TerminalWorkbench = struct {
         self.word_highlight_session.deinit();
         self.code_editors.deinit();
         self.working_copy_file_service.deinit();
+        self.output_service.deinit();
         self.extension_logger_service.deinit();
         self.disk_resource_registration.dispose();
         self.disk_resource_provider.deinit();
@@ -2458,7 +2474,7 @@ pub const TerminalWorkbench = struct {
         const part: layout_service_mod.Parts = switch (self.focus) {
             .editor => .editor,
             .sidebar => .sidebar,
-            .terminal, .problems, .bulk_edit => .panel,
+            .terminal, .problems, .bulk_edit, .output => .panel,
             .statusbar => .statusbar,
             .breadcrumbs => return false,
         };
@@ -2588,6 +2604,8 @@ pub const TerminalWorkbench = struct {
         if (std.mem.eql(u8, id, PROBLEMS_CONTAINER_ID)) {
             try self.ensureProblemsView();
             if (focus) self.setFocus(.problems);
+        } else if (focus and std.mem.eql(u8, id, @import("../vs/workbench/services/output/common/output.zig").OUTPUT_VIEW_ID)) {
+            self.setFocus(.output);
         } else if (focus and std.mem.eql(u8, id, BulkEditPane.ID)) {
             self.setFocus(.bulk_edit);
         } else if (focus and std.mem.eql(u8, id, TERMINAL_CONTAINER_ID)) {
@@ -2606,11 +2624,20 @@ pub const TerminalWorkbench = struct {
     /// Keeps the composite-bar title items in sync with `hideIfEmpty`: a
     /// container is listed while it has content, or while it is the active
     /// container (opening an empty Problems view re-shows its title).
+    fn outputViewChanged(context: *anyopaque) void {
+        const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
+        self.syncPanelContainerVisibility() catch {};
+        self.requestFrame();
+    }
+
     fn syncPanelContainerVisibility(self: *TerminalWorkbench) !void {
         const stats = if (self.marker_service) |service| service.getStatistics() else markers_mod.MarkerStatistics{};
         const problems_has_content = stats.errors + stats.warnings + stats.infos > 0;
         const problems_active = std.mem.eql(u8, self.geometry().activePanelId(), PROBLEMS_CONTAINER_ID);
         _ = try self.panel_part.pane.setPaneCompositeVisible(PROBLEMS_CONTAINER_ID, problems_has_content or problems_active);
+
+        const output_id = @import("../vs/workbench/services/output/common/output.zig").OUTPUT_VIEW_ID;
+        _ = try self.panel_part.pane.setPaneCompositeVisible(output_id, self.output_service.channels.items.len > 0 or std.mem.eql(u8, self.geometry().activePanelId(), output_id));
 
         const terminals = if (self.terminal_service) |service| service.count() else 0;
         const terminal_active = std.mem.eql(u8, self.geometry().activePanelId(), TERMINAL_CONTAINER_ID);
@@ -4018,7 +4045,7 @@ pub const TerminalWorkbench = struct {
             .search_results_focused = if (self.search_window.view) |view| view.results_focused else false,
             .statusbar_focused = self.focus == .statusbar,
             .terminal_focused = self.terminalFocused(),
-            .panel_focused = (self.focus == .terminal or self.focus == .problems or self.focus == .bulk_edit) and geometry_value.panelShown(),
+            .panel_focused = (self.focus == .terminal or self.focus == .problems or self.focus == .bulk_edit or self.focus == .output) and geometry_value.panelShown(),
             .bulk_edit_preview_focused = self.focus == .bulk_edit,
             .active_panel = if (geometry_value.panelShown()) geometry_value.activePanelId() else "",
             .quick_access_open = self.quick_access.isOpen(),
@@ -4455,7 +4482,7 @@ pub const TerminalWorkbench = struct {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
         return switch (self.focus) {
             .sidebar => .sidebar,
-            .terminal, .problems, .bulk_edit => .panel,
+            .terminal, .problems, .bulk_edit, .output => .panel,
             .statusbar => .statusbar,
             .breadcrumbs, .editor => .editor,
         };
@@ -4469,6 +4496,8 @@ pub const TerminalWorkbench = struct {
                 if (self.problemsVisible()) {
                     self.setFocus(.problems);
                     self.updateProblemsHighlight();
+                } else if (std.mem.eql(u8, self.geometry().activePanelId(), @import("../vs/workbench/services/output/common/output.zig").OUTPUT_VIEW_ID) and self.geometry().panelShown()) {
+                    self.setFocus(.output);
                 } else if (std.mem.eql(u8, self.geometry().activePanelId(), BulkEditPane.ID) and self.geometry().panelShown()) {
                     self.setFocus(.bulk_edit);
                 } else if (self.terminalVisible()) {
