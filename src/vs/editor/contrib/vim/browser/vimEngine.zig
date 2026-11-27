@@ -10,6 +10,7 @@ const ArrayList = std.array_list.Managed;
 const Position = @import("../../../common/core/position.zig").Position;
 const Range = @import("../../../common/core/range.zig").Range;
 const Selection = @import("../../../common/core/selection.zig").Selection;
+const bracket_text_objects = @import("../../../common/model/bracketPairsTextModelPart/bracketTextObjects.zig");
 const TextModel = @import("../../../common/model/textModel.zig").TextModel;
 const extension_api = @import("../../../../workbench/api/common/extensionApi.zig");
 const ui = @import("ui");
@@ -1011,18 +1012,16 @@ pub const VimEngine = struct {
         const model = self.editor.model;
         const cursor = self.editor.cursorPosition();
         if (model.bracketPairs().matchBracket(cursor, null)) |pair| {
-            const opening = pair[0];
-            return if (opening.containsPosition(&cursor)) pair[1].startPosition() else opening.startPosition();
+            return oppositeBracketPosition(pair, cursor);
         }
-        const line = try model.getLineContent(cursor.lineNumber);
-        defer line.deinit();
-        var index = @min(cursor.column -| 1, line.items.len);
-        while (index < line.items.len) : (index += 1) {
-            const kind = bracketKind(line.items[index]) orelse continue;
-            const target = scanBracket(line.items, index, kind) orelse return null;
-            return Position.init(cursor.lineNumber, target + 1);
-        }
-        return null;
+        // Vim's `%` searches forward on the cursor's line when it is not on a
+        // bracket. `findNextBracket` supplies the next bracket token (skipping
+        // brackets inside comments/strings and unexpected closers).
+        const next = model.bracketPairs().findNextBracket(cursor) orelse return null;
+        if (next.range.startLineNumber != cursor.lineNumber) return null;
+        const bracket_position = next.range.getStartPosition();
+        const pair = model.bracketPairs().matchBracket(bracket_position, null) orelse return null;
+        return oppositeBracketPosition(pair, bracket_position);
     }
 
     fn matchBracketMotion(self: *VimEngine) !void {
@@ -2115,77 +2114,19 @@ pub const VimEngine = struct {
         return switch (char) {
             'w' => try self.wordObject(around, false),
             'W' => try self.wordObject(around, true),
-            'b', '(', ')' => try self.bracketObject(around, '(', ')'),
-            '[', ']' => try self.bracketObject(around, '[', ']'),
-            '{', '}' => try self.bracketObject(around, '{', '}'),
-            '<', '>' => try self.bracketObject(around, '<', '>'),
+            'b', '(', ')' => try self.bracketObject(around, "(", ")"),
+            '[', ']' => try self.bracketObject(around, "[", "]"),
+            '{', '}' => try self.bracketObject(around, "{", "}"),
+            '<', '>' => try self.bracketObject(around, "<", ">"),
             '"', '\'', '`' => try self.quoteObject(around, @intCast(char)),
             else => null,
         };
     }
 
-    fn bracketObject(self: *VimEngine, around: bool, open: u8, close: u8) !?Range {
-        var value = try self.editor.model.getValue(.LF, false);
-        defer value.deinit();
-        var offset = self.editor.model.getOffsetAt(self.editor.cursorPosition());
-        if (offset >= value.items.len) offset = value.items.len -| 1;
-
-        var open_index: ?usize = null;
-        var close_index: ?usize = null;
-        if (value.items[offset] == open) {
-            open_index = offset;
-        } else if (value.items[offset] == close) {
-            var depth: isize = 1;
-            var index = offset;
-            while (index > 0) {
-                index -= 1;
-                if (value.items[index] == close) {
-                    depth += 1;
-                } else if (value.items[index] == open) {
-                    depth -= 1;
-                    if (depth == 0) {
-                        open_index = index;
-                        close_index = offset;
-                        break;
-                    }
-                }
-            }
-        } else {
-            var depth: isize = 0;
-            var index = offset;
-            while (index > 0) {
-                index -= 1;
-                if (value.items[index] == close) {
-                    depth += 1;
-                } else if (value.items[index] == open) {
-                    if (depth == 0) {
-                        open_index = index;
-                        break;
-                    }
-                    depth -= 1;
-                }
-            }
-        }
-        const start = open_index orelse return null;
-        if (close_index == null) {
-            var depth: isize = 0;
-            var index = start + 1;
-            while (index < value.items.len) : (index += 1) {
-                if (value.items[index] == open) {
-                    depth += 1;
-                } else if (value.items[index] == close) {
-                    if (depth == 0) {
-                        close_index = index;
-                        break;
-                    }
-                    depth -= 1;
-                }
-            }
-        }
-        const end = close_index orelse return null;
-        const start_offset = if (around) start else start + 1;
-        const end_offset = if (around) end + 1 else end;
-        return Range.fromPositions(self.editor.model.getPositionAt(start_offset), self.editor.model.getPositionAt(end_offset));
+    fn bracketObject(self: *VimEngine, around: bool, open_text: []const u8, close_text: []const u8) !?Range {
+        const cursor = self.editor.cursorPosition();
+        const pair = try bracket_text_objects.ofType(self.editor.model, cursor, open_text, close_text) orelse return null;
+        return if (around) pair.around() else pair.inside();
     }
 
     fn quoteObject(self: *VimEngine, around: bool, quote: u8) !?Range {
@@ -2668,63 +2609,8 @@ fn isNohlsearchCommand(command: []const u8) bool {
         std.mem.startsWith(u8, name, command);
 }
 
-const BracketKind = enum { open_paren, close_paren, open_square, close_square, open_brace, close_brace };
-
-fn bracketKind(byte: u8) ?BracketKind {
-    return switch (byte) {
-        '(' => .open_paren,
-        ')' => .close_paren,
-        '[' => .open_square,
-        ']' => .close_square,
-        '{' => .open_brace,
-        '}' => .close_brace,
-        else => null,
-    };
-}
-
-fn scanBracket(line: []const u8, start: usize, kind: BracketKind) ?usize {
-    const open: u8 = switch (kind) {
-        .open_paren => '(',
-        .close_paren => ')',
-        .open_square => '[',
-        .close_square => ']',
-        .open_brace => '{',
-        .close_brace => '}',
-    };
-    const close: u8 = switch (kind) {
-        .open_paren => ')',
-        .close_paren => '(',
-        .open_square => ']',
-        .close_square => '[',
-        .open_brace => '}',
-        .close_brace => '{',
-    };
-    const forward = switch (kind) {
-        .open_paren, .open_square, .open_brace => true,
-        else => false,
-    };
-    var depth: isize = 0;
-    if (forward) {
-        var index = start;
-        while (index < line.len) : (index += 1) {
-            if (line[index] == open) depth += 1;
-            if (line[index] == close) {
-                depth -= 1;
-                if (depth == 0) return index;
-            }
-        }
-    } else {
-        var index: isize = @intCast(start);
-        while (index >= 0) : (index -= 1) {
-            const byte = line[@intCast(index)];
-            if (byte == open) depth += 1;
-            if (byte == close) {
-                depth -= 1;
-                if (depth == 0) return @intCast(index);
-            }
-        }
-    }
-    return null;
+fn oppositeBracketPosition(pair: [2]Range, position: Position) Position {
+    return if (pair[0].containsPosition(&position)) pair[1].startPosition() else pair[0].startPosition();
 }
 
 fn wordClass(byte: u8) u8 {

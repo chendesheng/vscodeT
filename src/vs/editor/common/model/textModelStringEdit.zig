@@ -159,6 +159,7 @@ test "offsetEditToEditOperations and offsetEditFromLineRangeMapping" {
     const allocator = std.testing.allocator;
     const UndoRedoService = @import("../../../platform/undoRedo/common/undoRedoService.zig").UndoRedoService;
     const LanguageService = @import("../services/languageService.zig").LanguageService;
+    const LanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationService;
     const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
     const Model = @import("../model.zig");
 
@@ -168,6 +169,8 @@ test "offsetEditToEditOperations and offsetEditFromLineRangeMapping" {
     const codec = try std.heap.page_allocator.create(LanguageIdCodec);
     codec.* = try LanguageIdCodec.init(std.heap.page_allocator);
     var language_service = LanguageService.init(std.heap.page_allocator, codec);
+    var language_configuration_service = try LanguageConfigurationService.init(allocator, &language_service);
+    defer language_configuration_service.deinit();
 
     const creation_options = Model.TextModelCreationOptions{
         .tabSize = 4,
@@ -182,12 +185,12 @@ test "offsetEditToEditOperations and offsetEditFromLineRangeMapping" {
     };
 
     var original_reader = std.Io.Reader.fixed("hello\nworld");
-    const original = try TextModel.init(allocator, &original_reader, "", creation_options, null, &undo_redo, &language_service);
+    const original = try TextModel.init(allocator, &original_reader, "", creation_options, null, &undo_redo, &language_service, &language_configuration_service);
     defer allocator.destroy(original);
     defer original.deinit();
 
     var modified_reader = std.Io.Reader.fixed("hello!\nworld");
-    const modified = try TextModel.init(allocator, &modified_reader, "", creation_options, null, &undo_redo, &language_service);
+    const modified = try TextModel.init(allocator, &modified_reader, "", creation_options, null, &undo_redo, &language_service, &language_configuration_service);
     defer allocator.destroy(modified);
     defer modified.deinit();
 

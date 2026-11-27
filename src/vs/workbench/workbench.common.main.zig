@@ -53,6 +53,7 @@ pub fn registerViewContainers(registry: *@import("common/views.zig").ViewContain
     try @import("contrib/scm/browser/scm.contribution.zig").registerViewContainer(registry);
     try @import("contrib/markers/browser/markers.contribution.zig").registerViewContainer(registry);
     try @import("contrib/terminal/browser/terminal.contribution.zig").registerViewContainer(registry);
+    try @import("contrib/extensions/browser/extensions.contribution.zig").registerViewContainer(registry);
     try @import("contrib/bulkEdit/browser/preview/bulkEdit.contribution.zig").registerViewContainer(registry);
 }
 
@@ -60,6 +61,7 @@ pub fn registerViews(registry: *@import("common/views.zig").ViewsRegistry) !void
     try @import("contrib/files/browser/explorerViewlet.zig").registerViews(registry);
     try @import("contrib/outline/browser/outline.contribution.zig").registerViews(registry);
     try @import("contrib/scm/browser/scm.contribution.zig").registerViews(registry);
+    try @import("contrib/extensions/browser/extensions.contribution.zig").registerViews(registry);
 }
 
 pub fn registerMenus(menus: *MenuRegistry) !void {
@@ -141,6 +143,7 @@ pub fn registerActions(commands: *CommandRegistry, instantiation: *Instantiation
     try commands.registerAction(instantiation, terminal_actions.editor_action);
     try commands.registerAction(instantiation, @import("contrib/files/browser/explorerViewlet.zig").show_explorer_action);
     try commands.registerAction(instantiation, scm_contribution.show_scm_action);
+    for (@import("contrib/extensions/browser/extensions.contribution.zig").actions) |action| try commands.registerAction(instantiation, action);
     for (markers_contribution.view_actions) |action| try commands.registerAction(instantiation, action);
     try commands.registerAction(instantiation, panel_actions.toggle_panel_action);
     try panel_actions.registerPanelTitle(&commands.menus);

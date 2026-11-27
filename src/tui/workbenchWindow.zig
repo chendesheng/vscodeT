@@ -202,6 +202,10 @@ const git_model_mod = @import("../extensions/git/src/model.zig");
 const git_mod = @import("../extensions/git/src/git.zig");
 const scm_contribution = @import("../vs/workbench/contrib/scm/browser/scm.contribution.zig");
 const SCMContribution = scm_contribution.SCMContribution;
+const extensions_workbench_service = @import("../vs/workbench/contrib/extensions/browser/extensionsWorkbenchService.zig");
+const extensions_views = @import("../vs/workbench/contrib/extensions/browser/extensionsViews.zig");
+const extensions_viewlet = @import("../vs/workbench/contrib/extensions/browser/extensionsViewlet.zig");
+const extensions_view_host = @import("extensionsViewHost.zig");
 const scm_common = @import("../vs/workbench/contrib/scm/common/scm.zig");
 const repository_mod = @import("../extensions/git/src/repository.zig");
 const scm_view_mod = @import("../vs/workbench/contrib/scm/browser/scmViewPane.zig");
@@ -330,6 +334,12 @@ pub const TerminalWorkbench = struct {
     explorer_container: ?*view_pane_container_mod.ViewPaneContainer = null,
     explorer_view_model: ?*view_container_model_mod.ViewContainerModel = null,
     explorer_panes: ?[]view_pane_container_mod.Pane = null,
+    /// Port of the Extensions viewlet: its workbench service, mounted
+    /// pane-composite container and the list view resolved by the refresh and
+    /// clear-search commands through the views service.
+    extensions_service: ?*extensions_workbench_service.ExtensionsWorkbenchService = null,
+    extensions_view: ?*extensions_viewlet.ExtensionsViewPaneContainer = null,
+    extensions_list: ?*extensions_views.ExtensionsListView = null,
     window_events: @import("../vs/base/common/windowDispatch.zig").Queue,
     search_window: search_view_mod.SearchWindow,
     layout: *Layout,
@@ -548,6 +558,9 @@ pub const TerminalWorkbench = struct {
         self.explorer_container = null;
         self.explorer_view_model = null;
         self.explorer_panes = null;
+        self.extensions_service = null;
+        self.extensions_view = null;
+        self.extensions_list = null;
         self.window_events = .{ .io = self.async_io, .window_events = .init(allocator) };
         errdefer self.window_events.deinitWindowEvents();
         self.resource_file_service = .init(allocator);
@@ -1298,6 +1311,7 @@ pub const TerminalWorkbench = struct {
             ViewRegistration.pointerSlot(OutlinePane, &self.outline_view, .{ .descriptor = "outline" }),
             ViewRegistration.pointerSlot(scm_view_mod.SCMViewPane, &self.scm.changes, .{ .descriptor = "changes" }),
             ViewRegistration.pointerSlot(scm_history_view_mod.SCMHistoryViewPane, &self.scm.history, .{ .descriptor = "graph" }),
+            ViewRegistration.pointerSlot(extensions_views.ExtensionsListView, &self.extensions_list, .{ .container = extensions_views.ExtensionsListView.ID }),
         }) |registration| try self.window_views.registerView(registration);
         self.views_api = self.window_views.interface();
         _ = try self.services.set(views_service.views_service_id, &self.views_api);
@@ -1649,6 +1663,7 @@ pub const TerminalWorkbench = struct {
             self.allocator.free(panes);
             self.explorer_panes = null;
         }
+        extensions_view_host.detach(self);
         self.scm_multi_diff_resolvers.dispose();
         self.multi_diff_sources.deinit();
         self.scm.deinit();
@@ -2351,6 +2366,7 @@ pub const TerminalWorkbench = struct {
         self.sidebar.?.setOpenEditorQuery(.{ .context = self, .is_open = isPathOpen });
         _ = try self.activity_bar_part.setActive(self.activity_bar_part.activities.items[0].id);
         _ = try self.sidebar_part.openPaneComposite(self.activity_bar_part.activities.items[0].id);
+        try extensions_view_host.attach(self);
         try self.setSidebarVisible(true);
         self.sidebar_part.setFocused(self.focus == .sidebar);
         self.layoutAll();
@@ -3371,6 +3387,13 @@ pub const TerminalWorkbench = struct {
     }
 
     // --- end git / source control
+
+    /// Borrows the app-owned extension inventory for the Extensions panel and
+    /// its enablement actions. Called before the sidebar mounts the container.
+    pub fn setExtensionsService(self: *TerminalWorkbench, service: *extensions_workbench_service.ExtensionsWorkbenchService) void {
+        self.extensions_service = service;
+        if (self.extensions_view) |contribution| contribution.setService(service) catch {};
+    }
 
     pub fn setSidebarViewStorage(self: *TerminalWorkbench, user_data_dir: []const u8) !void {
         const state = try view_container_model_mod.ViewDescriptorsState.init(self.allocator, self.io, user_data_dir);
@@ -4804,6 +4827,7 @@ const global_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "workbench.action.focusStatusBar", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyS) } },
     .{ .id = markers_common.Markers.TOGGLE_MARKERS_VIEW_ACTION_ID, .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyM) } },
     .{ .id = "workbench.action.togglePanel", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyJ) } },
+    .{ .id = "workbench.view.extensions", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyX) } },
     .{ .id = "breadcrumbs.focusAndSelect", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.Period) } },
     .{ .id = "breadcrumbs.focus", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.Semicolon) } },
     .{ .id = "workbench.action.terminal.toggleTerminal", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyT) } },

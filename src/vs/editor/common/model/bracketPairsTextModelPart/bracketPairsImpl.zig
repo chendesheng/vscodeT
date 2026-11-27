@@ -6,14 +6,13 @@
 // document's initial build is deferred to the maintenance pass. Small documents
 // are tokenized eagerly so their first tree sees string/comment tokens; larger
 // ones start from upstream's fast tree and are rebuilt token-aware when the
-// background tokenizer completes. Matching uses the upstream fallback only when
-// colorization is off (or the document exceeds the upstream AST size limit).
+// background tokenizer completes. The AST resolves language configurations
+// through the resolved `LanguageConfigurationService`, as upstream does; the
+// upstream fallback matcher is used only above the AST size limit.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
 const TextModel = @import("../textModel.zig").TextModel;
-const LanguageService = @import("../../services/languageService.zig").LanguageService;
-const LanguageConfiguration = @import("../../languages/languageConfiguration.zig").LanguageConfiguration;
 const range_module = @import("../../core/range.zig");
 const Range = range_module.Range;
 const Position = @import("../../core/position.zig").Position;
@@ -23,6 +22,7 @@ const TextEditInfo = @import("./bracketPairsTree/beforeEditPositionMapper.zig").
 const combineTextEditInfos = @import("./bracketPairsTree/combineTextEditInfos.zig").combineTextEditInfos;
 const ModelContentChangedEvent = @import("../../textModelEvents.zig").ModelContentChangedEvent;
 const LanguageConfigurationServiceChangeEvent = @import("../../languages/languageConfigurationRegistry.zig").LanguageConfigurationServiceChangeEvent;
+const LanguageConfigurationService = @import("../../languages/languageConfigurationRegistry.zig").LanguageConfigurationService;
 const ModelTokensChangedEvent = @import("../../textModelEvents.zig").ModelTokensChangedEvent;
 const ResolvedLanguageConfiguration = @import("../../languages/languageConfigurationRegistry.zig").ResolvedLanguageConfiguration;
 const RichEditBrackets = @import("../../languages/supports/richEditBrackets.zig").RichEditBrackets;
@@ -69,21 +69,12 @@ pub const BracketPairWithMinIndentationInfo = struct {
     minVisibleColumnIndentation: i64,
 };
 
-/// Upstream obtains `RichEditBrackets`/`bracketsNew` from the language
-/// configuration service. The terminal host owns the resolved configuration
-/// in its registry, so the provider hands out a stable pointer instead of a
-/// by-value copy.
-pub const LanguageConfigurationProvider = struct {
-    context: *anyopaque,
-    get: *const fn (context: *anyopaque, language_id: []const u8) ?*const ResolvedLanguageConfiguration,
-};
-
 pub const BracketPairsTextModelPart = struct {
     const Self = @This();
 
     allocator: Allocator,
     textModel: *TextModel,
-    languageService: *LanguageService,
+    languageConfigurationService: *LanguageConfigurationService,
     _brackets: ArrayList(BracketInfo),
     _dirty: bool,
     _fullRebuild: bool,
@@ -97,13 +88,12 @@ pub const BracketPairsTextModelPart = struct {
     /// upstream's single `DenseKeyProvider`.
     _ids: tree.StringIdProvider,
     _onDidChange: Emitter(void),
-    language_configuration_provider: ?LanguageConfigurationProvider = null,
 
-    pub fn init(allocator: Allocator, textModel: *TextModel, languageService: *LanguageService) Self {
+    pub fn init(allocator: Allocator, textModel: *TextModel, languageConfigurationService: *LanguageConfigurationService) Self {
         return .{
             .allocator = allocator,
             .textModel = textModel,
-            .languageService = languageService,
+            .languageConfigurationService = languageConfigurationService,
             ._brackets = ArrayList(BracketInfo).init(allocator),
             ._dirty = true,
             ._fullRebuild = true,
@@ -124,15 +114,8 @@ pub const BracketPairsTextModelPart = struct {
         self._onDidChange.deinit();
     }
 
-    /// Installs the resolved-language-configuration provider used by the
-    /// upstream fallback matcher.
-    pub fn setLanguageConfigurationProvider(self: *Self, provider: LanguageConfigurationProvider) void {
-        self.language_configuration_provider = provider;
-    }
-
     fn resolvedConfig(self: *Self, language_id: []const u8) ?*const ResolvedLanguageConfiguration {
-        const provider = self.language_configuration_provider orelse return null;
-        return provider.get(provider.context, language_id);
+        return self.languageConfigurationService.resolved(language_id);
     }
 
     /// Upstream builds the bracket AST only below this size.
@@ -329,13 +312,13 @@ pub const BracketPairsTextModelPart = struct {
 
         var doc: tree.ParsedDocument = undefined;
         if (full_rebuild) {
-            doc = tree.parseDocument(self.allocator, self.textModel, self.languageService, &self._ids) catch |err| {
+            doc = tree.parseDocument(self.allocator, self.textModel, self.languageConfigurationService, &self._ids) catch |err| {
                 self._dirty = true;
                 return err;
             };
         } else {
-            doc = tree.parseDocumentIncremental(self.allocator, self.textModel, self.languageService, self._queuedEdits.items, self._document.?.root, &self._ids) catch blk: {
-                break :blk try tree.parseDocument(self.allocator, self.textModel, self.languageService, &self._ids);
+            doc = tree.parseDocumentIncremental(self.allocator, self.textModel, self.languageConfigurationService, self._queuedEdits.items, self._document.?.root, &self._ids) catch blk: {
+                break :blk try tree.parseDocument(self.allocator, self.textModel, self.languageConfigurationService, &self._ids);
             };
         }
         if (self._document) |*old| old.deinit();
@@ -743,7 +726,7 @@ pub const BracketPairsTextModelPart = struct {
         const offset = self.textModel.getOffsetAt(position);
         for (self._brackets.items) |bracket| {
             if (!bracket.isInvalid or bracket._startOffset < offset) continue;
-            if (isClosingBracketOf(self.languageService, bracket.languageId, openingBracket, bracket.bracketText)) return true;
+            if (isClosingBracketOf(self.languageConfigurationService, bracket.languageId, openingBracket, bracket.bracketText)) return true;
         }
         return false;
     }
@@ -1733,8 +1716,9 @@ pub const BracketPairsTextModelPart = struct {
     // #endregion
 };
 
-fn isClosingBracketOf(service: *LanguageService, languageId: []const u8, openingBracket: []const u8, closingText: []const u8) bool {
-    const config = service.getLanguageConfiguration(languageId) orelse return false;
+fn isClosingBracketOf(service: *LanguageConfigurationService, languageId: []const u8, openingBracket: []const u8, closingText: []const u8) bool {
+    const resolved = service.resolved(languageId) orelse return false;
+    const config = resolved.underlyingConfig;
     // Upstream resolves `brackets` and `colorizedBracketPairs` into one
     // bracket table; a pair can be configured only as colorized.
     if (config.brackets) |brackets| {

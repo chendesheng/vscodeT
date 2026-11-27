@@ -1201,6 +1201,32 @@ test "Helix: mi( and ma( select inside and around brackets" {
     try around.sendChar('(');
     try around.sendChar('d');
     try around.expectValue("f");
+
+    const nested = try Harness.init(std.testing.allocator, "f([a])");
+    defer nested.deinit();
+    try nested.editor.setCursorPosition(Position.init(1, 4));
+    try nested.sendChar('m');
+    try nested.sendChar('i');
+    try nested.sendChar('(');
+    try nested.sendChar('d');
+    try nested.expectValue("f()");
+
+    const multiline = try Harness.init(std.testing.allocator, "f(\n  a\n)");
+    defer multiline.deinit();
+    try multiline.editor.setCursorPosition(Position.init(2, 3));
+    try multiline.sendChar('m');
+    try multiline.sendChar('i');
+    try multiline.sendChar('(');
+    try multiline.sendChar('d');
+    try multiline.expectValue("f()");
+}
+
+test "Helix: mm only matches a bracket under the cursor" {
+    const h = try Harness.init(std.testing.allocator, "f(a)");
+    defer h.deinit();
+    try h.sendChar('m');
+    try h.sendChar('m');
+    try std.testing.expectEqual(@as(usize, 1), h.cursor().column);
 }
 
 test "Helix: mi\" and ma\" select inside and around quotes" {

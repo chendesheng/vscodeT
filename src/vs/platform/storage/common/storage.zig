@@ -34,6 +34,13 @@ pub fn readStateFile(comptime T: type, allocator: Allocator, io: std.Io, path: [
 pub fn writeStateFile(allocator: Allocator, io: std.Io, path: []const u8, value: anytype) !void {
     const bytes = try std.json.Stringify.valueAlloc(allocator, value, .{});
     defer allocator.free(bytes);
+    try writeStateFileRaw(io, path, bytes);
+}
+
+/// Writes an already-serialized state value atomically. Profile-state adapters
+/// that project a raw storage value (for example the extension enablement
+/// keys) use this instead of re-serializing.
+pub fn writeStateFileRaw(io: std.Io, path: []const u8, bytes: []const u8) !void {
     const cwd = std.Io.Dir.cwd();
     if (std.fs.path.dirname(path)) |dir| try cwd.createDirPath(io, dir);
     var atomic = try cwd.createFileAtomic(io, path, .{ .replace = true });

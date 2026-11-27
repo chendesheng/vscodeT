@@ -89,7 +89,7 @@ test "bracket tokenizer: Basic" {
         bracket_map.deinit();
     }
 
-    var tokenizer = Tokenizer.init(allocator, ctx.model, ctx.languageService, &ids, &bracket_map);
+    var tokenizer = Tokenizer.init(allocator, ctx.model, ctx.languageConfigurationService, &ids, &bracket_map);
     defer tokenizer.deinit();
     try tokenizer.tokenize();
 

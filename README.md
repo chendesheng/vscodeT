@@ -388,6 +388,40 @@ for a pre-existing path can be `ADDED`; open editors treat `ADDED` and
 added to `files.watcherExclude`: the patterns are passed to the FSEvents
 stream's exclusion paths and filtered on the worker.
 
+## Extensions side panel
+
+The Extensions activity (`Ctrl-Shift-X`, `View: Show Extensions`) lists the
+local extension inventory in a single combined view: the 87 installed built-in
+extensions plus extensions found in the effective VS Code extensions directory
+(`--extensions-dir`, `VSCODE_EXTENSIONS`, `VSCODE_PORTABLE`, or
+`~/.vscode/extensions`). Rows show the NLS-resolved display name, version,
+origin (`Installed`/`Built-in`) and description; user-installed extensions
+sort first. The search row filters the list with plain text and the upstream
+tokens `@installed`, `@builtin`, `@enabled`, `@disabled`, `category:"…"`,
+`category:-…` and `@id:publisher.name`. `Enter` or a left click opens the
+extension's `package.json`; the row context menu offers Enable/Disable and
+Open Extension.
+
+Enablement is global and persisted in
+`<user-data-dir>/User/globalStorage/extensions.state.json` using upstream's
+profile value shape (`[{"id":"publisher.name"}]`, the
+`extensionsIdentifiers/disabled` key). It applies on the next launch: enabled
+user extensions' declarative contributions (languages, grammars, snippets,
+icon themes, themes, `configurationDefaults`) are loaded at startup, and
+disabled extensions are excluded from the declarative catalog and from the
+executable built-in bundles passed to the Node extension host. The TUI has no
+reload command, so a change shows a restart notification instead of reloading
+in place. `Refresh` (`workbench.extensions.action.refreshExtension`) rescans
+the directories; `Clear Extensions Search Results` is also an F1 command.
+
+Not ported: the marketplace (install/uninstall/update/recommendations),
+extension-details editor, extension icons/ratings/install counts, workspace
+`.vscode/extensions` and development extensions, per-workspace enablement,
+engine-range compatibility checks, and activation of user-installed extension
+JavaScript. A user copy of a built-in id overrides it declaratively, but the
+installed built-in bundle is still what the Node host runs. See
+`docs/extensions.md` for the implementation map.
+
 ## Extension host (experimental)
 
 The workbench half of VS Code's extension system is being ported under
@@ -547,6 +581,10 @@ operations (`mi`/`ma`), and the `:` commands (`:w`, `:q`, `:q!`, `:wq`, `:e`,
 in Zig. Vim and Helix are mutually exclusive: enabling one disables and
 persists the other off. Helix Insert mode uses the regular editor key dispatch
 for suggestions, snippets, auto-closing pairs, and indentation.
+Bracket matching and bracket text objects in both engines use the ported VS
+Code bracket-pair AST, so they honor the language's configured bracket pairs
+and skip brackets inside comments and strings; `< >` text objects require a
+language configuration that declares them.
 See `docs/helix.md` for the supported surface and
 deliberate gaps.
 
@@ -657,10 +695,10 @@ the main log (`<user-data-dir>/logs/main.log`). `test-e2e` is skipped unless
 `host/dist/extensionHost.mjs` and the TypeScript extension fixture are present.
 Caret and selection changes the TUI makes itself (click, drag, TUI-handled
 keys, find) are pushed to the host with upstream's `source` string so Node
-language extensions stay in step. Still missing: the contribution scanner,
-configuration writes, full `tabGroups`, the rest of the built-in command set,
-and the extension keybinding registry. See `docs/extensions.md` for the port
-status and the remaining work.
+language extensions stay in step. Still missing: the command/menu/keybinding
+contribution scanners, configuration writes, full `tabGroups`, the rest of the
+built-in command set, and the extension keybinding registry. See
+`docs/extensions.md` for the port status and the remaining work.
 
 ## WebAssembly demo
 
@@ -981,12 +1019,14 @@ console API for raw mode, sizing and input polling.
     entry. Language override blocks such as `[typescript]` resolve through
     `getValue(..., override_identifier)` but are not projected by a Settings
     UI.
-- Color themes are discovered from the pinned `theme-defaults` extension (all
-  ten built-in themes), then the VS Code profile's extensions folder (later
-  roots win for duplicate theme ids). `src/tui/vscodeProfile.zig` resolves the
-  extensions path with upstream's `--extensions-dir`/`VSCODE_EXTENSIONS`/
-  `VSCODE_PORTABLE` behavior and `extensionsRegistry.scanThemes` parses only
-  `contributes.themes`, so installed languages/grammars are not pulled in. The
+- Color themes are discovered from the enabled declarative extension catalog:
+  the pinned built-ins (including all ten `theme-defaults` themes) followed by
+  user extensions in scan order (later scan order wins for duplicate theme
+  ids). `src/tui/vscodeProfile.zig` resolves the extensions path with
+  upstream's `--extensions-dir`/`VSCODE_EXTENSIONS`/`VSCODE_PORTABLE`
+  behavior, and `extensionsScannerService` loads each enabled extension's
+  languages, grammars, snippets and `configurationDefaults` as well as its
+  themes. The
   setting value is the contributed theme `id` (falling back to its label) and
   `workbench.colorTheme` defaults to `Dark 2026`; the preferred dark/light/HC
   theme settings and `migrateThemeSettingsId` legacy ids are honored.
@@ -1069,9 +1109,10 @@ console API for raw mode, sizing and input polling.
   terminal view (`src/vs/workbench/browser/parts/activitybar/activitybarPart.zig`). The Search activity shows a badge
   dot while matches are present (the exact count is in the panel); the service
   also supports view and global badges. It
-  switches between the Explorer, Search and Source Control containers;
-  Explorer is wired to the file tree, Search to the workspace text-search
-  panel and Source Control to the git SCM view. `Alt-1..3` switches containers
+  switches between the Explorer, Search, Source Control and Extensions
+  containers; Explorer is wired to the file tree, Search to the workspace
+  text-search panel, Source Control to the git SCM view and Extensions to the
+  local extension inventory described below. `Alt-1..4` switches containers
   while the side panel has focus. There is no Settings container: upstream's
   Settings entry is the `workbench.actions.manage` activity-bar gear, an
   action whose Settings item opens the Settings editor as an editor tab, not a
@@ -1079,9 +1120,10 @@ console API for raw mode, sizing and input polling.
   through the `Open User Settings (JSON)` command.
   The model owns order, visibility, the active container and compact width.
   Containers are registered in the ported view-container registry
-  (`src/vs/workbench/common/views.zig`), but there is still no extension
-  contribution point, live Explorer/Search file-change integration, context
-  menu or drag-and-drop.
+  (`src/vs/workbench/common/views.zig`). Extension-*contributed* containers and
+  views are still unsupported; the Extensions container itself is a built-in
+  contribution. Live Explorer/Search file-change integration, context menus
+  and drag-and-drop for tree views are not ported.
   `workbench.activityBar.location` (`default`/`top`/`bottom`/`hidden`),
   `workbench.activityBar.autoHide` and `workbench.activityBar.compact` are read
   from settings (workspace `.vscode/settings.json` or the user setting files).
@@ -1673,7 +1715,10 @@ Bracket-pair colorization:
   unmatched-closing detection. The upstream non-AST fallback matcher is ported
   as well; it is used for documents above the AST length limit. The AST
   is built lazily by visible bracket-guide and colorization queries, subject
-  to upstream’s maximum supported document length.
+  to upstream’s maximum supported document length. The native Vim and Helix
+  engines query this AST for `%`/`mm` and bracket text objects; the tokenizer
+  resolves language configurations through the same resolved configuration
+  service the fallback matcher uses, including the built-in plaintext default.
 - `ColorizedBracketPairsDecorationProvider` turns colorized brackets into
   `bracket-highlighting-N` / `unexpected-closing-bracket` decorations, honoring
   `bracketPairColorizationOptions`. The view resolves them before decorations,

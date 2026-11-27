@@ -2003,17 +2003,21 @@ generic fallback.
 - Configuration writes (`updateValue`), language overrides and
   `ConfigurationTarget`; extension updates are accepted in memory but are not
   persisted to settings files.
-- Persistent storage: `InMemoryStorageService`, in-memory working-copy
-  backups/history, and no disk memento backend, so state does not survive a
-  process restart.
+- General persistent storage: `InMemoryStorageService`, in-memory working-copy
+  backups/history, and no disk memento backend, so most state does not survive
+  a process restart. Extension enablement is the exception: it persists in
+  `<user-data-dir>/User/globalStorage/extensions.state.json` (§18.2).
 - The console logger and URI-keyed logger registry; the terminal has one file
   logger (`src/vs/platform/log/common/fileLog.zig`) and no per-channel log resources.
-- Localization bundles (`nlsBaseUrl` is omitted) and manifest
-  `package.nls.json` localization.
+- Localization bundles (`nlsBaseUrl` is omitted) and locale selection. The
+  extension scanner reads only the default `package.nls.json` for the row
+  display strings and theme labels; contribution-point localization is not
+  ported.
 - Full JSONC/schema validation; only the subset the TUI consumes is
   validated. JSON editing, formatting and visitor services are not ported at all.
-- Full semver ranges; only the subset needed by extension validation and
-  version comparison.
+- Semver ranges. Extension versions are ordered by a numeric/prerelease
+  subset for duplicate-id merging, and `engines.vscode` compatibility is
+  checked for presence only (§18.1).
 - Named-pipe transport and `PersistentProtocol`; the launcher's private
   fd/handle pair is the only transport. On Windows the same frames travel
   over inherited handles rather than POSIX fd numbers.
@@ -2048,6 +2052,120 @@ generic fallback.
 6. **Golden-vector ownership.** Decide whether the capture script lives in
    `build/` or in a separate `tools/` folder. It uses the pinned host's own
    modules, so it must not become a runtime dependency of the editor.
+
+## 18. Extensions side panel and local inventory
+
+The workbench ports the local inventory half of VS Code 1.147.0's Extensions
+viewlet. The marketplace, remote/web extension servers, extension-details
+editor and extension-code activation for user-installed extensions are out of
+scope (see §16).
+
+### 18.1 Scan sources and ownership
+
+`src/vs/platform/extensionManagement/common/extensionsScannerService.zig`
+extends the original location scan:
+
+- `scanExtensionsFromLocation` scans direct child directories (skipping
+  dot-directories for user extensions), parses each `package.json` with JSONC
+  tolerance, and owns the metadata the UI needs: gallery id, name, publisher,
+  version, NLS-resolved `displayName`/`description` from `package.nls.json`,
+  categories and the parsed manifest.
+- A manifest is valid when it has a non-empty `name`, a `version` and an
+  `engines.vscode` string. The engine *range* is not checked; the product
+  version/semver range matcher is not ported.
+- `scanExtensionsFromRoots` preserves the declarative registry's old root
+  behaviour (one extension or a directory of extensions).
+- `scanAllExtensions` scans the installed system location and the effective
+  user location, keeps both slices, and merges them into `all`. A user
+  extension replaces the system entry only when its version is strictly newer;
+  equal versions keep the system entry (upstream `dedupExtensions` for valid
+  manifests). `compareExtensionVersions` in `extensionManagementUtil.zig`
+  implements the numeric/prerelease ordering subset.
+
+`extensionsRegistry.scanDescriptions` consumes those descriptions and extracts
+languages, grammars (with `injectTo`), themes (NLS labels), icon themes,
+snippets and `configurationDefaults` into the registry arena. The manifest is
+parsed once; `scan(roots)` remains as a convenience wrapper for tests and
+one-off roots. The registry's `Extension.is_builtin` now reflects the scanned
+type instead of being hard-coded. The old themes-only `scanThemes` path is
+gone: user themes load through the enabled catalog like every other
+contribution.
+
+### 18.2 Workbench model and enablement
+
+- `src/vs/workbench/services/extensionManagement/common/extensionManagement.zig`
+  ports `EnablementState` and `isEnabledEnablementState`; only
+  `EnabledGlobally`/`DisabledGlobally` are produced.
+- `src/vs/workbench/services/extensionManagement/browser/extensionEnablementService.zig`
+  folds upstream's global `GlobalExtensionEnablementService`/`StorageManager`
+  subset. It receives a narrow `Store` (`load`/`save` raw profile value)
+  instead of the SQLite profile storage service. The value is upstream's
+  `extensionsIdentifiers/disabled` shape: `[{"id":"publisher.name"}]`;
+  comparisons are case-insensitive and a corrupt value loads as empty.
+  Workspace, trust, dependency, bisect and malicious-extension layers are not
+  ported.
+- `src/tui/extensionStateStorage.zig` binds the store to
+  `<user-data-dir>/User/globalStorage/extensions.state.json` with an atomic
+  write.
+- `src/vs/workbench/contrib/extensions/browser/extensionsWorkbenchService.zig`
+  owns the scanned `ModelState` (inventory, `IExtension` view model and the
+  enabled description list). `refresh()` builds the next generation, swaps it
+  in, fires `onChange`, then frees the previous generation so a view that
+  still holds old pointers during the event can rebuild safely. Enablement
+  changes update the model and fire the same event without invalidating the
+  inventory.
+
+### 18.3 Side panel
+
+`contrib/extensions/browser/` ports the viewlet's terminal subset:
+
+- `extensions.contribution.zig` registers the `"extensions"` container (sidebar,
+  order 4, glyph `0xEAE6`) and single view, plus the
+  `workbench.view.extensions` show command, `Refresh` and
+  `Clear Extensions Search Results`.
+- `extensionsViewlet.zig` mounts the view-pane container and its pane
+  callbacks (render/key/mouse/focus/title actions).
+- `extensionsViews.zig` implements the search row (`ui.InputBox`), the list
+  (`ListWidget`), query filtering, selection preservation, context menu and
+  open/enablement actions. `extensionsList.zig` ports the row rendering: two
+  cell rows, generic extension glyph, origin text, disabled dimming.
+- `common/extensionQuery.zig` ports `Query.parse`/`toString`/`isValid`/
+  `containsMcpTerm`/`equals`; autocomplete suggestions need the gallery
+  manifest and are not ported.
+
+Supported filters: plain text over name/display name/description,
+`@installed`, `@builtin`, `@enabled`, `@disabled`, `category:` (quoted and
+case-insensitive, `none` for uncategorized) and `@id:`. Gallery-only tokens
+(`@updates`, `@outdated`, `@recommended`, `@popular`, …) fall through to text
+matching. User-installed entries sort before built-ins, then by display name.
+
+Enable/disable persists immediately but applies on the next launch:
+contributions and extension-host bundle paths are rebuilt from the enablement
+state at startup. The view shows a restart notification; there is no reload
+command. The row menu's Enable/Disable uses the upstream action ids
+`extensions.enableGlobally`/`extensions.disableGlobally` as menu entries; they
+are not palette commands (upstream creates them per row).
+
+### 18.4 Test coverage
+
+Ported/added suites:
+
+- `platform/extensionManagement/test/node/extensionsScannerService.test.zig`:
+  location scan, metadata/NLS, validity, JSONC, system+user merge, roots.
+- `workbench/services/extensions/common/extensionsRegistry.zig` inline tests:
+  user-typed descriptions extract languages/snippets/defaults and report
+  `is_builtin == false`.
+- `workbench/services/extensionManagement/test/browser/extensionEnablementService.test.zig`:
+  the global-enablement cases.
+- `workbench/contrib/extensions/test/common/extensionQuery.test.zig`.
+- `workbench/contrib/extensions/test/electron-browser/extensionsViews.test.zig`:
+  the local query cases adapted to the combined list.
+- `workbench/contrib/extensions/test/electron-browser/extensionsWorkbenchService.test.zig`:
+  inventory, enablement, persistence, refresh.
+- `src/tui/workbench.test.zig`: the panel integration (list, filter, Escape,
+  F1 clear, disable, refresh, open manifest).
+- The upstream browser-only `extensionsViewlet.test.ts` (CSS reflow) has no
+  terminal analog and is intentionally not ported.
 
 ## Appendix A — baseline method inventory (1.147.0)
 

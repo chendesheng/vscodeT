@@ -149,6 +149,7 @@ comptime {
     _ = @import("./vs/editor/common/services/textModelSync/textModelSync.protocol.zig");
     _ = @import("./vs/editor/common/services/findSectionHeaders.zig");
     _ = @import("./vs/editor/common/model/bracketPairsTextModelPart/fixBrackets.zig");
+    _ = @import("./vs/editor/common/model/bracketPairsTextModelPart/bracketTextObjects.zig");
     _ = @import("./vs/editor/common/services/completionsEnablement.zig");
     _ = @import("./vs/editor/common/services/languageFeatureDebounce.zig");
     _ = @import("./vs/editor/common/services/languageService.zig");
@@ -761,6 +762,11 @@ comptime {
     _ = @import("./vs/platform/extensionManagement/common/extensionManagementUtil.zig");
     _ = @import("./vs/platform/extensionManagement/test/node/extensionsScannerService.test.zig");
     _ = @import("./vs/workbench/services/extensions/common/extensionsRegistry.zig");
+    _ = @import("./vs/workbench/contrib/extensions/test/common/extensionQuery.test.zig");
+    _ = @import("./vs/workbench/contrib/extensions/test/electron-browser/extensionsViews.test.zig");
+    _ = @import("./vs/workbench/contrib/extensions/test/electron-browser/extensionsWorkbenchService.test.zig");
+    _ = @import("./vs/workbench/services/extensionManagement/test/browser/extensionEnablementService.test.zig");
+    _ = @import("./tui/extensionStateStorage.zig");
     _ = @import("./vs/workbench/services/language/common/jsonLanguageClient.zig");
     _ = @import("./vs/base/common/stdUri.zig");
     _ = @import("./vs/editor/common/languageSelector.zig");

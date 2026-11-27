@@ -1686,8 +1686,9 @@ Library constraints:
   (`src/vs/workbench/services/activity/browser/activityService.zig`) and the
   terminal view (`src/vs/workbench/browser/parts/activitybar/activitybarPart.zig`). The Search activity shows a badge
   dot while matches are present (the exact count is in the panel); the service
-  also supports view and global badges. It switches fixed Explorer, Search and
-  Source Control containers. There is no Settings container: upstream's
+  also supports view and global badges. It switches fixed Explorer, Search,
+  Source Control and Extensions containers. There is no Settings container:
+  upstream's
   Settings entry is the activity-bar gear action whose Settings item opens the
   Settings editor as an editor tab, not a view container, and the port has no
   Settings editor.
@@ -1696,8 +1697,9 @@ Library constraints:
   order, visibility, the active container and compact width. Containers are
   declared in the ported view-container registry
   (`src/vs/workbench/common/views.zig`) and placed through
-  `ViewDescriptorService`; live file-change refresh, resizing and context
-  menus are not ported, and there is no extension contribution point yet.
+  `ViewDescriptorService`; extension-*contributed* containers/views are still
+  unsupported (the Extensions container is a built-in contribution), and live
+  file-change refresh, resizing and tree context menus are not ported.
   `workbench.activityBar.location` (`default`/`top`/`bottom`/`hidden`),
   `workbench.activityBar.autoHide` and `workbench.activityBar.compact` are
   applied by `LayoutSettingsValues` in
