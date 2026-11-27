@@ -27,6 +27,8 @@ const OperationSink = struct {
     resource: [256]u8 = undefined,
     resource_len: usize = 0,
     target_is_directory: bool = false,
+    target_resource: [256]u8 = undefined,
+    target_resource_len: usize = 0,
 
     fn callback(event: FileOperationEvent, self: *OperationSink) anyerror!void {
         self.count += 1;
@@ -35,6 +37,12 @@ const OperationSink = struct {
         @memcpy(self.resource[0..length], event.resource[0..length]);
         self.resource_len = length;
         self.target_is_directory = if (event.target) |target| target.isDirectory() else false;
+        self.target_resource_len = 0;
+        if (event.target) |target| {
+            const target_len = @min(target.resource.len, self.target_resource.len);
+            @memcpy(self.target_resource[0..target_len], target.resource[0..target_len]);
+            self.target_resource_len = target_len;
+        }
     }
 
     fn resourcePath(self: *const OperationSink) []const u8 {
@@ -366,4 +374,42 @@ test "in-memory file service: provider open/write appends large buffers" {
     try testing.expectEqualSlices(u8, prefix[0..64], content.bytes[0..64]);
     try testing.expectEqualSlices(u8, suffix[0..64], content.bytes[prefix.len .. prefix.len + 64]);
     try testing.expectEqualSlices(u8, suffix[suffix.len - 64 ..], content.bytes[content.bytes.len - 64 ..]);
+}
+
+test "FileService: typed URI mutations preserve escaped names and operation identity" {
+    const a = testing.allocator;
+    var fixture: Fixture = undefined;
+    try fixture.init(a);
+    defer fixture.deinit();
+    const service = fixture.service.interface();
+    var sink: OperationSink = .{};
+    _ = try fixture.service.listenOperation(&sink, OperationSink.callback);
+    const source = try std.Uri.parse("inmemory:/examples/new%20dir/a%23b.txt");
+    const renamed = try std.Uri.parse("inmemory:/other/renamed%20file.txt");
+    const copied = try std.Uri.parse("inmemory:/third/copied%23file.txt");
+    try service.writeFile(source, "contents", .{ .create = true, .overwrite = false });
+    try testing.expectEqual(FileOperation.WRITE, sink.operation.?);
+    try testing.expectEqualStrings("inmemory:/examples/new%20dir/a%23b.txt", sink.resourcePath());
+    try testing.expectEqual(@as(u64, 8), (try service.stat(source)).size);
+    try testing.expectError(error.FileExists, service.writeFile(source, "second", .{ .create = true, .overwrite = false }));
+    const original = try service.readFile(a, source);
+    defer a.free(original);
+    try testing.expectEqualStrings("contents", original);
+    try service.move(source, renamed, false);
+    try testing.expectError(error.FileNotFound, service.stat(source));
+    try testing.expectEqual(FileOperation.MOVE, sink.operation.?);
+    try testing.expectEqualStrings("inmemory:/examples/new%20dir/a%23b.txt", sink.resourcePath());
+    try testing.expectEqualStrings("inmemory:/other/renamed%20file.txt", sink.target_resource[0..sink.target_resource_len]);
+    try service.copy(renamed, copied, false);
+    const data = try service.readFile(a, copied);
+    defer a.free(data);
+    try testing.expectEqualStrings("contents", data);
+    try testing.expectEqualStrings("inmemory:/other/renamed%20file.txt", sink.resourcePath());
+    try testing.expectEqualStrings("inmemory:/third/copied%23file.txt", sink.target_resource[0..sink.target_resource_len]);
+    try service.del(copied, .{});
+    try testing.expectError(error.FileNotFound, service.stat(copied));
+    const folder = try std.Uri.parse("inmemory:/third/deep%20folder/child");
+    try service.createFolder(folder);
+    try testing.expect(files.FileType.isDirectory((try service.stat(folder)).type));
+    try testing.expect(sink.target_is_directory);
 }

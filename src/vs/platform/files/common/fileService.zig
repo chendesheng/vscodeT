@@ -415,6 +415,30 @@ pub const ProviderFileService = struct {
                 const service: *ProviderFileService = @ptrCast(@alignCast(context));
                 return service.statUri(resource);
             }
+            fn read(context: *anyopaque, allocator: Allocator, resource: std.Uri) ![]u8 {
+                const service: *ProviderFileService = @ptrCast(@alignCast(context));
+                return service.readFileUri(allocator, resource);
+            }
+            fn write(context: *anyopaque, resource: std.Uri, contents: []const u8, options: files.IFileWriteOptions) !void {
+                const service: *ProviderFileService = @ptrCast(@alignCast(context));
+                try service.writeFileUri(resource, contents, options);
+            }
+            fn createFolder(context: *anyopaque, resource: std.Uri) !void {
+                const service: *ProviderFileService = @ptrCast(@alignCast(context));
+                try service.createFolderUri(resource);
+            }
+            fn del(context: *anyopaque, resource: std.Uri, options: files.IFileDeleteOptions) !void {
+                const service: *ProviderFileService = @ptrCast(@alignCast(context));
+                try service.deleteUri(resource, options);
+            }
+            fn move(context: *anyopaque, from: std.Uri, to: std.Uri, overwrite: bool) !void {
+                const service: *ProviderFileService = @ptrCast(@alignCast(context));
+                try service.moveUri(from, to, overwrite);
+            }
+            fn copy(context: *anyopaque, from: std.Uri, to: std.Uri, overwrite: bool) !void {
+                const service: *ProviderFileService = @ptrCast(@alignCast(context));
+                try service.copyUri(from, to, overwrite);
+            }
         };
         return .{
             .context = self,
@@ -422,6 +446,12 @@ pub const ProviderFileService = struct {
             .has_provider = Adapter.has,
             .capture_read = Adapter.capture,
             .stat_uri = Adapter.stat,
+            .read_uri = Adapter.read,
+            .write_uri = Adapter.write,
+            .create_folder_uri = Adapter.createFolder,
+            .delete_uri = Adapter.del,
+            .move_uri = Adapter.move,
+            .copy_uri = Adapter.copy,
             .on_did_files_change = &self.on_did_files_change,
         };
     }
@@ -439,6 +469,122 @@ pub const ProviderFileService = struct {
         defer arena.deinit();
         const path = try @import("../../../base/common/stdUri.zig").fsPath(resource, arena.allocator());
         return provider.getStat(path);
+    }
+
+    // Resource operations decode the URI only at the provider boundary,
+    // preserving escaped filenames and scheme identity across the service.
+    const uri_util = @import("../../../base/common/stdUri.zig");
+
+    pub fn readFileUri(self: *ProviderFileService, allocator: Allocator, resource: std.Uri) ![]u8 {
+        const provider = self.providers.get(resource.scheme) orelse return error.ProviderUnavailable;
+        if (try self.captureRead(resource)) |request| {
+            defer request.destroy(request.context);
+            const data = try request.read(request.context, allocator);
+            errdefer allocator.free(data);
+            if (request.complete) |publish| try publish(request.context);
+            return data;
+        }
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const path = try uri_util.fsPath(resource, arena.allocator());
+        const data = try provider.readFile(path);
+        defer self.allocator.free(data);
+        return allocator.dupe(u8, data);
+    }
+
+    fn mkdirp(provider: files.IFileSystemProvider, path: []const u8) !void {
+        if (provider.getStat(path)) |stat_info| {
+            if (!files.FileType.isDirectory(stat_info.type)) return error.FileNotADirectory;
+            return;
+        } else |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        }
+        if (std.fs.path.dirname(path)) |parent| if (parent.len > 0 and !std.mem.eql(u8, parent, path)) try mkdirp(provider, parent);
+        try provider.makeDirectory(path);
+    }
+
+    pub fn writeFileUri(self: *ProviderFileService, resource: std.Uri, content: []const u8, options: files.IFileWriteOptions) !void {
+        const provider = self.providers.get(resource.scheme) orelse return error.ProviderUnavailable;
+        try ensureWritable(provider);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const path = try uri_util.fsPath(resource, arena.allocator());
+        if (options.create) if (std.fs.path.dirname(path)) |parent| if (parent.len > 0) try mkdirp(provider, parent);
+        try provider.writeFile(path, content, options);
+        try self.fireUriOperation(.WRITE, resource, resource);
+    }
+
+    pub fn createFolderUri(self: *ProviderFileService, resource: std.Uri) !void {
+        const provider = self.providers.get(resource.scheme) orelse return error.ProviderUnavailable;
+        try ensureWritable(provider);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        try mkdirp(provider, try uri_util.fsPath(resource, arena.allocator()));
+        try self.fireUriOperation(.CREATE, resource, resource);
+    }
+
+    pub fn deleteUri(self: *ProviderFileService, resource: std.Uri, options: files.IFileDeleteOptions) !void {
+        const provider = self.providers.get(resource.scheme) orelse return error.ProviderUnavailable;
+        try ensureWritable(provider);
+        if (options.useTrash and provider.getCapabilities() & files.FileSystemProviderCapabilities.Trash == 0) return error.TrashUnavailable;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        try provider.deleteResource(try uri_util.fsPath(resource, arena.allocator()), options);
+        try self.fireUriOperation(.DELETE, resource, null);
+    }
+
+    pub fn moveUri(self: *ProviderFileService, from: std.Uri, to: std.Uri, overwrite: bool) !void {
+        const source = self.providers.get(from.scheme) orelse return error.ProviderUnavailable;
+        const target = self.providers.get(to.scheme) orelse return error.ProviderUnavailable;
+        try ensureWritable(source);
+        try ensureWritable(target);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const old_path = try uri_util.fsPath(from, a);
+        const new_path = try uri_util.fsPath(to, a);
+        if (std.fs.path.dirname(new_path)) |parent| if (parent.len > 0) try mkdirp(target, parent);
+        if (source.context == target.context) {
+            try source.renameResource(old_path, new_path, .{ .overwrite = overwrite });
+        } else {
+            try self.copyResource(source, old_path, target, new_path, overwrite);
+            try source.deleteResource(old_path, .{ .recursive = true });
+        }
+        try self.fireUriOperation(.MOVE, from, to);
+    }
+
+    pub fn copyUri(self: *ProviderFileService, from: std.Uri, to: std.Uri, overwrite: bool) !void {
+        const source = self.providers.get(from.scheme) orelse return error.ProviderUnavailable;
+        const target = self.providers.get(to.scheme) orelse return error.ProviderUnavailable;
+        try ensureWritable(target);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const old_path = try uri_util.fsPath(from, a);
+        const new_path = try uri_util.fsPath(to, a);
+        if (std.fs.path.dirname(new_path)) |parent| if (parent.len > 0) try mkdirp(target, parent);
+        try self.copyResource(source, old_path, target, new_path, overwrite);
+        try self.fireUriOperation(.COPY, from, to);
+    }
+
+    fn fireUriOperation(self: *ProviderFileService, operation: files.FileOperation, source: std.Uri, target_uri: ?std.Uri) !void {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const encoded = try uri_util.encodedResource(a, source);
+        const target: ?files.FileStat = if (target_uri) |uri| blk: {
+            const stat_info = self.statUri(uri) catch break :blk null;
+            break :blk .{
+                .resource = try uri_util.encodedResource(a, uri),
+                .name = resourceBasename(try uri_util.fsPath(uri, a)),
+                .type = stat_info.type,
+                .size = stat_info.size,
+                .ctime = @intCast(@max(0, stat_info.ctime)),
+                .mtime = @intCast(@max(0, stat_info.mtime)),
+            };
+        } else null;
+        try self.on_did_run_operation.fire(.{ .operation = operation, .resource = encoded, .target = target });
     }
 
     pub fn listenFilesChange(self: *ProviderFileService, context: anytype, callback: fn (files.FileChangesEvent, @TypeOf(context)) anyerror!void) !usize {

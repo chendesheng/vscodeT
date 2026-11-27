@@ -479,7 +479,7 @@ const Emitter = @import("../../../base/common/event.zig").Emitter;
 const instantiation = @import("../../instantiation/common/instantiation.zig");
 pub const file_service_id = instantiation.ServiceIdentifier(IFileService, "fileService");
 
-/// The URI registration and read surface of upstream IFileService. Native
+/// The URI registration and resource operation surface of upstream IFileService. Native
 /// consumers capture requests rather than invoking a blocking provider from
 /// the window or moving a mutable provider into a worker.
 pub const IFileService = struct {
@@ -488,6 +488,12 @@ pub const IFileService = struct {
     has_provider: *const fn (*anyopaque, std.Uri) bool,
     capture_read: *const fn (*anyopaque, std.Uri) anyerror!?FileReadRequest,
     stat_uri: *const fn (*anyopaque, std.Uri) anyerror!IStat,
+    read_uri: *const fn (*anyopaque, Allocator, std.Uri) anyerror![]u8,
+    write_uri: *const fn (*anyopaque, std.Uri, []const u8, IFileWriteOptions) anyerror!void,
+    create_folder_uri: *const fn (*anyopaque, std.Uri) anyerror!void,
+    delete_uri: *const fn (*anyopaque, std.Uri, IFileDeleteOptions) anyerror!void,
+    move_uri: *const fn (*anyopaque, std.Uri, std.Uri, bool) anyerror!void,
+    copy_uri: *const fn (*anyopaque, std.Uri, std.Uri, bool) anyerror!void,
     on_did_files_change: *Emitter(FileChangesEvent),
 
     pub fn registerProvider(self: IFileService, scheme: []const u8, provider: IFileSystemProvider) !IDisposable {
@@ -504,6 +510,25 @@ pub const IFileService = struct {
 
     pub fn stat(self: IFileService, resource: std.Uri) !IStat {
         return self.stat_uri(self.context, resource);
+    }
+
+    pub fn readFile(self: IFileService, allocator: Allocator, resource: std.Uri) ![]u8 {
+        return self.read_uri(self.context, allocator, resource);
+    }
+    pub fn writeFile(self: IFileService, resource: std.Uri, content: []const u8, options: IFileWriteOptions) !void {
+        try self.write_uri(self.context, resource, content, options);
+    }
+    pub fn createFolder(self: IFileService, resource: std.Uri) !void {
+        try self.create_folder_uri(self.context, resource);
+    }
+    pub fn del(self: IFileService, resource: std.Uri, options: IFileDeleteOptions) !void {
+        try self.delete_uri(self.context, resource, options);
+    }
+    pub fn move(self: IFileService, from: std.Uri, to: std.Uri, overwrite: bool) !void {
+        try self.move_uri(self.context, from, to, overwrite);
+    }
+    pub fn copy(self: IFileService, from: std.Uri, to: std.Uri, overwrite: bool) !void {
+        try self.copy_uri(self.context, from, to, overwrite);
     }
 };
 
