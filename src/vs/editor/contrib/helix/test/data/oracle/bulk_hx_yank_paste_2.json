@@ -24,6 +24,12 @@
         2,
         6
       ],
+      "cursors": [
+        [
+          2,
+          6
+        ]
+      ],
       "mode": "normal",
       "selection_count": 1,
       "selections": [
@@ -41,5 +47,6 @@
       "text": "alpha\nalpha\nbeta\ngamma\ndelta\n"
     }
   ],
-  "width": 60
+  "width": 60,
+  "assert_cursors": false
 }

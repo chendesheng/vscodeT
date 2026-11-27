@@ -23,6 +23,12 @@
         1,
         1
       ],
+      "cursors": [
+        [
+          1,
+          1
+        ]
+      ],
       "mode": "normal",
       "selection_count": 1,
       "selections": [
@@ -40,5 +46,6 @@
       "text": "2\n3\n4\n"
     }
   ],
-  "width": 60
+  "width": 60,
+  "assert_cursors": false
 }

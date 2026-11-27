@@ -232,8 +232,19 @@ yet. See [scripts/oracle/README.md](../scripts/oracle/README.md) for the
 
 Cassettes whose reference text/mode/count match but whose cursor placement does
 not (insert/change after `<Esc>`, undo, paste) set `assert_cursor: false` and a
-`cursor_gap` reason; the edit itself is still asserted. The first corpus also
-documents, by exclusion, known gaps in word motion/count cursor placement,
-select-mode delete behavior, line-extend deletion and undo cursor restoration.
-Those need engine fixes before their reference cases can be committed without a
-gap.
+`cursor_gap` reason; the edit itself is still asserted. Generated variants that
+cannot yet assert cursor or the full cursor set set `assert_cursors: false`.
+Multi-cursor cases seed `seed.cursors` (a set of 1-based line/byte positions)
+and assert the recorded `state.cursors` set, `selection_count`, text and mode.
+The suite currently has six multi-cursor cases (insert, append, change, delete,
+text object and yank/paste across three cursors).
+
+Tutor coverage is tracked explicitly. Covered: basic `hjkl`, character and
+multi-cursor deletion, insert/append/open variants, line selection/delete,
+change, replace, text objects, registers, surround, search selection, and
+multi-cursor edits. Still uncovered or known-divergent: select/extend and
+collapse mode, counts with cursor assertions, undo cursor restoration, copy
+selection to next line (`C`), split selections on lines, regex selection,
+join/indent/increment, macros, match mode, comments, and the window/split
+chapters. Those are engine gaps or UI-only features, not silently skipped
+requirements.

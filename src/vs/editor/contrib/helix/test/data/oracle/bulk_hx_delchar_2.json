@@ -22,6 +22,12 @@
         1,
         1
       ],
+      "cursors": [
+        [
+          1,
+          1
+        ]
+      ],
       "mode": "normal",
       "selection_count": 1,
       "selections": [
@@ -39,5 +45,6 @@
       "text": "ne two\n"
     }
   ],
-  "width": 60
+  "width": 60,
+  "assert_cursors": false
 }

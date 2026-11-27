@@ -82,22 +82,24 @@ fn runCase(case: oracle.Case) !void {
     const actual_count = try harness.selectionCount();
     const expected_count = state.selection_count orelse 1;
     var cursors_match = true;
-    if (state.cursors) |expected_cursors| {
-        const actual_cursors = try harness.cursors(std.testing.allocator);
-        defer std.testing.allocator.free(actual_cursors);
-        const expected_sorted = try std.testing.allocator.dupe(oracle.Cursor, expected_cursors);
-        defer std.testing.allocator.free(expected_sorted);
-        std.mem.sort(oracle.Cursor, expected_sorted, {}, cursorLessThan);
-        const actual_sorted = try std.testing.allocator.dupe(Position, actual_cursors);
-        defer std.testing.allocator.free(actual_sorted);
-        std.mem.sort(Position, actual_sorted, {}, positionLessThan);
-        if (expected_sorted.len != actual_sorted.len) {
-            cursors_match = false;
-        } else {
-            for (expected_sorted, actual_sorted) |expected, actual| {
-                if (expected[0] != actual.lineNumber or expected[1] != actual.column) {
-                    cursors_match = false;
-                    break;
+    if (case.assert_cursors) {
+        if (state.cursors) |expected_cursors| {
+            const actual_cursors = try harness.cursors(std.testing.allocator);
+            defer std.testing.allocator.free(actual_cursors);
+            const expected_sorted = try std.testing.allocator.dupe(oracle.Cursor, expected_cursors);
+            defer std.testing.allocator.free(expected_sorted);
+            std.mem.sort(oracle.Cursor, expected_sorted, {}, cursorLessThan);
+            const actual_sorted = try std.testing.allocator.dupe(Position, actual_cursors);
+            defer std.testing.allocator.free(actual_sorted);
+            std.mem.sort(Position, actual_sorted, {}, positionLessThan);
+            if (expected_sorted.len != actual_sorted.len) {
+                cursors_match = false;
+            } else {
+                for (expected_sorted, actual_sorted) |expected, actual| {
+                    if (expected[0] != actual.lineNumber or expected[1] != actual.column) {
+                        cursors_match = false;
+                        break;
+                    }
                 }
             }
         }

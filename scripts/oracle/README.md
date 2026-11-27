@@ -64,8 +64,11 @@ Vim and 127 Helix cassettes). Generated variants assert text, final mode and,
 for Helix, selection count; the curated subset also asserts cursor. A cassette
 may set `"assert_cursor": false` with a `"cursor_gap"` explanation when the
 reference cursor representation does not map onto the native engine yet; text,
-mode and selection count are still asserted. Vim visual ranges, Helix selection
-ranges, and registers are recorded where easy but are not asserted yet.
+mode and selection count are still asserted. Multi-cursor Helix seeds use
+`seed.cursors` and assert the recorded `state.cursors` set; `assert_cursors`
+can be disabled for known cursor-placement gaps. Vim visual ranges, Helix
+selection ranges, and registers are recorded where easy but are not asserted
+yet.
 Unicode, tabs, soft wrap, prompts, and tree-sitter text objects are outside the
 first corpus.
 

@@ -1,17 +1,8 @@
 {
-  "schema": 1,
-  "engine": "helix",
-  "reference": "helix",
-  "reference_version": "helix 25.07.1",
+  "assert_cursor": false,
   "case": "tutor_register",
-  "width": 60,
-  "seed": {
-    "text": "one\ntwo\n",
-    "cursor": [
-      1,
-      1
-    ]
-  },
+  "cursor_gap": "cursor after register paste differs; text/mode/count asserted",
+  "engine": "helix",
   "keys": [
     "x",
     "\"",
@@ -21,7 +12,45 @@
     "a",
     "p"
   ],
-  "states": [],
-  "assert_cursor": false,
-  "cursor_gap": "cursor after register paste differs; text/mode/count asserted"
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      1
+    ],
+    "text": "one\ntwo\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        2,
+        4
+      ],
+      "cursors": [
+        [
+          2,
+          4
+        ]
+      ],
+      "mode": "normal",
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            2,
+            1
+          ],
+          "head": [
+            3,
+            1
+          ]
+        }
+      ],
+      "text": "one\none\ntwo\n"
+    }
+  ],
+  "width": 60,
+  "assert_cursors": false
 }

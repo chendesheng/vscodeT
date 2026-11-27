@@ -1,12 +1,15 @@
 {
-  "schema": 1,
+  "assert_cursor": false,
+  "case": "tutor_multi_delete",
+  "cursor_gap": "multi-cursor primary cursor is not asserted; cursor set is",
   "engine": "helix",
+  "keys": [
+    "d"
+  ],
   "reference": "helix",
   "reference_version": "helix 25.07.1",
-  "case": "tutor_multi_delete",
-  "width": 60,
+  "schema": 1,
   "seed": {
-    "text": "abc abc abc\n",
     "cursor": [
       1,
       1
@@ -24,12 +27,65 @@
         1,
         9
       ]
-    ]
+    ],
+    "text": "abc abc abc\n"
   },
-  "keys": [
-    "d"
+  "states": [
+    {
+      "cursor": [
+        1,
+        1
+      ],
+      "cursors": [
+        [
+          1,
+          1
+        ],
+        [
+          1,
+          4
+        ],
+        [
+          1,
+          7
+        ]
+      ],
+      "mode": "normal",
+      "selection_count": 3,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            1
+          ],
+          "head": [
+            1,
+            2
+          ]
+        },
+        {
+          "anchor": [
+            1,
+            4
+          ],
+          "head": [
+            1,
+            5
+          ]
+        },
+        {
+          "anchor": [
+            1,
+            7
+          ],
+          "head": [
+            1,
+            8
+          ]
+        }
+      ],
+      "text": "bc bc bc\n"
+    }
   ],
-  "states": [],
-  "assert_cursor": false,
-  "cursor_gap": "multi-cursor primary cursor is not asserted; cursor set is"
+  "width": 60
 }

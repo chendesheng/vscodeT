@@ -24,6 +24,12 @@
         1,
         7
       ],
+      "cursors": [
+        [
+          1,
+          7
+        ]
+      ],
       "mode": "normal",
       "selection_count": 1,
       "selections": [
@@ -41,5 +47,6 @@
       "text": "helloX\n"
     }
   ],
-  "width": 60
+  "width": 60,
+  "assert_cursors": false
 }

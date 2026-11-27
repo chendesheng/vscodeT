@@ -1,12 +1,18 @@
 {
-  "schema": 1,
+  "assert_cursor": false,
+  "case": "tutor_multi_textobj",
+  "cursor_gap": "multi-cursor primary cursor is not asserted; cursor set is",
   "engine": "helix",
+  "keys": [
+    "m",
+    "i",
+    "w",
+    "d"
+  ],
   "reference": "helix",
   "reference_version": "helix 25.07.1",
-  "case": "tutor_multi_textobj",
-  "width": 60,
+  "schema": 1,
   "seed": {
-    "text": "one two three\n",
     "cursor": [
       1,
       1
@@ -24,15 +30,65 @@
         1,
         9
       ]
-    ]
+    ],
+    "text": "one two three\n"
   },
-  "keys": [
-    "m",
-    "i",
-    "w",
-    "d"
+  "states": [
+    {
+      "cursor": [
+        1,
+        1
+      ],
+      "cursors": [
+        [
+          1,
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          1,
+          3
+        ]
+      ],
+      "mode": "normal",
+      "selection_count": 3,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            1
+          ],
+          "head": [
+            1,
+            2
+          ]
+        },
+        {
+          "anchor": [
+            1,
+            2
+          ],
+          "head": [
+            1,
+            3
+          ]
+        },
+        {
+          "anchor": [
+            1,
+            3
+          ],
+          "head": [
+            2,
+            1
+          ]
+        }
+      ],
+      "text": "  \n"
+    }
   ],
-  "states": [],
-  "assert_cursor": false,
-  "cursor_gap": "multi-cursor primary cursor is not asserted; cursor set is"
+  "width": 60
 }

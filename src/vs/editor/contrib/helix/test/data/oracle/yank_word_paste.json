@@ -24,6 +24,12 @@
         1,
         8
       ],
+      "cursors": [
+        [
+          1,
+          8
+        ]
+      ],
       "mode": "normal",
       "selection_count": 1,
       "selections": [
@@ -41,5 +47,6 @@
       "text": "one one two\n"
     }
   ],
-  "width": 60
+  "width": 60,
+  "assert_cursors": false
 }

@@ -24,6 +24,12 @@
         1,
         16
       ],
+      "cursors": [
+        [
+          1,
+          16
+        ]
+      ],
       "mode": "normal",
       "selection_count": 1,
       "selections": [
@@ -41,5 +47,6 @@
       "text": "red green blueX\n"
     }
   ],
-  "width": 60
+  "width": 60,
+  "assert_cursors": false
 }
