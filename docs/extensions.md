@@ -2010,6 +2010,13 @@ locations/commands. Right-click symbol-navigation menus, target-location hover
 and full upstream controller fidelity remain outstanding; the
 full advertised ZLS capability matrix is not yet verified.
 
+The mandatory `lsp-language-features` fixture starts the real pinned
+`vscode-languageclient` against a deterministic stdio mock language server.
+It verifies the advertised Zig-capability provider paths, optional semantic
+updates and inlay resolve, diagnostic publication, workspace/configuration,
+file events, progress, nested workspace edits, and save edits reaching disk.
+It runs in `zig build test-e2e` without installed Zig extension/ZLS assets.
+
 ## 16. Deferred / explicit limitations
 
 - Electron transport, `PersistentProtocol`, socket reconnection.

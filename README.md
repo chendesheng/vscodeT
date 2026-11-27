@@ -511,7 +511,9 @@ Inlay hints display themed, tracked injected text, support provider resolution
 and hover, and navigate on modifier-click without modifying document text. The
 negotiated capabilities are recorded in
 [the reference capture](docs/zig-zls-reference-capabilities.json). The full LSP capability matrix
-is still in progress; see [the integration plan](docs/zig-extension-lsp-plan.md).
+is still in progress; see [the integration plan](docs/zig-extension-lsp-plan.md). The default end-to-end suite also
+runs a real `vscode-languageclient` against a deterministic mock LSP server,
+including nested save and workspace edits.
 
 `zig build json-server` builds and installs the optional standalone JSON server.
 The intermediate bundles under `host/dist` are also used by the repository's

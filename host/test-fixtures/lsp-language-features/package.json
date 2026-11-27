@@ -1,0 +1,41 @@
+{
+  "name": "lsp-language-features-fixture",
+  "publisher": "vscode-textbuffer",
+  "version": "1.0.0",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "*"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "fixture.lsp.status",
+        "title": "Mock LSP Status"
+      },
+      {
+        "command": "fixture.lsp.applyEdit",
+        "title": "Mock LSP Workspace Edit"
+      },
+      {
+        "command": "fixture.lsp.progress",
+        "title": "Mock LSP Progress"
+      },
+      {
+        "command": "fixture.lsp.updateConfiguration",
+        "title": "Mock LSP Configuration Update"
+      }
+    ],
+    "configuration": {
+      "title": "Mock LSP",
+      "properties": {
+        "lspFixture.value": {
+          "type": "string",
+          "default": "default"
+        }
+      }
+    }
+  }
+}

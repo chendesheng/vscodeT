@@ -3219,6 +3219,425 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(!model.hasCompleteSemanticTokens());
         }
 
+        test "Extensions: real vscode-languageclient negotiates mock LSP and applies nested save and workspace edits" {
+            if (!build_options.e2e) return error.SkipZigTest;
+            const allocator = std.testing.allocator;
+            const io = time_compat.io;
+            try std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{});
+            try std.Io.Dir.cwd().access(io, "host/test-fixtures/lsp-language-features/package.json", .{});
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+            defer allocator.free(root);
+            const path = try std.fs.path.join(allocator, &.{ root, "mock.txt" });
+            defer allocator.free(path);
+            const settings_path = try std.fs.path.join(allocator, &.{ root, "settings.json" });
+            defer allocator.free(settings_path);
+            try tmp.dir.writeFile(io, .{ .sub_path = "mock.txt", .data = "alpha(1)\n  beta\n}\n" });
+            try tmp.dir.writeFile(io, .{ .sub_path = "settings.json", .data = "{\"lspFixture.value\":\"fixture setting\",\"workbench.colorTheme\":\"Mock LSP Semantic Theme\",\"editor.semanticHighlighting.enabled\":true}" });
+            try tmp.dir.writeFile(io, .{ .sub_path = "theme.json", .data = "{\"semanticHighlighting\":true,\"semanticTokenColors\":{\"*\":{\"foreground\":\"#12ab34\",\"bold\":true}}}" });
+            const window = try TestWindow.initWithOptions(allocator, io, &.{}, 100, 30, .{ .initial_user_settings_paths = &.{settings_path} }, null);
+            defer window.deinit();
+            const workbench = window.workbench;
+            try workbench.setWorkspaceFolders(&.{root});
+            try workbench.openPath(path);
+            try workbench.enableLanguageFeatures();
+            try workbench.registerThemeSources(&.{.{ .root = root, .id = "Mock LSP Semantic Theme", .settings_id = "Mock LSP Semantic Theme", .label = "Mock LSP Semantic Theme", .ui_theme = "vs-dark", .path = "theme.json" }});
+            workbench.applyThemeSettings();
+            const extension_host = try Extensions.init(allocator, io, workbench.extensionHostServices(), &.{.{ .path = "host/test-fixtures/lsp-language-features", .is_under_development = true }}, ".cache-ext/mock-languageclient", "host/dist");
+            defer extension_host.deinit();
+            const model = workbench.activeTab().?.editor.model;
+            const editor = workbench.activeTab().?.editor;
+            const features = workbench.language_features.?;
+            const startup = time_compat.milliTimestamp() + 20000;
+            while (time_compat.milliTimestamp() < startup) {
+                _ = extension_host.pump();
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                if (extension_host.activated and features.signature_help_provider.has(model) and features.rename_provider.has(model) and features.inlay_hints_provider.has(model) and features.document_semantic_tokens_provider.has(model)) break;
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(extension_host.activated);
+            try std.testing.expect(features.hover_provider.has(model));
+            try std.testing.expect(features.completion_provider.has(model));
+            try std.testing.expect(features.signature_help_provider.has(model));
+            try std.testing.expect(features.definition_provider.has(model) and features.declaration_provider.has(model) and features.type_definition_provider.has(model));
+            try std.testing.expect(features.reference_provider.has(model) and features.document_highlight_provider.has(model) and features.document_symbol_provider.has(model));
+            try std.testing.expect(features.code_action_provider.has(model) and features.document_formatting_edit_provider.has(model));
+            try std.testing.expect(features.rename_provider.has(model) and features.folding_range_provider.has(model) and features.selection_range_provider.has(model));
+            try std.testing.expect(features.document_semantic_tokens_provider.has(model) and features.document_range_semantic_tokens_provider.has(model) and features.inlay_hints_provider.has(model));
+
+            const MockCommand = struct {
+                arena: Allocator,
+                reply: ?std.json.Value = null,
+                failed: bool = false,
+                fn ready(context: *anyopaque, result: rpc.Reply) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    if (result == .json) self.reply = rpc.cloneJsonValue(self.arena, result.json) catch {
+                        self.failed = true;
+                        return;
+                    } else self.failed = true;
+                }
+                fn call(a: Allocator, wb: *terminal_window_type, host: *Extensions, command: []const u8) !std.json.Value {
+                    var receiver: @This() = .{ .arena = a };
+                    const request = try Extensions.requestActorAsync(host, protocol.ExtHostContext.ExtHostCommands, "$executeContributedCommand", &.{.{ .json = .{ .string = command } }}, .{ .context = &receiver, .callback = ready });
+                    const deadline = time_compat.milliTimestamp() + 10000;
+                    while (receiver.reply == null and !receiver.failed and time_compat.milliTimestamp() < deadline) {
+                        _ = host.pump();
+                        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                        time_compat.sleepMillis(5);
+                    }
+                    if (receiver.reply == null and !receiver.failed) request.dispose();
+                    return receiver.reply orelse error.MockLspCommandFailed;
+                }
+            };
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            const status = try MockCommand.call(a, workbench, extension_host, "fixture.lsp.status");
+            try std.testing.expect(status == .object);
+            try std.testing.expect(status.object.get("initial").? == .object);
+            try std.testing.expect(status.object.get("folders").?.array.items.len == 1);
+            const mock_configuration = status.object.get("configuration") orelse return error.MockConfigurationMissing;
+            try std.testing.expectEqualStrings("fixture setting", mock_configuration.object.get("value").?.string);
+            var resource = try @import("../../../platform/markers/common/markers.zig").Resource.fromUri(allocator, model.uri());
+            defer resource.deinit(allocator);
+            const diagnostic_deadline = time_compat.milliTimestamp() + 5000;
+            var diagnostic_found = false;
+            while (!diagnostic_found and time_compat.milliTimestamp() < diagnostic_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                const markers = try workbench.marker_service.?.read(a, .{ .resource = resource });
+                for (markers) |marker| if (std.mem.eql(u8, marker.message, "Mock diagnostic")) {
+                    diagnostic_found = true;
+                    break;
+                };
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(diagnostic_found);
+
+            const Deferred = struct {
+                highlight_count: ?usize = null,
+                completion_item: ?@import("../../../editor/common/languages/completion.zig").CompletionItem = null,
+                symbol_name: ?[]const u8 = null,
+                fn completions(context: *anyopaque, _: *anyopaque, result: anyerror!@import("../../../editor/common/languages/completion.zig").CompletionList) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    if (result) |list| {
+                        for (list.items) |item| if (std.mem.eql(u8, item.label, "mockCompletion")) {
+                            self.completion_item = item;
+                            break;
+                        };
+                    } else |_| {}
+                }
+                fn highlights(context: *anyopaque, result: anyerror!?[]const @import("../../../editor/common/languages.zig").DocumentHighlight) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    self.highlight_count = if (result) |value| if (value) |items| items.len else 0 else |_| 0;
+                }
+                fn symbols(context: *anyopaque, result: []const @import("../../../editor/common/languages.zig").DocumentSymbol) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    if (result.len > 0) self.symbol_name = result[0].name;
+                }
+            };
+            var deferred_result: Deferred = .{};
+            const completion_providers = try features.completion_provider.ordered(a, model, false);
+            var request_completion: ?@import("../../../editor/common/languages/completion.zig").CompletionRequest = null;
+            for (completion_providers) |provider| if (provider.provide_completion_items_deferred) |request| {
+                request_completion = try request(provider.context, a, model, Position.init(1, 1), .{}, .None);
+                if (request_completion != null) break;
+            };
+            const completion_request = request_completion orelse return error.MockCompletionMissing;
+            defer completion_request.cancel(completion_request.context);
+            completion_request.on_complete(completion_request.context, &deferred_result, Deferred.completions);
+            const symbol_providers = try features.document_symbol_provider.ordered(a, model, false);
+            const symbols = symbol_providers[0];
+            const symbol_request = (try symbols.request_document_symbols.?(symbols.context, a, model, .{ .context = &deferred_result, .complete = Deferred.symbols })).?;
+            defer if (deferred_result.symbol_name == null) symbol_request.dispose();
+            const highlight_providers = try features.document_highlight_provider.ordered(a, model, false);
+            var highlight_request: ?@import("../../../base/common/lifecycle.zig").IDisposable = null;
+            for (highlight_providers) |provider| if (provider.request_document_highlights) |request| {
+                highlight_request = try request(provider.context, a, model, Position.init(1, 2), .None, .{ .context = &deferred_result, .complete = Deferred.highlights });
+                if (highlight_request != null) break;
+            };
+            defer if (deferred_result.highlight_count == null) {
+                if (highlight_request) |request| request.dispose();
+            };
+            const completion_deadline = time_compat.milliTimestamp() + 5000;
+            while ((deferred_result.completion_item == null or deferred_result.symbol_name == null or deferred_result.highlight_count == null) and time_compat.milliTimestamp() < completion_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            const completion_item = deferred_result.completion_item orelse return error.MockCompletionMissing;
+            try std.testing.expectEqualStrings("(value)", completion_item.label_detail.?);
+            try std.testing.expectEqualStrings("mock", completion_item.label_description.?);
+            try std.testing.expectEqualStrings("Mock LSP completion", completion_item.detail.?);
+            try std.testing.expectEqualStrings("mockCompletion(${1:value})", completion_item.insert_text);
+            try std.testing.expectEqualStrings("alpha", deferred_result.symbol_name orelse return error.MockDocumentSymbolMissing);
+            try std.testing.expectEqual(@as(?usize, 2), deferred_result.highlight_count);
+
+            for ([_][]const u8{ "editor.action.revealDefinition", "editor.action.revealDeclaration", "editor.action.goToTypeDefinition" }) |command| {
+                try editor.setCursorPosition(Position.init(1, 2));
+                try std.testing.expect(runLspCommand(workbench.extensionHostServices(), command));
+                try waitNavigation(workbench);
+                try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().lineNumber);
+            }
+            try editor.setCursorPosition(Position.init(1, 2));
+            try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.goToReferences"));
+            try waitNavigation(workbench);
+            try std.testing.expect(workbench.quick_access.isOpen());
+            workbench.quick_access.inputService().hide();
+            try workbench.commands.execute("workbench.action.showAllSymbols");
+            const picker = workbench.quick_access.controller.pickerRef();
+            try picker.setValue("#MockWorkspaceSymbol");
+            const workspace_deadline = time_compat.milliTimestamp() + 5000;
+            var workspace_found = false;
+            while (!workspace_found and time_compat.milliTimestamp() < workspace_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                for (picker.items.items, 0..) |item, index| if (item == .item and std.mem.eql(u8, item.item.label, "MockWorkspaceSymbol")) {
+                    workspace_found = true;
+                    picker.setActiveIndex(index);
+                    break;
+                };
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(workspace_found);
+            picker.accept();
+            try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().lineNumber);
+
+            try editor.setCursorPosition(Position.init(1, 2));
+            try workbench.commands.execute("editor.action.showHover");
+            const HoverController = @import("../../../editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
+            const hover = editor.getInstantiatedContribution(HoverController).?;
+            const hover_deadline = time_compat.milliTimestamp() + 5000;
+            var mock_hover_found = false;
+            while (!mock_hover_found and time_compat.milliTimestamp() < hover_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                for (0..12) |i| if (hover.wrapper.getAccessibleWidgetContentAtIndex(@intCast(i))) |content| {
+                    if (std.mem.indexOf(u8, content, "Mock hover: alpha(1)") != null) mock_hover_found = true;
+                };
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(hover.isVisible() and mock_hover_found);
+            hover.hideContentHover();
+            try editor.setCursorPosition(Position.init(1, 7));
+            try workbench.commands.execute("editor.action.triggerParameterHints");
+            const ParameterHintsController = @import("../../../editor/contrib/parameterHints/browser/parameterHints.zig").ParameterHintsController;
+            const hints = editor.getInstantiatedContribution(ParameterHintsController).?;
+            const hints_deadline = time_compat.milliTimestamp() + 5000;
+            while (hints.model.hints() == null and time_compat.milliTimestamp() < hints_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expectEqualStrings("alpha(value: number)", (hints.model.hints() orelse return error.MockSignatureMissing).signatures[0].label);
+            try workbench.commands.execute("closeParameterHints");
+            const InlayController = @import("../../../editor/contrib/inlayHints/browser/inlayHintsController.zig").InlayHintsController;
+            const inlay = editor.getInstantiatedContribution(InlayController).?;
+            const features_deadline = time_compat.milliTimestamp() + 5000;
+            while ((!model.hasCompleteSemanticTokens() or inlay.parts.len == 0 or editor.folding.regionStartingAt(1) == null) and time_compat.milliTimestamp() < features_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(model.hasCompleteSemanticTokens() and model.hasSomeSemanticTokens());
+            try std.testing.expect(inlay.parts.len > 0 and editor.folding.regionStartingAt(1) != null);
+            try std.testing.expect(std.mem.indexOf(u8, (try editor.viewLineData(1)).content, "value:") != null);
+            const MockLanguageResults = struct {
+                semantic: ?@import("../../../editor/common/languages.zig").SemanticTokensResult = null,
+                resolved: ?@import("../../../editor/common/languages.zig").InlayHint = null,
+                failed: bool = false,
+                fn semanticReady(context: *anyopaque, result: anyerror!?@import("../../../editor/common/languages.zig").SemanticTokensResult) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    if (result) |value| self.semantic = value else |_| self.failed = true;
+                }
+                fn inlayReady(context: *anyopaque, result: anyerror!?@import("../../../editor/common/languages.zig").InlayHint) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    if (result) |value| self.resolved = value else |_| self.failed = true;
+                }
+                fn wait(self: *@This(), wb: *terminal_window_type, req: @import("../../../base/common/lifecycle.zig").IDisposable, is_semantic: bool) !void {
+                    const deadline = time_compat.milliTimestamp() + 5000;
+                    while (!self.failed and (if (is_semantic) self.semantic == null else self.resolved == null) and time_compat.milliTimestamp() < deadline) {
+                        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                        time_compat.sleepMillis(10);
+                    }
+                    if (self.failed or (if (is_semantic) self.semantic == null else self.resolved == null)) {
+                        if (!self.failed) req.dispose();
+                        return error.MockProviderUnavailable;
+                    }
+                }
+            };
+            var language_results: MockLanguageResults = .{};
+            const full_providers = try features.document_semantic_tokens_provider.ordered(a, model, false);
+            const full_provider = full_providers[0];
+            const raw_full = try full_provider.request_document_semantic_tokens(full_provider.context, a, model, null, .{ .context = &language_results, .complete = MockLanguageResults.semanticReady });
+            try language_results.wait(workbench, raw_full, true);
+            const full_tokens = language_results.semantic.?;
+            try std.testing.expectEqualSlices(u32, &.{ 0, 0, 5, 1, 1 }, full_tokens.payload.full);
+            language_results.semantic = null;
+            const raw_delta = try full_provider.request_document_semantic_tokens(full_provider.context, a, model, full_tokens.id, .{ .context = &language_results, .complete = MockLanguageResults.semanticReady });
+            try language_results.wait(workbench, raw_delta, true);
+            const delta = language_results.semantic.?;
+            try std.testing.expect(delta.payload == .delta);
+            try std.testing.expectEqualSlices(u32, &.{4}, delta.payload.delta[0].data);
+            full_provider.release_document_semantic_tokens(full_provider.context, delta.id);
+            const range_providers = try features.document_range_semantic_tokens_provider.ordered(a, model, false);
+            const range_provider = range_providers[0];
+            language_results.semantic = null;
+            const raw_range = try range_provider.request_document_range_semantic_tokens(range_provider.context, a, model, model.getFullModelRange(), .{ .context = &language_results, .complete = MockLanguageResults.semanticReady });
+            try language_results.wait(workbench, raw_range, true);
+            try std.testing.expectEqualSlices(u32, &.{ 0, 0, 5, 1, 1 }, language_results.semantic.?.payload.full);
+            const item = inlay.parts[0].item;
+            const raw_resolve = try item.provider.resolve_inlay_hint.?(item.provider.context, a, model, item.hint, .{ .context = &language_results, .complete = MockLanguageResults.inlayReady });
+            try language_results.wait(workbench, raw_resolve, false);
+            try std.testing.expectEqualStrings("Mock resolved hint", language_results.resolved.?.tooltip.?);
+
+            try editor.setCursorPosition(Position.init(1, 2));
+            try editor.growSelection(true);
+            const selection_deadline = time_compat.milliTimestamp() + 5000;
+            while (editor.smart_select.pending != null and time_compat.milliTimestamp() < selection_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            const selected = try editor.getModelSelections();
+            defer allocator.free(selected);
+            try std.testing.expect(!selected[0].isEmpty());
+            const actions_mod = @import("../../../editor/contrib/codeAction/browser/codeAction.zig");
+            const action_kinds = @import("../../../editor/contrib/codeAction/common/types.zig");
+            const bulk = @import("../../../editor/browser/services/bulkEditService.zig");
+            const ActionProbe = struct {
+                result: ?*actions_mod.ManagedCodeActionSet = null,
+                applied: ?bool = null,
+                failure: ?anyerror = null,
+                fn ready(context: *anyopaque, result: anyerror!*actions_mod.ManagedCodeActionSet) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    if (result) |value| self.result = value else |err| self.failure = err;
+                }
+                fn appliedEdit(context: *anyopaque, result: anyerror!bulk.IBulkEditResult) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    if (result) |value| self.applied = value.is_applied else |err| self.failure = err;
+                }
+            };
+            var action_probe: ActionProbe = .{};
+            const action_request = (try actions_mod.getCodeActions(allocator, &features.code_action_provider, model, Range.init(1, 1, 1, 6), .{ .type = .Invoke, .trigger_action = .QuickFix, .filter = .{ .include = action_kinds.CodeActionKind.QuickFix } }, .None, .{ .context = &action_probe, .complete = ActionProbe.ready })).?;
+            const action_deadline = time_compat.milliTimestamp() + 5000;
+            while (action_probe.result == null and action_probe.failure == null and time_compat.milliTimestamp() < action_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            if (action_probe.result == null and action_probe.failure == null) action_request.dispose();
+            const action_set = action_probe.result orelse return error.MockCodeActionMissing;
+            defer action_set.dispose();
+            try std.testing.expectEqual(@as(usize, 1), action_set.valid_actions.len);
+            const action = action_set.valid_actions[0].action;
+            try std.testing.expectEqualStrings("Mock quick fix", action.title);
+            const apply_request = try workbench.bulk_edit_api.apply(action.edit orelse return error.MockActionEditMissing, .{ .editor = editor }, .{ .context = &action_probe, .complete = ActionProbe.appliedEdit });
+            const apply_deadline = time_compat.milliTimestamp() + 5000;
+            while (action_probe.applied == null and action_probe.failure == null and time_compat.milliTimestamp() < apply_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            if (action_probe.applied == null and action_probe.failure == null) if (apply_request) |request| request.dispose();
+            try std.testing.expect(action_probe.applied orelse false);
+            try std.testing.expectEqualStrings("fixed(1)", try model.borrowLineContent(1));
+            try editor.undo();
+            try std.testing.expectEqualStrings("alpha(1)", try model.borrowLineContent(1));
+
+            try editor.setCursorPosition(Position.init(1, 2));
+            try editor.formatDocument();
+            const format_deadline = time_compat.milliTimestamp() + 5000;
+            while (!std.mem.startsWith(u8, try model.borrowLineContent(2), "    beta") and time_compat.milliTimestamp() < format_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expectEqualStrings("    beta", try model.borrowLineContent(2));
+            try editor.undo();
+            try std.testing.expectEqualStrings("  beta", try model.borrowLineContent(2));
+            try editor.setCursorPosition(Position.init(1, 2));
+            try workbench.commands.execute("editor.action.rename");
+            const RenameController = @import("../../../editor/contrib/rename/browser/rename.zig").RenameController;
+            const rename = editor.getInstantiatedContribution(RenameController).?;
+            const rename_deadline = time_compat.milliTimestamp() + 5000;
+            while (!rename.widget.visible and time_compat.milliTimestamp() < rename_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expectEqualStrings("alpha", rename.widget.input.getValue());
+            try rename.widget.input.setValue("renamed");
+            try workbench.commands.execute("acceptRenameInput");
+            const rename_edits_deadline = time_compat.milliTimestamp() + 5000;
+            while (rename.state != .idle and time_compat.milliTimestamp() < rename_edits_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expectEqualStrings("renamed(1)", try model.borrowLineContent(1));
+            try editor.undo();
+            try std.testing.expectEqualStrings("alpha(1)", try model.borrowLineContent(1));
+
+            // Saving calls the languageclient's onWillSave waitUntil listener;
+            // its returned workspace edit must be applied before writing.
+            try editor.setCursorPosition(Position.init(1, model.getLineMaxColumn(1)));
+            try editor.insertText("é");
+            try workbench.commands.execute("workbench.action.files.save");
+            const save_deadline = time_compat.milliTimestamp() + 10000;
+            var saved = false;
+            while (!saved and time_compat.milliTimestamp() < save_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                const contents = try tmp.dir.readFileAlloc(io, "mock.txt", allocator, .limited(64 * 1024));
+                defer allocator.free(contents);
+                saved = std.mem.startsWith(u8, contents, "// mock save\n") and std.mem.indexOf(u8, contents, "é") != null;
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(saved);
+            const applied = try MockCommand.call(a, workbench, extension_host, "fixture.lsp.applyEdit");
+            try std.testing.expect(applied == .bool and applied.bool);
+            try std.testing.expectEqualStrings("// nested edit", try model.borrowLineContent(1));
+            const progress = try MockCommand.call(a, workbench, extension_host, "fixture.lsp.progress");
+            try std.testing.expect(progress == .bool and progress.bool);
+            const config_updated = try MockCommand.call(a, workbench, extension_host, "fixture.lsp.updateConfiguration");
+            try std.testing.expect(config_updated == .bool and config_updated.bool);
+            const persisted = try tmp.dir.readFileAlloc(io, "settings.json", allocator, .limited(64 * 1024));
+            defer allocator.free(persisted);
+            try std.testing.expect(std.mem.indexOf(u8, persisted, "updated by extension") != null);
+            const config_deadline = time_compat.milliTimestamp() + 5000;
+            var config_seen = false;
+            while (!config_seen and time_compat.milliTimestamp() < config_deadline) {
+                const current = try MockCommand.call(a, workbench, extension_host, "fixture.lsp.status");
+                if (current.object.get("configuration")) |cfg| if (cfg == .object) if (cfg.object.get("value")) |value| {
+                    config_seen = value == .string and std.mem.eql(u8, value.string, "updated by extension");
+                };
+                if (!config_seen) time_compat.sleepMillis(20);
+            }
+            try std.testing.expect(config_seen);
+            try tmp.dir.writeFile(io, .{ .sub_path = "watched.lspfixture", .data = "change" });
+            const watch_deadline = time_compat.milliTimestamp() + 5000;
+            var watched_file = false;
+            while (!watched_file and time_compat.milliTimestamp() < watch_deadline) {
+                const current = try MockCommand.call(a, workbench, extension_host, "fixture.lsp.status");
+                for (current.object.get("watched").?.array.items) |change| {
+                    if (change == .object and std.mem.endsWith(u8, change.object.get("uri").?.string, "watched.lspfixture")) watched_file = true;
+                }
+                if (!watched_file) time_compat.sleepMillis(20);
+            }
+            try std.testing.expect(watched_file);
+            try tmp.dir.createDir(io, "another", .default_dir);
+            const other_root = try std.fs.path.join(allocator, &.{ root, "another" });
+            defer allocator.free(other_root);
+            try workbench.setWorkspaceFolders(&.{ root, other_root });
+            const folders_deadline = time_compat.milliTimestamp() + 5000;
+            var folders_seen = false;
+            while (!folders_seen and time_compat.milliTimestamp() < folders_deadline) {
+                const current = try MockCommand.call(a, workbench, extension_host, "fixture.lsp.status");
+                folders_seen = current.object.get("folders").?.array.items.len == 2;
+                if (!folders_seen) time_compat.sleepMillis(20);
+            }
+            try std.testing.expect(folders_seen);
+            const final_status = try MockCommand.call(a, workbench, extension_host, "fixture.lsp.status");
+            const saved_text = final_status.object.get("lastSaveText").?.string;
+            try std.testing.expect(std.mem.startsWith(u8, saved_text, "// mock save\n") and std.mem.indexOf(u8, saved_text, "é") != null);
+            const counts = final_status.object.get("counts").?.object;
+            try std.testing.expect(counts.get("willSaveWaitUntil") != null and counts.get("save") != null and counts.get("applyEdit") != null);
+            try std.testing.expect(counts.get("hover") != null and counts.get("signatureHelp") != null and counts.get("semanticFull") != null and counts.get("inlayHints") != null);
+            for ([_][]const u8{ "completion", "documentSymbol", "definition", "declaration", "typeDefinition", "references", "highlight", "workspaceSymbol", "codeAction", "format", "prepareRename", "rename", "folding", "selectionRange", "semanticRange", "semanticDelta", "resolveInlayHint", "watchedFiles", "workspaceFolders", "configurationChanged" }) |method| {
+                if (counts.get(method) == null) std.debug.print("Mock LSP method not reached: {s}\n", .{method});
+                try std.testing.expect(counts.get(method) != null);
+            }
+        }
+
         test "Extensions: relative paths mirror the model URI language features use" {
             // Regression: a relative command-line path used to be mirrored with its
             // raw spelling while language-feature requests carried the model's
