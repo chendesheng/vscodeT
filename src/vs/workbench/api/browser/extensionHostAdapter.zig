@@ -1170,13 +1170,22 @@ pub const Extensions = struct {
         return self.services.configuration_data(self.services.common.context, arena);
     }
 
-    fn configurationNotifyHost(context: *anyopaque, arena: Allocator, data: std.json.Value, changed_key: []const u8) anyerror!void {
+    fn configurationNotifyHost(context: *anyopaque, arena: Allocator, data: std.json.Value, event: configuration.Change) anyerror!void {
         const self: *Extensions = @ptrCast(@alignCast(context));
         var change: std.json.ObjectMap = .empty;
         var keys = std.json.Array.init(arena);
-        try keys.append(.{ .string = try arena.dupe(u8, changed_key) });
+        for (event.keys) |key| try keys.append(.{ .string = key });
         try change.put(arena, "keys", .{ .array = keys });
-        try change.put(arena, "overrides", .{ .array = std.json.Array.init(arena) });
+        var overrides = std.json.Array.init(arena);
+        for (event.overrides) |entry| {
+            var pair = std.json.Array.init(arena);
+            var changed_keys = std.json.Array.init(arena);
+            for (entry.keys) |key| try changed_keys.append(.{ .string = key });
+            try pair.append(.{ .string = entry.identifier });
+            try pair.append(.{ .array = changed_keys });
+            try overrides.append(.{ .array = pair });
+        }
+        try change.put(arena, "overrides", .{ .array = overrides });
         var args = [_]rpc.Arg{
             .{ .json = data },
             .{ .json = .{ .object = change } },
@@ -1227,6 +1236,8 @@ pub const Extensions = struct {
             5_000,
             error.InitializeConfigurationRejected,
         );
+
+        if (self.configuration_actor) |*actor| try actor.bindConfiguration(self.services.configuration, self.services.workspace);
 
         // MainThreadDocumentsAndEditors publishes existing model state before
         // extension activation. Otherwise provider registration during startup

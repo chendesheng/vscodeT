@@ -229,6 +229,7 @@ pub fn extensionHostServices(host: *TerminalWorkbench) ExtensionServices {
         .simple_browser = &host.simple_browser,
         .register_extension_configuration = Adapter.registerExtensionConfiguration,
         .context_keys = Adapter.contextKeys,
+        .configuration = host.configuration_api,
         .configuration_data = Adapter.configurationData,
         .workspace = host.workspace,
         .workspace_folder_path = Adapter.workspaceFolderPath,

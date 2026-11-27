@@ -422,7 +422,13 @@ pub const ConfigurationService = struct {
     }
 
     pub fn interface(self: *ConfigurationService) configuration.IConfigurationService {
-        return .{ .context = self, .get_value = getValueForInterface, .get_value_with_overrides = getValueWithOverridesForInterface, .update_value = updateValueForInterface, .update_resource_value = updateResourceValueForInterface, .on_did_change_configuration = &self.change_emitter };
+        return .{ .context = self, .get_value = getValueForInterface, .get_value_with_overrides = getValueWithOverridesForInterface, .get_scope = getScopeForInterface, .update_value = updateValueForInterface, .update_resource_value = updateResourceValueForInterface, .on_did_change_configuration = &self.change_emitter };
+    }
+
+    fn getScopeForInterface(context: *anyopaque, key: []const u8) ?configuration.ConfigurationScope {
+        const self: *ConfigurationService = @ptrCast(@alignCast(context));
+        const property = self.registry.getConfigurationProperties().get(key) orelse return null;
+        return property.scope;
     }
 
     fn updateValueForInterface(context: *anyopaque, key: []const u8, value: ?Value, target: configuration.ConfigurationTarget) !void {
@@ -572,7 +578,7 @@ pub const ConfigurationService = struct {
         const user_language = hasLanguageValue(&self.user, key, language);
         const target: configuration.ConfigurationTarget = explicit_target orelse if (folder_language) .WORKSPACE_FOLDER else if (workspace_language) .WORKSPACE else if (user_language) .USER_LOCAL else if (folder != null and folder.?.getValue(key) != null) .WORKSPACE_FOLDER else if (allow_workspace and self.workspace_model.getValue(key) != null) .WORKSPACE else .USER_LOCAL;
         const use_language = folder_language or workspace_language or user_language or hasLanguageValue(&self.defaults, key, language);
-        const identifier = if (use_language) language else null;
+        const identifier = if (overrides.scope_to_language) |enabled| (if (enabled) language else null) else if (use_language) language else null;
         switch (target) {
             .USER, .USER_LOCAL => {
                 if (self.user_settings_paths.len == 0) return error.NoWritableUserSettings;
@@ -864,13 +870,19 @@ pub const ConfigurationServiceBinding = struct {
     }
 
     pub fn interface(self: *ConfigurationServiceBinding) configuration.IConfigurationService {
-        return .{ .context = self, .get_value = getValue, .get_value_with_overrides = getValueWithOverrides, .update_value = updateValue, .update_resource_value = updateResourceValue, .on_did_change_configuration = &self.on_did_change_configuration };
+        return .{ .context = self, .get_value = getValue, .get_value_with_overrides = getValueWithOverrides, .get_scope = getScope, .update_value = updateValue, .update_resource_value = updateResourceValue, .on_did_change_configuration = &self.on_did_change_configuration };
     }
 
     fn getValue(context: *anyopaque, key: []const u8) ?*const Value {
         const self: *ConfigurationServiceBinding = @ptrCast(@alignCast(context));
         const service = self.service orelse return null;
         return service.getValue(key, .{});
+    }
+
+    fn getScope(context: *anyopaque, key: []const u8) ?configuration.ConfigurationScope {
+        const self: *ConfigurationServiceBinding = @ptrCast(@alignCast(context));
+        const service = self.service orelse return null;
+        return service.interface().getScope(key);
     }
 
     fn getValueWithOverrides(context: *anyopaque, key: []const u8, overrides: configuration.Overrides) ?*const Value {

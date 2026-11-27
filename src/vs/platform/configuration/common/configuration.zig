@@ -55,6 +55,7 @@ pub const ConfigurationTarget = enum(u8) {
 pub const Overrides = struct {
     override_identifier: ?[]const u8 = null,
     resource: ?[]const u8 = null,
+    scope_to_language: ?bool = null,
 };
 
 /// `IConfigurationChange`. The keys are borrowed from the service for the
@@ -95,6 +96,7 @@ pub const configuration_service_id = @import("../../instantiation/common/instant
 pub const IConfigurationService = struct {
     context: *anyopaque,
     get_value: *const fn (context: *anyopaque, key: []const u8) ?*const Value,
+    get_scope: ?*const fn (*anyopaque, []const u8) ?ConfigurationScope = null,
     get_value_with_overrides: ?*const fn (*anyopaque, []const u8, Overrides) ?*const Value = null,
     update_value: ?*const fn (*anyopaque, []const u8, ?Value, ConfigurationTarget) anyerror!void = null,
     update_resource_value: ?*const fn (*anyopaque, []const u8, ?Value, Overrides, ?ConfigurationTarget) anyerror!void = null,
@@ -110,6 +112,10 @@ pub const IConfigurationService = struct {
     pub fn updateResourceValue(self: IConfigurationService, key: []const u8, value: ?Value, overrides: Overrides, target: ?ConfigurationTarget) !void {
         if (self.update_resource_value) |update| return update(self.context, key, value, overrides, target);
         return self.updateValue(key, value, target orelse .USER);
+    }
+
+    pub fn getScope(self: IConfigurationService, key: []const u8) ?ConfigurationScope {
+        return if (self.get_scope) |get| get(self.context, key) else null;
     }
 
     pub fn getValue(self: IConfigurationService, key: []const u8) ?*const Value {

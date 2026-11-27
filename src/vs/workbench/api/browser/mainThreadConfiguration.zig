@@ -1,15 +1,16 @@
 // Port of `src/vs/workbench/api/browser/mainThreadConfiguration.ts`.
 //
-// Terminal adaptation: the workbench configuration service is read-only, so
-// extension writes are kept in a session-memory overlay (upstream's
-// `ConfigurationTarget.MEMORY` path) and pushed to the host as a
-// `$acceptConfigurationChanged` delta. The base scope data comes from the
-// ported configuration service; only the changed key is reported.
+// The native configuration service writes real user/workspace/folder settings.
+// The session-memory overlay remains only for explicit MEMORY writes, which
+// have no persistent terminal configuration store yet. Service events deliver
+// updated snapshots and change keys back to the extension host.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const rpc = @import("../../services/extensions/common/rpcProtocol.zig");
 const protocol = @import("../common/extHost.protocol.zig");
 const configuration = @import("../../../platform/configuration/common/configuration.zig");
+const std_uri = @import("../../../base/common/stdUri.zig");
+const WorkspaceContextService = @import("../../services/workspaces/common/workspaceContextService.zig").WorkspaceContextService;
 
 pub const DataHost = struct {
     context: *anyopaque,
@@ -18,7 +19,7 @@ pub const DataHost = struct {
 
 pub const NotifyHost = struct {
     context: *anyopaque,
-    notify: *const fn (context: *anyopaque, arena: Allocator, data: std.json.Value, changed_key: []const u8) anyerror!void,
+    notify: *const fn (context: *anyopaque, arena: Allocator, data: std.json.Value, change: configuration.Change) anyerror!void,
 };
 
 pub const MainThreadConfiguration = struct {
@@ -28,6 +29,9 @@ pub const MainThreadConfiguration = struct {
     /// `ConfigurationTarget.MEMORY` overlay, stored as raw JSON text.
     memory: std.StringHashMap([]u8),
     arena: std.heap.ArenaAllocator,
+    service: ?configuration.IConfigurationService = null,
+    workspace: ?*WorkspaceContextService = null,
+    listener: ?usize = null,
 
     pub fn init(allocator: Allocator, data_host: DataHost, notify_host: NotifyHost) MainThreadConfiguration {
         return .{
@@ -39,7 +43,21 @@ pub const MainThreadConfiguration = struct {
         };
     }
 
+    pub fn bindConfiguration(self: *MainThreadConfiguration, service: configuration.IConfigurationService, workspace: *WorkspaceContextService) !void {
+        self.service = service;
+        self.workspace = workspace;
+        if (service.on_did_change_configuration) |event| self.listener = try event.listen(self, onConfigurationChanged);
+    }
+
+    fn onConfigurationChanged(change: configuration.Change, self: *MainThreadConfiguration) !void {
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        try self.push(scratch.allocator(), change);
+    }
+
     pub fn deinit(self: *MainThreadConfiguration) void {
+        if (self.listener) |id| self.service.?.on_did_change_configuration.?.unlisten(id);
+
         var iterator = self.memory.iterator();
         while (iterator.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
@@ -58,23 +76,56 @@ pub const MainThreadConfiguration = struct {
         if (std.mem.eql(u8, method, "$updateConfigurationOption")) {
             const key = stringArg(args, 1) orelse return error.InvalidArguments;
             const value = valueArg(args, 2) orelse return error.InvalidArguments;
-            try self.setValue(key, value);
-            try self.push(arena, key);
+            try self.writeConfiguration(arena, args, key, value, 3, 4);
             return .empty;
         }
         if (std.mem.eql(u8, method, "$removeConfigurationOption")) {
             const key = stringArg(args, 1) orelse return error.InvalidArguments;
-            if (self.memory.fetchRemove(key)) |entry| {
-                self.allocator.free(entry.key);
-                self.allocator.free(entry.value);
-            }
-            try self.push(arena, key);
+            try self.writeConfiguration(arena, args, key, null, 2, 3);
             return .empty;
         }
         if (methodKind(method) == .request) {
             return .{ .err = .{ .name = "Unsupported", .message = method } };
         }
         return .empty;
+    }
+
+    fn writeConfiguration(self: *MainThreadConfiguration, arena: Allocator, args: []const rpc.Arg, key: []const u8, value: ?std.json.Value, overrides_index: usize, language_index: usize) !void {
+        var overrides: configuration.Overrides = .{};
+        if (valueArg(args, overrides_index)) |candidate| if (candidate == .object) {
+            if (candidate.object.get("overrideIdentifier")) |identifier| if (identifier == .string) {
+                overrides.override_identifier = identifier.string;
+            };
+            if (candidate.object.get("resource")) |resource| if (resource == .object) {
+                const encoded = try std_uri.encodedResourceFromJson(arena, resource);
+                const uri = try std.Uri.parse(encoded);
+                overrides.resource = if (std.mem.eql(u8, uri.scheme, "file")) try std_uri.fsPath(uri, arena) else encoded;
+            };
+        };
+        if (valueArg(args, language_index)) |scope| if (scope == .bool) {
+            overrides.scope_to_language = scope.bool;
+        };
+        const target = if (valueArg(args, 0)) |raw| if (raw == .integer) std.enums.fromInt(configuration.ConfigurationTarget, raw.integer) orelse return error.InvalidArguments else self.deriveTarget(key, overrides) else self.deriveTarget(key, overrides);
+        if (target == .MEMORY) {
+            if (value) |new_value| {
+                try self.setValue(key, new_value);
+            } else if (self.memory.fetchRemove(key)) |entry| {
+                self.allocator.free(entry.key);
+                self.allocator.free(entry.value);
+            }
+            return self.push(arena, .{ .source = .MEMORY, .keys = &.{key} });
+        }
+        const service = self.service orelse return error.ConfigurationReadOnly;
+        try service.updateResourceValue(key, value, overrides, target);
+    }
+
+    fn deriveTarget(self: *MainThreadConfiguration, key: []const u8, overrides: configuration.Overrides) configuration.ConfigurationTarget {
+        if (overrides.resource != null and self.workspace != null and self.workspace.?.getWorkbenchState() == .WORKSPACE) {
+            if (self.service) |service| if (service.getScope(key)) |scope| {
+                if (scope == .RESOURCE or scope == .LANGUAGE_OVERRIDABLE) return .WORKSPACE_FOLDER;
+            };
+        }
+        return .WORKSPACE;
     }
 
     fn setValue(self: *MainThreadConfiguration, key: []const u8, value: std.json.Value) !void {
@@ -93,10 +144,10 @@ pub const MainThreadConfiguration = struct {
         try self.memory.put(owned_key, text);
     }
 
-    fn push(self: *MainThreadConfiguration, arena: Allocator, changed_key: []const u8) !void {
+    fn push(self: *MainThreadConfiguration, arena: Allocator, change: configuration.Change) !void {
         var data = try self.data_host.data(self.data_host.context, arena);
         try overlayMemory(arena, &data, &self.memory);
-        try self.notify_host.notify(self.notify_host.context, arena, data, changed_key);
+        try self.notify_host.notify(self.notify_host.context, arena, data, change);
     }
 };
 
@@ -155,8 +206,8 @@ test "MainThreadConfiguration: memory updates overlay userLocal data" {
             try root.put(arena, "userLocal", .{ .object = user_local });
             return .{ .object = root };
         }
-        fn notify(_: *anyopaque, _: Allocator, payload: std.json.Value, key: []const u8) anyerror!void {
-            last_key = key;
+        fn notify(_: *anyopaque, _: Allocator, payload: std.json.Value, change: configuration.Change) anyerror!void {
+            last_key = change.keys[0];
             const user_local = payload.object.get("userLocal").?;
             const contents = user_local.object.get("contents").?;
             try std.testing.expect(configuration.getConfigurationValue(&contents, "js/ts.format.enabled") != null);
@@ -167,7 +218,7 @@ test "MainThreadConfiguration: memory updates overlay userLocal data" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     var args = [_]rpc.Arg{
-        .{ .json = .{ .integer = 1 } },
+        .{ .json = .{ .integer = @backingInt(configuration.ConfigurationTarget.MEMORY) } },
         .{ .json = .{ .string = "js/ts.format.enabled" } },
         .{ .json = .{ .bool = false } },
         .{ .json = .null },
