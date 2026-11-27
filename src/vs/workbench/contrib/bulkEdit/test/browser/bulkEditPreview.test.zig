@@ -160,3 +160,77 @@ test "BulkEditPreview: file changes conflict only for resources without a live m
     try files.interface().writeFile(target, "disk2", .{ .create = true, .overwrite = true });
     try std.testing.expect(ops.conflicts.?.hasConflicts());
 }
+
+test "BulkEditPreview: the registered preview handler owns acceptance before applying workspace text edits" {
+    const Resolver = @import("../../../../services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService;
+    const Queue = @import("../../../../../base/common/windowDispatch.zig").Queue;
+    const bulk = @import("../../../../../editor/browser/services/bulkEditService.zig");
+    const BulkService = @import("../../browser/bulkEditService.zig").BulkEditService;
+    const Disposable = @import("../../../../../base/common/lifecycle.zig").IDisposable;
+    const Probe = struct {
+        callback: ?bulk.PreviewListener = null,
+        edits: []const ResourceEdit = &.{},
+        result: ?bulk.IBulkEditResult = null,
+        failure: ?anyerror = null,
+        canceled: bool = false,
+        fn preview(context: *anyopaque, edits: []const ResourceEdit, _: bulk.IBulkEditOptions, listener: bulk.PreviewListener) !?Disposable {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.edits = edits;
+            self.callback = listener;
+            return Disposable.from(@This(), self, cancel);
+        }
+        fn cancel(self: *@This()) void {
+            self.canceled = true;
+            self.callback = null;
+        }
+        fn applied(context: *anyopaque, result: anyerror!bulk.IBulkEditResult) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (result) |value| self.result = value else |err| self.failure = err;
+        }
+        fn accept(self: *@This(), selected: []const ResourceEdit) void {
+            const callback = self.callback.?;
+            self.callback = null;
+            callback.complete(callback.context, selected);
+        }
+    };
+    var queue: Queue = .{ .io = std.testing.io };
+    defer queue.deinitWindowEvents();
+    var model_resolver = Resolver.init(a, std.testing.io, &queue);
+    defer model_resolver.deinit();
+    const target = uri("inmemory:/preview.txt");
+    var reference = try model_resolver.createResolvedModelReference(target, "preview.txt", "old", false);
+    defer reference.dispose();
+    const model = reference.object.textEditorModel;
+    var service: BulkService = .{ .allocator = a, .resolver_service = model_resolver.interface() };
+    const api = service.interface();
+    var probe: Probe = .{};
+    const first = try api.setPreviewHandler(.{ .context = &probe, .preview = Probe.preview });
+    const second = try api.setPreviewHandler(.{ .context = &probe, .preview = Probe.preview });
+    defer second.dispose();
+    first.dispose();
+    try std.testing.expect(api.hasPreviewHandler());
+    const edits = [_]ResourceEdit{
+        .{ .text = .{ .resource = target, .range = Range.init(1, 1, 1, 2), .text = "b", .metadata = .{ .label = "confirm", .needs_confirmation = true } } },
+        .{ .text = .{ .resource = target, .range = Range.init(1, 2, 1, 3), .text = "a" } },
+    };
+    const listener: bulk.EditListener = .{ .context = &probe, .complete = Probe.applied };
+    const pending = try api.apply(.{ .edits = &edits }, .{}, listener);
+    try std.testing.expect(pending != null and probe.callback != null);
+    try std.testing.expectEqualStrings("old", try model.borrowLineContent(1));
+    probe.accept(edits[0..1]);
+    for (0..8) |_| _ = queue.dispatch(std.math.maxInt(i64));
+    try std.testing.expect(probe.result.?.is_applied);
+    try std.testing.expectEqualStrings("bld", try model.borrowLineContent(1));
+    try std.testing.expectEqual(@as(usize, 1), probe.result.?.edit_count);
+    probe.result = null;
+    const discarded = try api.apply(.{ .edits = &edits }, .{ .show_preview = true }, listener);
+    try std.testing.expect(discarded != null);
+    probe.accept(&.{});
+    try std.testing.expect(!probe.result.?.is_applied);
+    try std.testing.expectEqualStrings("bld", try model.borrowLineContent(1));
+    probe.result = null;
+    const canceled = (try api.apply(.{ .edits = &edits }, .{ .show_preview = true }, listener)).?;
+    canceled.dispose();
+    try std.testing.expect(probe.canceled and probe.callback == null);
+    try std.testing.expect(probe.result == null and probe.failure == null);
+}

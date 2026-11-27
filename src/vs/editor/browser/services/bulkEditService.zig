@@ -20,13 +20,22 @@ pub const IBulkEditOptions = struct {
 };
 pub const IBulkEditResult = struct { is_applied: bool, edited_resources: usize = 0, edit_count: usize = 0 };
 pub const EditListener = struct { context: *anyopaque, complete: *const fn (*anyopaque, anyerror!IBulkEditResult) void };
+pub const PreviewListener = struct { context: *anyopaque, complete: *const fn (*anyopaque, anyerror![]const ResourceEdit) void };
+pub const IBulkEditPreviewHandler = struct {
+    context: *anyopaque,
+    preview: *const fn (*anyopaque, []const ResourceEdit, IBulkEditOptions, PreviewListener) anyerror!?cancellation.IDisposable,
+};
 pub const IBulkEditService = struct {
     context: *anyopaque,
     apply_fn: *const fn (*anyopaque, languages.WorkspaceEdit, IBulkEditOptions, EditListener) anyerror!?cancellation.IDisposable,
     has_preview_handler_fn: *const fn (*anyopaque) bool,
+    set_preview_handler_fn: *const fn (*anyopaque, IBulkEditPreviewHandler) anyerror!cancellation.IDisposable,
 
     pub fn apply(self: IBulkEditService, edit: languages.WorkspaceEdit, options: IBulkEditOptions, listener: EditListener) !?cancellation.IDisposable {
         return self.apply_fn(self.context, edit, options, listener);
+    }
+    pub fn setPreviewHandler(self: IBulkEditService, handler: IBulkEditPreviewHandler) !cancellation.IDisposable {
+        return self.set_preview_handler_fn(self.context, handler);
     }
     pub fn hasPreviewHandler(self: IBulkEditService) bool {
         return self.has_preview_handler_fn(self.context);

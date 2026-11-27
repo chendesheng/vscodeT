@@ -129,7 +129,6 @@ pub const BulkTextEdits = struct {
                 .text => |edit| edit,
                 .file => return error.UnsupportedResourceEdit,
             };
-            if (edit.metadata) |metadata| if (metadata.needs_confirmation) return error.PreviewRequired;
             const key = try uri_util.resourceKey(a, edit.resource);
             const entry = try groups.getOrPut(a, key);
             if (!entry.found_existing) {
