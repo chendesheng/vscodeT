@@ -477,6 +477,26 @@ pub const MultiDocumentHighlightProvider = struct {
     provide_multi_document_highlights: *const fn (*anyopaque, Allocator, *TextModel, Position, []const *TextModel, CancellationToken) anyerror!?[]const MultiDocumentHighlight,
 };
 
+pub const SemanticTokensLegend = struct {
+    token_types: []const []const u8,
+    token_modifiers: []const []const u8,
+};
+pub const SemanticTokensResult = @import("services/semanticTokensDto.zig").DecodedSemanticTokensDto;
+pub const SemanticTokensCallback = struct { context: *anyopaque, complete: *const fn (*anyopaque, anyerror!?SemanticTokensResult) void };
+pub const DocumentSemanticTokensProvider = struct {
+    context: *anyopaque,
+    legend: SemanticTokensLegend,
+    on_did_change: ?*@import("../../base/common/event.zig").Emitter(void) = null,
+    request_document_semantic_tokens: *const fn (*anyopaque, Allocator, *TextModel, ?u32, SemanticTokensCallback) anyerror!@import("../../base/common/lifecycle.zig").IDisposable,
+    release_document_semantic_tokens: *const fn (*anyopaque, u32) void,
+};
+pub const DocumentRangeSemanticTokensProvider = struct {
+    context: *anyopaque,
+    legend: SemanticTokensLegend,
+    on_did_change: ?*@import("../../base/common/event.zig").Emitter(void) = null,
+    request_document_range_semantic_tokens: *const fn (*anyopaque, Allocator, *TextModel, Range, SemanticTokensCallback) anyerror!@import("../../base/common/lifecycle.zig").IDisposable,
+};
+
 pub const SignatureHelpTriggerKind = enum(u8) { Invoke = 1, TriggerCharacter = 2, ContentChange = 3 };
 pub const ParameterInformation = struct {
     // Offset labels are UTF-8 byte offsets after wire decoding.

@@ -2740,6 +2740,67 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(!workbench.bulk_edit_preview.?.hasInput());
             try std.testing.expect(!selection_editor.rename_input_visible);
 
+            const SemanticResult = @import("../../../editor/common/languages.zig").SemanticTokensResult;
+            const SemanticProbe = struct {
+                result: ?SemanticResult = null,
+                failure: ?anyerror = null,
+                changed: bool = false,
+                fn ready(context: *anyopaque, value: anyerror!?SemanticResult) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    if (value) |response| self.result = response else |err| self.failure = err;
+                }
+                fn change(_: void, self: *@This()) !void {
+                    self.changed = true;
+                }
+            };
+            var semantic_probe: SemanticProbe = .{};
+            var semantic_arena = std.heap.ArenaAllocator.init(allocator);
+            defer semantic_arena.deinit();
+            const semantic_a = semantic_arena.allocator();
+            const semantic_providers = try features.document_semantic_tokens_provider.ordered(semantic_a, model, false);
+            try std.testing.expectEqual(@as(usize, 1), semantic_providers.len);
+            const semantic_provider = semantic_providers[0];
+            try std.testing.expectEqualStrings("variable", semantic_provider.legend.token_types[0]);
+            const semantic_listener = try semantic_provider.on_did_change.?.listen(&semantic_probe, SemanticProbe.change);
+            defer semantic_provider.on_did_change.?.unlisten(semantic_listener);
+            _ = try semantic_provider.request_document_semantic_tokens(semantic_provider.context, semantic_a, model, null, .{ .context = &semantic_probe, .complete = SemanticProbe.ready });
+            const semantic_deadline = time_compat.milliTimestamp() + 5000;
+            while (semantic_probe.result == null and semantic_probe.failure == null and time_compat.milliTimestamp() < semantic_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            const full = semantic_probe.result orelse return error.SemanticTokensUnavailable;
+            try std.testing.expectEqualSlices(u32, &.{ 1, 0, 1, 0, 1 }, full.payload.full);
+            semantic_probe.result = null;
+            _ = try semantic_provider.request_document_semantic_tokens(semantic_provider.context, semantic_a, model, full.id, .{ .context = &semantic_probe, .complete = SemanticProbe.ready });
+            const delta_deadline = time_compat.milliTimestamp() + 5000;
+            while (semantic_probe.result == null and semantic_probe.failure == null and time_compat.milliTimestamp() < delta_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            const delta = semantic_probe.result orelse return error.SemanticDeltaUnavailable;
+            try std.testing.expectEqual(@as(u32, 2), delta.payload.delta[0].start);
+            try std.testing.expectEqualSlices(u32, &.{2}, delta.payload.delta[0].data);
+            semantic_provider.release_document_semantic_tokens(semantic_provider.context, delta.id);
+            const range_providers = try features.document_range_semantic_tokens_provider.ordered(semantic_a, model, false);
+            try std.testing.expectEqual(@as(usize, 1), range_providers.len);
+            const range_provider = range_providers[0];
+            semantic_probe.result = null;
+            _ = try range_provider.request_document_range_semantic_tokens(range_provider.context, semantic_a, model, Range.init(1, 1, 3, 1), .{ .context = &semantic_probe, .complete = SemanticProbe.ready });
+            const range_deadline = time_compat.milliTimestamp() + 5000;
+            while (semantic_probe.result == null and semantic_probe.failure == null and time_compat.milliTimestamp() < range_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expectEqualSlices(u32, &.{ 1, 0, 1, 0, 0 }, (semantic_probe.result orelse return error.SemanticRangeUnavailable).payload.full);
+            try extension_host.host.executeContributedCommand("fixture.changeSemanticTokens", &.{});
+            const event_deadline = time_compat.milliTimestamp() + 5000;
+            while (!semantic_probe.changed and time_compat.milliTimestamp() < event_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(semantic_probe.changed);
+
             const action_model = @import("../../../editor/contrib/codeAction/browser/codeAction.zig");
             const action_types = @import("../../../editor/contrib/codeAction/common/types.zig");
             const ActionReceiver = struct {

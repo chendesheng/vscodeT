@@ -4,7 +4,7 @@
 // The terminal workbench has no DI container. `LanguageFeaturesService` owns
 // the registries and returns this pointer bag through `interface()`.
 //
-// Deferred registries from upstream (semantic tokens, inlay hints,
+// Deferred registries from upstream (inlay hints,
 // links, colors,
 // call/type hierarchy, inline completions, paste/drop edits and the remaining
 // language-feature registries) are not present.
@@ -14,6 +14,8 @@ const languages = @import("../languages.zig");
 const completion = @import("../languages/completion.zig");
 
 pub const ILanguageFeaturesService = struct {
+    document_semantic_tokens_provider: *registry.LanguageFeatureRegistry(languages.DocumentSemanticTokensProvider),
+    document_range_semantic_tokens_provider: *registry.LanguageFeatureRegistry(languages.DocumentRangeSemanticTokensProvider),
     rename_provider: *registry.LanguageFeatureRegistry(languages.RenameProvider),
     signature_help_provider: *registry.LanguageFeatureRegistry(languages.SignatureHelpProvider),
     folding_range_provider: *registry.LanguageFeatureRegistry(languages.FoldingRangeProvider),

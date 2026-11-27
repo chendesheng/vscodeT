@@ -14,6 +14,8 @@ const features = @import("languageFeatures.zig");
 
 pub const LanguageFeaturesService = struct {
     allocator: Allocator,
+    document_semantic_tokens_provider: registry.LanguageFeatureRegistry(languages.DocumentSemanticTokensProvider),
+    document_range_semantic_tokens_provider: registry.LanguageFeatureRegistry(languages.DocumentRangeSemanticTokensProvider),
     rename_provider: registry.LanguageFeatureRegistry(languages.RenameProvider),
     signature_help_provider: registry.LanguageFeatureRegistry(languages.SignatureHelpProvider),
     folding_range_provider: registry.LanguageFeatureRegistry(languages.FoldingRangeProvider),
@@ -37,6 +39,8 @@ pub const LanguageFeaturesService = struct {
     pub fn init(allocator: Allocator) LanguageFeaturesService {
         return .{
             .allocator = allocator,
+            .document_semantic_tokens_provider = .init(allocator),
+            .document_range_semantic_tokens_provider = .init(allocator),
             .rename_provider = .init(allocator),
             .signature_help_provider = .init(allocator),
             .folding_range_provider = .init(allocator),
@@ -60,6 +64,8 @@ pub const LanguageFeaturesService = struct {
     }
 
     pub fn deinit(self: *LanguageFeaturesService) void {
+        self.document_semantic_tokens_provider.deinit();
+        self.document_range_semantic_tokens_provider.deinit();
         self.rename_provider.deinit();
         self.signature_help_provider.deinit();
         self.folding_range_provider.deinit();
@@ -83,6 +89,8 @@ pub const LanguageFeaturesService = struct {
 
     pub fn interface(self: *LanguageFeaturesService) features.ILanguageFeaturesService {
         return .{
+            .document_semantic_tokens_provider = &self.document_semantic_tokens_provider,
+            .document_range_semantic_tokens_provider = &self.document_range_semantic_tokens_provider,
             .rename_provider = &self.rename_provider,
             .signature_help_provider = &self.signature_help_provider,
             .folding_range_provider = &self.folding_range_provider,

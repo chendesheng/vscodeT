@@ -3,7 +3,7 @@
 //
 // Ported features: hover, completion, definition, declaration,
 // implementation, type definition, references, document/workspace symbols, single- and
-// multi-document highlights, folding/selection ranges, signature help, rename, CodeLens, code actions
+// multi-document highlights, folding/selection ranges, signature help, rename, semantic tokens, CodeLens, code actions
 // and document/range/on-type formatting. The actor stores providers by handle
 // in `LanguageFeaturesService`, converts the extension-host DTOs into editor
 // types and forwards provider calls back to `ExtHostLanguageFeatures`.
@@ -68,6 +68,7 @@ const Registration = struct {
     code_lens_state: ?*CodeLensState = null,
     workspace_symbol_state: ?*WorkspaceSymbolState = null,
     folding_state: ?*FoldingState = null,
+    semantic_state: ?*SemanticState = null,
 };
 
 const HoverState = struct {
@@ -588,6 +589,7 @@ pub const MainThreadLanguageFeatures = struct {
     registrations: std.AutoHashMap(u32, *Registration),
     code_lens_events: std.AutoHashMap(u32, *CodeLensState),
     folding_events: std.AutoHashMap(u32, *FoldingState),
+    semantic_events: std.AutoHashMap(u32, *SemanticState),
     code_lens_commands: std.ArrayList(*CodeLensCommandRequest) = .empty,
     model_position_commands: std.ArrayList(*ModelPositionCommandRequest) = .empty,
     code_action_commands: std.ArrayList(*CodeActionCommandRequest) = .empty,
@@ -602,6 +604,7 @@ pub const MainThreadLanguageFeatures = struct {
             .registrations = std.AutoHashMap(u32, *Registration).init(allocator),
             .code_lens_events = std.AutoHashMap(u32, *CodeLensState).init(allocator),
             .folding_events = .init(allocator),
+            .semantic_events = .init(allocator),
         };
     }
 
@@ -617,6 +620,7 @@ pub const MainThreadLanguageFeatures = struct {
         self.code_lens_commands.deinit(self.allocator);
         self.code_lens_events.deinit();
         self.folding_events.deinit();
+        self.semantic_events.deinit();
         self.inline_providers.deinit();
     }
 
@@ -678,6 +682,10 @@ pub const MainThreadLanguageFeatures = struct {
         }
         if (registration.disposable) |disposable| disposable.dispose();
         if (registration.workspace_symbol_state) |state| state.releaseLastResult();
+        if (registration.semantic_state) |state| {
+            if (state.event_handle) |handle| _ = self.semantic_events.remove(handle);
+            state.changed.deinit();
+        }
         if (registration.folding_state) |state| {
             if (state.event_handle) |handle| _ = self.folding_events.remove(handle);
             state.changed.deinit();
@@ -722,6 +730,7 @@ pub const MainThreadLanguageFeatures = struct {
             if (self.registrations.fetchRemove(handle)) |entry| self.destroyRegistration(entry.value);
             if (self.code_lens_events.fetchRemove(handle)) |entry| entry.value.event_handle = null;
             if (self.folding_events.fetchRemove(handle)) |entry| entry.value.event_handle = null;
+            if (self.semantic_events.fetchRemove(handle)) |entry| entry.value.event_handle = null;
             return .empty;
         }
         if (std.mem.eql(u8, method, "$registerInlineCompletionsSupport")) {
@@ -738,6 +747,13 @@ pub const MainThreadLanguageFeatures = struct {
         if (std.mem.eql(u8, method, "$registerImplementationSupport")) return self.registerLocationProvider(args, arena, .implementation);
         if (std.mem.eql(u8, method, "$registerTypeDefinitionSupport")) return self.registerLocationProvider(args, arena, .type_definition);
         if (std.mem.eql(u8, method, "$registerReferenceSupport")) return self.registerReference(args, arena);
+        if (std.mem.eql(u8, method, "$registerDocumentSemanticTokensProvider")) return self.registerSemanticTokens(args, arena, false);
+        if (std.mem.eql(u8, method, "$registerDocumentRangeSemanticTokensProvider")) return self.registerSemanticTokens(args, arena, true);
+        if (std.mem.eql(u8, method, "$emitDocumentSemanticTokensEvent") or std.mem.eql(u8, method, "$emitDocumentRangeSemanticTokensEvent")) {
+            const handle = handleArg(args) orelse return error.InvalidArguments;
+            if (self.semantic_events.get(handle)) |state| try state.changed.fire({});
+            return .empty;
+        }
         if (std.mem.eql(u8, method, "$registerRenameSupport")) return self.registerRename(args, arena);
         if (std.mem.eql(u8, method, "$registerSignatureHelpProvider")) return self.registerSignatureHelp(args, arena);
         if (std.mem.eql(u8, method, "$registerFoldingRangeProvider")) return self.registerFoldingRange(args, arena);
@@ -854,6 +870,35 @@ pub const MainThreadLanguageFeatures = struct {
             .requires_window_fiber = self.proxy.request_async != null,
             .provide_references = provideReferences,
         });
+        return .empty;
+    }
+
+    fn registerSemanticTokens(self: *MainThreadLanguageFeatures, args: []const rpc.Arg, arena: Allocator, is_range: bool) !rpc.HandlerReply {
+        const handle = handleArg(args) orelse return error.InvalidArguments;
+        const selector_value = jsonArg(args, 1) orelse return error.InvalidArguments;
+        const legend_value = jsonArg(args, 2) orelse return error.InvalidArguments;
+        if (legend_value != .object) return error.InvalidArguments;
+        const registration = try self.createRegistration(arena, handle);
+        errdefer {
+            _ = self.registrations.remove(handle);
+            self.destroyRegistration(registration);
+        }
+        const a = registration.arena.allocator();
+        const state = try a.create(SemanticState);
+        state.* = .{ .registration = registration, .changed = .init(self.allocator) };
+        registration.semantic_state = state;
+        if (jsonArg(args, 3)) |event| if (event == .integer) {
+            state.event_handle = std.math.cast(u32, event.integer);
+        };
+        if (state.event_handle) |event| try self.semantic_events.put(event, state);
+        const selector = try parseSelector(a, selector_value);
+        const legend: languages.SemanticTokensLegend = .{ .token_types = try signatureCharacters(a, legend_value.object.get("tokenTypes")), .token_modifiers = try signatureCharacters(a, legend_value.object.get("tokenModifiers")) };
+        const emitter = if (state.event_handle != null) &state.changed else null;
+        if (is_range) {
+            registration.disposable = try self.features.document_range_semantic_tokens_provider.register(selector, .{ .context = state, .legend = legend, .on_did_change = emitter, .request_document_range_semantic_tokens = SemanticState.requestRange });
+        } else {
+            registration.disposable = try self.features.document_semantic_tokens_provider.register(selector, .{ .context = state, .legend = legend, .on_did_change = emitter, .request_document_semantic_tokens = SemanticState.requestFull, .release_document_semantic_tokens = SemanticState.release });
+        }
         return .empty;
     }
 
@@ -2491,6 +2536,48 @@ fn signatureCharacters(a: Allocator, value: ?std.json.Value) ![]const []const u8
     };
     return chars.items;
 }
+
+const SemanticState = struct {
+    registration: *Registration,
+    changed: @import("../../../base/common/event.zig").Emitter(void),
+    event_handle: ?u32 = null,
+    const Pending = struct {
+        allocator: Allocator,
+        callback: languages.SemanticTokensCallback,
+        fn ready(context: *anyopaque, reply: rpc.Reply) void {
+            const self: *Pending = @ptrCast(@alignCast(context));
+            self.callback.complete(self.callback.context, switch (reply) {
+                .buffer => |bytes| decode(self.allocator, bytes),
+                .err => error.RequestFailed,
+                else => @as(?languages.SemanticTokensResult, null),
+            });
+        }
+        fn decode(a: Allocator, bytes: []const u8) !?languages.SemanticTokensResult {
+            return try @import("../../../editor/common/services/semanticTokensDto.zig").decodeSemanticTokensDto(a, bytes);
+        }
+    };
+    fn requestFull(context: *anyopaque, a: Allocator, model: *TextModel, previous: ?u32, callback: languages.SemanticTokensCallback) !IDisposable {
+        const self: *SemanticState = @ptrCast(@alignCast(context));
+        const proxy = self.registration.owner.proxy;
+        const send = proxy.request_async orelse return error.RequestFailed;
+        const pending = try a.create(Pending);
+        pending.* = .{ .allocator = a, .callback = callback };
+        return send(proxy.context, "$provideDocumentSemanticTokens", &.{ .{ .json = .{ .integer = self.registration.handle } }, .{ .json = try std_uri.jsonComponents(a, model.uri()) }, .{ .json = .{ .integer = previous orelse 0 } } }, .{ .context = pending, .callback = Pending.ready });
+    }
+    fn requestRange(context: *anyopaque, a: Allocator, model: *TextModel, range: Range, callback: languages.SemanticTokensCallback) !IDisposable {
+        const self: *SemanticState = @ptrCast(@alignCast(context));
+        const proxy = self.registration.owner.proxy;
+        const send = proxy.request_async orelse return error.RequestFailed;
+        const pending = try a.create(Pending);
+        pending.* = .{ .allocator = a, .callback = callback };
+        return send(proxy.context, "$provideDocumentRangeSemanticTokens", &.{ .{ .json = .{ .integer = self.registration.handle } }, .{ .json = try std_uri.jsonComponents(a, model.uri()) }, .{ .json = try rangeJson(a, model, range) } }, .{ .context = pending, .callback = Pending.ready });
+    }
+    fn release(context: *anyopaque, id: u32) void {
+        const self: *SemanticState = @ptrCast(@alignCast(context));
+        const proxy = self.registration.owner.proxy;
+        proxy.notify(proxy.context, "$releaseDocumentSemanticTokens", &.{ .{ .json = .{ .integer = self.registration.handle } }, .{ .json = .{ .integer = id } } }) catch {};
+    }
+};
 
 const RenameState = struct {
     fn args(a: Allocator, registration: *Registration, model: *TextModel, position: Position) ![3]rpc.Arg {

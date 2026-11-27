@@ -216,6 +216,23 @@ function activate(context) {
       ];
     }
   }));
+  const semanticLegend = new vscode.SemanticTokensLegend(['variable'], ['declaration']);
+  const semanticChanges = new vscode.EventEmitter();
+  context.subscriptions.push(semanticChanges,
+    vscode.commands.registerCommand('fixture.changeSemanticTokens', () => semanticChanges.fire()),
+    vscode.languages.registerDocumentSemanticTokensProvider({ language: 'json' }, {
+      onDidChangeSemanticTokens: semanticChanges.event,
+      provideDocumentSemanticTokens() {
+        return new vscode.SemanticTokens(new Uint32Array([1, 0, 1, 0, 1]), 'first');
+      },
+      provideDocumentSemanticTokensEdits(document, lastResultId) {
+        if (lastResultId !== 'first') return new vscode.SemanticTokens(new Uint32Array([1, 0, 2, 0, 1]), 'second');
+        return new vscode.SemanticTokensEdits([new vscode.SemanticTokensEdit(2, 1, new Uint32Array([2]))], 'second');
+      }
+    }, semanticLegend),
+    vscode.languages.registerDocumentRangeSemanticTokensProvider({ language: 'json' }, {
+      provideDocumentRangeSemanticTokens() { return new vscode.SemanticTokens(new Uint32Array([1, 0, 1, 0, 0])); }
+    }, semanticLegend));
   context.subscriptions.push(vscode.languages.registerRenameProvider({ language: 'json' }, {
     prepareRename(document, position) {
       if (position.line === 0) throw new Error('Not a renamable location');
