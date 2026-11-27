@@ -3528,6 +3528,87 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(wb.activeTab() == null);
         }
 
+        test "Extensions: real Zig extension starts ZLS and provides hover" {
+            if (!build_options.e2e) return error.SkipZigTest;
+            // Explicit opt-in keeps ordinary CI independent of a developer's
+            // installed Zig/ZLS binaries and avoids installer network access.
+            const extension_path = std.mem.span(std.c.getenv("VSCODE_T_ZIG_EXTENSION") orelse return error.SkipZigTest);
+            const zig_path = std.mem.span(std.c.getenv("VSCODE_T_ZIG_PATH") orelse return error.SkipZigTest);
+            const zls_path = std.mem.span(std.c.getenv("VSCODE_T_ZLS_PATH") orelse return error.SkipZigTest);
+            try verifyRealZig(extension_path, zig_path, zls_path, false);
+            try verifyRealZig(extension_path, zig_path, zls_path, true);
+        }
+
+        fn verifyRealZig(extension_path: []const u8, zig_path: []const u8, zls_path: []const u8, workspace_activation: bool) !void {
+            const io = time_compat.io;
+            const allocator = std.testing.allocator;
+            try std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{});
+            try std.Io.Dir.cwd().access(io, zig_path, .{});
+            try std.Io.Dir.cwd().access(io, zls_path, .{});
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+            defer allocator.free(root);
+            const settings = try std.json.Stringify.valueAlloc(allocator, .{
+                .@"zig.path" = zig_path,
+                .@"zig.zls.path" = zls_path,
+                .@"zig.zls.enabled" = "on",
+                .@"zig.zls.trace.server" = "verbose",
+            }, .{});
+            defer allocator.free(settings);
+            try tmp.dir.writeFile(io, .{ .sub_path = "settings.json", .data = settings });
+            const settings_path = try std.fs.path.join(allocator, &.{ root, "settings.json" });
+            defer allocator.free(settings_path);
+            try tmp.dir.writeFile(io, .{ .sub_path = "sample.zig", .data = "/// Returns the answer.\npub fn answer() u32 { return 42; }\npub fn example() u32 { return answer(); }\n" });
+            const document_path = try std.fs.path.join(allocator, &.{ root, "sample.zig" });
+            defer allocator.free(document_path);
+            var catalog = try @import("../../services/extensions/common/extensionsRegistry.zig").scan(allocator, &.{extension_path});
+            defer catalog.deinit();
+            const window = try TestWindow.initWithOptions(allocator, io, &.{}, 100, 30, .{ .initial_user_settings_paths = &.{settings_path} }, null);
+            defer window.deinit();
+            const workbench = window.workbench;
+            workbench.setDeclarativeExtensions(&catalog);
+            if (workspace_activation) {
+                try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = "const std = @import(\"std\");\npub fn build(b: *std.Build) void { _ = b; }\n" });
+                try workbench.setWorkspaceFolders(&.{root});
+            } else {
+                try workbench.openPath(document_path);
+            }
+            try workbench.enableLanguageFeatures();
+            const extension_host = try Extensions.init(allocator, io, workbench.extensionHostServices(), &.{.{ .path = extension_path }}, if (workspace_activation) ".cache-ext/data-zig-workspace-test" else ".cache-ext/data-zig-test", "host/dist");
+            defer extension_host.deinit();
+            try std.testing.expectEqualStrings("ziglang.vscode-zig", extension_host.descriptions[0].identifier);
+            if (workspace_activation) {
+                // No document is open: activation must come from the pinned
+                // host's workspaceContains:build.zig path, not onLanguage.
+                const activation_deadline = time_compat.milliTimestamp() + 30_000;
+                while (!extension_host.activated and time_compat.milliTimestamp() < activation_deadline) {
+                    _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                    time_compat.sleepMillis(20);
+                }
+                try std.testing.expect(extension_host.activated);
+                try workbench.openPath(document_path);
+            }
+            const model = workbench.activeTab().?.editor.model;
+            try std.testing.expectEqualStrings("zig", model.getLanguageId());
+            const features = workbench.language_features.?;
+            const token = @import("../../../base/common/cancellation.zig").CancellationToken.None;
+            const deadline = time_compat.milliTimestamp() + 30_000;
+            while (time_compat.milliTimestamp() < deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                const providers = try features.hover_provider.ordered(allocator, model, false);
+                defer allocator.free(providers);
+                for (providers) |provider| {
+                    const result = provider.provide_hover(provider.context, model, Position.init(3, 32), token, null) catch continue;
+                    if (result) |hover| for (hover.contents) |contents| {
+                        if (std.mem.indexOf(u8, contents.value, "answer") != null) return;
+                    };
+                }
+                time_compat.sleepMillis(20);
+            }
+            return error.ZlsHoverNotReceived;
+        }
+
         test "Extensions: real TypeScript extension drives the language features" {
             if (!build_options.e2e) return error.SkipZigTest;
             const io = time_compat.io;

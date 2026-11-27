@@ -1,6 +1,6 @@
 # Faithful port of the Zig VS Code extension and ZLS LSP support
 
-Status: proposed integration plan; several prerequisite ports already exist, but real Zig/ZLS integration is not yet verified.
+Status: implementation in progress. Initial real Zig/ZLS activation and hover are verified on macOS; the full advertised-capability matrix is not complete.
 Upstream specification: VS Code 1.147.0 at `e31c2e52f563620846caab877103f630ea361b9c`.
 
 ## Fidelity contract
@@ -76,10 +76,31 @@ Not included: LSP features ZLS does not advertise (code lens, document links/col
 
 ## Assumptions
 
-- The Node extension host remains optional (`zig build host`) and Linux/macOS-only. Missing host/Node is diagnosed and the editor continues with declarative extensions.
+- The Node extension host remains optional (`zig build host`) on Linux, macOS and Windows. Missing host/Node is diagnosed and the editor continues with declarative extensions.
 - ZLS is supplied by the extension (or `zig.zls.path`). The extension's `workspace.fs` installer is supported by the ported local `MainThreadFileSystem`; network access remains external.
 - Configuration writes from extensions stay session-memory only (existing limitation); users persist `zig.path`, `zig.zls.path` and `zig.zls.enabled` (string `"on"`, not boolean; extension default is `"ask"`) in settings if they must survive restart.
 - User-installed extension JavaScript executes with user privileges when enabled; no sandbox is added.
+
+## Implementation record (2026-11-27)
+
+| Owner | Current status |
+|---|---|
+| `abstractExtensionService`, scanner and activation tracker | Effective enabled merged inventory, system bundle path resolution, declarative-only entries and user overrides implemented; live hot rescan/enablement is still next-launch only. |
+| `MainThreadWorkspace` | Real empty/multi-folder startup data and folder-change notification implemented; local glob check uses the existing file walker. Full cancellation during a running search, workspace editing and configuration-change propagation still need reconciliation. |
+| `MainThreadFileSystem` | Local stat/readdir/read/write/mkdir/delete/rename/copy and provider info implemented through IFileService; custom scheme provider registration, asynchronous disk mutations and installer-specific verification remain outstanding. |
+| `MainThreadLanguageFeatures` | Existing hover, completion, definition/declaration/type definition, references, symbols, highlights, code actions and formatting registrations retained; signature help, rename, workspace symbols, folding, selection range, semantic tokens and inlay hints remain unported. |
+| Host support and consumer views | Save/bulk-edit foundation already present; language status, output/logging, file-watcher RPC, progress, and full portable feature consumers still outstanding. |
+
+Reference run: real installed Zig extension **0.7.0**, Zig **0.17.0**, ZLS **0.17.0**, pinned Node extension host on macOS. The opt-in end-to-end test passed in two modes: standalone `sample.zig` (implicit `onLanguage`) and a workspace containing `build.zig` with no initially open document (workspace activation); both returned hover containing `answer` through the actual ZLS provider. The negotiated initialize response, complete provider matrix and Windows/Linux real-Zig runs have not yet been captured. Run:
+
+```sh
+VSCODE_T_ZIG_EXTENSION="$HOME/.vscode/extensions/ziglang.vscode-zig-0.7.0" \
+VSCODE_T_ZIG_PATH="$(command -v zig)" \
+VSCODE_T_ZLS_PATH="$(command -v zls)" \
+zig build test-e2e '-De2e-filter=Extensions: real Zig extension'
+```
+
+The environment variables are explicit opt-in reference assets, not special production extension-resolution rules. The test uses temporary settings and workspaces. Normal CI continues to run the same native suites on all three platforms; only the optional real-Zig test skips without those assets.
 
 ## Stage 0 — Reconcile the implementation and upstream contracts
 
@@ -134,7 +155,7 @@ The terminal's actual shared `EditorDocument` now invokes the registered `MainTh
 
 - Add `host/test-fixtures/lsp-language-features/`: a fixture extension using the host's real `vscode-languageclient` dependency and a mock LSP server advertising the reference ZLS capability set. Add separate fixture coverage for optional provider contracts (resolve, token delta, change events) and `Extensions:` e2e tests for every capability and required interaction, including nested will-save, rename, code actions, semantic tokens and inlay hints.
 - Expand the Stage 1 real-Zig startup test into the full observable feature matrix, including saved on-disk contents, workspace edits and output/status behavior. Gate ordinary local runs on the reference assets, but require an actual passing real-extension run on the reference combination before claiming complete Zig/ZLS integration; record the versions and results. Keep this test separate from mock coverage.
-- Add the Linux CI e2e step after the existing `npm ci`: build `host/dist/extensionHost.mjs` and run `zig build test-e2e`. TypeScript/real-Zig tests may skip when their optional assets are absent; the new mock LSP fixture and host bundle are mandatory in this CI step, and missing assets must fail that fixture run rather than silently skip it.
+- The shared native Linux/macOS/Windows CI matrix already builds the pinned host, JSON server and TypeScript SDK and runs `zig build test-e2e`. Add the mandatory mock LSP fixture to that same suite; preserve TypeScript coverage and only skip the real-Zig test when its explicitly optional reference assets are absent.
 - Update `README.md` (remove the user-extension-activation exclusion; document host build, auto pickup, Zig/ZLS setup and keybindings), `docs/extensions.md` (§10/§16/§18 plus a new Zig/LSP section with the capability matrix and terminal adaptations), `docs/terminal-ui.md` (widgets, injected text, keys), `docs/css.md` (new ported sheets), and palette fixtures.
 
 ## Tests and acceptance

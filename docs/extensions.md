@@ -2064,8 +2064,9 @@ generic fallback.
 
 The workbench ports the local inventory half of VS Code 1.147.0's Extensions
 viewlet. The marketplace, remote/web extension servers, extension-details
-editor and extension-code activation for user-installed extensions are out of
-scope (see §16).
+editor remain out of scope (see §16). Enabled user extensions now participate
+in the local Node host inventory, with individual API support tracked in the
+[Zig/LSP integration plan](zig-extension-lsp-plan.md).
 
 ### 18.1 Scan sources and ownership
 

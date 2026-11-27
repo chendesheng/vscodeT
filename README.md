@@ -433,7 +433,7 @@ profile value shape (`[{"id":"publisher.name"}]`, the
 user extensions' declarative contributions (languages, grammars, snippets,
 icon themes, themes, `configurationDefaults`) are loaded at startup, and
 disabled extensions are excluded from the declarative catalog and from the
-executable built-in bundles passed to the Node extension host. The TUI has no
+effective installed extensions passed to the Node extension host. The TUI has no
 reload command, so a change shows a restart notification instead of reloading
 in place. `Refresh` (`workbench.extensions.action.refreshExtension`) rescans
 the directories; `Clear Extensions Search Results` is also an F1 command.
@@ -441,9 +441,9 @@ the directories; `Clear Extensions Search Results` is also an F1 command.
 Not ported: the marketplace (install/uninstall/update/recommendations),
 extension-details editor, extension icons/ratings/install counts, workspace
 `.vscode/extensions` and development extensions, per-workspace enablement,
-engine-range compatibility checks, and activation of user-installed extension
-JavaScript. A user copy of a built-in id overrides it declaratively, but the
-installed built-in bundle is still what the Node host runs. See
+engine-range compatibility checks, and remote/web extension hosts. Enabled
+user extensions can activate in the local Node host; their individual API
+requirements may still be unported. See
 `docs/extensions.md` for the implementation map.
 
 ## Extension host (experimental)
@@ -482,8 +482,20 @@ Simple Browser, Terminal Suggest, GitHub and Microsoft authentication, and the
 npm, Grunt, Gulp and Jake task providers. The build installs their bundles, language
 servers and TypeScript SDK under `lib/vscode-textbuffer` in the same prefix
 as `zig build` (including `--prefix`). The ordinary native build requires
-no Node installation. Only executable packages present in both the installed
-runtime and the built-in catalog are passed to the extension host.
+no Node installation. The host receives the same enabled, deduplicated installed
+inventory as the declarative registry, including user and declarative-only
+extensions. Bundled system extensions use the installed runtime bundle when
+present; otherwise the catalog location is used.
+
+### Zig and ZLS (experimental)
+
+Install `ziglang.vscode-zig` in the effective extensions directory and build the
+Node host. With Zig and ZLS installed locally, set `"zig.path"`,
+`"zig.zls.path"` and `"zig.zls.enabled": "on"` in the VS Code settings used
+by the editor. The real Zig extension 0.7.0 with Zig/ZLS 0.17.0 has been
+verified to activate from a standalone Zig file and a workspace containing
+`build.zig`, and return hover content from ZLS. The full LSP capability matrix
+is still in progress; see [the integration plan](docs/zig-extension-lsp-plan.md).
 
 `zig build json-server` builds and installs the optional standalone JSON server.
 The intermediate bundles under `host/dist` are also used by the repository's
