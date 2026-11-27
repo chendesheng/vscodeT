@@ -126,6 +126,8 @@ pub const HostManager = struct {
     queue: std.array_list.Managed([]u8),
     queue_mutex: std.Io.Mutex = .init,
     reader: ?std.Thread = null,
+    ready_task: ?*@import("../../../../base/common/windowDispatch.zig").Task = null,
+    awaiting: ?*AwaitSlot = null,
     eof: bool = false,
     started: bool = false,
     stopped: bool = false,
@@ -213,6 +215,7 @@ pub const HostManager = struct {
 
     pub fn deinit(self: *HostManager) void {
         self.stop();
+        self.failAwaiters();
         self.rpc.deinit();
         self.server.deinit(self.io);
         std.Io.Dir.deleteFileAbsolute(self.io, self.socket_path) catch {};
@@ -267,6 +270,7 @@ pub const HostManager = struct {
                 const payload = self.allocator.dupe(u8, buffer.items[4 .. 4 + length]) catch break;
                 self.queue_mutex.lockUncancelable(self.io);
                 self.queue.append(payload) catch self.allocator.free(payload);
+                if (self.ready_task) |task| task.post();
                 self.queue_mutex.unlock(self.io);
                 const consumed = 4 + length;
                 std.mem.copyForwards(u8, buffer.items[0 .. buffer.items.len - consumed], buffer.items[consumed..]);
@@ -279,7 +283,19 @@ pub const HostManager = struct {
     fn setEof(self: *HostManager) void {
         self.queue_mutex.lockUncancelable(self.io);
         self.eof = true;
+        if (self.ready_task) |task| task.post();
         self.queue_mutex.unlock(self.io);
+    }
+
+    /// The reader owns only transport bytes; the window owns RPC dispatch.
+    /// Detach under the same lock before freeing the window task.
+    pub fn attachReadyTask(self: *HostManager, task: ?*@import("../../../../base/common/windowDispatch.zig").Task) void {
+        self.queue_mutex.lockUncancelable(self.io);
+        defer self.queue_mutex.unlock(self.io);
+        self.ready_task = task;
+        if (task) |ready| {
+            if (self.queue.items.len != 0 or self.eof) ready.post();
+        }
     }
 
     pub fn hasEof(self: *HostManager) bool {
@@ -303,6 +319,7 @@ pub const HostManager = struct {
             self.rpc.receive(frame);
             worked = true;
         }
+        if (self.hasEof()) self.failAwaiters();
         return worked;
     }
 
@@ -372,6 +389,60 @@ pub const HostManager = struct {
 
     pub fn setActor(self: *HostManager, identifier: proxyIdentifier.ProxyIdentifier, handler: rpcProtocol.ActorHandler) void {
         self.rpc.set(identifier, handler);
+    }
+
+    /// Runs from a WindowIo fiber. Incoming frames are dispatched by the
+    /// normal window queue, including requests nested inside this RPC.
+    /// No recursive pump and no blocking wait on the window thread.
+    pub fn requestAwait(
+        self: *HostManager,
+        window: *@import("../../../../base/common/windowDispatch.zig").Queue,
+        allocator: Allocator,
+        identifier: proxyIdentifier.ProxyIdentifier,
+        method: []const u8,
+        args: []const rpcProtocol.Arg,
+        token: ?@import("../../../../base/common/cancellation.zig").CancellationToken,
+        timeout_ms: u32,
+    ) !std.json.Value {
+        const cancellation = @import("../../../../base/common/cancellation.zig");
+        if (!@import("ui").WindowIo.inFiber(window.io)) return error.NotInWindowFiber;
+        if (self.hasEof()) return ExtensionHostError.HostExited;
+        const effective_token = token orelse cancellation.CancellationToken.None;
+        try effective_token.throwIfCancellationRequested();
+        var slot: AwaitSlot = .{
+            .owner = self,
+            .io = window.io,
+            .arena = std.heap.ArenaAllocator.init(allocator),
+        };
+        defer slot.arena.deinit();
+        const listener = try effective_token.onCancellationRequested(cancellation.CancellationListener.from(AwaitSlot, &slot, AwaitSlot.canceled));
+        defer listener.dispose();
+        slot.id = try self.rpc.call(identifier, method, args, token, .{ .context = &slot, .callback = AwaitSlot.callback });
+        slot.next = self.awaiting;
+        self.awaiting = &slot;
+        defer slot.detach();
+
+        const deadline = std.Io.Clock.Timestamp.fromNow(window.io, .{ .clock = .awake, .raw = .fromMilliseconds(timeout_ms) });
+        while (!slot.event.isSet()) {
+            slot.event.waitTimeout(window.io, .{ .deadline = deadline }) catch |err| switch (err) {
+                error.Timeout => {
+                    if (std.Io.Timestamp.now(window.io, .awake).nanoseconds >= deadline.raw.nanoseconds) return ExtensionHostError.HostTimeout;
+                },
+                error.Canceled => return err,
+            };
+        }
+        try effective_token.throwIfCancellationRequested();
+        if (slot.exited) return ExtensionHostError.HostExited;
+        if (slot.failed) return error.RequestFailed;
+        return rpcProtocol.cloneJsonValue(allocator, slot.value);
+    }
+
+    fn failAwaiters(self: *HostManager) void {
+        while (self.awaiting) |slot| {
+            slot.detach();
+            if (!slot.done) slot.exited = true;
+            slot.event.set(slot.io);
+        }
     }
 
     /// Sends a request and pumps the host until the reply arrives or the
@@ -448,6 +519,51 @@ pub const HostManager = struct {
             null,
             noop_callback,
         );
+    }
+};
+
+const AwaitSlot = struct {
+    owner: ?*HostManager,
+    next: ?*AwaitSlot = null,
+    io: std.Io,
+    id: u32 = undefined,
+    arena: std.heap.ArenaAllocator,
+    event: std.Io.Event = .unset,
+    value: std.json.Value = .null,
+    done: bool = false,
+    failed: bool = false,
+    exited: bool = false,
+
+    fn callback(context: *anyopaque, reply: rpcProtocol.Reply) void {
+        const self: *AwaitSlot = @ptrCast(@alignCast(context));
+        self.done = true;
+        defer self.event.set(self.io);
+        switch (reply) {
+            .json => |value| self.value = rpcProtocol.cloneJsonValue(self.arena.allocator(), value) catch {
+                self.failed = true;
+                return;
+            },
+            .empty => {},
+            else => self.failed = true,
+        }
+    }
+
+    fn canceled(self: *AwaitSlot) void {
+        self.event.set(self.io);
+    }
+
+    fn detach(self: *AwaitSlot) void {
+        const owner = self.owner orelse return;
+        var link = &owner.awaiting;
+        while (link.*) |slot| {
+            if (slot == self) {
+                link.* = self.next;
+                break;
+            }
+            link = &slot.next;
+        }
+        if (!self.done) owner.rpc.cancel(self.id);
+        self.owner = null;
     }
 };
 

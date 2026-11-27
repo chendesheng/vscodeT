@@ -376,6 +376,15 @@ pub const WindowIo = struct {
         return old;
     }
 
+    /// A window RPC can suspend only from a dispatched fiber: a root-level
+    /// await does not dispatch the native window's event queue.
+    pub fn inFiber(serial: Io) bool {
+        if (serial.vtable != &vtable) return false;
+        const self = fromOpaque(serial.userdata);
+        self.assertOwner();
+        return self.current != null;
+    }
+
     /// Returns the detached I/O backend for work that must run off-window.
     /// Non-WindowIo callers (standalone services/tests) retain their supplied Io.
     pub fn backingIo(serial: Io) Io {

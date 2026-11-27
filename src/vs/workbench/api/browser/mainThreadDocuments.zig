@@ -13,7 +13,7 @@ pub const Host = struct {
     context: *anyopaque,
     open: *const fn (context: *anyopaque, uri: std.json.Value, options: std.json.Value, arena: Allocator) anyerror!std.json.Value,
     create: *const fn (context: *anyopaque, options: std.json.Value, arena: Allocator) anyerror!std.json.Value,
-    save: *const fn (context: *anyopaque, uri: std.json.Value) anyerror!bool,
+    save: *const fn (context: *anyopaque, uri: std.json.Value) anyerror!rpc.HandlerReply,
 };
 
 pub const MainThreadDocuments = struct {
@@ -31,7 +31,7 @@ pub const MainThreadDocuments = struct {
         }
         if (std.mem.eql(u8, method, "$trySaveDocument")) {
             const uri = valueArg(args, 0) orelse return error.InvalidArguments;
-            return .{ .json = .{ .bool = try self.host.save(self.host.context, uri) } };
+            return self.host.save(self.host.context, uri);
         }
         if (methodKind(method) == .request) {
             return .{ .err = .{ .name = "Unsupported", .message = method } };

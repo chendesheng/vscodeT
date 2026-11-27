@@ -88,9 +88,11 @@ pub const Fiber = struct {
         run(@ptrCast(@alignCast(argument.?)));
     }
 
+    // A new fiber has no caller. Clear both the frame pointer and the
+    // return address so debug allocators cannot unwind into the root stack.
     fn posixEntry() callconv(.naked) void {
         switch (builtin.cpu.arch) {
-            .aarch64 => asm volatile ("mov x0, fp\nmov fp, #0\nb %[entry]"
+            .aarch64 => asm volatile ("mov x0, fp\nmov fp, #0\nmov lr, #0\nb %[entry]"
                 :
                 : [entry] "X" (&run),
             ),
@@ -98,7 +100,7 @@ pub const Fiber = struct {
                 :
                 : [entry] "X" (&run),
             ),
-            .riscv64 => asm volatile ("mv a0, fp\nli fp, 0\ntail %[entry]@plt"
+            .riscv64 => asm volatile ("mv a0, fp\nli fp, 0\nli ra, 0\ntail %[entry]@plt"
                 :
                 : [entry] "X" (&run),
             ),

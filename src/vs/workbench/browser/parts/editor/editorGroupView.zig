@@ -661,12 +661,39 @@ pub fn EditorGroupView(comptime View: type) type {
                 const host = self.host;
                 const tab = self.tabs[self.next - 1];
                 if (host.is_alive(host.context, self.pane, tab)) {
+                    const input = tab.editorInput();
+                    if (result == .SAVE and (input.close_handler != null or shouldConfirmClose(input))) {
+                        self.refs += 1;
+                        input.requestSave(self.pane.group.id, .{ .context = self, .complete = saveCompleted }) catch |err| saveCompleted(self, err);
+                        return;
+                    }
                     if (self.pane.doHandleCloseConfirmation(tab, result)) {
                         host.focus_editor(host.context, tab);
                         self.finish(false);
                         return;
                     }
                 } else if (result == .CANCEL) {
+                    self.finish(false);
+                    return;
+                }
+                self.confirmNext() catch |err| {
+                    host.report_error(host.context, err);
+                    self.finish(false);
+                };
+            }
+
+            fn saveCompleted(ptr: *anyopaque, result: anyerror!bool) void {
+                const self: *CloseEditorsOperation = @ptrCast(@alignCast(ptr));
+                defer self.release();
+                const host = self.host;
+                const tab = self.tabs[self.next - 1];
+                if (host.is_alive(host.context, self.pane, tab)) {
+                    if (saveVeto(tab, result)) {
+                        host.focus_editor(host.context, tab);
+                        self.finish(false);
+                        return;
+                    }
+                } else if (result) |_| {} else |_| {
                     self.finish(false);
                     return;
                 }
@@ -702,12 +729,19 @@ pub fn EditorGroupView(comptime View: type) type {
             pane: *Self,
             tab: View,
             host: CloseHost,
+            refs: usize = 1,
 
             fn complete(context: *anyopaque, result: dialogs.ConfirmResult) void {
                 const self: *CloseConfirmation = @ptrCast(@alignCast(context));
                 const host = self.host;
                 if (!host.is_alive(host.context, self.pane, self.tab)) {
                     host.focus_editor(host.context, null);
+                    return;
+                }
+                const input = self.tab.editorInput();
+                if (result == .SAVE and (input.close_handler != null or shouldConfirmClose(input))) {
+                    self.refs += 1;
+                    input.requestSave(self.pane.group.id, .{ .context = self, .complete = saveCompleted }) catch |err| saveCompleted(self, err);
                     return;
                 }
                 if (self.pane.doHandleCloseConfirmation(self.tab, result)) {
@@ -721,27 +755,51 @@ pub fn EditorGroupView(comptime View: type) type {
                 host.focus_editor(host.context, null);
             }
 
+            fn saveCompleted(context: *anyopaque, result: anyerror!bool) void {
+                const self: *CloseConfirmation = @ptrCast(@alignCast(context));
+                defer self.release();
+                const host = self.host;
+                if (!host.is_alive(host.context, self.pane, self.tab)) return;
+                if (saveVeto(self.tab, result)) {
+                    host.focus_editor(host.context, self.tab);
+                    return;
+                }
+                host.close_tab(host.context, self.pane, self.tab) catch |err| {
+                    host.report_error(host.context, err);
+                    return;
+                };
+                host.focus_editor(host.context, null);
+            }
+
+            fn release(self: *CloseConfirmation) void {
+                self.refs -= 1;
+                if (self.refs == 0) self.allocator.destroy(self);
+            }
+
             fn dispose(context: *anyopaque) void {
                 const self: *CloseConfirmation = @ptrCast(@alignCast(context));
-                self.allocator.destroy(self);
+                self.release();
             }
         };
 
-        /// Return true if the close is vetoed. The terminal's file inputs save
-        /// synchronously. Autosave-on-focus/window change and custom async
+        fn saveVeto(tab: View, result: anyerror!bool) bool {
+            const input = tab.editorInput();
+            const saved = result catch |err| {
+                tab.editor.setMessage("Unable to save {s}: {s}", .{ input.getName(), @errorName(err) });
+                return true;
+            };
+            return !saved or input.isDirty();
+        }
+
+        /// Return true if the close is vetoed. Save is delivered above by the
+        /// input's completion contract. Autosave-on-focus/window change and custom async
         /// confirm are still unported; the result is rechecked after the dialog.
         fn doHandleCloseConfirmation(self: *Self, tab: View, result: dialogs.ConfirmResult) bool {
             if (result == .CANCEL) return true;
             const input = tab.editorInput();
             if (input.close_handler == null and !shouldConfirmClose(input)) return false;
             switch (result) {
-                .SAVE => {
-                    _ = input.save(self.group.id) catch |err| {
-                        tab.editor.setMessage("Unable to save {s}: {s}", .{ input.getName(), @errorName(err) });
-                        return true;
-                    };
-                    return input.isDirty();
-                },
+                .SAVE => unreachable,
                 .DONT_SAVE => {
                     // Fall back to closing the final view when disk revert
                     // fails, as in the existing terminal soft-revert boundary.

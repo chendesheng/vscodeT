@@ -97,6 +97,7 @@ const language_configuration_registry = @import("../../../common/languages/langu
 const LanguageConfigurationService = language_configuration_registry.LanguageConfigurationService;
 const completion = @import("../../../common/languages/completion.zig");
 const CancellationToken = @import("../../../../base/common/cancellation.zig").CancellationToken;
+const CancellationTokenSource = @import("../../../../base/common/cancellation.zig").CancellationTokenSource;
 const extensions_registry = @import("../../../../workbench/services/extensions/common/extensionsRegistry.zig");
 const language_config_point = @import("../../../../workbench/services/language/common/languageConfigurationExtensionPoint.zig");
 const text_mate_tokenizer = @import("../../../common/model/tokens/textMateTokenizer.zig");
@@ -351,6 +352,12 @@ pub const EditorDocument = struct {
     /// Alternative version id at the last successful save. Shared by every
     /// view so both split panes flip clean together.
     saved_version: u32,
+    text_file_service: ?*text_files.TextFileService = null,
+    save_window: ?*window_dispatch.Queue = null,
+    pending_save: ?*SaveRequest = null,
+    queued_save: ?QueuedSave = null,
+    saving: bool = false,
+    saving_participants: bool = false,
     /// True when the file changed on disk while it had unsaved edits.
     conflict: bool = false,
     json: json_language.Document = .{},
@@ -510,6 +517,7 @@ pub const EditorDocument = struct {
             .is_dirty = wcIsDirty,
             .is_modified = wcIsModified,
             .save_fn = wcSave,
+            .request_save_fn = wcRequestSave,
             .add_dirty_listener = wcAddDirty,
             .remove_dirty_listener = wcRemoveDirty,
             .add_content_listener = wcAddContent,
@@ -537,6 +545,7 @@ pub const EditorDocument = struct {
 
     fn deinit(self: *EditorDocument) void {
         std.debug.assert(self.editors.items.len == 0);
+        self.cancelPendingSave();
         self.on_will_dispose.fire({}) catch {};
         self.on_will_dispose.deinit();
         self.editors.deinit();
@@ -581,33 +590,34 @@ pub const EditorDocument = struct {
     }
 
     pub fn save(self: *EditorDocument) !void {
+        if (self.pending_save != null) return error.SaveInProgress;
+        return self.saveWithIo(self.io);
+    }
+
+    fn saveWithIo(self: *EditorDocument, executor: Io) !void {
+        try executor.checkCancel();
+        if (self.saving) return error.SaveInProgress;
+        self.saving = true;
+        defer self.saving = false;
+        if (self.text_file_service) |service| {
+            self.saving_participants = true;
+            defer self.saving_participants = false;
+            try service.participateInDocumentSave(self.model, executor);
+        }
+        try executor.checkCancel();
+        // A save participant is allowed to modify the live model before the
+        // snapshot. Edits made while the detached write is running stay dirty.
+        const version = self.model.getAlternativeVersionId();
+        if (self.pending_save) |request| request.version = self.model.getVersionId();
         const value = try self.model.getValue(.TextDefined, true);
         defer value.deinit();
-
-        const path = self.path;
-        const cwd = Io.Dir.cwd();
-        var exists = true;
-        const maybe_file = cwd.openFile(self.io, path, .{}) catch |err| switch (err) {
-            error.FileNotFound => blk: {
-                exists = false;
-                break :blk null;
-            },
-            else => return err,
-        };
-        if (maybe_file) |file| file.close(self.io);
-
-        var atomic = try cwd.createFileAtomic(self.io, path, .{ .replace = exists });
-        defer atomic.deinit(self.io);
+        const path = try self.allocator.dupe(u8, self.path);
+        defer self.allocator.free(path);
         const encoded = try encoding_mod.encode(self.allocator, value.items, self.encoding);
         defer self.allocator.free(encoded);
-        try atomic.file.writeStreamingAll(self.io, encoded);
-        if (exists) {
-            try atomic.replace(self.io);
-        } else {
-            try atomic.link(self.io);
-        }
+        try window_dispatch.workerCall(executor, writeSnapshot, .{ window_dispatch.backingIo(executor), path, encoded });
 
-        self.saved_version = self.model.getAlternativeVersionId();
+        self.saved_version = version;
         self.clearConflict();
         self.refreshDirtyState();
         for (self.working_copy_save_listeners.items) |listener| listener.callback(listener.context);
@@ -615,6 +625,141 @@ pub const EditorDocument = struct {
             for (editor.working_copy_save_listeners.items) |listener| listener.callback(listener.context);
             editor.setMessage("Saved {s}", .{path});
         }
+    }
+
+    fn writeSnapshot(io: Io, path: []const u8, encoded: []const u8) !void {
+        const cwd = Io.Dir.cwd();
+        var exists = true;
+        const maybe_file = cwd.openFile(io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound => blk: {
+                exists = false;
+                break :blk null;
+            },
+            else => return err,
+        };
+        if (maybe_file) |file| file.close(io);
+        var atomic = try cwd.createFileAtomic(io, path, .{ .replace = exists });
+        defer atomic.deinit(io);
+        try atomic.file.writeStreamingAll(io, encoded);
+        if (exists) try atomic.replace(io) else try atomic.link(io);
+    }
+
+    const SaveListeners = std.ArrayList(text_files.SaveCompletion);
+    const QueuedSave = struct {
+        window: *window_dispatch.Queue,
+        listeners: SaveListeners = .empty,
+    };
+
+    const SaveRequest = struct {
+        document: *EditorDocument,
+        window: *window_dispatch.Queue,
+        listeners: SaveListeners,
+        version: u32,
+        future: Io.Future(anyerror!void),
+        completion: window_dispatch.Task,
+
+        fn run(self: *SaveRequest) anyerror!void {
+            defer self.completion.post();
+            try self.document.saveWithIo(self.window.io);
+        }
+
+        fn complete(context: *anyopaque, _: i64, _: bool) bool {
+            const self: *SaveRequest = @ptrCast(@alignCast(context));
+            const document = self.document;
+            const result: anyerror!bool = if (self.future.await(self.window.io)) !document.isDirty() else |err| err;
+            document.pending_save = null;
+            const listeners = self.listeners;
+            const allocator = document.allocator;
+            allocator.destroy(self);
+            // Callbacks can close the last view or enqueue another save.
+            document.retain();
+            defer document.release();
+            if (result) |_| {} else |err| {
+                for (document.editors.items) |editor| editor.setMessage("Unable to save: {s}", .{@errorName(err)});
+            }
+            const queued = document.queued_save;
+            document.queued_save = null;
+            var queued_result: ?anyerror!bool = null;
+            if (queued) |value| {
+                if (result catch false) {
+                    queued_result = true;
+                } else {
+                    document.startSave(value.window, value.listeners) catch |err| {
+                        queued_result = err;
+                    };
+                }
+            }
+            deliverSaveListeners(allocator, listeners, result);
+            if (queued_result) |value| deliverSaveListeners(allocator, queued.?.listeners, value);
+            return true;
+        }
+    };
+
+    fn deliverSaveListeners(allocator: Allocator, listeners: SaveListeners, result: anyerror!bool) void {
+        var owned = listeners;
+        defer owned.deinit(allocator);
+        for (owned.items) |callback| callback.complete(callback.context, result);
+    }
+
+    fn startSave(self: *EditorDocument, queue: *window_dispatch.Queue, listeners: SaveListeners) !void {
+        const request = try self.allocator.create(SaveRequest);
+        errdefer self.allocator.destroy(request);
+        request.* = .{
+            .document = self,
+            .window = queue,
+            .listeners = listeners,
+            .version = self.model.getVersionId(),
+            .future = undefined,
+            .completion = .{ .queue = queue, .context = request, .run = SaveRequest.complete, .progress = true },
+        };
+        request.future = try queue.io.concurrent(SaveRequest.run, .{request});
+        self.pending_save = request;
+    }
+
+    pub fn requestSave(self: *EditorDocument, window: ?*window_dispatch.Queue, listener: ?text_files.SaveCompletion) !void {
+        // Upstream refuses recursive saves from a save participant. Return
+        // the current saved state rather than wait for our own participant.
+        if (self.saving_participants) {
+            if (listener) |callback| callback.complete(callback.context, !self.isDirty());
+            return;
+        }
+        if (self.pending_save) |request| {
+            if (request.version == self.model.getVersionId()) {
+                if (listener) |callback| try request.listeners.append(self.allocator, callback);
+                return;
+            }
+            // A changed version is saved after the current disk write.
+            if (self.queued_save == null) self.queued_save = .{ .window = request.window };
+            if (listener) |callback| try self.queued_save.?.listeners.append(self.allocator, callback);
+            return;
+        }
+        if (self.saving) return error.SaveInProgress;
+        if (window) |queue| {
+            if (queue.scheduler != null and self.text_file_service != null and self.text_file_service.?.document_save_participants.items.len != 0) {
+                var listeners: SaveListeners = .empty;
+                errdefer listeners.deinit(self.allocator);
+                if (listener) |callback| try listeners.append(self.allocator, callback);
+                return self.startSave(queue, listeners);
+            }
+        }
+        try self.save();
+        if (listener) |callback| callback.complete(callback.context, true);
+    }
+
+    pub fn cancelPendingSave(self: *EditorDocument) void {
+        const request = self.pending_save orelse return;
+        const allocator = self.allocator;
+        const queued = self.queued_save;
+        self.queued_save = null;
+        request.future.cancel(request.window.io) catch {};
+        request.completion.schedule(null);
+        self.pending_save = null;
+        const listeners = request.listeners;
+        allocator.destroy(request);
+        // No access to the document after notifying a callback; the last
+        // retained extension document reference may be released here.
+        deliverSaveListeners(allocator, listeners, error.Canceled);
+        if (queued) |value| deliverSaveListeners(allocator, value.listeners, error.Canceled);
     }
 
     /// The text-file model owner uses a soft revert during move/delete:
@@ -797,6 +942,7 @@ pub const Editor = struct {
     folding_dirty: bool,
     /// Upstream Delayer for folding model updates.
     folding_task: window_dispatch.Task = .{},
+    pending_format: ?*FormatRequest = null,
     folding_delay_ms: i64,
     smart_select: smart_select.SmartSelectController,
     in_place_replace_task: window_dispatch.Task = .{},
@@ -1198,6 +1344,7 @@ pub const Editor = struct {
     pub fn setModel(self: *Editor, document: ?*EditorDocument) !void {
         const old_document = if (self.hasModel()) self.document else null;
         if (old_document == document) return;
+        self.cancelFormat();
         // Retain both event URIs across detaching even the last editor view.
         if (old_document) |old| old.retain();
         defer if (old_document) |old| old.release();
@@ -1222,6 +1369,7 @@ pub const Editor = struct {
         std.debug.assert(!self.hasModel());
         const allocator = self.allocator;
         const model = document.model;
+        if (self.folding_task.queue) |window| document.save_window = window;
         const language_id = model.getLanguageId();
         const resolved = model.getOptions();
         self.document = document;
@@ -1902,7 +2050,132 @@ pub const Editor = struct {
         return result;
     }
 
+    const FormatKind = enum { document, selection };
+
+    // The formatting action owns a cancellable window-fiber request. Model
+    // and registry events invalidate it before the provider result is applied.
+    const FormatRequest = struct {
+        editor: *Editor,
+        window: *window_dispatch.Queue,
+        kind: FormatKind,
+        source: CancellationTokenSource,
+        future: Io.Future(anyerror!void),
+        completion: window_dispatch.Task,
+        listeners: [3]?@import("../../../../base/common/event.zig").SignalSubscription = @splat(null),
+        content_listener: ?usize = null,
+        applying: bool = false,
+
+        fn changed(self: *FormatRequest) !void {
+            if (!self.applying) self.source.cancel();
+        }
+
+        fn contentChanged(_: InternalModelContentChangeEvent, self: *FormatRequest) !void {
+            try self.changed();
+        }
+
+        fn registryChanged(self: *FormatRequest) !void {
+            self.source.cancel();
+        }
+
+        fn run(self: *FormatRequest) anyerror!void {
+            defer self.completion.post();
+            const token = try self.source.token();
+            try token.throwIfCancellationRequested();
+            switch (self.kind) {
+                .document => try self.editor.formatDocumentWithToken(token),
+                .selection => try self.editor.formatSelectionWithToken(token),
+            }
+        }
+
+        fn dispose(self: *FormatRequest) void {
+            for (self.listeners) |listener| if (listener) |value| value.dispose();
+            if (self.content_listener) |listener| self.editor.model.removeDidChangeContentListener(listener);
+            self.source.deinit();
+            self.completion.schedule(null);
+            self.editor.allocator.destroy(self);
+        }
+
+        fn complete(context: *anyopaque, _: i64, _: bool) bool {
+            const self: *FormatRequest = @ptrCast(@alignCast(context));
+            const editor = self.editor;
+            editor.pending_format = null;
+            defer self.dispose();
+            self.future.await(self.window.io) catch |err| {
+                if (err != error.CancellationError and err != error.Canceled) editor.setMessage("Formatting failed: {s}", .{@errorName(err)});
+            };
+            return true;
+        }
+    };
+
+    fn cancelFormat(self: *Editor) void {
+        const request = self.pending_format orelse return;
+        request.source.cancel();
+        request.future.cancel(request.window.io) catch {};
+        self.pending_format = null;
+        request.dispose();
+    }
+
+    fn asyncFormatter(registry: anytype, allocator: Allocator, model: *TextModel) !bool {
+        const providers = try registry.ordered(allocator, model, false);
+        defer allocator.free(providers);
+        for (providers) |provider| if (provider.requires_window_fiber) return true;
+        return false;
+    }
+
     pub fn formatDocument(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
+        if (try self.requestFormat(.document)) return;
+        return self.formatDocumentWithToken(.None);
+    }
+
+    pub fn formatSelection(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
+        if (try self.requestFormat(.selection)) return;
+        return self.formatSelectionWithToken(.None);
+    }
+
+    fn requestFormat(self: *Editor, kind: FormatKind) !bool {
+        self.cancelFormat();
+        const window = self.folding_task.queue orelse return false;
+        if (window.scheduler == null) return false;
+        const features = self.language_features orelse return false;
+        const defer_document = kind == .document and try asyncFormatter(&features.document_formatting_edit_provider, self.allocator, self.model);
+        const defer_range = try asyncFormatter(&features.document_range_formatting_edit_provider, self.allocator, self.model);
+        if (!defer_document and !defer_range) return false;
+        const request = try self.allocator.create(FormatRequest);
+        errdefer self.allocator.destroy(request);
+        var source = try CancellationTokenSource.init(self.allocator);
+        errdefer source.deinit();
+        request.* = .{
+            .editor = self,
+            .window = window,
+            .kind = kind,
+            .source = source,
+            .future = undefined,
+            .completion = .{ .queue = window, .context = request, .run = FormatRequest.complete, .progress = true },
+        };
+        errdefer {
+            for (request.listeners) |listener| if (listener) |value| value.dispose();
+            if (request.content_listener) |listener| self.model.removeDidChangeContentListener(listener);
+        }
+        request.listeners[0] = try features.document_formatting_edit_provider.on_did_change.listenSignal(request, FormatRequest.registryChanged);
+        request.listeners[1] = try features.document_range_formatting_edit_provider.on_did_change.listenSignal(request, FormatRequest.registryChanged);
+        if (kind == .selection) request.listeners[2] = try self.on_did_change_cursor_selection.listenSignal(request, FormatRequest.changed);
+        request.content_listener = try self.model.onDidChangeContentWithContextId(request, FormatRequest.contentChanged);
+        request.future = try window.io.concurrent(FormatRequest.run, .{request});
+        self.pending_format = request;
+        return true;
+    }
+
+    fn applyFormatEdits(self: *Editor, edits: []const TextEdit) !void {
+        if (self.pending_format) |request| request.applying = true;
+        defer if (self.pending_format) |request| {
+            request.applying = false;
+        };
+        try self.applyTextEdits(edits, &.{});
+    }
+
+    fn formatDocumentWithToken(self: *Editor, token: CancellationToken) !void {
         if (self.read_only) return error.ReadOnly;
         if (self.language_features) |features| {
             // Port of `getRealAndSyntheticDocumentFormattersOrdered` from
@@ -1915,6 +2188,7 @@ pub const Editor = struct {
             const providers = try features.document_formatting_edit_provider.ordered(self.allocator, self.model, false);
             defer self.allocator.free(providers);
             for (providers) |provider| {
+                try token.throwIfCancellationRequested();
                 if (provider.extension_id.len > 0) {
                     var already_seen = false;
                     for (seen.items) |extension_id| {
@@ -1932,13 +2206,14 @@ pub const Editor = struct {
                     arena.allocator(),
                     self.model,
                     .{ .tab_size = @intCast(self.cursor_config.tabSize), .insert_spaces = self.cursor_config.insertSpaces },
-                    CancellationToken.None,
+                    token,
                 ) catch continue;
+                try token.throwIfCancellationRequested();
                 if (edits.len == 0) continue;
                 const text_edits = try self.allocator.alloc(TextEdit, edits.len);
                 defer self.allocator.free(text_edits);
                 for (edits, 0..) |edit, index| text_edits[index] = .{ .range = edit.range, .text = edit.text };
-                try self.applyTextEdits(text_edits, &.{});
+                try self.applyFormatEdits(text_edits);
                 self.setMessage("Formatted document", .{});
                 return;
             }
@@ -1947,6 +2222,7 @@ pub const Editor = struct {
             const line_count = self.model.getLineCount();
             const full_range = Range.init(1, 1, line_count, self.model.getLineMaxColumn(line_count));
             for (range_providers) |provider| {
+                try token.throwIfCancellationRequested();
                 if (provider.extension_id.len > 0) {
                     var already_seen = false;
                     for (seen.items) |extension_id| {
@@ -1966,24 +2242,26 @@ pub const Editor = struct {
                     self.model,
                     full_range,
                     .{ .tab_size = @intCast(self.cursor_config.tabSize), .insert_spaces = self.cursor_config.insertSpaces },
-                    CancellationToken.None,
+                    token,
                 ) catch continue;
+                try token.throwIfCancellationRequested();
                 if (edits.len == 0) continue;
                 const text_edits = try self.allocator.alloc(TextEdit, edits.len);
                 defer self.allocator.free(text_edits);
                 for (edits, 0..) |edit, index| text_edits[index] = .{ .range = edit.range, .text = edit.text };
-                try self.applyTextEdits(text_edits, &.{});
+                try self.applyFormatEdits(text_edits);
                 self.setMessage("Formatted document", .{});
                 return;
             }
         }
+        try token.throwIfCancellationRequested();
         return self.formatJson();
     }
 
     /// Port of `FormatSelectionAction`: run the range formatter for each
     /// selection. The first provider that returns edits wins, matching the
     /// document formatter's provider ordering.
-    pub fn formatSelection(self: *Editor) !void {
+    fn formatSelectionWithToken(self: *Editor, token: CancellationToken) !void {
         if (self.read_only) return error.ReadOnly;
         const features = self.language_features orelse return;
         const selections = try self.getSelections();
@@ -2002,6 +2280,7 @@ pub const Editor = struct {
                 selection.endColumn,
             );
             for (providers) |provider| {
+                try token.throwIfCancellationRequested();
                 var arena = std.heap.ArenaAllocator.init(self.allocator);
                 defer arena.deinit();
                 const edits = provider.provide_document_range_formatting_edits(
@@ -2010,16 +2289,18 @@ pub const Editor = struct {
                     self.model,
                     range,
                     .{ .tab_size = @intCast(self.cursor_config.tabSize), .insert_spaces = self.cursor_config.insertSpaces },
-                    CancellationToken.None,
+                    token,
                 ) catch continue;
+                try token.throwIfCancellationRequested();
                 if (edits.len == 0) continue;
                 const text_edits = try self.allocator.alloc(TextEdit, edits.len);
                 defer self.allocator.free(text_edits);
                 for (edits, 0..) |edit, index| text_edits[index] = .{ .range = edit.range, .text = edit.text };
-                try self.applyTextEdits(text_edits, &.{});
+                try self.applyFormatEdits(text_edits);
                 break;
             }
         }
+        try token.throwIfCancellationRequested();
         self.setMessage("Formatted selection", .{});
     }
 
@@ -2051,6 +2332,7 @@ pub const Editor = struct {
     }
 
     pub fn deinit(self: *Editor) void {
+        self.cancelFormat();
         if (self.code_editor_service) |service| service.removeCodeEditor(self);
         self.on_will_dispose.fire({}) catch {};
         self.contributions.deinit(self.allocator);
@@ -2808,8 +3090,10 @@ pub const Editor = struct {
     const folding_debounce_max_ms: i64 = 40_000;
     pub fn attachWindow(self: *Editor, window: *window_dispatch.Queue) void {
         if (self.folding_task.queue == window) return;
+        self.cancelFormat();
         self.folding_task.schedule(null);
         self.folding_task = .{ .queue = window, .context = self, .run = onFoldingDeadline };
+        if (self.hasModel()) self.document.save_window = window;
         self.in_place_replace_task.schedule(null);
         self.in_place_replace_task = .{ .queue = window, .context = self, .run = onInPlaceReplaceDeadline };
         if (self.folding_dirty) self.triggerFoldingUpdate(time_compat.milliTimestamp());
@@ -5655,6 +5939,11 @@ pub const Editor = struct {
         self.document.clearConflict();
     }
 
+    pub fn requestSave(self: *Editor, listener: ?text_files.SaveCompletion) !void {
+        if (self.read_only) return error.ReadOnly;
+        return self.document.requestSave(self.folding_task.queue, listener);
+    }
+
     pub fn save(self: *Editor) !void {
         if (self.read_only) return error.ReadOnly;
         try self.document.save();
@@ -5966,6 +6255,77 @@ test "Editor: save writes the model value" {
     try editor.save();
     const content2 = try tmp.dir.readFile(io, "save.txt", &buffer);
     try std.testing.expectEqualStrings("XYhello", content2);
+}
+
+test "Editor: cancellation of a suspended save participant does not write the snapshot" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "save.txt", .data = "hello" });
+    const path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/save.txt", .{tmp.sub_path});
+    defer allocator.free(path);
+    var runtime = try @import("ui").WindowIo.init(allocator, io);
+    defer runtime.deinit();
+    var queue: window_dispatch.Queue = .{ .io = runtime.io(), .scheduler = &runtime };
+    var disk = @import("../../../../platform/files/common/fileService.zig").DiskFileService.init(allocator, io);
+    defer disk.deinit();
+    var files = text_files.TextFileService.init(allocator, &disk);
+    defer files.deinit();
+    const Probe = struct {
+        entered: bool = false,
+        finished: bool = false,
+        result: ?anyerror!bool = null,
+        callbacks: usize = 0,
+        ready: Io.Event = .unset,
+
+        fn participant(context: *anyopaque, _: *TextModel, serial: Io) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.entered = true;
+            try self.ready.wait(serial);
+            self.finished = true;
+        }
+
+        fn saved(context: *anyopaque, result: anyerror!bool) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.result = result;
+            self.callbacks += 1;
+        }
+    };
+    var probe: Probe = .{};
+    try files.addDocumentSaveParticipant(.{ .context = &probe, .participate = Probe.participant });
+    const editor = try Editor.createFromText(allocator, io, "hello", path, 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    editor.document.text_file_service = &files;
+    editor.attachWindow(&queue);
+    try editor.insertText("X");
+    try editor.requestSave(.{ .context = &probe, .complete = Probe.saved });
+    try editor.requestSave(.{ .context = &probe, .complete = Probe.saved });
+    _ = queue.dispatch(time_compat.milliTimestamp());
+    try std.testing.expect(probe.entered and !probe.finished);
+    try std.testing.expect(probe.result == null);
+    editor.document.cancelPendingSave();
+    try std.testing.expectError(error.Canceled, probe.result.?);
+    try std.testing.expectEqual(@as(usize, 2), probe.callbacks);
+    try std.testing.expect(editor.isDirty());
+    var buffer: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("hello", try tmp.dir.readFile(io, "save.txt", &buffer));
+    // A new save can proceed after the canceled operation is joined.
+    probe.result = null;
+    probe.ready.set(queue.io);
+    try editor.requestSave(.{ .context = &probe, .complete = Probe.saved });
+    const deadline = time_compat.milliTimestamp() + 5_000;
+    while (probe.result == null and time_compat.milliTimestamp() < deadline) {
+        _ = queue.dispatch(time_compat.milliTimestamp());
+        io.sleep(.fromMilliseconds(1), .awake) catch {};
+    }
+    try std.testing.expect(probe.result != null);
+    try std.testing.expect(try probe.result.?);
+    try std.testing.expect(probe.finished and !editor.isDirty());
+    try std.testing.expectEqualStrings("Xhello", try tmp.dir.readFile(io, "save.txt", &buffer));
 }
 
 test "Editor: cursor and deletion across a wrap boundary" {
@@ -6952,7 +7312,7 @@ fn cmdFormatDocument(context: *anyopaque) anyerror!void {
     return editorOf(context).formatDocument();
 }
 fn cmdSave(context: *anyopaque) anyerror!void {
-    return editorOf(context).save();
+    return editorOf(context).requestSave(null);
 }
 fn cmdUndo(context: *anyopaque) anyerror!void {
     return editorOf(context).undo();
@@ -7270,6 +7630,10 @@ fn wcName(context: *anyopaque) []const u8 {
 fn wcIsDirty(context: *anyopaque) bool {
     const document: *EditorDocument = @ptrCast(@alignCast(context));
     return document.isDirty();
+}
+fn wcRequestSave(context: *anyopaque, listener: ?working_copy.SaveCompletion) !void {
+    const document: *EditorDocument = @ptrCast(@alignCast(context));
+    try document.requestSave(document.save_window, listener);
 }
 fn wcSave(context: *anyopaque) !void {
     const document: *EditorDocument = @ptrCast(@alignCast(context));

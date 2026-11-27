@@ -948,6 +948,7 @@ pub const TerminalWorkbench = struct {
                     fn configure(context: *anyopaque, editor: *Editor) void {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
                         host.ensureConfiguration() catch {};
+                        editor.document.text_file_service = &host.text_file_service;
                         editor.attachCodeEditorService(host.code_editor_api, &host.word_highlight_session) catch {};
                         host.configured_languages.applyToEditor(editor);
                         if (host.language_features) |features| editor.attachLanguageServices(features, host.marker_service, host.marker_decorations);
@@ -1091,6 +1092,7 @@ pub const TerminalWorkbench = struct {
         };
         self.search_window.bindEditorFactory();
         self.symbol_navigation = .{
+            .window = &self.window_events,
             .allocator = allocator,
             .arena = std.heap.ArenaAllocator.init(allocator),
             .quick_input = self.quick_access.inputService(),

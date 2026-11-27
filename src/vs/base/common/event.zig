@@ -54,8 +54,12 @@ pub fn Emitter(comptime T: type) type {
         }
 
         pub fn fire(self: *Self, evt: T) anyerror!void {
-            for (self._listeners.items) |*entry| {
-                if (entry.*) |listener| {
+            // A callback may register another listener, reallocating the
+            // list, or dispose a later listener. Capture only the initial
+            // length and fetch each current slot immediately before delivery.
+            const count = self._listeners.items.len;
+            for (0..count) |index| {
+                if (self._listeners.items[index]) |listener| {
                     try listener.call(evt);
                 }
             }
@@ -185,4 +189,38 @@ test "two listeners" {
 
     try emitter.fire(1);
     try std.testing.expectEqual(3, count);
+}
+
+test "Emitter: registering listeners during delivery does not invalidate the current event" {
+    const State = struct {
+        emitter: *Emitter(void),
+        added: bool = false,
+        old_calls: usize = 0,
+        new_calls: usize = 0,
+
+        fn register(_: void, self: *@This()) !void {
+            if (self.added) return;
+            self.added = true;
+            for (0..32) |_| _ = try self.emitter.listen(self, addedListener);
+        }
+
+        fn oldListener(_: void, self: *@This()) !void {
+            self.old_calls += 1;
+        }
+
+        fn addedListener(_: void, self: *@This()) !void {
+            self.new_calls += 1;
+        }
+    };
+    var emitter = Emitter(void).init(std.testing.allocator);
+    defer emitter.deinit();
+    var state: State = .{ .emitter = &emitter };
+    _ = try emitter.listen(&state, State.register);
+    _ = try emitter.listen(&state, State.oldListener);
+    try emitter.fire({});
+    try std.testing.expectEqual(@as(usize, 1), state.old_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.new_calls);
+    try emitter.fire({});
+    try std.testing.expectEqual(@as(usize, 2), state.old_calls);
+    try std.testing.expectEqual(@as(usize, 32), state.new_calls);
 }

@@ -156,6 +156,19 @@ function activate(context) {
     finish();
     return true;
   }));
+  let participateInSave = false;
+  context.subscriptions.push(vscode.commands.registerCommand('fixture.enableSaveParticipant', () => {
+    participateInSave = true;
+    return true;
+  }));
+  context.subscriptions.push(vscode.commands.registerCommand('fixture.saveDocument', uri => {
+    const document = vscode.workspace.textDocuments.find(value => value.uri.toString() === uri);
+    return document ? document.save() : false;
+  }));
+  context.subscriptions.push(vscode.workspace.onWillSaveTextDocument(event => {
+    if (!participateInSave) return;
+    event.waitUntil(Promise.resolve([vscode.TextEdit.insert(new vscode.Position(0, 0), ' ')]));
+  }));
   context.subscriptions.push(vscode.languages.registerCompletionItemProvider({ language: 'json' }, {
     provideCompletionItems() {
       const item = new vscode.CompletionItem('fixture', vscode.CompletionItemKind.Text);

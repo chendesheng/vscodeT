@@ -130,6 +130,7 @@ pub fn builtinExtensionServices(self: *TerminalWorkbench) @import("../vs/workben
     return .{
         .context = self,
         .io = self.io,
+        .window = &self.window_events,
         .editors = .{ .part = self.part },
         .commands = &self.commands,
         .statusbar = &self.statusbar,
@@ -205,6 +206,7 @@ pub fn extensionHostServices(host: *TerminalWorkbench) ExtensionServices {
     return .{
         .common = common,
         .window = &host.window_events,
+        .text_files = &host.text_file_service,
         .quick_access = host.quick_access,
         .notification = host.notification_api,
         .dialog = host.dialog_api,

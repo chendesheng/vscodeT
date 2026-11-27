@@ -44,6 +44,7 @@ const IExtensionContext = extension_api.IExtensionContext;
 pub const Services = struct {
     context: *anyopaque,
     io: std.Io,
+    window: ?*@import("../../../base/common/windowDispatch.zig").Queue = null,
     editors: EditorService,
     commands: *CommandRegistry,
     statusbar: *statusbar_part.StatusbarService,
@@ -92,6 +93,7 @@ pub const BuiltinExtensionHost = struct {
                 .register_fn = registerCommand,
                 .execute_fn = executeCommand,
                 .locations_fn = executeLocationProvider,
+                .request_locations_fn = requestLocationProvider,
             },
             .key_input = .{ .context = self, .register_fn = registerKeyHandler },
             .editors = .{
@@ -505,12 +507,15 @@ fn executeCommand(context: *anyopaque, id: []const u8) anyerror!bool {
 fn executeLocationProvider(context: *anyopaque, arena: Allocator, id: []const u8, model: *TextModel, position: Position) ![]const extension_api.LocationLink {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
     const features = self.services.language_features(self.services.context) orelse return &.{};
+    return collectLocationLinks(features, arena, id, model, position, .None);
+}
+
+fn collectLocationLinks(features: *LanguageFeaturesService, arena: Allocator, id: []const u8, model: *TextModel, position: Position, token: @import("../../../base/common/cancellation.zig").CancellationToken) ![]const extension_api.LocationLink {
     const symbols = @import("../../../editor/contrib/gotoSymbol/browser/goToSymbol.zig");
-    const none = @import("../../../base/common/cancellation.zig").CancellationToken.None;
     const links = if (std.mem.eql(u8, id, "vscode.executeReferenceProvider"))
-        try symbols.getReferencesAtPosition(arena, &features.reference_provider, model, position, false, false, none)
+        try symbols.getReferencesAtPosition(arena, &features.reference_provider, model, position, false, false, token)
     else if (std.mem.eql(u8, id, "vscode.executeImplementationProvider"))
-        try symbols.getImplementationsAtPosition(arena, &features.implementation_provider, model, position, false, none)
+        try symbols.getImplementationsAtPosition(arena, &features.implementation_provider, model, position, false, token)
     else
         return error.UnknownCommand;
     var sorted = try @import("../../../editor/contrib/gotoSymbol/browser/referencesModel.zig").ReferencesModel.init(arena, links, "");
@@ -518,6 +523,140 @@ fn executeLocationProvider(context: *anyopaque, arena: Allocator, id: []const u8
     const result = try arena.alloc(extension_api.LocationLink, sorted.references.len);
     for (result, sorted.references) |*link, reference| link.* = reference.link;
     return result;
+}
+
+const LocationRequest = struct {
+    const Window = @import("../../../base/common/windowDispatch.zig");
+    const Source = @import("../../../base/common/cancellation.zig").CancellationTokenSource;
+    const Emitter = @import("../../../base/common/event.zig").Emitter(usize);
+    allocator: Allocator,
+    arena: Allocator,
+    window: *Window.Queue,
+    document: *@import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").EditorDocument,
+    features: *LanguageFeaturesService,
+    command: []const u8,
+    position: Position,
+    callback: extension_api.LocationProviderCallback,
+    registry: *Emitter,
+    registry_listener: Emitter.ListenerId,
+    content_listener: ?usize = null,
+    source: Source,
+    future: std.Io.Future(anyerror![]const extension_api.LocationLink),
+    completion: Window.Task,
+
+    fn run(self: *LocationRequest) anyerror![]const extension_api.LocationLink {
+        defer self.completion.post();
+        const token = try self.source.token();
+        try token.throwIfCancellationRequested();
+        const links = try collectLocationLinks(self.features, self.arena, self.command, self.document.model, self.position, token);
+        try token.throwIfCancellationRequested();
+        return links;
+    }
+
+    fn changed(_: usize, self: *LocationRequest) !void {
+        self.source.cancel();
+    }
+
+    fn contentChanged(_: @import("../../../editor/common/textModelEvents.zig").InternalModelContentChangeEvent, self: *LocationRequest) !void {
+        self.source.cancel();
+    }
+
+    fn dispose(self: *LocationRequest) void {
+        self.registry.unlisten(self.registry_listener);
+        if (self.content_listener) |listener| self.document.model.removeDidChangeContentListener(listener);
+        self.source.deinit();
+        self.document.release();
+        self.completion.schedule(null);
+        self.allocator.destroy(self);
+    }
+
+    fn cancel(context: *anyopaque) void {
+        const self: *LocationRequest = @ptrCast(@alignCast(context));
+        self.source.cancel();
+        _ = self.future.cancel(self.window.io) catch &.{};
+        self.dispose();
+    }
+
+    fn complete(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *LocationRequest = @ptrCast(@alignCast(context));
+        const value = self.future.await(self.window.io);
+        const token = self.source.token() catch @import("../../../base/common/cancellation.zig").CancellationToken.Cancelled;
+        const result: anyerror![]const extension_api.LocationLink = if (token.isCancellationRequested()) error.CancellationError else value;
+        const callback = self.callback;
+        self.dispose();
+        callback.complete(callback.context, result);
+        return true;
+    }
+};
+
+fn requestLocationProvider(context: *anyopaque, arena: Allocator, id: []const u8, model: *TextModel, position: Position, callback: extension_api.LocationProviderCallback) !?extension_api.IDisposable {
+    const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
+    const features = self.services.language_features(self.services.context) orelse {
+        callback.complete(callback.context, &.{});
+        return null;
+    };
+    const registry = if (std.mem.eql(u8, id, "vscode.executeReferenceProvider"))
+        &features.reference_provider.on_did_change
+    else if (std.mem.eql(u8, id, "vscode.executeImplementationProvider"))
+        &features.implementation_provider.on_did_change
+    else
+        return error.UnknownCommand;
+    const window = self.services.window orelse {
+        callback.complete(callback.context, executeLocationProvider(context, arena, id, model, position));
+        return null;
+    };
+    const editor_interface = self.activeEditorInterface() orelse return error.NoActiveEditor;
+    if (editor_interface.model != model) return error.NoActiveEditor;
+    const editor = editorFrom(editor_interface.context);
+    if (window.scheduler == null) {
+        callback.complete(callback.context, executeLocationProvider(context, arena, id, model, position));
+        return null;
+    }
+    // Keep the immediate path for local, synchronous providers. Only host
+    // providers require an asynchronous window-fiber boundary.
+    const needs_fiber = if (std.mem.eql(u8, id, "vscode.executeReferenceProvider")) blk: {
+        const providers = try features.reference_provider.ordered(arena, model, false);
+        defer arena.free(providers);
+        for (providers) |provider| if (provider.requires_window_fiber) break :blk true;
+        break :blk false;
+    } else blk: {
+        const providers = try features.implementation_provider.ordered(arena, model, false);
+        defer arena.free(providers);
+        for (providers) |provider| if (provider.requires_window_fiber) break :blk true;
+        break :blk false;
+    };
+    if (!needs_fiber) {
+        callback.complete(callback.context, executeLocationProvider(context, arena, id, model, position));
+        return null;
+    }
+
+    const request = try self.allocator.create(LocationRequest);
+    errdefer self.allocator.destroy(request);
+    var source = try LocationRequest.Source.init(self.allocator);
+    errdefer source.deinit();
+    editor.document.retain();
+    errdefer editor.document.release();
+    request.* = .{
+        .allocator = self.allocator,
+        .arena = arena,
+        .window = window,
+        .document = editor.document,
+        .features = features,
+        .command = if (std.mem.eql(u8, id, "vscode.executeReferenceProvider")) "vscode.executeReferenceProvider" else "vscode.executeImplementationProvider",
+        .position = position,
+        .callback = callback,
+        .registry = registry,
+        .registry_listener = undefined,
+        .source = source,
+        .future = undefined,
+        .completion = .{ .queue = window, .context = request, .run = LocationRequest.complete, .progress = true },
+    };
+    request.registry_listener = try registry.listen(request, LocationRequest.changed);
+    errdefer registry.unlisten(request.registry_listener);
+    request.content_listener = try model.onDidChangeContentWithContextId(request, LocationRequest.contentChanged);
+    errdefer model.removeDidChangeContentListener(request.content_listener.?);
+    request.future = try window.io.concurrent(LocationRequest.run, .{request});
+    return .{ .context = request, .disposeFn = LocationRequest.cancel };
 }
 
 const StatusEntryState = struct {

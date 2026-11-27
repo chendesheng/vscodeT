@@ -799,6 +799,7 @@ comptime {
     _ = @import("./vs/workbench/api/browser/mainThreadWindow.zig");
     _ = @import("./vs/workbench/api/browser/mainThreadExtensionService.zig");
     _ = @import("./vs/workbench/api/browser/mainThreadDocuments.zig");
+    _ = @import("./vs/workbench/api/browser/mainThreadSaveParticipant.zig");
     _ = @import("./vs/workbench/api/browser/mainThreadTextEditors.zig");
     _ = @import("./vs/workbench/api/common/configurationExtensionPoint.zig");
     _ = @import("./vs/workbench/api/common/positionConverter.zig");

@@ -16,7 +16,7 @@ fn save(_: *anyopaque, accessor: ServicesAccessor) !void {
     const groups = try accessor.get(editor_groups.editor_groups_service_id);
     const input = editors.activeEditor() orelse return error.NoActiveEditor;
     const group = groups.activeGroup() orelse return error.NoActiveEditor;
-    _ = try input.save(group.id);
+    try input.requestSave(group.id, null);
 }
 
 fn revert(_: *anyopaque, accessor: ServicesAccessor) !void {

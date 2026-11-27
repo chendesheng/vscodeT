@@ -37,6 +37,7 @@ pub const Candidate = union(enum) {
 /// A save result mirrors upstream `EditorInput | IUntypedEditorInput | undefined`:
 /// null means the save failed or was canceled.
 pub const SaveResult = ?*EditorInput;
+pub const SaveCompletion = @import("../../services/workingCopy/common/workingCopy.zig").SaveCompletion;
 
 /// Upstream IMoveResult for the native resource-input replacement path.
 /// The editor service retains the group-specific view state independently.
@@ -81,6 +82,7 @@ pub const EditorInput = struct {
     matches_fn: ?*const fn (self: *EditorInput, other: *EditorInput) bool = null,
     matches_untyped_fn: ?*const fn (self: *const EditorInput, other: editor.UntypedEditorInput) bool = null,
     is_dirty_fn: ?*const fn (self: *const EditorInput) bool = null,
+    request_save_fn: ?*const fn (*EditorInput, GroupIdentifier, ?SaveCompletion) anyerror!void = null,
     save_fn: ?*const fn (self: *EditorInput, group: GroupIdentifier) anyerror!SaveResult = null,
     revert_fn: ?*const fn (self: *EditorInput, group: GroupIdentifier) anyerror!void = null,
     rename_fn: ?*const fn (self: *EditorInput, group: GroupIdentifier, target: std.Uri) anyerror!?MoveResult = null,
@@ -217,6 +219,12 @@ pub const EditorInput = struct {
     pub fn resolve(self: *EditorInput) anyerror!?*anyopaque {
         _ = self;
         return null;
+    }
+
+    pub fn requestSave(self: *EditorInput, group: GroupIdentifier, completion: ?SaveCompletion) !void {
+        if (self.request_save_fn) |request| return request(self, group, completion);
+        const result = try self.save(group);
+        if (completion) |callback| callback.complete(callback.context, result != null);
     }
 
     pub fn save(self: *EditorInput, group: GroupIdentifier) anyerror!SaveResult {

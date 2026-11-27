@@ -39,6 +39,7 @@ pub const DiffEditorInput = struct {
         base.matches_untyped_fn = matchesUntyped;
         base.is_dirty_fn = isDirty;
         base.save_fn = saveHook;
+        base.request_save_fn = requestSaveHook;
         base.revert_fn = revertHook;
         base.capabilities = modified.capabilities | editor.EditorInputCapabilities.MultipleEditors;
         self.* = .{
@@ -136,6 +137,11 @@ pub const DiffEditorInput = struct {
     fn isDirty(base: *const EditorInput) bool {
         const self: *const DiffEditorInput = @ptrCast(@alignCast(base.impl.?));
         return self.modified.isDirty();
+    }
+
+    fn requestSaveHook(base: *EditorInput, group: editor.GroupIdentifier, completion: ?editor_input.SaveCompletion) !void {
+        const self: *DiffEditorInput = @ptrCast(@alignCast(base.impl.?));
+        return self.modified.requestSave(group, completion);
     }
 
     fn saveHook(base: *EditorInput, group: editor.GroupIdentifier) anyerror!editor_input.SaveResult {

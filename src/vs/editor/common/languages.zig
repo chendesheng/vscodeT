@@ -518,6 +518,7 @@ pub const LocationLink = struct {
 
 pub const DefinitionProvider = struct {
     context: *anyopaque,
+    requires_window_fiber: bool = false,
     provide_definition: *const fn (
         context: *anyopaque,
         allocator: Allocator,
@@ -529,6 +530,7 @@ pub const DefinitionProvider = struct {
 
 pub const DeclarationProvider = struct {
     context: *anyopaque,
+    requires_window_fiber: bool = false,
     provide_declaration: *const fn (
         context: *anyopaque,
         allocator: Allocator,
@@ -540,6 +542,7 @@ pub const DeclarationProvider = struct {
 
 pub const ImplementationProvider = struct {
     context: *anyopaque,
+    requires_window_fiber: bool = false,
     provide_implementation: *const fn (
         context: *anyopaque,
         allocator: Allocator,
@@ -551,6 +554,7 @@ pub const ImplementationProvider = struct {
 
 pub const TypeDefinitionProvider = struct {
     context: *anyopaque,
+    requires_window_fiber: bool = false,
     provide_type_definition: *const fn (
         context: *anyopaque,
         allocator: Allocator,
@@ -569,6 +573,7 @@ pub const ReferenceContext = struct {
 /// (including each URI) with the supplied allocator.
 pub const ReferenceProvider = struct {
     context: *anyopaque,
+    requires_window_fiber: bool = false,
     provide_references: *const fn (
         context: *anyopaque,
         allocator: Allocator,
@@ -637,6 +642,7 @@ pub const FormattingOptions = struct {
 
 pub const DocumentFormattingEditProvider = struct {
     context: *anyopaque,
+    requires_window_fiber: bool = false,
     extension_id: []const u8 = "",
     display_name: []const u8 = "",
     provide_document_formatting_edits: *const fn (
@@ -650,6 +656,7 @@ pub const DocumentFormattingEditProvider = struct {
 
 pub const DocumentRangeFormattingEditProvider = struct {
     context: *anyopaque,
+    requires_window_fiber: bool = false,
     extension_id: []const u8 = "",
     display_name: []const u8 = "",
     provide_document_range_formatting_edits: *const fn (

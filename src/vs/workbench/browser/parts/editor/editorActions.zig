@@ -140,6 +140,11 @@ pub const AbstractCloseAllAction = struct {
     targets: []Target,
     history: ?*HistoryService = null,
     on_exit: ?*const fn (*anyopaque) void = null,
+    refs: usize = 1,
+    next_save: usize = 0,
+    waiting_save: bool = false,
+    advancing_save: bool = false,
+    save_failed: bool = false,
 
     fn run(part: *EditorPart, dialog_service: dialogs.IDialogService, host: GroupView.CloseHost, mode: Mode, history: ?*HistoryService, on_exit: ?*const fn (*anyopaque) void) !void {
         if (dialog_service.hasDialog()) return;
@@ -219,6 +224,12 @@ pub const AbstractCloseAllAction = struct {
 
     fn dispose(context: *anyopaque) void {
         const self: *AbstractCloseAllAction = @ptrCast(@alignCast(context));
+        self.release();
+    }
+
+    fn release(self: *AbstractCloseAllAction) void {
+        self.refs -= 1;
+        if (self.refs != 0) return;
         self.allocator.free(self.targets);
         self.allocator.destroy(self);
     }
@@ -229,27 +240,54 @@ pub const AbstractCloseAllAction = struct {
             host.focus_editor(host.context, null);
             return;
         }
+        if (result == .SAVE) return self.saveNext();
         for (self.targets) |target| {
             if (!target.confirm or !host.is_alive(host.context, target.pane, target.tab)) continue;
             const tab = target.tab;
             if (!tab.input.isDirty() and tab.input.close_handler == null) continue;
-            switch (result) {
-                .SAVE => {
-                    _ = tab.input.save(target.pane.group.id) catch |err| {
-                        tab.editor.setMessage("Unable to save {s}: {s}", .{ tab.input.getName(), @errorName(err) });
-                        try self.revealFailure(target.pane, tab);
-                        return;
-                    };
-                    if (tab.input.isDirty()) {
-                        try self.revealFailure(target.pane, tab);
-                        return;
-                    }
-                },
-                .DONT_SAVE => tab.input.revert(target.pane.group.id) catch {},
-                .CANCEL => unreachable,
-            }
+            tab.input.revert(target.pane.group.id) catch {};
         }
         try self.doCloseAll();
+    }
+
+    fn saveNext(self: *AbstractCloseAllAction) !void {
+        if (self.advancing_save) return;
+        self.advancing_save = true;
+        defer self.advancing_save = false;
+        while (!self.waiting_save and !self.save_failed and self.next_save < self.targets.len) {
+            const target = self.targets[self.next_save];
+            self.next_save += 1;
+            if (!target.confirm or !self.host.is_alive(self.host.context, target.pane, target.tab)) continue;
+            const tab = target.tab;
+            if (!tab.input.isDirty() and tab.input.close_handler == null) continue;
+            self.waiting_save = true;
+            self.refs += 1;
+            tab.input.requestSave(target.pane.group.id, .{ .context = self, .complete = saveCompleted }) catch |err| saveCompleted(self, err);
+        }
+        if (!self.waiting_save and !self.save_failed) try self.doCloseAll();
+    }
+
+    fn saveCompleted(context: *anyopaque, result: anyerror!bool) void {
+        const self: *AbstractCloseAllAction = @ptrCast(@alignCast(context));
+        defer self.release();
+        self.waiting_save = false;
+        const target = self.targets[self.next_save - 1];
+        if (self.host.is_alive(self.host.context, target.pane, target.tab)) {
+            const tab = target.tab;
+            const saved = result catch |err| blk: {
+                tab.editor.setMessage("Unable to save {s}: {s}", .{ tab.input.getName(), @errorName(err) });
+                break :blk false;
+            };
+            if (!saved or tab.input.isDirty()) {
+                self.save_failed = true;
+                self.revealFailure(target.pane, tab) catch |err| self.host.report_error(self.host.context, err);
+                return;
+            }
+        } else if (result) |_| {} else |_| {
+            self.save_failed = true;
+            return;
+        }
+        self.saveNext() catch |err| self.host.report_error(self.host.context, err);
     }
 
     fn revealFailure(self: *AbstractCloseAllAction, pane: *GroupView, tab: *Tab) !void {

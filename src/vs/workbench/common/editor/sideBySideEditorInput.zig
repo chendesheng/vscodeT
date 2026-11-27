@@ -35,6 +35,7 @@ pub const SideBySideEditorInput = struct {
         base.matches_fn = matches;
         base.matches_untyped_fn = matchesUntyped;
         base.save_fn = saveHook;
+        base.request_save_fn = requestSaveHook;
         base.revert_fn = revertHook;
         base.capabilities = primary.capabilities | editor.EditorInputCapabilities.MultipleEditors;
         self.* = .{
@@ -77,6 +78,11 @@ pub const SideBySideEditorInput = struct {
 
     pub fn getPreferredDescription(self: *const SideBySideEditorInput) ?[]const u8 {
         return self.owned_description;
+    }
+
+    fn requestSaveHook(base: *EditorInput, group: editor.GroupIdentifier, completion: ?editor_input.SaveCompletion) !void {
+        const self: *SideBySideEditorInput = @ptrCast(@alignCast(base.impl.?));
+        return self.primary.requestSave(group, completion);
     }
 
     fn saveHook(base: *EditorInput, group: editor.GroupIdentifier) anyerror!editor_input.SaveResult {

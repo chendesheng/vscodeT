@@ -32,14 +32,17 @@ pub const ActionDescriptor = struct {
 
     /// Portable provider dispatch of SymbolNavigationAction's concrete subclasses.
     pub fn getLocationLinks(action: *const ActionDescriptor, arena: std.mem.Allocator, features: *@import("../../../common/services/languageFeaturesService.zig").LanguageFeaturesService, model: *@import("../../../common/model/textModel.zig").TextModel, position: @import("../../../common/core/position.zig").Position) ![]@import("../../../common/languages.zig").LocationLink {
+        return action.getLocationLinksWithToken(arena, features, model, position, .None);
+    }
+
+    pub fn getLocationLinksWithToken(action: *const ActionDescriptor, arena: std.mem.Allocator, features: *LanguageFeaturesService, model: *TextModel, position: Position, token: CancellationToken) ![]LocationLink {
         const symbols = @import("goToSymbol.zig");
-        const CancellationToken = @import("../../../../base/common/cancellation.zig").CancellationToken;
         return switch (action.kind) {
-            .definition => try symbols.getDefinitionsAtPosition(arena, &features.definition_provider, model, position, false, CancellationToken.None),
-            .declaration => try symbols.getDeclarationsAtPosition(arena, &features.declaration_provider, model, position, false, CancellationToken.None),
-            .type_definition => try symbols.getTypeDefinitionsAtPosition(arena, &features.type_definition_provider, model, position, false, CancellationToken.None),
-            .implementation => try symbols.getImplementationsAtPosition(arena, &features.implementation_provider, model, position, false, CancellationToken.None),
-            .references => try symbols.getReferencesAtPosition(arena, &features.reference_provider, model, position, action.compact_references, false, CancellationToken.None),
+            .definition => try symbols.getDefinitionsAtPosition(arena, &features.definition_provider, model, position, false, token),
+            .declaration => try symbols.getDeclarationsAtPosition(arena, &features.declaration_provider, model, position, false, token),
+            .type_definition => try symbols.getTypeDefinitionsAtPosition(arena, &features.type_definition_provider, model, position, false, token),
+            .implementation => try symbols.getImplementationsAtPosition(arena, &features.implementation_provider, model, position, false, token),
+            .references => try symbols.getReferencesAtPosition(arena, &features.reference_provider, model, position, action.compact_references, false, token),
         };
     }
 };
@@ -171,6 +174,13 @@ const ReferencesModel = references_model.ReferencesModel;
 const std_uri = @import("../../../../base/common/stdUri.zig");
 const strings = @import("../../../../base/common/strings.zig");
 const Allocator = std.mem.Allocator;
+const TextModel = @import("../../../common/model/textModel.zig").TextModel;
+const LocationLink = @import("../../../common/languages.zig").LocationLink;
+const EditorDocument = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").EditorDocument;
+const window_dispatch = @import("../../../../base/common/windowDispatch.zig");
+const CancellationToken = @import("../../../../base/common/cancellation.zig").CancellationToken;
+const CancellationTokenSource = @import("../../../../base/common/cancellation.zig").CancellationTokenSource;
+const RegistryChange = @import("../../../../base/common/event.zig").Emitter(usize);
 
 /// Terminal adapter of SymbolNavigationAction.runEditorCommand. The native
 /// picker is used instead of the browser peek widget; resource opening is
@@ -188,8 +198,11 @@ pub const SymbolNavigationActionHost = struct {
         open_link: *const fn (*anyopaque, @import("../../../common/languages.zig").LocationLink) anyerror!void,
     },
     pending_references: ?*ReferencesModel = null,
+    window: ?*window_dispatch.Queue = null,
+    pending_navigation: ?*NavigationRequest = null,
 
     pub fn deinit(self: *SymbolNavigationActionHost) void {
+        self.cancelNavigation();
         if (self.quick_input.handler_context == @as(*anyopaque, self)) self.quick_input.hide();
         self.arena.deinit();
     }
@@ -223,6 +236,7 @@ pub const SymbolNavigationActionHost = struct {
     }
 
     pub fn runEditorCommand(self: *SymbolNavigationActionHost, action: *const ActionDescriptor) !bool {
+        self.cancelNavigation();
         const editor = self.host.active_editor(self.host.context) orelse return false;
         const features = self.language_features.* orelse return false;
         if (self.quick_input.isVisible()) self.quick_input.hide();
@@ -233,8 +247,157 @@ pub const SymbolNavigationActionHost = struct {
 
         const model = editor.model;
         const position = editor.modelCursorPosition();
+        if (self.window) |window| {
+            const needs_fiber = switch (action.kind) {
+                .definition => try requiresFiber(&features.definition_provider, arena, model),
+                .declaration => try requiresFiber(&features.declaration_provider, arena, model),
+                .implementation => try requiresFiber(&features.implementation_provider, arena, model),
+                .type_definition => try requiresFiber(&features.type_definition_provider, arena, model),
+                .references => try requiresFiber(&features.reference_provider, arena, model),
+            };
+            if (window.scheduler != null and needs_fiber) {
+                try self.startNavigation(window, action, editor, features, position);
+                return true;
+            }
+        }
         const links = try action.getLocationLinks(arena, features, model, position);
+        return self.showNavigationResult(editor, action, position, links);
+    }
 
+    fn requiresFiber(registry: anytype, arena: Allocator, model: *TextModel) !bool {
+        const providers = try registry.ordered(arena, model, false);
+        defer arena.free(providers);
+        for (providers) |provider| if (provider.requires_window_fiber) return true;
+        return false;
+    }
+
+    const NavigationRequest = struct {
+        owner: *SymbolNavigationActionHost,
+        window: *window_dispatch.Queue,
+        document: *EditorDocument,
+        editor: *Editor,
+        action: ActionDescriptor,
+        position: Position,
+        version: u32,
+        features: *LanguageFeaturesService,
+        source: CancellationTokenSource,
+        registry: *RegistryChange,
+        listener: RegistryChange.ListenerId,
+        content_listener: ?usize = null,
+        editor_listeners: [3]?@import("../../../../base/common/event.zig").SignalSubscription = @splat(null),
+        future: std.Io.Future(anyerror![]LocationLink),
+        completion: window_dispatch.Task,
+
+        fn changed(_: usize, self: *NavigationRequest) !void {
+            self.source.cancel();
+        }
+
+        fn cancelOnChange(self: *NavigationRequest) !void {
+            self.source.cancel();
+        }
+
+        fn contentChanged(_: @import("../../../common/textModelEvents.zig").InternalModelContentChangeEvent, self: *NavigationRequest) !void {
+            self.source.cancel();
+        }
+
+        fn editorDisposed(self: *NavigationRequest) !void {
+            self.owner.cancelNavigation();
+        }
+
+        fn detachEditorListeners(self: *NavigationRequest) void {
+            for (&self.editor_listeners) |*listener| {
+                if (listener.*) |value| value.dispose();
+                listener.* = null;
+            }
+        }
+
+        fn run(self: *NavigationRequest) anyerror![]LocationLink {
+            defer self.completion.post();
+            const token = try self.source.token();
+            try token.throwIfCancellationRequested();
+            return self.action.getLocationLinksWithToken(self.owner.arena.allocator(), self.features, self.document.model, self.position, token);
+        }
+
+        fn dispose(self: *NavigationRequest) void {
+            self.registry.unlisten(self.listener);
+            self.detachEditorListeners();
+            if (self.content_listener) |listener| self.document.model.removeDidChangeContentListener(listener);
+            self.source.deinit();
+            self.completion.schedule(null);
+            self.document.release();
+            self.owner.allocator.destroy(self);
+        }
+
+        fn complete(context: *anyopaque, _: i64, _: bool) bool {
+            const self: *NavigationRequest = @ptrCast(@alignCast(context));
+            const owner = self.owner;
+            owner.pending_navigation = null;
+            defer self.dispose();
+            const links = self.future.await(self.window.io) catch return false;
+            const token = self.source.token() catch return false;
+            if (token.isCancellationRequested()) return false;
+            const editor = owner.host.active_editor(owner.host.context) orelse return false;
+            if (editor != self.editor or editor.document != self.document or editor.model.getVersionId() != self.version or !editor.modelCursorPosition().equals(self.position)) return false;
+            self.detachEditorListeners();
+            _ = owner.showNavigationResult(editor, &self.action, self.position, links) catch |err| {
+                if (owner.host.active_editor(owner.host.context)) |active| active.setMessage("Navigation failed: {s}", .{@errorName(err)});
+                return true;
+            };
+            return true;
+        }
+    };
+
+    fn startNavigation(self: *SymbolNavigationActionHost, window: *window_dispatch.Queue, action: *const ActionDescriptor, editor: *Editor, features: *LanguageFeaturesService, position: Position) !void {
+        const registry = switch (action.kind) {
+            .definition => &features.definition_provider.on_did_change,
+            .declaration => &features.declaration_provider.on_did_change,
+            .implementation => &features.implementation_provider.on_did_change,
+            .type_definition => &features.type_definition_provider.on_did_change,
+            .references => &features.reference_provider.on_did_change,
+        };
+        const request = try self.allocator.create(NavigationRequest);
+        errdefer self.allocator.destroy(request);
+        var source = try CancellationTokenSource.init(self.allocator);
+        errdefer source.deinit();
+        editor.document.retain();
+        errdefer editor.document.release();
+        request.* = .{
+            .owner = self,
+            .window = window,
+            .document = editor.document,
+            .editor = editor,
+            .action = action.*,
+            .position = position,
+            .version = editor.model.getVersionId(),
+            .features = features,
+            .source = source,
+            .registry = registry,
+            .listener = undefined,
+            .future = undefined,
+            .completion = .{ .queue = window, .context = request, .run = NavigationRequest.complete, .progress = true },
+        };
+        request.listener = try registry.listen(request, NavigationRequest.changed);
+        errdefer registry.unlisten(request.listener);
+        request.content_listener = try editor.model.onDidChangeContentWithContextId(request, NavigationRequest.contentChanged);
+        errdefer editor.model.removeDidChangeContentListener(request.content_listener.?);
+        errdefer request.detachEditorListeners();
+        request.editor_listeners[0] = try editor.on_did_change_cursor_position.listenSignal(request, NavigationRequest.cancelOnChange);
+        request.editor_listeners[1] = try editor.on_will_change_model.listenSignal(request, NavigationRequest.cancelOnChange);
+        request.editor_listeners[2] = try editor.on_will_dispose.listenSignal(request, NavigationRequest.editorDisposed);
+        request.future = try window.io.concurrent(NavigationRequest.run, .{request});
+        self.pending_navigation = request;
+    }
+
+    fn cancelNavigation(self: *SymbolNavigationActionHost) void {
+        const request = self.pending_navigation orelse return;
+        self.pending_navigation = null;
+        request.source.cancel();
+        _ = request.future.cancel(request.window.io) catch &.{};
+        request.dispose();
+    }
+
+    fn showNavigationResult(self: *SymbolNavigationActionHost, editor: *Editor, action: *const ActionDescriptor, position: Position, links: []LocationLink) !bool {
+        const arena = self.arena.allocator();
         const references = try arena.create(ReferencesModel);
         references.* = try ReferencesModel.init(arena, links, action.title);
         if (references.references.len == 0) {

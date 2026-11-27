@@ -310,14 +310,26 @@ pub const CommandHandler = struct {
 
 pub const LocationLink = @import("../../../editor/common/languages.zig").LocationLink;
 
+pub const LocationProviderCallback = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, anyerror![]const LocationLink) void,
+};
+
 pub const ICommandService = struct {
     /// Typed executeCommand overload for the language provider API. The supplied
     /// arena owns the result and its resource strings.
     locations_fn: ?*const fn (*anyopaque, Allocator, []const u8, *TextModel, Position) anyerror![]const LocationLink = null,
+    request_locations_fn: ?*const fn (*anyopaque, Allocator, []const u8, *TextModel, Position, LocationProviderCallback) anyerror!?IDisposable = null,
 
     context: *anyopaque,
     register_fn: *const fn (context: *anyopaque, id: []const u8, label: []const u8, handler: CommandHandler) anyerror!IDisposable,
     execute_fn: *const fn (context: *anyopaque, id: []const u8) anyerror!bool,
+
+    pub fn requestLocationProvider(self: ICommandService, arena: Allocator, id: []const u8, model: *TextModel, position: Position, callback: LocationProviderCallback) !?IDisposable {
+        if (self.request_locations_fn) |request| return request(self.context, arena, id, model, position, callback);
+        callback.complete(callback.context, self.executeLocationProvider(arena, id, model, position));
+        return null;
+    }
 
     pub fn executeLocationProvider(self: ICommandService, arena: Allocator, id: []const u8, model: *TextModel, position: Position) ![]const LocationLink {
         const run = self.locations_fn orelse return error.UnknownCommand;

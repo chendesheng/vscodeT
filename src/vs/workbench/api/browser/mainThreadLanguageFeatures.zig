@@ -779,6 +779,7 @@ pub const MainThreadLanguageFeatures = struct {
         registration.disposable = try self.features.completion_provider.register(parsed, .{
             .context = state,
             .provide_completion_items = provideCompletion,
+            .provide_completion_items_deferred = if (self.proxy.request_async != null) requestCompletion else null,
             .trigger_characters = triggers,
         });
         return .empty;
@@ -796,18 +797,22 @@ pub const MainThreadLanguageFeatures = struct {
         switch (kind) {
             .definition => registration.disposable = try self.features.definition_provider.register(parsed, .{
                 .context = state,
+                .requires_window_fiber = self.proxy.request_async != null,
                 .provide_definition = provideDefinition,
             }),
             .declaration => registration.disposable = try self.features.declaration_provider.register(parsed, .{
                 .context = state,
+                .requires_window_fiber = self.proxy.request_async != null,
                 .provide_declaration = provideDeclaration,
             }),
             .implementation => registration.disposable = try self.features.implementation_provider.register(parsed, .{
                 .context = state,
+                .requires_window_fiber = self.proxy.request_async != null,
                 .provide_implementation = provideImplementation,
             }),
             .type_definition => registration.disposable = try self.features.type_definition_provider.register(parsed, .{
                 .context = state,
+                .requires_window_fiber = self.proxy.request_async != null,
                 .provide_type_definition = provideTypeDefinition,
             }),
         }
@@ -823,6 +828,7 @@ pub const MainThreadLanguageFeatures = struct {
         state.* = .{ .registration = registration };
         registration.disposable = try self.features.reference_provider.register(parsed, .{
             .context = state,
+            .requires_window_fiber = self.proxy.request_async != null,
             .provide_references = provideReferences,
         });
         return .empty;
@@ -842,6 +848,7 @@ pub const MainThreadLanguageFeatures = struct {
             .context = state,
             .display_name = state.display_name,
             .provide_document_symbols = provideDocumentSymbols,
+            .request_document_symbols = if (self.proxy.request_async != null) requestDocumentSymbols else null,
         });
         return .empty;
     }
@@ -960,12 +967,14 @@ pub const MainThreadLanguageFeatures = struct {
                 .context = state,
                 .extension_id = state.extension_id,
                 .display_name = state.display_name,
+                .requires_window_fiber = self.proxy.request_async != null,
                 .provide_document_formatting_edits = provideDocumentFormatting,
             }),
             .range => registration.disposable = try self.features.document_range_formatting_edit_provider.register(parsed, .{
                 .context = state,
                 .extension_id = state.extension_id,
                 .display_name = state.display_name,
+                .requires_window_fiber = self.proxy.request_async != null,
                 .provide_document_range_formatting_edits = provideRangeFormatting,
             }),
             .on_type => registration.disposable = try self.features.on_type_formatting_edit_provider.register(parsed, .{
@@ -1061,30 +1070,39 @@ pub const MainThreadLanguageFeatures = struct {
         return null;
     }
 
-    fn provideCompletion(context: *anyopaque, allocator: Allocator, model: *TextModel, position: Position, trigger: completion.CompletionContext, token: CancellationToken) anyerror!completion.CompletionList {
-        const state: *CompletionState = @ptrCast(@alignCast(context));
-        const self = state.registration.owner;
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const scratch = arena.allocator();
+    fn completionArgs(scratch: Allocator, handle: u32, model: *TextModel, position: Position, trigger: completion.CompletionContext) ![]rpc.Arg {
         var args = std.array_list.Managed(rpc.Arg).init(scratch);
-        try args.append(.{ .json = .{ .integer = state.registration.handle } });
+        try args.append(.{ .json = .{ .integer = handle } });
         try args.append(.{ .json = try std_uri.jsonComponents(scratch, model.uri()) });
         try args.append(.{ .json = try positionJson(scratch, model, position) });
         var context_json: std.json.ObjectMap = .empty;
         try context_json.put(scratch, "triggerKind", .{ .integer = @backingInt(trigger.trigger_kind) });
         if (trigger.trigger_character) |character| try context_json.put(scratch, "triggerCharacter", .{ .string = try scratch.dupe(u8, character) });
         try args.append(.{ .json = .{ .object = context_json } });
-        const reply = self.call(scratch, "$provideCompletionItems", args.items, token, timeout_default_ms) catch return .{};
+        return args.items;
+    }
+
+    fn provideCompletion(context: *anyopaque, allocator: Allocator, model: *TextModel, position: Position, trigger: completion.CompletionContext, token: CancellationToken) anyerror!completion.CompletionList {
+        const state: *CompletionState = @ptrCast(@alignCast(context));
+        const self = state.registration.owner;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const scratch = arena.allocator();
+        const args = try completionArgs(scratch, state.registration.handle, model, position, trigger);
+        const reply = self.call(scratch, "$provideCompletionItems", args, token, timeout_default_ms) catch return .{};
+        return parseCompletionReply(allocator, self.proxy, state.registration.handle, model, reply);
+    }
+
+    fn parseCompletionReply(allocator: Allocator, proxy: HostProxy, handle: u32, model: *TextModel, reply: std.json.Value) !completion.CompletionList {
         if (reply != .object) return .{};
         const object = reply.object;
         if (object.get("x")) |cache| {
             if (cache == .integer) {
                 var release = [_]rpc.Arg{
-                    .{ .json = .{ .integer = state.registration.handle } },
+                    .{ .json = .{ .integer = handle } },
                     .{ .json = cache },
                 };
-                self.proxy.notify(self.proxy.context, "$releaseCompletionItems", &release) catch {};
+                proxy.notify(proxy.context, "$releaseCompletionItems", &release) catch {};
             }
         }
         const items_value = object.get("b") orelse return .{};
@@ -1100,6 +1118,57 @@ pub const MainThreadLanguageFeatures = struct {
             .items = owned,
             .is_incomplete = if (object.get("c")) |value| value == .bool and value.bool else false,
         };
+    }
+
+    const CompletionAsyncRequest = struct {
+        allocator: Allocator,
+        model: *TextModel,
+        proxy: HostProxy,
+        handle: u32,
+        pending: ?IDisposable = null,
+        callback: ?completion.CompletionRequest.Callback = null,
+        result: ?anyerror!completion.CompletionList = null,
+        callback_context: *anyopaque = undefined,
+
+        fn onComplete(context: *anyopaque, callback_context: *anyopaque, callback: completion.CompletionRequest.Callback) void {
+            const self: *CompletionAsyncRequest = @ptrCast(@alignCast(context));
+            self.callback_context = callback_context;
+            self.callback = callback;
+            if (self.result) |result| callback(callback_context, self, result);
+        }
+
+        fn cancel(context: *anyopaque) void {
+            const self: *CompletionAsyncRequest = @ptrCast(@alignCast(context));
+            if (self.pending) |pending| pending.dispose();
+            self.pending = null;
+        }
+
+        fn ready(context: *anyopaque, reply: rpc.Reply) void {
+            const self: *CompletionAsyncRequest = @ptrCast(@alignCast(context));
+            self.pending = null;
+            const result: anyerror!completion.CompletionList = switch (reply) {
+                .json => |value| parseCompletionReply(self.allocator, self.proxy, self.handle, self.model, value),
+                .err => error.RequestFailed,
+                else => .{},
+            };
+            self.result = result;
+            if (self.callback) |callback| callback(self.callback_context, self, result);
+        }
+    };
+
+    fn requestCompletion(context: *anyopaque, allocator: Allocator, model: *TextModel, position: Position, trigger: completion.CompletionContext, token: CancellationToken) !?completion.CompletionRequest {
+        const state: *CompletionState = @ptrCast(@alignCast(context));
+        try token.throwIfCancellationRequested();
+        const proxy = state.registration.owner.proxy;
+        const request = proxy.request_async orelse return null;
+        var scratch = std.heap.ArenaAllocator.init(state.registration.owner.allocator);
+        defer scratch.deinit();
+        const handle = state.registration.handle;
+        const args = try completionArgs(scratch.allocator(), handle, model, position, trigger);
+        const pending = try allocator.create(CompletionAsyncRequest);
+        pending.* = .{ .allocator = allocator, .model = model, .proxy = proxy, .handle = handle };
+        pending.pending = try request(proxy.context, "$provideCompletionItems", args, .{ .context = pending, .callback = CompletionAsyncRequest.ready });
+        return .{ .context = pending, .on_complete = CompletionAsyncRequest.onComplete, .cancel = CompletionAsyncRequest.cancel };
     }
 
     fn provideDefinition(context: *anyopaque, allocator: Allocator, model: *TextModel, position: Position, token: CancellationToken) anyerror![]languages.LocationLink {
@@ -1187,6 +1256,10 @@ pub const MainThreadLanguageFeatures = struct {
         try args.append(.{ .json = .{ .integer = state.registration.handle } });
         try args.append(.{ .json = try std_uri.jsonComponents(scratch, model.uri()) });
         const reply = self.call(scratch, "$provideDocumentSymbols", args.items, token, timeout_format_ms) catch return &.{};
+        return parseDocumentSymbolsReply(allocator, model, reply);
+    }
+
+    fn parseDocumentSymbolsReply(allocator: Allocator, model: *TextModel, reply: std.json.Value) ![]languages.DocumentSymbol {
         if (reply != .array) return &.{};
         var result = std.array_list.Managed(languages.DocumentSymbol).init(allocator);
         for (reply.array.items) |item| {
@@ -1194,6 +1267,36 @@ pub const MainThreadLanguageFeatures = struct {
             try result.append(try parseDocumentSymbol(allocator, item.object, model));
         }
         return result.toOwnedSlice();
+    }
+
+    const DocumentSymbolsAsyncRequest = struct {
+        allocator: Allocator,
+        model: *TextModel,
+        callback: languages.DocumentSymbolCallback,
+
+        fn ready(context: *anyopaque, reply: rpc.Reply) void {
+            const self: *DocumentSymbolsAsyncRequest = @ptrCast(@alignCast(context));
+            const symbols = switch (reply) {
+                .json => |value| parseDocumentSymbolsReply(self.allocator, self.model, value) catch &.{},
+                else => &.{},
+            };
+            self.callback.complete(self.callback.context, symbols);
+        }
+    };
+
+    fn requestDocumentSymbols(context: *anyopaque, allocator: Allocator, model: *TextModel, callback: languages.DocumentSymbolCallback) !?IDisposable {
+        const state: *DocumentSymbolState = @ptrCast(@alignCast(context));
+        const proxy = state.registration.owner.proxy;
+        const request = proxy.request_async orelse return null;
+        var scratch = std.heap.ArenaAllocator.init(state.registration.owner.allocator);
+        defer scratch.deinit();
+        const args = [_]rpc.Arg{
+            .{ .json = .{ .integer = state.registration.handle } },
+            .{ .json = try std_uri.jsonComponents(scratch.allocator(), model.uri()) },
+        };
+        const pending = try allocator.create(DocumentSymbolsAsyncRequest);
+        pending.* = .{ .allocator = allocator, .model = model, .callback = callback };
+        return try request(proxy.context, "$provideDocumentSymbols", &args, .{ .context = pending, .callback = DocumentSymbolsAsyncRequest.ready });
     }
 
     const CodeLensRelease = struct {

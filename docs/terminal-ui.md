@@ -1958,7 +1958,13 @@ request/reply, thread affinity, detached worker bodies, timers, cancellation,
 groups, wake ordering and real file opens). Save and remaining synchronous
 provider contracts still need their upstream asynchronous lifecycle ports;
 providing the executor does not by itself make extension RPC asynchronous.
-The separate Windows extension-host transport remains unported.
+The workbench now connects transport readiness to the dispatcher, with
+`HostManager.requestAwait` yielding only the requesting window fiber. Nested
+RPCs dispatch normally, including the workspace edit during
+`onWillSaveTextDocument`. Language navigation/formatting and participating
+text-file saves use that path; completion and document symbols use their
+existing deferred interfaces. The separate Windows extension-host transport
+remains unported.
 
 `Workbench.async_io` is now `WindowIo`. Its existing service-owned jobs keep
 their completion/cancellation contracts, but execute the continuation on the

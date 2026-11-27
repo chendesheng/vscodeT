@@ -13,6 +13,11 @@ pub const WorkingCopyListener = struct {
     callback: *const fn (context: *anyopaque) void,
 };
 
+pub const SaveCompletion = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, anyerror!bool) void,
+};
+
 /// Mirrors upstream `IWorkingCopy` for the terminal working-copy service.
 pub const IWorkingCopy = struct {
     context: *anyopaque,
@@ -22,6 +27,7 @@ pub const IWorkingCopy = struct {
     name: *const fn (context: *anyopaque) []const u8,
     is_dirty: *const fn (context: *anyopaque) bool,
     is_modified: *const fn (context: *anyopaque) bool,
+    request_save_fn: ?*const fn (*anyopaque, ?SaveCompletion) anyerror!void = null,
     save_fn: ?*const fn (context: *anyopaque) anyerror!void = null,
     add_dirty_listener: *const fn (context: *anyopaque, listener: WorkingCopyListener) void,
     remove_dirty_listener: *const fn (context: *anyopaque, listener: WorkingCopyListener) void,
@@ -45,6 +51,11 @@ pub const IWorkingCopy = struct {
     }
     pub fn getDirty(self: IWorkingCopy) bool {
         return self.is_dirty(self.context);
+    }
+    pub fn requestSave(self: IWorkingCopy, completion: ?SaveCompletion) !void {
+        if (self.request_save_fn) |request| return request(self.context, completion);
+        try self.save();
+        if (completion) |callback| callback.complete(callback.context, true);
     }
     pub fn save(self: IWorkingCopy) !void {
         const callback = self.save_fn orelse return error.SaveUnsupported;

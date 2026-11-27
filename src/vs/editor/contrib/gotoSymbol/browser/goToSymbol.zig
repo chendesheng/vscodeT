@@ -31,6 +31,7 @@ pub fn getDefinitionsAtPosition(
         result.deinit();
     }
     for (providers) |provider| {
+        try token.throwIfCancellationRequested();
         const links = provider.provide_definition(provider.context, allocator, model, position, token) catch continue;
         try appendLocationLinks(allocator, model, &result, links);
     }
@@ -53,6 +54,7 @@ pub fn getDeclarationsAtPosition(
         result.deinit();
     }
     for (providers) |provider| {
+        try token.throwIfCancellationRequested();
         const links = provider.provide_declaration(provider.context, allocator, model, position, token) catch continue;
         try appendLocationLinks(allocator, model, &result, links);
     }
@@ -75,6 +77,7 @@ pub fn getImplementationsAtPosition(
         result.deinit();
     }
     for (providers) |provider| {
+        try token.throwIfCancellationRequested();
         const links = provider.provide_implementation(provider.context, allocator, model, position, token) catch continue;
         try appendLocationLinks(allocator, model, &result, links);
     }
@@ -97,6 +100,7 @@ pub fn getTypeDefinitionsAtPosition(
         result.deinit();
     }
     for (providers) |provider| {
+        try token.throwIfCancellationRequested();
         const links = provider.provide_type_definition(provider.context, allocator, model, position, token) catch continue;
         try appendLocationLinks(allocator, model, &result, links);
     }
@@ -120,6 +124,7 @@ pub fn getReferencesAtPosition(
         result.deinit();
     }
     for (providers) |provider| {
+        try token.throwIfCancellationRequested();
         try appendProviderReferences(allocator, model, &result, provider, position, compact, token);
     }
     return result.toOwnedSlice();
@@ -170,7 +175,7 @@ fn appendProviderReferences(
         token,
     ) catch return;
 
-    if (compact and chosen.len == 2) {
+    if (compact and chosen.len == 2 and !token.isCancellationRequested()) {
         const without_declaration = provider.provide_references(
             provider.context,
             allocator,

@@ -783,9 +783,6 @@ pub fn main(init: std.process.Init) !void {
         if (json_client) |client| {
             if (client.dispatchResponses(false)) needs_render = true;
         }
-        if (extension_host) |ext| {
-            if (ext.pump()) needs_render = true;
-        }
         var timeout = workbench.window_events.nextTimeout(time_compat.milliTimestamp(), 250);
 
         timeout = restore_timer.nextTimeout(timeout);

@@ -781,8 +781,14 @@ console API for raw mode, sizing and input polling.
   `std.Io` for window-owned async tasks. Its fibers yield on waits and resume
   on the window thread; detached reads, decodes and process work use its
   concurrent backing pool. The native wake callback integrates with the
-  existing window dispatcher. Save-participant and provider lifecycle
-  migration remains separate work.
+  existing window dispatcher. The extension reader also wakes that dispatcher;
+  completion and document symbols use deferred results, while navigation,
+  references and formatting await RPCs in window fibers. File save commands,
+  extension document saves and close confirmation run the extension save
+  participant before snapshotting the model and delegating the disk write.
+  Synchronous compatibility entry points and the remaining unported provider
+  and non-language actor contracts are tracked in the
+  [Zig extension plan](docs/zig-extension-lsp-plan.md).
 - `ui/` is a standalone Zig package outside `src/`: a DOM-like tree with
   authored `Style` declarations that cascade into `ComputedStyle` (inherited
   properties from the parent, initial values otherwise), integer class IDs into

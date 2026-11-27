@@ -201,17 +201,62 @@ const BulkApplyRequest = struct {
             };
         }
     }
-    fn maybeAutoSave(self: *BulkApplyRequest) void {
-        if (!self.options.respect_auto_save_config or self.result.edited_resources <= 1 or !self.resources_complete) return;
-        const copies = self.service.working_copy_service orelse return;
-        const config = if (self.service.file_services) |services| services.configuration_service else null;
-        if (config) |settings| if (!settings.getBool(auto_save_setting, true)) return;
-        const a = self.arena.allocator();
-        const dirty = copies.dirtyWorkingCopies(a) catch return;
-        for (dirty) |copy| {
-            const key = uri_util.resourceKey(a, copy.getResourceUri()) catch continue;
-            if (self.resources.contains(key)) copy.save() catch {};
+    const SaveGroup = struct {
+        allocator: std.mem.Allocator,
+        owner: ?*BulkApplyRequest,
+        remaining: usize = 1, // sentinel while issuing the working-copy saves
+
+        fn completed(context: *anyopaque, result: anyerror!bool) void {
+            const self: *SaveGroup = @ptrCast(@alignCast(context));
+            if (result) |_| {} else |err| std.log.warn("Bulk edit save failed: {s}", .{@errorName(err)});
+            self.release();
         }
+
+        fn release(self: *SaveGroup) void {
+            self.remaining -= 1;
+            if (self.remaining != 0) return;
+            const owner = self.owner;
+            self.allocator.destroy(self);
+            if (owner) |request| request.completedAutoSave();
+        }
+
+        fn detach(context: *anyopaque) void {
+            const self: *SaveGroup = @ptrCast(@alignCast(context));
+            self.owner = null;
+        }
+    };
+
+    fn maybeAutoSave(self: *BulkApplyRequest) bool {
+        if (!self.options.respect_auto_save_config or self.result.edited_resources <= 1 or !self.resources_complete) return false;
+        const copies = self.service.working_copy_service orelse return false;
+        const config = if (self.service.file_services) |services| services.configuration_service else null;
+        if (config) |settings| if (!settings.getBool(auto_save_setting, true)) return false;
+        const a = self.arena.allocator();
+        const dirty = copies.dirtyWorkingCopies(a) catch return false;
+        const saves = self.service.allocator.create(SaveGroup) catch return false;
+        saves.* = .{ .allocator = self.service.allocator, .owner = self };
+        self.waiting = true;
+        self.pending = .{ .context = saves, .disposeFn = SaveGroup.detach };
+        for (dirty) |copy| {
+            if (self.completion != null) break;
+            const key = uri_util.resourceKey(a, copy.getResourceUri()) catch continue;
+            if (!self.resources.contains(key)) continue;
+            saves.remaining += 1;
+            copy.requestSave(.{ .context = saves, .complete = SaveGroup.completed }) catch |err| SaveGroup.completed(saves, err);
+        }
+        // All immediate results have already been delivered. The sentinel
+        // keeps the group alive until every save has been issued.
+        saves.release();
+        return true;
+    }
+
+    fn completedAutoSave(self: *BulkApplyRequest) void {
+        if (self.completion != null) return;
+        self.depth += 1;
+        defer self.leave();
+        self.waiting = false;
+        self.pending = null;
+        self.finish(self.result);
     }
 
     fn advance(self: *BulkApplyRequest) void {
@@ -225,8 +270,7 @@ const BulkApplyRequest = struct {
             }
             if (self.next == self.edits.len) {
                 self.result.is_applied = self.edits.len != 0;
-                self.maybeAutoSave();
-                self.finish(self.result);
+                if (!self.maybeAutoSave()) self.finish(self.result);
                 return;
             }
             const start_index = self.next;

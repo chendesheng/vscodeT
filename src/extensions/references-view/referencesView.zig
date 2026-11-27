@@ -60,6 +60,7 @@ pub const SymbolsTree = struct {
     picker_arena: std.heap.ArenaAllocator,
     history: History = .{},
     results: []const api.LocationLink = &.{},
+    pending_search: ?api.IDisposable = null,
     registrations: [5]api.IDisposable = @splat(.none),
 
     pub fn init(self: *SymbolsTree, context: *const api.IExtensionContext, quick_input: *QuickInputService) !void {
@@ -78,12 +79,19 @@ pub const SymbolsTree = struct {
     }
 
     pub fn deinit(self: *SymbolsTree) void {
+        self.cancelSearch();
         for (self.registrations) |registration| registration.dispose();
         self.history.deinit(self.allocator);
         self.picker_arena.deinit();
     }
 
+    fn cancelSearch(self: *SymbolsTree) void {
+        if (self.pending_search) |pending| pending.dispose();
+        self.pending_search = null;
+    }
+
     fn beginPick(self: *SymbolsTree) std.mem.Allocator {
+        self.cancelSearch();
         if (self.quick_input.isVisible()) self.quick_input.hide();
         self.results = &.{};
         _ = self.picker_arena.reset(.retain_capacity);
@@ -104,8 +112,34 @@ fn search(w: *SymbolsTree, kind: actions.Kind) !void {
     const position = tab.cursorPosition();
     const arena = w.beginPick();
     const command = if (kind == .references) "vscode.executeReferenceProvider" else "vscode.executeImplementationProvider";
+    const pending = try arena.create(SearchRequest);
+    pending.* = .{ .owner = w, .model = tab.model, .version = tab.model.getVersionId(), .position = position, .kind = kind };
+    w.pending_search = try w.commands.requestLocationProvider(arena, command, tab.model, position, .{ .context = pending, .complete = SearchRequest.ready });
+}
+
+const SearchRequest = struct {
+    owner: *SymbolsTree,
+    model: *TextModel,
+    version: u32,
+    position: Position,
+    kind: actions.Kind,
+
+    fn ready(context: *anyopaque, result: anyerror![]const api.LocationLink) void {
+        const self: *SearchRequest = @ptrCast(@alignCast(context));
+        const w = self.owner;
+        w.pending_search = null;
+        const tab = w.editors.activeTextEditor() orelse return;
+        if (tab.model != self.model or tab.model.getVersionId() != self.version or !tab.cursorPosition().equals(self.position)) return;
+        const results = result catch return;
+        showResults(w, tab, self.position, self.kind, results) catch |err| {
+            tab.setMessage(@errorName(err));
+        };
+    }
+};
+
+fn showResults(w: *SymbolsTree, tab: api.ITextEditor, position: Position, kind: actions.Kind, results: []const api.LocationLink) !void {
+    const arena = w.picker_arena.allocator();
     const title = if (kind == .references) "References" else "Implementations";
-    const results = try w.commands.executeLocationProvider(arena, command, tab.model, position);
     if (results.len == 0) {
         tab.setMessage(if (kind == .references) "No references found" else "No implementations found");
         return;
@@ -240,6 +274,7 @@ fn refresh(context: *anyopaque) !void {
 
 fn clear(context: *anyopaque) !void {
     const w: *SymbolsTree = @ptrCast(@alignCast(context));
+    w.cancelSearch();
     if (w.quick_input.isVisible()) w.quick_input.hide();
     w.history.deinit(w.allocator);
 }

@@ -142,6 +142,7 @@ pub const Extensions = struct {
     move_group_listener: ?usize = null,
     tabs_task: Task = .{},
     models_task: Task = .{},
+    rpc_task: Task = .{},
     models: documents_and_editors.ModelCollection,
     active_selection_handler: ViewEventHandler,
     selection_task: Task = .{},
@@ -167,6 +168,8 @@ pub const Extensions = struct {
     commands_actor: ?MainThreadCommands = null,
     configuration_actor: ?MainThreadConfiguration = null,
     documents_actor: ?MainThreadDocuments = null,
+    save_participant: @import("mainThreadSaveParticipant.zig").MainThreadSaveParticipant = undefined,
+    pending_document_saves: std.ArrayList(*DocumentSaveRequest) = .empty,
     text_editors_actor: ?MainThreadTextEditors = null,
     editor_tabs_actor: ?MainThreadEditorTabs = null,
     pending_tab_closes: std.ArrayList(*TabCloseRequest) = .empty,
@@ -228,6 +231,8 @@ pub const Extensions = struct {
             .active_selection_handler = ViewEventHandler.init(self, .{ .onCursorStateChanged = onActiveSelection }),
         };
 
+        self.rpc_task = .{ .queue = services.window, .context = self, .run = dispatchRpc, .progress = true };
+        errdefer self.rpc_task.schedule(null);
         self.models_task = .{ .queue = services.window, .context = self, .run = updateModels, .progress = true };
         self.tabs_task = .{ .queue = services.window, .context = self, .run = updateTabs, .progress = true };
         self.selection_task = .{ .queue = services.window, .context = self, .run = updateSelection, .progress = true };
@@ -348,10 +353,28 @@ pub const Extensions = struct {
         errdefer self.removeActiveDocument() catch {};
         try self.boot(runtime_dir);
         try self.registerEditorListeners();
+        errdefer self.unregisterEditorListeners();
+        self.save_participant = .{
+            .allocator = allocator,
+            .host = self.host,
+            .window = services.window,
+            .models = .{ .context = self, .synchronize = synchronizeSaveModel },
+        };
+        try services.text_files.addDocumentSaveParticipant(self.save_participant.interface());
+        self.host.attachReadyTask(&self.rpc_task);
         return self;
     }
 
     pub fn deinit(self: *Extensions) void {
+        self.services.text_files.removeDocumentSaveParticipant(&self.save_participant);
+        while (self.pending_document_saves.items.len != 0) {
+            const request = self.pending_document_saves.items[self.pending_document_saves.items.len - 1];
+            request.channel = null;
+            request.document.cancelPendingSave();
+        }
+        self.pending_document_saves.deinit(self.allocator);
+        self.host.attachReadyTask(null);
+        self.rpc_task.schedule(null);
         if (self.services.quick_access.isOpen()) self.services.quick_access.inputService().hide();
         self.message_service.deinit();
         if (self.terminal_completions) |*session| session.deinit();
@@ -384,6 +407,7 @@ pub const Extensions = struct {
         self.activation_tracker.deinit();
         self.last_selections.deinit();
         self.host.deinit();
+        self.rpc_task.schedule(null);
         for (self.descriptions) |*description| description.deinit(self.allocator);
         self.allocator.free(self.descriptions);
         self.allocator.free(self.extension_ptrs);
@@ -453,7 +477,10 @@ pub const Extensions = struct {
 
     fn languageFeaturesRequest(context: *anyopaque, allocator: Allocator, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, timeout_ms: u32) anyerror!std.json.Value {
         const self: *Extensions = @ptrCast(@alignCast(context));
-        return self.host.requestSync(allocator, proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostLanguageFeatures), method, args, token, timeout_ms);
+        const actor = proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostLanguageFeatures);
+        if (@import("ui").WindowIo.inFiber(self.services.window.io))
+            return self.host.requestAwait(self.services.window, allocator, actor, method, args, token, timeout_ms);
+        return self.host.requestSync(allocator, actor, method, args, token, timeout_ms);
     }
 
     const AsyncActorRequest = struct {
@@ -523,7 +550,7 @@ pub const Extensions = struct {
 
     fn requestTerminalFrame(context: *anyopaque) void {
         const self: *Extensions = @ptrCast(@alignCast(context));
-        self.needs_render = true;
+        self.requestRender();
     }
 
     fn hasEditorFocus(context: *anyopaque) bool {
@@ -720,7 +747,7 @@ pub const Extensions = struct {
         if (!std.mem.eql(u8, scheme.string, "file")) return false;
         const path = uriPath(uri) orelse return false;
         self.services.common.open_path(self.services.common.context, path) catch return false;
-        self.needs_render = true;
+        self.requestRender();
         return true;
     }
 
@@ -762,7 +789,7 @@ pub const Extensions = struct {
         _ = try target.pane.moveEditor(dest, target.tab, .{ .pinned = true, .sticky = target.pane.group.model.isSticky(.{ .editor = target.tab.input }), .active = true, .preserve_focus = preserve_focus, .index = @intCast(index) }, group_actions.transfer.move);
         if (target.pane != dest and target.pane.group.model.count() == 0) part.collapseGroup(target.pane, group_actions.transfer);
         group_actions.transfer.layout(group_actions.transfer.copy.context);
-        self.needs_render = true;
+        self.requestRender();
     }
 
     const LocatedTab = struct { pane: *GroupPane, tab: *Tab };
@@ -906,7 +933,7 @@ pub const Extensions = struct {
                 }
             }
             self.restoreFocus(extensions);
-            extensions.needs_render = true;
+            extensions.requestRender();
             self.advance();
         }
 
@@ -933,7 +960,7 @@ pub const Extensions = struct {
         // Make the document known before `workspace.openTextDocument`
         // resolves; the extension host otherwise waits for the next pump.
         self.syncActiveDocument() catch {};
-        self.needs_render = true;
+        self.requestRender();
         // Return the resource the document mirror registered, not the caller's
         // path spelling, so an extension-requested open joins the same
         // document (`$tryOpenDocument` resolves to this URI).
@@ -947,17 +974,55 @@ pub const Extensions = struct {
         return manager.fileUri(arena, "/tmp/untitled");
     }
 
-    fn documentsSaveHost(context: *anyopaque, uri: std.json.Value) anyerror!bool {
+    fn synchronizeSaveModel(context: *anyopaque, model: *TextModel) !bool {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        try self.syncDocumentModels();
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const key = try std_uri.resourceKey(arena.allocator(), model.uri());
+        return self.models.modelForResource(key) == model;
+    }
+
+    const DocumentSaveRequest = struct {
+        owner: *Extensions,
+        document: *EditorDocument,
+        channel: ?*rpc.RpcProtocol = null,
+        id: u32 = 0,
+
+        fn start(context: *anyopaque, channel: *rpc.RpcProtocol, id: u32) void {
+            const self: *DocumentSaveRequest = @ptrCast(@alignCast(context));
+            self.channel = channel;
+            self.id = id;
+            self.document.requestSave(self.owner.services.window, .{ .context = self, .complete = complete }) catch |err| complete(self, err);
+        }
+
+        fn complete(context: *anyopaque, result: anyerror!bool) void {
+            const self: *DocumentSaveRequest = @ptrCast(@alignCast(context));
+            const owner = self.owner;
+            if (self.channel) |channel| channel.sendReply(self.id, .{ .json = .{ .bool = result catch false } });
+            if (std.mem.indexOfScalar(*DocumentSaveRequest, owner.pending_document_saves.items, self)) |index| _ = owner.pending_document_saves.swapRemove(index);
+            const document = self.document;
+            owner.allocator.destroy(self);
+            document.release();
+            owner.requestRender();
+        }
+    };
+
+    fn documentsSaveHost(context: *anyopaque, uri: std.json.Value) anyerror!rpc.HandlerReply {
         const self: *Extensions = @ptrCast(@alignCast(context));
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const arena = scratch.allocator();
         const components = try std_uri.componentsFromJson(uri, arena);
         const key = try std_uri.resourceKeyFromComponents(arena, components);
-        const editor = self.models.writableEditorForResource(key) orelse return false;
-        editor.save() catch return false;
-        self.needs_render = true;
-        return true;
+        const editor = self.models.writableEditorForResource(key) orelse return .{ .json = .{ .bool = false } };
+        const request = try self.allocator.create(DocumentSaveRequest);
+        errdefer self.allocator.destroy(request);
+        editor.document.retain();
+        errdefer editor.document.release();
+        request.* = .{ .owner = self, .document = editor.document };
+        try self.pending_document_saves.append(self.allocator, request);
+        return .{ .deferred = .{ .context = request, .start = DocumentSaveRequest.start } };
     }
 
     fn textEditorSetSelectionsHost(context: *anyopaque, selections: []Selection) anyerror!void {
@@ -969,7 +1034,7 @@ pub const Extensions = struct {
         }
         if (selections.len > 0) {
             editor.setSelections(selections) catch {};
-            self.needs_render = true;
+            self.requestRender();
         }
         self.captureSelections(editor);
     }
@@ -990,7 +1055,7 @@ pub const Extensions = struct {
         if (self.editor_service.activeEditorPane()) |tab| applyShowDocumentSelection(tab.editor, options);
         self.syncActiveDocument() catch {};
         self.syncSelection() catch {};
-        self.needs_render = true;
+        self.requestRender();
         return "1";
     }
 
@@ -1015,7 +1080,7 @@ pub const Extensions = struct {
             );
         }
         self.sendVisibleRanges() catch {};
-        self.needs_render = true;
+        self.requestRender();
     }
 
     fn configurationDataHost(context: *anyopaque, arena: Allocator) anyerror!std.json.Value {
@@ -1275,6 +1340,16 @@ pub const Extensions = struct {
         self.activation_tracker.activateLanguage(self.host, event.newLanguage);
     }
 
+    fn requestRender(self: *Extensions) void {
+        self.needs_render = true;
+        self.rpc_task.post();
+    }
+
+    fn dispatchRpc(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        return self.pump();
+    }
+
     /// Drains incoming extension messages. Returns true when the TUI should
     /// repaint (an edit, selection, or status entry changed).
     pub fn pump(self: *Extensions) bool {
@@ -1389,7 +1464,7 @@ pub const Extensions = struct {
         self.setScrollListener(editor);
         self.captureSelections(editor);
         self.activation_tracker.activateLanguage(self.host, editor.languageId());
-        self.needs_render = true;
+        self.requestRender();
     }
 
     fn textInputUri(input: *EditorInput) ?std.Uri {
@@ -1481,7 +1556,7 @@ pub const Extensions = struct {
         defer self.allocator.free(active.uri);
         defer self.allocator.free(active.language_id);
 
-        self.needs_render = true;
+        self.requestRender();
         var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_instance.deinit();
         const arena = arena_instance.allocator();
@@ -1514,7 +1589,7 @@ pub const Extensions = struct {
         }
         if (std.mem.eql(u8, method, "$showMessage")) {
             const self: *Extensions = @ptrCast(@alignCast(context));
-            self.needs_render = true;
+            self.requestRender();
             return self.message_service.showMessage(args);
         }
         if (std.mem.eql(u8, method, "$startFileSearch")) {
@@ -1535,7 +1610,7 @@ pub const Extensions = struct {
         // The content listener mirrors real edits; a cursor-only type (for
         // example overtyping an auto-closing pair) fires no model event.
         try self.sendSelection(arena, .command);
-        self.needs_render = true;
+        self.requestRender();
     }
 
     /// Mirrors the selection/scroll result of a command. Content changes are
@@ -1543,12 +1618,12 @@ pub const Extensions = struct {
     fn syncAfterEditorCommand(self: *Extensions, _: Allocator, _: *Editor) !void {
         try self.syncSelection();
         self.sendVisibleRanges() catch {};
-        self.needs_render = true;
+        self.requestRender();
     }
 
     fn applyCommandEdit(self: *Extensions, arena: Allocator, _: *Editor) !void {
         try self.sendSelection(arena, .command);
-        self.needs_render = true;
+        self.requestRender();
     }
 
     fn applyEditSpecs(self: *Extensions, arena: Allocator, editor: *Editor, edits: []const EditSpec) !void {
@@ -1572,7 +1647,7 @@ pub const Extensions = struct {
         if (text_edits.items.len == 0) return;
         try editor.applyTextEdits(text_edits.items, &.{});
         try self.sendSelection(arena, .keyboard);
-        self.needs_render = true;
+        self.requestRender();
     }
 
     fn sendSelection(self: *Extensions, arena: Allocator, source: SelectionSource) !void {
@@ -1600,7 +1675,7 @@ pub const Extensions = struct {
     fn onEditorScroll(context: *anyopaque) void {
         const self: *Extensions = @ptrCast(@alignCast(context));
         self.visible_ranges_task.post();
-        self.needs_render = true;
+        self.requestRender();
     }
 
     fn setScrollListener(self: *Extensions, editor: ?*Editor) void {
@@ -1919,7 +1994,7 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
     const args: []const std.json.Value = if (command_args == .array) command_args.array.items else &.{};
     if (std.mem.eql(u8, command, "workbench.action.browser.open") or std.mem.eql(u8, command, "simpleBrowser.show")) {
         try self.services.simple_browser.show(if (args.len > 0 and args[0] == .string) args[0].string else null);
-        self.needs_render = true;
+        self.requestRender();
         return null;
     }
     if (std.mem.eql(u8, command, "editorScroll")) {
@@ -1932,7 +2007,7 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
     if (std.mem.eql(u8, command, "revealLine")) {
         if (self.active) |active| {
             _ = applyRevealLine(active.editor, args);
-            self.needs_render = true;
+            self.requestRender();
         }
         return null;
     }
@@ -1979,7 +2054,7 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
     }
     if (std.mem.eql(u8, command, "search.action.focusSearchList")) {
         findInFiles(self.services.views) catch {};
-        self.needs_render = true;
+        self.requestRender();
         return null;
     }
     if (std.mem.eql(u8, command, "workbench.action.splitEditor") or
@@ -2002,12 +2077,12 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
         else
             .RIGHT;
         self.services.split_active(self.services.common.context, direction) catch {};
-        self.needs_render = true;
+        self.requestRender();
         return null;
     }
     if (std.mem.eql(u8, command, "workbench.action.closeActiveEditor")) {
         _ = self.services.close_active(self.services.common.context) catch false;
-        self.needs_render = true;
+        self.requestRender();
         return null;
     }
     if (std.mem.eql(u8, command, "moveActiveEditor")) {
@@ -2017,17 +2092,17 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
             const by = objectString(object, "by") orelse "tab";
             const value = objectUsize(object, "value") orelse 1;
             self.services.move_active_editor(self.services.common.context, to, by, value) catch {};
-            self.needs_render = true;
+            self.requestRender();
         }
         return null;
     }
     if (std.mem.startsWith(u8, command, "workbench.action.openEditorAtIndex")) {
         if (args.len > 0 and args[0] == .integer and args[0].integer >= 0) {
             self.services.activate_index(self.services.common.context, @intCast(args[0].integer)) catch {};
-            self.needs_render = true;
+            self.requestRender();
         } else if (std.mem.eql(u8, command, "workbench.action.openEditorAtIndex1")) {
             self.services.activate_index(self.services.common.context, 0) catch {};
-            self.needs_render = true;
+            self.requestRender();
         }
         return null;
     }
@@ -2036,22 +2111,22 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
         // extension that reads `activeTextEditor` immediately sees the target.
         self.syncActiveDocument() catch {};
         self.syncSelection() catch {};
-        self.needs_render = true;
+        self.requestRender();
         return null;
     }
     if (std.mem.eql(u8, command, "workbench.action.files.save")) {
-        if (self.active) |active| active.editor.save() catch {};
-        self.needs_render = true;
+        if (self.active) |active| active.editor.requestSave(null) catch {};
+        self.requestRender();
         return null;
     }
     if (std.mem.eql(u8, command, "workbench.action.nextEditorInGroup")) {
         self.services.common.switch_tab(self.services.common.context, 1) catch {};
-        self.needs_render = true;
+        self.requestRender();
         return null;
     }
     if (std.mem.eql(u8, command, "workbench.action.previousEditorInGroup")) {
         self.services.common.switch_tab(self.services.common.context, -1) catch {};
-        self.needs_render = true;
+        self.requestRender();
         return null;
     }
     if (std.mem.eql(u8, command, "vscode.open")) {
@@ -2059,7 +2134,7 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
             if (args[0].object.get("path")) |path| {
                 if (path == .string) {
                     self.services.common.open_path(self.services.common.context, path.string) catch {};
-                    self.needs_render = true;
+                    self.requestRender();
                 }
             }
         }
@@ -2080,7 +2155,7 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
         } else {
             try self.syncSelection();
         }
-        self.needs_render = true;
+        self.requestRender();
         return null;
     }
     return null;
@@ -2323,6 +2398,24 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(!try runEditorCommand(editor, "unhandled.command"));
         }
 
+        fn waitNavigation(workbench: *terminal_window_type) !void {
+            const deadline = time_compat.milliTimestamp() + 5_000;
+            while (workbench.symbol_navigation.pending_navigation != null and time_compat.milliTimestamp() < deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(1);
+            }
+            try std.testing.expect(workbench.symbol_navigation.pending_navigation == null);
+        }
+
+        fn waitReferences(workbench: *terminal_window_type) !void {
+            const deadline = time_compat.milliTimestamp() + 5_000;
+            while (workbench.references_view.pending_search != null and time_compat.milliTimestamp() < deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(1);
+            }
+            try std.testing.expect(workbench.references_view.pending_search == null);
+        }
+
         test "Extensions: language feature registration reaches the workbench registries" {
             // The fixture registers definition/declaration/implementation/type
             // definition/reference providers so the bridge actions run without tsserver.
@@ -2441,6 +2534,111 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             defer allocator.free(symbol_providers);
             try std.testing.expect(symbol_providers.len > 0);
 
+            // These providers now complete through the window queue, without
+            // explicitly pumping the extension host from the consumer.
+            const DeferredResults = struct {
+                completion_items: ?usize = null,
+                symbols: ?usize = null,
+                fn completions(context: *anyopaque, _: *anyopaque, result: anyerror!@import("../../../editor/common/languages/completion.zig").CompletionList) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    self.completion_items = if (result) |list| list.items.len else |_| 0;
+                }
+                fn documentSymbols(context: *anyopaque, symbols: []const @import("../../../editor/common/languages.zig").DocumentSymbol) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    self.symbols = symbols.len;
+                }
+            };
+            var deferred_results: DeferredResults = .{};
+            var provider_arena = std.heap.ArenaAllocator.init(allocator);
+            defer provider_arena.deinit();
+            const completions = completion_providers[0];
+            const completion_request = (try completions.provide_completion_items_deferred.?(completions.context, provider_arena.allocator(), model, Position.init(1, 1), .{}, .None)).?;
+            defer completion_request.cancel(completion_request.context);
+            completion_request.on_complete(completion_request.context, &deferred_results, DeferredResults.completions);
+            const symbols = symbol_providers[0];
+            const symbol_request = (try symbols.request_document_symbols.?(symbols.context, provider_arena.allocator(), model, .{ .context = &deferred_results, .complete = DeferredResults.documentSymbols })).?;
+            defer if (deferred_results.symbols == null) symbol_request.dispose();
+            try std.testing.expect(deferred_results.completion_items == null and deferred_results.symbols == null);
+            const deferred_deadline = time_compat.milliTimestamp() + 5_000;
+            while ((deferred_results.completion_items == null or deferred_results.symbols == null) and time_compat.milliTimestamp() < deferred_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(1);
+            }
+            try std.testing.expectEqual(@as(?usize, 1), deferred_results.completion_items);
+            try std.testing.expectEqual(@as(?usize, 1), deferred_results.symbols);
+
+            // A fiber awaiting an extension command can receive a nested
+            // workspace edit request before the command itself replies.
+            const Nested = struct {
+                fn run(ext: *Extensions, a: Allocator, uri: []const u8, completed: *bool) !bool {
+                    defer completed.* = true;
+                    const reply = try ext.host.requestAwait(ext.services.window, a, proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands), "$executeContributedCommand", &.{
+                        .{ .json = .{ .string = "fixture.applyWorkspaceEdit" } },
+                        .{ .json = .{ .string = uri } },
+                    }, null, 5_000);
+                    return reply == .bool and reply.bool;
+                }
+            };
+            var nested_done = false;
+            const serial = workbench.window_events.io;
+            var nested = try serial.concurrent(Nested.run, .{ extension_host, provider_arena.allocator(), resource, &nested_done });
+            defer {
+                if (!nested_done) _ = nested.cancel(serial) catch false;
+            }
+            const nested_deadline = time_compat.milliTimestamp() + 7_000;
+            while (!nested_done and time_compat.milliTimestamp() < nested_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(1);
+            }
+            try std.testing.expect(nested_done);
+            try std.testing.expect(try nested.await(serial));
+            try std.testing.expectEqualStrings(" {", try model.borrowLineContent(1));
+            try workbench.activeTab().?.editor.undo();
+
+            // The real onWillSave listener sends a nested workspace edit.
+            // It must be applied before the disk write and will-save reply.
+            const command_actor = proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands);
+            const enabled = try extension_host.host.requestSync(provider_arena.allocator(), command_actor, "$executeContributedCommand", &.{.{ .json = .{ .string = "fixture.enableSaveParticipant" } }}, null, 5_000);
+            try std.testing.expect(enabled == .bool and enabled.bool);
+            const save_editor = workbench.activeTab().?.editor;
+            try workbench.commands.execute("workbench.action.files.save");
+            try std.testing.expect(save_editor.document.pending_save != null);
+            const save_deadline = time_compat.milliTimestamp() + 5_000;
+            while (save_editor.document.pending_save != null and time_compat.milliTimestamp() < save_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(1);
+            }
+            try std.testing.expect(save_editor.document.pending_save == null);
+            try std.testing.expectEqualStrings(" {", try model.borrowLineContent(1));
+            try std.testing.expect(!save_editor.isDirty());
+            const saved_bytes = try tmp.dir.readFileAlloc(io, "fixture.json", allocator, .limited(1024));
+            defer allocator.free(saved_bytes);
+            try std.testing.expect(std.mem.startsWith(u8, saved_bytes, " {"));
+            try save_editor.undo();
+
+            // Extension-initiated TextDocument.save must also reply only
+            // after its participant and disk snapshot have completed.
+            var saved_by_extension: ?bool = null;
+            const save_request = try Extensions.requestActorAsync(extension_host, protocol.ExtHostContext.ExtHostCommands, "$executeContributedCommand", &.{
+                .{ .json = .{ .string = "fixture.saveDocument" } },
+                .{ .json = .{ .string = resource } },
+            }, .{ .context = &saved_by_extension, .callback = struct {
+                fn complete(context: *anyopaque, reply: rpc.Reply) void {
+                    const result: *?bool = @ptrCast(@alignCast(context));
+                    result.* = reply == .json and reply.json == .bool and reply.json.bool;
+                }
+            }.complete });
+            const extension_save_deadline = time_compat.milliTimestamp() + 5_000;
+            while (saved_by_extension == null and time_compat.milliTimestamp() < extension_save_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(1);
+            }
+            if (saved_by_extension == null) save_request.dispose();
+            try std.testing.expect(saved_by_extension orelse false);
+            try std.testing.expectEqualStrings(" {", try model.borrowLineContent(1));
+            try std.testing.expect(!save_editor.isDirty());
+            try save_editor.undo();
+
             const declaration_providers = try features.declaration_provider.ordered(allocator, model, false);
             defer allocator.free(declaration_providers);
             try std.testing.expect(declaration_providers.len > 0);
@@ -2466,18 +2664,24 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
             // Extension command names reach the same workbench actions.
             try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.goToDeclaration"));
+            try waitNavigation(workbench);
             try std.testing.expectEqual(@as(usize, 1), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
             try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.revealDeclaration"));
+            try waitNavigation(workbench);
             try std.testing.expectEqual(@as(usize, 2), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
             try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.goToImplementation"));
+            try waitNavigation(workbench);
             try std.testing.expectEqual(@as(usize, 3), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
             try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.goToTypeDefinition"));
+            try waitNavigation(workbench);
             try std.testing.expectEqual(@as(usize, 1), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
 
             try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.goToReferences"));
+            try waitNavigation(workbench);
             try std.testing.expect(workbench.quick_access.isOpen());
             workbench.quick_access.inputService().hide();
             try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.findReferences"));
+            try waitNavigation(workbench);
             try std.testing.expect(workbench.quick_access.isOpen());
             workbench.quick_access.inputService().hide();
             try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "outline.focus"));
@@ -2588,6 +2792,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             while (!navigated and time_compat.milliTimestamp() < navigation_deadline) {
                 _ = extension_host.pump();
                 navigated = workbench.revealDefinition() catch false;
+                if (navigated) try waitNavigation(workbench);
                 if (!navigated) time_compat.sleepMillis(20);
             }
             try std.testing.expect(navigated);
@@ -3417,6 +3622,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             while (!found_definition and time_compat.milliTimestamp() < deadline) {
                 _ = extension_host.pump();
                 if (try workbench.revealDefinition()) {
+                    try waitNavigation(workbench);
                     if (workbench.activeTab()) |opened| {
                         const target = opened.editor.modelCursorPosition();
                         if (target.lineNumber == 1 and std.mem.eql(u8, opened.editor.path, definition_tab.editor.path)) {
@@ -3431,6 +3637,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
             try tab.editor.setCursorPosition(Position.init(2, 13));
             try workbench.commands.execute("references-view.findReferences");
+            try waitReferences(workbench);
             try std.testing.expect(workbench.quick_access.isOpen());
             const reference_picker = workbench.quick_access.inputService().pickerRef();
             try std.testing.expect(reference_picker.items.items.len >= 3);
@@ -3438,6 +3645,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try workbench.commands.execute("references-view.pickFromHistory");
             try std.testing.expectEqualStrings("value", reference_picker.items.items[0].item.label);
             reference_picker.accept();
+            try waitReferences(workbench);
             try std.testing.expect(reference_picker.items.items.len >= 3);
             workbench.quick_access.inputService().hide();
 
@@ -3475,6 +3683,12 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             while (!formatted and time_compat.milliTimestamp() < deadline) {
                 _ = extension_host.pump();
                 tab.editor.formatDocument() catch {};
+                const format_deadline = time_compat.milliTimestamp() + 5_000;
+                while (tab.editor.pending_format != null and time_compat.milliTimestamp() < format_deadline) {
+                    _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                    time_compat.sleepMillis(1);
+                }
+                try std.testing.expect(tab.editor.pending_format == null);
                 var text = try model.getValue(.LF, false);
                 defer text.deinit();
                 formatted = std.mem.indexOf(u8, text.items, "const value: number") != null;

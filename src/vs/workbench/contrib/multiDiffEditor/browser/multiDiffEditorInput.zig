@@ -383,6 +383,7 @@ pub const MultiDiffEditorInput = struct {
         self.base.matches_fn = matches;
         self.base.is_dirty_fn = isDirty;
         self.base.save_fn = save;
+        self.base.request_save_fn = requestSave;
         self.base.revert_fn = revert;
         self.base.close_handler = .{ .context = self, .show_confirm = showConfirm };
         return self;
@@ -615,6 +616,47 @@ pub const MultiDiffEditorInput = struct {
         }
         return false;
     }
+    const SaveBatch = struct {
+        allocator: Allocator,
+        completion: ?editor_input.SaveCompletion,
+        remaining: usize = 1,
+        result: anyerror!bool = true,
+
+        fn complete(context: *anyopaque, result: anyerror!bool) void {
+            const self: *SaveBatch = @ptrCast(@alignCast(context));
+            if (result) |saved| {
+                if (!saved and (self.result catch false)) self.result = false;
+            } else |err| self.result = err;
+            self.release();
+        }
+
+        fn release(self: *SaveBatch) void {
+            self.remaining -= 1;
+            if (self.remaining != 0) return;
+            const completion = self.completion;
+            const result = self.result;
+            self.allocator.destroy(self);
+            if (completion) |callback| callback.complete(callback.context, result);
+        }
+
+        fn saveInput(self: *SaveBatch, input: SideInput, group: editor_input.GroupIdentifier) void {
+            if (input.fileInput() == null or !input.interface().isDirty()) return;
+            self.remaining += 1;
+            input.interface().requestSave(group, .{ .context = self, .complete = complete }) catch |err| complete(self, err);
+        }
+    };
+
+    fn requestSave(base: *EditorInput, group: editor_input.GroupIdentifier, completion: ?editor_input.SaveCompletion) !void {
+        const self: *MultiDiffEditorInput = @ptrCast(@alignCast(base.impl.?));
+        const batch = try self.allocator.create(SaveBatch);
+        batch.* = .{ .allocator = self.allocator, .completion = completion };
+        for (self.entries) |entry| {
+            if (entry.original) |input| batch.saveInput(input, group);
+            if (entry.modified) |input| batch.saveInput(input, group);
+        }
+        batch.release();
+    }
+
     fn save(base: *EditorInput, group: editor_input.GroupIdentifier) !editor_input.SaveResult {
         const self: *MultiDiffEditorInput = @ptrCast(@alignCast(base.impl.?));
         for (self.entries) |entry| {

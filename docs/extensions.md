@@ -1269,8 +1269,11 @@ The baseline bridge is ported: `languageSelector.zig`,
 definition/implementation, references, document symbols, outline and formatting
 are wired to the TUI, diagnostics render as squiggly underlines, overview-ruler
 marks, the Problems panel view and the workspace `Problems` status
-counts, and synchronous provider calls are bounded by a timeout. The remaining `MainThreadLanguageFeatures` methods still
-reject.
+counts. Interactive completion/document symbols deliver deferred results;
+navigation, references and formatting suspend window fibers on bounded
+extension RPCs. The direct synchronous provider interface remains available
+for standalone tests and compatibility callers. The remaining
+`MainThreadLanguageFeatures` methods still reject.
 
 `MainThreadLanguageFeatures` is handle-based: the host registers a provider
 and gets a numeric handle; later requests carry that handle. The baseline
@@ -1934,9 +1937,10 @@ Other provider registrations from the extension are accepted and retained for
 `$unregister`, but their providers are not invoked because the terminal has no
 renderer for semantic tokens, inlay hints, code lens, links, colors, call/type
 hierarchy, linked editing or inline completions. Code-action providers are
-transported but still have no TUI command surface. Provider calls remain synchronous with the
-existing bounded timeouts; the first tsserver request may return empty while a
-project loads.
+transported but still have no TUI command surface. Interactive navigation,
+references and formatting await their replies on the window dispatcher;
+completion and symbols use cancellable deferred results. The first tsserver
+request may return empty while a project loads.
 
 The e2e test opens a temp `.ts` file with the extension and asserts
 diagnostics, completion, hover, formatting and an accented-prefix diagnostic

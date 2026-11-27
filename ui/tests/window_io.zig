@@ -234,3 +234,19 @@ test "WindowIo detached jobs run on the worker and resume the owning window" {
     try std.testing.expectEqual(std.Thread.getCurrentId(), try f.await(a));
     try std.testing.expectEqual(std.Thread.getCurrentId(), try g.await(b));
 }
+
+test "WindowIo fibers support allocator stack tracing" {
+    const Probe = struct {
+        fn allocate(allocator: std.mem.Allocator) !void {
+            const memory = try allocator.alloc(u8, 33);
+            defer allocator.free(memory);
+            @memset(memory, 42);
+            try std.testing.expectEqual(@as(u8, 42), memory[0]);
+        }
+    };
+    var runtime = try WindowIo.init(std.testing.allocator, std.testing.io);
+    defer runtime.deinit();
+    const serial = runtime.io();
+    var job = try serial.concurrent(Probe.allocate, .{std.testing.allocator});
+    try job.await(serial);
+}

@@ -71,10 +71,20 @@ pub const SaveParticipant = struct {
     participate: *const fn (context: *anyopaque, model: *anyopaque) anyerror!void,
 };
 
+/// Real text-editor model save participant. The terminal working copy owns
+/// the model, so the participant runs before the working copy snapshots it.
+pub const DocumentSaveParticipant = struct {
+    context: *anyopaque,
+    participate: *const fn (*anyopaque, *@import("../../../../editor/common/model/textModel.zig").TextModel, Io) anyerror!void,
+};
+
+pub const SaveCompletion = @import("../../workingCopy/common/workingCopy.zig").SaveCompletion;
+
 pub const TextFileService = struct {
     allocator: Allocator,
     files: *DiskFileService,
     save_participants: std.array_list.Managed(SaveParticipant),
+    document_save_participants: std.ArrayList(DocumentSaveParticipant) = .empty,
 
     pub fn init(allocator: Allocator, files: *DiskFileService) TextFileService {
         return .{
@@ -86,6 +96,7 @@ pub const TextFileService = struct {
 
     pub fn deinit(self: *TextFileService) void {
         self.save_participants.deinit();
+        self.document_save_participants.deinit(self.allocator);
     }
 
     pub fn addSaveParticipant(self: *TextFileService, context: *anyopaque, callback: *const fn (context: *anyopaque, model: *anyopaque) anyerror!void) !void {
@@ -99,6 +110,33 @@ pub const TextFileService = struct {
                 _ = self.save_participants.orderedRemove(index);
                 return;
             }
+        }
+    }
+
+    pub fn addDocumentSaveParticipant(self: *TextFileService, participant: DocumentSaveParticipant) !void {
+        try self.document_save_participants.append(self.allocator, participant);
+    }
+
+    pub fn removeDocumentSaveParticipant(self: *TextFileService, context: *anyopaque) void {
+        for (self.document_save_participants.items, 0..) |participant, i| {
+            if (participant.context == context) {
+                _ = self.document_save_participants.orderedRemove(i);
+                return;
+            }
+        }
+    }
+
+    pub fn participateInDocumentSave(self: *TextFileService, model: *@import("../../../../editor/common/model/textModel.zig").TextModel, executor: Io) !void {
+        var i: usize = 0;
+        while (i < self.document_save_participants.items.len) {
+            const participant = self.document_save_participants.items[i];
+            // Upstream reports participant failure but continues saving.
+            participant.participate(participant.context, model, executor) catch |err| {
+                if (err == error.Canceled or err == error.CancellationError) return err;
+                std.log.warn("Save participant failed: {s}", .{@errorName(err)});
+            };
+            try executor.checkCancel();
+            if (i < self.document_save_participants.items.len and self.document_save_participants.items[i].context == participant.context) i += 1;
         }
     }
 
