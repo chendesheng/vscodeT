@@ -1,12 +1,13 @@
 {
-  "schema": 1,
+  "case": "tutor_multi_word_move",
   "engine": "helix",
+  "keys": [
+    "w"
+  ],
   "reference": "helix",
   "reference_version": "helix 25.07.1",
-  "case": "tutor_multi_word_move",
-  "width": 60,
+  "schema": 1,
   "seed": {
-    "text": "one two three\n",
     "cursor": [
       1,
       1
@@ -24,10 +25,65 @@
         1,
         9
       ]
-    ]
+    ],
+    "text": "one two three\n"
   },
-  "keys": [
-    "w"
+  "states": [
+    {
+      "cursor": [
+        1,
+        4
+      ],
+      "cursors": [
+        [
+          1,
+          4
+        ],
+        [
+          1,
+          8
+        ],
+        [
+          1,
+          13
+        ]
+      ],
+      "mode": "normal",
+      "selection_count": 3,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            1
+          ],
+          "head": [
+            1,
+            5
+          ]
+        },
+        {
+          "anchor": [
+            1,
+            5
+          ],
+          "head": [
+            1,
+            9
+          ]
+        },
+        {
+          "anchor": [
+            1,
+            9
+          ],
+          "head": [
+            1,
+            14
+          ]
+        }
+      ],
+      "text": "one two three\n"
+    }
   ],
-  "states": []
+  "width": 60
 }

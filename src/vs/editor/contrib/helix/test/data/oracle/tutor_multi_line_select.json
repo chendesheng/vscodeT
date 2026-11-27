@@ -1,12 +1,14 @@
 {
-  "schema": 1,
+  "case": "tutor_multi_line_select",
   "engine": "helix",
+  "keys": [
+    "x",
+    "d"
+  ],
   "reference": "helix",
   "reference_version": "helix 25.07.1",
-  "case": "tutor_multi_line_select",
-  "width": 60,
+  "schema": 1,
   "seed": {
-    "text": "a\nb\nc\n",
     "cursor": [
       1,
       1
@@ -20,11 +22,37 @@
         2,
         1
       ]
-    ]
+    ],
+    "text": "a\nb\nc\n"
   },
-  "keys": [
-    "x",
-    "d"
+  "states": [
+    {
+      "cursor": [
+        1,
+        1
+      ],
+      "cursors": [
+        [
+          1,
+          1
+        ]
+      ],
+      "mode": "normal",
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            1
+          ],
+          "head": [
+            1,
+            2
+          ]
+        }
+      ],
+      "text": "c\n"
+    }
   ],
-  "states": []
+  "width": 60
 }

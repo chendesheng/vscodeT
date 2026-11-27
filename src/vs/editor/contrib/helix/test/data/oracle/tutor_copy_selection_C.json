@@ -1,19 +1,61 @@
 {
-  "schema": 1,
-  "engine": "helix",
-  "reference": "helix",
-  "reference_version": "helix 25.07.1",
   "case": "tutor_copy_selection_C",
-  "width": 60,
-  "seed": {
-    "text": "a\nb\n",
-    "cursor": [
-      1,
-      1
-    ]
-  },
+  "engine": "helix",
   "keys": [
     "C"
   ],
-  "states": []
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      1
+    ],
+    "text": "a\nb\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        2,
+        1
+      ],
+      "cursors": [
+        [
+          1,
+          1
+        ],
+        [
+          2,
+          1
+        ]
+      ],
+      "mode": "normal",
+      "selection_count": 2,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            1
+          ],
+          "head": [
+            1,
+            2
+          ]
+        },
+        {
+          "anchor": [
+            2,
+            1
+          ],
+          "head": [
+            2,
+            2
+          ]
+        }
+      ],
+      "text": "a\nb\n"
+    }
+  ],
+  "width": 60
 }
