@@ -1,8 +1,9 @@
 // Port of `src/vs/workbench/contrib/bulkEdit/browser/bulkTextEdits.ts`.
 // Model references resolve on the dispatcher; the entire text-edit group is
 // validated before any model mutation. UTF-16 DTO ranges are converted only
-// against their resolved models. Native editor selections are copied at entry
-// instead of retaining an editor pointer across asynchronous model resolution.
+// against their resolved models. An editor edit task keeps a detachable
+// reference to its initiating editor and rechecks model identity after the
+// asynchronous resource acquisition, as upstream does.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const languages = @import("../../../../editor/common/languages.zig");
@@ -24,6 +25,7 @@ const columns = @import("../../../api/common/positionConverter.zig");
 const bulk = @import("../../../../editor/browser/services/bulkEditService.zig");
 const SnippetParser = @import("../../../../editor/contrib/snippet/browser/snippetParser.zig");
 const Edit = languages.WorkspaceTextEdit;
+const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 
 pub const ModelEditTask = struct {
     owner: *BulkTextEdits,
@@ -35,6 +37,7 @@ pub const ModelEditTask = struct {
     done: bool = false,
     operations: []model_types.IdentifiedSingleEditOperation = &.{},
     eol: ?@import("../../../../editor/common/core/misc/eolCounter.zig").EOL = null,
+    before_selections: ?[]Selection = null,
 
     fn modelReady(context: *anyopaque, result: resolver.ModelReferenceResult) void {
         const self: *ModelEditTask = @ptrCast(@alignCast(context));
@@ -54,6 +57,11 @@ pub const ModelEditTask = struct {
         if (reference.object.isReadonly()) return error.ReadOnlyResource;
         const model = reference.object.textEditorModel;
         const a = self.owner.arena.allocator();
+        if (self.getEditor()) |editor| {
+            const selections = try editor.getSelections();
+            defer editor.allocator.free(selections);
+            self.before_selections = try a.dupe(Selection, selections);
+        }
         var operations: std.ArrayList(model_types.IdentifiedSingleEditOperation) = .empty;
         for (self.edits.items) |edit| {
             if (edit.version_id) |version| if (model.getVersionId() != version) return error.ModelVersionMismatch;
@@ -77,7 +85,14 @@ pub const ModelEditTask = struct {
     }
 
     fn getBeforeCursorState(self: *ModelEditTask) ?[]Selection {
-        return if (self.owner.selection_key) |key| if (std.mem.eql(u8, key, self.key)) self.owner.before_selections else null else null;
+        return if (self.getEditor() != null) self.before_selections else null;
+    }
+
+    fn getEditor(self: *ModelEditTask) ?*Editor {
+        const editor = self.owner.editor_target.editor orelse return null;
+        const model = if (self.reference) |reference| reference.object.textEditorModel else return null;
+        if (editor.isReadOnly() or editor.getModel() != model) return null;
+        return editor;
     }
 
     fn isNoOp(self: *ModelEditTask) bool {
@@ -99,9 +114,26 @@ pub fn convertRange(model: *TextModel, range: Range) !Range {
     return .init(range.startLineNumber, columns.columnForUtf16Offset(start_line.items, range.startColumn), range.endLineNumber, columns.columnForUtf16Offset(end_line.items, range.endColumn));
 }
 
-pub const SelectionSnapshot = struct {
-    resource_key: []const u8,
-    selections: []Selection,
+pub const EditorEditTarget = struct {
+    editor: ?*Editor = null,
+    dispose_listener: ?usize = null,
+
+    pub fn attach(self: *EditorEditTarget, editor: ?*Editor) !void {
+        const target = editor orelse return;
+        if (target.isReadOnly()) return;
+        self.dispose_listener = try target.on_will_dispose.listen(self, onDisposed);
+        self.editor = target;
+    }
+
+    pub fn deinit(self: *EditorEditTarget) void {
+        if (self.editor) |editor| if (self.dispose_listener) |id| editor.on_will_dispose.unlisten(id);
+        self.editor = null;
+        self.dispose_listener = null;
+    }
+
+    fn onDisposed(_: void, self: *EditorEditTarget) !void {
+        self.deinit();
+    }
 };
 
 pub const BulkTextEdits = struct {
@@ -116,8 +148,7 @@ pub const BulkTextEdits = struct {
     undo_source: ?*UndoRedoSource,
     label: []const u8,
     code: []const u8,
-    selection_key: ?[]const u8 = null,
-    before_selections: ?[]Selection = null,
+    editor_target: *EditorEditTarget,
     remaining: usize = 0,
     edit_count: usize = 0,
     starting: bool = true,
@@ -128,16 +159,12 @@ pub const BulkTextEdits = struct {
     cancel_notify: bool = false,
     detached: bool = false,
 
-    pub fn start(allocator: Allocator, service: resolver.ITextModelService, undo_service: *UndoRedoService, edits: []const bulk.ResourceEdit, options: bulk.IBulkEditOptions, group: *UndoRedoGroup, selection: ?SelectionSnapshot, reporter: bulk.ResourceReporter, listener: bulk.EditListener) !?Disposable {
+    pub fn start(allocator: Allocator, service: resolver.ITextModelService, undo_service: *UndoRedoService, edits: []const bulk.ResourceEdit, options: bulk.IBulkEditOptions, group: *UndoRedoGroup, editor_target: *EditorEditTarget, reporter: bulk.ResourceReporter, listener: bulk.EditListener) !?Disposable {
         try options.token.throwIfCancellationRequested();
         const self = try allocator.create(BulkTextEdits);
-        self.* = .{ .allocator = allocator, .arena = .init(allocator), .resolver_service = service, .listener = listener, .reporter = reporter, .undo_group = group, .undo_service = undo_service, .undo_source = options.undo_redo_source, .label = options.label orelse "Workspace Edit", .code = options.code orelse "undoredo.workspaceEdit" };
+        self.* = .{ .allocator = allocator, .arena = .init(allocator), .resolver_service = service, .listener = listener, .reporter = reporter, .undo_group = group, .undo_service = undo_service, .undo_source = options.undo_redo_source, .label = options.label orelse "Workspace Edit", .code = options.code orelse "undoredo.workspaceEdit", .editor_target = editor_target };
         errdefer self.destroy();
         const a = self.arena.allocator();
-        if (selection) |snapshot| {
-            self.selection_key = try a.dupe(u8, snapshot.resource_key);
-            self.before_selections = try a.dupe(Selection, snapshot.selections);
-        }
         var groups: std.StringHashMapUnmanaged(*ModelEditTask) = .empty;
         for (edits) |resource_edit| {
             const edit = switch (resource_edit) {

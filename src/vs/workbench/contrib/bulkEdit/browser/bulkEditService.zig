@@ -8,7 +8,7 @@ const languages = @import("../../../../editor/common/languages.zig");
 const resolver = @import("../../../../editor/common/services/resolverService.zig");
 const Disposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
 const BulkTextEdits = @import("bulkTextEdits.zig").BulkTextEdits;
-const SelectionSnapshot = @import("bulkTextEdits.zig").SelectionSnapshot;
+const EditorEditTarget = @import("bulkTextEdits.zig").EditorEditTarget;
 const file_edits = @import("bulkFileEdits.zig");
 const group_mod = @import("../../../../platform/undoRedo/common/undoRedo.zig");
 const uri_util = @import("../../../../base/common/stdUri.zig");
@@ -108,8 +108,9 @@ pub const BulkEditService = struct {
 
 /// Contiguous resource groups execute in original workspace-edit order,
 /// with one active undo group shared by text and file operations. The request
-/// owns every DTO and the originating selection so preview dismissal or a
-/// later file/model-reference completion cannot retain borrowed editor data.
+/// owns every DTO and a detachable originating editor reference so preview
+/// dismissal or a later file/model-reference completion cannot retain a
+/// disposed view. Selection is read from the actual editor edit task.
 const BulkApplyRequest = struct {
     service: *BulkEditService,
     arena: std.heap.ArenaAllocator,
@@ -117,7 +118,7 @@ const BulkApplyRequest = struct {
     options: bulk.IBulkEditOptions,
     listener: bulk.EditListener,
     group: *BulkEditService.ActiveGroup,
-    selection: ?SelectionSnapshot = null,
+    editor_target: EditorEditTarget = .{},
     next: usize = 0,
     result: bulk.IBulkEditResult = .{ .is_applied = false },
     resources: std.StringHashMapUnmanaged(void) = .empty,
@@ -169,16 +170,12 @@ const BulkApplyRequest = struct {
         if (options.label) |label| saved_options.label = try a.dupe(u8, label);
         if (options.code) |code| saved_options.code = try a.dupe(u8, code);
         if (options.quotable_label) |label| saved_options.quotable_label = try a.dupe(u8, label);
-        var selection: ?SelectionSnapshot = null;
-        if (options.editor) |editor| if (!editor.isReadOnly()) {
-            const selections = try editor.getSelections();
-            defer editor.allocator.free(selections);
-            selection = .{ .resource_key = try uri_util.resourceKey(a, editor.model.uri()), .selections = try a.dupe(@import("../../../../editor/common/core/selection.zig").Selection, selections) };
-        };
         saved_options.editor = null;
         const group = try service.acquireGroup(options.undo_redo_group_id);
         errdefer service.releaseGroup(group);
-        self.* = .{ .service = service, .arena = arena, .edits = owned, .options = saved_options, .listener = listener, .group = group, .selection = selection };
+        self.* = .{ .service = service, .arena = arena, .edits = owned, .options = saved_options, .listener = listener, .group = group };
+        try self.editor_target.attach(options.editor);
+        errdefer self.editor_target.deinit();
         self.cancellation_listener = try options.token.onCancellationRequested(.{ .context = self, .callbackFn = onCanceled });
         self.advance();
         const finished = self.completion != null;
@@ -250,7 +247,7 @@ const BulkApplyRequest = struct {
                 },
                 .text => {
                     self.waiting = true;
-                    const request = BulkTextEdits.start(self.service.allocator, self.service.resolver_service, self.service.undo_redo_service, edits, self.options, &self.group.value, self.selection, .{ .context = self, .report = reportResources }, .{ .context = self, .complete = completedTextGroup }) catch |err| {
+                    const request = BulkTextEdits.start(self.service.allocator, self.service.resolver_service, self.service.undo_redo_service, edits, self.options, &self.group.value, &self.editor_target, .{ .context = self, .report = reportResources }, .{ .context = self, .complete = completedTextGroup }) catch |err| {
                         self.waiting = false;
                         self.finish(err);
                         return;
@@ -302,6 +299,7 @@ const BulkApplyRequest = struct {
         const reply = self.completion.?;
         const notify = !self.detached;
         self.service.releaseGroup(self.group);
+        self.editor_target.deinit();
         self.arena.deinit();
         self.service.allocator.destroy(self);
         if (notify) listener.complete(listener.context, reply);
@@ -318,16 +316,23 @@ const PreviewApplyRequest = struct {
     depth: usize = 0,
     result: ?anyerror!bulk.IBulkEditResult = null,
     detached: bool = false,
+    editor_target: EditorEditTarget = .{},
 
     fn start(service: *BulkEditService, handler: bulk.IBulkEditPreviewHandler, edits: []const bulk.ResourceEdit, options: bulk.IBulkEditOptions, listener: bulk.EditListener) !?Disposable {
         const self = try service.allocator.create(PreviewApplyRequest);
         self.* = .{ .service = service, .options = options, .listener = listener, .depth = 1 };
+        self.editor_target.attach(options.editor) catch |err| {
+            service.allocator.destroy(self);
+            return err;
+        };
+        self.options.editor = null;
         self.cancellation_listener = options.token.onCancellationRequested(.{ .context = self, .callbackFn = onCanceled }) catch |err| {
+            self.editor_target.deinit();
             service.allocator.destroy(self);
             return err;
         };
         if (self.phase == .preview) {
-            const pending = handler.preview(handler.context, edits, options, .{ .context = self, .complete = previewCompleted }) catch |err| blk: {
+            const pending = handler.preview(handler.context, edits, self.options, .{ .context = self, .complete = previewCompleted }) catch |err| blk: {
                 self.finish(err);
                 break :blk null;
             };
@@ -354,7 +359,9 @@ const PreviewApplyRequest = struct {
         }
         self.phase = .applying;
         self.options.show_preview = false;
-        const pending = self.service.applyEdits(edits, self.options, .{ .context = self, .complete = editsApplied }) catch |err| {
+        var options = self.options;
+        options.editor = self.editor_target.editor;
+        const pending = self.service.applyEdits(edits, options, .{ .context = self, .complete = editsApplied }) catch |err| {
             self.finish(err);
             return;
         };
@@ -404,6 +411,7 @@ const PreviewApplyRequest = struct {
         const listener = self.listener;
         const result = self.result.?;
         const notify = !self.detached;
+        self.editor_target.deinit();
         self.service.allocator.destroy(self);
         if (notify) listener.complete(listener.context, result);
     }
