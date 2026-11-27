@@ -272,3 +272,12 @@ test "TextFileService reads and writes text files" {
     defer allocator.free(text);
     try std.testing.expectEqualStrings("hello\nworld", text);
 }
+
+/// Empty-file encoding used by workspace create edits whose contents were not
+/// supplied as already-encoded bytes. The native encoder supports the same
+/// UTF-8/UTF-16 subset as the text-file read/save path.
+pub fn getEncodedReadable(allocator: Allocator, config: ?@import("../../../../platform/configuration/common/configuration.zig").IConfigurationService) ![]u8 {
+    const value = if (config) |service| service.getString("files.encoding") orelse "utf8" else "utf8";
+    const encoding: encoding_mod.Encoding = if (std.mem.eql(u8, value, "utf8bom")) .utf8_with_bom else if (std.mem.eql(u8, value, "utf16le")) .utf16le_with_bom else if (std.mem.eql(u8, value, "utf16be")) .utf16be_with_bom else .utf8;
+    return encoding_mod.encode(allocator, "", encoding);
+}

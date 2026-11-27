@@ -407,6 +407,11 @@ pub const ProviderFileService = struct {
                 const service: *ProviderFileService = @ptrCast(@alignCast(context));
                 return service.providers.contains(resource.scheme);
             }
+            fn capabilities(context: *anyopaque, resource: std.Uri) u32 {
+                const service: *ProviderFileService = @ptrCast(@alignCast(context));
+                const provider = service.providers.get(resource.scheme) orelse return 0;
+                return provider.getCapabilities();
+            }
             fn capture(context: *anyopaque, resource: std.Uri) !?files.FileReadRequest {
                 const service: *ProviderFileService = @ptrCast(@alignCast(context));
                 return service.captureRead(resource);
@@ -444,6 +449,7 @@ pub const ProviderFileService = struct {
             .context = self,
             .register_provider = Adapter.register,
             .has_provider = Adapter.has,
+            .capabilities = Adapter.capabilities,
             .capture_read = Adapter.capture,
             .stat_uri = Adapter.stat,
             .read_uri = Adapter.read,

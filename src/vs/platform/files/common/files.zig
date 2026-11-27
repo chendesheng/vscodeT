@@ -486,6 +486,7 @@ pub const IFileService = struct {
     context: *anyopaque,
     register_provider: *const fn (*anyopaque, []const u8, IFileSystemProvider) anyerror!IDisposable,
     has_provider: *const fn (*anyopaque, std.Uri) bool,
+    capabilities: ?*const fn (*anyopaque, std.Uri) u32 = null,
     capture_read: *const fn (*anyopaque, std.Uri) anyerror!?FileReadRequest,
     stat_uri: *const fn (*anyopaque, std.Uri) anyerror!IStat,
     read_uri: *const fn (*anyopaque, Allocator, std.Uri) anyerror![]u8,
@@ -502,6 +503,11 @@ pub const IFileService = struct {
 
     pub fn hasProvider(self: IFileService, resource: std.Uri) bool {
         return self.has_provider(self.context, resource);
+    }
+
+    pub fn hasCapability(self: IFileService, resource: std.Uri, value: u32) bool {
+        const callback = self.capabilities orelse return false;
+        return callback(self.context, resource) & value != 0;
     }
 
     pub fn captureRead(self: IFileService, resource: std.Uri) !?FileReadRequest {
