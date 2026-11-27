@@ -59,7 +59,9 @@ Adding or removing a cassette requires regenerating the embedded index:
 python3 scripts/oracle/generate_cassette_index.py
 ```
 
-v1 compares text, cursor, final mode, and (Helix) selection count. A cassette
+The corpus is a curated set plus generated coverage variants (currently 317
+Vim and 127 Helix cassettes). Generated variants assert text, final mode and,
+for Helix, selection count; the curated subset also asserts cursor. A cassette
 may set `"assert_cursor": false` with a `"cursor_gap"` explanation when the
 reference cursor representation does not map onto the native engine yet; text,
 mode and selection count are still asserted. Vim visual ranges, Helix selection

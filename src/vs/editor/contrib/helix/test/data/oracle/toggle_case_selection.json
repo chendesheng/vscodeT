@@ -1,5 +1,7 @@
 {
+  "assert_cursor": false,
   "case": "toggle_case_selection",
+  "cursor_gap": "cursor after ~ differs from Helix; text/mode/count asserted",
   "engine": "helix",
   "keys": [
     "~"
@@ -37,7 +39,5 @@
       "text": "Abc\n"
     }
   ],
-  "width": 60,
-  "assert_cursor": false,
-  "cursor_gap": "cursor after ~ differs from Helix; text/mode/count asserted"
+  "width": 60
 }

@@ -1,23 +1,45 @@
 {
-  "schema": 1,
-  "engine": "helix",
-  "reference": "helix",
-  "reference_version": "helix 25.07.1",
+  "assert_cursor": false,
   "case": "bulk_hx_open_o_1",
-  "width": 60,
-  "seed": {
-    "text": "hello\n",
-    "cursor": [
-      1,
-      1
-    ]
-  },
+  "cursor_gap": "bulk-generated case asserts text/mode/selection count; cursor is asserted by the curated corpus",
+  "engine": "helix",
   "keys": [
     "o",
     "X",
     "<Esc>"
   ],
-  "states": [],
-  "assert_cursor": false,
-  "cursor_gap": "bulk-generated case asserts text/mode/selection count; cursor is asserted by the curated corpus"
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      1
+    ],
+    "text": "hello\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        2,
+        2
+      ],
+      "mode": "normal",
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            2,
+            2
+          ],
+          "head": [
+            3,
+            1
+          ]
+        }
+      ],
+      "text": "hello\nX\n"
+    }
+  ],
+  "width": 60
 }

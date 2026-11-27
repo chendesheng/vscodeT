@@ -1,5 +1,7 @@
 {
+  "assert_cursor": false,
   "case": "yank_word_paste",
+  "cursor_gap": "cursor after word yank/paste differs from Helix; text/mode/count asserted",
   "engine": "helix",
   "keys": [
     "w",
@@ -39,7 +41,5 @@
       "text": "one one two\n"
     }
   ],
-  "width": 60,
-  "assert_cursor": false,
-  "cursor_gap": "cursor after word yank/paste differs from Helix; text/mode/count asserted"
+  "width": 60
 }
