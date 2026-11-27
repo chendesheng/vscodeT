@@ -317,7 +317,7 @@ test "BulkEditPreview: shared tree enforces file/category check state and token-
     try std.testing.expect(operations.checked.isChecked(0));
     try std.testing.expect(operations.checked.isChecked(1));
     try std.testing.expect(!text.isDisabled(operations));
-    try tree.setGrouping(true);
+    try tree.setGrouping(true, null);
     try std.testing.expectEqual(@as(usize, 2), tree.tree.count());
     tree.toggleChecked();
     try std.testing.expectEqual(@as(usize, 0), operations.checked.checked_count);
