@@ -501,6 +501,7 @@ comptime {
     _ = @import("./vs/workbench/contrib/bulkEdit/test/browser/bulkFileEdits.test.zig");
     _ = @import("./vs/editor/contrib/hover/test/browser/glyphHoverComputer.test.zig");
     _ = @import("./vs/editor/contrib/hover/test/browser/markerHoverParticipant.test.zig");
+    _ = @import("./vs/editor/contrib/gotoError/test/browser/markerNavigationService.test.zig");
     _ = @import("./vs/editor/contrib/wordHighlighter/browser/highlightDecorations.zig");
     _ = @import("./vs/editor/contrib/wordHighlighter/browser/textualHighlightProvider.zig");
     _ = @import("./vs/editor/contrib/wordHighlighter/browser/wordHighlighter.zig");
