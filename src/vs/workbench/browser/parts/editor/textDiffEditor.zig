@@ -10,6 +10,7 @@ const Io = std.Io;
 
 const ui = @import("ui");
 const widget_mod = @import("../../../../editor/browser/widget/diffEditor/diffEditorWidget.zig");
+const diff_options = @import("../../../../editor/browser/widget/diffEditor/diffEditorOptions.zig");
 const diff_editor_input = @import("../../../common/editor/diffEditorInput.zig");
 const editor_input = @import("../../../common/editor/editorInput.zig");
 const text_files = @import("../../../services/textfile/common/textFileService.zig");
@@ -51,9 +52,7 @@ pub fn computeConfigurationForResource(configuration_service: ?configuration_mod
         options.use_inline_view_when_space_is_limited = boolSetting(configuration, overrides, "diffEditor.useInlineViewWhenSpaceIsLimited", true);
         if (configuration.getValueWithOverrides("diffEditor.renderSideBySideInlineBreakpoint", overrides)) |value| {
             switch (value.*) {
-                .integer => |number| if (number >= 0) {
-                    options.minimum_side_by_side_width = @import("../../../services/layout/browser/layoutService.zig").widthInCells(@intCast(number));
-                },
+                .integer => |number| options.minimum_side_by_side_width = @import("../../../services/layout/browser/layoutService.zig").widthInCells(@intCast(std.math.clamp(number, 0, @as(i64, diff_options.max_safe_small_integer)))),
                 else => {},
             }
         }
@@ -75,25 +74,19 @@ pub fn computeConfigurationForResource(configuration_service: ?configuration_mod
         }
         if (configuration.getValueWithOverrides("diffEditor.hideUnchangedRegions.revealLineCount", overrides)) |value| {
             switch (value.*) {
-                .integer => |number| if (number >= 0) {
-                    options.hide_unchanged_regions_reveal_line_count = @intCast(number);
-                },
+                .integer => |number| options.hide_unchanged_regions_reveal_line_count = @intCast(@max(number, 0)),
                 else => {},
             }
         }
         if (configuration.getValueWithOverrides("diffEditor.hideUnchangedRegions.contextLineCount", overrides)) |value| {
             switch (value.*) {
-                .integer => |number| if (number >= 0) {
-                    options.hide_unchanged_regions_context_line_count = @intCast(number);
-                },
+                .integer => |number| options.hide_unchanged_regions_context_line_count = @intCast(@max(number, 0)),
                 else => {},
             }
         }
         if (configuration.getValueWithOverrides("diffEditor.hideUnchangedRegions.minimumLineCount", overrides)) |value| {
             switch (value.*) {
-                .integer => |number| if (number >= 0) {
-                    options.hide_unchanged_regions_minimum_line_count = @intCast(number);
-                },
+                .integer => |number| options.hide_unchanged_regions_minimum_line_count = @intCast(@max(number, 0)),
                 else => {},
             }
         }
@@ -102,6 +95,9 @@ pub fn computeConfigurationForResource(configuration_service: ?configuration_mod
                 .integer => |number| options.max_computation_time_ms = number,
                 else => {},
             }
+        }
+        if (configuration.getValueWithOverrides("diffEditor.maxFileSize", overrides)) |value| {
+            if (value.* == .integer) options.max_file_size_mb = @intCast(@max(value.integer, 0));
         }
         if (configuration.getValueWithOverrides("diffEditor.splitViewDefaultRatio", overrides)) |value| {
             switch (value.*) {
@@ -118,12 +114,12 @@ pub fn computeConfigurationForResource(configuration_service: ?configuration_mod
         }
         if (configuration.getValueWithOverrides("diffEditor.diffAlgorithm", overrides)) |value| {
             switch (value.*) {
-                .string => |name| options.diff_algorithm = widget_mod.DiffAlgorithmName.fromName(name) orelse .advanced,
+                .string => |name| options.diff_algorithm = diff_options.algorithmFromName(name),
                 else => {},
             }
         }
     }
-    return options;
+    return options.normalize();
 }
 
 pub const TextResourceEditorInput = @import("../../../common/editor/textResourceEditorInput.zig").TextResourceEditorInput;

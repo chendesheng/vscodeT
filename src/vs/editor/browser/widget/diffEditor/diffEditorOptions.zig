@@ -1,18 +1,18 @@
-// Port of the options subset of
+// Port of
 // `src/vs/editor/browser/widget/diffEditor/diffEditorOptions.ts`.
 //
 // Terminal adaptation: there is no observable/configuration service in the
 // editor layer, so the workbench reads `diffEditor.*` settings and passes this
-// plain value. `normalize` applies the upstream validation rules that matter to
-// the terminal (algorithm fallback, bounded split ratio, non-negative
-// computation time); renderer options are represented where they affect cell
-// presentation, model state, or command availability.
+// plain value. `normalize` preserves upstream integer and ratio validation;
+// the side-by-side breakpoint is projected to terminal cells by the
+// workbench. The provider, not options validation, owns package fallback.
 const std = @import("std");
 
 const doc_diff = @import("../../../common/diff/documentDiffProvider.zig");
 
 pub const DiffAlgorithmName = doc_diff.DiffAlgorithmName;
 pub const DiffWordWrap = @import("../../../common/config/diffEditor.zig").DiffWordWrap;
+pub const max_safe_small_integer: usize = 1 << 30;
 
 /// Terminal projection of `IValidDiffEditorBaseOptions`.
 pub const ValidDiffEditorBaseOptions = struct {
@@ -25,6 +25,7 @@ pub const ValidDiffEditorBaseOptions = struct {
 pub const Options = struct {
     ignore_trim_whitespace: bool = true,
     max_computation_time_ms: i64 = 5000,
+    max_file_size_mb: usize = 50,
     diff_algorithm: DiffAlgorithmName = .advanced,
     show_moves: bool = false,
     show_empty_decorations: bool = true,
@@ -72,23 +73,21 @@ pub const Options = struct {
         };
     }
 
-    /// Upstream clamps the ratio and the computation budget. Package diff
-    /// algorithms fall back to the built-in advanced computer.
+    /// The embedded editor's validated settings use the same bounds as
+    /// validateDiffEditorOptions. The renderer separately requires enough
+    /// cells for both panes and the separator.
     pub fn normalize(self: Options) Options {
         var result = self;
         if (!std.math.isFinite(result.split_view_default_ratio)) {
             result.split_view_default_ratio = 0.5;
         }
         result.split_view_default_ratio = std.math.clamp(result.split_view_default_ratio, 0.1, 0.9);
-        if (result.max_computation_time_ms < 0) result.max_computation_time_ms = 0;
-        if (result.diff_algorithm.isPackage()) result.diff_algorithm = .advanced;
-        if (result.minimum_side_by_side_width < 2) result.minimum_side_by_side_width = 2;
-        if (result.hide_unchanged_regions_context_line_count > 1000) {
-            result.hide_unchanged_regions_context_line_count = 1000;
-        }
-        if (result.hide_unchanged_regions_minimum_line_count > 1000) {
-            result.hide_unchanged_regions_minimum_line_count = 1000;
-        }
+        result.max_computation_time_ms = std.math.clamp(result.max_computation_time_ms, 0, @as(i64, max_safe_small_integer));
+        result.max_file_size_mb = @min(result.max_file_size_mb, max_safe_small_integer);
+        result.minimum_side_by_side_width = @min(result.minimum_side_by_side_width, max_safe_small_integer);
+        result.hide_unchanged_regions_context_line_count = @min(result.hide_unchanged_regions_context_line_count, max_safe_small_integer);
+        result.hide_unchanged_regions_minimum_line_count = @min(result.hide_unchanged_regions_minimum_line_count, max_safe_small_integer);
+        result.hide_unchanged_regions_reveal_line_count = @min(result.hide_unchanged_regions_reveal_line_count, max_safe_small_integer);
         return result;
     }
 };
@@ -134,10 +133,12 @@ pub const WidthBasedLayout = struct {
 };
 
 pub fn algorithmFromName(name: []const u8) DiffAlgorithmName {
+    if (std.mem.eql(u8, name, "smart")) return .legacy;
+    if (std.mem.eql(u8, name, "experimental")) return .advanced;
     return DiffAlgorithmName.fromName(name) orelse .advanced;
 }
 
-test "diffEditorOptions: normalization clamps the split and falls back to advanced" {
+test "diffEditorOptions: validation clamps numeric settings and preserves the requested algorithm" {
     const options = (Options{
         .split_view_default_ratio = 2.5,
         .max_computation_time_ms = -1,
@@ -146,8 +147,13 @@ test "diffEditorOptions: normalization clamps the split and falls back to advanc
     }).normalize();
     try std.testing.expectEqual(@as(f64, 0.9), options.split_view_default_ratio);
     try std.testing.expectEqual(@as(i64, 0), options.max_computation_time_ms);
-    try std.testing.expectEqual(DiffAlgorithmName.advanced, options.diff_algorithm);
-    try std.testing.expectEqual(@as(usize, 2), options.minimum_side_by_side_width);
+    try std.testing.expectEqual(DiffAlgorithmName.advanced_external, options.diff_algorithm);
+    try std.testing.expectEqual(@as(usize, 0), options.minimum_side_by_side_width);
+    const large = (Options{ .max_computation_time_ms = std.math.maxInt(i64), .max_file_size_mb = std.math.maxInt(usize), .hide_unchanged_regions_context_line_count = 2000, .hide_unchanged_regions_minimum_line_count = 2000 }).normalize();
+    try std.testing.expectEqual(@as(i64, max_safe_small_integer), large.max_computation_time_ms);
+    try std.testing.expectEqual(max_safe_small_integer, large.max_file_size_mb);
+    try std.testing.expectEqual(@as(usize, 2000), large.hide_unchanged_regions_context_line_count);
+    try std.testing.expectEqual(@as(usize, 2000), large.hide_unchanged_regions_minimum_line_count);
 
     // NaN is not finite and falls back to the default ratio.
     const nan_ratio = (Options{ .split_view_default_ratio = std.math.nan(f64) }).normalize();
@@ -168,4 +174,7 @@ test "diffEditorOptions: base options preserve the portable fields" {
     try std.testing.expect(options.show_moves);
     try std.testing.expectEqual(DiffAlgorithmName.legacy, algorithmFromName("legacy"));
     try std.testing.expectEqual(DiffAlgorithmName.advanced, algorithmFromName("unknown"));
+    try std.testing.expectEqual(DiffAlgorithmName.legacy, algorithmFromName("smart"));
+    try std.testing.expectEqual(DiffAlgorithmName.advanced, algorithmFromName("experimental"));
+    try std.testing.expectEqual(DiffAlgorithmName.advanced_wasm, algorithmFromName("advanced-wasm"));
 }
