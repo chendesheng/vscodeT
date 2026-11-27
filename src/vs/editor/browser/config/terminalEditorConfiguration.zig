@@ -197,6 +197,12 @@ pub fn applyViewSettings(
     mark(changed, .hover, hover_changed);
     any = any or hover_changed;
     options.set(.hover, hover);
+    const lightbulb_value = readString(reader, "editor.lightbulb.enabled", language_id, resource) orelse "onCode";
+    const lightbulb: editorOptions.EditorLightbulbOptions = .{ .enabled = if (std.mem.eql(u8, lightbulb_value, "off")) .off else if (std.mem.eql(u8, lightbulb_value, "on")) .on else .on_code };
+    const lightbulb_changed = !std.meta.eql(options.get(.lightbulb), lightbulb);
+    mark(changed, .lightbulb, lightbulb_changed);
+    any = any or lightbulb_changed;
+    options.set(.lightbulb, lightbulb);
 
     inline for (.{
         .{ .option = EditorOption.occurrencesHighlight, .value = occurrencesHighlight(reader, language_id, resource) },

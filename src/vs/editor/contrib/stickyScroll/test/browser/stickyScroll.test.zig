@@ -208,6 +208,7 @@ pub fn Tests(comptime ViewType: type) type {
                 self.features = LanguageFeaturesService.init(allocator);
                 errdefer self.features.deinit();
                 self.editor.attachLanguageServices(&self.features, null, null);
+                errdefer self.editor.attachLanguageServices(null, null, null);
                 self.symbol_set = .{ .symbols = symbols_value };
                 self.registration = try self.features.document_symbol_provider.register(
                     .{ .language = "*" },
@@ -222,9 +223,9 @@ pub fn Tests(comptime ViewType: type) type {
                 }
                 if (self.registration) |registration| registration.dispose();
                 if (self.view) |view| view.deinit();
-                self.features.deinit();
                 self.editor.deinit();
                 self.allocator.destroy(self.editor);
+                self.features.deinit();
             }
 
             fn createView(self: *Fixture) !void {

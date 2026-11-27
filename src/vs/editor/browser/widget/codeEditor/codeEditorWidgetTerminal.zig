@@ -463,6 +463,7 @@ pub const EditorDocument = struct {
     }
 
     fn languageChanged(_: @import("../../../common/textModelEvents.zig").ModelLanguageChangedEvent, self: *EditorDocument) anyerror!void {
+        for (self.editors.items) |editor| editor.updateCodeActionProviderContext();
         if (self.json.client == null or self.editors.items.len == 0) return;
         self.editors.items[0].detachJsonLanguage();
         self.editors.items[0].attachJsonLanguage() catch |err| self.editors.items[0].setMessage("JSON attach failed: {s}", .{@errorName(err)});
@@ -729,6 +730,7 @@ pub const Editor = struct {
     on_will_dispose: Emitter(void),
     on_did_layout_change: Emitter(void),
     on_did_change_code_lens_provider: Emitter(bool),
+    on_did_change_code_action_provider: Emitter(void),
     on_did_change_word_highlights: Emitter(bool),
     on_did_change_hover_state: Emitter(void),
     on_did_mouse_event: Emitter(editorBrowser.EditorMouseEvent),
@@ -741,6 +743,8 @@ pub const Editor = struct {
     focused_embedded: ?EmbeddedEditorFocus = null,
 
     has_code_lens_provider: bool = false,
+    has_code_action_provider: bool = false,
+    supported_code_actions: []const u8 = "",
     has_word_highlights: bool = false,
     hover_visible: bool = false,
     hover_focused: bool = false,
@@ -853,6 +857,7 @@ pub const Editor = struct {
     /// class names and colors.
     search_highlight_sink: ?editorBrowser.DecorationSink = null,
     language_features: ?*LanguageFeaturesService = null,
+    code_action_registry_listener: ?usize = null,
     code_editor_service: ?@import("../../services/codeEditorService.zig").ICodeEditorService = null,
     word_highlight_session: ?*@import("../../../contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterSession = null,
     marker_service: ?*MarkerService = null,
@@ -1029,6 +1034,7 @@ pub const Editor = struct {
             .on_will_dispose = .init(allocator),
             .on_did_layout_change = .init(allocator),
             .on_did_change_code_lens_provider = .init(allocator),
+            .on_did_change_code_action_provider = .init(allocator),
             .on_did_change_word_highlights = .init(allocator),
             .on_did_change_hover_state = .init(allocator),
             .on_did_mouse_event = .init(allocator),
@@ -1657,7 +1663,12 @@ pub const Editor = struct {
         marker_decorations: ?*MarkerDecorationsService,
     ) void {
         const had_marker_service = self.marker_service != null;
+        if (self.language_features != features) self.detachCodeActionRegistry();
         self.language_features = features;
+        if (features) |service| if (self.code_action_registry_listener == null) {
+            self.code_action_registry_listener = service.code_action_provider.on_did_change.listen(self, onCodeActionRegistryChanged) catch null;
+        };
+        self.updateCodeActionProviderContext();
         self.marker_service = marker_service;
         self.marker_decorations = marker_decorations;
         if (!self.hasModel()) return;
@@ -1943,6 +1954,7 @@ pub const Editor = struct {
         if (self.code_editor_service) |service| service.removeCodeEditor(self);
         self.on_will_dispose.fire({}) catch {};
         self.contributions.deinit(self.allocator);
+        self.detachCodeActionRegistry();
         self.detachModel();
         self.on_will_dispose.deinit();
         self.on_will_change_model.deinit();
@@ -1962,6 +1974,8 @@ pub const Editor = struct {
         self.on_did_change_dirty.deinit();
         self.on_did_layout_change.deinit();
         self.on_did_change_code_lens_provider.deinit();
+        self.on_did_change_code_action_provider.deinit();
+        if (self.supported_code_actions.len != 0) self.allocator.free(self.supported_code_actions);
         self.on_did_change_word_highlights.deinit();
         self.on_did_change_hover_state.deinit();
         self.on_did_mouse_event.deinit();
@@ -2028,6 +2042,7 @@ pub const Editor = struct {
         self.last_content_changes.clearRetainingCapacity();
         self.document.removeEditor(self);
         self.model_attached = false;
+        self.updateCodeActionProviderContext();
         self.document.release();
         self.document = undefined;
         self.path = undefined;
@@ -2498,6 +2513,30 @@ pub const Editor = struct {
         if (self.has_word_highlights == has_highlights) return;
         self.has_word_highlights = has_highlights;
         self.on_did_change_word_highlights.fire(has_highlights) catch {};
+    }
+
+    fn onCodeActionRegistryChanged(_: usize, self: *Editor) !void {
+        self.updateCodeActionProviderContext();
+    }
+
+    fn detachCodeActionRegistry(self: *Editor) void {
+        if (self.language_features) |features| if (self.code_action_registry_listener) |id| features.code_action_provider.on_did_change.unlisten(id);
+        self.code_action_registry_listener = null;
+    }
+
+    fn updateCodeActionProviderContext(self: *Editor) void {
+        const has_provider = if (self.language_features) |features| if (self.getModel()) |model| features.code_action_provider.has(model) else false else false;
+        if (self.has_code_action_provider == has_provider) return;
+        self.has_code_action_provider = has_provider;
+        self.on_did_change_code_action_provider.fire({}) catch {};
+    }
+
+    pub fn setSupportedCodeActions(self: *Editor, kinds: []const u8) void {
+        if (std.mem.eql(u8, self.supported_code_actions, kinds)) return;
+        const owned = if (kinds.len > 0) self.allocator.dupe(u8, kinds) catch return else "";
+        if (self.supported_code_actions.len > 0) self.allocator.free(self.supported_code_actions);
+        self.supported_code_actions = owned;
+        self.on_did_change_code_action_provider.fire({}) catch {};
     }
 
     pub fn setHasCodeLensProvider(self: *Editor, has_provider: bool) void {

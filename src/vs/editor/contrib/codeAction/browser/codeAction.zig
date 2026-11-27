@@ -308,7 +308,7 @@ pub fn getCodeActions(allocator: Allocator, registry: *Registry, model: *TextMod
     return request.start(token);
 }
 
-fn copyTrigger(a: Allocator, trigger: types.CodeActionTrigger) !types.CodeActionTrigger {
+pub fn copyTrigger(a: Allocator, trigger: types.CodeActionTrigger) !types.CodeActionTrigger {
     var owned = trigger;
     if (trigger.filter.include) |kind| owned.filter.include = .init(try a.dupe(u8, kind.value));
     const excludes = try a.alloc(Kind, trigger.filter.excludes.len);

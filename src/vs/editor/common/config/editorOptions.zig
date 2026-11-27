@@ -373,6 +373,12 @@ pub const EditorHoverOptions = struct {
     show_long_line_warning: bool = true,
 };
 
+/// Port of `EditorLightbulbOptions` (upstream `onCode` default).
+pub const EditorLightbulbOptions = struct {
+    pub const Enabled = enum { off, on, on_code };
+    enabled: Enabled = .on_code,
+};
+
 /// Port of `EditorStickyScrollOptions`.
 pub const EditorStickyScrollOptions = struct {
     enabled: bool = true,
@@ -536,6 +542,7 @@ pub fn OptionValueType(comptime option: EditorOption) type {
         .guides => InternalGuidesOptions,
         .find => EditorFindOptions,
         .hover => EditorHoverOptions,
+        .lightbulb => EditorLightbulbOptions,
         .stickyScroll => EditorStickyScrollOptions,
         .rulers => []const IRulerOption,
         .fontInfo => fontInfo.FontInfo,
