@@ -50,6 +50,7 @@ pub const FileEditorInput = struct {
         self.base.is_dirty_fn = isDirty;
         self.base.save_fn = save;
         self.base.revert_fn = revert;
+        self.base.rename_fn = rename;
         self.base.matches_fn = matches;
 
         self.dirty_listener = try editor.on_did_change_dirty.listen(self, onEditorDirty);
@@ -113,6 +114,10 @@ pub const FileEditorInput = struct {
         _ = group;
         const self: *FileEditorInput = @ptrCast(@alignCast(base.impl.?));
         try self.editor.reloadFromDisk();
+    }
+
+    fn rename(_: *EditorInput, _: GroupIdentifier, target: std.Uri) !?@import("../../../../common/editor/editorInput.zig").MoveResult {
+        return .{ .resource = target };
     }
 
     fn matches(base: *EditorInput, other: *EditorInput) bool {

@@ -38,6 +38,10 @@ pub const Candidate = union(enum) {
 /// null means the save failed or was canceled.
 pub const SaveResult = ?*EditorInput;
 
+/// Upstream IMoveResult for the native resource-input replacement path.
+/// The editor service retains the group-specific view state independently.
+pub const MoveResult = struct { resource: std.Uri };
+
 pub const EditorInput = struct {
     allocator: Allocator,
 
@@ -79,10 +83,16 @@ pub const EditorInput = struct {
     is_dirty_fn: ?*const fn (self: *const EditorInput) bool = null,
     save_fn: ?*const fn (self: *EditorInput, group: GroupIdentifier) anyerror!SaveResult = null,
     revert_fn: ?*const fn (self: *EditorInput, group: GroupIdentifier) anyerror!void = null,
+    rename_fn: ?*const fn (self: *EditorInput, group: GroupIdentifier, target: std.Uri) anyerror!?MoveResult = null,
     copy_fn: ?*const fn (self: *EditorInput) *EditorInput = null,
     can_move_fn: ?*const fn (self: *EditorInput, source: GroupIdentifier, target: GroupIdentifier) CanMoveResult = null,
     can_reopen_fn: ?*const fn (self: *const EditorInput) bool = null,
     dispose_fn: ?*const fn (self: *EditorInput) void = null,
+
+    pub fn rename(self: *EditorInput, group: GroupIdentifier, target: std.Uri) !?MoveResult {
+        const callback = self.rename_fn orelse return null;
+        return callback(self, group, target);
+    }
 
     pub const CanMoveResult = union(enum) {
         yes,

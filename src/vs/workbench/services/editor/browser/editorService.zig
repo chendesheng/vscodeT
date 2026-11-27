@@ -3,6 +3,7 @@
 // src/vs/workbench/services/editor/browser/editorService.ts.
 // Terminal groups retain one pane per tab and expose their mounted pane.
 const std = @import("std");
+const resource_uri = @import("../../../../base/common/stdUri.zig");
 const ui = @import("ui");
 const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const FileEditorInput = @import("../../../contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
@@ -554,6 +555,166 @@ pub const EditorOpening = struct {
     } = null,
     diff_progress: WindowTask = .{},
     reload_jobs: std.array_list.Managed(*TextFileRead),
+    working_copy_file_listener: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
+    file_operation_service: ?@import("../../../../platform/files/common/files.zig").IFileService = null,
+    pending_file_operations: std.ArrayList(*PendingFileOperation) = .empty,
+
+    const PendingFileOperation = struct {
+        owner: *EditorOpening,
+        arena: std.heap.ArenaAllocator,
+        operation: @import("../../../../platform/files/common/files.zig").FileOperation,
+        pairs: []const @import("../../workingCopy/common/workingCopyFileService.zig").SourceTargetPair,
+        leases: std.ArrayList(@import("../../../../editor/common/services/resolverService.zig").ModelReference) = .empty,
+        task: WindowTask = .{},
+
+        fn dispose(self: *PendingFileOperation) void {
+            self.task.schedule(null);
+            for (self.leases.items) |*reference| reference.dispose();
+            const owner = self.owner;
+            for (owner.pending_file_operations.items, 0..) |item, i| if (item == self) {
+                _ = owner.pending_file_operations.orderedRemove(i);
+                break;
+            };
+            self.arena.deinit();
+            owner.allocator.destroy(self);
+        }
+        fn run(context: *anyopaque, _: i64, _: bool) bool {
+            const self: *PendingFileOperation = @ptrCast(@alignCast(context));
+            const owner = self.owner;
+            defer self.dispose();
+            for (self.pairs) |pair| {
+                if (self.operation == .MOVE) {
+                    if (pair.source) |source| {
+                        owner.handleMovedFile(source, pair.target) catch {};
+                        owner.handleDeletedFile(source, pair.target) catch {};
+                    }
+                } else owner.handleDeletedFile(pair.target, null) catch {};
+            }
+            owner.host.request_frame(owner.host.context);
+            return true;
+        }
+    };
+
+    pub fn bindWorkingCopyFileService(self: *EditorOpening, service: @import("../../workingCopy/common/workingCopyFileService.zig").IWorkingCopyFileService, files: @import("../../../../platform/files/common/files.zig").IFileService) !void {
+        self.unbindWorkingCopyFileService();
+        self.file_operation_service = files;
+        self.working_copy_file_listener = try service.on_did_run.listenDisposable(self, onDidRunFileOperation);
+    }
+    pub fn unbindWorkingCopyFileService(self: *EditorOpening) void {
+        if (self.working_copy_file_listener) |listener| listener.dispose();
+        self.working_copy_file_listener = null;
+        self.file_operation_service = null;
+        while (self.pending_file_operations.items.len > 0) self.pending_file_operations.items[0].dispose();
+        self.pending_file_operations.clearAndFree(self.allocator);
+    }
+    fn onDidRunFileOperation(event: @import("../../workingCopy/common/workingCopyFileService.zig").WorkingCopyFileEvent, self: *EditorOpening) !void {
+        if (event.operation != .MOVE and event.operation != .DELETE) return;
+        // The upstream listener awaits replacement; native provider mutations
+        // complete synchronously. Deliver the immutable operation at the next
+        // window turn, so a file undo cannot destroy its initiating editor
+        // while that editor's undo/redo or code-action call is on the stack.
+        const pending = try self.allocator.create(PendingFileOperation);
+        errdefer self.allocator.destroy(pending);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        const pairs = try a.alloc(@import("../../workingCopy/common/workingCopyFileService.zig").SourceTargetPair, event.files.len);
+        for (event.files, pairs) |pair, *owned| owned.* = .{ .source = if (pair.source) |source| try resource_uri.clone(a, source) else null, .target = try resource_uri.clone(a, pair.target) };
+        pending.* = .{ .owner = self, .arena = arena, .operation = event.operation, .pairs = pairs };
+        errdefer for (pending.leases.items) |*reference| reference.dispose();
+        // Keep restored target models alive through the deferred editor
+        // replacement, including clean copies otherwise eligible for disposal.
+        if (event.operation == .MOVE) for (self.part.group_views.items) |pane| for (pane.tabs.items) |tab| {
+            if (tab.file_input == null) continue;
+            const resource = tab.editor.model.uri();
+            for (pairs) |pair| if (pair.source) |source| {
+                const moved = (try resource_uri.mapMovedResource(a, resource, source, pair.target, self.ignoresFilePathCasing(resource))) orelse continue;
+                if (try self.text_model_resolver.acquireExisting(moved)) |reference| {
+                    var owned = reference;
+                    errdefer owned.dispose();
+                    try pending.leases.append(a, owned);
+                }
+            };
+        };
+        // ArrayList allocations above belong to the local arena which is
+        // transferred together with the pending operation.
+        pending.arena = arena;
+        try self.pending_file_operations.append(self.allocator, pending);
+        pending.task = .{ .queue = self.window_events, .context = pending, .run = PendingFileOperation.run, .progress = true };
+        pending.task.post();
+    }
+
+    fn ignoresFilePathCasing(self: *const EditorOpening, resource: std.Uri) bool {
+        const files = self.file_operation_service orelse return false;
+        return !files.hasCapability(resource, @import("../../../../platform/files/common/files.zig").FileSystemProviderCapabilities.PathCaseSensitive);
+    }
+
+    fn handleMovedFile(self: *EditorOpening, source: std.Uri, target: std.Uri) !void {
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        const active_group_id = self.part.service.activeGroup().id;
+        defer if (self.part.service.getGroup(active_group_id)) |restored| self.part.service.activateGroup(restored);
+        const group_ids = try a.alloc(GroupIdentifier, self.part.group_views.items.len);
+        for (self.part.group_views.items, group_ids) |pane, *id| id.* = pane.group.id;
+        const Item = struct { replacement: EditorReplacement, view_state: @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").ICodeEditorViewState };
+        for (group_ids) |id| {
+            const group = self.part.service.getGroup(id) orelse continue;
+            const pane = self.part.viewForGroup(group) orelse continue;
+            const active = group.model.activeEditor();
+            var active_replacement: ?[]const u8 = null;
+            var replacements: std.ArrayList(Item) = .empty;
+            for (pane.tabs.items) |tab| {
+                if (tab.file_input == null) continue;
+                const resource = tab.editor.model.uri();
+                const moved = (try resource_uri.mapMovedResource(a, resource, source, target, self.ignoresFilePathCasing(resource))) orelse continue;
+                const result = (try tab.input.rename(group.id, moved)) orelse continue;
+                const path = try resource_uri.fsPath(result.resource, a);
+                try replacements.append(a, .{ .replacement = .{ .editor = tab.input, .resource = path, .options = .{ .force_text = true, .pinned = group.model.isPinned(.{ .editor = tab.input }), .preserve_focus = true } }, .view_state = try tab.editor.saveViewState(a) });
+                if (active == tab.input) active_replacement = path;
+            }
+            for (replacements.items) |item| {
+                try self.replaceEditors(&.{item.replacement}, id);
+                for (pane.tabs.items) |tab| if (tab.file_input != null and self.samePath(tab.editor.path, item.replacement.resource)) {
+                    try tab.editor.restoreViewState(item.view_state);
+                    break;
+                };
+            }
+            // Rename of an inactive tab must not make it active, and moving
+            // the active tab restores the same group-specific selection.
+            if (active_replacement) |path| {
+                for (pane.tabs.items) |tab| if (tab.file_input != null and self.samePath(tab.editor.path, path)) {
+                    try pane.activateTab(tab);
+                    break;
+                };
+            } else if (active) |input| if (pane.tabForInput(input)) |tab| try pane.activateTab(tab);
+        }
+    }
+
+    fn deletedResourceMatches(self: *EditorOpening, a: Allocator, resource: std.Uri, source: std.Uri, moved_to: ?std.Uri) !bool {
+        const ignore_case = self.ignoresFilePathCasing(resource);
+        if (moved_to) |target| if (try resource_uri.isEqualOrParent(resource, target, a, ignore_case)) return false;
+        return resource_uri.isEqualOrParent(resource, source, a, ignore_case);
+    }
+    fn handleDeletedFile(self: *EditorOpening, source: std.Uri, moved_to: ?std.Uri) !void {
+        const close = self.host.request_close_editor orelse return;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        var to_close: std.ArrayList(struct { group: GroupIdentifier, input: *EditorInput }) = .empty;
+        for (self.part.group_views.items) |pane| for (pane.tabs.items) |tab| {
+            if (tab.input.isDirty()) continue;
+            var matches = false;
+            if (tab.file_input != null) matches = try self.deletedResourceMatches(a, tab.editor.model.uri(), source, moved_to) else if (tab.diff) |diff| {
+                for ([_]text_diff_editor_mod.SideInput{ diff.original_input, diff.modified_input }) |side| {
+                    if (side != .file) continue;
+                    if (try self.deletedResourceMatches(a, side.resolve().model.uri(), source, moved_to)) matches = true;
+                }
+            }
+            if (matches) try to_close.append(a, .{ .group = pane.group.id, .input = tab.input });
+        };
+        for (to_close.items) |item| try close(self.host.context, item.group, item.input, true);
+    }
 
     pub fn cancel(self: *EditorOpening) void {
         self.cancelPendingOpen();
@@ -562,6 +723,7 @@ pub const EditorOpening = struct {
     }
 
     pub fn deinit(self: *EditorOpening) void {
+        self.unbindWorkingCopyFileService();
         self.cancel();
         if (self.diff_worker) |worker| {
             worker.deinit();
@@ -1220,6 +1382,13 @@ pub const EditorOpening = struct {
             return self.openExistingInput(path, existing, options);
         }
         const size = (self.part.activeView() orelse return error.GroupPaneMissing).contentDimensions();
+        const resource: std.Uri = .{ .scheme = "file", .path = .{ .raw = path } };
+        if (try self.text_model_resolver.acquireExisting(resource)) |reference| {
+            var held = reference;
+            defer held.dispose();
+            const editor = try Editor.createViewFromDocument(TextModelResolverService.documentOf(held), size.width, size.height, .{ .reserve_scrollbar = true });
+            return self.openCreatedTextEditor(path, editor, options);
+        }
         const editor = try Editor.createWithExtensionsOptions(self.allocator, self.io, path, size.width, size.height, self.declarative.*, self.json_client.*, .{ .reserve_scrollbar = true, .undo_store = try self.text_model_resolver.undoRedoStore() });
         try self.openCreatedTextEditor(path, editor, options);
     }
@@ -1247,22 +1416,28 @@ pub const EditorOpening = struct {
                     break :outer;
                 }
             }
+            const already_open = replacement != null;
             if (replacement) |tab| {
                 try destination.activateTab(tab);
                 if (item.options.pinned) _ = try group.model.pin(tab.input);
                 try self.history.add(item.resource);
             } else {
-                try self.openPathWithOptions(item.resource, item.options);
+                // Keep the source preview alive until its explicit REPLACE
+                // close. Opening another unpinned preview would otherwise
+                // dispose the source before this transaction can use it.
+                var open_options = item.options;
+                open_options.pinned = true;
+                try self.openPathWithOptions(item.resource, open_options);
                 replacement = destination.activeTab();
             }
             const tab = replacement orelse return error.EditorOpeningUnavailable;
             if (tab == old or tab.file_input == null) return error.ReplacementNotSupported;
             self.group_actions.transfer.move.will_move(self.group_actions.transfer.move.context, destination, old);
             try self.part.closeEditorWithContext(destination, old, .REPLACE, self.group_actions.transfer);
-            if (sticky) _ = try group.model.stick(tab.input);
+            if (sticky) _ = try group.model.stick(tab.input) else if (!item.options.pinned and !already_open and !tab.input.isDirty()) _ = try group.model.unpin(tab.input);
             _ = try group.model.moveEditor(tab.input, @intCast(index));
             destination.syncActivePane();
-            destination.focus();
+            if (!item.options.preserve_focus) destination.focus();
         }
     }
 

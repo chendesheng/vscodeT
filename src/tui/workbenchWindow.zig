@@ -1017,6 +1017,8 @@ pub const TerminalWorkbench = struct {
                 }.dimensions,
             },
         };
+        try self.editor_opening.bindWorkingCopyFileService(self.working_copy_file_api, self.file_service_api);
+        errdefer self.editor_opening.unbindWorkingCopyFileService();
         self.search_window = .{
             .lists = &self.lists,
             .allocator = allocator,
@@ -1812,6 +1814,7 @@ pub const TerminalWorkbench = struct {
 
     pub fn deinit(self: *TerminalWorkbench) void {
         self.deinitBulkEditPreview();
+        self.editor_opening.unbindWorkingCopyFileService();
         self.text_file_model_manager.deinit();
         self.accessible_view.deinit();
         self.sidebar_part.setFocused(false);

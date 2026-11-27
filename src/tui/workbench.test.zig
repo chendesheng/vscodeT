@@ -10602,6 +10602,70 @@ test "Diff editor commands: workspace text and file edit groups share real model
     try std.testing.expectEqualStrings("created", redone);
 }
 
+test "Diff editor commands: renaming a dirty file preserves contents and view state through workspace undo" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const bulk = @import("../vs/editor/browser/services/bulkEditService.zig");
+    const Probe = struct {
+        result: ?bulk.IBulkEditResult = null,
+        failure: ?anyerror = null,
+        fn complete(context: *anyopaque, reply: anyerror!bulk.IBulkEditResult) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (reply) |value| self.result = value else |err| self.failure = err;
+        }
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(a, io, &tmp, "before.txt", "first\nsecond");
+    defer a.free(path);
+    const absolute = try @import("../vs/workbench/services/textfile/common/textFileService.zig").absolutePath(a, io, path);
+    defer a.free(absolute);
+    const target_path = try std.fs.path.join(a, &.{ std.fs.path.dirname(absolute).?, "after.txt" });
+    defer a.free(target_path);
+    const window = try TestWindow.init(a, io, &.{path}, 100, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    const original = wb.activeTab().?.editor;
+    var changes = [_]@import("../vs/editor/common/model.zig").IdentifiedSingleEditOperation{.init(Range.init(2, 7, 2, 7), @import("../vs/base/common/strings.zig").String.initBorrowed("!"))};
+    _ = try original.model.pushEditOperations(null, &changes, null, null);
+    try original.setCursorPosition(.init(2, 3));
+    try std.testing.expect(original.isDirty());
+    const target: std.Uri = .{ .scheme = "file", .path = .{ .raw = target_path } };
+    const edits = [_]languages.WorkspaceResourceEdit{.{ .file = .{ .old_resource = original.model.uri(), .new_resource = target } }};
+    var probe: Probe = .{};
+    _ = try wb.bulk_edit_api.apply(.{ .edits = &edits }, .{}, .{ .context = &probe, .complete = Probe.complete });
+    for (0..5000) |_| {
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        if (probe.result != null and std.mem.eql(u8, wb.activeTab().?.editor.path, target_path)) break;
+        if (probe.failure != null) break;
+        time_compat.sleepMillis(1);
+    }
+    if (probe.failure) |err| return err;
+    try std.testing.expect(probe.result.?.is_applied);
+    const moved = wb.activeTab().?.editor;
+    try std.testing.expectEqualStrings(target_path, moved.path);
+    try std.testing.expectEqualStrings("second!", try moved.model.borrowLineContent(2));
+    try std.testing.expect(moved.isDirty());
+    try std.testing.expectEqual(@as(usize, 2), moved.modelCursorPosition().lineNumber);
+    try std.testing.expectEqual(@as(usize, 3), moved.modelCursorPosition().column);
+    const disk = try wb.file_service_api.readFile(a, target);
+    defer a.free(disk);
+    try std.testing.expectEqualStrings("first\nsecond", disk);
+    // Undo through the real CodeEditorWidget, not an isolated service call;
+    // its replacement must not be destroyed until the dispatch turn.
+    try moved.undo();
+    for (0..5000) |_| {
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        if (std.mem.eql(u8, wb.activeTab().?.editor.path, absolute)) break;
+        time_compat.sleepMillis(1);
+    }
+    const restored = wb.activeTab().?.editor;
+    try std.testing.expectEqualStrings(absolute, restored.path);
+    try std.testing.expect(restored.isDirty());
+    try std.testing.expectEqualStrings("second!", try restored.model.borrowLineContent(2));
+    try std.testing.expectError(error.FileNotFound, wb.file_service_api.stat(target));
+}
+
 test "Diff editor commands: whitespace hint and timeout prompt use effective configuration" {
     const a = std.testing.allocator;
     const io = std.testing.io;
