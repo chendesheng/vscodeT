@@ -229,4 +229,5 @@ pub fn registerEditorNavigationActions(commands: *CommandRegistry, instantiation
     for (@import("../platform/actionWidget/browser/actionWidget.zig").widget_actions) |action| try commands.registerAction(instantiation, action);
     try commands.registerEditorAction(instantiation, @import("../editor/contrib/message/browser/messageController.zig").leave_message_action);
     for (@import("../editor/contrib/parameterHints/browser/parameterHints.zig").editor_actions) |action| try commands.registerEditorAction(instantiation, action);
+    for (@import("../editor/contrib/rename/browser/rename.zig").editor_actions) |action| try commands.registerEditorAction(instantiation, action);
 }

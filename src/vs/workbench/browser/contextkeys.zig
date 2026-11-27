@@ -84,6 +84,9 @@ const WindowContextKeys = struct {
     has_prev_tabstop: contextkeys.IContextKey,
     in_snippet_choice: contextkeys.IContextKey,
     message_visible: contextkeys.IContextKey,
+    editor_has_rename_provider: contextkeys.IContextKey,
+    rename_input_visible: contextkeys.IContextKey,
+    rename_preview: contextkeys.IContextKey,
     editor_has_signature_help_provider: contextkeys.IContextKey,
     parameter_hints_visible: contextkeys.IContextKey,
     parameter_hints_multiple: contextkeys.IContextKey,
@@ -146,6 +149,9 @@ const WindowContextKeys = struct {
             .has_next_tabstop = try service.createKey("hasNextTabstop", .{ .boolean = false }),
             .has_prev_tabstop = try service.createKey("hasPrevTabstop", .{ .boolean = false }),
             .in_snippet_choice = try service.createKey("inSnippetChoice", .{ .boolean = false }),
+            .editor_has_rename_provider = try service.createKey("editorHasRenameProvider", .{ .boolean = false }),
+            .rename_input_visible = try service.createKey("renameInputVisible", .{ .boolean = false }),
+            .rename_preview = try service.createKey("config.editor.rename.enablePreview", .{ .boolean = false }),
             .editor_has_signature_help_provider = try service.createKey("editorHasSignatureHelpProvider", .{ .boolean = false }),
             .parameter_hints_visible = try service.createKey("parameterHintsVisible", .{ .boolean = false }),
             .parameter_hints_multiple = try service.createKey("parameterHintsMultipleSignatures", .{ .boolean = false }),
@@ -201,6 +207,7 @@ pub const WorkbenchContextKeysHandler = struct {
     snippet_state_listener: ?usize = null,
     inline_message_listener: ?usize = null,
     parameter_hints_listener: ?usize = null,
+    rename_listener: ?usize = null,
     code_action_provider_listener: ?usize = null,
     quick_diff_context_listener: ?usize = null,
     working_copy_service: *WorkingCopyService,
@@ -363,6 +370,8 @@ pub const WorkbenchContextKeysHandler = struct {
         errdefer active.on_did_change_inline_message.unlisten(self.inline_message_listener.?);
         self.parameter_hints_listener = try active.on_did_change_parameter_hints.listen(self, onParameterHintsChanged);
         errdefer active.on_did_change_parameter_hints.unlisten(self.parameter_hints_listener.?);
+        self.rename_listener = try active.on_did_change_rename.listen(self, onRenameChanged);
+        errdefer active.on_did_change_rename.unlisten(self.rename_listener.?);
         self.code_action_provider_listener = try active.on_did_change_code_action_provider.listen(self, onCodeActionsChanged);
         errdefer active.on_did_change_code_action_provider.unlisten(self.code_action_provider_listener.?);
         self.quick_diff_context_listener = try active.on_did_change_quick_diff_context.listen(self, onQuickDiffContextChanged);
@@ -370,6 +379,7 @@ pub const WorkbenchContextKeysHandler = struct {
         self.window_keys.has_word_highlights.set(.{ .boolean = active.has_word_highlights });
         self.updateHoverState(active);
         self.updateParameterHints(active);
+        self.updateRename(active);
         self.window_keys.markers_navigation_visible.set(.{ .boolean = active.markers_navigation_visible });
         self.updateSnippetState(active.snippet_state);
         self.window_keys.message_visible.set(.{ .boolean = active.inline_message_visible });
@@ -400,6 +410,11 @@ pub const WorkbenchContextKeysHandler = struct {
         self.inline_message_listener = null;
         if (self.parameter_hints_listener) |listener| editor.on_did_change_parameter_hints.unlisten(listener);
         self.parameter_hints_listener = null;
+        if (self.rename_listener) |id| editor.on_did_change_rename.unlisten(id);
+        self.rename_listener = null;
+        self.window_keys.editor_has_rename_provider.set(.{ .boolean = false });
+        self.window_keys.rename_input_visible.set(.{ .boolean = false });
+        self.window_keys.rename_preview.set(.{ .boolean = false });
         self.window_keys.editor_has_signature_help_provider.set(.{ .boolean = false });
         self.window_keys.parameter_hints_visible.set(.{ .boolean = false });
         self.window_keys.parameter_hints_multiple.set(.{ .boolean = false });
@@ -423,6 +438,16 @@ pub const WorkbenchContextKeysHandler = struct {
 
     fn onLanguageChanged(_: ModelLanguageChangedEvent, self: *@This()) !void {
         if (self.active_editor) |editor| self.window_keys.editor_lang_id.set(.{ .string = if (self.language_visible) editor.languageId() else "" });
+    }
+
+    fn updateRename(self: *@This(), editor: *Editor) void {
+        self.window_keys.editor_has_rename_provider.set(.{ .boolean = editor.rename_available });
+        self.window_keys.rename_input_visible.set(.{ .boolean = editor.rename_input_visible });
+        self.window_keys.rename_preview.set(.{ .boolean = editor.rename_preview });
+    }
+
+    fn onRenameChanged(_: void, self: *@This()) !void {
+        if (self.active_editor) |editor| self.updateRename(editor);
     }
 
     fn updateParameterHints(self: *@This(), editor: *Editor) void {

@@ -209,6 +209,7 @@ pub const Tab = struct {
     original_controllers: ?*Controllers = null,
     code_lens_services: ?CodeLensServices = null,
     code_action_services: ?CodeActionServices = null,
+    rename_services: ?RenameServices = null,
     hover_opener: ?MarkerHoverParticipantOpener = null,
     hover_menus: ?MarkerHoverMenuServices = null,
     marker_navigation_services: ?MarkerNavigationServices = null,
@@ -536,6 +537,14 @@ pub const Tab = struct {
         if (self.original_controllers) |controllers| controllers.attachCodeLensServices(services) catch {};
     }
 
+    pub fn attachRenameServices(self: *Tab, services: RenameServices) void {
+        if (self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
+        self.rename_services = services;
+        self.ensureControllers() catch return;
+        if (self.controllers) |controllers| controllers.attachRenameServices(services) catch {};
+        if (self.original_controllers) |controllers| controllers.attachRenameServices(services) catch {};
+    }
+
     pub fn attachCodeActionServices(self: *Tab, services: CodeActionServices) void {
         if (self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
         self.code_action_services = services;
@@ -611,6 +620,7 @@ pub const Tab = struct {
         if (self.window) |window| controllers.attachWindow(window);
         if (self.code_lens_services) |services| try controllers.attachCodeLensServices(services);
         if (self.code_action_services) |services| try controllers.attachCodeActionServices(services);
+        if (self.rename_services) |services| try controllers.attachRenameServices(services);
         if (self.hover_opener) |opener| if (self.hover_menus) |menus| controllers.attachHoverServices(opener, menus);
         if (self.marker_navigation_services) |services| try controllers.attachMarkerNavigationServices(services);
         return controllers;
@@ -1347,6 +1357,8 @@ fn SuggestControllerHostForView(view: *View) @import("../../../../editor/contrib
 }
 
 const CodeActionController = @import("../../../../editor/contrib/codeAction/browser/codeActionController.zig").CodeActionController;
+const RenameServices = @import("../../../../editor/contrib/rename/browser/rename.zig").Services;
+const RenameController = @import("../../../../editor/contrib/rename/browser/rename.zig").RenameController;
 const CodeActionServices = @import("../../../../editor/contrib/codeAction/browser/codeActionController.zig").Services;
 const MarkerHoverParticipantOpener = @import("../../../../editor/contrib/hover/browser/markerHoverParticipant.zig").Opener;
 const MarkerHoverMenuServices = @import("../../../../editor/contrib/hover/browser/markerHoverParticipant.zig").MenuServices;
@@ -1390,6 +1402,7 @@ pub const Controllers = struct {
     code_lens: ?*CodeLensContribution,
     code_lens_services: ?CodeLensServices,
     code_action: ?*CodeActionController,
+    rename: ?*RenameController,
     code_action_services: ?CodeActionServices,
     hover_opener: ?MarkerHoverParticipantOpener,
     hover_menus: ?MarkerHoverMenuServices,
@@ -1471,6 +1484,7 @@ pub const Controllers = struct {
         self.code_lens = null;
         self.code_lens_services = null;
         self.code_action = null;
+        self.rename = null;
         self.code_action_services = null;
         self.hover_opener = null;
         self.hover_menus = null;
@@ -1651,6 +1665,11 @@ pub const Controllers = struct {
         self.setThemeColors(view.themeColors());
     }
 
+    pub fn attachRenameServices(self: *Controllers, services: RenameServices) !void {
+        if (self.rename != null) return;
+        self.rename = try RenameController.getOrCreate(self.editor, self.view, services);
+    }
+
     pub fn attachCodeActionServices(self: *Controllers, services: CodeActionServices) !void {
         if (self.code_action_services != null) return;
         self.code_action_services = services;
@@ -1821,6 +1840,8 @@ pub const Controllers = struct {
     }
 
     pub fn deinit(self: *Controllers) void {
+        if (self.rename) |rename| rename.unbind();
+        self.rename = null;
         self.detachCodeActionServices();
         self.detachMarkerNavigationServices();
         self.detachCodeLensServices();
@@ -1907,6 +1928,10 @@ pub const MultiDiffBindingServices = struct {
         if (host.marker_navigation) |services| {
             self.original.attachMarkerNavigationServices(services) catch {};
             self.modified.attachMarkerNavigationServices(services) catch {};
+        }
+        if (host.rename) |services| {
+            self.original.attachRenameServices(services) catch {};
+            self.modified.attachRenameServices(services) catch {};
         }
         if (host.code_actions) |services| {
             self.original.attachCodeActionServices(services) catch {};

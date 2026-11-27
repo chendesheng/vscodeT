@@ -66,6 +66,11 @@ pub const ThemeColors = struct {
         };
     }
 
+    pub fn renameTheme(palette: ?*const ThemeColors) @import("../../editor/contrib/rename/browser/renameWidget_css.zig").Colors {
+        const colors = palette orelse return .{};
+        return .{ .background = colors.color("editorWidget.background", .{ 37, 37, 38 }), .foreground = colors.color("editorWidget.foreground", .{ 204, 204, 204 }), .input_background = colors.color("input.background", .{ 30, 30, 30 }), .input_foreground = colors.color("input.foreground", .{ 204, 204, 204 }), .border = colors.color("editorWidget.border", .{ 69, 69, 69 }) };
+    }
+
     pub fn parameterHintsTheme(palette: ?*const ThemeColors) @import("../../editor/contrib/parameterHints/browser/parameterHints_css.zig").Colors {
         const colors = palette orelse return .{};
         const hover = hoverTheme(palette);

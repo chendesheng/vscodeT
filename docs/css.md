@@ -155,6 +155,7 @@ Rules:
   | `messageController.css` | `0x0160` | model-anchored inline message and themed cell border; pixel triangle and animation are omitted |
   | `gotoErrorWidget.css` | `0x0170` | marker-navigation message, stale state, details and related-location links; cell insets replace pixel padding |
   | `parameterHints.css` | `0x0180` | signature and overload controls, highlighted active parameter, themed border; cell sizing replaces pixel metrics |
+  | `renameWidget.css` | `0x0190` | editor-anchored input and preview label; shared terminal InputBox replaces the browser input element |
 
   The multi-diff changed-files list's
   `media/multiDiffEditorWithFileList.css` is projected directly through the

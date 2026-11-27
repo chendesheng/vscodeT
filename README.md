@@ -503,7 +503,8 @@ source locations. Expand/Shrink Selection also consumes language-server
 selection ranges, syntax folding uses the server’s folding ranges, and
 Trigger Parameter Hints displays server-provided signatures and active
 parameters in an editor content widget. Rich documentation and scrolling
-remain outstanding. The
+remain outstanding. Rename Symbol (`F2`) prepares the symbol with its provider
+and applies workspace edits or opens the existing refactoring preview. The
 negotiated capabilities are recorded in
 [the reference capture](docs/zig-zls-reference-capabilities.json). The full LSP capability matrix
 is still in progress; see [the integration plan](docs/zig-extension-lsp-plan.md).

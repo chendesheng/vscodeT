@@ -976,6 +976,7 @@ pub const Editor = struct {
     on_did_change_text_focus: Emitter(bool),
     on_did_change_inline_message: Emitter(bool),
     on_did_change_parameter_hints: Emitter(void),
+    on_did_change_rename: Emitter(void),
     on_did_change_markers_navigation: Emitter(bool),
     on_did_change_snippet_state: Emitter(SnippetState),
     on_did_mouse_event: Emitter(editorBrowser.EditorMouseEvent),
@@ -994,6 +995,9 @@ pub const Editor = struct {
     hover_visible: bool = false,
     hover_focused: bool = false,
     inline_message_visible: bool = false,
+    rename_available: bool = false,
+    rename_input_visible: bool = false,
+    rename_preview: bool = false,
     parameter_hints_available: bool = false,
     parameter_hints_visible: bool = false,
     parameter_hints_multiple: bool = false,
@@ -1292,6 +1296,7 @@ pub const Editor = struct {
             .on_did_change_text_focus = .init(allocator),
             .on_did_change_inline_message = .init(allocator),
             .on_did_change_parameter_hints = .init(allocator),
+            .on_did_change_rename = .init(allocator),
             .on_did_change_markers_navigation = .init(allocator),
             .on_did_change_snippet_state = .init(allocator),
             .on_did_mouse_event = .init(allocator),
@@ -2443,6 +2448,7 @@ pub const Editor = struct {
         self.on_did_change_text_focus.deinit();
         self.on_did_change_inline_message.deinit();
         self.on_did_change_parameter_hints.deinit();
+        self.on_did_change_rename.deinit();
         self.on_did_change_markers_navigation.deinit();
         self.on_did_change_snippet_state.deinit();
         self.on_did_mouse_event.deinit();
@@ -3002,6 +3008,14 @@ pub const Editor = struct {
         self.hover_visible = visible;
         self.hover_focused = focused;
         self.on_did_change_hover_state.fire({}) catch {};
+    }
+
+    pub fn setRenameState(self: *Editor, available: bool, visible: bool, preview: bool) void {
+        if (self.rename_available == available and self.rename_input_visible == visible and self.rename_preview == preview) return;
+        self.rename_available = available;
+        self.rename_input_visible = visible;
+        self.rename_preview = preview;
+        self.on_did_change_rename.fire({}) catch {};
     }
 
     pub fn setParameterHintsState(self: *Editor, available: bool, visible: bool, multiple: bool) void {

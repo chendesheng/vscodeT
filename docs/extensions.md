@@ -1999,8 +1999,11 @@ background document resolution, watcher registration and disposal, output
 channel lifecycle, progress reporting and cancellation, and optional workspace
 symbol resolution, and signature help (overload cycling, retriggers and UTF-16
 labels). Signature help supports real ZLS responses; rich documentation and
-scrolling remain gaps. Remaining portable gaps include rename, semantic tokens
-and inlay hints; the
+scrolling remain gaps. Rename Symbol now prepares and applies real ZLS edits
+through the shared bulk-edit service, including the fixture’s refactoring
+preview and discard flow. New-symbol-name suggestions and full upstream rename
+controller behavior remain outstanding. Remaining portable gaps include semantic
+tokens and inlay hints; the
 full advertised ZLS capability matrix is not yet verified.
 
 ## 16. Deferred / explicit limitations

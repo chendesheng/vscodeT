@@ -96,6 +96,9 @@ pub const EditorScopedContext = struct {
     fn get(context: *anyopaque, key: []const u8) contextkey.ContextKeyValue {
         const self: *EditorScopedContext = @ptrCast(@alignCast(context));
         if (std.mem.eql(u8, key, "editorReadonly")) return .{ .boolean = self.editor.isReadOnly() };
+        if (std.mem.eql(u8, key, "editorHasRenameProvider")) return .{ .boolean = self.editor.rename_available };
+        if (std.mem.eql(u8, key, "renameInputVisible")) return .{ .boolean = self.editor.rename_input_visible };
+        if (std.mem.eql(u8, key, "config.editor.rename.enablePreview")) return .{ .boolean = self.editor.rename_preview };
         if (std.mem.eql(u8, key, "editorHasSignatureHelpProvider")) return .{ .boolean = self.editor.parameter_hints_available };
         if (std.mem.eql(u8, key, "parameterHintsVisible")) return .{ .boolean = self.editor.parameter_hints_visible };
         if (std.mem.eql(u8, key, "parameterHintsMultipleSignatures")) return .{ .boolean = self.editor.parameter_hints_multiple };

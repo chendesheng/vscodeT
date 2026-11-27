@@ -2716,6 +2716,30 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqualStrings("newName", rename_edit.edits[0].text.text);
             try std.testing.expectEqual(@as(@FieldType(rename_languages.WorkspaceTextEdit, "column_encoding"), .utf16), rename_edit.edits[0].text.column_encoding);
 
+            const RenameController = @import("../../../editor/contrib/rename/browser/rename.zig").RenameController;
+            try selection_editor.setCursorPosition(Position.init(2, 1));
+            try std.testing.expect(selection_editor.rename_available);
+            try workbench.commands.execute("editor.action.rename");
+            const rename_controller = selection_editor.getInstantiatedContribution(RenameController).?;
+            const input_deadline = time_compat.milliTimestamp() + 5000;
+            while (!rename_controller.widget.visible and time_compat.milliTimestamp() < input_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(rename_controller.widget.visible and selection_editor.rename_input_visible);
+            try std.testing.expectEqualStrings("fixture", rename_controller.widget.input.getValue());
+            try rename_controller.widget.input.setValue("previewed");
+            try workbench.commands.execute("acceptRenameInputWithPreview");
+            const preview_deadline = time_compat.milliTimestamp() + 5000;
+            while (!workbench.bulk_edit_preview.?.hasInput() and time_compat.milliTimestamp() < preview_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(workbench.bulk_edit_preview.?.hasInput());
+            try workbench.commands.execute("refactorPreview.discard");
+            try std.testing.expect(!workbench.bulk_edit_preview.?.hasInput());
+            try std.testing.expect(!selection_editor.rename_input_visible);
+
             const action_model = @import("../../../editor/contrib/codeAction/browser/codeAction.zig");
             const action_types = @import("../../../editor/contrib/codeAction/common/types.zig");
             const ActionReceiver = struct {
@@ -3919,6 +3943,26 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                         try std.testing.expect(std.mem.indexOf(u8, signature_help.signatures[0].label, "value") != null);
                         try std.testing.expect(selection_editor.parameter_hints_visible);
                         try workbench.commands.execute("closeParameterHints");
+                        const RenameController = @import("../../../editor/contrib/rename/browser/rename.zig").RenameController;
+                        try selection_editor.setCursorPosition(Position.init(8, 9));
+                        try workbench.commands.execute("editor.action.rename");
+                        const rename_controller = selection_editor.getInstantiatedContribution(RenameController).?;
+                        const rename_deadline = time_compat.milliTimestamp() + 5000;
+                        while (!rename_controller.widget.visible and time_compat.milliTimestamp() < rename_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                            time_compat.sleepMillis(10);
+                        }
+                        try std.testing.expect(rename_controller.widget.visible);
+                        try std.testing.expectEqualStrings("add", rename_controller.widget.input.getValue());
+                        try rename_controller.widget.input.setValue("sumValues");
+                        try workbench.commands.execute("acceptRenameInput");
+                        const rename_edit_deadline = time_compat.milliTimestamp() + 5000;
+                        while (rename_controller.state != .idle and time_compat.milliTimestamp() < rename_edit_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                            time_compat.sleepMillis(10);
+                        }
+                        try std.testing.expect(std.mem.indexOf(u8, try model.borrowLineContent(8), "fn sumValues(") != null);
+                        try std.testing.expect(std.mem.indexOf(u8, try model.borrowLineContent(9), "return sumValues(") != null);
                         model.setLanguage("plaintext");
                         try std.testing.expect(workbench.statusbar.model().findEntry("status.languageStatus") == null);
                         return;

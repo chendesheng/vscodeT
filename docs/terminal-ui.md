@@ -1297,6 +1297,7 @@ Library constraints:
   insertions or deletions above a collapsed region re-expand it because there
   are no tracked folding decorations to shift the range.
 - Parameter hints are ported from `src/vs/editor/contrib/parameterHints/browser/`: the model handles typed triggers, retriggers, provider cancellation and overload selection, and an editor content widget paints the signature and active parameter using cell geometry. Documentation is currently plain text; rich markdown links and scrolling remain portable gaps.
+- Rename Symbol uses the ported `RenameSkeleton`, `RenameController` and `RenameWidget` with the shared terminal InputBox. Enter applies the workspace edit, Ctrl+Enter opens the existing refactoring preview, and Escape dismisses the input. New-symbol-name suggestions and complete upstream progress/notification behavior are not yet ported.
 - Sticky scroll is ported from
   `src/vs/editor/contrib/stickyScroll/browser` and painted as an editor overlay
   (`stickyScrollHost.zig` in that contribution owns the editor/view-model adapter;

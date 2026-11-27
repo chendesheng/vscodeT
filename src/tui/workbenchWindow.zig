@@ -3021,12 +3021,20 @@ pub const TerminalWorkbench = struct {
         }.execute };
     }
 
-    fn codeActionServices(self: *TerminalWorkbench, features: *LanguageFeaturesService) @import("../vs/editor/contrib/codeAction/browser/codeActionController.zig").Services {
-        const configuration = self.instantiation.invokeFunction(struct {
+    fn renameServices(self: *TerminalWorkbench, features: *LanguageFeaturesService) @import("../vs/editor/contrib/rename/browser/rename.zig").Services {
+        return .{ .registry = &features.rename_provider, .bulk_edit = self.bulk_edit_api, .configuration = self.textResourceConfiguration() };
+    }
+
+    fn textResourceConfiguration(self: *TerminalWorkbench) ?@import("../vs/editor/common/services/textResourceConfiguration.zig").ITextResourceConfigurationService {
+        return self.instantiation.invokeFunction(struct {
             fn get(accessor: @import("../vs/platform/instantiation/common/instantiation.zig").ServicesAccessor) !@import("../vs/editor/common/services/textResourceConfiguration.zig").ITextResourceConfigurationService {
                 return (try accessor.get(@import("../vs/editor/common/services/textResourceConfiguration.zig").text_resource_configuration_service_id)).*;
             }
         }.get, .{}) catch null;
+    }
+
+    fn codeActionServices(self: *TerminalWorkbench, features: *LanguageFeaturesService) @import("../vs/editor/contrib/codeAction/browser/codeActionController.zig").Services {
+        const configuration = self.textResourceConfiguration();
         return .{ .registry = &features.code_action_provider, .markers = self.marker_service, .window = &self.window_events, .action_widget = self.action_widget_api, .bulk_edit = self.bulk_edit_api, .commands = self.providerCommandHost(), .configuration = configuration };
     }
 
@@ -3034,6 +3042,7 @@ pub const TerminalWorkbench = struct {
         tab.attachHoverServices((editor_service_mod.EditorOpening.OpenerAdapter{ .opening = &self.editor_opening }).interface(), .{ .menus = &self.menu_service, .parent_context = self.core.context_keys.getContext() });
         const features = self.language_features orelse return;
         tab.attachCodeActionServices(self.codeActionServices(features));
+        tab.attachRenameServices(self.renameServices(features));
         if (self.markerNavigationServices()) |services| tab.attachMarkerNavigationServices(services);
         const cache = self.code_lens_cache orelse return;
         tab.attachCodeLensServices(features, cache, self.providerCommandHost(), &self.window_events);
@@ -3043,7 +3052,7 @@ pub const TerminalWorkbench = struct {
         const features = self.language_features orelse return;
         widget.original_editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
         widget.modified_editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
-        widget.attachNativeLanguageServices(.{ .features = features, .cache = self.code_lens_cache, .commands = self.providerCommandHost(), .code_actions = self.codeActionServices(features), .opener = (editor_service_mod.EditorOpening.OpenerAdapter{ .opening = &self.editor_opening }).interface(), .hover_menus = .{ .menus = &self.menu_service, .parent_context = self.core.context_keys.getContext() }, .marker_navigation = self.markerNavigationServices(), .window = &self.window_events });
+        widget.attachNativeLanguageServices(.{ .features = features, .cache = self.code_lens_cache, .commands = self.providerCommandHost(), .code_actions = self.codeActionServices(features), .rename = self.renameServices(features), .opener = (editor_service_mod.EditorOpening.OpenerAdapter{ .opening = &self.editor_opening }).interface(), .hover_menus = .{ .menus = &self.menu_service, .parent_context = self.core.context_keys.getContext() }, .marker_navigation = self.markerNavigationServices(), .window = &self.window_events });
     }
 
     fn markerNavigationServices(self: *TerminalWorkbench) ?@import("../vs/editor/contrib/gotoError/browser/gotoError.zig").Services {
@@ -4164,6 +4173,7 @@ pub const TerminalWorkbench = struct {
     fn applyThemeToParts(self: *TerminalWorkbench, palette: ?*const theme_colors_mod.ThemeColors) void {
         editor_css.hover.registerTheme(self.editor_surface.document(), theme_colors_mod.ThemeColors.hoverTheme(palette)) catch {};
         editor_css.parameter_hints.registerTheme(self.editor_surface.document(), theme_colors_mod.ThemeColors.parameterHintsTheme(palette)) catch {};
+        editor_css.rename.registerTheme(self.editor_surface.document(), theme_colors_mod.ThemeColors.renameTheme(palette)) catch {};
         editor_css.light_bulb.registerTheme(self.editor_surface.document(), theme_colors_mod.ThemeColors.lightBulbTheme(palette)) catch {};
         editor_css.message.registerTheme(self.editor_surface.document(), theme_colors_mod.ThemeColors.messageTheme(palette)) catch {};
         self.applyContextMenuTheme(palette);
