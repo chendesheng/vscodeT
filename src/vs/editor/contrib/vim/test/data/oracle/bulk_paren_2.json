@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_paren_2",
+  "width": 60,
+  "seed": {
+    "text": "if (a) b;\n",
+    "cursor": [
+      1,
+      5
+    ]
+  },
+  "keys": [
+    "d",
+    "i",
+    "("
+  ],
+  "states": [
+    {
+      "text": "if () b;\n",
+      "cursor": [
+        1,
+        5
+      ],
+      "mode": "normal"
+    }
+  ],
+  "assert_cursor": false,
+  "cursor_gap": "bulk-generated case asserts text/mode; cursor is asserted by the curated corpus"
+}

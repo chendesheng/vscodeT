@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_dd_9",
+  "width": 60,
+  "seed": {
+    "text": "first\nsecond\nthird\n",
+    "cursor": [
+      2,
+      1
+    ]
+  },
+  "keys": [
+    "d",
+    "d"
+  ],
+  "states": [
+    {
+      "text": "first\nthird\n",
+      "cursor": [
+        2,
+        1
+      ],
+      "mode": "normal"
+    }
+  ],
+  "assert_cursor": false,
+  "cursor_gap": "bulk-generated case asserts text/mode; cursor is asserted by the curated corpus"
+}

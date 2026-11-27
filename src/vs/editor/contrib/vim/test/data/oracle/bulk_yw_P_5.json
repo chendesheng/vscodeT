@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_yw_P_5",
+  "width": 60,
+  "seed": {
+    "text": "red green blue\n",
+    "cursor": [
+      1,
+      5
+    ]
+  },
+  "keys": [
+    "y",
+    "w",
+    "P"
+  ],
+  "states": [
+    {
+      "text": "red green green blue\n",
+      "cursor": [
+        1,
+        10
+      ],
+      "mode": "normal"
+    }
+  ],
+  "assert_cursor": false,
+  "cursor_gap": "bulk-generated case asserts text/mode; cursor is asserted by the curated corpus"
+}

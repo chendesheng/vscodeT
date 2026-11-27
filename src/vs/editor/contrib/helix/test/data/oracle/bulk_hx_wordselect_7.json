@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "engine": "helix",
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "case": "bulk_hx_wordselect_7",
+  "width": 60,
+  "seed": {
+    "text": "lorem ipsum\n",
+    "cursor": [
+      1,
+      1
+    ]
+  },
+  "keys": [
+    "w",
+    "d"
+  ],
+  "states": [],
+  "assert_cursor": false,
+  "cursor_gap": "bulk-generated case asserts text/mode/selection count; cursor is asserted by the curated corpus"
+}

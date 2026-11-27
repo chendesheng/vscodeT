@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_append_9",
+  "width": 60,
+  "seed": {
+    "text": "lorem ipsum dolor\n",
+    "cursor": [
+      1,
+      7
+    ]
+  },
+  "keys": [
+    "a",
+    "X",
+    "<Esc>"
+  ],
+  "states": [
+    {
+      "text": "lorem iXpsum dolor\n",
+      "cursor": [
+        1,
+        8
+      ],
+      "mode": "normal"
+    }
+  ],
+  "assert_cursor": false,
+  "cursor_gap": "bulk-generated case asserts text/mode; cursor is asserted by the curated corpus"
+}

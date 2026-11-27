@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_joingJ_5",
+  "width": 60,
+  "seed": {
+    "text": "alpha\nbeta\ngamma\n",
+    "cursor": [
+      3,
+      1
+    ]
+  },
+  "keys": [
+    "g",
+    "J"
+  ],
+  "states": [
+    {
+      "text": "alpha\nbeta\ngamma",
+      "cursor": [
+        3,
+        5
+      ],
+      "mode": "normal"
+    }
+  ],
+  "assert_cursor": false,
+  "cursor_gap": "bulk-generated case asserts text/mode; cursor is asserted by the curated corpus"
+}

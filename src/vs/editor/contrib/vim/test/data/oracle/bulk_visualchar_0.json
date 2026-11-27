@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "engine": "vim",
+  "reference": "neovim",
+  "reference_version": "NVIM v0.10.4",
+  "case": "bulk_visualchar_0",
+  "width": 60,
+  "seed": {
+    "text": "alpha beta gamma\n",
+    "cursor": [
+      1,
+      1
+    ]
+  },
+  "keys": [
+    "v",
+    "l",
+    "d"
+  ],
+  "states": [
+    {
+      "text": "pha beta gamma\n",
+      "cursor": [
+        1,
+        1
+      ],
+      "mode": "normal"
+    }
+  ],
+  "assert_cursor": false,
+  "cursor_gap": "bulk-generated case asserts text/mode; cursor is asserted by the curated corpus"
+}

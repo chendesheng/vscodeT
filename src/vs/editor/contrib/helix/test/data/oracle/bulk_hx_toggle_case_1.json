@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "engine": "helix",
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "case": "bulk_hx_toggle_case_1",
+  "width": 60,
+  "seed": {
+    "text": "hello\n",
+    "cursor": [
+      1,
+      1
+    ]
+  },
+  "keys": [
+    "~"
+  ],
+  "states": [],
+  "assert_cursor": false,
+  "cursor_gap": "bulk-generated case asserts text/mode/selection count; cursor is asserted by the curated corpus"
+}
