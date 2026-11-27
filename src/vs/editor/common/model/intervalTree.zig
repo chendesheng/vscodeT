@@ -1,6 +1,8 @@
 // Port of `src/vs/editor/common/model/intervalTree.ts`.
 //
-// Offsets are UTF-8 byte offsets. Font-decoration bits are not tracked (the
+// Absolute offsets are UTF-8 byte offsets; relative tree coordinates are
+// signed, as upstream JavaScript numbers can be negative after delta shifts.
+// Font-decoration bits are not tracked (the
 // terminal has one font); owner, validation and margin filters are ported.
 const std = @import("std");
 const ModelDecoration = @import("../model.zig").ModelDecoration;
@@ -10,7 +12,6 @@ const TrackedRangeStickiness = @import("../model.zig").TrackedRangeStickiness;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
 const usizeSub = @import("../../../base/common/utils.zig").usizeSub;
-const usizeAdd = @import("../../../base/common/utils.zig").usizeAdd;
 
 pub const ClassName = enum {
     EditorHintDecoration,
@@ -119,10 +120,10 @@ pub const IntervalNode = struct {
     right: *IntervalNode,
     parent: *IntervalNode,
 
-    start: usize,
-    end: usize,
+    start: isize,
+    end: isize,
     delta: isize,
-    maxEnd: usize,
+    maxEnd: isize,
 
     id: u64,
     ownerId: usize,
@@ -148,10 +149,10 @@ pub const IntervalNode = struct {
             .parent = node,
             .left = node,
             .right = node,
-            .start = start,
-            .end = end,
+            .start = @intCast(start),
+            .end = @intCast(end),
             .delta = 0,
-            .maxEnd = end,
+            .maxEnd = @intCast(end),
             .id = id,
             .ownerId = 0,
             .cachedVersionId = 0,
@@ -168,9 +169,9 @@ pub const IntervalNode = struct {
     }
 
     pub fn reset(self: *IntervalNode, versionId: u32, start: usize, end: usize, range: ?Range) void {
-        self.start = start;
-        self.end = end;
-        self.maxEnd = end;
+        self.start = @intCast(start);
+        self.end = @intCast(end);
+        self.maxEnd = @intCast(end);
         self.cachedVersionId = versionId;
         self.cachedAbsoluteStart = start;
         self.cachedAbsoluteEnd = end;
@@ -297,8 +298,8 @@ pub const IntervalTree = struct {
             current = current.parent;
         }
 
-        const nodeStart = usizeAdd(initialNode.start, delta);
-        const nodeEnd = usizeAdd(initialNode.end, delta);
+        const nodeStart: usize = @intCast(initialNode.start + delta);
+        const nodeEnd: usize = @intCast(initialNode.end + delta);
         initialNode.setCachedOffsets(nodeStart, nodeEnd, cachedVersionId);
     }
 
@@ -321,8 +322,8 @@ pub const IntervalTree = struct {
 
         // (4) edit the nodes of interest and insert them back in the tree
         for (nodesOfInterest.items) |node| {
-            node.start = node.cachedAbsoluteStart;
-            node.end = node.cachedAbsoluteEnd;
+            node.start = @intCast(node.cachedAbsoluteStart);
+            node.end = @intCast(node.cachedAbsoluteEnd);
             nodeAcceptEdit(node, offset, (offset + length), textLength, forceMoveMarkers);
             node.maxEnd = node.end;
             _ = rbTreeInsert(self, node);
@@ -437,8 +438,8 @@ fn normalizeDelta(T: *IntervalTree) void {
         }
 
         // handle current node
-        node.start = usizeAdd(node.start, delta);
-        node.end = usizeAdd(node.end, delta);
+        node.start += delta;
+        node.end += delta;
         node.delta = 0;
         recomputeMaxEnd(node);
 
@@ -461,7 +462,7 @@ fn normalizeDelta(T: *IntervalTree) void {
 
 const MarkerMoveSemantics = enum(u2) { MarkerDefined = 0, ForceMove = 1, ForceStay = 2 };
 
-fn adjustMarkerBeforeColumn(markerOffset: usize, markerStickToPreviousCharacter: bool, checkOffset: usize, moveSemantics: MarkerMoveSemantics) bool {
+fn adjustMarkerBeforeColumn(markerOffset: isize, markerStickToPreviousCharacter: bool, checkOffset: isize, moveSemantics: MarkerMoveSemantics) bool {
     if (markerOffset < checkOffset) {
         return true;
     }
@@ -479,7 +480,10 @@ fn adjustMarkerBeforeColumn(markerOffset: usize, markerStickToPreviousCharacter:
 
 // This is a lot more complicated than strictly necessary to maintain the same behaviour
 // as when decorations were implemented using two markers.
-fn nodeAcceptEdit(node: *IntervalNode, start: usize, end: usize, textLength: usize, forceMoveMarkers: bool) void {
+fn nodeAcceptEdit(node: *IntervalNode, start_offset: usize, end_offset: usize, text_length: usize, forceMoveMarkers: bool) void {
+    const start: isize = @intCast(start_offset);
+    const end: isize = @intCast(end_offset);
+    const textLength: isize = @intCast(text_length);
     const nodeStickiness = getNodeStickiness(node);
     const startStickToPreviousCharacter = (nodeStickiness == TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges or nodeStickiness == TrackedRangeStickiness.GrowsOnlyWhenTypingBefore);
     const endStickToPreviousCharacter = (nodeStickiness == TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges or nodeStickiness == TrackedRangeStickiness.GrowsOnlyWhenTypingBefore);
@@ -536,12 +540,12 @@ fn nodeAcceptEdit(node: *IntervalNode, start: usize, end: usize, textLength: usi
     }
 
     // Finish
-    const deltaColumn = usizeSub(insertingCnt, deletingCnt);
+    const deltaColumn = insertingCnt - deletingCnt;
     if (!startDone) {
-        node.start = @max(0, @as(isize, @intCast(nodeStart)) + deltaColumn);
+        node.start = @max(0, nodeStart + deltaColumn);
     }
     if (!endDone) {
-        node.end = @max(0, @as(isize, @intCast(nodeEnd)) + deltaColumn);
+        node.end = @max(0, nodeEnd + deltaColumn);
     }
 
     if (node.start > node.end) {
@@ -576,7 +580,7 @@ fn searchForEditing(T: *IntervalTree, start: usize, end: usize) !ArrayList(*Inte
 
         if (!getNodeIsVisited(node.left)) {
             // first time seeing this node
-            nodeMaxEnd = usizeAdd(node.maxEnd, delta);
+            nodeMaxEnd = @intCast(node.maxEnd + delta);
             if (nodeMaxEnd < start) {
                 // cover case b) from above
                 // there is no need to search this node or its children
@@ -592,7 +596,7 @@ fn searchForEditing(T: *IntervalTree, start: usize, end: usize) !ArrayList(*Inte
         }
 
         // handle current node
-        nodeStart = usizeAdd(node.start, delta);
+        nodeStart = @intCast(node.start + delta);
         if (nodeStart > end) {
             // cover case a) from above
             // there is no need to search this node or its right subtree
@@ -600,7 +604,7 @@ fn searchForEditing(T: *IntervalTree, start: usize, end: usize) !ArrayList(*Inte
             continue;
         }
 
-        nodeEnd = usizeAdd(node.end, delta);
+        nodeEnd = @intCast(node.end + delta);
         if (nodeEnd >= start) {
             node.setCachedOffsets(nodeStart, nodeEnd, 0);
             try result.append(node);
@@ -647,7 +651,7 @@ fn noOverlapReplace(T: *IntervalTree, start: usize, end: usize, textLength: usiz
 
         if (!getNodeIsVisited(node.left)) {
             // first time seeing this node
-            nodeMaxEnd = usizeAdd(node.maxEnd, delta);
+            nodeMaxEnd = @intCast(node.maxEnd + delta);
             if (nodeMaxEnd < start) {
                 // cover case b) from above
                 // there is no need to search this node or its children
@@ -663,10 +667,10 @@ fn noOverlapReplace(T: *IntervalTree, start: usize, end: usize, textLength: usiz
         }
 
         // handle current node
-        nodeStart = usizeAdd(node.start, delta);
+        nodeStart = @intCast(node.start + delta);
         if (nodeStart > end) {
-            node.start = usizeAdd(node.start, editDelta);
-            node.end = usizeAdd(node.end, editDelta);
+            node.start += editDelta;
+            node.end += editDelta;
             node.delta += editDelta;
             if (node.delta < MIN_SAFE_DELTA or node.delta > MAX_SAFE_DELTA) {
                 T.requestNormalizeDelta = true;
@@ -790,8 +794,8 @@ fn _search(T: *IntervalTree, filterOwnerId: usize, filterOutValidation: bool, ca
         }
 
         // handle current node
-        nodeStart = usizeAdd(node.start, delta);
-        nodeEnd = usizeAdd(node.end, delta);
+        nodeStart = @intCast(node.start + delta);
+        nodeEnd = @intCast(node.end + delta);
 
         node.setCachedOffsets(nodeStart, nodeEnd, cachedVersionId);
 
@@ -853,7 +857,7 @@ fn _intervalSearch(T: *IntervalTree, intervalStart: usize, intervalEnd: usize, f
 
         if (!getNodeIsVisited(node.left)) {
             // first time seeing this node
-            nodeMaxEnd = usizeAdd(node.maxEnd, delta);
+            nodeMaxEnd = @intCast(node.maxEnd + delta);
             if (nodeMaxEnd < intervalStart) {
                 // cover case b) from above
                 // there is no need to search this node or its children
@@ -869,7 +873,7 @@ fn _intervalSearch(T: *IntervalTree, intervalStart: usize, intervalEnd: usize, f
         }
 
         // handle current node
-        nodeStart = usizeAdd(node.start, delta);
+        nodeStart = @intCast(node.start + delta);
         if (nodeStart > intervalEnd) {
             // cover case a) from above
             // there is no need to search this node or its right subtree
@@ -877,7 +881,7 @@ fn _intervalSearch(T: *IntervalTree, intervalStart: usize, intervalEnd: usize, f
             continue;
         }
 
-        nodeEnd = usizeAdd(node.end, delta);
+        nodeEnd = @intCast(node.end + delta);
 
         if (nodeEnd >= intervalStart) {
             // There is overlap
@@ -982,14 +986,14 @@ fn treeInsert(T: *IntervalTree, z: *IntervalNode) void {
     const zAbsoluteStart = z.start;
     const zAbsoluteEnd = z.end;
     while (true) {
-        const cmp = intervalCompare(zAbsoluteStart, zAbsoluteEnd, usizeAdd(x.start, delta), usizeAdd(x.end, delta));
+        const cmp = intervalCompare(zAbsoluteStart, zAbsoluteEnd, x.start + delta, x.end + delta);
         if (cmp < 0) {
             // this node should be inserted to the left
             // => it is not affected by the node's delta
             if (x.left == SENTINEL) {
-                z.start = usizeAdd(z.start, -delta);
-                z.end = usizeAdd(z.end, -delta);
-                z.maxEnd = usizeAdd(z.maxEnd, -delta);
+                z.start -= delta;
+                z.end -= delta;
+                z.maxEnd -= delta;
                 x.left = z;
                 break;
             } else {
@@ -999,9 +1003,9 @@ fn treeInsert(T: *IntervalTree, z: *IntervalNode) void {
             // this node should be inserted to the right
             // => it is not affected by the node's delta
             if (x.right == SENTINEL) {
-                z.start = usizeAdd(z.start, -(delta + x.delta));
-                z.end = usizeAdd(z.end, -(delta + x.delta));
-                z.maxEnd = usizeAdd(z.maxEnd, -(delta + x.delta));
+                z.start -= delta + x.delta;
+                z.end -= delta + x.delta;
+                z.maxEnd -= delta + x.delta;
                 x.right = z;
                 break;
             } else {
@@ -1036,8 +1040,8 @@ fn rbTreeDelete(T: *IntervalTree, z: *IntervalNode) void {
             T.requestNormalizeDelta = true;
         }
         if (x != SENTINEL) {
-            x.start = usizeAdd(x.start, z.delta);
-            x.end = usizeAdd(x.end, z.delta);
+            x.start += z.delta;
+            x.end += z.delta;
         }
     } else if (z.right == SENTINEL) {
         x = z.left;
@@ -1050,16 +1054,16 @@ fn rbTreeDelete(T: *IntervalTree, z: *IntervalNode) void {
         // but we don't want to walk the entire right-hand-side subtree of x.
         // we therefore maintain z's delta in y, and adjust only x
         if (x != SENTINEL) {
-            x.start = usizeAdd(x.start, y.delta);
-            x.end = usizeAdd(x.end, y.delta);
+            x.start += y.delta;
+            x.end += y.delta;
         }
         x.delta += y.delta;
         if (x.delta < MIN_SAFE_DELTA or x.delta > MAX_SAFE_DELTA) {
             T.requestNormalizeDelta = true;
         }
 
-        y.start = usizeAdd(y.start, z.delta);
-        y.end = usizeAdd(y.end, z.delta);
+        y.start += z.delta;
+        y.end += z.delta;
         y.delta = z.delta;
         if (y.delta < MIN_SAFE_DELTA or y.delta > MAX_SAFE_DELTA) {
             T.requestNormalizeDelta = true;
@@ -1224,8 +1228,8 @@ fn leftRotate(T: *IntervalTree, x: *IntervalNode) void {
     if (y.delta < MIN_SAFE_DELTA or y.delta > MAX_SAFE_DELTA) {
         T.requestNormalizeDelta = true;
     }
-    y.start = usizeAdd(y.start, x.delta);
-    y.end = usizeAdd(y.end, x.delta);
+    y.start += x.delta;
+    y.end += x.delta;
 
     x.right = y.left; // turn y's left subtree into x's right subtree.
     if (y.left != SENTINEL) {
@@ -1254,8 +1258,8 @@ fn rightRotate(T: *IntervalTree, y: *IntervalNode) void {
     if (y.delta < MIN_SAFE_DELTA or y.delta > MAX_SAFE_DELTA) {
         T.requestNormalizeDelta = true;
     }
-    y.start = usizeAdd(y.start, -(x.delta));
-    y.end = usizeAdd(y.end, -(x.delta));
+    y.start -= x.delta;
+    y.end -= x.delta;
 
     y.left = x.right;
     if (x.right != SENTINEL) {
@@ -1277,7 +1281,7 @@ fn rightRotate(T: *IntervalTree, y: *IntervalNode) void {
     recomputeMaxEnd(x);
 }
 
-fn computeMaxEnd(node: *const IntervalNode) usize {
+fn computeMaxEnd(node: *const IntervalNode) isize {
     // Upstream seeds from the node's own absolute end, so the bound shrinks
     // again when the right-most interval is shortened.
     var maxEnd = node.end;
@@ -1288,7 +1292,7 @@ fn computeMaxEnd(node: *const IntervalNode) usize {
         }
     }
     if (node.right != SENTINEL) {
-        const rightMaxEnd = usizeAdd(node.right.maxEnd, node.delta);
+        const rightMaxEnd = node.right.maxEnd + node.delta;
         if (rightMaxEnd > maxEnd) {
             maxEnd = rightMaxEnd;
         }
@@ -1315,11 +1319,11 @@ fn recomputeMaxEndWalkToRoot(node: *IntervalNode) void {
     }
 }
 
-pub fn intervalCompare(aStart: usize, aEnd: usize, bStart: usize, bEnd: usize) isize {
+pub fn intervalCompare(aStart: isize, aEnd: isize, bStart: isize, bEnd: isize) isize {
     if (aStart == bStart) {
-        return usizeSub(aEnd, bEnd);
+        return aEnd - bEnd;
     }
-    return usizeSub(aStart, bStart);
+    return aStart - bStart;
 }
 
 test "computeMaxEnd shrinks with the node end" {
@@ -1330,5 +1334,5 @@ test "computeMaxEnd shrinks with the node end" {
     node.end = 15;
     node.maxEnd = 20;
     recomputeMaxEnd(node);
-    try std.testing.expectEqual(@as(usize, 15), node.maxEnd);
+    try std.testing.expectEqual(@as(isize, 15), node.maxEnd);
 }

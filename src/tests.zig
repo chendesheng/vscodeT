@@ -171,6 +171,7 @@ comptime {
     _ = @import("./vs/editor/common/encodedTokenAttributes.zig");
     _ = @import("./vs/editor/common/model/indentationGuesser.zig");
     _ = @import("./vs/editor/common/model/intervalTree.zig");
+    _ = @import("./vs/editor/test/common/model/intervalTree.test.zig");
     _ = @import("./vs/editor/common/model/prefixSumComputer.zig");
     _ = @import("./vs/editor/common/model/textModelPart.zig");
     _ = @import("./vs/editor/common/core/misc/indentation.zig");

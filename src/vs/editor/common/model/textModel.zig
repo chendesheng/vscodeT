@@ -1525,7 +1525,7 @@ pub const TextModel = struct {
             // Upstream `delta` is a JS number and may be negative (an edit
             // before the node shifted an ancestor delta left). Keep the
             // arithmetic signed instead of underflowing `usize`.
-            const delta: isize = @as(isize, @intCast(node.cachedAbsoluteStart)) - @as(isize, @intCast(node.start));
+            const delta: isize = @as(isize, @intCast(node.cachedAbsoluteStart)) - node.start;
 
             const startOffset = self._buffer.getOffsetAt(range.startLineNumber, range.startColumn);
             const endOffset = self._buffer.getOffsetAt(range.endLineNumber, range.endColumn);
@@ -1534,8 +1534,8 @@ pub const TextModel = struct {
             node.cachedAbsoluteEnd = endOffset;
             node.cachedVersionId = versionId;
 
-            node.start = @intCast(@as(isize, @intCast(startOffset)) - delta);
-            node.end = @intCast(@as(isize, @intCast(endOffset)) - delta);
+            node.start = @as(isize, @intCast(startOffset)) - delta;
+            node.end = @as(isize, @intCast(endOffset)) - delta;
 
             recomputeMaxEnd(node);
         }
