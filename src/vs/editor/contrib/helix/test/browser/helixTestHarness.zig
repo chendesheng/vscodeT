@@ -113,6 +113,16 @@ pub const Harness = struct {
         return self.editor.modelCursorPosition();
     }
 
+    pub fn cursors(self: *Harness, allocator: std.mem.Allocator) ![]Position {
+        const selections = try self.editor.getSelections();
+        defer self.allocator.free(selections);
+        const result = try allocator.alloc(Position, selections.len);
+        for (selections, 0..) |selection, index| {
+            result[index] = selection.getPosition();
+        }
+        return result;
+    }
+
     pub fn selectionCount(self: *Harness) !usize {
         const selections = try self.editor.getSelections();
         defer self.allocator.free(selections);

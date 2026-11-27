@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "engine": "helix",
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "case": "tutor_multi_change",
+  "width": 60,
+  "seed": {
+    "text": "abc abc abc\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "cursors": [
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        5
+      ],
+      [
+        1,
+        9
+      ]
+    ]
+  },
+  "keys": [
+    "c",
+    "X",
+    "<Esc>"
+  ],
+  "states": [],
+  "assert_cursor": false,
+  "cursor_gap": "multi-cursor primary cursor is not asserted; cursor set is"
+}

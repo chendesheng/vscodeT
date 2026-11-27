@@ -11,10 +11,10 @@ index 469242e..cb03f2c 100644
  }
 diff --git a/helix-term/tests/test/record.rs b/helix-term/tests/test/record.rs
 new file mode 100644
-index 0000000..f9c5c07
+index 0000000..433289c
 --- /dev/null
 +++ b/helix-term/tests/test/record.rs
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,192 @@
 +// CI-only cassette recorder for the vscodeT Helix oracle.
 +//
 +// This file is added by scripts/oracle/helix/record.patch and is never part of
@@ -26,13 +26,14 @@ index 0000000..f9c5c07
 +use std::path::{Path, PathBuf};
 +
 +use anyhow::{bail, Context, Result};
-+use helix_core::Rope;
++use helix_core::{Range, Rope, Selection, Transaction};
 +use helix_term::application::Application;
-+use helix_view::current_ref;
++use helix_view::{current, current_ref};
 +use serde_json::{json, Value};
 +
 +use super::helpers::{test_key_sequence, AppBuilder};
 +
++/// Byte offset of a 1-based line/byte-column position.
 +fn char_offset(text: &str, line: usize, byte_column: usize) -> Result<usize> {
 +    if line == 0 || byte_column == 0 {
 +        bail!("cursor positions are 1-based");
@@ -55,19 +56,32 @@ index 0000000..f9c5c07
 +    bail!("cursor line {line} is past the end of the document")
 +}
 +
-+/// Wraps the character at the seed cursor as Helix's primary one-grapheme
-+/// selection so `AppBuilder::with_input_text` can seed the editor.
-+fn marked_seed(text: &str, line: usize, column: usize) -> Result<String> {
-+    let offset = char_offset(text, line, column)?;
-+    let rest = text.get(offset..).context("cursor is not at a UTF-8 boundary")?;
-+    let ch = rest.chars().next().context("cursor is at the end of the document")?;
-+    let mut marked = String::with_capacity(text.len() + 8);
-+    marked.push_str(&text[..offset]);
-+    marked.push_str("#[");
-+    marked.push(ch);
-+    marked.push_str("|]#");
-+    marked.push_str(&text[offset + ch.len_utf8()..]);
-+    Ok(marked)
++/// Replaces the document and seeds one Helix one-grapheme selection per
++/// cursor position. `cursors` are 1-based line/byte-column pairs.
++fn seed_editor(app: &mut Application, text: &str, cursors: &[(usize, usize)]) -> Result<()> {
++    if cursors.is_empty() {
++        bail!("seed has no cursors");
++    }
++    let char_count = text.chars().count();
++    let mut ranges = Vec::with_capacity(cursors.len());
++    for (line, column) in cursors {
++        let byte_offset = char_offset(text, *line, *column)?;
++        let char_index = text[..byte_offset].chars().count();
++        ranges.push(if char_index < char_count {
++            Range::new(char_index, char_index + 1)
++        } else {
++            Range::point(char_index)
++        });
++    }
++    let selection = Selection::new(ranges.into(), 0);
++
++    let (view, doc) = helix_view::current!(app.editor);
++    let transaction = Transaction::change_by_selection(doc.text(), doc.selection(view.id), |_| {
++        (0, doc.text().len_chars(), Some(text.into()))
++    })
++    .with_selection(selection);
++    doc.apply(&transaction, view.id);
++    Ok(())
 +}
 +
 +fn helix_keys(tokens: &[String]) -> Result<String> {
@@ -80,6 +94,7 @@ index 0000000..f9c5c07
 +            "<BS>" | "<Backspace>" => keys.push_str("<backspace>"),
 +            "<Space>" => keys.push_str("<space>"),
 +            "<lt>" => keys.push_str("<lt>"),
++            other if other.starts_with("<C-") || other.starts_with("<A-") => keys.push_str(other),
 +            other if other.chars().count() == 1 => keys.push_str(other),
 +            other => bail!("unsupported Helix cassette key token {other:?}"),
 +        }
@@ -99,6 +114,11 @@ index 0000000..f9c5c07
 +    let text = doc.text();
 +    let selection = doc.selection(view.id);
 +    let cursor = selection.primary().cursor(text.slice(..));
++    let cursors: Vec<Value> = selection
++        .ranges()
++        .iter()
++        .map(|range| position_of(text, range.cursor(text.slice(..))))
++        .collect();
 +    let selections: Vec<Value> = selection
 +        .ranges()
 +        .iter()
@@ -112,6 +132,7 @@ index 0000000..f9c5c07
 +    json!({
 +        "text": text.to_string(),
 +        "cursor": position_of(text, cursor),
++        "cursors": cursors,
 +        "mode": app.editor.mode.to_string(),
 +        "selection_count": selection.ranges().len(),
 +        "selections": selections,
@@ -149,6 +170,19 @@ index 0000000..f9c5c07
 +        let cursor = case["seed"]["cursor"].as_array().context("cassette is missing seed.cursor")?;
 +        let line = cursor.first().and_then(Value::as_u64).context("invalid seed.cursor line")? as usize;
 +        let column = cursor.get(1).and_then(Value::as_u64).context("invalid seed.cursor column")? as usize;
++        let cursors: Vec<(usize, usize)> = if let Some(values) = case["seed"]["cursors"].as_array() {
++            values
++                .iter()
++                .map(|value| {
++                    let pair = value.as_array().context("invalid seed.cursors entry")?;
++                    let line = pair.first().and_then(Value::as_u64).context("invalid seed.cursors line")? as usize;
++                    let column = pair.get(1).and_then(Value::as_u64).context("invalid seed.cursors column")? as usize;
++                    Ok((line, column))
++                })
++                .collect::<Result<_>>()?
++        } else {
++            vec![(line, column)]
++        };
 +        let tokens: Vec<String> = case["keys"]
 +            .as_array()
 +            .context("cassette is missing keys")?
@@ -156,11 +190,10 @@ index 0000000..f9c5c07
 +            .map(|value| value.as_str().map(str::to_owned).context("invalid key token"))
 +            .collect::<Result<_>>()?;
 +
-+        let marked = marked_seed(text, line, column)?;
 +        let keys = helix_keys(&tokens)?;
 +        let out_path = output_dir.join(path.file_name().context("cassette has no filename")?);
-+        let app = AppBuilder::default().with_input_text(marked).build()?;
-+        let mut app = app;
++        let mut app = AppBuilder::default().build()?;
++        seed_editor(&mut app, text, &cursors)?;
 +        test_key_sequence(
 +            &mut app,
 +            Some(&keys),

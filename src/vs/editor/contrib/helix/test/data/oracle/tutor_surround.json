@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "engine": "helix",
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "case": "tutor_surround",
+  "width": 60,
+  "seed": {
+    "text": "one two\n",
+    "cursor": [
+      1,
+      1
+    ]
+  },
+  "keys": [
+    "m",
+    "i",
+    "w",
+    "m",
+    "s",
+    "("
+  ],
+  "states": []
+}

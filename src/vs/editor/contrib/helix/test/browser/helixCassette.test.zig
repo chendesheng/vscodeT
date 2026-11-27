@@ -7,6 +7,7 @@ const cassettes = @import("./helixCassettes.generated.zig");
 const Harness = @import("./helixTestHarness.zig").Harness;
 const Mode = @import("../../browser/helixEngine.zig").Mode;
 const Position = @import("../../../../common/core/position.zig").Position;
+const Selection = @import("../../../../common/core/selection.zig").Selection;
 
 test "Helix cassette: reference corpus" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -46,7 +47,16 @@ fn runCase(case: oracle.Case) !void {
     const harness = try Harness.initWithWidth(std.testing.allocator, case.seed.text, case.width);
     defer harness.deinit();
 
-    try harness.editor.setCursorPosition(Position.init(case.seed.cursor[0], case.seed.cursor[1]));
+    if (case.seed.cursors) |cursors| {
+        const selections = try std.testing.allocator.alloc(Selection, cursors.len);
+        defer std.testing.allocator.free(selections);
+        for (cursors, 0..) |cursor, index| {
+            selections[index] = Selection.init(cursor[0], cursor[1], cursor[0], cursor[1]);
+        }
+        try harness.editor.setSelections(selections);
+    } else {
+        try harness.editor.setCursorPosition(Position.init(case.seed.cursor[0], case.seed.cursor[1]));
+    }
 
     for (case.keys) |token| {
         const event = oracle.keyEvent(token) catch |err| {
@@ -71,13 +81,35 @@ fn runCase(case: oracle.Case) !void {
     const actual_mode = harness.mode();
     const actual_count = try harness.selectionCount();
     const expected_count = state.selection_count orelse 1;
+    var cursors_match = true;
+    if (state.cursors) |expected_cursors| {
+        const actual_cursors = try harness.cursors(std.testing.allocator);
+        defer std.testing.allocator.free(actual_cursors);
+        const expected_sorted = try std.testing.allocator.dupe(oracle.Cursor, expected_cursors);
+        defer std.testing.allocator.free(expected_sorted);
+        std.mem.sort(oracle.Cursor, expected_sorted, {}, cursorLessThan);
+        const actual_sorted = try std.testing.allocator.dupe(Position, actual_cursors);
+        defer std.testing.allocator.free(actual_sorted);
+        std.mem.sort(Position, actual_sorted, {}, positionLessThan);
+        if (expected_sorted.len != actual_sorted.len) {
+            cursors_match = false;
+        } else {
+            for (expected_sorted, actual_sorted) |expected, actual| {
+                if (expected[0] != actual.lineNumber or expected[1] != actual.column) {
+                    cursors_match = false;
+                    break;
+                }
+            }
+        }
+    }
 
     const cursor_matches = !case.assert_cursor or
         (actual_cursor.lineNumber == state.cursor[0] and actual_cursor.column == state.cursor[1]);
     if (!std.mem.eql(u8, actual_text, state.text) or
         !cursor_matches or
         actual_mode != expected_mode or
-        actual_count != expected_count)
+        actual_count != expected_count or
+        !cursors_match)
     {
         std.debug.print(
             \\
@@ -85,8 +117,8 @@ fn runCase(case: oracle.Case) !void {
             \\  reference: {s}
             \\  seed: {s}
             \\  keys: {s}
-            \\  expected: text={s} cursor={d}:{d} mode={s} selections={d}
-            \\  actual:   text={s} cursor={d}:{d} mode={s} selections={d}
+            \\  expected: text={s} cursor={d}:{d} mode={s} selections={d} cursors={d}
+            \\  actual:   text={s} cursor={d}:{d} mode={s} selections={d} cursors={d}
             \\
         , .{
             case.case,
@@ -98,10 +130,12 @@ fn runCase(case: oracle.Case) !void {
             state.cursor[1],
             state.mode,
             expected_count,
+            if (state.cursors) |c| c.len else 0,
             actual_text,
             actual_cursor.lineNumber,
             actual_cursor.column,
             @tagName(actual_mode),
+            actual_count,
             actual_count,
         });
         return error.CassetteMismatch;
@@ -123,4 +157,14 @@ fn printContext(case: oracle.Case, message: []const u8) void {
     std.debug.print("  keys:", .{});
     for (case.keys) |token| std.debug.print(" {s}", .{token});
     std.debug.print("\n", .{});
+}
+
+fn cursorLessThan(_: void, a: oracle.Cursor, b: oracle.Cursor) bool {
+    if (a[0] != b[0]) return a[0] < b[0];
+    return a[1] < b[1];
+}
+
+fn positionLessThan(_: void, a: Position, b: Position) bool {
+    if (a.lineNumber != b.lineNumber) return a.lineNumber < b.lineNumber;
+    return a.column < b.column;
 }

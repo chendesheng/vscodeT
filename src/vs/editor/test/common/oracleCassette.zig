@@ -16,7 +16,10 @@ pub const Cursor = [2]usize; // [1-based line, 1-based UTF-8 byte column]
 
 pub const Seed = struct {
     text: []const u8,
+    /// Primary/only cursor. Multi-cursor seeds additionally list all cursor
+    /// positions in `cursors`.
     cursor: Cursor,
+    cursors: ?[]Cursor = null,
 };
 
 pub const State = struct {
@@ -24,6 +27,8 @@ pub const State = struct {
     cursor: Cursor,
     mode: []const u8,
     selection_count: ?usize = null,
+    /// All selection/cursor positions, when the reference recorder emits them.
+    cursors: ?[]Cursor = null,
 };
 
 pub const Case = struct {
