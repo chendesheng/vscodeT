@@ -2505,3 +2505,11 @@ model-change events. Up/down and Page Up/Down scroll, Home/End jump, and left/ri
 cycle channels when the panel has focus. The terminal currently paints a read-only
 file slice instead of mounting an editor; editor-backed selection, links,
 filtering and the channel dropdown remain portable work.
+
+### Extension progress
+
+The workbench progress service adapts window and notification progress to its
+existing notifications and status-bar entry, uses a dispatcher deadline for
+the upstream delayed window display, and routes Cancel back to the extension.
+Named views, other pane/container locations and dialog progress are not yet
+ported.

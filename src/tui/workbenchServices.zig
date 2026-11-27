@@ -211,6 +211,7 @@ pub fn extensionHostServices(host: *TerminalWorkbench) ExtensionServices {
         .window = &host.window_events,
         .file_service = host.file_service_api,
         .file_watcher = Adapter.watcher,
+        .progress_service = &host.progress_service,
         .logger_service = &host.extension_logger_service,
         .output_service = &host.output_service,
         .language_status = host.language_status_api,

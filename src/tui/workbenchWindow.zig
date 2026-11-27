@@ -308,6 +308,7 @@ pub const TerminalWorkbench = struct {
     resource_file_service: @import("../vs/platform/files/common/fileService.zig").ProviderFileService,
     disk_resource_provider: @import("../vs/platform/files/node/diskFileSystemProvider.zig").DiskFileSystemProvider,
     disk_resource_registration: @import("../vs/base/common/lifecycle.zig").IDisposable,
+    progress_service: @import("../vs/workbench/services/progress/browser/progressService.zig").ProgressService,
     extension_logger_service: @import("../vs/platform/log/common/fileLog.zig").FileLoggerService,
     output_service: @import("../vs/workbench/contrib/output/browser/outputServices.zig").OutputService,
     output_view: ?@import("../vs/workbench/contrib/output/browser/outputView.zig").OutputViewPane,
@@ -1510,6 +1511,8 @@ pub const TerminalWorkbench = struct {
         self.layout.notification_service = self.notification_api;
         self.statusbar = try StatusbarService.init(self.allocator);
         errdefer self.statusbar.deinit();
+        self.progress_service = .{ .allocator = self.allocator, .notifications = self.notification_api, .statusbar = &self.statusbar, .window = &self.window_events, .changed = .{ .context = self, .run = progressChanged } };
+        errdefer self.progress_service.deinit();
         self.language_status = .init(self.allocator);
         errdefer self.language_status.deinit();
         self.language_status_contribution = null;
@@ -1708,6 +1711,7 @@ pub const TerminalWorkbench = struct {
         if (self.output_view) |*view| view.deinit();
         self.output_view = null;
         self.language_status.deinit();
+        self.progress_service.deinit();
         self.statusbar.deinit();
         self.notification_service.deinit();
         self.notification_storage.deinit();
@@ -2624,6 +2628,11 @@ pub const TerminalWorkbench = struct {
     /// Keeps the composite-bar title items in sync with `hideIfEmpty`: a
     /// container is listed while it has content, or while it is the active
     /// container (opening an empty Problems view re-shows its title).
+    fn progressChanged(context: *anyopaque) void {
+        const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
+        self.requestFrame();
+    }
+
     fn outputViewChanged(context: *anyopaque) void {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
         self.syncPanelContainerVisibility() catch {};

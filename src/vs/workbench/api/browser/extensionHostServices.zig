@@ -21,6 +21,7 @@ pub const Services = struct {
     window: *WindowQueue,
     output_service: *@import("../../contrib/output/browser/outputServices.zig").OutputService,
     logger_service: *@import("../../../platform/log/common/fileLog.zig").FileLoggerService,
+    progress_service: *@import("../../services/progress/browser/progressService.zig").ProgressService,
     file_watcher: *const fn (*anyopaque) anyerror!*@import("../../../platform/files/node/watcher/fileWatcherService.zig").FileWatcherService,
     file_service: @import("../../../platform/files/common/files.zig").IFileService,
     language_status: @import("../../services/languageStatus/common/languageStatusService.zig").ILanguageStatusService,

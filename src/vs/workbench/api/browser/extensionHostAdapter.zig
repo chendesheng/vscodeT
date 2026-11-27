@@ -153,6 +153,7 @@ pub const Extensions = struct {
     scroll_listener_editor: ?*Editor = null,
     inline_completions: @import("inlineCompletionSession.zig").Session = undefined,
     language_features_actor: ?MainThreadLanguageFeatures = null,
+    progress_actor: ?@import("mainThreadProgress.zig").MainThreadProgress = null,
     file_events_actor: ?@import("mainThreadFileSystemEventService.zig").MainThreadFileSystemEventService = null,
     output_actor: ?@import("mainThreadOutputService.zig").MainThreadOutputService = null,
     languages_actor: ?@import("mainThreadLanguages.zig").MainThreadLanguages = null,
@@ -356,6 +357,8 @@ pub const Extensions = struct {
         self.file_events_actor = .init(allocator, try services.file_watcher(services.common.context), services.file_service, .{ .context = self, .notify = notifyFileEvents });
         errdefer self.file_events_actor.?.deinit();
         try self.file_events_actor.?.attach();
+        self.progress_actor = .init(allocator, services.progress_service, .{ .context = self, .cancel = cancelProgress });
+        errdefer self.progress_actor.?.deinit();
         self.registerActors();
         self.initLanguageActors() catch |err| {
             std.log.warn("language feature actors unavailable: {s}", .{@errorName(err)});
@@ -411,6 +414,7 @@ pub const Extensions = struct {
         if (self.languages_actor) |*actor| actor.deinit();
         if (self.output_actor) |*actor| actor.deinit();
         if (self.file_events_actor) |*actor| actor.deinit();
+        if (self.progress_actor) |*actor| actor.deinit();
         self.services.logger_service.clear();
         if (self.storage_actor) |*actor| actor.deinit();
         if (self.statusbar_actor) |*actor| actor.deinit();
@@ -457,6 +461,8 @@ pub const Extensions = struct {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeLogger });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadLanguages)) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeLanguages });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadProgress)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeProgress });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadFileSystemEventService)) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeFileEvents });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadFileSystem)) {
@@ -658,6 +664,17 @@ pub const Extensions = struct {
             self.requestRender();
             return reply;
         }
+        return .{ .err = .{ .name = "Unavailable", .message = method } };
+    }
+
+    fn cancelProgress(context: *anyopaque, handle: i64) !void {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        try self.host.notify(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostProgress), "$acceptProgressCanceled", &.{.{ .json = .{ .integer = handle } }});
+    }
+
+    fn invokeProgress(context: *anyopaque, method: []const u8, args: []const rpc.Arg, _: ?@import("../../../base/common/cancellation.zig").CancellationToken, _: Allocator) anyerror!rpc.HandlerReply {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        if (self.progress_actor) |*actor| return actor.invoke(method, args);
         return .{ .err = .{ .name = "Unavailable", .message = method } };
     }
 
@@ -4365,6 +4382,52 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                 time_compat.sleepMillis(10);
             }
             try std.testing.expectEqual(@as(usize, 0), watcher_actor.watches.count());
+            // withProgress's report, cancellation and completion travel over
+            // the real Node actor, not a simulated status message.
+            try ext.host.executeContributedCommand("fixture.progressStart", &.{});
+            const progress_deadline = time_compat.milliTimestamp() + 5000;
+            var progress_item: ?*@import("../../common/notifications.zig").NotificationViewItem = null;
+            while (time_compat.milliTimestamp() < progress_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                for (workbench.notification_service.model.notifications.items) |item| {
+                    if (item.actions.primary.len > 0 and std.mem.eql(u8, item.actions.primary[0].id(), "progress.cancel") and item.progress().state.worked == 25) {
+                        progress_item = item;
+                        break;
+                    }
+                }
+                if (progress_item != null) break;
+                time_compat.sleepMillis(10);
+            }
+            const item = progress_item orelse return error.ProgressNotificationMissing;
+            try std.testing.expectEqual(@as(?i64, 100), item.progress().state.total);
+            try item.actions.primary[0].execute(null);
+            const cancel_deadline = time_compat.milliTimestamp() + 5000;
+            var cancelled = false;
+            while (time_compat.milliTimestamp() < cancel_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                if (workbench.output_service.getChannel(watch_channel)) |channel| {
+                    if (std.mem.indexOf(u8, channel.model.content, "progress cancelled") != null and ext.progress_actor.?.entries.count() == 0 and workbench.progress_service.tasks.items.len == 0) {
+                        cancelled = true;
+                        break;
+                    }
+                }
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(cancelled);
+            try ext.host.executeContributedCommand("fixture.windowProgressStart", &.{});
+            const status_deadline = time_compat.milliTimestamp() + 5000;
+            while (time_compat.milliTimestamp() < status_deadline and workbench.statusbar.model().findEntry("status.progress") == null) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(workbench.statusbar.model().findEntry("status.progress") != null);
+            try ext.host.executeContributedCommand("fixture.windowProgressEnd", &.{});
+            const end_deadline = time_compat.milliTimestamp() + 5000;
+            while (time_compat.milliTimestamp() < end_deadline and workbench.statusbar.model().findEntry("status.progress") != null) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(workbench.statusbar.model().findEntry("status.progress") == null);
         }
 
         test "Extensions: task activation and provider results resume on the window" {
