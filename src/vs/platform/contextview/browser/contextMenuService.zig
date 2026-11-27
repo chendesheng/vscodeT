@@ -74,6 +74,7 @@ pub const ContextMenuService = struct {
         self.hideContextMenu();
         // A hide listener may have opened another context view synchronously.
         if (self.current != null or self.disposed) {
+            if (menu.on_hide) |on_hide| on_hide(menu.context);
             menu.deinit();
             return;
         }
