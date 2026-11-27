@@ -194,7 +194,9 @@ pub const BulkFileOperations = struct {
         return true;
     }
 
-    pub fn getWorkspaceEdit(self: *const BulkFileOperations, a: Allocator) !struct { edits: []const ResourceEdit, owned: bool } {
+    pub const WorkspaceSelection = struct { edits: []const ResourceEdit, owned: bool };
+
+    pub fn getWorkspaceEdit(self: *const BulkFileOperations, a: Allocator) !WorkspaceSelection {
         if (self.checked.checked_count == self.edits.len) return .{ .edits = self.edits, .owned = false };
         var result: std.ArrayList(ResourceEdit) = .empty;
         errdefer result.deinit(a);

@@ -275,3 +275,50 @@ test "BulkEditPreview: checked changes update the same real preview model and le
     try std.testing.expectEqualStrings("old", try preview.textEditorModel.borrowLineContent(1));
     try std.testing.expect(!operations.conflicts.?.hasConflicts());
 }
+
+test "BulkEditPreview: shared tree enforces file/category check state and token-context rows" {
+    const Resolver = @import("../../../../services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService;
+    const Queue = @import("../../../../../base/common/windowDispatch.zig").Queue;
+    const BulkTree = @import("../../browser/preview/bulkEditTree.zig").BulkEditTree;
+    var files = FileService.init(a);
+    defer files.deinit();
+    var queue: Queue = .{ .io = std.testing.io };
+    defer queue.deinitWindowEvents();
+    var model_resolver = Resolver.init(a, std.testing.io, &queue);
+    defer model_resolver.deinit();
+    const target = uri("inmemory:/preview.txt");
+    var reference = try model_resolver.createResolvedModelReference(target, "preview.txt", "alpha beta gamma", false);
+    defer reference.dispose();
+    const edits = [_]ResourceEdit{
+        .{ .file = .{ .new_resource = target, .metadata = .{ .label = "Create", .needs_confirmation = true } } },
+        .{ .text = .{ .resource = target, .range = Range.init(1, 7, 1, 11), .text = "new", .metadata = .{ .label = "Change" } } },
+    };
+    const operations = try BulkFileOperations.create(a, files.interface(), model_resolver.modelService(), &edits);
+    defer operations.dispose();
+    const tree = try BulkTree.create(a, operations, model_resolver.modelService(), false);
+    defer tree.dispose();
+    var text_element: ?*@import("../../browser/preview/bulkEditTree.zig").Element = null;
+    for (tree.tree.view.rendered.items) |node| if (node.element) |element| {
+        if (element.* == .text) text_element = element;
+    };
+    const text = text_element orelse return error.MissingTextEdit;
+    try std.testing.expectEqualStrings("alpha ", text.text.prefix);
+    try std.testing.expectEqualStrings("beta", text.text.selecting);
+    try std.testing.expectEqualStrings("new", text.text.inserting);
+    try std.testing.expect(text.isDisabled(operations));
+    text.setChecked(operations, true);
+    try std.testing.expect(!operations.checked.isChecked(1));
+    for (tree.tree.view.rendered.items) |node| if (node.element) |element| {
+        if (element.* == .file and element.file.operation.type_mask != 1) {
+            element.setChecked(operations, true);
+            break;
+        }
+    };
+    try std.testing.expect(operations.checked.isChecked(0));
+    try std.testing.expect(operations.checked.isChecked(1));
+    try std.testing.expect(!text.isDisabled(operations));
+    try tree.setGrouping(true);
+    try std.testing.expectEqual(@as(usize, 2), tree.tree.count());
+    tree.toggleChecked();
+    try std.testing.expectEqual(@as(usize, 0), operations.checked.checked_count);
+}
