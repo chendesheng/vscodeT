@@ -757,6 +757,7 @@ comptime {
     _ = @import("./vs/workbench/contrib/vim/test/browser/vimExtension.test.zig").Tests(@import("./tui/workbench.zig").TerminalWorkbench, @import("./tui/editorView.zig").View.createHandle);
     _ = @import("./vs/workbench/contrib/vim/test/browser/vimRuntime.test.zig").Tests(@import("./tui/workbench.zig").TerminalWorkbench, @import("./tui/editorView.zig").View.createHandle);
     _ = @import("./vs/workbench/services/extensions/test/common/rpcProtocol.test.zig");
+    _ = @import("./vs/base/parts/ipc/test/node/ipc.net.test.zig");
     _ = @import("./vs/workbench/services/extensions/test/common/extensionHostManager.test.zig");
     _ = @import("./vs/workbench/services/extensions/common/extensionService.zig");
     _ = @import("./vs/platform/environment/common/environmentService.zig");

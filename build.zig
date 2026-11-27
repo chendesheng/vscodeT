@@ -968,7 +968,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
             bench_file,
             "src/tests.zig",
         ),
-        .filters = &.{"Extensions:"},
+        .filters = &.{b.option([]const u8, "e2e-filter", "Filter extension-host integration tests") orelse "Extensions:"},
     });
     const run_e2e_tests = b.addRunArtifact(e2e_tests);
     const e2e_test_step = b.step("test-e2e", "Run the extension-host interop tests");

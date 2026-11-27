@@ -121,6 +121,19 @@ jobs:
       - name: Build
         shell: pwsh
         run: zig build "-Donig-include=$env:ONIG_DIR\include" "-Donig-lib=$env:ONIG_DIR\lib"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Bundle the pinned Node extension host
+        working-directory: host
+        shell: pwsh
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+          if (!(Test-Path dist/extensionHost.mjs)) { throw "Extension host bundle missing" }
+      - name: Test Windows extension-host IPC
+        shell: pwsh
+        run: zig build test-e2e "-De2e-filter=Extensions: transport" --summary all "-Donig-include=$env:ONIG_DIR\include" "-Donig-lib=$env:ONIG_DIR\lib"
       - name: Test
         shell: pwsh
         run: zig build test --summary all "-Donig-include=$env:ONIG_DIR\include" "-Donig-lib=$env:ONIG_DIR\lib"

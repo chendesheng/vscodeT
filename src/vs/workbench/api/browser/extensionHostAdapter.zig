@@ -4020,6 +4020,63 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqualStrings("{;;x}", try editor.model.borrowLineContent(1));
         }
 
+        test "Extensions: transport activates an extension and exchanges a large RPC" {
+            if (!build_options.e2e) return error.SkipZigTest;
+            const allocator = std.testing.allocator;
+            const io = time_compat.io;
+            std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try tmp.dir.writeFile(io, .{ .sub_path = "transport.txt", .data = "transport fixture" });
+            const path = try tmp.dir.realPathFileAlloc(io, "transport.txt", allocator);
+            defer allocator.free(path);
+            const data = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+            defer allocator.free(data);
+            const window = try TestWindow.init(allocator, io, &.{path}, 80, 24);
+            defer window.deinit();
+            const workbench = window.workbench;
+            const ext = try Extensions.init(allocator, io, workbench.extensionHostServices(), &.{.{ .path = "host/test-fixtures/transport", .is_under_development = true }}, data, "host/dist");
+            defer ext.deinit();
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            const payload = try a.alloc(u8, 192 * 1024);
+            for (payload, 0..) |*byte, i| byte.* = @intCast('a' + i % 26);
+            const Probe = struct {
+                host: *manager.HostManager,
+                queue: *@import("../../../base/common/windowDispatch.zig").Queue,
+                arena: std.mem.Allocator,
+                payload: []const u8,
+                done: bool = false,
+
+                fn run(self: *@This()) anyerror!std.json.Value {
+                    defer self.done = true;
+                    const activation = proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostExtensionService);
+                    _ = try self.host.requestAwait(self.queue, self.arena, activation, "$activateByEvent", &.{ .{ .json = .{ .string = "*" } }, .{ .json = .{ .integer = 0 } } }, null, 10_000);
+                    const command = proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands);
+                    return self.host.requestAwait(self.queue, self.arena, command, "$executeContributedCommand", &.{ .{ .json = .{ .string = "fixture.transportEcho" } }, .{ .json = .{ .string = self.payload } } }, null, 10_000);
+                }
+            };
+            var probe: Probe = .{ .host = ext.host, .queue = &workbench.window_events, .arena = a, .payload = payload };
+            var future = try workbench.window_events.io.concurrent(Probe.run, .{&probe});
+            const deadline = time_compat.milliTimestamp() + 20_000;
+            while (!probe.done and time_compat.milliTimestamp() < deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(1);
+            }
+            if (!probe.done) {
+                _ = future.cancel(workbench.window_events.io) catch {};
+                return error.TransportTimeout;
+            }
+            const result = try future.await(workbench.window_events.io);
+            try std.testing.expectEqualStrings(payload, result.object.get("value").?.string);
+            const document = result.object.get("document").?.string;
+            const extension = result.object.get("extension").?.string;
+            const text_files = @import("../../services/textfile/common/textFileService.zig");
+            try std.testing.expect(text_files.samePath(allocator, io, path, document));
+            try std.testing.expect(text_files.samePath(allocator, io, "host/test-fixtures/transport", extension));
+        }
+
         test "Extensions: task activation and provider results resume on the window" {
             if (!build_options.e2e) return error.SkipZigTest;
             const allocator = std.testing.allocator;

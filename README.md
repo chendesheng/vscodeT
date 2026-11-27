@@ -453,6 +453,11 @@ extension host itself is reused, not vendored: the launcher in
 `host/extensionHost.ts` bundles the module graph reachable from the pinned
 tree's `src/vs/workbench/api/common/extensionHostMain.ts` with esbuild, so a
 full VS Code `out/` build is not required.
+The local transport follows VS Code's IPC endpoint contract: Unix domain sockets
+on macOS/Linux and native named pipes on Windows. The Node launcher and WindowIo
+RPC dispatch are shared. Windows CI includes a pinned Node-host startup and
+extension activation/RPC interop test; the integrated terminal's PTY support is
+still a separate platform gap.
 
 The bundle must come from the **pinned VS Code 1.147.0** tree (commit
 `e31c2e5`): the Zig workbench's generated RPC actor table only matches that
@@ -481,8 +486,8 @@ runtime and the built-in catalog are passed to the extension host.
 
 `zig build json-server` builds and installs the optional standalone JSON server.
 The intermediate bundles under `host/dist` are also used by the repository's
-interop tests. The host transport currently supports macOS and Linux.
-Windows requires a local IPC transport and a native launcher.
+interop tests. The host transports use Unix sockets on macOS/Linux and Windows
+named pipes, with a shared Node launcher.
 
 Markdown preview uses KaTeX from the optional host to render Greek symbols,
 roots, fractions and scripts in inline, display and fenced math. Unsupported

@@ -127,6 +127,7 @@ pub fn encodedResource(allocator: Allocator, uri: std.Uri) ![]u8 {
         const separator = std.mem.indexOfAny(u8, rest, "/\\") orelse rest.len;
         host = rest[0..separator];
         for (rest[separator..]) |byte| try normalized.append(a, if (byte == '\\') '/' else byte);
+        if (normalized.items.len == 0) try normalized.append(a, '/');
     } else {
         if (raw.len == 0 or raw[0] != '/') try normalized.append(a, '/');
         for (raw) |byte| try normalized.append(a, if (raw.len > 0 and raw[0] != '/' and byte == '\\') '/' else byte);
@@ -166,6 +167,15 @@ pub const Components = struct {
 };
 
 pub fn resourceKeyFromComponents(allocator: Allocator, components: Components) ![]u8 {
+    if (std.mem.eql(u8, components.scheme, "file") and components.authority.len == 0 and std.mem.startsWith(u8, components.path, "\\\\")) {
+        // Native UNC models and the extension host's revived URI must share
+        // one identity, including its authority.
+        var scratch = std.heap.ArenaAllocator.init(allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        const canonical = try std.Uri.parse(try encodedResource(a, .{ .scheme = "file", .path = .{ .raw = components.path } }));
+        return resourceKeyFromComponents(allocator, .{ .scheme = "file", .authority = try authority(canonical, a), .path = try path(canonical, a), .query = components.query, .fragment = components.fragment });
+    }
     var out = std.array_list.Managed(u8).init(allocator);
     errdefer out.deinit();
     try out.appendSlice(components.scheme);
@@ -208,13 +218,22 @@ fn appendFilePath(out: *std.array_list.Managed(u8), file_path: []const u8) !void
 /// URI components in the `UriComponents` shape accepted by the extension host
 /// (`URI.revive`). The `$mid` tag is required by the upstream RPC revival.
 pub fn jsonComponents(arena: Allocator, uri: std.Uri) !std.json.Value {
+    // The extension host revives these as URI components, not filesystem
+    // paths. Canonicalize native Windows paths with the shared URI encoder.
+    const raw = try path(uri, arena);
+    const native_drive = raw.len >= 2 and std.ascii.isAlphabetic(raw[0]) and raw[1] == ':';
+    const native_unc = std.mem.startsWith(u8, raw, "\\\\");
+    const canonical = if (std.mem.eql(u8, uri.scheme, "file") and (native_drive or native_unc))
+        try std.Uri.parse(try encodedResource(arena, uri))
+    else
+        uri;
     var object: std.json.ObjectMap = .empty;
     try object.put(arena, "$mid", .{ .integer = 1 });
-    try object.put(arena, "scheme", .{ .string = try arena.dupe(u8, uri.scheme) });
-    try object.put(arena, "authority", .{ .string = try arena.dupe(u8, try authority(uri, arena)) });
-    try object.put(arena, "path", .{ .string = try arena.dupe(u8, try path(uri, arena)) });
-    try object.put(arena, "query", .{ .string = try arena.dupe(u8, try query(uri, arena)) });
-    try object.put(arena, "fragment", .{ .string = try arena.dupe(u8, try fragment(uri, arena)) });
+    try object.put(arena, "scheme", .{ .string = try arena.dupe(u8, canonical.scheme) });
+    try object.put(arena, "authority", .{ .string = try arena.dupe(u8, try authority(canonical, arena)) });
+    try object.put(arena, "path", .{ .string = try arena.dupe(u8, try path(canonical, arena)) });
+    try object.put(arena, "query", .{ .string = try arena.dupe(u8, try query(canonical, arena)) });
+    try object.put(arena, "fragment", .{ .string = try arena.dupe(u8, try fragment(canonical, arena)) });
     return .{ .object = object };
 }
 
@@ -344,4 +363,18 @@ pub fn mapMovedResource(allocator: Allocator, resource: std.Uri, source: std.Uri
         result.path = .{ .raw = try std.mem.concat(allocator, u8, &.{ base_path, "/", relative }) };
     }
     return result;
+}
+
+test "std.Uri bridge: Windows RPC URI components match URI.file" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const drive = try jsonComponents(a, .{ .scheme = "file", .path = .{ .raw = "C:\\Users\\me\\a b.zig" } });
+    try std.testing.expectEqualStrings("/C:/Users/me/a b.zig", drive.object.get("path").?.string);
+    const unc = try jsonComponents(a, .{ .scheme = "file", .path = .{ .raw = "\\\\server\\share\\a b.zig" } });
+    try std.testing.expectEqualStrings("server", unc.object.get("authority").?.string);
+    try std.testing.expectEqualStrings("/share/a b.zig", unc.object.get("path").?.string);
+    const native_key = try resourceKeyFromComponents(a, .{ .scheme = "file", .path = "\\\\server\\share\\a b.zig" });
+    const remote_key = try resourceKeyFromComponents(a, try componentsFromJson(unc, a));
+    try std.testing.expectEqualStrings(remote_key, native_key);
 }

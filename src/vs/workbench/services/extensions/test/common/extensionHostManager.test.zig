@@ -217,3 +217,32 @@ fn emptyConfig(arena: std.mem.Allocator) !std.json.Value {
     try root.put(arena, "configurationScopes", .{ .array = std.json.Array.init(arena) });
     return .{ .object = root };
 }
+
+test "Extensions: transport connects the pinned Node host and initializes" {
+    if (!build_options.e2e) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    const io = time_compat.io;
+    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(root);
+    const app_root = try std.Io.Dir.cwd().realPathFileAlloc(io, "host/dist", a);
+    defer a.free(app_root);
+    const options: manager.Options = .{
+        .host_script = "host/dist/extensionHost.mjs",
+        .extensions = &.{},
+        .user_data_dir = root,
+        .workspace_path = root,
+        .app_root = app_root,
+        .parent_pid = manager.currentProcessId(),
+    };
+    const host = try manager.HostManager.start(a, options);
+    defer host.deinit();
+    try host.expectControl(2, 10_000);
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    try host.sendInitData(try manager.buildInitData(arena.allocator(), options));
+    try host.expectControl(1, 10_000);
+    try std.testing.expect(!host.hasEof());
+}

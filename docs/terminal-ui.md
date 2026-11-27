@@ -1970,7 +1970,8 @@ standalone harnesses retain compatibility entry points. This migration covers
 window-owned asynchronous jobs and RPC response waits. Outbound transport
 frame writes and unrelated synchronous native commands, such as the Git CLI
 command adapters, are not converted into asynchronous producer queues by
-this change. The separate Windows extension-host transport remains unported.
+this change. The local extension-host transport now uses Windows named pipes
+or Unix domain sockets, independently of the window executor.
 
 `Workbench.async_io` is now `WindowIo`. Its existing service-owned jobs keep
 their completion/cancellation contracts, but execute the continuation on the
