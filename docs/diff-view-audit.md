@@ -379,10 +379,38 @@ steps), including all six upstream `bulkFileEdits.test.ts` deletion cases and
 real provider create/copy/rename undo. The subsequent native view suite passed
 504/504 with actual checked refactor preview acceptance, mixed file/text
 workspace undo/redo, and dirty-file renaming/undo preserving content and cursor
-state. Final full-suite and extension-host verification are pending the next
-contribution changes. Remaining portable work includes active-editor snippet
-edits, closed-resource multi-model undo preparation, refactor auto-save,
-public code-action execution, and marker/accessible hover integration.
+state. Subsequent verification and further contributions are recorded below.
+
+### Public code actions, refactor auto-save and marker hover checkpoint (2026-11-27)
+
+* The registered `_executeCodeActionProvider` command uses the real URI model,
+  resolves only the requested valid actions, preserves selection direction,
+  and releases provider results after the upstream cache deadline. Node tests
+  execute the command on both real diff resources. Text workspace edits install
+  labeled single/multi-model undo elements before applying the group.
+* Refactor auto-save uses the actual canonical working-copy URI, not a path
+  reconstructed from an editor label. The resolver registers mounted and
+  unmounted writable file-model working copies for their real lifetime.
+  Multi-resource refactor edits save only modified, affected copies when
+  `files.refactoring.autoSave` and the request's opt-in are enabled.
+* Diagnostic related information and linked code targets retain structured URIs
+  through marker ownership and extension-host forwarding. Marker hover renders
+  related locations, supplies their accessible text, and sends both mouse and
+  keyboard activation through the resource opener. The view regression opens
+  the real editable file from either diff pane and checks the UTF-16 position
+  after a non-BMP character. The rendered result owns its status request,
+  cancellation, delayed checking/empty state and provider action set. Writable
+  markers query the full original diagnostic range with the Quick Fix filter;
+  the action widget adopts that result without querying the cursor again.
+  Read-only markers do not invoke the provider. Status controls wrap and support
+  keyboard focus under terminal cell constraints.
+
+The actual extension-host suite through the public code-action execution
+passed 22/22 (43/43 build steps). The focused native view suite through marker
+quick fixes passed 508/508. The full suite passed 3,741/3,767 (26 skipped;
+48/48 build steps). Remaining portable work includes active-editor snippet
+edits, closed-resource multi-model undo preparation, marker-hover contributed
+menus and the View Problem widget, accessible hover and preview refinements.
 
 ### Native performance measurements (2026-11-27)
 

@@ -1433,8 +1433,9 @@ Library constraints:
   `ui.Surface` (the same DOM-to-cells path as the status bar), the Problems
   tab carries the error/warning badge and `hideIfEmpty` drops the tab while
   the container is empty and inactive.
-  Filters, table/tree mode, related information, quick fixes and file
-  decorations are not ported. The minimap metadata produced by the marker
+  Filters, table/tree mode, related information and quick fixes in the Problems
+  panel and file decorations are not ported. Diagnostic related locations and
+  quick fixes are available in the editor hover. The minimap metadata produced by the marker
   decorator is ignored.
 
 - Word-occurrence highlighting is a model-decoration consumer. The editor
@@ -1474,10 +1475,15 @@ Library constraints:
   The marker participant (`markerHoverParticipant.zig`) resolves each marker
   decoration through `MarkerDecorationsService.getMarker` and renders the
   severity glyph, the diagnostic message (including embedded newlines) and a
-  dim `source(code)` line. Marker quick fixes, related-information links and
-  the "View Problem" status-bar action are not yet wired into marker hover.
-  The shared code-action controller is available separately through the
-  editor actions and lightbulb. Hovering a
+  dim `source(code)` line. Diagnostic code links and related locations are
+  focusable terminal nodes; the registered opener activates the actual file or
+  virtual resource and converts UTF-16 positions on its resolved model. A
+  writable marker's full range drives the cancellable Quick Fix provider
+  query. The status row shows the delayed checking/empty state and transfers
+  the returned set to the shared action widget anchored to the action node;
+  status actions wrap to remain reachable in narrower terminal panes. The
+  View Problem navigation widget and menu-contributed hover actions are still
+  portable gaps. Hovering a
   squiggle and the keyboard `gh` command both show the marker message.
 - `ui/src/widgets/inputbox.zig` is the terminal single-line input: UTF-8 buffer,
   `(anchor, cursor)` selection with keyboard/mouse extension and selection

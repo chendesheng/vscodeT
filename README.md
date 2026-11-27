@@ -619,7 +619,13 @@ document/range/on-type formatting register in `LanguageFeaturesService`, and
 diagnostics feed the marker service, which paints severity-colored squiggly
 range underlines, overview-ruler marks, the `Problems` panel view and the workspace
 error/warning/info status counts. Hovering a squiggle (or `gh` with the caret in
-the range) shows the severity and marker message in the content-hover popup.
+the range) shows the severity and marker message, linked diagnostic code and
+related locations in the content-hover popup. Related locations open the actual
+resource and reveal their UTF-16 position; the terminal's status actions can be
+activated by mouse or keyboard. Editable markers query their full diagnostic
+range for quick fixes and transfer the resolved provider set to the shared
+action widget without a second query. The separate View Problem navigation
+widget and marker-hover contributed action menu remain unported.
 Selecting a problem highlights its code range
 in the editor while the Problems view owns focus. Hover, completion, the
 navigation actions, breadcrumb symbols and document formatting are wired to the
@@ -629,7 +635,9 @@ diff panes. Resolved workspace text edits use the URI model and bulk edit
 services; refactor preview uses checked changes and retained read-only
 multi-diff models. Workspace file create/delete/copy/rename operations also
 participate in shared undo groups, retaining binary file contents and dirty
-working-copy snapshots across native moves. Hover and code-action provider
+working-copy snapshots across native moves. Refactor auto-save uses the
+configured `files.refactoring.autoSave` policy and saves only affected dirty
+working copies (including unmounted file models). Hover and code-action provider
 results support asynchronous cancellation; other
 `MainThreadLanguageFeatures` methods remain incomplete.
 
