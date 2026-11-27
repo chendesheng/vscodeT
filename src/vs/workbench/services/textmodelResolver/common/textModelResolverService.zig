@@ -707,6 +707,13 @@ pub const TextModelResolverService = struct {
                 const service: *TextModelResolverService = @ptrCast(@alignCast(context));
                 return service.acquireModelReference(uri);
             }
+            fn fromText(context: *anyopaque, resource: std.Uri, path: []const u8, text: []const u8, language: ?[]const u8, readonly: bool) !resolver.ModelReference {
+                const service: *TextModelResolverService = @ptrCast(@alignCast(context));
+                var reference = try service.createResolvedModelReference(resource, path, text, readonly);
+                errdefer reference.dispose();
+                if (language) |id| try TextModelResolverService.documentOf(reference).setLanguage(id);
+                return reference;
+            }
             fn synthetic(context: *anyopaque, value: []const u8, language: ?[]const u8) !resolver.ModelReference {
                 const service: *TextModelResolverService = @ptrCast(@alignCast(context));
                 return service.createSyntheticDocument(value, language);
@@ -724,7 +731,7 @@ pub const TextModelResolverService = struct {
                 return service.canHandleResource(uri);
             }
         };
-        return .{ .context = self, .create_model_reference = Adapter.reference, .acquire_model_reference = Adapter.acquireReference, .refresh_model_reference = Adapter.refresh, .create_synthetic_document = Adapter.synthetic, .can_handle_resource = Adapter.canHandle, .register_provider = Adapter.register, .update_virtual_content = Adapter.updateVirtualContent };
+        return .{ .context = self, .create_model_reference = Adapter.reference, .acquire_model_reference = Adapter.acquireReference, .refresh_model_reference = Adapter.refresh, .create_model_from_text = Adapter.fromText, .create_synthetic_document = Adapter.synthetic, .can_handle_resource = Adapter.canHandle, .register_provider = Adapter.register, .update_virtual_content = Adapter.updateVirtualContent };
     }
 
     pub fn modelService(self: *TextModelResolverService) @import("../../../../editor/common/services/modelService.zig").IModelService {

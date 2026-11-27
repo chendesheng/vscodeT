@@ -114,6 +114,7 @@ pub const ITextModelService = struct {
     create_model_reference: *const fn (*anyopaque, std.Uri, ModelReferenceListener) anyerror!ModelReferenceRequest,
     acquire_model_reference: *const fn (*anyopaque, std.Uri) anyerror!ModelReference,
     refresh_model_reference: *const fn (*anyopaque, std.Uri, ModelReferenceListener) anyerror!ModelReferenceRequest,
+    create_model_from_text: *const fn (*anyopaque, std.Uri, []const u8, []const u8, ?[]const u8, bool) anyerror!ModelReference,
     create_synthetic_document: *const fn (*anyopaque, []const u8, ?[]const u8) anyerror!ModelReference,
     can_handle_resource: *const fn (*anyopaque, std.Uri) bool,
     register_provider: *const fn (*anyopaque, []const u8, ITextModelContentProvider) anyerror!ContentProviderRegistration,
@@ -133,6 +134,12 @@ pub const ITextModelService = struct {
     /// published by a provider or editor input.
     pub fn acquireModelReference(self: ITextModelService, resource: std.Uri) !ModelReference {
         return self.acquire_model_reference(self.context, resource);
+    }
+
+    /// Native IModelService.createModel boundary for a supplied resource and
+    /// snapshot. The returned reference pins the newly registered document.
+    pub fn createModelFromText(self: ITextModelService, resource: std.Uri, path: []const u8, text: []const u8, language_id: ?[]const u8, readonly: bool) !ModelReference {
+        return self.create_model_from_text(self.context, resource, path, text, language_id, readonly);
     }
 
     pub fn createSyntheticDocument(self: ITextModelService, value: []const u8, language_id: ?[]const u8) !ModelReference {

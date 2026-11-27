@@ -234,3 +234,44 @@ test "BulkEditPreview: the registered preview handler owns acceptance before app
     try std.testing.expect(probe.canceled and probe.callback == null);
     try std.testing.expect(probe.result == null and probe.failure == null);
 }
+
+test "BulkEditPreview: checked changes update the same real preview model and leave the original intact" {
+    const Resolver = @import("../../../../services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService;
+    const Queue = @import("../../../../../base/common/windowDispatch.zig").Queue;
+    const Provider = @import("../../browser/preview/bulkEditPreview.zig").BulkEditPreviewProvider;
+    var files = FileService.init(a);
+    defer files.deinit();
+    var queue: Queue = .{ .io = std.testing.io };
+    defer queue.deinitWindowEvents();
+    var model_resolver = Resolver.init(a, std.testing.io, &queue);
+    defer model_resolver.deinit();
+    const target = uri("inmemory:/preview.txt");
+    var reference = try model_resolver.createResolvedModelReference(target, "preview.txt", "old", false);
+    defer reference.dispose();
+    const model = reference.object.textEditorModel;
+    const edits = [_]ResourceEdit{
+        .{ .text = .{ .resource = target, .range = Range.init(1, 1, 1, 2), .text = "b" } },
+        .{ .text = .{ .resource = target, .range = Range.init(1, 2, 1, 3), .text = "a" } },
+    };
+    const operations = try BulkFileOperations.create(a, files.interface(), model_resolver.modelService(), &edits);
+    defer operations.dispose();
+    const provider = try Provider.create(a, operations, model_resolver.interface(), model_resolver.modelService(), &queue);
+    defer provider.dispose();
+    for (0..16) |_| _ = queue.dispatch(std.math.maxInt(i64));
+    try std.testing.expect(provider.ready);
+    const resources = try provider.resources(a);
+    defer a.free(resources);
+    try std.testing.expectEqual(@as(usize, 1), resources.len);
+    const preview = model_resolver.modelService().getModel(resources[0].modified.?).?;
+    try std.testing.expect(preview.isReadonly());
+    try std.testing.expectEqualStrings("bad", try preview.textEditorModel.borrowLineContent(1));
+    try std.testing.expectEqualStrings("old", try model.borrowLineContent(1));
+    operations.checked.updateChecked(1, false);
+    for (0..16) |_| _ = queue.dispatch(std.math.maxInt(i64));
+    try std.testing.expectEqual(preview.textEditorModel, model_resolver.modelService().getModel(resources[0].modified.?).?.textEditorModel);
+    try std.testing.expectEqualStrings("bld", try preview.textEditorModel.borrowLineContent(1));
+    operations.checked.updateChecked(0, false);
+    for (0..16) |_| _ = queue.dispatch(std.math.maxInt(i64));
+    try std.testing.expectEqualStrings("old", try preview.textEditorModel.borrowLineContent(1));
+    try std.testing.expect(!operations.conflicts.?.hasConflicts());
+}

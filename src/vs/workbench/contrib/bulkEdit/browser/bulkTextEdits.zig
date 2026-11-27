@@ -85,7 +85,7 @@ pub const ModelEditTask = struct {
     }
 };
 
-fn convertRange(model: *TextModel, range: Range) !Range {
+pub fn convertRange(model: *TextModel, range: Range) !Range {
     const start_line = try model.getLineContent(range.startLineNumber);
     defer start_line.deinit();
     const end_line = try model.getLineContent(range.endLineNumber);

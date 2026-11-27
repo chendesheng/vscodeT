@@ -258,7 +258,11 @@ const ManualResolver = struct {
         self.arena.deinit();
     }
     fn interface(self: *ManualResolver) resolver_api.ITextModelService {
-        return .{ .context = self, .create_model_reference = request, .refresh_model_reference = request, .acquire_model_reference = acquire, .create_synthetic_document = synthetic, .can_handle_resource = canHandle, .register_provider = register };
+        return .{ .context = self, .create_model_reference = request, .refresh_model_reference = request, .acquire_model_reference = acquire, .create_model_from_text = fromText, .create_synthetic_document = synthetic, .can_handle_resource = canHandle, .register_provider = register };
+    }
+    fn fromText(context: *anyopaque, resource: std.Uri, path: []const u8, text: []const u8, language: ?[]const u8, readonly: bool) !resolver_api.ModelReference {
+        const self: *ManualResolver = @ptrCast(@alignCast(context));
+        return self.models.interface().createModelFromText(resource, path, text, language, readonly);
     }
     fn request(context: *anyopaque, uri: std.Uri, listener: resolver_api.ModelReferenceListener) !resolver_api.ModelReferenceRequest {
         const self: *ManualResolver = @ptrCast(@alignCast(context));
