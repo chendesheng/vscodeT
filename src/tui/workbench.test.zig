@@ -13215,6 +13215,99 @@ test "Diff editor commands: marker hover queries the full diagnostic and transfe
     modified.hideContentHover();
 }
 
+test "Diff editor commands: accessible hover uses the focused real pane and updates content through verbosity events" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const TextModel = @import("../vs/editor/common/model/textModel.zig").TextModel;
+    const HoverController = @import("../vs/editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
+    const Provider = struct {
+        original: *TextModel,
+        increased: usize = 0,
+        fn provide(context: *anyopaque, model: *TextModel, _: Position, _: CancellationToken, hover_context: ?*const languages.HoverContext) !?languages.Hover {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const detailed = if (hover_context) |value| if (value.verbosity_request) |request| request.verbosity_delta > 0 else false else false;
+            if (detailed) self.increased += 1;
+            return .{
+                .id = if (detailed) 2 else 1,
+                .range = Range.init(1, 1, 1, 5),
+                .contents = if (model == self.original)
+                    (if (detailed) &.{.{ .value = "Original details" }} else &.{.{ .value = "Original summary" }})
+                else
+                    (if (detailed) &.{.{ .value = "Modified details" }} else &.{.{ .value = "Modified summary" }}),
+                .can_increase_verbosity = !detailed,
+                .can_decrease_verbosity = detailed,
+            };
+        }
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(a, io, &tmp, "accessible-hover.txt", "original");
+    defer a.free(path);
+    const window = try TestWindow.init(a, io, &.{}, 120, 28);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.enableLanguageFeatures();
+    try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "original", "modified", "Original", "Modified");
+    const diff = wb.activeTab().?.diff.?.widget;
+    var provider: Provider = .{ .original = diff.originalModel() };
+    const registration = try wb.language_features.?.hover_provider.register(.{ .language = "*" }, .{ .context = &provider, .provide_hover = Provider.provide });
+    defer registration.dispose();
+    var frame: std.Io.Writer.Allocating = .init(a);
+    defer frame.deinit();
+    const service = &wb.accessible_view;
+    for ([_]*Editor{ diff.original_editor, diff.modified_editor }, [_][]const u8{ "Original", "Modified" }) |editor, name| {
+        if (diff.focusedEditor() != editor) try diff.switchSide();
+        try renderFrame(wb, &frame.writer);
+        const controller = editor.getContribution(HoverController).?;
+        controller.showContentHover(Range.init(1, 1, 1, 2), .immediate, .keyboard, true);
+        const rendered = controller.widget().widget.rendered orelse return error.MissingHover;
+        var focused_index: ?isize = null;
+        for (rendered.parts, 0..) |part, index| {
+            if (part.can_increase_verbosity) {
+                focused_index = @intCast(index);
+                break;
+            }
+        }
+        const index = focused_index orelse return error.NoVerbosityHover;
+        controller.widget().focusHoverPartWithIndex(index);
+        try wb.commands.execute("editor.action.accessibleView");
+        try std.testing.expect(service.visible());
+        try std.testing.expectEqual(.Hover, service.current.?.provider.id);
+        try std.testing.expect(controller.should_keep_open_on_editor_mouse_move_or_leave);
+        const summary = try std.fmt.allocPrint(a, "{s} summary\n", .{name});
+        defer a.free(summary);
+        var value = try service.current.?.editor.model.getValue(null, false);
+        defer value.deinit();
+        try std.testing.expectEqualStrings(summary, value.items);
+        const keys = try wb.ensureContextKeys();
+        try std.testing.expect(keys.getValue("accessibleViewIsShown").boolean);
+        var tab_key: ui.KeyEvent = .{ .key = .tab };
+        try std.testing.expect(try service.handleKey(&tab_key));
+        try std.testing.expectEqual(@as(?usize, 0), service.current.?.focused_action);
+        var enter: ui.KeyEvent = .{ .key = .enter };
+        try std.testing.expect(try service.handleKey(&enter));
+        const details = try std.fmt.allocPrint(a, "{s} details\n", .{name});
+        defer a.free(details);
+        var updated = try service.current.?.editor.model.getValue(null, false);
+        defer updated.deinit();
+        try std.testing.expectEqualStrings(details, updated.items);
+        try wb.commands.execute("editor.action.accessibilityHelp");
+        try std.testing.expectEqual(.Help, service.current.?.provider.kind);
+        var help = try service.current.?.editor.model.getValue(null, false);
+        defer help.deinit();
+        try std.testing.expect(std.mem.indexOf(u8, help.items, "can be decreased") != null);
+        var escape: ui.KeyEvent = .{ .key = .escape };
+        try std.testing.expect(try service.handleKey(&escape));
+        try std.testing.expectEqual(.View, service.current.?.provider.kind);
+        try std.testing.expect(try service.handleKey(&escape));
+        try std.testing.expect(!service.visible());
+        try std.testing.expect(!controller.should_keep_open_on_editor_mouse_move_or_leave);
+        try std.testing.expectEqual(index, controller.widget().focusedHoverPartIndex());
+        controller.hideContentHover();
+    }
+    try std.testing.expectEqual(@as(usize, 2), provider.increased);
+}
+
 test "Word highlights drive the active editor context and upstream F7 action before rendering" {
     const a = std.testing.allocator;
     const io = std.testing.io;

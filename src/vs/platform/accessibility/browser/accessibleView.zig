@@ -4,12 +4,13 @@ const std = @import("std");
 const instantiation = @import("../../instantiation/common/instantiation.zig");
 
 pub const AccessibleViewType = enum { Help, View };
-pub const AccessibleViewProviderId = enum { DiffEditor, MultiDiffEditorFileList, Editor };
+pub const AccessibleViewProviderId = enum { DiffEditor, MultiDiffEditorFileList, Editor, Hover };
 pub fn providerIdString(id: AccessibleViewProviderId) []const u8 {
     return switch (id) {
         .DiffEditor => "diffEditor",
         .MultiDiffEditorFileList => "multiDiffEditorFileList",
         .Editor => "editor",
+        .Hover => "hover",
     };
 }
 
@@ -20,12 +21,40 @@ pub const AccessibleContentProvider = struct {
     content: []u8,
     verbosity_setting_key: []const u8,
     on_close: ?Close = null,
+    language: ?[]const u8 = null,
+    live: ?LiveProvider = null,
 
     pub const Close = struct { context: *anyopaque, run: *const fn (*anyopaque) void };
 
     pub fn deinit(self: *AccessibleContentProvider) void {
+        if (self.live) |live| live.dispose(live.context);
         self.allocator.free(self.content);
     }
+};
+
+pub const ContentChangeListener = struct {
+    context: *anyopaque,
+    changed: *const fn (*anyopaque, bool) void,
+};
+
+pub const ProviderAction = struct {
+    id: []const u8,
+    label: []const u8,
+    icon: u8,
+    enabled: bool,
+};
+
+/// Dynamic content providers use the source's actual content event and
+/// disposal lifecycle. Static help providers keep using their owned text.
+pub const LiveProvider = struct {
+    context: *anyopaque,
+    connect: *const fn (*anyopaque, ContentChangeListener) anyerror!void,
+    provide_content: *const fn (*anyopaque, std.mem.Allocator, AccessibleViewType) anyerror![]u8,
+    dispose: *const fn (*anyopaque) void,
+    action_count: usize = 0,
+    get_action: ?*const fn (*anyopaque, usize) ProviderAction = null,
+    run_action: ?*const fn (*anyopaque, usize) void = null,
+    custom_help: bool = false,
 };
 
 pub const IAccessibleViewService = struct {

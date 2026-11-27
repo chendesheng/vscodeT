@@ -16,6 +16,8 @@ pub fn createServices(allocator: std.mem.Allocator) !ServiceCollection {
 pub fn registerAccessibleViews(registry: *@import("../platform/accessibility/browser/accessibleViewRegistry.zig").AccessibleViewRegistry) !void {
     try registry.register(@import("contrib/codeEditor/browser/diffEditorAccessibilityHelp.zig").DiffEditorAccessibilityHelp.registration);
     try registry.register(@import("contrib/multiDiffEditor/browser/multiDiffEditorAccessibilityHelp.zig").MultiDiffEditorFileListAccessibilityHelp.registration);
+    try registry.register(@import("../editor/contrib/hover/browser/hoverAccessibleViews.zig").HoverAccessibleView.registration);
+    try registry.register(@import("../editor/contrib/hover/browser/hoverAccessibleViews.zig").HoverAccessibilityHelp.registration);
 }
 
 pub fn registerConfigurations(registry: *@import("../platform/configuration/common/configurationRegistry.zig").ConfigurationRegistry) !void {

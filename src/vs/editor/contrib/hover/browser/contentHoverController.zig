@@ -15,6 +15,7 @@ const TextModel = @import("../../../common/model/textModel.zig").TextModel;
 const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const ModelChange = @import("../../../common/editorCommon.zig").IModelChangedEvent;
 const time_compat = @import("../../../../base/common/timeCompat.zig");
+const Emitter = @import("../../../../base/common/event.zig").Emitter;
 
 const ui = @import("ui");
 
@@ -153,6 +154,8 @@ pub const ContentHoverController = struct {
     is_mouse_down: bool = false,
     ignore_mouse_events: bool = false,
     should_keep_open_on_editor_mouse_move_or_leave: bool = false,
+    on_hover_contents_changed: Emitter(void),
+    on_will_unbind: Emitter(void),
 
     pub fn init(
         allocator: Allocator,
@@ -169,7 +172,11 @@ pub const ContentHoverController = struct {
             .settings = settings,
             .host = host,
             .wrapper = undefined,
+            .on_hover_contents_changed = .init(allocator),
+            .on_will_unbind = .init(allocator),
         };
+        errdefer self.on_hover_contents_changed.deinit();
+        errdefer self.on_will_unbind.deinit();
 
         self.wrapper = try ContentHoverWidgetWrapper.init(
             allocator,
@@ -224,6 +231,7 @@ pub const ContentHoverController = struct {
             .hide = widgetHide,
             .focus_editor = widgetFocusEditor,
             .set_hover_decoration = widgetSetHoverDecoration,
+            .contents_changed = widgetContentsChanged,
         };
     }
 
@@ -257,6 +265,7 @@ pub const ContentHoverController = struct {
     }
 
     pub fn unbindModel(self: *ContentHoverController) void {
+        if (self.wrapper.model_attached) self.on_will_unbind.fire({}) catch {};
         if (self.editor) |editor| {
             if (self.content_listener) |id| self.model.removeDidChangeContentListener(id);
             self.content_listener = null;
@@ -283,6 +292,8 @@ pub const ContentHoverController = struct {
         self.wrapper.deinit();
         self.react_timer.cancel();
         self.operation_timer.cancel();
+        self.on_hover_contents_changed.deinit();
+        self.on_will_unbind.deinit();
         self.allocator.destroy(self);
     }
 
@@ -311,6 +322,11 @@ pub const ContentHoverController = struct {
     fn widgetRequestFrame(context: *anyopaque) void {
         const self: *ContentHoverController = @ptrCast(@alignCast(context));
         self.host.request_frame(self.host.context);
+    }
+
+    fn widgetContentsChanged(context: *anyopaque) void {
+        const self: *ContentHoverController = @ptrCast(@alignCast(context));
+        self.on_hover_contents_changed.fire({}) catch {};
     }
 
     fn widgetHide(context: *anyopaque) void {

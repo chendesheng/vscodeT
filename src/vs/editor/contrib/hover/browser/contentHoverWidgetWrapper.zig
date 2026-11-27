@@ -45,6 +45,7 @@ pub const HoverWidgetWrapperHost = struct {
     focus_editor: *const fn (context: *anyopaque) void,
     /// Publishes or clears the `hoverHighlight` model decoration.
     set_hover_decoration: *const fn (context: *anyopaque, range: ?Range) void,
+    contents_changed: ?*const fn (context: *anyopaque) void = null,
 };
 
 pub const ContentHoverWidgetWrapper = struct {
@@ -252,14 +253,17 @@ pub const ContentHoverWidgetWrapper = struct {
         self.host.set_hover_decoration(self.host.context, rendered.highlight);
         self.widget.show(rendered);
         if (rendered.should_focus) self.widget.focus();
+        if (self.host.contents_changed) |changed| changed(self.host.context);
     }
 
     fn hideHover(self: *ContentHoverWidgetWrapper) void {
+        const was_visible = self.widget.isVisible();
         self.widget.hide();
         self.host.set_hover_decoration(self.host.context, null);
         for (self.participants) |participant| {
             if (participant.handle_hide) |handle| handle(participant.context);
         }
+        if (was_visible) if (self.host.contents_changed) |changed| changed(self.host.context);
     }
 
     fn renderHide(context: ?*anyopaque) void {
@@ -270,6 +274,7 @@ pub const ContentHoverWidgetWrapper = struct {
     fn renderContentsChanged(context: ?*anyopaque) void {
         const self: *ContentHoverWidgetWrapper = @ptrCast(@alignCast(context orelse return));
         self.host.request_frame(self.host.context);
+        if (self.host.contents_changed) |changed| changed(self.host.context);
     }
 
     fn renderSetMinimumDimensions(context: ?*anyopaque, width: usize, height: usize) void {
@@ -428,6 +433,32 @@ pub const ContentHoverWidgetWrapper = struct {
 
     pub fn getWidgetContent(self: *const ContentHoverWidgetWrapper) ?[]const u8 {
         return self.widget.widgetContent();
+    }
+
+    pub fn getAccessibleWidgetContentAtIndex(self: *const ContentHoverWidgetWrapper, index: isize) ?[]const u8 {
+        const rendered = self.widget.rendered orelse return null;
+        if (index < 0 or index >= rendered.parts.len) return null;
+        return rendered.parts[@intCast(index)].accessible_content;
+    }
+
+    pub fn doesHoverAtIndexSupportVerbosityAction(self: *const ContentHoverWidgetWrapper, index: isize, action: hoverTypes.HoverVerbosityAction) bool {
+        const rendered = self.widget.rendered orelse return false;
+        if (index < 0 or index >= rendered.parts.len) return false;
+        const part = rendered.parts[@intCast(index)];
+        return switch (action) {
+            .Increase => part.can_increase_verbosity,
+            .Decrease => part.can_decrease_verbosity,
+        };
+    }
+
+    pub fn focusHoverPartWithIndex(self: *ContentHoverWidgetWrapper, index: isize) void {
+        const rendered = self.widget.rendered orelse return;
+        if (index < 0 or index >= rendered.parts.len) return;
+        self.widget.focused_part = index;
+        self.widget.focused_action = null;
+        self.widget.focused_marker_link = null;
+        self.widget.focused_status_action = null;
+        self.widget.focus();
     }
 
     pub fn focus(self: *ContentHoverWidgetWrapper) void {
