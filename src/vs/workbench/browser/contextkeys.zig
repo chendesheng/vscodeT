@@ -78,6 +78,7 @@ const WindowContextKeys = struct {
     has_word_highlights: contextkeys.IContextKey,
     hover_visible: contextkeys.IContextKey,
     hover_focused: contextkeys.IContextKey,
+    markers_navigation_visible: contextkeys.IContextKey,
     message_visible: contextkeys.IContextKey,
     quick_diff_decoration_count: contextkeys.IContextKey,
     dirty_diff_visible: contextkeys.IContextKey,
@@ -133,6 +134,7 @@ const WindowContextKeys = struct {
             .has_word_highlights = try service.createKey("hasWordHighlights", .{ .boolean = false }),
             .hover_visible = try service.createKey("hoverVisible", .{ .boolean = false }),
             .hover_focused = try service.createKey("hoverFocused", .{ .boolean = false }),
+            .markers_navigation_visible = try service.createKey("markersNavigationVisible", .{ .boolean = false }),
             .message_visible = try service.createKey("messageVisible", .{ .boolean = false }),
             .quick_diff_decoration_count = try service.createKey("quickDiffDecorationCount", .{ .number = 0 }),
             .dirty_diff_visible = try service.createKey("dirtyDiffVisible", .{ .boolean = false }),
@@ -181,6 +183,7 @@ pub const WorkbenchContextKeysHandler = struct {
     code_lens_provider_listener: ?usize = null,
     word_highlights_listener: ?usize = null,
     hover_state_listener: ?usize = null,
+    markers_navigation_listener: ?usize = null,
     inline_message_listener: ?usize = null,
     code_action_provider_listener: ?usize = null,
     quick_diff_context_listener: ?usize = null,
@@ -336,6 +339,8 @@ pub const WorkbenchContextKeysHandler = struct {
         errdefer active.on_did_change_word_highlights.unlisten(self.word_highlights_listener.?);
         self.hover_state_listener = try active.on_did_change_hover_state.listen(self, onHoverStateChanged);
         errdefer active.on_did_change_hover_state.unlisten(self.hover_state_listener.?);
+        self.markers_navigation_listener = try active.on_did_change_markers_navigation.listen(self, onMarkersNavigationChanged);
+        errdefer active.on_did_change_markers_navigation.unlisten(self.markers_navigation_listener.?);
         self.inline_message_listener = try active.on_did_change_inline_message.listen(self, onInlineMessageChanged);
         errdefer active.on_did_change_inline_message.unlisten(self.inline_message_listener.?);
         self.code_action_provider_listener = try active.on_did_change_code_action_provider.listen(self, onCodeActionsChanged);
@@ -344,6 +349,7 @@ pub const WorkbenchContextKeysHandler = struct {
         self.window_keys.editor_has_code_lens_provider.set(.{ .boolean = active.has_code_lens_provider });
         self.window_keys.has_word_highlights.set(.{ .boolean = active.has_word_highlights });
         self.updateHoverState(active);
+        self.window_keys.markers_navigation_visible.set(.{ .boolean = active.markers_navigation_visible });
         self.window_keys.message_visible.set(.{ .boolean = active.inline_message_visible });
         self.updateCodeActions(active);
         self.updateQuickDiffContext(active);
@@ -362,6 +368,9 @@ pub const WorkbenchContextKeysHandler = struct {
         self.window_keys.has_word_highlights.set(.{ .boolean = false });
         if (self.hover_state_listener) |listener| editor.on_did_change_hover_state.unlisten(listener);
         self.hover_state_listener = null;
+        if (self.markers_navigation_listener) |listener| editor.on_did_change_markers_navigation.unlisten(listener);
+        self.markers_navigation_listener = null;
+        self.window_keys.markers_navigation_visible.set(.{ .boolean = false });
         if (self.inline_message_listener) |listener| editor.on_did_change_inline_message.unlisten(listener);
         self.inline_message_listener = null;
         self.window_keys.message_visible.set(.{ .boolean = false });
@@ -406,6 +415,10 @@ pub const WorkbenchContextKeysHandler = struct {
 
     fn onHoverStateChanged(_: void, self: *@This()) !void {
         if (self.active_editor) |editor| self.updateHoverState(editor);
+    }
+
+    fn onMarkersNavigationChanged(visible: bool, self: *@This()) !void {
+        self.window_keys.markers_navigation_visible.set(.{ .boolean = visible });
     }
 
     fn onWordHighlightsChanged(has_highlights: bool, self: *@This()) !void {

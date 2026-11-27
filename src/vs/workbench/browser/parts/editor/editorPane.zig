@@ -211,6 +211,7 @@ pub const Tab = struct {
     code_action_services: ?CodeActionServices = null,
     hover_opener: ?MarkerHoverParticipantOpener = null,
     hover_menus: ?MarkerHoverMenuServices = null,
+    marker_navigation_services: ?MarkerNavigationServices = null,
     diff: ?*DiffView = null,
     multi_diff: ?*MultiDiffPane = null,
     multi_diff_listener: ?usize = null,
@@ -550,6 +551,14 @@ pub const Tab = struct {
         if (self.original_controllers) |controllers| controllers.attachHoverServices(opener, menus);
     }
 
+    pub fn attachMarkerNavigationServices(self: *Tab, services: MarkerNavigationServices) void {
+        if (self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
+        self.marker_navigation_services = services;
+        self.ensureControllers() catch return;
+        if (self.controllers) |controllers| controllers.attachMarkerNavigationServices(services) catch {};
+        if (self.original_controllers) |controllers| controllers.attachMarkerNavigationServices(services) catch {};
+    }
+
     pub fn detachCodeLensServices(self: *Tab) void {
         if (self.controllers) |controllers| controllers.detachCodeLensServices();
         if (self.original_controllers) |controllers| controllers.detachCodeLensServices();
@@ -603,6 +612,7 @@ pub const Tab = struct {
         if (self.code_lens_services) |services| try controllers.attachCodeLensServices(services);
         if (self.code_action_services) |services| try controllers.attachCodeActionServices(services);
         if (self.hover_opener) |opener| if (self.hover_menus) |menus| controllers.attachHoverServices(opener, menus);
+        if (self.marker_navigation_services) |services| try controllers.attachMarkerNavigationServices(services);
         return controllers;
     }
 
@@ -1340,6 +1350,8 @@ const CodeActionController = @import("../../../../editor/contrib/codeAction/brow
 const CodeActionServices = @import("../../../../editor/contrib/codeAction/browser/codeActionController.zig").Services;
 const MarkerHoverParticipantOpener = @import("../../../../editor/contrib/hover/browser/markerHoverParticipant.zig").Opener;
 const MarkerHoverMenuServices = @import("../../../../editor/contrib/hover/browser/markerHoverParticipant.zig").MenuServices;
+const MarkerController = @import("../../../../editor/contrib/gotoError/browser/gotoError.zig").MarkerController;
+const MarkerNavigationServices = @import("../../../../editor/contrib/gotoError/browser/gotoError.zig").Services;
 const CodeLensContribution = @import("../../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution;
 const CodeLensServices = struct {
     features: *LanguageFeaturesService,
@@ -1380,6 +1392,8 @@ pub const Controllers = struct {
     code_action_services: ?CodeActionServices,
     hover_opener: ?MarkerHoverParticipantOpener,
     hover_menus: ?MarkerHoverMenuServices,
+    marker_navigation_services: ?MarkerNavigationServices,
+    marker_navigation: ?*MarkerController,
     language_features: ?*LanguageFeaturesService,
     window: ?*@import("../../../../base/common/windowDispatch.zig").Queue,
     widgets_attached: bool = false,
@@ -1439,6 +1453,7 @@ pub const Controllers = struct {
         }
         if (self.hover != null) self.hover_participant.setCodeBackground(code_background);
         if (self.code_lens) |lens| lens.setColors(Tab.codeLensColors(palette));
+        if (self.marker_navigation) |controller| if (controller.widget) |widget| widget.applyTheme();
     }
 
     pub fn init(allocator: Allocator, editor: *Editor, view: *View) !*Controllers {
@@ -1457,6 +1472,8 @@ pub const Controllers = struct {
         self.code_action_services = null;
         self.hover_opener = null;
         self.hover_menus = null;
+        self.marker_navigation_services = null;
+        self.marker_navigation = null;
         self.language_features = editor.language_features;
         self.window = null;
         self.hover_registration = null;
@@ -1646,6 +1663,29 @@ pub const Controllers = struct {
         }
     }
 
+    pub fn attachMarkerNavigationServices(self: *Controllers, services: MarkerNavigationServices) !void {
+        if (self.marker_navigation_services != null) return;
+        self.marker_navigation_services = services;
+        errdefer self.marker_navigation_services = null;
+        if (self.editor.getInstantiatedContribution(MarkerController) != null) {
+            try createMarkerNavigation(self);
+        } else try MarkerController.registerFactory(self.editor, self, createMarkerNavigation);
+    }
+
+    fn createMarkerNavigation(context: *anyopaque) !void {
+        const self: *Controllers = @ptrCast(@alignCast(context));
+        if (self.marker_navigation != null) return;
+        const services = self.marker_navigation_services orelse return error.MarkerNavigationUnavailable;
+        self.marker_navigation = try MarkerController.getOrCreate(self.editor, self.view, services);
+    }
+
+    fn detachMarkerNavigationServices(self: *Controllers) void {
+        self.editor.unregisterContributionFactory(MarkerController, self);
+        if (self.marker_navigation) |controller| controller.unbind();
+        self.marker_navigation = null;
+        self.marker_navigation_services = null;
+    }
+
     fn createCodeAction(context: *anyopaque) !void {
         const self: *Controllers = @ptrCast(@alignCast(context));
         if (self.code_action != null) return;
@@ -1771,6 +1811,7 @@ pub const Controllers = struct {
 
     pub fn deinit(self: *Controllers) void {
         self.detachCodeActionServices();
+        self.detachMarkerNavigationServices();
         self.detachCodeLensServices();
         self.find.widget().detachViewZones();
         if (self.widgets_attached) {
@@ -1852,6 +1893,10 @@ pub const MultiDiffBindingServices = struct {
             self.original.attachHoverServices(opener, menus);
             self.modified.attachHoverServices(opener, menus);
         };
+        if (host.marker_navigation) |services| {
+            self.original.attachMarkerNavigationServices(services) catch {};
+            self.modified.attachMarkerNavigationServices(services) catch {};
+        }
         if (host.code_actions) |services| {
             self.original.attachCodeActionServices(services) catch {};
             self.modified.attachCodeActionServices(services) catch {};

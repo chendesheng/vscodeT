@@ -8,6 +8,10 @@ const views_service = @import("../../../services/views/common/viewsService.zig")
 const markers = @import("../common/markers.zig");
 const MarkersView = @import("markersView.zig").MarkersView;
 
+pub const properties = [_]@import("../../../../platform/configuration/common/configurationRegistry.zig").PropertySchema{
+    .{ .key = "problems.sortOrder", .value_type = "string", .default = .{ .string = "severity" }, .enum_values = &.{ "severity", "position" } },
+};
+
 pub fn registerViewContainer(registry: *views.ViewContainersRegistry) !void {
     _ = try registry.register(.{
         .id = markers.Markers.MARKERS_CONTAINER_ID,

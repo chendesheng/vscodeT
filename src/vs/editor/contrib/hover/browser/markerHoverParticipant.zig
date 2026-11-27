@@ -33,6 +33,7 @@ const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTermi
 const codeAction = @import("../../codeAction/browser/codeAction.zig");
 const action_types = @import("../../codeAction/common/types.zig");
 const CodeActionController = @import("../../codeAction/browser/codeActionController.zig").CodeActionController;
+const goto_error = @import("../../gotoError/browser/gotoError.zig");
 const dispatch = @import("../../../../base/common/windowDispatch.zig");
 const Disposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
 const menu_api = @import("../../../../platform/actions/common/menuService.zig");
@@ -49,25 +50,6 @@ pub const CodeActionServices = struct {
 pub const MenuServices = struct {
     menus: *menu_api.MenuService,
     parent_context: contextkey.IContext,
-};
-
-/// The terminal's window context represents its active code editor. For a
-/// mouse hover on the other diff pane, resolve the editor-dependent keys
-/// against the actual owning editor while inheriting workbench keys.
-const MarkerMenuContext = struct {
-    editor: *Editor,
-    parent: contextkey.IContext,
-    fn interface(self: *MarkerMenuContext) contextkey.IContext {
-        return .{ .context = self, .get_value = get };
-    }
-    fn get(context: *anyopaque, key: []const u8) contextkey.ContextKeyValue {
-        const self: *MarkerMenuContext = @ptrCast(@alignCast(context));
-        if (std.mem.eql(u8, key, "editorReadonly")) return .{ .boolean = self.editor.isReadOnly() };
-        if (std.mem.eql(u8, key, "editorHasCodeActionsProvider")) return .{ .boolean = self.editor.has_code_action_provider };
-        if (std.mem.eql(u8, key, "editorLangId")) return .{ .string = self.editor.model.getLanguageId() };
-        if (std.mem.eql(u8, key, "resourceScheme")) return .{ .string = self.editor.model.uri().scheme };
-        return self.parent.getValue(key);
-    }
 };
 
 /// Narrow adapter for IOpenerService. Related positions retain UTF-16 columns
@@ -271,11 +253,13 @@ const MarkerStatus = struct {
     menu_actions: ?menu_api.MenuActions = null,
     menu_action_count: usize = 0,
     hover_range: Range,
+    marker_range: Range,
 
     fn start(participant: *MarkerHoverParticipant, services: CodeActionServices, context: IEditorHoverRenderContext, hover: *const MarkerHover) !void {
         const register = context.add_disposable orelse return;
         if (context.status_bar.set_message == null) return;
-        if (services.editor.isReadOnly() and participant.menus == null) return;
+        const has_navigation = (hover.severity == MarkerSeverity.Error or hover.severity == MarkerSeverity.Warning or hover.severity == MarkerSeverity.Info) and services.editor.getContribution(goto_error.MarkerController) != null;
+        if (services.editor.isReadOnly() and participant.menus == null and !has_navigation) return;
         const a = participant.allocator;
         const self = try a.create(MarkerStatus);
         errdefer a.destroy(self);
@@ -284,10 +268,10 @@ const MarkerStatus = struct {
         const code = hover.code orelse "";
         const key = try std.fmt.allocPrint(a, "{d}:{s}{d}:{s}{d}:{s}:{d}:{d}:{d}:{d}:{d}", .{ source.len, source, code.len, code, hover.message.len, hover.message, hover.severity, r.startLineNumber, r.startColumn, r.endLineNumber, r.endColumn });
         errdefer a.free(key);
-        self.* = .{ .participant = participant, .services = services, .context = context, .key = key, .hover_range = hover.range };
+        self.* = .{ .participant = participant, .services = services, .context = context, .key = key, .hover_range = hover.range, .marker_range = r };
         self.timer = .{ .queue = services.window, .context = self, .run = showChecking };
         if (participant.menus) |menus| {
-            var scoped = MarkerMenuContext{ .editor = services.editor, .parent = menus.parent_context };
+            var scoped = @import("../../../browser/editorExtensions.zig").EditorScopedContext{ .editor = services.editor, .parent = menus.parent_context };
             self.menu_actions = try menus.menus.getMenuActions(a, @import("../../../../platform/actions/common/actions.zig").menu_ids.MarkerHoverStatusBar, scoped.interface());
             for (self.menu_actions.?.groups) |group| for (group.actions) |action| {
                 if (menu_api.MenuItemAction.from(action) != null and action.enabled()) self.menu_action_count += 1;
@@ -296,6 +280,9 @@ const MarkerStatus = struct {
         errdefer if (self.menu_actions) |*actions| actions.deinit();
         try register(context.context, Disposable.from(MarkerStatus, self, dispose));
         // Once registered, the rendered owner is responsible for cleanup.
+        if (has_navigation) {
+            _ = context.status_bar.add_action(context.status_bar.context, .{ .label = "View Problem", .command_id = goto_error.next_marker_id, .run_context = self, .run = showProblem });
+        }
         if (services.editor.isReadOnly()) {
             self.renderMenuActions();
             return;
@@ -401,6 +388,14 @@ const MarkerStatus = struct {
         const actions = self.actions orelse return;
         self.actions = null;
         controller.showCodeActions(markerCodeActionTrigger, actions, controller.anchorForHoverTarget(node));
+    }
+
+    fn showProblem(context: ?*anyopaque) void {
+        const self: *MarkerStatus = @ptrCast(@alignCast(context orelse return));
+        const controller = self.services.editor.getContribution(goto_error.MarkerController) orelse return;
+        const range = self.marker_range;
+        self.context.callHide();
+        controller.showAtMarker(range) catch {};
     }
 
     fn applyAI(context: ?*anyopaque) void {

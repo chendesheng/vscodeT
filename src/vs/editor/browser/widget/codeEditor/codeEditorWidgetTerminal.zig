@@ -818,6 +818,7 @@ pub const Editor = struct {
     on_did_change_hover_state: Emitter(void),
     on_did_change_text_focus: Emitter(bool),
     on_did_change_inline_message: Emitter(bool),
+    on_did_change_markers_navigation: Emitter(bool),
     on_did_mouse_event: Emitter(editorBrowser.EditorMouseEvent),
     on_did_key_down: Emitter(*input.KeyEvent),
     on_did_change_quick_diff_context: Emitter(void),
@@ -834,6 +835,7 @@ pub const Editor = struct {
     hover_visible: bool = false,
     hover_focused: bool = false,
     inline_message_visible: bool = false,
+    markers_navigation_visible: bool = false,
     screen_width: usize,
     screen_height: usize,
     /// Terminal default is soft wrap on; a configured `editor.wordWrap`
@@ -1126,6 +1128,7 @@ pub const Editor = struct {
             .on_did_change_hover_state = .init(allocator),
             .on_did_change_text_focus = .init(allocator),
             .on_did_change_inline_message = .init(allocator),
+            .on_did_change_markers_navigation = .init(allocator),
             .on_did_mouse_event = .init(allocator),
             .on_did_key_down = .init(allocator),
             .on_did_change_quick_diff_context = .init(allocator),
@@ -2069,6 +2072,7 @@ pub const Editor = struct {
         self.on_did_change_hover_state.deinit();
         self.on_did_change_text_focus.deinit();
         self.on_did_change_inline_message.deinit();
+        self.on_did_change_markers_navigation.deinit();
         self.on_did_mouse_event.deinit();
         self.on_did_key_down.deinit();
         self.on_did_change_quick_diff_context.deinit();
@@ -2604,6 +2608,12 @@ pub const Editor = struct {
         if (self.inline_message_visible == visible) return;
         self.inline_message_visible = visible;
         self.on_did_change_inline_message.fire(visible) catch {};
+    }
+
+    pub fn setMarkersNavigationVisible(self: *Editor, visible: bool) void {
+        if (self.markers_navigation_visible == visible) return;
+        self.markers_navigation_visible = visible;
+        self.on_did_change_markers_navigation.fire(visible) catch {};
     }
 
     pub fn setHasWordHighlights(self: *Editor, has_highlights: bool) void {

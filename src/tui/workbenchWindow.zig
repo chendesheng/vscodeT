@@ -455,6 +455,8 @@ pub const TerminalWorkbench = struct {
     language_features: ?*LanguageFeaturesService = null,
     marker_service: ?*MarkerService = null,
     marker_decorations: ?*MarkerDecorationsService = null,
+    marker_navigation: ?@import("../vs/editor/contrib/gotoError/browser/markerNavigationService.zig").MarkerNavigationService = null,
+    marker_navigation_api: ?@import("../vs/editor/contrib/gotoError/browser/markerNavigationService.zig").IMarkerNavigationService = null,
     snippet_provider: SnippetCompletionProvider,
     snippet_registration: ?IDisposable = null,
     word_completion_provider: ?*WordBasedCompletionProvider = null,
@@ -614,6 +616,8 @@ pub const TerminalWorkbench = struct {
         self.language_features = null;
         self.marker_service = null;
         self.marker_decorations = null;
+        self.marker_navigation = null;
+        self.marker_navigation_api = null;
         self.snippet_provider = SnippetCompletionProvider.init(allocator, io);
         self.snippet_registration = null;
         self.word_completion_provider = null;
@@ -1955,6 +1959,7 @@ pub const TerminalWorkbench = struct {
         if (self.textual_highlight_feature) |feature| feature.dispose();
         if (self.word_completion_provider) |provider| self.allocator.destroy(provider);
         if (self.marker_decorations) |service| service.deinit();
+        if (self.marker_navigation) |*service| service.deinit();
         if (self.marker_listener) |listener| {
             if (self.marker_service) |service| service.on_marker_changed.unlisten(listener);
             self.marker_listener = null;
@@ -2850,6 +2855,7 @@ pub const TerminalWorkbench = struct {
     /// app startup calls it before the extension host and JSON client attach.
     pub fn enableLanguageFeatures(self: *TerminalWorkbench) !void {
         if (self.language_features != null) return;
+        try self.ensureConfiguration();
         const features = try self.allocator.create(LanguageFeaturesService);
         errdefer self.allocator.destroy(features);
         features.* = LanguageFeaturesService.init(self.allocator);
@@ -2886,6 +2892,9 @@ pub const TerminalWorkbench = struct {
         self.language_features = features;
         self.marker_service = marker_service;
         self.marker_decorations = marker_decorations;
+        self.marker_navigation = .{ .allocator = self.allocator, .markers = marker_service, .configuration = self.configuration_api };
+        self.marker_navigation_api = self.marker_navigation.?.interface();
+        _ = try self.services.set(@import("../vs/editor/contrib/gotoError/browser/markerNavigationService.zig").marker_navigation_service_id, &self.marker_navigation_api.?);
         self.word_completion_provider = word_provider;
         self.snippet_registration = snippets;
         self.word_completion_registration = words;
@@ -2943,6 +2952,7 @@ pub const TerminalWorkbench = struct {
         tab.attachHoverServices((editor_service_mod.EditorOpening.OpenerAdapter{ .opening = &self.editor_opening }).interface(), .{ .menus = &self.menu_service, .parent_context = self.core.context_keys.getContext() });
         const features = self.language_features orelse return;
         tab.attachCodeActionServices(self.codeActionServices(features));
+        if (self.markerNavigationServices()) |services| tab.attachMarkerNavigationServices(services);
         const cache = self.code_lens_cache orelse return;
         tab.attachCodeLensServices(features, cache, self.providerCommandHost(), &self.window_events);
     }
@@ -2951,7 +2961,12 @@ pub const TerminalWorkbench = struct {
         const features = self.language_features orelse return;
         widget.original_editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
         widget.modified_editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
-        widget.attachNativeLanguageServices(.{ .features = features, .cache = self.code_lens_cache, .commands = self.providerCommandHost(), .code_actions = self.codeActionServices(features), .opener = (editor_service_mod.EditorOpening.OpenerAdapter{ .opening = &self.editor_opening }).interface(), .hover_menus = .{ .menus = &self.menu_service, .parent_context = self.core.context_keys.getContext() }, .window = &self.window_events });
+        widget.attachNativeLanguageServices(.{ .features = features, .cache = self.code_lens_cache, .commands = self.providerCommandHost(), .code_actions = self.codeActionServices(features), .opener = (editor_service_mod.EditorOpening.OpenerAdapter{ .opening = &self.editor_opening }).interface(), .hover_menus = .{ .menus = &self.menu_service, .parent_context = self.core.context_keys.getContext() }, .marker_navigation = self.markerNavigationServices(), .window = &self.window_events });
+    }
+
+    fn markerNavigationServices(self: *TerminalWorkbench) ?@import("../vs/editor/contrib/gotoError/browser/gotoError.zig").Services {
+        const navigation = self.marker_navigation_api orelse return null;
+        return .{ .marker_navigation = navigation, .editors = self.code_editor_api, .opener = (editor_service_mod.EditorOpening.OpenerAdapter{ .opening = &self.editor_opening }).interface(), .window = &self.window_events, .menus = &self.menu_service, .context_keys = self.core.context_keys.getContext() };
     }
 
     fn onMarkersChanged(_: MarkerChangeEvent, self: *TerminalWorkbench) !void {

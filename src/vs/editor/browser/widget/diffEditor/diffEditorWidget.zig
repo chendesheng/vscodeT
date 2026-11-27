@@ -229,6 +229,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 code_actions: ?@import("../../../contrib/codeAction/browser/codeActionController.zig").Services = null,
                 opener: ?@import("../../../../platform/opener/common/opener.zig").IOpenerService = null,
                 hover_menus: ?@import("../../../contrib/hover/browser/markerHoverParticipant.zig").MenuServices = null,
+                marker_navigation: ?@import("../../../contrib/gotoError/browser/gotoError.zig").Services = null,
                 window: *window_dispatch.Queue,
             };
         };

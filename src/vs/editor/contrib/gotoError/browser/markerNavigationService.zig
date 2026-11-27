@@ -150,7 +150,7 @@ pub const MarkerList = struct {
                 const mid = low + (high - low) / 2;
                 if (std.mem.order(u8, self.markers[mid].key, key) == .lt) low = mid + 1 else high = mid;
             }
-            self.next_idx = if (fwd) low % self.markers.len else (self.markers.len + low - 1) % self.markers.len;
+            self.next_idx = if (fwd) low else (self.markers.len + low - 1) % self.markers.len;
             return;
         }
         for (self.markers[first.?..], first.?..) |marker, index| {
@@ -202,11 +202,38 @@ pub const IMarkerListProvider = struct {
     get_marker_list: *const fn (*anyopaque, ?Resource) anyerror!?*MarkerList,
 };
 
+pub const IMarkerNavigationService = struct {
+    context: *anyopaque,
+    get_marker_list: *const fn (*anyopaque, ?Resource) anyerror!*MarkerList,
+    register_provider: *const fn (*anyopaque, IMarkerListProvider) anyerror!Disposable,
+
+    pub fn getMarkerList(self: IMarkerNavigationService, resource: ?Resource) !*MarkerList {
+        return self.get_marker_list(self.context, resource);
+    }
+    pub fn registerProvider(self: IMarkerNavigationService, provider: IMarkerListProvider) !Disposable {
+        return self.register_provider(self.context, provider);
+    }
+};
+pub const marker_navigation_service_id = @import("../../../../platform/instantiation/common/instantiation.zig").ServiceIdentifier(IMarkerNavigationService, "IMarkerNavigationService");
+
 pub const MarkerNavigationService = struct {
     allocator: Allocator,
     markers: *MarkerService,
     configuration: IConfigurationService,
     providers: std.ArrayList(*Registration) = .empty,
+
+    pub fn interface(self: *MarkerNavigationService) IMarkerNavigationService {
+        return .{ .context = self, .get_marker_list = getMarkerListAdapter, .register_provider = registerProviderAdapter };
+    }
+
+    fn getMarkerListAdapter(context: *anyopaque, resource: ?Resource) !*MarkerList {
+        const self: *MarkerNavigationService = @ptrCast(@alignCast(context));
+        return self.getMarkerList(resource);
+    }
+    fn registerProviderAdapter(context: *anyopaque, provider: IMarkerListProvider) !Disposable {
+        const self: *MarkerNavigationService = @ptrCast(@alignCast(context));
+        return self.registerProvider(provider);
+    }
 
     const Registration = struct {
         owner: *MarkerNavigationService,

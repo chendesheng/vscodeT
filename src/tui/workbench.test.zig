@@ -13131,7 +13131,7 @@ test "Diff editor commands: marker hover queries the full diagnostic and transfe
     };
     const FindStatusAction = struct {
         fn find(node: *ui.Node) ?*ui.Node {
-            if (node.getAttribute("data-hover-status-action")) |id| if (std.mem.eql(u8, id, "0")) return node;
+            if (node.getAttribute("data-hover-status-action")) |id| if (std.mem.eql(u8, id, "1")) return node;
             var child = node.firstChild();
             while (child) |value| : (child = value.nextSibling()) if (find(value)) |found| return found;
             return null;
@@ -13170,7 +13170,8 @@ test "Diff editor commands: marker hover queries the full diagnostic and transfe
     original.showContentHover(Range.init(1, 2, 1, 3), .immediate, .keyboard, true);
     try std.testing.expect(original.widget().isVisible());
     try std.testing.expectEqual(@as(usize, 0), provider.calls);
-    try std.testing.expect(!original.widget().widget.rendered.?.status_bar.hasContent());
+    try std.testing.expectEqual(@as(usize, 1), original.widget().widget.rendered.?.status_bar.actions.items.len);
+    try std.testing.expectEqualStrings("View Problem", original.widget().widget.rendered.?.status_bar.actions.items[0].label);
     original.hideContentHover();
     try diff.switchSide();
     try renderFrame(wb, &frame.writer);
@@ -13190,8 +13191,9 @@ test "Diff editor commands: marker hover queries the full diagnostic and transfe
     try std.testing.expectEqualStrings("Checking for quick fixes...", status.message.?);
     provider.resolve(&.{ .{ .title = "Fix diagnostic", .kind = "quickfix", .command = .{ .id = "test.markerQuickFix", .title = "Fix diagnostic" } }, .{ .title = "Not a quick fix", .kind = "refactor" } });
     try std.testing.expect(status.message == null);
-    try std.testing.expectEqual(@as(usize, 1), status.actions.items.len);
-    try std.testing.expectEqualStrings("Quick Fix...", status.actions.items[0].label);
+    try std.testing.expectEqual(@as(usize, 2), status.actions.items.len);
+    try std.testing.expectEqualStrings("View Problem", status.actions.items[0].label);
+    try std.testing.expectEqualStrings("Quick Fix...", status.actions.items[1].label);
     try renderFrame(wb, &frame.writer);
     const button = FindStatusAction.find(modified.widget().widget.root.?) orelse return error.MissingQuickFixStatusButton;
     var click: ui.MouseEvent = .{ .kind = .click, .x = 0, .y = 0 };
@@ -13215,6 +13217,115 @@ test "Diff editor commands: marker hover queries the full diagnostic and transfe
     modified.hideContentHover();
 }
 
+test "Diff editor commands: View Problem mounts marker navigation and follows live markers in each real pane" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const marker_types = @import("../vs/platform/markers/common/markers.zig");
+    const HoverController = @import("../vs/editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
+    const MarkerController = @import("../vs/editor/contrib/gotoError/browser/gotoError.zig").MarkerController;
+    const FindButton = struct {
+        fn find(node: *ui.Node) ?*ui.Node {
+            if (node.getAttribute("data-hover-status-action")) |id| if (std.mem.eql(u8, id, "0")) return node;
+            var child = node.firstChild();
+            while (child) |value| : (child = value.nextSibling()) if (find(value)) |found| return found;
+            return null;
+        }
+        fn title(node: *ui.Node, id: []const u8) ?*ui.Node {
+            if (node.getAttribute("data-peek-action")) |value| if (std.mem.eql(u8, value, id)) return node;
+            var child = node.firstChild();
+            while (child) |value| : (child = value.nextSibling()) if (title(value, id)) |found| return found;
+            return null;
+        }
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(a, io, &tmp, "navigation.txt", "original\nsecond line\nthird");
+    defer a.free(path);
+    const other = try seedFile(a, io, &tmp, "other-diagnostic.txt", "header\nexternal diagnostic\n");
+    defer a.free(other);
+    const absolute_other = try @import("../vs/workbench/services/textfile/common/textFileService.zig").absolutePath(a, io, other);
+    defer a.free(absolute_other);
+    const window = try TestWindow.init(a, io, &.{}, 120, 32);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.enableLanguageFeatures();
+    try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "original\nsecond line\nthird", "modified\nsecond line\nthird", "Original", "Modified");
+    const tab = wb.activeTab().?;
+    const diff = tab.diff.?.widget;
+    const keys = try wb.ensureContextKeys();
+    var frame: std.Io.Writer.Allocating = .init(a);
+    defer frame.deinit();
+    for ([_]*Editor{ diff.original_editor, diff.modified_editor }) |editor| {
+        if (diff.focusedEditor() != editor) try diff.switchSide();
+        try renderFrame(wb, &frame.writer);
+        var resource = try marker_types.Resource.fromUri(a, editor.model.uri());
+        defer resource.deinit(a);
+        const first: marker_types.MarkerData = .{ .message = "First diagnostic", .severity = marker_types.MarkerSeverity.Error, .start_line_number = 1, .start_column = 2, .end_line_number = 1, .end_column = 5 };
+        var second: marker_types.MarkerData = .{ .message = "Second diagnostic", .severity = marker_types.MarkerSeverity.Error, .start_line_number = 2, .start_column = 2, .end_line_number = 2, .end_column = 6 };
+        try wb.marker_service.?.changeOne("navigation", resource, &.{ first, second }, null);
+        const hover = editor.getContribution(HoverController).?;
+        hover.showContentHover(Range.init(1, 2, 1, 3), .immediate, .keyboard, true);
+        try renderFrame(wb, &frame.writer);
+        const button = FindButton.find(hover.widget().widget.root.?) orelse return error.MissingViewProblemAction;
+        var click: ui.MouseEvent = .{ .kind = .click, .x = 0, .y = 0 };
+        button.document.dispatchMouse(button, &click);
+        try std.testing.expect(!hover.isVisible());
+        const controller = editor.getInstantiatedContribution(MarkerController).?;
+        const widget = controller.widget orelse return error.MissingMarkerNavigationWidget;
+        try std.testing.expect(widget.peek.zone.zone_id != null);
+        try std.testing.expectEqual(Position.init(1, 2), widget.position().?);
+        try std.testing.expect(keys.getValue("markersNavigationVisible").boolean);
+        try std.testing.expectEqualStrings("First diagnostic", widget.message.marker.?.message);
+        try renderFrame(wb, &frame.writer);
+        const painted = try frameText(a, &wb.frame);
+        defer a.free(painted);
+        try std.testing.expect(std.mem.indexOf(u8, painted, "First diagnostic") != null);
+        try std.testing.expect(std.mem.indexOf(u8, painted, "1 of 2 problems") != null);
+        const next_button = FindButton.title(widget.peek.action_bar.?, "editor.action.marker.next") orelse return error.MissingMarkerTitleAction;
+        var press: ui.MouseEvent = .{ .kind = .down, .x = 0, .y = 0, .button = .left };
+        next_button.document.dispatchMouse(next_button, &press);
+        for (0..64) |_| {
+            if (widget.position().?.lineNumber == 2) break;
+            _ = wb.window_events.dispatch(std.math.maxInt(i64));
+        }
+        try std.testing.expectEqual(Position.init(2, 2), widget.position().?);
+        try wb.commands.execute("editor.action.marker.prev");
+        try std.testing.expectEqual(Position.init(1, 2), widget.position().?);
+        try wb.commands.execute("editor.action.marker.next");
+        try std.testing.expectEqual(Position.init(2, 2), widget.position().?);
+        second.message = "Updated live diagnostic";
+        try wb.marker_service.?.changeOne("navigation", resource, &.{ first, second }, null);
+        try std.testing.expectEqualStrings("Updated live diagnostic", widget.message.marker.?.message);
+        try std.testing.expect(!widget.message.stale);
+        try wb.marker_service.?.changeOne("navigation", resource, &.{first}, null);
+        try std.testing.expect(widget.message.stale);
+        try wb.commands.execute("closeMarkersNavigation");
+        try std.testing.expect(controller.widget == null and controller.model == null);
+        try std.testing.expect(!keys.getValue("markersNavigationVisible").boolean);
+        try wb.marker_service.?.changeOne("navigation", resource, &.{}, null);
+    }
+    try wb.marker_service.?.changeOne("external-navigation", .{ .scheme = "file", .path = absolute_other }, &.{.{ .message = "External diagnostic", .severity = marker_types.MarkerSeverity.Error, .start_line_number = 2, .start_column = 3, .end_line_number = 2, .end_column = 7 }}, null);
+    try wb.commands.execute("editor.action.marker.nextInFiles");
+    const cross_file = diff.modified_editor.getInstantiatedContribution(MarkerController).?;
+    if (cross_file.model) |list| {
+        // Pinned upstream preserves the binary-search insertion index when
+        // the current URI sorts after all markers; the next move wraps it.
+        if (list.selected() == null and list.next_idx != null) try wb.commands.execute("editor.action.marker.nextInFiles");
+    }
+    for (0..5000) |_| {
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        if (wb.activeTab().? != tab) break;
+        time_compat.sleepMillis(1);
+    }
+    const opened = wb.activeTab().?;
+    try std.testing.expect(opened != tab and opened.file_input != null);
+    const external = opened.editor.getInstantiatedContribution(MarkerController).?;
+    try std.testing.expectEqualStrings("External diagnostic", external.widget.?.message.marker.?.message);
+    // Upstream opens the target with the complete marker selection, and the
+    // marker widget anchors at its active end when that cursor is in range.
+    try std.testing.expectEqual(Position.init(2, 7), external.widget.?.position().?);
+}
+
 test "Diff editor commands: marker hover menu actions inherit workbench context and select the owning pane range" {
     const a = std.testing.allocator;
     const io = std.testing.io;
@@ -13229,7 +13340,7 @@ test "Diff editor commands: marker hover menu actions inherit workbench context 
             self.calls += 1;
         }
         fn find(node: *ui.Node) ?*ui.Node {
-            if (node.getAttribute("data-hover-status-action")) |id| if (std.mem.eql(u8, id, "0")) return node;
+            if (node.getAttribute("data-hover-status-action")) |id| if (std.mem.eql(u8, id, "1")) return node;
             var child = node.firstChild();
             while (child) |value| : (child = value.nextSibling()) if (find(value)) |found| return found;
             return null;
@@ -13269,8 +13380,9 @@ test "Diff editor commands: marker hover menu actions inherit workbench context 
         controller.showContentHover(Range.init(1, 2, 1, 3), .immediate, .keyboard, false);
         const bar = controller.widget().widget.rendered.?.status_bar;
         try std.testing.expect(bar.message == null);
-        try std.testing.expectEqual(@as(usize, 1), bar.actions.items.len);
-        try std.testing.expectEqualStrings(label, bar.actions.items[0].label);
+        try std.testing.expectEqual(@as(usize, 2), bar.actions.items.len);
+        try std.testing.expectEqualStrings("View Problem", bar.actions.items[0].label);
+        try std.testing.expectEqualStrings(label, bar.actions.items[1].label);
         try renderFrame(wb, &frame.writer);
         const node = Probe.find(controller.widget().widget.root.?) orelse return error.MissingMarkerMenuAction;
         var event: ui.MouseEvent = .{ .kind = .click, .x = 0, .y = 0 };

@@ -25,6 +25,7 @@ pub fn registerConfigurations(registry: *@import("../platform/configuration/comm
     try registry.registerConfiguration("editor", &@import("../editor/contrib/codeAction/browser/codeActionContributions.zig").properties);
     try registry.registerConfiguration("diffEditor", &@import("../editor/common/config/editorConfigurationSchema.zig").diff_editor_properties);
     try registry.registerConfiguration("files", &@import("contrib/bulkEdit/browser/bulkEditService.zig").properties);
+    try registry.registerConfiguration("problems", &@import("contrib/markers/browser/markers.contribution.zig").properties);
 }
 
 pub fn registerConfigurationMigrations(registry: *@import("common/configuration.zig").ConfigurationMigrationRegistry) !void {
@@ -213,6 +214,7 @@ pub fn registerEditorNavigationActions(commands: *CommandRegistry, instantiation
     try commands.registerEditorAction(instantiation, hover_actions.hide_hover_action);
     for (hover_actions.scroll_actions) |action| try commands.registerEditorAction(instantiation, action);
     for (hover_actions.verbosity_actions) |action| try commands.registerEditorAction(instantiation, action);
+    for (@import("../editor/contrib/gotoError/browser/gotoError.zig").marker_actions) |action| try commands.registerEditorAction(instantiation, action);
     for (@import("../editor/contrib/codeAction/browser/codeActionContributions.zig").editor_actions) |action| try commands.registerEditorAction(instantiation, action);
     for (@import("../platform/actionWidget/browser/actionWidget.zig").widget_actions) |action| try commands.registerAction(instantiation, action);
     try commands.registerEditorAction(instantiation, @import("../editor/contrib/message/browser/messageController.zig").leave_message_action);
