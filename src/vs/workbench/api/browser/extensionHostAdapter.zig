@@ -4456,7 +4456,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try directory.writeFile(io, .{ .sub_path = "theme.json", .data = "{\"semanticHighlighting\":true,\"colors\":{\"editor.background\":\"#1e1e1e\",\"editor.foreground\":\"#cccccc\"},\"semanticTokenColors\":{\"*\":{\"foreground\":\"#12ab34\",\"bold\":true}}}" });
             const settings_path = try std.fs.path.join(allocator, &.{ root, "settings.json" });
             defer allocator.free(settings_path);
-            try directory.writeFile(io, .{ .sub_path = "sample.zig", .data = "/// Returns the answer.\npub fn answer() u32 { return 42; }\npub fn example() u32 { return answer(); }\npub fn multiline() void {\n    const x = 1;\n    _ = x;\n}\npub fn add(value: u32, other: u32) u32 { return value + other; }\npub fn callAdd() u32 { return add(1, 2); }\n" });
+            try directory.writeFile(io, .{ .sub_path = "sample.zig", .data = "/// Returns the answer.\npub fn answer() u32 { return 42; }\npub fn example() u32 { return answer(); }\npub fn multiline() void {\n    const x = 1;\n    _ = x;\n}\npub fn add(value: u32, other: u32) u32 { return value + other; }\npub fn callAdd() u32 { return add(1, 2); }\npub const Thing = struct { value: u32 };\npub fn makeThing() Thing { return .{ .value = 1 }; }\npub fn useThing() u32 { const t = makeThing(); return t.value; }\n" });
             const document_path = try std.fs.path.join(allocator, &.{ root, "sample.zig" });
             defer allocator.free(document_path);
             var catalog = try @import("../../services/extensions/common/extensionsRegistry.zig").scan(allocator, &.{extension_path});
@@ -4560,6 +4560,88 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                             try std.testing.expectEqual(@as(usize, 2), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
                         }
                         const selection_editor = workbench.activeTab().?.editor;
+                        for ([_][]const u8{ "editor.action.revealDefinition", "editor.action.revealDeclaration" }) |command| {
+                            try selection_editor.setCursorPosition(Position.init(3, 32));
+                            try std.testing.expect(runLspCommand(workbench.extensionHostServices(), command));
+                            try waitNavigation(workbench);
+                            try std.testing.expectEqual(@as(usize, 2), selection_editor.modelCursorPosition().lineNumber);
+                        }
+                        const type_column = (std.mem.indexOf(u8, try model.borrowLineContent(12), "t.value") orelse return error.ZlsTypeFixtureMissing) + 1;
+                        try selection_editor.setCursorPosition(Position.init(12, type_column));
+                        try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.goToTypeDefinition"));
+                        try waitNavigation(workbench);
+                        try std.testing.expectEqual(@as(usize, 10), selection_editor.modelCursorPosition().lineNumber);
+                        // VS Code's compact reference search excludes the declaration
+                        // when there is just one use; start from the declaration.
+                        try selection_editor.setCursorPosition(Position.init(2, 9));
+                        try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.goToReferences"));
+                        try waitNavigation(workbench);
+                        if (workbench.quick_access.isOpen()) {
+                            workbench.quick_access.inputService().hide();
+                        } else {
+                            try std.testing.expectEqual(@as(usize, 3), selection_editor.modelCursorPosition().lineNumber);
+                        }
+                        // Query the actual extension providers, not the lexical
+                        // fallback or an independently launched ZLS process.
+                        const RealProviderProbe = struct {
+                            completion_found: ?bool = null,
+                            symbol_found: ?bool = null,
+                            highlight_count: ?usize = null,
+                            fn completions(context: *anyopaque, _: *anyopaque, result: anyerror!@import("../../../editor/common/languages/completion.zig").CompletionList) void {
+                                const self: *@This() = @ptrCast(@alignCast(context));
+                                self.completion_found = false;
+                                if (result) |list| {
+                                    for (list.items) |item| if (std.mem.eql(u8, item.label, "answer")) {
+                                        self.completion_found = true;
+                                        break;
+                                    };
+                                } else |_| {}
+                            }
+                            fn symbols(context: *anyopaque, result: []const @import("../../../editor/common/languages.zig").DocumentSymbol) void {
+                                const self: *@This() = @ptrCast(@alignCast(context));
+                                self.symbol_found = false;
+                                for (result) |symbol| if (std.mem.eql(u8, symbol.name, "answer")) {
+                                    self.symbol_found = true;
+                                    break;
+                                };
+                            }
+                            fn highlights(context: *anyopaque, result: anyerror!?[]const @import("../../../editor/common/languages.zig").DocumentHighlight) void {
+                                const self: *@This() = @ptrCast(@alignCast(context));
+                                self.highlight_count = if (result) |value| if (value) |items| items.len else 0 else |_| 0;
+                            }
+                        };
+                        var probe_arena = std.heap.ArenaAllocator.init(allocator);
+                        defer probe_arena.deinit();
+                        const probe_allocator = probe_arena.allocator();
+                        var probe: RealProviderProbe = .{};
+                        const completion_providers = try features.completion_provider.ordered(probe_allocator, model, false);
+                        var completion: ?@import("../../../editor/common/languages/completion.zig").CompletionRequest = null;
+                        for (completion_providers) |provider| if (provider.provide_completion_items_deferred) |request| {
+                            completion = try request(provider.context, probe_allocator, model, Position.init(3, 34), .{}, .None);
+                            if (completion != null) break;
+                        };
+                        const completion_request = completion orelse return error.ZlsCompletionProviderMissing;
+                        defer completion_request.cancel(completion_request.context);
+                        completion_request.on_complete(completion_request.context, &probe, RealProviderProbe.completions);
+                        const symbol_providers = try features.document_symbol_provider.ordered(probe_allocator, model, false);
+                        const symbol_provider = symbol_providers[0];
+                        const symbol_request = (try symbol_provider.request_document_symbols.?(symbol_provider.context, probe_allocator, model, .{ .context = &probe, .complete = RealProviderProbe.symbols })).?;
+                        defer if (probe.symbol_found == null) symbol_request.dispose();
+                        const highlight_providers = try features.document_highlight_provider.ordered(probe_allocator, model, false);
+                        var highlight_request: ?@import("../../../base/common/lifecycle.zig").IDisposable = null;
+                        for (highlight_providers) |provider| if (provider.request_document_highlights) |request| {
+                            highlight_request = try request(provider.context, probe_allocator, model, Position.init(3, 32), .None, .{ .context = &probe, .complete = RealProviderProbe.highlights });
+                            if (highlight_request != null) break;
+                        };
+                        defer if (probe.highlight_count == null) if (highlight_request) |request| request.dispose();
+                        const probe_deadline = time_compat.milliTimestamp() + 5000;
+                        while ((probe.completion_found == null or probe.symbol_found == null or probe.highlight_count == null) and time_compat.milliTimestamp() < probe_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                            time_compat.sleepMillis(10);
+                        }
+                        try std.testing.expect(probe.completion_found orelse false);
+                        try std.testing.expect(probe.symbol_found orelse false);
+                        try std.testing.expect((probe.highlight_count orelse 0) >= 2);
                         try selection_editor.setCursorPosition(Position.init(3, 32));
                         try selection_editor.growSelection(true);
                         try std.testing.expect(selection_editor.smart_select.pending != null);
@@ -4637,6 +4719,26 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                         }
                         try std.testing.expect(std.mem.indexOf(u8, try model.borrowLineContent(8), "fn sumValues(") != null);
                         try std.testing.expect(std.mem.indexOf(u8, try model.borrowLineContent(9), "return sumValues(") != null);
+                        // The real server's formatting response must be applied
+                        // before the save lifecycle writes the renamed document.
+                        try selection_editor.formatDocument();
+                        const format_deadline = time_compat.milliTimestamp() + 5000;
+                        while (std.mem.indexOf(u8, try model.borrowLineContent(2), "return 42") != null and time_compat.milliTimestamp() < format_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                            time_compat.sleepMillis(10);
+                        }
+                        try std.testing.expectEqualStrings("pub fn answer() u32 {", try model.borrowLineContent(2));
+                        try workbench.commands.execute("workbench.action.files.save");
+                        const save_deadline = time_compat.milliTimestamp() + 10000;
+                        var saved = false;
+                        while (!saved and time_compat.milliTimestamp() < save_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                            const contents = try directory.readFileAlloc(io, "sample.zig", allocator, .limited(64 * 1024));
+                            defer allocator.free(contents);
+                            saved = std.mem.indexOf(u8, contents, "fn sumValues(") != null and std.mem.indexOf(u8, contents, "return sumValues(") != null and std.mem.indexOf(u8, contents, "    return 42;") != null;
+                            time_compat.sleepMillis(10);
+                        }
+                        try std.testing.expect(saved);
                         model.setLanguage("plaintext");
                         try std.testing.expect(workbench.statusbar.model().findEntry("status.languageStatus") == null);
                         return;
