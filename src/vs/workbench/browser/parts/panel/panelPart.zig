@@ -58,6 +58,7 @@ pub const PanelPart = struct {
     title_nodes: std.array_list.Managed(TitleNode),
     title_action_nodes: std.array_list.Managed(TitleNode),
     title_menu: ?*menus.Menu = null,
+    view_title_menus: std.StringHashMapUnmanaged(*menus.Menu) = .empty,
     on_did_change: Emitter(void),
     /// Last painted title grid; unchanged chrome is blitted instead of being
     /// cleared and laid out again on every editor frame.
@@ -99,6 +100,12 @@ pub const PanelPart = struct {
             menu.deinit();
             self.allocator.destroy(menu);
         }
+        var view_menus = self.view_title_menus.valueIterator();
+        while (view_menus.next()) |menu| {
+            menu.*.deinit();
+            self.allocator.destroy(menu.*);
+        }
+        self.view_title_menus.deinit(self.allocator);
         self.on_did_change.deinit();
         self.pane.deinit();
     }
@@ -118,33 +125,52 @@ pub const PanelPart = struct {
         try self.onTitleMenuChanged();
     }
 
+    /// ViewPaneContainer merges a sole active pane's title toolbar with
+    /// the composite toolbar. The registered menu ID belongs to that view.
+    pub fn attachViewTitleMenu(self: *PanelPart, view_id: []const u8, menu_id: @import("../../../../platform/actions/common/actions.zig").MenuId, service: *menus.MenuService, context: @import("../../../../platform/contextkey/common/contextkey.zig").IContext) !void {
+        if (self.view_title_menus.contains(view_id)) return;
+        const menu = try service.createMenu(self.allocator, menu_id, context);
+        errdefer {
+            menu.deinit();
+            self.allocator.destroy(menu);
+        }
+        _ = try menu.onDidChange.listenSignal(self, onTitleMenuChanged);
+        try self.view_title_menus.put(self.allocator, view_id, menu);
+        errdefer _ = self.view_title_menus.remove(view_id);
+        try self.onTitleMenuChanged();
+    }
+
     fn onTitleMenuChanged(self: *PanelPart) !void {
         self.title_signature = null;
         self.title_action_nodes.clearRetainingCapacity();
         try self.on_did_change.fire({});
     }
 
-    fn titleActions(self: *const PanelPart) []const IAction {
-        const menu = self.title_menu orelse return &.{};
-        for (menu.getActions()) |group| {
+    fn navigationActions(menu: ?*menus.Menu) []const IAction {
+        for ((menu orelse return &.{}).getActions()) |group| {
             if (std.mem.eql(u8, group.id, "navigation")) return group.actions;
         }
         return &.{};
     }
 
+    fn titleActionGroups(self: *const PanelPart) [2][]const IAction {
+        const view_menu = if (self.pane.active_id) |id| self.view_title_menus.get(id) else null;
+        return .{ navigationActions(view_menu), navigationActions(self.title_menu) };
+    }
+
     pub fn titleActionTooltip(self: *const PanelPart, id: []const u8) ?[]const u8 {
-        for (self.titleActions()) |action| {
+        for (self.titleActionGroups()) |group| for (group) |action| {
             if (std.mem.eql(u8, action.id(), id)) return if (action.tooltip().len != 0) action.tooltip() else action.label();
-        }
+        };
         return null;
     }
 
     pub fn runTitleAction(self: *PanelPart, id: []const u8) !void {
-        for (self.titleActions()) |action| {
+        for (self.titleActionGroups()) |group| for (group) |action| {
             if (!std.mem.eql(u8, action.id(), id)) continue;
             if (action.enabled()) try action.execute(null);
             return;
-        }
+        };
     }
 
     pub fn setVisible(self: *PanelPart, visible: bool) !void {
@@ -427,7 +453,7 @@ pub fn renderTitle(
         try part.title_nodes.append(.{ .id = item.id, .node = tab });
     }
 
-    for (part.titleActions()) |action| {
+    for (part.titleActionGroups()) |group| for (group) |action| {
         const button = try doc.createElement(.div);
         const hovered = part.hovered_id != null and std.mem.eql(u8, part.hovered_id.?, action.id());
         button.setStyle(.{
@@ -447,12 +473,16 @@ pub fn renderTitle(
             if (action.checked() == true) "⊟" else "⊞"
         else if (std.mem.eql(u8, icon, "panel-close"))
             "×"
+        else if (std.mem.eql(u8, icon, "group-by-ref-type"))
+            "≣"
+        else if (std.mem.eql(u8, icon, "ungroup-by-ref-type"))
+            "≡"
         else
             action.label();
         _ = try button.appendText(label);
         _ = try root.appendChild(button);
         try part.title_action_nodes.append(.{ .id = action.id(), .node = button });
-    }
+    };
 
     doc.setRoot(root);
     try surface.paintFrame();
@@ -472,7 +502,8 @@ pub fn titleContentEnd(part: *const PanelPart, rect: ui.Rect) usize {
 /// Panel navigation actions occupy the right-hand end of the one-cell title.
 /// The active composite toolbar uses the remaining cells before this boundary.
 pub fn titleActionsStart(part: *const PanelPart, rect: ui.Rect) usize {
-    const count = part.titleActions().len;
+    const groups = part.titleActionGroups();
+    const count = groups[0].len + groups[1].len;
     const reserve = if (count == 0) 0 else count * 2 + 1;
     return ui.cell.snap(rect.x) + (ui.cell.snap(rect.w) -| reserve);
 }

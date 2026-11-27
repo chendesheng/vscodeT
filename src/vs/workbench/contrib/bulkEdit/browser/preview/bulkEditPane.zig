@@ -15,12 +15,16 @@ const contextkey = @import("../../../../../platform/contextkey/common/contextkey
 const editor_service = @import("../../../../services/editor/common/editorService.zig");
 const storage = @import("../../../../../platform/storage/common/storage.zig");
 const dialogs = @import("../../../../../platform/dialogs/common/dialogs.zig");
+const actions = @import("../../../../../platform/actions/common/actions.zig");
+const menus = @import("../../../../../platform/actions/common/menuService.zig");
+const context_menus = @import("../../../../../platform/contextview/browser/contextMenuService.zig");
 const ThemeColors = @import("../../../../browser/themeColors.zig").ThemeColors;
 const Allocator = std.mem.Allocator;
 
 pub const BulkEditPane = struct {
     pub const ID = "refactorPreview";
     pub const Schema = "vscode-bulkeditpreview-multieditor";
+    pub const title_menu_id = actions.menu_ids.BulkEditTitle;
     pub const Host = struct {
         context: *anyopaque,
         changed: *const fn (*anyopaque) void,
@@ -34,6 +38,8 @@ pub const BulkEditPane = struct {
         window: *dispatch.Queue,
         dialogs: dialogs.IDialogService,
         storage: ?storage.IStorageService = null,
+        menus: *menus.MenuService,
+        context_menu: context_menus.IContextMenuService,
     };
     allocator: Allocator,
     services: Services,
@@ -42,6 +48,7 @@ pub const BulkEditPane = struct {
     group_by_file: bool = true,
     focused: bool = false,
     status: []const u8 = "",
+    menu_context: ?contextkey.IContext = null,
     context_enabled: ?contextkey.IContextKey = null,
     context_categories: ?contextkey.IContextKey = null,
     context_checked: ?contextkey.IContextKey = null,
@@ -54,6 +61,7 @@ pub const BulkEditPane = struct {
         operations: *preview.BulkFileOperations,
         provider: *preview.BulkEditPreviewProvider,
         tree_view: ?*tree.BulkEditTree = null,
+        tree_view_states: [2]?tree.BulkEditTree.ViewState = .{ null, null },
         ready_listener: ?usize = null,
         checked_listener: ?usize = null,
         conflict_dialog: ?dialogs.IDialogHandle = null,
@@ -62,6 +70,7 @@ pub const BulkEditPane = struct {
             if (self.ready_listener) |id| self.provider.on_did_ready.unlisten(id);
             if (self.checked_listener) |id| self.operations.checked.on_did_change.unlisten(id);
             if (self.tree_view) |value| value.dispose();
+            for (&self.tree_view_states) |*state| if (state.*) |*value| value.deinit();
             self.provider.dispose();
             self.operations.dispose();
             self.owner.allocator.destroy(self);
@@ -92,6 +101,7 @@ pub const BulkEditPane = struct {
         for ([_]?contextkey.IContextKey{ self.context_enabled, self.context_categories, self.context_checked, self.context_grouping }) |key| if (key) |value| value.dispose();
     }
     pub fn bindContextKeys(self: *BulkEditPane, service: contextkey.IContextKeyService) !void {
+        self.menu_context = service.getContext();
         self.context_enabled = try service.createKey("refactorPreview.enabled", .{ .boolean = false });
         self.context_categories = try service.createKey("refactorPreview.hasCategories", .{ .boolean = false });
         self.context_checked = try service.createKey("refactorPreview.hasCheckedChanges", .{ .boolean = false });
@@ -189,10 +199,22 @@ pub const BulkEditPane = struct {
     pub fn groupByType(self: *BulkEditPane) !void {
         try self.setGrouping(false);
     }
+    pub fn toggleGrouping(self: *BulkEditPane) !void {
+        if (self.session == null or self.session.?.tree_view == null) return;
+        try self.setGrouping(!self.group_by_file);
+    }
+
     fn setGrouping(self: *BulkEditPane, by_file: bool) !void {
         if (self.group_by_file == by_file) return;
+        if (self.session) |session| if (session.tree_view) |value| {
+            const old_index = @intFromBool(self.group_by_file);
+            const old_state = try value.getViewState();
+            if (session.tree_view_states[old_index]) |*saved| saved.deinit();
+            session.tree_view_states[old_index] = old_state;
+            const new_index = @intFromBool(by_file);
+            try value.setGrouping(by_file, if (session.tree_view_states[new_index]) |*saved| saved else null);
+        };
         self.group_by_file = by_file;
-        if (self.session) |session| if (session.tree_view) |value| try value.setGrouping(by_file);
         if (self.services.storage) |service| try service.store("refactorPreview.groupByFile", .{ .boolean = by_file }, .profile, .user);
         self.updateContexts();
         self.host.changed(self.host.context);
@@ -236,8 +258,22 @@ pub const BulkEditPane = struct {
         drawText(grid, x + 1, y + height - 1, width -| 1, " Apply ", button_style);
         drawText(grid, x + 10, y + height - 1, width -| 10, " Discard ", style);
     }
+    fn showContextMenu(self: *BulkEditPane, anchor: context_menus.Anchor) !void {
+        const Context = struct {
+            fn run(_: *@This(), _: []const u8) !void {}
+        };
+        const menu = try context_menus.Menu.init(self.allocator, Context{}, Context.run);
+        errdefer menu.deinit();
+        try menu.appendMenuActions(self.services.menus, actions.menu_ids.BulkEditContext, self.menu_context orelse return error.NoContextKeys, false);
+        try self.services.context_menu.showContextMenu(menu, anchor);
+    }
+
     pub fn handleKey(self: *BulkEditPane, event: *const ui.KeyEvent) bool {
         const session = self.session orelse return false;
+        if (event.key == .f10 and event.mods.shift) {
+            if (session.tree_view) |value| if (value.selectedAnchor()) |anchor| self.showContextMenu(anchor) catch {};
+            return true;
+        }
         if (event.key == .enter and event.mods.ctrl) {
             self.accept() catch {};
             return true;
@@ -246,6 +282,12 @@ pub const BulkEditPane = struct {
     }
     pub fn handleMouse(self: *BulkEditPane, event: *const ui.MouseEvent) bool {
         const session = self.session orelse return false;
+        if (event.kind == .down and event.button == .right) {
+            if (session.tree_view) |value| {
+                if (value.selectElementAt(event.x, event.y)) self.showContextMenu(.mouse(event)) catch {};
+            }
+            return true;
+        }
         const footer = ui.cell.snap(self.last_rect.y + self.last_rect.h) -| 1;
         if (event.y == footer and event.kind == .down and event.button == .left) {
             const relative = event.x -| ui.cell.snap(self.last_rect.x);

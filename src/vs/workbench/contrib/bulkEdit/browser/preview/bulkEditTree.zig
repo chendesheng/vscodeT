@@ -16,6 +16,7 @@ const SnippetParser = @import("../../../../../editor/contrib/snippet/browser/sni
 const Allocator = std.mem.Allocator;
 
 const TextEdit = struct {
+    identity: []const u8,
     file: FileElement,
     edit: preview.BulkTextEdit,
     prefix: []const u8,
@@ -24,6 +25,7 @@ const TextEdit = struct {
     suffix: []const u8,
 };
 pub const FileElement = struct {
+    identity: []const u8,
     operation: *preview.BulkFileOperation,
     category: ?*preview.BulkCategory = null,
     label: []const u8,
@@ -58,15 +60,19 @@ pub const FileElement = struct {
         }
     }
 };
-pub const Element = union(enum) {
+pub const CategoryElement = struct {
     category: *preview.BulkCategory,
+    identity: []const u8,
+};
+pub const Element = union(enum) {
+    category: CategoryElement,
     file: FileElement,
     text: TextEdit,
 
     pub fn isChecked(self: *const Element, operations: *preview.BulkFileOperations) bool {
         switch (self.*) {
             .category => |category| {
-                for (category.file_operations.items) |operation| for (operation.original_edits.items) |index| {
+                for (category.category.file_operations.items) |operation| for (operation.original_edits.items) |index| {
                     if (!operations.checked.isChecked(index)) return false;
                 };
                 return true;
@@ -85,7 +91,7 @@ pub const Element = union(enum) {
     pub fn setChecked(self: *const Element, operations: *preview.BulkFileOperations, value: bool) void {
         if (self.isDisabled(operations)) return;
         switch (self.*) {
-            .category => |category| for (category.file_operations.items) |operation| for (operation.original_edits.items) |index| operations.checked.updateChecked(index, value),
+            .category => |category| for (category.category.file_operations.items) |operation| for (operation.original_edits.items) |index| operations.checked.updateChecked(index, value),
             .file => |file| file.setChecked(operations, value),
             .text => |text| {
                 operations.checked.updateChecked(text.edit.index, value);
@@ -111,6 +117,19 @@ pub const Element = union(enum) {
     }
 };
 
+pub const BulkEditIdentityProvider = struct {
+    pub fn interface(self: *BulkEditIdentityProvider) @import("../../../../../base/browser/ui/tree/tree.zig").IdentityProvider(*Element) {
+        return .{ .context = self, .get_id = getId };
+    }
+    fn getId(_: *anyopaque, element: *Element) []const u8 {
+        return switch (element.*) {
+            .category => |category| category.identity,
+            .file => |file| file.identity,
+            .text => |text| text.identity,
+        };
+    }
+};
+
 pub const BulkEditDataSource = struct {
     model_service: models,
     group_by_file: bool = true,
@@ -121,7 +140,7 @@ pub const BulkEditDataSource = struct {
         const result = try a.alloc(Tree.Element, operations.categories.items.len);
         for (operations.categories.items, result) |category, *item| {
             const element = try a.create(Element);
-            element.* = .{ .category = category };
+            element.* = .{ .category = .{ .category = category, .identity = try std.fmt.allocPrint(a, "category:{s}", .{category.key}) } };
             const items = try self.fileChildren(a, category.file_operations.items, category);
             item.* = .{ .element = element, .children = items, .collapsible = items.len > 0 };
         }
@@ -138,7 +157,13 @@ pub const BulkEditDataSource = struct {
         const result = try a.alloc(Tree.Element, ordered.len);
         for (ordered, result) |operation, *item| {
             const path = try uri_util.fsPath(operation.uri, a);
-            const file: FileElement = .{ .operation = operation, .category = category, .label = std.fs.path.basename(path), .description = std.fs.path.dirname(path) orelse "" };
+            const file: FileElement = .{
+                .identity = try std.fmt.allocPrint(a, "file:{d}:{s}{s}", .{ operation.key.len, operation.key, if (category) |value| value.key else "" }),
+                .operation = operation,
+                .category = category,
+                .label = std.fs.path.basename(path),
+                .description = std.fs.path.dirname(path) orelse "",
+            };
             const element = try a.create(Element);
             element.* = .{ .file = file };
             const edits = try self.textChildren(a, file);
@@ -159,7 +184,7 @@ pub const BulkEditDataSource = struct {
         const result = try a.alloc(Tree.Element, sorted.len);
         for (sorted, result) |edit, *item| {
             const element = try a.create(Element);
-            var text: TextEdit = .{ .file = file, .edit = edit, .prefix = "", .selecting = "", .inserting = if (edit.text_edit.insert_as_snippet) try SnippetParser.asInsertText(a, edit.text_edit.text) else edit.text_edit.text, .suffix = "" };
+            var text: TextEdit = .{ .identity = try std.fmt.allocPrint(a, "edit:{d}", .{edit.index}), .file = file, .edit = edit, .prefix = "", .selecting = "", .inserting = if (edit.text_edit.insert_as_snippet) try SnippetParser.asInsertText(a, edit.text_edit.text) else edit.text_edit.text, .suffix = "" };
             if (self.model_service.getModel(file.operation.uri)) |reference| {
                 const model = reference.textEditorModel;
                 if (edit.text_edit.range) |raw_range| {
@@ -206,15 +231,18 @@ pub const BulkEditTree = struct {
     source: BulkEditDataSource,
     tree: *Tree,
     theme: ?*const ThemeColors = null,
+    identity: BulkEditIdentityProvider = .{},
+
+    pub const ViewState = @import("../../../../../base/browser/ui/tree/abstractTree.zig").AbstractTreeViewState;
 
     pub fn create(a: Allocator, operations: *preview.BulkFileOperations, model_service: models, group_by_file: bool) !*BulkEditTree {
         const self = try a.create(BulkEditTree);
         errdefer a.destroy(self);
         self.* = .{ .allocator = a, .arena = .init(a), .operations = operations, .source = .{ .model_service = model_service, .group_by_file = group_by_file }, .tree = undefined };
         errdefer self.arena.deinit();
-        self.tree = try Tree.init(a, "BulkEdit", .{ .context = self, .render = renderRow }, false, .{});
+        self.tree = try Tree.init(a, "BulkEdit", .{ .context = self, .render = renderRow }, true, .{});
         errdefer self.tree.deinit();
-        try self.rebuild();
+        try self.rebuild(null);
         return self;
     }
     pub fn dispose(self: *BulkEditTree) void {
@@ -222,19 +250,38 @@ pub const BulkEditTree = struct {
         self.arena.deinit();
         self.allocator.destroy(self);
     }
-    pub fn rebuild(self: *BulkEditTree) !void {
+    fn initialExpansion(children: []Tree.Element, expanded: bool) void {
+        for (children) |*child| {
+            child.collapsed = !expanded;
+            initialExpansion(@constCast(child.children), expanded);
+        }
+    }
+    pub fn rebuild(self: *BulkEditTree, state: ?*const ViewState) !void {
         var new_arena = std.heap.ArenaAllocator.init(self.allocator);
-        errdefer new_arena.deinit();
+        var arena_owned = true;
+        errdefer if (arena_owned) new_arena.deinit();
         const children = try self.source.children(new_arena.allocator(), self.operations);
+        // Upstream expands the first ten root nodes recursively when the
+        // grouping has no saved state, leaving later roots collapsed.
+        for (children, 0..) |_, index| initialExpansion(children[index..][0..1], index < 10);
         try self.tree.setChildren(null, children);
         self.arena.deinit();
         self.arena = new_arena;
-        if (self.tree.count() > 0) self.tree.view.setSelectionNode(self.tree.view.rendered.items[0]);
+        arena_owned = false;
+        if (state) |saved| {
+            try self.tree.view.restoreViewState(self.identity.interface(), saved);
+        } else {
+            self.tree.view.widget.view.setScrollTop(0);
+            if (self.tree.count() > 0) self.tree.view.setSelectionNode(self.tree.view.rendered.items[0]);
+        }
     }
-    pub fn setGrouping(self: *BulkEditTree, group_by_file: bool) !void {
+    pub fn getViewState(self: *BulkEditTree) !ViewState {
+        return self.tree.view.getViewState(self.identity.interface());
+    }
+    pub fn setGrouping(self: *BulkEditTree, group_by_file: bool, state: ?*const ViewState) !void {
         if (self.source.group_by_file == group_by_file) return;
         self.source.group_by_file = group_by_file;
-        try self.rebuild();
+        try self.rebuild(state);
     }
     pub fn setFocus(self: *BulkEditTree, focus: bool) void {
         self.tree.setFocus(focus);
@@ -242,6 +289,15 @@ pub const BulkEditTree = struct {
     pub fn selected(self: *BulkEditTree) ?*Element {
         return self.tree.view.selectedElement();
     }
+    pub fn selectElementAt(self: *BulkEditTree, x: usize, y: usize) bool {
+        return self.tree.view.selectElementAt(x, y) != null;
+    }
+
+    pub fn selectedAnchor(self: *BulkEditTree) ?@import("../../../../../platform/contextview/browser/contextMenuService.zig").Anchor {
+        const anchor = self.tree.view.selectionAnchor() orelse return null;
+        return .{ .x = anchor.x, .y = anchor.y };
+    }
+
     pub fn toggleChecked(self: *BulkEditTree) void {
         if (self.selected()) |element| element.setChecked(self.operations, !element.isChecked(self.operations));
     }
@@ -265,8 +321,11 @@ pub const BulkEditTree = struct {
                 // Tree/list hit testing owns the selected row. The checkbox is
                 // at the same depth-relative coordinate as the row renderer.
                 const relative_x = event.x -| ui.cell.snap(self.tree.view.widget.last_rect.x);
-                const checkbox = 3 + (node.depth -| 1) * 2;
-                if (relative_x == checkbox) self.toggleChecked();
+                const twisty = 1 + (node.depth -| 1) * 2;
+                const checkbox = twisty + 2;
+                if (relative_x == twisty and node.collapsible) {
+                    _ = self.tree.setCollapsed(node.element, !node.collapsed, false) catch {};
+                } else if (relative_x == checkbox) self.toggleChecked();
             }
         }
         return handled;
@@ -304,7 +363,7 @@ pub const BulkEditTree = struct {
         x += 2;
         if (x >= right) return;
         switch (element.*) {
-            .category => |category| _ = drawText(row.grid, x, row.y, right - x, category.metadata.label, paint),
+            .category => |category| _ = drawText(row.grid, x, row.y, right - x, category.category.metadata.label, paint),
             .file => |file| {
                 const kind = file.operation.type_mask;
                 if (kind & @backingInt(preview.BulkFileOperationType.Delete) != 0) paint.attrs |= ui.cell.Attr.strikethrough;

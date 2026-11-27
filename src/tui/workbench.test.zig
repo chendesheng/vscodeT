@@ -10542,6 +10542,130 @@ test "Diff editor commands: refactor preview shows real multi-diff models and ap
     try std.testing.expect(wb.activeTab().?.multi_diff == null);
 }
 
+test "Diff editor commands: refactor preview restores per-grouping tree state and uses registered title and context menus" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const bulk = @import("../vs/editor/browser/services/bulkEditService.zig");
+    const Probe = struct {
+        result: ?bulk.IBulkEditResult = null,
+        failure: ?anyerror = null,
+        fn complete(context: *anyopaque, reply: anyerror!bulk.IBulkEditResult) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (reply) |value| self.result = value else |err| self.failure = err;
+        }
+    };
+    const Title = struct {
+        fn click(wb: *Workbench, id: []const u8) !void {
+            var frame: std.Io.Writer.Allocating = .init(a);
+            defer frame.deinit();
+            try renderFrame(wb, &frame.writer);
+            const rect = wb.geometry().panelRect();
+            const x = ui.cell.snap(rect.x);
+            const y = ui.cell.snap(rect.y);
+            for (x..x + ui.cell.snap(rect.w)) |column| {
+                const hit = panel_part_mod.hitTitleAction(&wb.panel_part, rect, column, y) orelse continue;
+                if (std.mem.eql(u8, hit, id)) {
+                    try std.testing.expect(terminal_workbench.handlePanelMouse(wb, &.{ .kind = .down, .button = .left, .x = column, .y = y }));
+                    return;
+                }
+            }
+            return error.ExpectedTitleAction;
+        }
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var edits: [12]languages.WorkspaceResourceEdit = undefined;
+    for (&edits, 0..) |*edit, i| {
+        const filename = try std.fmt.allocPrint(scratch, "file-{d:0>2}.txt", .{i});
+        try tmp.dir.writeFile(io, .{ .sub_path = filename, .data = "old" });
+        const path = try tmp.dir.realPathFileAlloc(io, filename, scratch);
+        edit.* = .{ .text = .{
+            .resource = .{ .scheme = "file", .path = .{ .raw = path } },
+            .range = Range.init(1, 1, 1, 4),
+            .text = "new",
+            .metadata = .{ .label = if (i < 6) "First category" else "Second category" },
+        } };
+    }
+    const window = try TestWindow.init(a, io, &.{}, 110, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    var probe: Probe = .{};
+    _ = try wb.bulk_edit_api.apply(.{ .edits = &edits }, .{ .show_preview = true }, .{ .context = &probe, .complete = Probe.complete });
+    const pane = &wb.bulk_edit_preview.?;
+    for (0..5000) |_| {
+        if (pane.session.?.tree_view != null) break;
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        time_compat.sleepMillis(1);
+    }
+    const tree = pane.session.?.tree_view orelse return error.ExpectedPreviewTree;
+    try std.testing.expect(pane.group_by_file);
+    const root = try tree.tree.model.getNode(null);
+    try std.testing.expectEqual(@as(usize, 12), root.children.items.len);
+    for (root.children.items, 0..) |node, index| try std.testing.expectEqual(index >= 10, node.collapsed);
+    var frame: std.Io.Writer.Allocating = .init(a);
+    defer frame.deinit();
+    try renderFrame(wb, &frame.writer);
+    const chosen = root.children.items[2];
+    const chosen_key = chosen.element.?.file.operation.key;
+    tree.tree.view.setSelectionNode(chosen);
+    // The actual twisty cell collapses the file.
+    const anchor = tree.selectedAnchor().?;
+    try std.testing.expect(terminal_workbench.handlePanelMouse(wb, &.{ .kind = .down, .button = .left, .x = anchor.x + 1, .y = anchor.y }));
+    try std.testing.expect(chosen.collapsed);
+    tree.tree.view.widget.view.setScrollTop(2);
+    const file_scroll = tree.tree.view.widget.view.scroll_top;
+
+    try Title.click(wb, "refactorPreview.groupByType");
+    try std.testing.expect(!pane.group_by_file);
+    const category_root = try tree.tree.model.getNode(null);
+    try std.testing.expectEqual(@as(usize, 2), category_root.children.items.len);
+    const category_first = category_root.children.items[0];
+    try std.testing.expect(!category_first.collapsed);
+    _ = try tree.tree.setCollapsed(category_first.element, true, false);
+    tree.tree.view.setSelectionNode(category_root.children.items[1]);
+    const category_key = tree.selected().?.category.category.key;
+    try Title.click(wb, "refactorPreview.groupByFile");
+    try std.testing.expect(pane.group_by_file);
+    try std.testing.expectEqualStrings(chosen_key, tree.selected().?.file.operation.key);
+    try std.testing.expect(tree.tree.selection().?.collapsed);
+    try std.testing.expectEqual(file_scroll, tree.tree.view.widget.view.scroll_top);
+
+    try Title.click(wb, "refactorPreview.groupByType");
+    try std.testing.expect(!pane.group_by_file);
+    try std.testing.expectEqualStrings(category_key, tree.selected().?.category.category.key);
+    try std.testing.expect((try tree.tree.model.getNode(null)).children.items[0].collapsed);
+
+    // The registered context menu exposes the same actions and toggle state.
+    try renderFrame(wb, &frame.writer);
+    const context_anchor = tree.selectedAnchor().?;
+    try std.testing.expect(terminal_workbench.handlePanelMouse(wb, &.{ .kind = .down, .button = .right, .x = context_anchor.x + 5, .y = context_anchor.y }));
+    const menu = wb.context_menu_service.current orelse return error.ExpectedPreviewContextMenu;
+    var found_toggle = false;
+    var found_apply = false;
+    var found_discard = false;
+    for (menu.items.items) |item| {
+        if (std.mem.eql(u8, item.label, "Group Changes By Type")) {
+            found_toggle = true;
+            try std.testing.expect(item.checked and item.enabled);
+        } else if (std.mem.eql(u8, item.label, "Apply Refactoring")) {
+            found_apply = true;
+        } else if (std.mem.eql(u8, item.label, "Discard Refactoring")) {
+            found_discard = true;
+        }
+    }
+    try std.testing.expect(found_toggle and found_apply and found_discard);
+    try std.testing.expect(wb.context_menu_service.handleKey(&.{ .key = .end }));
+    try std.testing.expect(wb.context_menu_service.handleKey(&.{ .key = .enter }));
+    try std.testing.expect(pane.group_by_file);
+    try std.testing.expectEqualStrings(chosen_key, tree.selected().?.file.operation.key);
+    try wb.commands.execute("refactorPreview.discard");
+    try std.testing.expect(!pane.hasInput());
+    try std.testing.expect(probe.failure == null and !probe.result.?.is_applied);
+}
+
 test "Diff editor commands: workspace text and file edit groups share real model undo and redo" {
     const a = std.testing.allocator;
     const io = std.testing.io;

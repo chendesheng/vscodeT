@@ -162,6 +162,7 @@ const categories = contexts.Expr{ .Defined = "refactorPreview.hasCategories" };
 const by_file = contexts.Expr{ .Defined = "refactorPreview.groupByFile" };
 const by_type = contexts.Expr{ .Not = "refactorPreview.groupByFile" };
 const can_apply = contexts.Expr{ .And = @constCast(&[_]*const contexts.Expr{ &enabled, &checked }) };
+const can_toggle_group = contexts.Expr{ .And = @constCast(&[_]*const contexts.Expr{ &enabled, &categories }) };
 const can_group_file = contexts.Expr{ .And = @constCast(&[_]*const contexts.Expr{ &enabled, &categories, &by_type }) };
 const can_group_type = contexts.Expr{ .And = @constCast(&[_]*const contexts.Expr{ &enabled, &categories, &by_file }) };
 const focused_view = contexts.Expr{ .Equals = .{ .key = "focusedView", .value = .{ .string = BulkEditPane.ID } } };
@@ -174,6 +175,11 @@ pub const view_actions = [_]actions.Action2{
     make("refactorPreview.toggleCheckedState", "Toggle Change", null, &enabled, BulkEditPane.toggleChecked, &.{.{ .id = actions.menu_ids.BulkEditContext, .group = "navigation" }}, @backingInt(keys.KeyCode.Space), &list_focus, @backingInt(weights.WorkbenchContrib)),
     make("refactorPreview.groupByFile", "Group Changes By File", "ungroup-by-ref-type", &can_group_file, BulkEditPane.groupByFile, &.{.{ .id = actions.menu_ids.BulkEditTitle, .group = "navigation", .order = 3, .when = &can_group_file }}, null, null, 0),
     make("refactorPreview.groupByType", "Group Changes By Type", "group-by-ref-type", &can_group_type, BulkEditPane.groupByType, &.{.{ .id = actions.menu_ids.BulkEditTitle, .group = "navigation", .order = 3, .when = &can_group_type }}, null, null, 0),
+    blk: {
+        var action = make("refactorPreview.toggleGrouping", "Group Changes By Type", "list-tree", &can_toggle_group, BulkEditPane.toggleGrouping, &.{.{ .id = actions.menu_ids.BulkEditContext, .order = 3 }}, null, null, 0);
+        action.command.toggled = &by_type;
+        break :blk action;
+    },
 };
 fn make(comptime id: []const u8, comptime title: []const u8, comptime icon: ?[]const u8, comptime condition: *const contexts.Expr, comptime run: anytype, comptime menus: []const actions.MenuRegistration, comptime key: ?u32, comptime when: ?*const contexts.Expr, comptime weight: i64) actions.Action2 {
     var action = view_action(BulkEditPane, .active, .{ .id = id, .title = title, .category = "Refactor Preview", .icon = icon, .precondition = condition }, false, run, .{});

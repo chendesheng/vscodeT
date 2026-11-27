@@ -1237,6 +1237,7 @@ pub const TerminalWorkbench = struct {
         try self.part.attachTitleMenus(.{ .menus = &self.menu_service, .parent_context = self.core.context_keys.getContext(), .context = self, .request_frame = requestWorkbenchFrame });
         errdefer self.part.disposeTitleMenus();
         try self.panel_part.attachTitleMenu(&self.menu_service, self.core.context_keys.getContext());
+        try self.panel_part.attachViewTitleMenu(BulkEditPane.ID, BulkEditPane.title_menu_id, &self.menu_service, self.core.context_keys.getContext());
         _ = try self.panel_part.on_did_change.listenSignal(self, struct {
             fn run(host: *TerminalWorkbench) !void {
                 host.requestFrame();
@@ -1342,7 +1343,7 @@ pub const TerminalWorkbench = struct {
         _ = try self.services.set(@import("../vs/workbench/services/host/browser/host.zig").host_service_id, &self.host_api);
         _ = try self.services.set(storage_mod.storage_service_id, &self.storage_api);
         self.bulk_edit_preview_contribution = .{ .allocator = self.allocator, .views_service = self.views_api, .panes = self.pane_composite_api, .layout = self.layout_api, .editors = self.editor_api, .dialogs = self.dialog_api };
-        self.bulk_edit_preview = BulkEditPane.init(self.allocator, .{ .files = self.file_service_api, .models = self.model_service_api, .text = self.text_model_api, .editors = self.editor_api, .window = &self.window_events, .dialogs = self.dialog_api, .storage = self.storage_api }, .{ .context = self, .changed = requestWorkbenchFrame, .finished = struct {
+        self.bulk_edit_preview = BulkEditPane.init(self.allocator, .{ .files = self.file_service_api, .models = self.model_service_api, .text = self.text_model_api, .editors = self.editor_api, .window = &self.window_events, .dialogs = self.dialog_api, .storage = self.storage_api, .menus = &self.menu_service, .context_menu = self.context_menu_api }, .{ .context = self, .changed = requestWorkbenchFrame, .finished = struct {
             fn finish(context: *anyopaque) void {
                 const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
                 if (host.bulk_edit_preview_contribution) |*contribution| contribution.onPaneFinished();
