@@ -4739,6 +4739,79 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                             time_compat.sleepMillis(10);
                         }
                         try std.testing.expect(saved);
+                        // A real Zig diagnostic must reach the marker service and
+                        // be included in the language client's quick-fix request.
+                        const last_line = model.getLineCount();
+                        try selection_editor.setCursorPosition(Position.init(last_line, model.getLineMaxColumn(last_line)));
+                        try selection_editor.insertText("pub fn invalid() void {\n    const unused = 1;\n}\n");
+                        var diagnostic_resource = try @import("../../../platform/markers/common/markers.zig").Resource.fromUri(allocator, model.uri());
+                        defer diagnostic_resource.deinit(allocator);
+                        const diagnostic_deadline = time_compat.milliTimestamp() + 10000;
+                        var diagnostic_range: ?Range = null;
+                        while (diagnostic_range == null and time_compat.milliTimestamp() < diagnostic_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                            const markers = try workbench.marker_service.?.read(probe_allocator, .{ .resource = diagnostic_resource });
+                            for (markers) |marker| if (std.mem.indexOf(u8, marker.message, "unused local constant") != null) {
+                                diagnostic_range = Range.init(marker.start_line_number, marker.start_column, marker.end_line_number, marker.end_column);
+                                break;
+                            };
+                            time_compat.sleepMillis(10);
+                        }
+                        const fix_range = diagnostic_range orelse return error.ZlsDiagnosticMissing;
+                        const actions_mod = @import("../../../editor/contrib/codeAction/browser/codeAction.zig");
+                        const action_kinds = @import("../../../editor/contrib/codeAction/common/types.zig");
+                        const bulk = @import("../../../editor/browser/services/bulkEditService.zig");
+                        const RealActionProbe = struct {
+                            actions: ?*actions_mod.ManagedCodeActionSet = null,
+                            applied: ?bool = null,
+                            failure: ?anyerror = null,
+                            fn ready(context: *anyopaque, result: anyerror!*actions_mod.ManagedCodeActionSet) void {
+                                const self: *@This() = @ptrCast(@alignCast(context));
+                                if (result) |value| self.actions = value else |err| self.failure = err;
+                            }
+                            fn appliedEdit(context: *anyopaque, result: anyerror!bulk.IBulkEditResult) void {
+                                const self: *@This() = @ptrCast(@alignCast(context));
+                                if (result) |value| self.applied = value.is_applied else |err| self.failure = err;
+                            }
+                        };
+                        var action_probe: RealActionProbe = .{};
+                        const action_request = (try actions_mod.getCodeActions(allocator, &features.code_action_provider, model, fix_range, .{ .type = .Invoke, .trigger_action = .QuickFix, .filter = .{ .include = action_kinds.CodeActionKind.QuickFix } }, .None, .{ .context = &action_probe, .complete = RealActionProbe.ready })).?;
+                        const action_deadline = time_compat.milliTimestamp() + 5000;
+                        while (action_probe.actions == null and action_probe.failure == null and time_compat.milliTimestamp() < action_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                            time_compat.sleepMillis(10);
+                        }
+                        if (action_probe.actions == null and action_probe.failure == null) action_request.dispose();
+                        const action_set = action_probe.actions orelse return error.ZlsQuickFixMissing;
+                        defer action_set.dispose();
+                        var edit: ?@import("../../../editor/common/languages.zig").WorkspaceEdit = null;
+                        for (action_set.valid_actions) |item| if (item.action.edit) |value| {
+                            edit = value;
+                            break;
+                        };
+                        const apply_request = try workbench.bulk_edit_api.apply(edit orelse return error.ZlsQuickFixEditMissing, .{ .editor = selection_editor }, .{ .context = &action_probe, .complete = RealActionProbe.appliedEdit });
+                        const apply_deadline = time_compat.milliTimestamp() + 5000;
+                        while (action_probe.applied == null and action_probe.failure == null and time_compat.milliTimestamp() < apply_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                            time_compat.sleepMillis(10);
+                        }
+                        if (action_probe.applied == null and action_probe.failure == null) if (apply_request) |request| request.dispose();
+                        try std.testing.expect(action_probe.applied orelse false);
+                        try std.testing.expectEqualStrings("    _ = unused; // autofix", try model.borrowLineContent(last_line + 2));
+                        try std.testing.expectEqualStrings("}", try model.borrowLineContent(last_line + 3));
+                        const diagnostic_clear_deadline = time_compat.milliTimestamp() + 10000;
+                        var diagnostic_cleared = false;
+                        while (!diagnostic_cleared and time_compat.milliTimestamp() < diagnostic_clear_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                            const markers = try workbench.marker_service.?.read(probe_allocator, .{ .resource = diagnostic_resource });
+                            diagnostic_cleared = true;
+                            for (markers) |marker| if (marker.severity == @import("../../../platform/markers/common/markers.zig").MarkerSeverity.Error or std.mem.indexOf(u8, marker.message, "unused local constant") != null) {
+                                diagnostic_cleared = false;
+                                break;
+                            };
+                            time_compat.sleepMillis(10);
+                        }
+                        try std.testing.expect(diagnostic_cleared);
                         model.setLanguage("plaintext");
                         try std.testing.expect(workbench.statusbar.model().findEntry("status.languageStatus") == null);
                         return;
