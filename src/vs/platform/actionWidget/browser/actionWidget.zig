@@ -143,6 +143,8 @@ pub const ActionWidgetService = struct {
         }
         try self.context_menu.showContextMenu(popup, anchor);
         self.setVisible(self.active != null);
+        // Upstream ActionList.focus selects the first enabled entry on open.
+        if (self.active == value) _ = self.context_menu.handleKey(&.{ .key = .home });
     }
 
     fn hide(context: *anyopaque, owner: ?*anyopaque) void {
