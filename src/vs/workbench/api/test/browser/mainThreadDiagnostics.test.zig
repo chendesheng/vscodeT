@@ -96,6 +96,52 @@ test "mainThreadDiagnostics: clear removes owner markers on dispose" {
     });
 }
 
+test "mainThreadDiagnostics: preserves diagnostic code targets and related resource locations" {
+    const allocator = std.testing.allocator;
+    var service = MarkerService.init(allocator);
+    defer service.deinit();
+    var fake = Fake{ .allocator = allocator };
+    defer if (fake.last_payload_json) |json| allocator.free(json);
+    const actor = try MainThreadDiagnostics.init(allocator, &service, .{ .context = &fake, .notify = Fake.notify }, null);
+    defer actor.deinit();
+    {
+        var request = std.heap.ArenaAllocator.init(allocator);
+        defer request.deinit();
+        const arena = request.allocator();
+        const value = try std.json.parseFromSliceLeaky(std.json.Value, arena,
+            \\["lint",[[{"scheme":"file","path":"/a"},[{"severity":8,"message":"bad","code":{"value":"E42","target":{"scheme":"https","authority":"example.com","path":"/docs","fragment":"E42"}},"relatedInformation":[{"resource":{"scheme":"git","path":"/other file","query":"ref=HEAD"},"message":"previous declaration","startLineNumber":3,"startColumn":5,"endLineNumber":3,"endColumn":8}]}]]]]
+        , .{});
+        const args = [_]rpc.Arg{ .{ .json = value.array.items[0] }, .{ .json = value.array.items[1] } };
+        _ = try actor.invoke("$changeMany", &args, arena);
+    }
+    const resource: markers.Resource = .{ .scheme = "file", .path = "/a" };
+    const list = try service.read(allocator, .{ .resource = resource });
+    defer allocator.free(list);
+    try std.testing.expectEqual(@as(usize, 1), list.len);
+    const marker = list[0];
+    try std.testing.expectEqualStrings("E42", marker.code.?);
+    try std.testing.expectEqualStrings("E42", marker.code_target.?.fragment);
+    try std.testing.expectEqual(@as(usize, 1), marker.related_information.len);
+    const info = marker.related_information[0];
+    try std.testing.expectEqualStrings("/other file", info.resource.path);
+    try std.testing.expectEqualStrings("ref=HEAD", info.resource.query);
+    try std.testing.expectEqualStrings("previous declaration", info.message);
+    try std.testing.expectEqual(@as(u32, 5), info.start_column);
+    // A workbench-owned marker carrying the same diagnostic must be forwarded
+    // back to the extension host with structured URIs, not discarded fields.
+    try service.changeOne("native", resource, &.{.{ .message = marker.message, .code = marker.code, .code_target = marker.code_target, .related_information = marker.related_information }}, null);
+    try actor.flush();
+    var response = std.heap.ArenaAllocator.init(allocator);
+    defer response.deinit();
+    const payload = try std.json.parseFromSliceLeaky(std.json.Value, response.allocator(), fake.last_payload_json.?, .{});
+    const diagnostic = payload.array.items[0].array.items[1].array.items[0].object;
+    try std.testing.expectEqualStrings("E42", diagnostic.get("code").?.object.get("value").?.string);
+    try std.testing.expectEqualStrings("example.com", diagnostic.get("code").?.object.get("target").?.object.get("authority").?.string);
+    const related = diagnostic.get("relatedInformation").?.array.items[0].object;
+    try std.testing.expectEqualStrings("/other file", related.get("resource").?.object.get("path").?.string);
+    try std.testing.expectEqual(@as(i64, 8), related.get("endColumn").?.integer);
+}
+
 test "mainThreadDiagnostics: deinit after an owner clears its markers" {
     const allocator = std.testing.allocator;
     var marker_service = MarkerService.init(allocator);

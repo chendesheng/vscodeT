@@ -225,16 +225,19 @@ pub const MainThreadDiagnostics = struct {
 fn markerDataFromMarkerCopy(allocator: Allocator, marker: *const markers.Marker) !markers.MarkerData {
     var data = markerDataFromMarker(marker);
     data.code = if (marker.code) |value| try allocator.dupe(u8, value) else null;
+    data.code_target = if (marker.code_target) |value| try value.clone(allocator) else null;
     data.message = try allocator.dupe(u8, marker.message);
     data.source = if (marker.source) |value| try allocator.dupe(u8, value) else null;
     data.origin = if (marker.origin) |value| try allocator.dupe(u8, value) else null;
     data.tags = try allocator.dupe(u32, marker.tags);
+    data.related_information = try markers.RelatedInformation.cloneAll(allocator, marker.related_information);
     return data;
 }
 
 fn markerDataFromMarker(marker: *const markers.Marker) markers.MarkerData {
     return .{
         .code = if (marker.code) |value| value else null,
+        .code_target = marker.code_target,
         .severity = marker.severity,
         .message = marker.message,
         .source = if (marker.source) |value| value else null,
@@ -244,6 +247,7 @@ fn markerDataFromMarker(marker: *const markers.Marker) markers.MarkerData {
         .end_column = marker.end_column,
         .model_version_id = marker.model_version_id,
         .tags = marker.tags,
+        .related_information = marker.related_information,
         .origin = if (marker.origin) |value| value else null,
     };
 }
@@ -291,7 +295,30 @@ fn markerDataFromJson(object: std.json.ObjectMap, arena: Allocator, ext_host_id:
             result.tags = try values.toOwnedSlice();
         }
     }
+    if (object.get("relatedInformation")) |related| {
+        if (related == .array) {
+            var values = std.array_list.Managed(markers.RelatedInformation).init(arena);
+            for (related.array.items) |entry| {
+                if (entry != .object) continue;
+                const resource = entry.object.get("resource") orelse continue;
+                const components = try std_uri.componentsFromJson(resource, arena);
+                try values.append(.{
+                    .resource = .{ .scheme = components.scheme, .authority = components.authority, .path = components.path, .query = components.query, .fragment = components.fragment },
+                    .message = try stringField(arena, entry.object, "message"),
+                    .start_line_number = markerCoordinate(entry.object, "startLineNumber"),
+                    .start_column = markerCoordinate(entry.object, "startColumn"),
+                    .end_line_number = markerCoordinate(entry.object, "endLineNumber"),
+                    .end_column = markerCoordinate(entry.object, "endColumn"),
+                });
+            }
+            result.related_information = try values.toOwnedSlice();
+        }
+    }
     return result;
+}
+
+fn markerCoordinate(object: std.json.ObjectMap, name: []const u8) u32 {
+    return @intCast(std.math.clamp(intValue(object.get(name)) orelse 1, 1, std.math.maxInt(u32)));
 }
 
 fn columnForModel(model: *TextModel, line_number: u32, offset: u32) u32 {
@@ -310,11 +337,32 @@ fn markerToJson(arena: Allocator, marker: *const markers.Marker) !std.json.Value
     try object.put(arena, "endLineNumber", .{ .integer = @intCast(marker.end_line_number) });
     try object.put(arena, "endColumn", .{ .integer = @intCast(marker.end_column) });
     if (marker.source) |source| try object.put(arena, "source", .{ .string = try arena.dupe(u8, source) });
-    if (marker.code) |code| try object.put(arena, "code", .{ .string = try arena.dupe(u8, code) });
+    if (marker.code) |code| {
+        if (marker.code_target) |target| {
+            var linked_code: std.json.ObjectMap = .empty;
+            try linked_code.put(arena, "value", .{ .string = try arena.dupe(u8, code) });
+            try linked_code.put(arena, "target", try componentsJson(arena, target));
+            try object.put(arena, "code", .{ .object = linked_code });
+        } else try object.put(arena, "code", .{ .string = try arena.dupe(u8, code) });
+    }
     if (marker.tags.len > 0) {
         var tags = std.json.Array.init(arena);
         for (marker.tags) |tag| try tags.append(.{ .integer = @intCast(tag) });
         try object.put(arena, "tags", .{ .array = tags });
+    }
+    if (marker.related_information.len > 0) {
+        var related = std.json.Array.init(arena);
+        for (marker.related_information) |info| {
+            var entry: std.json.ObjectMap = .empty;
+            try entry.put(arena, "resource", try componentsJson(arena, info.resource));
+            try entry.put(arena, "message", .{ .string = try arena.dupe(u8, info.message) });
+            try entry.put(arena, "startLineNumber", .{ .integer = info.start_line_number });
+            try entry.put(arena, "startColumn", .{ .integer = info.start_column });
+            try entry.put(arena, "endLineNumber", .{ .integer = info.end_line_number });
+            try entry.put(arena, "endColumn", .{ .integer = info.end_column });
+            try related.append(.{ .object = entry });
+        }
+        try object.put(arena, "relatedInformation", .{ .array = related });
     }
     return .{ .object = object };
 }

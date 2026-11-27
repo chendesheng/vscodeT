@@ -106,12 +106,57 @@ pub const Resource = struct {
         };
     }
 
+    pub fn clone(self: Resource, allocator: Allocator) !Resource {
+        var result: Resource = .{};
+        errdefer result.deinit(allocator);
+        result.scheme = try allocator.dupe(u8, self.scheme);
+        result.authority = try allocator.dupe(u8, self.authority);
+        result.path = try allocator.dupe(u8, self.path);
+        result.query = try allocator.dupe(u8, self.query);
+        result.fragment = try allocator.dupe(u8, self.fragment);
+        return result;
+    }
+
     pub fn deinit(self: *Resource, allocator: Allocator) void {
         allocator.free(self.scheme);
         allocator.free(self.authority);
         allocator.free(self.path);
         allocator.free(self.query);
         allocator.free(self.fragment);
+    }
+};
+
+/// Related locations can refer to a model which has not been loaded yet.
+/// Their columns retain the upstream UTF-16 coordinates until reveal.
+pub const RelatedInformation = struct {
+    resource: Resource,
+    message: []const u8,
+    start_line_number: u32,
+    start_column: u32,
+    end_line_number: u32,
+    end_column: u32,
+
+    pub fn cloneAll(allocator: Allocator, items: []const RelatedInformation) ![]RelatedInformation {
+        const owned = try allocator.alloc(RelatedInformation, items.len);
+        var count: usize = 0;
+        errdefer deinitAll(allocator, owned, count);
+        for (items, owned) |item, *target| {
+            var resource = try item.resource.clone(allocator);
+            errdefer resource.deinit(allocator);
+            target.* = item;
+            target.resource = resource;
+            target.message = try allocator.dupe(u8, item.message);
+            count += 1;
+        }
+        return owned;
+    }
+
+    pub fn deinitAll(allocator: Allocator, items: []RelatedInformation, count: usize) void {
+        for (items[0..count]) |*item| {
+            item.resource.deinit(allocator);
+            allocator.free(item.message);
+        }
+        allocator.free(items);
     }
 };
 
@@ -127,6 +172,7 @@ pub const MarkerData = struct {
     end_column: u32 = 1,
     model_version_id: ?u32 = null,
     tags: []const u32 = &.{},
+    related_information: []const RelatedInformation = &.{},
     origin: ?[]const u8 = null,
 };
 
@@ -135,7 +181,7 @@ pub const Marker = struct {
     resource: Resource,
     key: []const u8,
     code: ?[]u8 = null,
-    code_target: ?[]u8 = null,
+    code_target: ?Resource = null,
     severity: u32,
     message: []u8,
     source: ?[]u8 = null,
@@ -145,6 +191,7 @@ pub const Marker = struct {
     end_column: u32,
     model_version_id: ?u32,
     tags: []u32,
+    related_information: []RelatedInformation = &.{},
     origin: ?[]u8 = null,
     /// Internal link used by `MarkerService` to keep removed markers alive
     /// until its `onMarkerChanged` listeners return. Not marker data.
@@ -154,10 +201,11 @@ pub const Marker = struct {
         allocator.free(self.owner);
         allocator.free(self.message);
         if (self.code) |value| allocator.free(value);
-        if (self.code_target) |value| allocator.free(value);
+        if (self.code_target) |*value| value.deinit(allocator);
         if (self.source) |value| allocator.free(value);
         if (self.origin) |value| allocator.free(value);
         if (self.tags.len > 0) allocator.free(self.tags);
+        RelatedInformation.deinitAll(allocator, self.related_information, self.related_information.len);
     }
 };
 

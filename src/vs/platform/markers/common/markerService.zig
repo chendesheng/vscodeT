@@ -287,25 +287,28 @@ pub const MarkerService = struct {
     fn createMarker(self: *MarkerService, owner: []const u8, bucket: *Bucket, data: MarkerData) !*Marker {
         const marker = try self.allocator.create(Marker);
         errdefer self.allocator.destroy(marker);
-        const tags = try self.allocator.alloc(u32, data.tags.len);
-        @memcpy(tags, data.tags);
         marker.* = .{
-            .owner = try self.allocator.dupe(u8, owner),
+            .owner = &.{},
             .resource = bucket.resource,
             .key = bucket.key,
-            .code = if (data.code) |value| try self.allocator.dupe(u8, value) else null,
-            .code_target = if (data.code_target) |target| try target.key(self.allocator) else null,
             .severity = data.severity,
-            .message = try self.allocator.dupe(u8, data.message),
-            .source = if (data.source) |value| try self.allocator.dupe(u8, value) else null,
+            .message = &.{},
             .start_line_number = if (data.start_line_number > 0) data.start_line_number else 1,
             .start_column = if (data.start_column > 0) data.start_column else 1,
             .end_line_number = 0,
             .end_column = 0,
             .model_version_id = data.model_version_id,
-            .tags = tags,
-            .origin = if (data.origin) |value| try self.allocator.dupe(u8, value) else null,
+            .tags = &.{},
         };
+        errdefer marker.deinit(self.allocator);
+        marker.owner = try self.allocator.dupe(u8, owner);
+        marker.code = if (data.code) |value| try self.allocator.dupe(u8, value) else null;
+        marker.code_target = if (data.code_target) |target| try target.clone(self.allocator) else null;
+        marker.message = try self.allocator.dupe(u8, data.message);
+        marker.source = if (data.source) |value| try self.allocator.dupe(u8, value) else null;
+        marker.tags = try self.allocator.dupe(u32, data.tags);
+        marker.origin = if (data.origin) |value| try self.allocator.dupe(u8, value) else null;
+        marker.related_information = try markers.RelatedInformation.cloneAll(self.allocator, data.related_information);
         marker.end_line_number = if (data.end_line_number >= marker.start_line_number) data.end_line_number else marker.start_line_number;
         marker.end_column = if (data.end_column > 0) data.end_column else marker.start_column;
         return marker;
