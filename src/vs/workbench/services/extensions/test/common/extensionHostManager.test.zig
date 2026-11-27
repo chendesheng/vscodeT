@@ -229,8 +229,18 @@ test "Extensions: transport connects the pinned Node host and initializes" {
     defer a.free(root);
     const app_root = try std.Io.Dir.cwd().realPathFileAlloc(io, "host/dist", a);
     defer a.free(app_root);
+    // The upstream 10s slow-start warning must not kill a healthy host.
+    // Simulate a cold startup before importing the exact pinned Node bundle.
+    try temp.dir.writeFile(io, .{ .sub_path = "slow-host.mjs", .data =
+        \\import { resolve } from 'node:path';
+        \\import { pathToFileURL } from 'node:url';
+        \\await new Promise(done => setTimeout(done, 11_000));
+        \\await import(pathToFileURL(resolve('host/dist/extensionHost.mjs')).href);
+    });
+    const script = try temp.dir.realPathFileAlloc(io, "slow-host.mjs", a);
+    defer a.free(script);
     const options: manager.Options = .{
-        .host_script = "host/dist/extensionHost.mjs",
+        .host_script = script,
         .extensions = &.{},
         .user_data_dir = root,
         .workspace_path = root,
@@ -239,10 +249,10 @@ test "Extensions: transport connects the pinned Node host and initializes" {
     };
     const host = try manager.HostManager.start(a, options);
     defer host.deinit();
-    try host.expectControl(2, 10_000);
+    try host.expectControl(2, manager.startup_timeout_ms);
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     try host.sendInitData(try manager.buildInitData(arena.allocator(), options));
-    try host.expectControl(1, 10_000);
+    try host.expectControl(1, manager.startup_timeout_ms);
     try std.testing.expect(!host.hasEof());
 }

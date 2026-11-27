@@ -1105,7 +1105,7 @@ pub const Extensions = struct {
     }
 
     fn boot(self: *Extensions, runtime_dir: []const u8) !void {
-        try self.host.expectControl(2, 10_000);
+        try self.host.expectControl(2, manager.startup_timeout_ms);
         var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_instance.deinit();
         const arena = arena_instance.allocator();
@@ -1121,7 +1121,7 @@ pub const Extensions = struct {
             .parent_pid = @intCast(manager.currentProcessId()),
         });
         try self.host.sendInitData(init_data);
-        try self.host.expectControl(1, 10_000);
+        try self.host.expectControl(1, manager.startup_timeout_ms);
 
         var workspace_args = std.array_list.Managed(rpc.Arg).init(arena);
         var workspace_data: std.json.ObjectMap = .empty;

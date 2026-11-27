@@ -18,6 +18,10 @@ const proxyIdentifier = @import("proxyIdentifier.zig");
 const protocol = @import("../../../api/common/extHost.protocol.zig");
 
 pub const max_frame_size: usize = 64 * 1024 * 1024;
+// LocalProcessExtensionHost._establishProtocol/_performHandshake allow 60s
+// for connection and each handshake phase; the 10s upstream notification is
+// a warning, not a deadline that terminates a slow-starting host.
+pub const startup_timeout_ms: u32 = 60_000;
 
 /// The manager creates its own `Io` for the host transport, and that `Io` must
 /// carry the process environment: `std.process.spawn` resolves `node` against
@@ -208,7 +212,7 @@ pub const HostManager = struct {
         errdefer if (self.child.id != null) self.child.kill(self.io);
 
         // A dead or stalled child cannot hold the workbench at startup.
-        self.stream = self.server.accept(self.io, 10_000) catch |err| switch (err) {
+        self.stream = self.server.accept(self.io, startup_timeout_ms) catch |err| switch (err) {
             error.Timeout => return ExtensionHostError.HostTimeout,
             else => return ExtensionHostError.HostExited,
         };
