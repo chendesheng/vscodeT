@@ -1273,6 +1273,29 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(grid.attrs[grid.index(old_start, 0)] & ui.cell.Attr.strikethrough != 0);
         }
 
+        test "diffEditorWidget: computation result exposes real detailed and legacy changes" {
+            const allocator = testing.allocator;
+            const io = Io.Threaded.global_single_threaded.io();
+            const widget = try DiffEditorWidget.create(View.init, allocator, io, "a.txt", "b.txt", "abc old def\nkeep\nlast", "abc new def\nkeep\ninserted\nlast", "Original", "Modified", 80, 8, .{});
+            defer widget.destroy();
+            const interface = widget.interface();
+            const result = interface.getDiffComputationResult().?;
+            try testing.expect(!result.identical and !result.quit_early);
+            try testing.expectEqual(@as(usize, 2), result.changes2.len);
+            const changes = (try interface.getLineChanges(allocator)).?;
+            defer {
+                for (changes) |*change| change.deinit(allocator);
+                allocator.free(changes);
+            }
+            try testing.expectEqual(@as(usize, 2), changes.len);
+            const mapping = result.changes2[0].line_range_mapping.inner_changes.?[0];
+            const legacy = changes[0].charChanges.?[0];
+            try testing.expectEqual(mapping.originalRange.startColumn, legacy.originalStartColumn);
+            try testing.expectEqual(mapping.modifiedRange.endColumn, legacy.modifiedEndColumn);
+            try testing.expectEqual(@as(usize, 0), changes[1].originalEndLineNumber);
+            try testing.expect(changes[1].charChanges == null);
+        }
+
         test "diffEditorWidget: pure insertions and deletions paint character tint across the entire real row" {
             const allocator = testing.allocator;
             const io = Io.Threaded.global_single_threaded.io();

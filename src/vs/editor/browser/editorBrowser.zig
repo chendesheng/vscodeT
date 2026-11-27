@@ -15,13 +15,22 @@
 //! pointer, so the host does not issue a zero-delta translation afterwards.
 
 const ui = @import("ui");
+const std = @import("std");
+const diff_model = @import("widget/diffEditor/diffEditorViewModel.zig");
+const LegacyLineChange = @import("../common/diff/legacyLinesDiffComputer.zig").LineChange;
 const Position = @import("../common/core/position.zig").Position;
 const Range = @import("../common/core/range.zig").Range;
 
 pub const DiffComputationResult = struct {
     identical: bool,
     quit_early: bool,
-    change_count: usize,
+    /// Borrowed real detailed mappings; valid until the next diff update.
+    changes2: []const diff_model.DiffMapping,
+
+    /// The legacy shape is owned by the caller, including charChanges.
+    pub fn getLineChanges(self: DiffComputationResult, allocator: std.mem.Allocator) ![]LegacyLineChange {
+        return diff_model.DiffEditorViewModel.toLegacyLineChanges(allocator, self.changes2);
+    }
 };
 
 /// Terminal adaptation of the code editor overlay API used by diff editor
@@ -76,6 +85,11 @@ pub const IDiffEditor = struct {
 
     pub fn getDiffComputationResult(self: IDiffEditor) ?DiffComputationResult {
         return if (self.get_computation_result) |get| get(self.context) else null;
+    }
+
+    pub fn getLineChanges(self: IDiffEditor, allocator: std.mem.Allocator) !?[]LegacyLineChange {
+        const result = self.getDiffComputationResult() orelse return null;
+        return try result.getLineChanges(allocator);
     }
 
     pub fn getModifiedControl(self: IDiffEditor) ?ModifiedDiffControl {

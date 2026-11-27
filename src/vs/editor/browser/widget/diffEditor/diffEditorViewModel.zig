@@ -624,12 +624,51 @@ pub const DiffEditorViewModel = struct {
         return if (self.state) |*state| state else null;
     }
 
-    /// Copy of the mappings converted to the legacy `IChange` shape.
-    pub fn toLineChanges(self: *DiffEditorViewModel, allocator: Allocator) ![]IChange {
-        const state = self.stateRef() orelse return allocator.alloc(IChange, 0);
-        const result = try allocator.alloc(IChange, state.mappings.len);
-        for (state.mappings, 0..) |mapping, index| {
-            result[index] = toLineChange(mapping.line_range_mapping);
+    /// Upstream toLineChanges converts both line and character coordinates.
+    /// The returned legacy changes (including their character arrays) are owned.
+    pub fn toLineChanges(self: *DiffEditorViewModel, allocator: Allocator) ![]LegacyLineChange {
+        const state = self.stateRef() orelse return allocator.alloc(LegacyLineChange, 0);
+        return toLegacyLineChanges(allocator, state.mappings);
+    }
+
+    const LegacyLineChange = @import("../../../common/diff/legacyLinesDiffComputer.zig").LineChange;
+
+    pub fn toLegacyLineChanges(allocator: Allocator, mappings: []const DiffMapping) ![]LegacyLineChange {
+        const legacy = @import("../../../common/diff/legacyLinesDiffComputer.zig");
+        const result = try allocator.alloc(legacy.LineChange, mappings.len);
+        var initialized: usize = 0;
+        errdefer {
+            for (result[0..initialized]) |*change| change.deinit(allocator);
+            allocator.free(result);
+        }
+        for (mappings, 0..) |mapping, index| {
+            const lines = mapping.line_range_mapping;
+            const range = toLineChange(lines);
+            const inner = if (lines.original.isEmpty() or lines.modified.isEmpty()) null else lines.inner_changes;
+            const char_changes: ?[]legacy.CharChange = if (inner) |changes| blk: {
+                const converted = try allocator.alloc(legacy.CharChange, changes.len);
+                for (changes, 0..) |change, i| {
+                    converted[i] = .{
+                        .originalStartLineNumber = change.originalRange.startLineNumber,
+                        .originalStartColumn = change.originalRange.startColumn,
+                        .originalEndLineNumber = change.originalRange.endLineNumber,
+                        .originalEndColumn = change.originalRange.endColumn,
+                        .modifiedStartLineNumber = change.modifiedRange.startLineNumber,
+                        .modifiedStartColumn = change.modifiedRange.startColumn,
+                        .modifiedEndLineNumber = change.modifiedRange.endLineNumber,
+                        .modifiedEndColumn = change.modifiedRange.endColumn,
+                    };
+                }
+                break :blk converted;
+            } else null;
+            result[index] = .{
+                .originalStartLineNumber = range.originalStartLineNumber,
+                .originalEndLineNumber = range.originalEndLineNumber,
+                .modifiedStartLineNumber = range.modifiedStartLineNumber,
+                .modifiedEndLineNumber = range.modifiedEndLineNumber,
+                .charChanges = char_changes,
+            };
+            initialized = index + 1;
         }
         return result;
     }
@@ -760,7 +799,10 @@ test "diffEditorViewModel: identical and changed line counts" {
     try std.testing.expect(state.mappings[0].line_range_mapping.inner_changes != null);
 
     const changes = try view_model.toLineChanges(allocator);
-    defer allocator.free(changes);
+    defer {
+        for (changes) |*change| change.deinit(allocator);
+        allocator.free(changes);
+    }
     try std.testing.expectEqual(@as(usize, 1), changes.len);
     try std.testing.expectEqual(@as(usize, 2), changes[0].modifiedStartLineNumber);
     try std.testing.expectEqual(@as(usize, 2), changes[0].modifiedEndLineNumber);

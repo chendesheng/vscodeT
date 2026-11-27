@@ -318,7 +318,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         fn getDiffComputationResult(context: *anyopaque) ?@import("../../editorBrowser.zig").DiffComputationResult {
             const self: *Self = @ptrCast(@alignCast(context));
             const value = self.state() orelse return null;
-            return .{ .identical = value.identical, .quit_early = value.quit_early, .change_count = value.mappings.len };
+            return .{ .identical = value.identical, .quit_early = value.quit_early, .changes2 = value.mappings };
         }
 
         fn getMaxComputationTime(context: *anyopaque) i64 {

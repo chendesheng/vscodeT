@@ -59,7 +59,7 @@ pub const DiffEditorHelperContribution = struct {
     fn update(self: *DiffEditorHelperContribution) !void {
         const result = self.diff.getDiffComputationResult();
         const control = self.diff.getModifiedControl() orelse return;
-        if (result != null and !result.?.identical and result.?.change_count == 0) {
+        if (result != null and !result.?.identical and result.?.changes2.len == 0) {
             try self.widget.render(control.overlays);
         } else self.widget.dispose();
         if (result != null and result.?.quit_early) {
