@@ -118,9 +118,14 @@ const catalog_path = "share/vscode-textbuffer/extensions";
 fn installBuiltinExtensions(b: *std.Build, step: *std.Build.Step) !void {
     const io = b.graph.io;
     const source = try b.root.joinString(b.allocator, "vscode/extensions");
+    // Editor builds without the optional upstream submodule retain embedded
+    // fallbacks. Do not register the configure dependency in that case: a
+    // missing tracked directory makes a fresh configure fail with
+    // FileSystemFailure before the fallback can be used.
+    if (!fileExists(b, "vscode/extensions")) return;
     b.dependOnDirectoryContents(b.path("vscode/extensions"));
     var root = std.Io.Dir.cwd().openDir(io, source, .{ .iterate = true }) catch |err| switch (err) {
-        error.FileNotFound => return, // Editor builds without the optional submodule retain embedded fallbacks.
+        error.FileNotFound => return,
         else => return err,
     };
     defer root.close(io);
