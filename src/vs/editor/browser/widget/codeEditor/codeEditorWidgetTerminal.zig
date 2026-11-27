@@ -25,6 +25,7 @@ const IdentifiedSingleEditOperation = @import("../../../common/model.zig").Ident
 const ValidEditOperation = @import("../../../common/model.zig").ValidEditOperation;
 const CursorStateComputer = @import("../../../common/model/editStack.zig").CursorStateComputer;
 const UndoRedoService = @import("../../../../platform/undoRedo/common/undoRedoService.zig").UndoRedoService;
+const ModelUndoRedoStore = @import("../../../common/services/modelService.zig").ModelUndoRedoStore;
 const LanguageService = @import("../../../common/services/languageService.zig").LanguageService;
 const LanguageIdCodec = @import("../../../common/languages.zig").LanguageIdCodec;
 const languages = @import("../../../common/languages.zig");
@@ -319,6 +320,7 @@ pub const EditorDocument = struct {
     path: []u8,
     model: *TextModel,
     undo_redo: *UndoRedoService,
+    undo_store: ?*ModelUndoRedoStore = null,
     codec: *LanguageIdCodec,
     language_service: *LanguageService,
     language_config_service: *LanguageConfigurationService,
@@ -362,6 +364,7 @@ pub const EditorDocument = struct {
         declarative: ?*const extensions_registry.Registry,
         loaded: ?*const LoadedText,
         resource: ?std.Uri,
+        undo_store: ?*ModelUndoRedoStore,
     ) !*EditorDocument {
         const path_copy = try allocator.dupe(u8, path);
         errdefer allocator.free(path_copy);
@@ -406,10 +409,15 @@ pub const EditorDocument = struct {
         language_config_service.* = try LanguageConfigurationService.init(allocator, language_service);
         errdefer language_config_service.deinit();
 
-        const undo_redo = try allocator.create(UndoRedoService);
-        errdefer allocator.destroy(undo_redo);
-        undo_redo.* = UndoRedoService.init(allocator);
-        errdefer undo_redo.deinit();
+        const undo_redo = if (undo_store) |store| &store.service else blk: {
+            const service = try allocator.create(UndoRedoService);
+            service.* = UndoRedoService.init(allocator);
+            break :blk service;
+        };
+        errdefer if (undo_store == null) {
+            undo_redo.deinit();
+            allocator.destroy(undo_redo);
+        };
 
         var resource_arena = std.heap.ArenaAllocator.init(allocator);
         errdefer resource_arena.deinit();
@@ -440,6 +448,7 @@ pub const EditorDocument = struct {
             .path = path_copy,
             .model = model,
             .undo_redo = undo_redo,
+            .undo_store = undo_store,
             .codec = codec,
             .language_service = language_service,
             .language_config_service = language_config_service,
@@ -459,6 +468,11 @@ pub const EditorDocument = struct {
         };
         try model.onDidChangeLanguage(self, languageChanged);
         try model.onDidChangeContentWithContext(self, contentChanged);
+        if (undo_store) |store| {
+            store.retain();
+            store.onModelCreated(model) catch {};
+            self.saved_version = model.getAlternativeVersionId();
+        }
         return self;
     }
 
@@ -479,7 +493,11 @@ pub const EditorDocument = struct {
 
     /// Resolve a virtual text resource independently of any mounted editor.
     pub fn createFromText(allocator: Allocator, io: Io, path: []const u8, text: []const u8, resource: ?std.Uri) !*EditorDocument {
-        return init(allocator, io, path, text, null, null, resource);
+        return init(allocator, io, path, text, null, null, resource, null);
+    }
+
+    pub fn createFromTextWithUndoStore(allocator: Allocator, io: Io, path: []const u8, text: []const u8, resource: ?std.Uri, store: *ModelUndoRedoStore) !*EditorDocument {
+        return init(allocator, io, path, text, null, null, resource, store);
     }
 
     pub fn interface(self: *EditorDocument) IWorkingCopy {
@@ -529,10 +547,13 @@ pub const EditorDocument = struct {
         self.language_config_service.deinit();
         self.allocator.destroy(self.language_config_service);
         self.declarative_arena.deinit();
+        if (self.undo_store) |store| store.onWillDisposeModel(self.model);
         self.model.deinit();
         self.allocator.destroy(self.model);
-        self.undo_redo.deinit();
-        self.allocator.destroy(self.undo_redo);
+        if (self.undo_store) |store| store.release() else {
+            self.undo_redo.deinit();
+            self.allocator.destroy(self.undo_redo);
+        }
         self.resource_arena.deinit();
         self.associations_arena.deinit();
         self.language_service.deinit();
@@ -876,6 +897,7 @@ pub const Editor = struct {
     pub const CreateOptions = struct {
         reserve_scrollbar: bool = false,
         resource: ?std.Uri = null,
+        undo_store: ?*ModelUndoRedoStore = null,
     };
 
     pub fn overviewRulerWidthFor(screen_width: usize, gutter: usize) usize {
@@ -988,7 +1010,7 @@ pub const Editor = struct {
     }
 
     fn createInternal(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize, text: ?[]const u8, declarative: ?*const extensions_registry.Registry, options: CreateOptions, loaded: ?*const LoadedText) !*Editor {
-        const document = try EditorDocument.init(allocator, io, path, text, declarative, loaded, options.resource);
+        const document = try EditorDocument.init(allocator, io, path, text, declarative, loaded, options.resource, options.undo_store);
         errdefer document.release();
         return createView(allocator, document, width, height, options);
     }

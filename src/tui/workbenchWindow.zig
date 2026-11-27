@@ -549,6 +549,7 @@ pub const TerminalWorkbench = struct {
         self.text_model_resolver = .init(allocator, self.async_io, &self.window_events);
         errdefer self.text_model_resolver.deinit();
         try self.text_model_resolver.bindFileService(self.file_service_api);
+        _ = try self.text_model_resolver.undoRedoStore();
         self.text_model_api = self.text_model_resolver.interface();
         self.bulk_edit_service = .{ .allocator = allocator, .resolver_service = self.text_model_api };
         self.bulk_edit_api = self.bulk_edit_service.interface();
@@ -1305,6 +1306,7 @@ pub const TerminalWorkbench = struct {
         self.environment_api = .{};
         _ = try self.services.set(@import("../vs/workbench/services/environment/common/environmentService.zig").workbench_environment_service_id, &self.environment_api);
         self.configuration_api = self.configuration_binding.interface();
+        self.text_model_resolver.undo_store.?.configuration_service = self.configuration_api;
         _ = try self.services.set(@import("../vs/platform/configuration/common/configuration.zig").configuration_service_id, &self.configuration_api);
         try self.accessible_view.bindServices(self.configuration_api, self.editor_api, self.clipboard_api);
         _ = try self.services.set(@import("../vs/platform/accessibility/browser/accessibleView.zig").accessible_view_service_id, &self.accessible_view_api);
@@ -1369,7 +1371,9 @@ pub const TerminalWorkbench = struct {
     }
 
     pub fn createFileSerializer(self: *TerminalWorkbench) FileEditorSerializer {
-        return FileEditorSerializer.init(self.allocator, self.io, self.cols, self.editorContentHeight());
+        var serializer = FileEditorSerializer.init(self.allocator, self.io, self.cols, self.editorContentHeight());
+        serializer.undo_store = self.text_model_resolver.undo_store;
+        return serializer;
     }
 
     fn initShellModels(self: *TerminalWorkbench, parent: *ui.Node, options: IWorkbenchOptions, has_previous_state: bool) !void {
@@ -1892,6 +1896,7 @@ pub const TerminalWorkbench = struct {
         self.contributions.deinit();
         self.lifecycle.deinit();
         self.configuration_migrations.deinit();
+        if (self.text_model_resolver.undo_store) |store| store.configuration_service = null;
         self.configuration_binding.deinit();
         if (self.configuration) |configuration| configuration.deinit();
         freeOwnedPaths(self.allocator, self.user_settings_paths);

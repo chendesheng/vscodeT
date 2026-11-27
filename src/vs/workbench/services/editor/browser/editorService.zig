@@ -1220,7 +1220,7 @@ pub const EditorOpening = struct {
             return self.openExistingInput(path, existing, options);
         }
         const size = (self.part.activeView() orelse return error.GroupPaneMissing).contentDimensions();
-        const editor = try Editor.createWithExtensionsOptions(self.allocator, self.io, path, size.width, size.height, self.declarative.*, self.json_client.*, .{ .reserve_scrollbar = true });
+        const editor = try Editor.createWithExtensionsOptions(self.allocator, self.io, path, size.width, size.height, self.declarative.*, self.json_client.*, .{ .reserve_scrollbar = true, .undo_store = try self.text_model_resolver.undoRedoStore() });
         try self.openCreatedTextEditor(path, editor, options);
     }
 
@@ -1415,7 +1415,7 @@ pub const EditorOpening = struct {
             size.height,
             self.declarative.*,
             self.json_client.*,
-            .{ .reserve_scrollbar = true },
+            .{ .reserve_scrollbar = true, .undo_store = try self.text_model_resolver.undoRedoStore() },
         );
         try self.openCreatedTextEditor(path, editor, options);
     }

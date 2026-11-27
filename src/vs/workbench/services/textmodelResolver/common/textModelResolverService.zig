@@ -12,6 +12,7 @@ const event_mod = @import("../../../../base/common/event.zig");
 
 const resolver = @import("../../../../editor/common/services/resolverService.zig");
 const EditorDocument = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").EditorDocument;
+const ModelUndoRedoStore = @import("../../../../editor/common/services/modelService.zig").ModelUndoRedoStore;
 const dispatch = @import("../../../../base/common/windowDispatch.zig");
 const worker_mod = @import("../../../../editor/browser/services/editorWorkerService.zig");
 const IDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
@@ -27,6 +28,7 @@ pub const TextModelResolverService = struct {
     io: std.Io,
     window: *dispatch.Queue,
     collection: ResourceModelCollection,
+    undo_store: ?*ModelUndoRedoStore = null,
     file_service: ?files.IFileService = null,
     file_listener: ?event_mod.SignalSubscription = null,
     providers: std.ArrayList(*ProviderEntry) = .empty,
@@ -58,6 +60,11 @@ pub const TextModelResolverService = struct {
 
     pub fn init(allocator: Allocator, io: std.Io, window: *dispatch.Queue) TextModelResolverService {
         return .{ .allocator = allocator, .io = io, .window = window, .collection = ResourceModelCollection.init(allocator, window) };
+    }
+
+    pub fn undoRedoStore(self: *TextModelResolverService) !*ModelUndoRedoStore {
+        if (self.undo_store == null) self.undo_store = try ModelUndoRedoStore.create(self.allocator);
+        return self.undo_store.?;
     }
 
     /// The workbench supplies the window's registered file service. Virtual
@@ -122,6 +129,8 @@ pub const TextModelResolverService = struct {
             self.worker = null;
         }
         self.collection.deinit();
+        if (self.undo_store) |store| store.releaseOwner();
+        self.undo_store = null;
     }
 
     pub fn registerTextModelContentProvider(self: *TextModelResolverService, scheme: []const u8, provider: resolver.ITextModelContentProvider) !resolver.ContentProviderRegistration {
@@ -665,7 +674,7 @@ pub const TextModelResolverService = struct {
     /// its model rather than constructing a second model at the same URI.
     pub fn createResolvedModelReference(self: *TextModelResolverService, resource: std.Uri, path: []const u8, text: []const u8, readonly: bool) !resolver.ModelReference {
         if (try self.acquireExisting(resource)) |reference| return reference;
-        const document = try EditorDocument.createFromText(self.allocator, self.io, path, text, resource);
+        const document = try EditorDocument.createFromTextWithUndoStore(self.allocator, self.io, path, text, resource, try self.undoRedoStore());
         defer document.release();
         const entry = try self.collection.register(document, readonly);
         return entry.acquire();

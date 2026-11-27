@@ -135,6 +135,7 @@ pub const FileEditorInput = struct {
 /// is the serialized value. Dirty buffers are not persisted (upstream restores
 /// those through working-copy backups, which are not ported).
 pub const FileEditorSerializer = struct {
+    undo_store: ?*@import("../../../../../editor/common/services/modelService.zig").ModelUndoRedoStore = null,
     allocator: Allocator,
     io: std.Io,
     width: usize,
@@ -196,7 +197,7 @@ pub const FileEditorSerializer = struct {
                     break :blk Editor.createViewFromDocument(document, self.width, self.height, .{ .reserve_scrollbar = true }) catch return null;
                 }
             }
-            const created = Editor.createWithOptions(self.allocator, self.io, data, self.width, self.height, .{ .reserve_scrollbar = true }) catch return null;
+            const created = Editor.createWithOptions(self.allocator, self.io, data, self.width, self.height, .{ .reserve_scrollbar = true, .undo_store = self.undo_store }) catch return null;
             self.resolved_documents.append(self.allocator, created.document) catch |err| {
                 created.deinit();
                 self.allocator.destroy(created);

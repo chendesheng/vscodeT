@@ -20,6 +20,7 @@ const UndoRedoGroup = @import("../../../platform/undoRedo/common/undoRedo.zig").
 const ValidEditOperation = @import("../model.zig").ValidEditOperation;
 const Disposable = @import("../../../platform/undoRedo/common/undoRedo.zig").Disposable;
 const uriToString = @import("../model.zig").uriToString;
+const uri_util = @import("../../../base/common/stdUri.zig");
 const TextModelCreationOptions = @import("../model.zig").TextModelCreationOptions;
 const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
 const LanguageService = @import("../services/languageService.zig").LanguageService;
@@ -86,6 +87,22 @@ pub const EditStackElement = union(enum) {
             },
             .workspace => return error.InvalidEditStackElement,
         }
+    }
+
+    pub fn matchesResource(self: *const EditStackElement, resource_uri: Uri) bool {
+        return switch (self.*) {
+            .singleModel => |*element| element.matchesResource(resource_uri),
+            .multiModel => |*element| element.matchesResource(resource_uri),
+            .workspace => false,
+        };
+    }
+
+    pub fn heapSize(self: *const EditStackElement, resource_uri: Uri) !usize {
+        return switch (self.*) {
+            .singleModel => |*element| try element.heapSize(),
+            .multiModel => |*element| try element.heapSize(resource_uri),
+            .workspace => 0,
+        };
     }
 
     pub fn setModel(self: *EditStackElement, model: TextModelOrUri) void {
@@ -479,6 +496,8 @@ const TextModelOrUri = union(enum) {
 
 pub const SingleModelEditStackElement = struct {
     model: TextModelOrUri,
+    resource_arena: ?std.heap.ArenaAllocator = null,
+    retained_resource: ?Uri = null,
     _data: SingleModelEditStackData,
     label: []const u8,
     code: []const u8,
@@ -486,9 +505,14 @@ pub const SingleModelEditStackElement = struct {
     allocator: Allocator,
 
     pub fn init(allocator: Allocator, label: []const u8, code: []const u8, model: *TextModel, beforeCursorState: ?[]Selection) !SingleModelEditStackElement {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer arena.deinit();
+        const owned_uri = try uri_util.clone(arena.allocator(), model.uri());
         return SingleModelEditStackElement{
             .allocator = allocator,
             .model = .{ .model = model },
+            .resource_arena = arena,
+            .retained_resource = owned_uri,
             ._data = SingleModelEditStackData{
                 .unserialized = try SingleModelEditStackDataUnserialized.create(
                     allocator,
@@ -505,9 +529,13 @@ pub const SingleModelEditStackElement = struct {
 
     pub fn deinit(self: *SingleModelEditStackElement) void {
         self._data.deinit();
+        if (self.resource_arena) |*arena| arena.deinit();
     }
 
     pub fn clone(self: *const SingleModelEditStackElement) !SingleModelEditStackElement {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        errdefer arena.deinit();
+        const owned_uri = try uri_util.clone(arena.allocator(), self.resource());
         const data: SingleModelEditStackData = switch (self._data) {
             .unserialized => |*data| .{ .unserialized = try data.clone(self.allocator) },
             .serialized => |serialized| blk: {
@@ -519,7 +547,9 @@ pub const SingleModelEditStackElement = struct {
         };
         return .{
             .allocator = self.allocator,
-            .model = self.model,
+            .model = if (self.model == .uri) .{ .uri = owned_uri } else self.model,
+            .resource_arena = arena,
+            .retained_resource = owned_uri,
             ._data = data,
             .label = self.label,
             .code = self.code,
@@ -554,23 +584,19 @@ pub const SingleModelEditStackElement = struct {
 
     pub fn matchesResource(self: *const SingleModelEditStackElement, res: Uri) bool {
         const allocator = self.allocator;
-        const uri = switch (self.model) {
-            .model => |model| model.uri(),
-            .uri => |uri| uri,
-        };
-        const uriStr = try uriToString(uri, allocator);
-        defer uriStr.deinit();
-        const resourceStr = try uriToString(res, allocator);
-        defer resourceStr.deinit();
-        return std.mem.eql(u8, uriStr.items, resourceStr.items);
+        const own_key = uri_util.resourceKey(allocator, self.resource()) catch return false;
+        defer allocator.free(own_key);
+        const other = uri_util.resourceKey(allocator, res) catch return false;
+        defer allocator.free(other);
+        return std.mem.eql(u8, own_key, other);
     }
 
     pub fn setModel(self: *SingleModelEditStackElement, model: TextModelOrUri) void {
-        self.model = model;
+        self.model = if (model == .uri and self.retained_resource != null) .{ .uri = self.retained_resource.? } else model;
     }
 
     pub fn resource(self: *const SingleModelEditStackElement) Uri {
-        return self.model.getUri();
+        return self.retained_resource orelse self.model.getUri();
     }
 
     pub fn canAppend(self: *const SingleModelEditStackElement, model: *const TextModel) bool {
@@ -605,7 +631,7 @@ pub const SingleModelEditStackElement = struct {
             .serialized => |data| {
                 const allocator = self.allocator;
                 const unserialized = try SingleModelEditStackDataUnserialized.deserialize(allocator, data.items);
-                allocator.free(data);
+                data.deinit();
                 self._data = .{ .unserialized = unserialized };
             },
             .unserialized => {},
@@ -658,11 +684,11 @@ pub const SingleModelEditStackElement = struct {
         switch (self._data) {
             .unserialized => |*dat| {
                 const data = try dat.serialize();
-                defer self.allocator.free(data);
-                return data.len + 168; // heap overhead, FIXME: is this the same in zig?
+                defer data.deinit();
+                return data.items.len + 168; // heap overhead, FIXME: is this the same in zig?
             },
             .serialized => |data| {
-                return data.len + 168; // heap overhead, FIXME: is this the same in zig?
+                return data.items.len + 168; // heap overhead, FIXME: is this the same in zig?
             },
         }
     }
@@ -779,15 +805,17 @@ pub const MultiModelEditStackElement = struct {
         return result;
     }
 
-    pub fn matchesResource(self: *MultiModelEditStackElement, resourceUri: Uri) bool {
-        return self._editStackElementsMap.contains(resourceUri);
+    pub fn matchesResource(self: *const MultiModelEditStackElement, resourceUri: Uri) bool {
+        for (self._editStackElementsArr.items) |*element| if (element.matchesResource(resourceUri)) return true;
+        return false;
     }
 
     pub fn setModel(self: *MultiModelEditStackElement, model: TextModelOrUri) void {
         const key = model.getUri();
-        if (self._editStackElementsMap.get(key)) |editStackElement| {
-            editStackElement.setModel(model);
-        }
+        for (self._editStackElementsArr.items) |*element| if (element.matchesResource(key)) {
+            element.setModel(model);
+            return;
+        };
     }
 
     pub fn canAppend(self: *const MultiModelEditStackElement, model: *const TextModel) bool {

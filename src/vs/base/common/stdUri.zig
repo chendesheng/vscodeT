@@ -14,6 +14,29 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
+/// Copy all URI components into the caller's arena without changing the
+/// original raw/percent-encoded representation. Useful for retaining the
+/// identity independently of a text model's lifetime.
+pub fn clone(allocator: Allocator, uri: std.Uri) !std.Uri {
+    return .{
+        .scheme = try allocator.dupe(u8, uri.scheme),
+        .user = if (uri.user) |c| try cloneComponent(allocator, c) else null,
+        .password = if (uri.password) |c| try cloneComponent(allocator, c) else null,
+        .host = if (uri.host) |c| try cloneComponent(allocator, c) else null,
+        .port = uri.port,
+        .path = try cloneComponent(allocator, uri.path),
+        .query = if (uri.query) |c| try cloneComponent(allocator, c) else null,
+        .fragment = if (uri.fragment) |c| try cloneComponent(allocator, c) else null,
+    };
+}
+
+fn cloneComponent(allocator: Allocator, component: std.Uri.Component) !std.Uri.Component {
+    return switch (component) {
+        .raw => |value| .{ .raw = try allocator.dupe(u8, value) },
+        .percent_encoded => |value| .{ .percent_encoded = try allocator.dupe(u8, value) },
+    };
+}
+
 pub fn scheme(uri: std.Uri) []const u8 {
     return uri.scheme;
 }
