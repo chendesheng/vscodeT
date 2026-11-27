@@ -9,9 +9,14 @@ const ServiceIdentifier = @import("../../../platform/instantiation/common/instan
 
 pub const IModelService = struct {
     context: *anyopaque,
+    get_model: *const fn (*anyopaque, std.Uri) ?resolver.IResolvedTextEditorModel,
     get_models: *const fn (*anyopaque, std.mem.Allocator) anyerror![]resolver.IResolvedTextEditorModel,
     on_model_added: *Emitter(resolver.IResolvedTextEditorModel),
     on_model_removed: *Emitter(resolver.IResolvedTextEditorModel),
+
+    pub fn getModel(self: IModelService, resource: std.Uri) ?resolver.IResolvedTextEditorModel {
+        return self.get_model(self.context, resource);
+    }
 
     /// The slice is caller-owned; elements borrow the model-service lifetime.
     pub fn getModels(self: IModelService, allocator: std.mem.Allocator) ![]resolver.IResolvedTextEditorModel {

@@ -6,6 +6,8 @@ const languages = @import("../../../../../editor/common/languages.zig");
 const files = @import("../../../../../platform/files/common/files.zig");
 const uri_util = @import("../../../../../base/common/stdUri.zig");
 const Emitter = @import("../../../../../base/common/event.zig").Emitter;
+const IModelService = @import("../../../../../editor/common/services/modelService.zig").IModelService;
+const ConflictDetector = @import("../conflicts.zig").ConflictDetector;
 const Range = @import("../../../../../editor/common/core/range.zig").Range;
 const Allocator = std.mem.Allocator;
 const ResourceEdit = languages.WorkspaceResourceEdit;
@@ -84,8 +86,9 @@ pub const BulkFileOperations = struct {
     file_operations: std.ArrayList(*BulkFileOperation) = .empty,
     categories: std.ArrayList(*BulkCategory) = .empty,
     new_to_old_uri: std.StringHashMapUnmanaged(std.Uri) = .empty,
+    conflicts: ?*ConflictDetector = null,
 
-    pub fn create(a: Allocator, file_service: files.IFileService, edits: []const ResourceEdit) !*BulkFileOperations {
+    pub fn create(a: Allocator, file_service: files.IFileService, models: ?IModelService, edits: []const ResourceEdit) !*BulkFileOperations {
         const self = try a.create(BulkFileOperations);
         errdefer a.destroy(self);
         self.* = .{ .allocator = a, .arena = .init(a), .edits = edits, .checked = try CheckedStates.init(a, edits.len) };
@@ -94,10 +97,12 @@ pub const BulkFileOperations = struct {
             self.arena.deinit();
         }
         try self.initialize(file_service);
+        if (models) |service| self.conflicts = try ConflictDetector.create(a, file_service, service, edits);
         return self;
     }
 
     pub fn dispose(self: *BulkFileOperations) void {
+        if (self.conflicts) |detector| detector.dispose();
         self.checked.deinit();
         self.arena.deinit();
         self.allocator.destroy(self);

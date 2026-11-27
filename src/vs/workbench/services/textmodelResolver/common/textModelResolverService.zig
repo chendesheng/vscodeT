@@ -750,6 +750,15 @@ const ResourceModelCollection = struct {
     fn interface(self: *ResourceModelCollection) @import("../../../../editor/common/services/modelService.zig").IModelService {
         return .{
             .context = self,
+            .get_model = struct {
+                fn get(context: *anyopaque, resource: std.Uri) ?resolver.IResolvedTextEditorModel {
+                    const collection: *ResourceModelCollection = @ptrCast(@alignCast(context));
+                    const key = uri_util.resourceKey(collection.allocator, resource) catch return null;
+                    defer collection.allocator.free(key);
+                    const entry = collection.entries.get(key) orelse return null;
+                    return entry.modelInterface();
+                }
+            }.get,
             .get_models = struct {
                 fn get(context: *anyopaque, allocator: Allocator) ![]resolver.IResolvedTextEditorModel {
                     const collection: *ResourceModelCollection = @ptrCast(@alignCast(context));
