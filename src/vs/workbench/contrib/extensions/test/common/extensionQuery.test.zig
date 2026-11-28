@@ -99,3 +99,20 @@ test "Extension query equals" {
     defer sorted.deinit(allocator);
     try testing.expect(!first.equals(&sorted));
 }
+
+test "Extension query suggestions hide duplicate filters and completed sort/category" {
+    const allocator = testing.allocator;
+    const suggestions = try Query.suggestions(allocator, "@installed @sort:name @category:\"themes\"", true);
+    defer {
+        for (suggestions) |item| allocator.free(item);
+        allocator.free(suggestions);
+    }
+    var builtin = false;
+    for (suggestions) |item| {
+        try testing.expect(!std.mem.startsWith(u8, item, "@installed"));
+        try testing.expect(!std.mem.startsWith(u8, item, "@sort:"));
+        try testing.expect(!std.mem.startsWith(u8, item, "@category:"));
+        if (std.mem.eql(u8, item, "@builtin ")) builtin = true;
+    }
+    try testing.expect(builtin);
+}

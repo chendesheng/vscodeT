@@ -20,6 +20,7 @@ const gallery = @import("../../../../platform/extensionManagement/common/extensi
 const paging = @import("../../../../base/common/paging.zig");
 const dispatch = @import("../../../../base/common/windowDispatch.zig");
 const time = @import("../../../../base/common/timeCompat.zig");
+const quick = @import("../../../../platform/quickinput/common/quickInput.zig");
 const query_mod = @import("../common/extensionQuery.zig");
 const service_mod = @import("extensionsWorkbenchService.zig");
 const IExtension = model.IExtension;
@@ -106,6 +107,7 @@ pub const ExtensionsListView = struct {
     gallery_kind: service_mod.GalleryKind = .search,
     gallery_pages: paging.PageIterator = .{ .page_size = 50 },
     initial_gallery_search_started: bool = false,
+    suggestion_picker: ?*SuggestionPicker = null,
     builtin_group: BuiltinGroup = .all,
     filter_override: ?[]u8 = null,
     query_changed: ?struct { context: *anyopaque, run: *const fn (*anyopaque) void } = null,
@@ -147,6 +149,8 @@ pub const ExtensionsListView = struct {
 
     fn deinitContents(self: *ExtensionsListView) void {
         self.cancelGallery();
+        if (self.suggestion_picker) |picker| picker.view = null;
+        self.suggestion_picker = null;
         self.unsubscribe();
         if (self.filter_override) |query| self.allocator.free(query);
         self.list.deinit();
@@ -194,9 +198,71 @@ pub const ExtensionsListView = struct {
         }
     }
 
+    const SuggestionPicker = struct {
+        view: ?*ExtensionsListView,
+        allocator: Allocator,
+        arena: std.heap.ArenaAllocator,
+        before: []const u8,
+        after: []const u8,
+        fn dispose(self: *SuggestionPicker) void {
+            self.arena.deinit();
+            self.allocator.destroy(self);
+        }
+        fn selected(context: *anyopaque, item: ?*const quick.Item) !void {
+            const self: *SuggestionPicker = @ptrCast(@alignCast(context));
+            defer self.dispose();
+            const view = self.view orelse return;
+            view.suggestion_picker = null;
+            const choice = item orelse return;
+            const value = try std.mem.concat(self.arena.allocator(), u8, &.{ self.before, choice.id, self.after });
+            try view.input_box.setValue(value);
+            const caret = self.before.len + choice.id.len;
+            view.input_box.select(.{ .start = caret, .end = caret });
+            view.requestFrame();
+        }
+    };
+
+    pub fn showSuggestions(self: *ExtensionsListView) !void {
+        const service = self.service orelse return;
+        const input = service.quick_input orelse return;
+        const value = self.input_box.getValue();
+        const caret = @min(self.input_box.cursor, value.len);
+        var start = caret;
+        while (start > 0 and !std.ascii.isWhitespace(value[start - 1])) start -= 1;
+        const prefix = if (start < caret and value[start] == '@') value[start..caret] else "";
+        if (prefix.len == 0) start = caret;
+        var end = caret;
+        if (prefix.len > 0) while (end < value.len and !std.ascii.isWhitespace(value[end])) : (end += 1) {};
+        const picker = try self.allocator.create(SuggestionPicker);
+        picker.* = .{ .view = self, .allocator = self.allocator, .arena = .init(self.allocator), .before = "", .after = "" };
+        var adopted = false;
+        defer if (!adopted) picker.dispose();
+        const allocator = picker.arena.allocator();
+        picker.before = try std.mem.concat(allocator, u8, &.{ value[0..start], if (start > 0 and !std.ascii.isWhitespace(value[start - 1])) " " else "" });
+        picker.after = try allocator.dupe(u8, value[end..]);
+        const query = try std.mem.concat(allocator, u8, &.{ picker.before, picker.after });
+        const suggestions = try query_mod.Query.suggestions(allocator, query, service.gallery_url != null);
+        var items: std.ArrayList(quick.QuickPickItem) = .empty;
+        for (suggestions) |suggestion| {
+            if (prefix.len > 0 and !startsWithIgnoreCase(suggestion, prefix)) continue;
+            try items.append(allocator, .{ .item = .{ .id = suggestion, .label = std.mem.trimEnd(u8, suggestion, " ") } });
+        }
+        if (items.items.len == 0) return;
+        if (self.suggestion_picker) |previous| previous.view = null;
+        self.suggestion_picker = picker;
+        errdefer self.suggestion_picker = null;
+        try input.pick(items.items, .{ .placeholder = "Filter Extensions" }, SuggestionPicker.selected, picker);
+        adopted = true;
+    }
+
     fn onInputChange(context: ?*anyopaque, _: []const u8) void {
         const self: *ExtensionsListView = @ptrCast(@alignCast(context orelse return));
         self.searchChanged();
+        // A fresh @ token opens the terminal's quick-input suggestion list;
+        // Ctrl+Space can reopen it when completing a longer token.
+        const value = self.input_box.getValue();
+        const caret = self.input_box.cursor;
+        if (self.input_focused and caret > 0 and value[caret - 1] == '@' and (caret == 1 or std.ascii.isWhitespace(value[caret - 2]))) self.showSuggestions() catch {};
     }
 
     fn onInputEnter(context: ?*anyopaque) void {
@@ -440,6 +506,10 @@ pub const ExtensionsListView = struct {
     }
 
     pub fn handleSearchKey(self: *ExtensionsListView, event: *ui.KeyEvent) bool {
+        if (event.mods.ctrl and event.key == .char and event.key.char == ' ') {
+            self.showSuggestions() catch {};
+            return true;
+        }
         switch (event.key) {
             .down, .enter, .tab, .backtab => return false,
             else => {},
@@ -450,6 +520,11 @@ pub const ExtensionsListView = struct {
     }
 
     pub fn handleSearchMouse(self: *ExtensionsListView, event: *const ui.MouseEvent, rect: ui.Rect) bool {
+        const width = ui.cell.snap(rect.w);
+        if (width >= 6 and event.x >= ui.cell.snap(rect.x) + width - 3 and event.kind == .down and event.button == .left) {
+            self.showSuggestions() catch {};
+            return true;
+        }
         var local = event.*;
         local.x -|= ui.cell.snap(rect.x);
         local.y = 0;
@@ -459,7 +534,12 @@ pub const ExtensionsListView = struct {
     }
 
     pub fn renderSearch(self: *ExtensionsListView, grid: *ui.CellGrid, rect: ui.Rect) !void {
-        try self.renderInput(grid, ui.cell.snap(rect.x), ui.cell.snap(rect.y), ui.cell.snap(rect.w), list_renderer.colors(self.theme()));
+        const width = ui.cell.snap(rect.w);
+        const x = ui.cell.snap(rect.x);
+        const y = ui.cell.snap(rect.y);
+        const palette = list_renderer.colors(self.theme());
+        try self.renderInput(grid, x, y, if (width >= 6) width - 3 else width, palette);
+        if (width >= 6) _ = list_renderer.drawTextEllipsis(grid, x + width - 3, y, 3, " ≡ ", .{ .fg = ui.cell.packColor(palette.input_foreground), .bg = ui.cell.packColor(palette.input_background) });
     }
 
     fn setInputFocused(self: *ExtensionsListView, focused: bool) void {
@@ -882,7 +962,8 @@ fn parseFilter(arena: Allocator, value: []const u8) !ParsedFilter {
     while (index < value.len) {
         while (index < value.len and std.ascii.isWhitespace(value[index])) : (index += 1) {}
         if (index >= value.len) break;
-        if (startsWithIgnoreCase(value[index..], "category:")) {
+        if (startsWithIgnoreCase(value[index..], "category:") or startsWithIgnoreCase(value[index..], "@category:")) {
+            if (value[index] == '@') index += 1;
             index += "category:".len;
             var category: []const u8 = "";
             if (index < value.len and value[index] == '"') {
