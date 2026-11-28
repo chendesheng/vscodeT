@@ -317,7 +317,9 @@ pub const SCMContribution = struct {
     pub fn attachHistoryProvider(self: *SCMContribution, provider: *const scm.ISCMProvider, theme: ?*const ThemeColors) void {
         const history = self.history orelse return;
         if (theme) |palette| history.setThemeColors(palette);
-        if (provider.history_provider) |history_provider| history.setProvider(history_provider);
+        if (provider.history_provider) |history_provider| {
+            if (history.provider != history_provider) history.setProvider(history_provider);
+        }
     }
 
     /// The attached providers are borrowed. Tear down their listeners and

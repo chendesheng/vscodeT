@@ -319,6 +319,20 @@ test "SCM history view pane: WindowIo pagination publishes on completion and can
     view.setProvider(null);
     _ = window.dispatch(time.milliTimestamp());
     try testing.expectEqual(@as(usize, 1), view.rows.items.len);
+
+    // Mounting a live provider is also asynchronous. It must not run the
+    // standalone provider API or block the window while displaying the first page.
+    const before = provider.fetch_count;
+    view.setProvider(provider.interface());
+    try testing.expectEqual(before + 1, provider.fetch_count);
+    try testing.expectEqual(@as(?usize, 0), provider.last_skip);
+    try testing.expectEqual(@as(usize, 1), view.rows.items.len);
+    const initial_deadline = time.milliTimestamp() + 5000;
+    while (view.rows.items.len == 1 and time.milliTimestamp() < initial_deadline) {
+        _ = window.dispatch(time.milliTimestamp());
+        if (view.rows.items.len == 1) try io.sleep(.fromMilliseconds(1), .awake);
+    }
+    try testing.expectEqual(@as(usize, 3), view.rows.items.len);
 }
 
 test "SCM history view pane: one click on Load More loads the next page" {

@@ -9,8 +9,8 @@
 // - hover is plain text (no markdown/avatars/commands);
 // - one click selects and a second click on the selected commit toggles
 //   expansion. Open Changes uses the host's single-file diff and picker;
-// - pagination awaits a detached provider read on the window executor;
-//   initial loading and cursor reveal still use the synchronous provider API.
+// - initial history loading and pagination await detached provider reads on
+//   the window executor; ref resolution and cursor reveal remain synchronous.
 // - the tree mode compresses single-child folders like `scm.compactFolders`.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -425,6 +425,19 @@ pub const SCMHistoryViewPane = struct {
 
         if (kind == .reload) {
             self.loaded_pages = 1;
+            if (self.host.window != null and provider.capture_history_items_fn != null) {
+                // Like the upstream data source, start the first history request
+                // without blocking the view (or mounting the workbench).
+                self.loaded_pages = 0;
+                self.load_more = .no;
+                self.rows.clearRetainingCapacity();
+                _ = self.graph_arena.reset(.retain_capacity);
+                try self.rows.append(.welcome);
+                self.clampSelection();
+                try self.fetchNextPage();
+                self.revision += 1;
+                return;
+            }
         }
 
         var ref_ids = std.array_list.Managed([]const u8).init(arena);
@@ -433,7 +446,7 @@ pub const SCMHistoryViewPane = struct {
         }
         const all_refs = self.filter_kind == .all;
         const page_size = @max(self.config.page_size, 1);
-        const wanted = page_size * self.loaded_pages;
+        const wanted = page_size * @max(self.loaded_pages, 1);
 
         var items = std.array_list.Managed(history.ISCMHistoryItem).init(arena);
         var pages: usize = 0;
@@ -559,6 +572,7 @@ pub const SCMHistoryViewPane = struct {
         defer job.destroy();
         const page = job.result catch |err| {
             self.last_error = err;
+            self.revision += 1;
             return true;
         };
         self.appendPage(page, job.limit) catch |err| {
@@ -627,9 +641,9 @@ pub const SCMHistoryViewPane = struct {
         switch (self.filter_kind) {
             .auto => {
                 var refs = std.array_list.Managed(history.ISCMHistoryItemRef).init(arena);
-                if (provider.history_item_ref) |ref| try refs.append(ref);
-                if (provider.history_item_remote_ref) |ref| try refs.append(ref);
-                if (provider.history_item_base_ref) |ref| try refs.append(ref);
+                if (provider.history_item_ref) |ref| try refs.append(try ref.clone(arena));
+                if (provider.history_item_remote_ref) |ref| try refs.append(try ref.clone(arena));
+                if (provider.history_item_base_ref) |ref| try refs.append(try ref.clone(arena));
                 return refs.toOwnedSlice();
             },
             .all => {
@@ -643,9 +657,9 @@ pub const SCMHistoryViewPane = struct {
                     self.filter_kind = .auto;
                     self.clearFilterIds();
                     var fallback = std.array_list.Managed(history.ISCMHistoryItemRef).init(arena);
-                    if (provider.history_item_ref) |ref| try fallback.append(ref);
-                    if (provider.history_item_remote_ref) |ref| try fallback.append(ref);
-                    if (provider.history_item_base_ref) |ref| try fallback.append(ref);
+                    if (provider.history_item_ref) |ref| try fallback.append(try ref.clone(arena));
+                    if (provider.history_item_remote_ref) |ref| try fallback.append(try ref.clone(arena));
+                    if (provider.history_item_base_ref) |ref| try fallback.append(try ref.clone(arena));
                     return fallback.toOwnedSlice();
                 }
                 return refs;
@@ -1490,7 +1504,7 @@ pub const SCMHistoryViewPane = struct {
             .welcome => {
                 const label = try doc.createElement(.span);
                 label.setStyle(.{ .white_space = .pre, .color = colors.dim, .padding = .{ .left = 1 } });
-                _ = try label.appendText("The selected source control provider does not have any source control history items.");
+                _ = try label.appendText(if (self.page_job != null) "Loading history…" else "The selected source control provider does not have any source control history items.");
                 _ = try line.appendChild(label);
             },
         }

@@ -1363,8 +1363,8 @@ stress and strict reference-conformance reports run separately.
   `Enter` opens a parent↔commit diff and clicking the `Load More…` row pages
   older commits in. Pagination keeps loaded commits and requests only the next
   page (`skip` and `limit`), using the existing WindowIo executor for a detached
-  Git read; completion publishes on the window. Initial loading and cursor reveal
-  still use the synchronous provider contract. `scm.graph.pageSize` (50),
+  Git read; completion publishes on the window. Initial history pages use the
+  same executor; ref resolution and cursor reveal remain synchronous. `scm.graph.pageSize` (50),
   `scm.graph.pageOnScroll` (true), `scm.graph.badges` (`filter`),
   `scm.graph.showIncomingChanges`/`showOutgoingChanges` (true),
   `scm.defaultViewMode` (`list`), `scm.compactFolders` (true) and
