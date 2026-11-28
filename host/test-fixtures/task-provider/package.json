@@ -1,6 +1,6 @@
 {
   "name": "task-provider-fixture",
-  "publisher": "vscode-textbuffer",
+  "publisher": "minecode",
   "version": "1.0.0",
   "engines": { "vscode": "^1.100.0" },
   "main": "./extension.js",

@@ -1558,7 +1558,7 @@ the extension manager UI itself as much as to contributed features.
 ### 11.7 Native Vim built-in extension
 
 Vim is no longer implemented by loading VSCodeVim through the Node extension
-host. It is a compiled-in built-in extension (`vscode-textbuffer.vim`) that
+host. It is a compiled-in built-in extension (`minecode.vim`) that
 receives the generic `IExtensionContext` from
 `src/vs/workbench/api/common/extensionApi.zig` and registers a key handler via
 `src/vs/workbench/api/common/keyInput.zig`. The workbench core has no Vim

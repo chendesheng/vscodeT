@@ -11,7 +11,7 @@ import termios
 import time
 
 HOST = Path(__file__).resolve().parent
-EDITOR = HOST.parent / "zig-out/bin/zig"
+EDITOR = HOST.parent / "zig-out/bin/minecode"
 
 
 def run(root):
@@ -29,7 +29,7 @@ def run(root):
     env = {
         "HOME": str(root), "XDG_CONFIG_HOME": str(root / "config"),
         "PATH": os.environ["PATH"], "TERM": "xterm-256color",
-        "VSCODE_TEXTBUFFER_COPILOT_SERVER": str(HOST / "test-fixtures/copilot-server.cjs"),
+        "MINECODE_COPILOT_SERVER": str(HOST / "test-fixtures/copilot-server.cjs"),
         "COPILOT_TEST_EVENTS": str(events),
     }
     process = subprocess.Popen([EDITOR, "--user-data-dir", profile, source],

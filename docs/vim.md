@@ -1,6 +1,6 @@
 # Native Vim
 
-Vim is a compiled-in built-in extension (`vscode-textbuffer.vim`). It does not
+Vim is a compiled-in built-in extension (`minecode.vim`). It does not
 run in the Node extension host and does not load VSCodeVim.
 
 Vim and the native Helix built-in (`docs/helix.md`) are mutually exclusive:

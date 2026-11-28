@@ -327,7 +327,7 @@ pub fn main(init: std.process.Init) !void {
 
     const executable_dir = try std.process.executableDirPathAlloc(io, allocator);
     defer allocator.free(executable_dir);
-    const installed_extensions = try std.fs.path.resolveAlloc(allocator, &.{ executable_dir, "../share/vscode-textbuffer/extensions" });
+    const installed_extensions = try std.fs.path.resolveAlloc(allocator, &.{ executable_dir, "../share/minecode/extensions" });
     defer allocator.free(installed_extensions);
 
     // Extension inventory: installed built-ins plus the effective VS Code
@@ -386,7 +386,7 @@ pub fn main(init: std.process.Init) !void {
     if (declarative) |*registry| tokenizer.setGrammarCatalog(registry.grammars);
     defer tokenizer.setGrammarCatalog(&.{});
 
-    const runtime_dir = try std.fs.path.resolveAlloc(allocator, &.{ executable_dir, "../lib/vscode-textbuffer" });
+    const runtime_dir = try std.fs.path.resolveAlloc(allocator, &.{ executable_dir, "../lib/minecode" });
     defer allocator.free(runtime_dir);
     const json_server = try std.fs.path.join(allocator, &.{ runtime_dir, "jsonServer.mjs" });
     defer allocator.free(json_server);

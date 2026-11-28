@@ -23,7 +23,7 @@ const decoder = new TextDecoder();
 const COLS = 80;
 const ROWS = 24;
 
-const SAMPLE = `// vscodeT wasm smoke
+const SAMPLE = `// minecode wasm smoke
 export function greet(name: string): string {
   return \`Hello, \${name}!\`;
 }
@@ -165,7 +165,7 @@ async function main() {
   vt.write(first);
   vt.update();
   const text = viewportText(vt, COLS, ROWS);
-  assert.match(text, /vscodeT/, `sample text not rendered by Ghostty:\n${text}`);
+  assert.match(text, /minecode/, `sample text not rendered by Ghostty:\n${text}`);
   assert.ok(nonDefaultForegroundCount(vt) > 0, 'no syntax-colored cells reached Ghostty');
 
   // Ghostty's key encoder -> the same terminal bytes the page receives.
@@ -196,7 +196,7 @@ async function main() {
   vt.update();
   assert.equal(vt.cols, 100);
   assert.equal(vt.rows, 30);
-  assert.match(viewportText(vt, 100, 30), /vscodeT/);
+  assert.match(viewportText(vt, 100, 30), /minecode/);
 
   // An SGR mouse press/release must reach View.dispatchMouse and place the caret.
   send('\x1b[<0;10;3M');
@@ -204,7 +204,7 @@ async function main() {
   assert.notEqual(wasm.wasm_cursor(), 0xFFFFFFFF, 'mouse click left the cursor hidden');
 
   const saved = saveText();
-  assert.match(saved, /vscodeT/, 'saved text lost the document');
+  assert.match(saved, /minecode/, 'saved text lost the document');
   assert.match(saved, /X/, 'saved text lost the typed character');
 
   wasm.wasm_deinit();

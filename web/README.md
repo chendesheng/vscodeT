@@ -1,11 +1,11 @@
-# vscodeT WebAssembly demo
+# minecode WebAssembly demo
 
 A single-file browser build of the editor. The editor core and view are Zig
 compiled to `wasm32-wasi`; the terminal is **Ghostty** through
 [`ghostty-web`](https://github.com/coder/ghostty-web) (the Ghostty VT engine
 compiled to wasm with a canvas renderer and an xterm.js-compatible API).
 
-Live: <https://chendesheng.github.io/vscodeT/>
+Live: <https://chendesheng.github.io/minecode/>
 
 ## Build and run locally
 
@@ -80,7 +80,7 @@ ghostty-web write ◀── ANSI diff + cursor ── wasm_render ◀── View
   pins the tarball and each extracted file by SHA-256. The generated vendor
   directory includes the MIT `LICENSE` and a provenance `README.md`.
 - All page URLs are relative so the same files work at `/` and under a GitHub
-  Pages project path such as `/vscodeT/`.
+  Pages project path such as `/minecode/`.
 
 ## GitHub Pages
 

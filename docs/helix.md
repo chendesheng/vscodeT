@@ -1,6 +1,6 @@
 # Native Helix
 
-Helix is a compiled-in built-in extension (`vscode-textbuffer.helix`). It does
+Helix is a compiled-in built-in extension (`minecode.helix`). It does
 not run in the Node extension host and does not load a Helix plugin. It is a
 deliberate Zig addition, not a VS Code upstream port, and follows Helix's
 selection-first editing model: a movement builds a selection, then `d`/`c`/`y`

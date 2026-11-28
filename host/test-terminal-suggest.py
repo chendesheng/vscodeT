@@ -11,7 +11,7 @@ import tempfile
 import termios
 import time
 
-EDITOR = Path(__file__).resolve().parent.parent / "zig-out/bin/zig"
+EDITOR = Path(__file__).resolve().parent.parent / "zig-out/bin/minecode"
 
 
 def run(root):

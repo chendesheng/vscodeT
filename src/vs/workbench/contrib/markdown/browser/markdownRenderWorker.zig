@@ -62,7 +62,7 @@ pub const Renderer = struct {
             self.executable_checked = true;
             const dir = std.process.executableDirPathAlloc(dispatch.backingIo(io), self.allocator) catch return null;
             defer self.allocator.free(dir);
-            const script = std.fs.path.resolveAlloc(self.allocator, &.{ dir, "../lib/vscode-textbuffer", self.script_name }) catch return null;
+            const script = std.fs.path.resolveAlloc(self.allocator, &.{ dir, "../lib/minecode", self.script_name }) catch return null;
             Io.Dir.cwd().access(dispatch.backingIo(io), script, .{}) catch {
                 self.allocator.free(script);
                 return null;

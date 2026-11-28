@@ -42,7 +42,7 @@ connection.onInitialize(params => {
     semanticTokensProvider: { legend: { tokenTypes: ['variable', 'function'], tokenModifiers: ['declaration'] }, full: { delta: true }, range: true },
     inlayHintProvider: { resolveProvider: true },
     workspace: { workspaceFolders: { supported: true, changeNotifications: true } },
-  }, serverInfo: { name: 'vscodeT-mock-zls', version: '1.0.0' } };
+  }, serverInfo: { name: 'minecode-mock-zls', version: '1.0.0' } };
 });
 connection.onInitialized(async () => {
   bump('initialized');

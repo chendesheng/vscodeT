@@ -13,7 +13,7 @@ const fileInput = document.getElementById('file-input');
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-const SAMPLE = `// vscodeT WebAssembly demo
+const SAMPLE = `// minecode WebAssembly demo
 // Ghostty (ghostty-web) parses the ANSI frames; the editor is Zig wasm.
 import { Editor } from "./core/editor";
 
@@ -24,7 +24,7 @@ export function greet(name: string): string {
 }
 
 const answer = 42;
-console.log(greet("vscodeT"), answer);
+console.log(greet("minecode"), answer);
 `;
 
 const MODES = '\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[?2004h\x1b[?7l';
@@ -385,7 +385,7 @@ function saveFile() {
 function updateFileLabel() {
   fileLabel.textContent = currentPath;
   fileLabel.title = currentPath;
-  document.title = `${currentPath.split('/').pop() || 'demo'} — vscodeT wasm`;
+  document.title = `${currentPath.split('/').pop() || 'demo'} — minecode wasm`;
 }
 
 function isModifierCombo(event) {

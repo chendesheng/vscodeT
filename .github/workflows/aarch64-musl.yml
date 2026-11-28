@@ -22,19 +22,15 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
-      - name: Build Oniguruma for aarch64 musl
-        run: scripts/build-onig-aarch64.sh "$PWD/aarch64-onig"
-      - name: Build vscodeT
+      - name: Build minecode
         run: |
-          zig build -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSmall \
-            -Donig-include="$PWD/third_party/oniguruma/src" \
-            -Donig-lib="$PWD/aarch64-onig"
+          zig build -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSmall -Donig-static=true
       - name: Inspect binary
         run: |
-          file zig-out/bin/zig
-          readelf -h zig-out/bin/zig | head -20
+          file zig-out/bin/minecode
+          readelf -h zig-out/bin/minecode | head -20
       - uses: actions/upload-artifact@v4
         with:
-          name: vscodet-aarch64-musl
-          path: zig-out/bin/zig
+          name: minecode-aarch64-musl
+          path: zig-out/bin/minecode
           if-no-files-found: error

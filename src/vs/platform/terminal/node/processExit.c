@@ -8,7 +8,7 @@
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
 #include <sys/event.h>
 
-int vscodet_process_exit_fd(pid_t pid) {
+int minecode_process_exit_fd(pid_t pid) {
     int fd = kqueue();
     if (fd < 0) return -1;
     struct kevent event;
@@ -34,13 +34,13 @@ int vscodet_process_exit_fd(pid_t pid) {
     return fd;
 }
 #else
-int vscodet_process_exit_fd(pid_t pid) {
+int minecode_process_exit_fd(pid_t pid) {
     (void)pid;
     return -1;
 }
 #endif
 
-void vscodet_wait_for_process_exit(pid_t pid, int wake_fd) {
+void minecode_wait_for_process_exit(pid_t pid, int wake_fd) {
     siginfo_t info;
     while (waitid(P_PID, (id_t)pid, &info, WEXITED | WNOWAIT) < 0 && errno == EINTR) {}
     const char ready = 1;

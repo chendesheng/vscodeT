@@ -1,7 +1,7 @@
 # ui
 
 A small, standalone Zig 0.17 terminal UI library. It is the rendering layer used
-by the `vscode-textbuffer` preview; it has no dependency on the editor.
+by the `minecode` preview; it has no dependency on the editor.
 
 The public module starts at [src/ui.zig](src/ui.zig). [tests/](tests/) holds the unit and stress suites and their fixtures. Runnable scenes live in [examples/](examples/) and benchmarks in [bench/](bench/).
 

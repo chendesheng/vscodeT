@@ -70,7 +70,7 @@ pub fn create(allocator: Allocator) !extension_api.IBuiltinExtension {
     state.* = VimExtensionState.init(allocator);
     return .{
         .context = state,
-        .id = "vscode-textbuffer.vim",
+        .id = "minecode.vim",
         .display_name = "Vim",
         .version = "0.1.0",
         .activate_fn = activate,

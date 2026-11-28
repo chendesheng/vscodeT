@@ -2873,7 +2873,7 @@ fn createExternalTempDir(allocator: Allocator) ![]u8 {
     std.testing.io.random(&random);
     var encoded: [std.base64.url_safe.Encoder.calcSize(12)]u8 = undefined;
     _ = std.base64.url_safe.Encoder.encode(&encoded, &random);
-    const path = try std.fmt.allocPrint(allocator, "/tmp/vscode-textbuffer-gitcli-{s}", .{encoded});
+    const path = try std.fmt.allocPrint(allocator, "/tmp/minecode-gitcli-{s}", .{encoded});
     std.Io.Dir.cwd().createDirPath(std.testing.io, path) catch |err| {
         allocator.free(path);
         return err;

@@ -81,8 +81,8 @@ own profiles.
 
 ## Reproducing
 
-Use the built executable with its adjacent `share/vscode-textbuffer` and
-`lib/vscode-textbuffer` directories. Launch it in a 140×44 PTY using
+Use the built executable with its adjacent `share/minecode` and
+`lib/minecode` directories. Launch it in a 140×44 PTY using
 `--user-data-dir`, `--extensions-dir` and `--logsPath` for isolated runs.
 Compare the `startup:` stages from `main.log`; profile startup and wheel
 input independently using macOS `sample`. For in-process measurements

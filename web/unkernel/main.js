@@ -1,4 +1,4 @@
-// vscodeT on unkernel: a real wasm Linux kernel runs the native aarch64 TUI,
+// minecode on unkernel: a real wasm Linux kernel runs the native aarch64 TUI,
 // and Ghostty (ghostty-web) is the terminal frontend.
 import { Ghostty, Terminal } from "./vendor/ghostty-web/ghostty-web.js";
 import { createKernel, checkSupport } from "./vendor/unkernel/web.mjs";
@@ -35,11 +35,11 @@ const THEME = {
 };
 
 const WORKSPACE = {
-  "demo.ts": `// vscodeT in unkernel — a real Linux kernel in WebAssembly.
+  "demo.ts": `// minecode in unkernel — a real Linux kernel in WebAssembly.
 import { greet } from "./src/main";
 
 const answer = 42;
-console.log(greet("vscodeT"), answer);
+console.log(greet("minecode"), answer);
 `,
   "src/main.ts": `export function greet(name: string): string {
   const message = \`Hello, \${name}!\`;
@@ -47,16 +47,16 @@ console.log(greet("vscodeT"), answer);
   return message;
 }
 `,
-  "README.md": `# vscodeT on unkernel
+  "README.md": `# minecode on unkernel
 
 This is a real aarch64 Debian/Alpine userland booted by unkernel, a Linux
-kernel compiled to WebAssembly. The editor is the native vscodeT TUI, not a
+kernel compiled to WebAssembly. The editor is the native minecode TUI, not a
 wasm reimplementation.
 
 Press Ctrl+P for quick open, or Alt+Shift+T for the integrated terminal.
 `,
   "package.json": `{
-  "name": "vscodet-unkernel-demo",
+  "name": "minecode-unkernel-demo",
   "private": true,
   "version": "0.0.0"
 }
@@ -346,7 +346,7 @@ async function start() {
   fitGrid();
 
   showStatus("Booting Linux…");
-  const binary = await fetchBytes("./vscodet");
+  const binary = await fetchBytes("./minecode");
   const vm = await createKernel({
     kernel: "./vendor/unkernel/unkernel.wasm",
     distro: "./alpine.erofs",
@@ -354,7 +354,7 @@ async function start() {
     memoryMiB: 1024,
     mounts: {
       "/mnt/host": {
-        vscodet: binary,
+        minecode: binary,
         workspace: WORKSPACE,
       },
     },
@@ -363,14 +363,14 @@ async function start() {
   showStatus("Installing the workbench…");
   await vm.exec(
     "sh",
-    ["-c", "cp /mnt/host/vscodet /home/user/vscodet && chmod +x /home/user/vscodet && cp -r /mnt/host/workspace /home/user/workspace"],
+    ["-c", "cp /mnt/host/minecode /home/user/minecode && chmod +x /home/user/minecode && cp -r /mnt/host/workspace /home/user/workspace"],
     { user: "user" },
   );
 
-  showStatus("Starting vscodeT…");
+  showStatus("Starting minecode…");
   const pty = await vm.spawn(
-    "/home/user/vscodet",
-    ["--user-data-dir", "/home/user/.vscodet", "/home/user/workspace", "/home/user/workspace/demo.ts"],
+    "/home/user/minecode",
+    ["--user-data-dir", "/home/user/.minecode", "/home/user/workspace", "/home/user/workspace/demo.ts"],
     { cols: term.cols, rows: term.rows, cwd: "/home/user", user: "user" },
   );
 
@@ -392,9 +392,9 @@ async function start() {
   resize();
 
   pty.ended.then((result) => {
-    showStatus(`vscodeT ended: ${JSON.stringify(result)}`, true);
+    showStatus(`minecode ended: ${JSON.stringify(result)}`, true);
   }).catch((error) => {
-    showStatus(`vscodeT error: ${error?.message ?? error}`, true);
+    showStatus(`minecode error: ${error?.message ?? error}`, true);
   });
 }
 

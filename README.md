@@ -1,4 +1,4 @@
-# vscodeT
+# minecode
 
 **Current Workbench architecture:** `src/vs/workbench/browser/workbench.zig` owns the portable Workbench startup, Layout, registered parts, notifications and lifecycle. `src/tui/workbenchWindow.zig` owns the native TerminalWorkbench window and remaining service/feature adapters; `src/tui/workbenchServices.zig` constructs the native service contracts; `src/tui/workbench.zig` owns the terminal event loop, rendering, and input. No production feature imports the portable Workbench or the native window. The old workbench polling methods are replaced by events and I/O readiness/deadline adapters. Outline editor subscriptions follow the view body visibility and active/visible-editor events, without render-time synchronization. ViewsService resolves registered views, active composites and body visibility through the layout and descriptor services. Sidebar title-area events drive the active toolbar. See the [Workbench port audit](docs/workbench-audit.md) for the live architectural boundaries and remaining port omissions.
 
@@ -10,7 +10,7 @@ no equivalent in the single terminal window. Cell geometry, terminal input and
 image protocols are adapted at the host boundary; portable notification logic
 is retained. See [terminal UI adaptations](docs/terminal-ui.md).
 
-`vscodeT` is a Zig 0.17 port of Visual Studio Code's editor and workbench
+`minecode` is a Zig 0.17 port of Visual Studio Code's editor and workbench
 internals to a terminal UI. It started as a port of the editor's pieceTree text
 buffer; the target is now the whole pinned VS Code tree in the `vscode/`
 submodule: editor core, view/view-model/controller layers, workbench services,
@@ -28,21 +28,46 @@ the pinned startup sequence and the remaining extractions.
 
 ## Live demo
 
-**[Open the full vscodeT workbench](https://chendesheng.github.io/vscodeT/unkernel/)** —
+**[Open the full minecode workbench](https://chendesheng.github.io/minecode/unkernel/)** —
 the native TUI running on [unkernel](https://github.com/pithings/unkernel), a
 real Linux kernel compiled to WebAssembly. The page boots a minimal Alpine
-aarch64 userland, copies the native aarch64 `vscodeT` binary into it and spawns
+aarch64 userland, copies the native aarch64 `minecode` binary into it and spawns
 it on a real pty; Ghostty (`ghostty-web`) is the terminal frontend. The sidebar,
 tabs, status bar, Ctrl+P quick open, file watcher, threads and integrated
 terminal are the same native app. The extension host and git are not included;
 the status bar reports that Source Control is disabled.
 
-The original **[editor-only wasm demo](https://chendesheng.github.io/vscodeT/)**
+The original **[editor-only wasm demo](https://chendesheng.github.io/minecode/)**
 is still available. It compiles only the editor to WebAssembly and is much
 lighter, but it has no workbench shell. See [`web/README.md`](web/README.md) for
 the scope of both pages.
 
 Requires Zig 0.17 or newer.
+
+## Prebuilt releases
+
+Tagged releases publish archives for Linux (x86_64 and aarch64 musl), macOS
+(Apple Silicon) and Windows (x86_64). Extract an archive and run
+`bin/minecode` from it.
+
+The executable itself is a single native binary: the editor, workbench, UI,
+terminal engine, Oniguruma and the main syntax grammars are linked or embedded
+at build time. It is **not a single-file installation**. It resolves two
+sibling directories relative to its own location:
+
+- `share/minecode/extensions` — the pinned built-in extension catalog
+  (manifests, language configurations, grammars, snippets, themes, icons).
+  Without it the editor still opens files with the embedded fallbacks, but the
+  full built-in language/theme catalog and its contributions are missing.
+- `lib/minecode` — the optional Node extension host, JSON language server,
+  TypeScript SDK and built-in executable extensions. Without it, TypeScript,
+  HTML, CSS, Emmet, Git and the other Node-backed features stay disabled; Node
+  must also be on `PATH` when this directory is present.
+
+Keep the `bin/`, `share/` and `lib/` directories together when installing or
+moving the editor. A release archive already has this layout.
+
+## Build from source
 
 ```sh
 # macOS
@@ -51,7 +76,9 @@ brew install oniguruma
 # Debian/Ubuntu
 sudo apt install libonig-dev
 
-zig build        # build the TUI editor
+zig build        # build the TUI editor (uses the system libonig)
+zig build -Donig-static=true   # build with the vendored Oniguruma instead
+zig build -Doptimize=ReleaseSmall -Donig-static=true   # release binary
 zig build run -- <folder> [<file>...]   # open a workspace folder and files
 zig build run -- <file>...   # open files in an empty workspace
 zig build run -- --session <file> [<folder>] [<file>...]  # restore/save the tab session
@@ -72,8 +99,8 @@ real Linux kernel and an aarch64 user-space emulator, so the workbench runs as
 a native aarch64 binary rather than a wasm rebuild. The page:
 
 1. boots unkernel's Alpine image with `createKernel({ worker: false })`;
-2. mounts the aarch64 `vscodet` binary and a sample workspace over 9p;
-3. copies them into `/home/user`, then spawns `vscodet` on a pty with
+2. mounts the aarch64 `minecode` binary and a sample workspace over 9p;
+3. copies them into `/home/user`, then spawns `minecode` on a pty with
    `vm.spawn()`;
 4. pipes the pty to Ghostty's terminal and sends keyboard, resize and mouse
    input back.
@@ -81,10 +108,7 @@ a native aarch64 binary rather than a wasm rebuild. The page:
 The binary is built in CI:
 
 ```sh
-scripts/build-onig-aarch64.sh aarch64-onig
-zig build -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSmall \
-  -Donig-include="$PWD/third_party/oniguruma/src" \
-  -Donig-lib="$PWD/aarch64-onig"
+zig build -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSmall -Donig-static=true
 ```
 
 The Pages workflow then downloads the pinned unkernel SDK and Alpine image,
@@ -368,9 +392,9 @@ line format as upstream's `FileLogger`:
 ```
 
 The file lives in the terminal user data directory's `logs` folder
-(`~/Library/Application Support/vscode-textbuffer/logs/main.log` on macOS,
-`$XDG_CONFIG_HOME/vscode-textbuffer/logs/main.log` on Linux,
-`%APPDATA%\vscode-textbuffer\logs\main.log` on Windows); the upstream
+(`~/Library/Application Support/minecode/logs/main.log` on macOS,
+`$XDG_CONFIG_HOME/minecode/logs/main.log` on Linux,
+`%APPDATA%\minecode\logs\main.log` on Windows); the upstream
 `--logsPath <dir>` switch overrides the directory. Timestamps are UTC because
 the terminal host has no time-zone database.
 Console loggers, the URI-keyed `ILoggerService` registry and the log-output
@@ -487,7 +511,7 @@ checkout. These provide TypeScript/JavaScript, HTML, CSS/Less/SCSS, Emmet,
 PHP, Git Base, Search Result, configuration and manifest authoring, Merge Conflict,
 Simple Browser, Terminal Suggest, GitHub and Microsoft authentication, and the
 npm, Grunt, Gulp and Jake task providers. The build installs their bundles, language
-servers and TypeScript SDK under `lib/vscode-textbuffer` in the same prefix
+servers and TypeScript SDK under `lib/minecode` in the same prefix
 as `zig build` (including `--prefix`). The ordinary native build requires
 no Node installation. The host receives the same enabled, deduplicated installed
 inventory as the declarative registry, including user and declarative-only
@@ -594,7 +618,7 @@ npm --prefix host ci
 zig build
 zig build host
 npm install -g @github/copilot-language-server@1.574.1
-VSCODE_TEXTBUFFER_COPILOT_SERVER=copilot-language-server zig-out/bin/zig example.py
+MINECODE_COPILOT_SERVER=copilot-language-server zig-out/bin/minecode example.py
 ```
 
 Open the command palette and run **GitHub Copilot: Sign In**. The status bar
@@ -607,7 +631,7 @@ show their first line with a return marker and insert the full text on acceptanc
 Use **GitHub Copilot: Sign Out** to end the session. The adapter honors
 `github.copilot.enable` per language and `editor.inlineSuggest.enabled`.
 
-Vim is a compiled-in built-in extension (`vscode-textbuffer.vim`), enabled
+Vim is a compiled-in built-in extension (`minecode.vim`), enabled
 with `"vim.enabled": true` in the user settings or after startup with the
 `Vim: Enable` / `Vim: Disable` commands; both persist the user-level
 `vim.enabled` setting. It does not use the Node extension
@@ -639,7 +663,7 @@ The status bar shows `-- NORMAL --`, `-- INSERT --`, `-- VISUAL --`, pending
 keys and the `:`/`/` prompt. See `docs/vim.md` for the supported feature list
 and the deliberate non-goals (Vimscript, plugins and `.vimrc`).
 
-Helix is the second compiled-in modal editor (`vscode-textbuffer.helix`),
+Helix is the second compiled-in modal editor (`minecode.helix`),
 enabled with `"helix.enabled": true` or with the `Helix: Enable` /
 `Helix: Disable` commands; both persist the user-level `helix.enabled`
 setting. It uses the same editor-state ownership and raw key-input contract as
@@ -662,7 +686,7 @@ See `docs/helix.md` for the supported surface and
 deliberate gaps.
 
 The native build installs the pinned built-in manifests and declarative assets
-under `share/vscode-textbuffer/extensions` beside the `bin` directory.
+under `share/minecode/extensions` beside the `bin` directory.
 Startup scans this catalog for languages, grammars, snippets and color themes.
 Keep both directories together when moving the editor. `zig build builtin-extensions`
 installs the catalog on its own. See the [extension tracker](docs/vscode-builtin-extension-status.md)
@@ -671,7 +695,7 @@ therefore gets its upstream `<!-- -->` comment rule, bracket pairs, auto-closing
 pairs and off-side folding even when the built-in grammar was already bundled.
 
 JSON and JSONC editors use the bundled VS Code JSON language server when
-the installed `lib/vscode-textbuffer/jsonServer.mjs` is present. Syntax diagnostics are pulled after
+the installed `lib/minecode/jsonServer.mjs` is present. Syntax diagnostics are pulled after
 edits and shown as severity-colored squiggle underlines over their ranges in
 the editor, in the `Problems` panel view and in the status-bar counts; `Ctrl-Space` completion
 comes from the same server. Without the server bundle the editor keeps the
@@ -805,7 +829,7 @@ needs a PTY), file watching, the Node extension host, image previews or the diff
 editor. See [`web/README.md`](web/README.md) for details and known limits.
 
 `.github/workflows/pages.yml` builds the demo, runs the smoke test and deploys
-`zig-out/web` to GitHub Pages (`https://chendesheng.github.io/vscodeT/`) on
+`zig-out/web` to GitHub Pages (`https://chendesheng.github.io/minecode/`) on
 pushes to `main`. The repository's Pages source must be **GitHub Actions**;
 this is a one-time repository setting.
 
@@ -823,6 +847,12 @@ system dependency installation and library search paths differ: Windows
 uses vcpkg and `-Donig-include`/`-Donig-lib`. The terminal layer uses the
 Windows console API for raw mode, sizing and input polling. Specialized UI
 stress and strict reference-conformance reports run separately.
+
+`.github/workflows/release.yml` builds the release archives for Linux x86_64,
+Linux aarch64 musl, macOS arm64 and Windows x86_64 on native runners, using
+`-Donig-static=true` so the binary has no runtime `libonig` dependency. A
+pushed `v*` tag creates a GitHub release with the archives and SHA-256
+checksums; `workflow_dispatch` builds the same artifacts without publishing.
 
 ## Design docs
 
@@ -1094,9 +1124,9 @@ stress and strict reference-conformance reports run separately.
   matching upstream. The terminal layer is the TUI profile's
   `<user-data-dir>/User/settings.json`, using upstream `userDataPath.ts`
   precedence: `VSCODE_PORTABLE` → `<portable>/user-data`, `VSCODE_APPDATA` →
-  `<appdata>/vscode-textbuffer`, `--user-data-dir <dir>`, then the platform
-  application-data directory (`~/Library/Application Support/vscode-textbuffer`,
-  `$XDG_CONFIG_HOME/vscode-textbuffer`, `%APPDATA%\vscode-textbuffer`).
+  `<appdata>/minecode`, `--user-data-dir <dir>`, then the platform
+  application-data directory (`~/Library/Application Support/minecode`,
+  `$XDG_CONFIG_HOME/minecode`, `%APPDATA%\minecode`).
   `src/tui/vscodeProfile.zig` owns the discovery. The TUI watches every user
   layer, the workspace file, each folder's `.vscode/settings.json` and the
   keybinding files, and reloads automatically. "Preferences: Open User Settings
