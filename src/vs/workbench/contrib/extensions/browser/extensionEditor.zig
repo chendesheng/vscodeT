@@ -276,7 +276,7 @@ pub const ExtensionEditor = struct {
         for (self.tabs[0..self.tab_count]) |tab| {
             if (tab == self.active_tab) break;
         } else self.active_tab = .readme;
-        try self.feature_tab.setManifest(self.manifest);
+        try self.feature_tab.setManifestWithRuntime(self.manifest, self.service.getRuntimeStatus(self.input.identifier) != null);
         try self.refreshAdditionalDetails();
         try self.refreshContent();
     }
@@ -298,7 +298,7 @@ pub const ExtensionEditor = struct {
         const source = switch (self.active_tab) {
             .readme => try self.allocator.dupe(u8, self.readme),
             .changelog => try self.allocator.dupe(u8, self.changelog orelse "No changelog available."),
-            .features => try self.feature_tab.renderSelected(self.manifest),
+            .features => try self.feature_tab.renderSelectedWithRuntime(self.manifest, self.service.getRuntimeStatus(self.input.identifier)),
             .dependencies => try self.dependencyContent("extensionDependencies"),
             .extensionPack => try self.dependencyContent("extensionPack"),
         };

@@ -21,6 +21,7 @@ pub const ExtensionHostRuntime = struct {
 
     pub fn attach(self: *ExtensionHostRuntime) !void {
         try self.service.recordRuntime();
+        try self.service.setRuntimeStatusService(if (self.host.*) |host| host.interface() else null);
         self.service.restart_host = .{ .context = self, .restart = restart };
         self.reconcile_task = .{ .queue = &self.workbench.window_events, .context = self, .run = reconcile };
         self.description_listener = try self.service.on_did_change_enabled_descriptions.listenSignal(self, descriptionsChanged);
@@ -28,6 +29,7 @@ pub const ExtensionHostRuntime = struct {
 
     pub fn detach(self: *ExtensionHostRuntime) void {
         self.service.restart_host = null;
+        self.service.setRuntimeStatusService(null) catch {};
         if (self.description_listener) |listener| listener.dispose();
         self.description_listener = null;
         self.reconcile_task.schedule(null);
@@ -92,9 +94,11 @@ pub const ExtensionHostRuntime = struct {
             defer allocator.free(script);
             try std.Io.Dir.cwd().access(io, script, .{});
         }
+        try self.service.setRuntimeStatusService(null);
         if (self.host.*) |host| host.deinit();
         self.host.* = null;
         if (paths.len > 0) self.host.* = try Extensions.init(allocator, io, self.workbench.extensionHostServices(), paths, self.user_data_dir, self.runtime_dir);
+        try self.service.setRuntimeStatusService(if (self.host.*) |host| host.interface() else null);
         self.workbench.requestFrame();
     }
 };

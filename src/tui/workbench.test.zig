@@ -14550,17 +14550,22 @@ test "Workbench: Restart Extensions applies active removal without closing edito
     try runtime.attach();
     defer runtime.detach();
     const deadline = time_compat.milliTimestamp(io) + 10_000;
-    while (workbench.commands.get("fixture.active.command") == null and time_compat.milliTimestamp(io) < deadline) {
+    while ((workbench.commands.get("fixture.active.command") == null or service.getRuntimeStatus("fixture.active").?.activation_times == null) and time_compat.milliTimestamp(io) < deadline) {
         _ = workbench.window_events.dispatch(time_compat.milliTimestamp(io));
         time_compat.sleepMillis(io, 10);
     }
     try std.testing.expect(workbench.commands.get("fixture.active.command") != null);
+    const activation = service.getRuntimeStatus("FIXTURE.ACTIVE").?.activation_times orelse return error.ExpectedActivationStatus;
+    try std.testing.expect(activation.startup);
+    try std.testing.expectEqualStrings("*", activation.activation_event);
+    try std.testing.expect(activation.activate_call_time >= 0);
     const tab = workbench.activeTab().?;
     try std.testing.expect(try service.setEnablement("fixture.active", .DisabledGlobally));
     _ = workbench.window_events.dispatch(time_compat.milliTimestamp(io));
     try std.testing.expectEqual(abstract.RuntimeInventory.Action.RestartExtensions, service.runtimeState("fixture.active").?);
     try workbench.commands.execute("workbench.action.restartExtensionHost");
     try std.testing.expect(host == null);
+    try std.testing.expect(service.getRuntimeStatus("fixture.active") == null);
     try std.testing.expect(workbench.commands.get("fixture.active.command") == null);
     try std.testing.expect(workbench.activeTab().? == tab);
     try std.testing.expect(service.runtimeState("fixture.active") == null);

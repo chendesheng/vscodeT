@@ -23,6 +23,7 @@ const storage = @import("../../../../platform/storage/common/storage.zig");
 const configuration = @import("../../../../platform/configuration/common/configuration.zig");
 const lifecycle = @import("../../../services/lifecycle/common/lifecycle.zig");
 const time = @import("../../../../base/common/timeCompat.zig");
+const extension_status = @import("../../../services/extensions/common/extensions.zig");
 const RuntimeInventory = @import("../../../services/extensions/common/abstractExtensionService.zig").RuntimeInventory;
 
 pub const Options = struct {
@@ -297,6 +298,8 @@ pub const ExtensionsWorkbenchService = struct {
     context_menu: ?@import("../../../../platform/contextview/browser/contextMenuService.zig").IContextMenuService = null,
     pending_dialog: ?dialogs.IDialogHandle = null,
     runtime: ?RuntimeInventory = null,
+    runtime_status: ?extension_status.IExtensionStatusService = null,
+    runtime_status_listener: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
     restart_host: ?struct { context: *anyopaque, restart: *const fn (*anyopaque) anyerror!void } = null,
     enablement: *enablement_mod.ExtensionEnablementService,
     on_change: Emitter(void),
@@ -454,6 +457,22 @@ pub const ExtensionsWorkbenchService = struct {
     }
 
     /// Called by the local host owner only after accepting the new inventory.
+    pub fn setRuntimeStatusService(self: *ExtensionsWorkbenchService, service: ?extension_status.IExtensionStatusService) !void {
+        if (self.runtime_status_listener) |listener| listener.dispose();
+        self.runtime_status_listener = null;
+        self.runtime_status = service;
+        if (service) |status| self.runtime_status_listener = try status.on_did_change_extensions_status.listenSignal(self, runtimeStatusChanged);
+        try self.on_change.fire({});
+    }
+
+    fn runtimeStatusChanged(self: *ExtensionsWorkbenchService) !void {
+        try self.on_change.fire({});
+    }
+
+    pub fn getRuntimeStatus(self: *const ExtensionsWorkbenchService, identifier: []const u8) ?extension_status.IExtensionsStatus {
+        return if (self.runtime_status) |status| status.getStatus(identifier) else null;
+    }
+
     pub fn recordRuntime(self: *ExtensionsWorkbenchService) !void {
         return self.acceptRuntime(try RuntimeInventory.init(self.allocator, self.enabledDescriptions()));
     }
@@ -752,6 +771,9 @@ pub const ExtensionsWorkbenchService = struct {
     }
 
     pub fn detachWindow(self: *ExtensionsWorkbenchService) void {
+        if (self.runtime_status_listener) |listener| listener.dispose();
+        self.runtime_status_listener = null;
+        self.runtime_status = null;
         self.cancelVersions();
         self.update_timer.schedule(null);
         self.update_timer = .{};

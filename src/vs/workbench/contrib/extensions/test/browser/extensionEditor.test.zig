@@ -62,3 +62,23 @@ test "ExtensionEditor: registered feature renderers preserve command and languag
     defer allocator.free(settings);
     for ([_][]const u8{ "pub.enabled", "Enable it", "true" }) |value| try std.testing.expect(std.mem.indexOf(u8, settings, value) != null);
 }
+
+test "ExtensionEditor: runtime feature reports activation and replaces status" {
+    const allocator = std.testing.allocator;
+    const features = @import("../../../../services/extensionManagement/common/extensionFeatures.zig");
+    var registry = features.ExtensionFeaturesRegistry.init(allocator);
+    defer registry.deinit();
+    var tab = @import("../../browser/extensionFeaturesTab.zig").ExtensionFeaturesTab.init(allocator, &registry);
+    defer tab.deinit();
+    try tab.setManifestWithRuntime(.null, true);
+    try std.testing.expectEqualStrings("runtimeStatus", tab.available[0].id);
+    const pending = try tab.renderSelectedWithRuntime(.null, .{});
+    defer allocator.free(pending);
+    try std.testing.expect(std.mem.indexOf(u8, pending, "Not yet activated") != null);
+    const active = try tab.renderSelectedWithRuntime(.null, .{ .activation_started = true, .activation_times = .{ .code_loading_time = 1, .activate_call_time = 2, .activate_resolved_time = 3, .startup = false, .activation_event = "onCommand:example.run" } });
+    defer allocator.free(active);
+    try std.testing.expect(std.mem.indexOf(u8, active, "onCommand:example.run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, active, "2.0ms") != null);
+    try tab.setManifestWithRuntime(.null, false);
+    try std.testing.expectEqual(@as(usize, 0), tab.available.len);
+}
