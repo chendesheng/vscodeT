@@ -14,7 +14,7 @@ new file mode 100644
 index 0000000..433289c
 --- /dev/null
 +++ b/helix-term/tests/test/record.rs
-@@ -0,0 +1,220 @@
+@@ -0,0 +1,223 @@
 +// CI-only cassette recorder for the minecode Helix oracle.
 +//
 +// This file is added by scripts/oracle/helix/record.patch and is never part of
@@ -94,6 +94,9 @@ index 0000000..433289c
 +            "<BS>" | "<Backspace>" => keys.push_str("<backspace>"),
 +            "<Space>" => keys.push_str("<space>"),
 +            "<lt>" => keys.push_str("<lt>"),
++            "<gt>" => keys.push_str("<gt>"),
++            "<" => keys.push_str("<lt>"),
++            ">" => keys.push_str("<gt>"),
 +            other if other.starts_with("<C-") || other.starts_with("<A-") => keys.push_str(other),
 +            other if other.chars().count() == 1 => keys.push_str(other),
 +            other => bail!("unsupported Helix cassette key token {other:?}"),
