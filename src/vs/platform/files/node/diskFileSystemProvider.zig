@@ -185,8 +185,11 @@ pub const DiskFileSystemProvider = struct {
             else
                 try Io.Dir.cwd().openFile(disk.io, resource, .{ .mode = .write_only });
             defer file.close(disk.io);
-            const file_stat = try file.stat(disk.io);
-            try file.writePositionalAll(disk.io, content, file_stat.size);
+            // Only the ending offset is needed. On Windows querying full
+            // metadata requires access not granted by a write-only handle;
+            // FileStandardInformation (length) works without read access.
+            const end = try file.length(disk.io);
+            try file.writePositionalAll(disk.io, content, end);
         } else {
             try disk.writeFile(resource, .{ .bytes = @constCast(content) });
         }
@@ -583,7 +586,8 @@ test "DiskFileSystemProvider append does not allocate or rewrite the existing co
     var provider = DiskFileSystemProvider.init(failing.allocator(), io);
     defer provider.deinit();
     try provider.writeFile(path, "new\n", .{ .create = true, .overwrite = true, .append = true });
+    try provider.writeFile(path, "last\n", .{ .create = false, .overwrite = true, .append = true });
     const actual = try tmp.dir.readFileAlloc(io, "channel.log", a, .limited(1024));
     defer a.free(actual);
-    try std.testing.expectEqualStrings("existing\nnew\n", actual);
+    try std.testing.expectEqualStrings("existing\nnew\nlast\n", actual);
 }

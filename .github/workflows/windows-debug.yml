@@ -89,8 +89,21 @@ jobs:
               $debugger = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
             }
             if (Test-Path -LiteralPath $debugger) {
-              $diagnostic = Start-Process -FilePath $debugger -ArgumentList @('-pv', '-p', "$($test.Id)", '-c', '"~* k; q"') -NoNewWindow -PassThru
+              $stackLog = Join-Path $env:RUNNER_TEMP 'windows-debug-stacks.txt'
+              $testExe = $test.Path
+              $diagnostic = Start-Process -FilePath $debugger -ArgumentList @('-pv', '-p', "$($test.Id)", '-logo', ('"' + $stackLog + '"'), '-c', '"~* k; q"') -NoNewWindow -PassThru
               if (!$diagnostic.WaitForExit(30000)) { $diagnostic.Kill() }
+              # Zig embeds DWARF rather than Windows debugger symbols on
+              # GNU targets. Resolve the RVAs using LLVM and the exact EXE.
+              $symbolizer = Get-Command llvm-symbolizer.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+              if (!$symbolizer) { $symbolizer = Join-Path $env:ProgramFiles 'LLVM\bin\llvm-symbolizer.exe' }
+              if ((Test-Path -LiteralPath $symbolizer) -and (Test-Path -LiteralPath $stackLog)) {
+                $addresses = [regex]::Matches((Get-Content -LiteralPath $stackLog -Raw), 'e2e_tests\+(0x[0-9a-fA-F]+)') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique
+                if ($addresses) {
+                  Write-Host 'Symbolized Zig frames:'
+                  & $symbolizer "--obj=$testExe" --relative-address --addresses @addresses
+                }
+              }
             } else {
               Write-Host 'Windows SDK debugger is unavailable on this runner.'
             }
@@ -105,5 +118,16 @@ jobs:
         with:
           name: windows-debug-extension-host-logs
           path: .cache-ext/**/logs/extension-host*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+      - name: Preserve executable and debugger trace on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-debug-symbols
+          path: |
+            .zig-cache/o/**/e2e_tests.exe
+            .zig-cache/o/**/e2e_tests.pdb
+            ${{ runner.temp }}/windows-debug-stacks.txt
           include-hidden-files: true
           if-no-files-found: ignore
