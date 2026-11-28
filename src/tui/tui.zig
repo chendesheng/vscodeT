@@ -22,6 +22,7 @@ const ENABLE_VIRTUAL_TERMINAL_INPUT: windows.DWORD = 0x0200;
 const ENABLE_PROCESSED_OUTPUT: windows.DWORD = 0x0001;
 const ENABLE_VIRTUAL_TERMINAL_PROCESSING: windows.DWORD = 0x0004;
 const DISABLE_NEWLINE_AUTO_RETURN: windows.DWORD = 0x0008;
+const CP_UTF8: windows.UINT = 65001;
 
 const WAIT_OBJECT_0: windows.DWORD = 0;
 const WAIT_TIMEOUT: windows.DWORD = 258;
@@ -51,6 +52,11 @@ const ConsoleScreenBufferInfo = extern struct {
 extern "kernel32" fn GetStdHandle(std_handle: windows.DWORD) callconv(.winapi) windows.HANDLE;
 extern "kernel32" fn GetConsoleMode(handle: windows.HANDLE, mode: *windows.DWORD) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn SetConsoleMode(handle: windows.HANDLE, mode: windows.DWORD) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn GetConsoleCP() callconv(.winapi) windows.UINT;
+extern "kernel32" fn GetConsoleOutputCP() callconv(.winapi) windows.UINT;
+extern "kernel32" fn SetConsoleCP(code_page: windows.UINT) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn SetConsoleOutputCP(code_page: windows.UINT) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn WriteConsoleW(handle: windows.HANDLE, buffer: [*]const u16, chars_to_write: windows.DWORD, chars_written: *windows.DWORD, reserved: ?*anyopaque) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn GetConsoleScreenBufferInfo(handle: windows.HANDLE, info: *ConsoleScreenBufferInfo) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn WaitForSingleObject(handle: windows.HANDLE, milliseconds: windows.DWORD) callconv(.winapi) windows.DWORD;
 extern "kernel32" fn WaitForMultipleObjects(
@@ -75,6 +81,8 @@ const WindowsRawMode = struct {
     input_mode: windows.DWORD = 0,
     output: ?windows.HANDLE = null,
     output_mode: windows.DWORD = 0,
+    input_code_page: windows.UINT = 0,
+    output_code_page: windows.UINT = 0,
 };
 
 pub fn enableRawMode() !RawModeState {
@@ -109,6 +117,7 @@ fn enableRawModePosix() !posix.termios {
 
 fn enableRawModeWindows() !WindowsRawMode {
     var state = WindowsRawMode{};
+    errdefer disableRawModeWindows(state);
 
     const input = GetStdHandle(STD_INPUT_HANDLE);
     if (input != windows.INVALID_HANDLE_VALUE) {
@@ -118,7 +127,9 @@ fn enableRawModeWindows() !WindowsRawMode {
             mode &= ~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT);
             mode |= ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_EXTENDED_FLAGS;
             mode |= ENABLE_WINDOW_INPUT | ENABLE_MOUSE_INPUT;
-            _ = SetConsoleMode(input, mode);
+            if (SetConsoleMode(input, mode) == .FALSE) return error.ConsoleModeFailed;
+            state.input_code_page = GetConsoleCP();
+            if (state.input_code_page != 0 and SetConsoleCP(CP_UTF8) == .FALSE) return error.ConsoleCodePageFailed;
         }
     }
 
@@ -129,7 +140,9 @@ fn enableRawModeWindows() !WindowsRawMode {
             var mode = state.output_mode;
             mode |= ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
             mode &= ~DISABLE_NEWLINE_AUTO_RETURN;
-            _ = SetConsoleMode(output, mode);
+            if (SetConsoleMode(output, mode) == .FALSE) return error.ConsoleModeFailed;
+            state.output_code_page = GetConsoleOutputCP();
+            if (state.output_code_page != 0 and SetConsoleOutputCP(CP_UTF8) == .FALSE) return error.ConsoleCodePageFailed;
         }
     }
 
@@ -175,6 +188,129 @@ pub fn disableRawMode(state: RawModeState) !void {
 fn disableRawModeWindows(state: WindowsRawMode) void {
     if (state.input) |handle| _ = SetConsoleMode(handle, state.input_mode);
     if (state.output) |handle| _ = SetConsoleMode(handle, state.output_mode);
+    if (state.input_code_page != 0) _ = SetConsoleCP(state.input_code_page);
+    if (state.output_code_page != 0) _ = SetConsoleOutputCP(state.output_code_page);
+}
+
+/// Windows console handles interpret byte writes using an OEM code page.
+/// Convert the UTF-8 ANSI stream to UTF-16 at the console boundary instead;
+/// redirected pipes/files must continue receiving the original UTF-8 bytes.
+pub const TerminalWriter = struct {
+    file: Io.File.Writer,
+    console: if (is_windows) ?WindowsConsoleWriter else void = if (is_windows) null else {},
+
+    pub fn init(allocator: Allocator, io: Io, buffer: []u8, state: RawModeState) TerminalWriter {
+        var result: TerminalWriter = .{ .file = Io.File.stdout().writer(io, buffer) };
+        if (is_windows) if (state.output) |handle| {
+            result.console = WindowsConsoleWriter.init(allocator, handle, buffer);
+        };
+        return result;
+    }
+
+    pub fn writer(self: *TerminalWriter) *Io.Writer {
+        if (is_windows) if (self.console) |*console| return &console.interface;
+        return &self.file.interface;
+    }
+
+    pub fn deinit(self: *TerminalWriter) void {
+        if (is_windows) if (self.console) |*console| console.deinit();
+    }
+};
+
+const WindowsConsoleWriter = struct {
+    interface: Io.Writer,
+    allocator: Allocator,
+    handle: windows.HANDLE,
+    write_wide: *const fn (windows.HANDLE, []const u16) Io.Writer.Error!void = writeWide,
+    bytes: std.ArrayList(u8) = .empty,
+    wide: std.ArrayList(u16) = .empty,
+
+    fn init(allocator: Allocator, handle: windows.HANDLE, buffer: []u8) WindowsConsoleWriter {
+        return .{
+            .interface = .{ .buffer = buffer, .vtable = &.{ .drain = drain, .flush = flush } },
+            .allocator = allocator,
+            .handle = handle,
+        };
+    }
+
+    fn deinit(self: *WindowsConsoleWriter) void {
+        self.bytes.deinit(self.allocator);
+        self.wide.deinit(self.allocator);
+    }
+
+    fn drain(writer: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
+        const self: *WindowsConsoleWriter = @fieldParentPtr("interface", writer);
+        self.bytes.appendSlice(self.allocator, writer.buffer[0..writer.end]) catch return error.WriteFailed;
+        writer.end = 0;
+        for (data[0 .. data.len - 1]) |slice| self.bytes.appendSlice(self.allocator, slice) catch return error.WriteFailed;
+        for (0..splat) |_| self.bytes.appendSlice(self.allocator, data[data.len - 1]) catch return error.WriteFailed;
+
+        const complete = utf8CompletePrefix(self.bytes.items);
+        self.wide.resize(self.allocator, complete) catch return error.WriteFailed;
+        const len = std.unicode.utf8ToUtf16Le(self.wide.items, self.bytes.items[0..complete]) catch return error.WriteFailed;
+        try self.write_wide(self.handle, self.wide.items[0..len]);
+        // Retain a partial UTF-8 scalar if a buffered write split it.
+        self.bytes.replaceRangeAssumeCapacity(0, complete, &.{});
+        return Io.Writer.countSplat(data, splat);
+    }
+
+    fn writeWide(handle: windows.HANDLE, text: []const u16) Io.Writer.Error!void {
+        var remaining = text;
+        while (remaining.len > 0) {
+            var chunk_len = @min(remaining.len, 32768);
+            // A UTF-16 surrogate pair must stay in the same console write.
+            if (chunk_len < remaining.len and remaining[chunk_len - 1] >= 0xd800 and remaining[chunk_len - 1] <= 0xdbff) chunk_len -= 1;
+            var written: windows.DWORD = 0;
+            if (WriteConsoleW(handle, remaining.ptr, @intCast(chunk_len), &written, null) == .FALSE or written == 0 or written > chunk_len) return error.WriteFailed;
+            remaining = remaining[written..];
+        }
+    }
+
+    fn flush(writer: *Io.Writer) Io.Writer.Error!void {
+        try Io.Writer.defaultFlush(writer);
+        const self: *WindowsConsoleWriter = @fieldParentPtr("interface", writer);
+        if (self.bytes.items.len != 0) return error.WriteFailed;
+    }
+};
+
+fn utf8CompletePrefix(bytes: []const u8) usize {
+    if (bytes.len == 0) return 0;
+    var start = bytes.len - 1;
+    while (start > 0 and bytes[start] & 0xc0 == 0x80) start -= 1;
+    const expected = std.unicode.utf8ByteSequenceLength(bytes[start]) catch return bytes.len;
+    return if (bytes.len - start < expected) start else bytes.len;
+}
+
+test "Windows terminal output preserves UTF-8 scalars and ANSI escape sequences" {
+    const text = "\x1b[38;2;191;191;191m╭─你好😀\x1b[0m";
+    const expected = std.unicode.utf8ToUtf16LeStringLiteral(text);
+    for (0..text.len + 1) |split| {
+        const complete = utf8CompletePrefix(text[0..split]);
+        var wide: [text.len]u16 = undefined;
+        const first = try std.unicode.utf8ToUtf16Le(&wide, text[0..complete]);
+        const second = try std.unicode.utf8ToUtf16Le(wide[first..], text[complete..]);
+        try std.testing.expectEqualSlices(u16, expected, wide[0 .. first + second]);
+        try std.testing.expect(split - complete <= 3);
+    }
+}
+
+test "Windows console writer preserves split scalars and buffered ANSI output" {
+    if (!is_windows) return error.SkipZigTest;
+    const text = "\x1b[31m╭─你好😀\x1b[0m";
+    var captured: std.ArrayList(u16) = .empty;
+    defer captured.deinit(std.testing.allocator);
+    var buffer: [3]u8 = undefined;
+    var console = WindowsConsoleWriter.init(std.testing.allocator, @ptrCast(&captured), &buffer);
+    defer console.deinit();
+    console.write_wide = struct {
+        fn write(handle: windows.HANDLE, wide: []const u16) Io.Writer.Error!void {
+            const list: *std.ArrayList(u16) = @ptrCast(@alignCast(handle));
+            list.appendSlice(std.testing.allocator, wide) catch return error.WriteFailed;
+        }
+    }.write;
+    for (text) |byte| try console.interface.writeByte(byte);
+    try console.interface.flush();
+    try std.testing.expectEqualSlices(u16, std.unicode.utf8ToUtf16LeStringLiteral(text), captured.items);
 }
 
 pub fn writeAll(writer: anytype, text: []const u8) !void {

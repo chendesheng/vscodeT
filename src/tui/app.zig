@@ -444,14 +444,16 @@ pub fn main(init: std.process.Init) !void {
     // release it before the safe allocator checks for leaks on exit.
     defer word_character_classifier.freeWordClassifierCache();
 
-    var out_buffer: [65536]u8 = undefined;
-    var stdout_writer = Io.File.stdout().writer(io, &out_buffer);
-    const out = &stdout_writer.interface;
-    defer out.flush() catch {};
-
     const orig_termios = try tui.enableRawMode();
     tui.rememberOrigTermios(orig_termios);
     defer tui.disableRawMode(orig_termios) catch {};
+
+    var out_buffer: [65536]u8 = undefined;
+    var stdout_writer = tui.TerminalWriter.init(allocator, io, &out_buffer, orig_termios);
+    defer stdout_writer.deinit();
+    const out = stdout_writer.writer();
+    // Flush the exit sequences while the console is still in VT/raw mode.
+    defer out.flush() catch {};
 
     try tui.enableBracketedPaste(out);
     defer tui.disableBracketedPaste(out) catch {};

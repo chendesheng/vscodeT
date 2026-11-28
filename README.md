@@ -51,21 +51,20 @@ macOS (Apple Silicon) and Windows (x86_64) archives. Download one from
 `bin/minecode <folder>`. Keep the sibling `bin/`, `share/` and `lib/`
 directories together; see [docs/usage.md](docs/usage.md#install-layout).
 
-**From source.** Requires Zig 0.17 or newer and Oniguruma.
+**From source.** Requires Zig 0.17 or newer; Oniguruma is built from its pinned submodule.
 
 ```sh
-git clone --recurse-submodules --shallow-submodules https://github.com/chendesheng/minecode.git
+git clone https://github.com/chendesheng/minecode.git
 cd minecode
-
-brew install oniguruma                    # macOS
-sudo apt install libonig-dev              # Debian/Ubuntu
+git submodule update --init --depth 1 vscode vscode-textmate third_party/oniguruma
 
 zig build -Doptimize=ReleaseSmall
 zig build run -- ~/code/project
 ```
 
-`zig build` alone produces a Debug build with the system libonig;
-`-Donig-static=true` links the vendored Oniguruma instead. The optional Node
+`zig build` produces a Debug build with statically linked vendored Oniguruma
+on Linux, macOS and Windows. To use a system library instead, pass
+`-Donig-static=false` (and `-Donig-include`/`-Donig-lib` if needed). The optional Node
 host and language servers are built with `zig build host` and
 `zig build json-server`; see
 [docs/usage.md](docs/usage.md#node-extension-host). Gallery extensions are
@@ -119,7 +118,7 @@ flowchart TD
 
 Upstream pins are shallow submodules: `vscode` at 1.147.0
 (`e31c2e5`), `vscode-textmate` at 9.3.2, `helix` at 25.07.1 (oracle cassettes
-only) and `third_party/oniguruma` at 6.9.10 (static builds). Details and bump
+only) and `third_party/oniguruma` at 6.9.10 (default builds). Details and bump
 rules are in [docs/design.md](docs/design.md#upstream-pins-and-checkout).
 
 ## Libraries
@@ -167,8 +166,8 @@ git diff --check
 The upstream trees are shallow submodules; initialize the ones you need:
 
 ```sh
-# vscode and vscode-textmate are required; helix is only for cassette work.
-git submodule update --init --depth 1 vscode vscode-textmate
+# Helix is only for cassette recording.
+git submodule update --init --depth 1 vscode vscode-textmate third_party/oniguruma
 ```
 
 The full build, benchmark, oracle and watcher command list is in

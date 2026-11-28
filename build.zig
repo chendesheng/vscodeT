@@ -35,10 +35,10 @@ pub fn build(b: *std.Build) void {
         .include_dir = b.option([]const u8, "onig-include", "Directory containing oniguruma.h"),
         .lib_dir = b.option([]const u8, "onig-lib", "Directory containing the oniguruma library"),
     };
-    // Release binaries link the vendored Oniguruma sources so they do not need
-    // a system libonig at runtime. The default keeps the system library for
-    // ordinary development builds.
-    const onig_static = b.option(bool, "onig-static", "Compile and statically link the vendored Oniguruma sources") orelse false;
+    // Use the same pinned Oniguruma sources for development, CI and releases.
+    // Explicit system paths or -Donig-static=false select a system library.
+    const onig_static = b.option(bool, "onig-static", "Compile and statically link the vendored Oniguruma sources") orelse
+        (onig_paths.include_dir == null and onig_paths.lib_dir == null);
 
     if (!watcher_only) {
         const onig = onigModule(b, target, optimize, onig_paths, onig_static);
@@ -566,6 +566,7 @@ fn onigModule(
 ) *std.Build.Module {
     if (static) {
         const include_dir = "third_party/oniguruma/src";
+        if (!fileExists(b, include_dir ++ "/oniguruma.h")) @panic("vendored Oniguruma not found; run `git submodule update --init --depth 1 third_party/oniguruma`");
         const translate = b.addTranslateC(.{
             .root_source_file = b.path("src/support/oniguruma.h"),
             .target = target,

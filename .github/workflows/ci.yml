@@ -40,7 +40,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/oracle/generate_cassette_index.py --check
       - name: Initialize upstream submodules
-        run: git submodule update --init --depth 1 vscode vscode-textmate
+        run: git submodule update --init --depth 1 vscode vscode-textmate third_party/oniguruma
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
@@ -49,38 +49,25 @@ jobs:
           node-version: 24
 
       # Only system dependency installation varies across the native matrix.
-      - name: Install oniguruma and ripgrep (Linux)
+      - name: Install ripgrep (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libonig-dev ripgrep
-      - name: Install oniguruma and ripgrep (macOS)
+          sudo apt-get install -y ripgrep
+      - name: Install ripgrep (macOS)
         if: runner.os == 'macOS'
-        run: brew install oniguruma ripgrep
-      - name: Install oniguruma and ripgrep (Windows)
+        run: brew install ripgrep
+      - name: Install ripgrep (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          choco install ripgrep -y --no-progress
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $vcpkg = if ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT } else { "C:\vcpkg" }
-          & "$vcpkg\vcpkg.exe" install oniguruma:x64-windows
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          "ONIG_DIR=$vcpkg\installed\x64-windows" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "$vcpkg\installed\x64-windows\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+        run: choco install ripgrep -y --no-progress
 
       - name: Check workbench boundaries
         shell: pwsh
-        run: |
-          $zigOptions = @()
-          if ($env:ONIG_DIR) { $zigOptions = @("-Donig-include=$(Join-Path $env:ONIG_DIR include)", "-Donig-lib=$(Join-Path $env:ONIG_DIR lib)") }
-          zig build check-workbench @zigOptions
+        run: zig build check-workbench
       - name: Build
         shell: pwsh
-        run: |
-          $zigOptions = @()
-          if ($env:ONIG_DIR) { $zigOptions = @("-Donig-include=$(Join-Path $env:ONIG_DIR include)", "-Donig-lib=$(Join-Path $env:ONIG_DIR lib)") }
-          zig build @zigOptions
+        run: zig build
       - name: Install Node host dependencies
         working-directory: host
         # esbuild and the optional native host packages do not need their
@@ -119,17 +106,11 @@ jobs:
       - name: Test extension-host and language-server interoperability
         timeout-minutes: 20
         shell: pwsh
-        run: |
-          $zigOptions = @()
-          if ($env:ONIG_DIR) { $zigOptions = @("-Donig-include=$(Join-Path $env:ONIG_DIR include)", "-Donig-lib=$(Join-Path $env:ONIG_DIR lib)") }
-          zig build test-e2e -De2e-progress=true --summary all @zigOptions
+        run: zig build test-e2e -De2e-progress=true --summary all
       - name: Test
         if: ${{ !cancelled() && steps.integration_assets.outcome == 'success' }}
         shell: pwsh
-        run: |
-          $zigOptions = @()
-          if ($env:ONIG_DIR) { $zigOptions = @("-Donig-include=$(Join-Path $env:ONIG_DIR include)", "-Donig-lib=$(Join-Path $env:ONIG_DIR lib)") }
-          zig build test --summary all @zigOptions
+        run: zig build test --summary all
       - name: Preserve extension-host logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -175,10 +156,8 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
-      - name: Install oniguruma
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libonig-dev
+      - name: Initialize Oniguruma submodule
+        run: git submodule update --init --depth 1 third_party/oniguruma
       - name: Strict Helix cassette suite
         run: zig build test-oracle-helix
 
@@ -193,13 +172,9 @@ jobs:
         with:
           fetch-depth: 1
       - name: Initialize upstream submodules
-        run: git submodule update --init --depth 1 vscode vscode-textmate
+        run: git submodule update --init --depth 1 vscode vscode-textmate third_party/oniguruma
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
-      - name: Install oniguruma
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libonig-dev
       - name: Strict Vim cassette suite
         run: zig build test-oracle-vim

@@ -238,9 +238,10 @@ commit. Git's submodule initializer may also fetch the current default-branch
 tip at depth 1; that tip is not checked out.
 
 ```sh
-git clone --recurse-submodules --shallow-submodules <repo-url>
-# or, in an existing checkout (normal development):
-git submodule update --init --depth 1 vscode vscode-textmate
+git clone <repo-url>
+cd minecode
+# Run in a new or existing checkout (normal development):
+git submodule update --init --depth 1 vscode vscode-textmate third_party/oniguruma
 ```
 
 `helix/` is a third, shallow submodule pinned to Helix **25.07.1** at commit
@@ -264,13 +265,15 @@ zig build test-oracle
 See [scripts/oracle/README.md](../scripts/oracle/README.md). The Helix pin is
 coupled to its patch and the committed cassettes; bump them together.
 
-Static native builds use the `third_party/oniguruma` git submodule,
+Native and cross builds use the `third_party/oniguruma` git submodule by default,
 pinned to Oniguruma **6.9.10** at commit
 `4ef89209a239c1aea328cf13c05a2807e5c146d1`. Initialize it with
 `git submodule update --init --depth 1 third_party/oniguruma` before
-using `-Donig-static=true`; ordinary native builds use the system libonig.
+building. Linux, macOS and Windows statically link the same pinned sources.
+Developers can explicitly select system libonig with `-Donig-static=false`
+or by supplying system library paths.
 
-Without an initialized submodule, `zig build` still works with the vendored
+Without an initialized `vscode/` submodule, `zig build` still works with the vendored
 grammar and theme fallbacks in `src/support/` (Zig, TOML, YAML and Markdown,
 plus Dark+); the remaining upstream syntax/theme assets, language
 configurations and the Node extension host need `vscode/`.
@@ -532,14 +535,16 @@ and [usage](usage.md#extensions-side-panel) for specifics.
 GitHub Actions (`.github/workflows/ci.yml`) runs the same native build,
 `zig build test` and full `zig build test-e2e` on Linux (inotify), macOS
 (kqueue) and Windows (`ReadDirectoryChangesW`) using a shared matrix. Every
-platform initializes the pinned `vscode/` and `vscode-textmate/` submodules,
+platform initializes the pinned `vscode/`, `vscode-textmate/` and
+`third_party/oniguruma` submodules,
 bundles the JSON language server, Node extension host, built-in extensions and
 TypeScript SDK, and checks that the required assets exist before testing.
 This covers real TypeScript/JavaScript tsserver behavior, JSON and other
 language servers, and native extension-host IPC on every platform. Only
-system dependency installation and library search paths differ: Windows
-uses vcpkg and `-Donig-include`/`-Donig-lib`. The terminal layer uses the
-Windows console API for raw mode, sizing and input polling. Specialized UI
+system dependency installation (ripgrep) differs. The terminal layer uses the
+Windows console API for raw mode, sizing and input polling, and Unicode
+console output; the host converts ANSI/UTF-8 frames to UTF-16 for real console
+handles and leaves redirected output in UTF-8. Specialized UI
 stress and strict reference-conformance reports run separately.
 
 `.github/workflows/release.yml` builds the release archives for Linux x86_64,

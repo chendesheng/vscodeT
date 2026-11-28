@@ -315,6 +315,7 @@ comptime {
     _ = @import("./vs/editor/common/viewModelEventDispatcher.zig");
     _ = @import("./vs/editor/test/common/viewModel/viewModelTests.zig");
     _ = @import("./tui/app.zig");
+    _ = @import("./tui/tui.zig");
     _ = @import("./vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
     _ = @import("./vs/editor/browser/widget/codeEditor/terminalViewHost.zig");
     _ = @import("./tui/editorView.zig");

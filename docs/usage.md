@@ -95,8 +95,8 @@ moving the editor. A release archive already has this layout.
 ## Building and testing
 
 ```sh
-zig build                                      # Debug build with the system libonig
-zig build -Donig-static=true                   # link the vendored Oniguruma
+zig build                                      # Debug build with vendored Oniguruma
+zig build -Donig-static=false                  # opt into a system Oniguruma library
 zig build -Doptimize=ReleaseSmall -Donig-static=true
 zig build run -- <folder> [<file>...]          # open a workspace folder and files
 zig build run -- <file>...                     # open files in an empty workspace

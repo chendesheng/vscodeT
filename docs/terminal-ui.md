@@ -7,6 +7,12 @@ Status: proposed design.
 The native host in `src/tui/workbench.zig` preserves partial input sequences
 across reads, waits on terminal and worker-completion handles, composites the
 editor, sidebar, panel, status bar and overlays, and flushes completed frames.
+On Windows, `src/tui/tui.zig` enables virtual-terminal processing and saves
+and selects UTF-8 console code pages. For actual console handles it writes
+the ANSI stream with `WriteConsoleW`, converting UTF-8 to UTF-16 without
+splitting a scalar at a writer buffer boundary. Redirected output remains
+raw UTF-8. Exit sequences are flushed before restoring the console modes
+and code pages, including on the read-only preview path.
 Terminal cells supply part bounds and pointer input. Browser DOM
 font measurement, macOS font smoothing, auxiliary windows, floating panels,
 traffic-light title controls, ARIA live regions/accessible view and browser-managed
