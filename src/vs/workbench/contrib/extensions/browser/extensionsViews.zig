@@ -1045,6 +1045,9 @@ pub fn filterExtensions(allocator: Allocator, local: []const IExtension, query_t
     defer arena.deinit();
     const scratch = arena.allocator();
     const parsed = try parseFilter(scratch, query_text);
+    // These queries require gallery/update metadata; an unavailable gallery
+    // does not turn them into an unfiltered list of installed extensions.
+    if (parsed.updates or parsed.recommended or parsed.popular) return allocator.alloc(*const IExtension, 0);
     var result: std.array_list.Managed(*const IExtension) = .init(allocator);
     errdefer result.deinit();
     for (local) |*extension| {

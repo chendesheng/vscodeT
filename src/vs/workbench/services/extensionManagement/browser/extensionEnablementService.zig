@@ -26,7 +26,7 @@ const StoredIdentifier = struct { id: []const u8 };
 pub const ExtensionEnablementService = struct {
     allocator: Allocator,
     store: ?Store = null,
-    /// Owned, lowercased ids of globally disabled extensions.
+    /// Owned identifiers of globally disabled extensions; comparisons are case-insensitive.
     disabled: std.array_list.Managed([]u8),
     on_did_change: Emitter([]const u8),
     workspace_io: ?std.Io = null,
@@ -169,7 +169,7 @@ pub const ExtensionEnablementService = struct {
 
     fn appendUnique(ids: *Ids, identifier: []const u8) !void {
         if (identifier.len == 0 or contains(ids.items, identifier)) return;
-        const value = try std.ascii.allocLowerString(ids.allocator, identifier);
+        const value = try ids.allocator.dupe(u8, identifier);
         errdefer ids.allocator.free(value);
         try ids.append(value);
     }
