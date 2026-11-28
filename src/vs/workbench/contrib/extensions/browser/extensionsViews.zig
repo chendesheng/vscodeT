@@ -287,7 +287,7 @@ pub const ExtensionsListView = struct {
         if (service.gallery_url == null or self.host.window == null) return false;
         const text = std.mem.trim(u8, self.queryText(), " \t");
         if (text.len == 0) return false;
-        for ([_][]const u8{ "@installed", "@builtin", "@enabled", "@disabled", "@recentlyUpdated" }) |token| {
+        for ([_][]const u8{ "@installed", "@builtin", "@enabled", "@disabled", "@recentlyUpdated", "@updates", "@outdated", "@restartRequired" }) |token| {
             if (containsIgnoreCase(text, token)) return false;
         }
         return true;
@@ -339,6 +339,9 @@ pub const ExtensionsListView = struct {
         self.gallery_error = false;
         self.gallery_pages = .{ .page_size = 50 };
         self.gallery_loading = self.searchesGallery();
+        if (containsIgnoreCase(self.queryText(), "@updates") or containsIgnoreCase(self.queryText(), "@outdated")) {
+            if (self.service) |service| if (service.gallery_url != null and service.update_job == null) service.checkForUpdates() catch {};
+        }
         if (self.query_changed) |callback| callback.run(callback.context);
         self.rebuild() catch {};
         if (self.gallery_loading) self.search_delayer.schedule(time.milliTimestamp(self.host.window.?.workerIo()) + 500);
@@ -448,7 +451,7 @@ pub const ExtensionsListView = struct {
                 try result.append(self.allocator, entry);
             }
             break :blk try result.toOwnedSlice(self.allocator);
-        } else try filterExtensions(self.allocator, local, if (self.queryText().len == 0) "@installed" else self.queryText());
+        } else try filterExtensionsWithService(self.allocator, local, if (self.queryText().len == 0) "@installed" else self.queryText(), self.service);
         errdefer self.allocator.free(rows);
         if (containsIgnoreCase(self.queryText(), "@recentlyUpdated")) {
             const now = if (self.service) |service| time.milliTimestamp(service.io) else 0;
@@ -865,7 +868,8 @@ pub const ExtensionsListView = struct {
 
         if (self.rows.len == 0) {
             var buffer: [256]u8 = undefined;
-            const message = if (self.gallery_loading) "Searching Marketplace…" else if (self.gallery_error) "Unable to search Marketplace." else if (self.queryText().len == 0)
+            const checking = (containsIgnoreCase(self.queryText(), "@updates") or containsIgnoreCase(self.queryText(), "@outdated")) and if (self.service) |service| service.update_job != null else false;
+            const message = if (checking) "Checking for updates…" else if (self.gallery_loading) "Searching Marketplace…" else if (self.gallery_error) "Unable to search Marketplace." else if (self.queryText().len == 0)
                 "No extensions found."
             else
                 std.fmt.bufPrint(&buffer, "No extensions match '{s}'.", .{self.queryText()}) catch "No extensions match.";
@@ -957,6 +961,7 @@ const ParsedFilter = struct {
     recommended: bool = false,
     popular: bool = false,
     recently_updated: bool = false,
+    restart_required: bool = false,
     ids: []const []const u8 = &.{},
     included_categories: []const []const u8 = &.{},
     excluded_categories: []const []const u8 = &.{},
@@ -1042,6 +1047,10 @@ fn parseFilter(arena: Allocator, value: []const u8) !ParsedFilter {
         }
         if (tokenEquals(word, "@recentlyUpdated")) {
             result.recently_updated = true;
+            continue;
+        }
+        if (tokenEquals(word, "@restartRequired")) {
+            result.restart_required = true;
             continue;
         }
         if (tokenEquals(word, "@popular")) {
@@ -1133,16 +1142,22 @@ fn newerExtension(_: void, a: *const IExtension, b: *const IExtension) bool {
 /// display name. Fixed allocation per call; the returned slice is owned by the
 /// caller.
 pub fn filterExtensions(allocator: Allocator, local: []const IExtension, query_text: []const u8) ![]const *const IExtension {
+    return filterExtensionsWithService(allocator, local, query_text, null);
+}
+
+fn filterExtensionsWithService(allocator: Allocator, local: []const IExtension, query_text: []const u8, service: ?*service_mod.ExtensionsWorkbenchService) ![]const *const IExtension {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
     const parsed = try parseFilter(scratch, query_text);
     // These queries require gallery/update metadata; an unavailable gallery
     // does not turn them into an unfiltered list of installed extensions.
-    if (parsed.updates or parsed.recommended or parsed.popular) return allocator.alloc(*const IExtension, 0);
+    if (parsed.recommended or parsed.popular or ((parsed.updates or parsed.restart_required) and service == null)) return allocator.alloc(*const IExtension, 0);
     var result: std.array_list.Managed(*const IExtension) = .init(allocator);
     errdefer result.deinit();
     for (local) |*extension| {
+        if (parsed.updates and service.?.availableUpdate(extension.identifier) == null) continue;
+        if (parsed.restart_required and service.?.runtimeState(extension.identifier) == null) continue;
         if (parsed.installed and extension.is_builtin) continue;
         if (parsed.recently_updated and (extension.is_builtin or !extension.updated or extension.installed_timestamp == null)) continue;
         if (parsed.builtin and !extension.is_builtin) continue;

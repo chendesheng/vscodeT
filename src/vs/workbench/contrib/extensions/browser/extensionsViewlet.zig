@@ -17,7 +17,7 @@ const ExtensionsListView = view_mod.ExtensionsListView;
 const service_mod = @import("extensionsWorkbenchService.zig");
 const model = @import("../common/extensions.zig");
 
-const Mode = enum { installed, search_installed, marketplace, enabled, disabled, builtin_features, builtin_themes, builtin_languages, outdated, recently_updated, recommended, popular, search_recommended };
+const Mode = enum { installed, search_installed, marketplace, enabled, disabled, builtin_features, builtin_themes, builtin_languages, outdated, recently_updated, recommended, popular, search_recommended, restart_required };
 const descriptors_list = [_]views.ViewDescriptor{
     .{ .id = "workbench.views.extensions.installed", .name = "Installed", .order = 1, .weight = 100, .can_toggle_visibility = false, .can_move = false },
     .{ .id = "workbench.views.extensions.searchInstalled", .name = "Installed", .order = 1, .weight = 100, .available = false, .can_move = false },
@@ -32,6 +32,7 @@ const descriptors_list = [_]views.ViewDescriptor{
     .{ .id = "extensions.recommendedList", .name = "Recommended", .order = 3, .available = false, .can_move = false },
     .{ .id = "workbench.views.extensions.popular", .name = "Popular", .order = 2, .weight = 60, .available = false, .can_move = false },
     .{ .id = "workbench.views.extensions.workspaceRecommendations", .name = "Workspace Recommendations", .order = 3, .available = false, .can_move = false },
+    .{ .id = "workbench.views.extensions.restartRequired", .name = "Restart Required", .order = 1, .available = false, .can_move = false },
 };
 
 pub fn registerViews(registry: *views.ViewsRegistry) !void {
@@ -142,7 +143,7 @@ pub const ExtensionsViewPaneContainer = struct {
     fn queryChanged(context: *anyopaque) void {
         const self: *ExtensionsViewPaneContainer = @ptrCast(@alignCast(context));
         const text = std.mem.trim(u8, self.view.queryText(), " \t\r\n");
-        const mode: Mode = if (text.len == 0) .installed else if (hasToken(text, "@builtin")) .builtin_features else if (hasToken(text, "@installed")) .search_installed else if (hasToken(text, "@enabled")) .enabled else if (hasToken(text, "@disabled")) .disabled else if (hasToken(text, "@updates") or hasToken(text, "@outdated")) .outdated else if (hasToken(text, "@recentlyUpdated")) .recently_updated else if (hasToken(text, "@recommended")) .search_recommended else .marketplace;
+        const mode: Mode = if (text.len == 0) .installed else if (hasToken(text, "@builtin")) .builtin_features else if (hasToken(text, "@installed")) .search_installed else if (hasToken(text, "@enabled")) .enabled else if (hasToken(text, "@disabled")) .disabled else if (hasToken(text, "@updates") or hasToken(text, "@outdated")) .outdated else if (hasToken(text, "@restartRequired")) .restart_required else if (hasToken(text, "@recentlyUpdated")) .recently_updated else if (hasToken(text, "@recommended")) .search_recommended else .marketplace;
         const default = mode == .installed;
         const has_gallery = if (self.view.service) |service| service.gallery_url != null else false;
         const popular = default and self.view.showDefaultPopular();

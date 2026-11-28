@@ -18,7 +18,7 @@ pub const Query = struct {
             for (result.items) |item| allocator.free(item);
             result.deinit(allocator);
         }
-        for ([_][]const u8{ "installed", "updates", "enabled", "disabled", "builtin", "popular", "recommended", "recentlyUpdated" }) |command| {
+        for ([_][]const u8{ "installed", "updates", "enabled", "disabled", "builtin", "popular", "recommended", "recentlyUpdated", "restartRequired" }) |command| {
             if (!has_gallery and (std.mem.eql(u8, command, "popular") or std.mem.eql(u8, command, "recommended") or std.mem.eql(u8, command, "updates"))) continue;
             var buffer: [64]u8 = undefined;
             const token = try std.fmt.bufPrint(&buffer, "@{s}", .{command});
