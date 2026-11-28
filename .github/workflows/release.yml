@@ -23,6 +23,9 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      MINECODE_TARGET_PLATFORM: ${{ matrix.target_platform }}
+      MINECODE_TARGET_ARCH: ${{ matrix.target_arch }}
     strategy:
       fail-fast: false
       matrix:
@@ -31,18 +34,26 @@ jobs:
             name: linux-x86_64
             package_target: linux-x86_64
             target_arg: '-Dcpu=baseline'
+            target_platform: linux
+            target_arch: x64
           - os: ubuntu-latest
             name: linux-aarch64-musl
             package_target: linux-aarch64-musl
             target_arg: '-Dtarget=aarch64-linux-musl'
+            target_platform: linux
+            target_arch: arm64
           - os: macos-latest
             name: macos-arm64
             package_target: macos-arm64
             target_arg: '-Dcpu=baseline'
+            target_platform: darwin
+            target_arch: arm64
           - os: windows-latest
             name: windows-x86_64
             package_target: windows-x86_64
             target_arg: '-Dcpu=baseline'
+            target_platform: win32
+            target_arch: x64
     steps:
       - uses: actions/checkout@v4
         with:

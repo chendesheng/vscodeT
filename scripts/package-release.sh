@@ -84,10 +84,22 @@ if [ -d "$lib_src" ]; then
         fi
     done
     # Install only the runtime manifest. Build-only packages stay in
-    # host/package.json and never enter the archive.
+    # host/package.json and never enter the archive. Select the target's
+    # optional native packages even when this runs on a cross-compiling host.
+    npm_os=""
+    npm_cpu=""
+    case "$target" in
+        linux-x86_64) npm_os=linux; npm_cpu=x64 ;;
+        linux-aarch64-musl) npm_os=linux; npm_cpu=arm64 ;;
+        macos-arm64) npm_os=darwin; npm_cpu=arm64 ;;
+        windows-x86_64) npm_os=win32; npm_cpu=x64 ;;
+    esac
+    npm_args=(ci --omit=dev --ignore-scripts --no-audit --no-fund)
+    if [ -n "$npm_os" ]; then npm_args+=("--os=$npm_os"); fi
+    if [ -n "$npm_cpu" ]; then npm_args+=("--cpu=$npm_cpu"); fi
     runtime_tmp=$(mktemp -d)
     cp "$root/host/runtime/package.json" "$root/host/runtime/package-lock.json" "$runtime_tmp/"
-    (cd "$runtime_tmp" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund)
+    (cd "$runtime_tmp" && npm "${npm_args[@]}")
     mv "$runtime_tmp/node_modules" "$stage/lib/minecode/node_modules"
     rm -rf "$runtime_tmp"
 fi

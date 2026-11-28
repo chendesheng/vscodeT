@@ -73,9 +73,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     await bundleExtension('microsoft-authentication', 'dist/extension.js', [], {
         keytar: path.join(upstream, 'microsoft-authentication/packageMocks/keytar/index.js')
     }, ['electron', './msal-node-runtime']);
-    const platformFolder = { darwin: 'macos', win32: 'windows', linux: 'linux' }[process.platform];
+    // Native MSAL binaries must match the release target, not the runner that
+    // happens to build a cross-compiled binary (for example aarch64 musl on an
+    // x86_64 Linux runner).
+    const targetPlatform = process.env.MINECODE_TARGET_PLATFORM || process.platform;
+    const targetArch = process.env.MINECODE_TARGET_ARCH || process.arch;
+    const platformFolder = { darwin: 'macos', win32: 'windows', linux: 'linux' }[targetPlatform];
     if (platformFolder) {
-        const source = path.join(modules, '@azure/msal-node-runtime/dist', platformFolder, process.arch);
+        const source = path.join(modules, '@azure/msal-node-runtime/dist', platformFolder, targetArch);
         const binaries = await readdir(source).catch(error => {
             if (error.code === 'ENOENT') return [];
             throw error;
