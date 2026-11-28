@@ -70,15 +70,18 @@ python3 scripts/oracle/generate_cassette_index.py --check
 The index check validates the Git index as well as the directory, so it rejects
 case aliases even if a case-insensitive checkout hides one of them.
 
-The corpus is a curated set plus generated coverage variants (329 Vim and 162
+The corpus is a curated set plus generated coverage variants (329 Vim and 207
 Helix cassettes). `zig build test-oracle-helix` and
 `zig build test-oracle-vim` run the per-engine lanes; `zig build test-oracle`
 runs both. The replay asserts every recorded field: text, mode, selection
-count, the raw anchor/head `selections` ranges and the cursor set. The cursor is
-the reference's `Range::cursor()` value (previous grapheme of a forward head,
-otherwise the head), and seeds use the reference's one-grapheme ranges. Both
-lanes are green (329 Vim and 162 Helix) and gate CI in their own jobs. Cases are
-not removed or weakened to make either lane green.
+count, the raw anchor/head `selections` ranges, the cursor set and (Helix) the
+viewport `scroll.top_line`/`scroll.left`. The cursor is the reference's
+`Range::cursor()` value (previous grapheme of a forward head, otherwise the
+head), and seeds use the reference's one-grapheme ranges. Helix cassettes also
+record `height` (visible text rows) so scroll assertions use the same inner
+viewport as the recorder. Both lanes are green (329 Vim and 207 Helix) and gate
+CI in their own jobs. Cases are not removed or weakened to make either lane
+green.
 
 ## CI cost and limits
 

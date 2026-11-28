@@ -1,6 +1,7 @@
 {
   "case": "normal_motions",
   "engine": "helix",
+  "height": 12,
   "keys": [
     "w",
     "b",
@@ -29,6 +30,10 @@
         ]
       ],
       "mode": "normal",
+      "scroll": {
+        "left": 0,
+        "top_line": 1
+      },
       "selection_count": 1,
       "selections": [
         {

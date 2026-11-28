@@ -1,6 +1,7 @@
 {
   "case": "textobj_inside_parens",
   "engine": "helix",
+  "height": 12,
   "keys": [
     "m",
     "i",
@@ -11,13 +12,44 @@
   "reference_version": "helix 25.07.1",
   "schema": 1,
   "seed": {
-    "text": "call(foo, bar)\n",
     "cursor": [
       1,
       7
-    ]
+    ],
+    "text": "call(foo, bar)\n"
   },
-  "width": 60,
-  "height": 12,
-  "states": []
+  "states": [
+    {
+      "cursor": [
+        1,
+        6
+      ],
+      "cursors": [
+        [
+          1,
+          6
+        ]
+      ],
+      "mode": "normal",
+      "scroll": {
+        "left": 0,
+        "top_line": 1
+      },
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            6
+          ],
+          "head": [
+            1,
+            7
+          ]
+        }
+      ],
+      "text": "call()\n"
+    }
+  ],
+  "width": 60
 }

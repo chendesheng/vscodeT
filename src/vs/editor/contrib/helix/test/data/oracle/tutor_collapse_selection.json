@@ -1,6 +1,7 @@
 {
   "case": "tutor_collapse_selection",
   "engine": "helix",
+  "height": 12,
   "keys": [
     "v",
     "l",
@@ -30,6 +31,10 @@
         ]
       ],
       "mode": "normal",
+      "scroll": {
+        "left": 0,
+        "top_line": 1
+      },
       "selection_count": 1,
       "selections": [
         {

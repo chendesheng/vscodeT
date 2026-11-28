@@ -1,6 +1,7 @@
 {
   "case": "bulk_hx_insert_i_4",
   "engine": "helix",
+  "height": 12,
   "keys": [
     "i",
     "X",
@@ -29,6 +30,10 @@
         ]
       ],
       "mode": "normal",
+      "scroll": {
+        "left": 0,
+        "top_line": 1
+      },
       "selection_count": 1,
       "selections": [
         {

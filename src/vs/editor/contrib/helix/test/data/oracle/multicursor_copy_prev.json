@@ -1,6 +1,7 @@
 {
   "case": "multicursor_copy_prev",
   "engine": "helix",
+  "height": 12,
   "keys": [
     "<A-C>"
   ],
@@ -8,13 +9,58 @@
   "reference_version": "helix 25.07.1",
   "schema": 1,
   "seed": {
-    "text": "abc\ndef\n",
     "cursor": [
       2,
       1
-    ]
+    ],
+    "text": "abc\ndef\n"
   },
-  "width": 60,
-  "height": 12,
-  "states": []
+  "states": [
+    {
+      "cursor": [
+        1,
+        1
+      ],
+      "cursors": [
+        [
+          1,
+          1
+        ],
+        [
+          2,
+          1
+        ]
+      ],
+      "mode": "normal",
+      "scroll": {
+        "left": 0,
+        "top_line": 1
+      },
+      "selection_count": 2,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            1
+          ],
+          "head": [
+            1,
+            2
+          ]
+        },
+        {
+          "anchor": [
+            2,
+            1
+          ],
+          "head": [
+            2,
+            2
+          ]
+        }
+      ],
+      "text": "abc\ndef\n"
+    }
+  ],
+  "width": 60
 }

@@ -1,6 +1,7 @@
 {
   "case": "tutor_split_selection_lines",
   "engine": "helix",
+  "height": 12,
   "keys": [
     "%",
     "<A-s>"
@@ -32,6 +33,10 @@
         ]
       ],
       "mode": "normal",
+      "scroll": {
+        "left": 0,
+        "top_line": 1
+      },
       "selection_count": 2,
       "selections": [
         {

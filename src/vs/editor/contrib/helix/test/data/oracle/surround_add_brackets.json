@@ -1,6 +1,7 @@
 {
   "case": "surround_add_brackets",
   "engine": "helix",
+  "height": 12,
   "keys": [
     "m",
     "i",
@@ -13,13 +14,44 @@
   "reference_version": "helix 25.07.1",
   "schema": 1,
   "seed": {
-    "text": "word\n",
     "cursor": [
       1,
       1
-    ]
+    ],
+    "text": "word\n"
   },
-  "width": 60,
-  "height": 12,
-  "states": []
+  "states": [
+    {
+      "cursor": [
+        1,
+        6
+      ],
+      "cursors": [
+        [
+          1,
+          6
+        ]
+      ],
+      "mode": "normal",
+      "scroll": {
+        "left": 0,
+        "top_line": 1
+      },
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            1
+          ],
+          "head": [
+            1,
+            7
+          ]
+        }
+      ],
+      "text": "[word]\n"
+    }
+  ],
+  "width": 60
 }

@@ -1,6 +1,7 @@
 {
   "case": "scroll_page_down_up",
   "engine": "helix",
+  "height": 12,
   "keys": [
     "<C-f>",
     "<C-b>"
@@ -9,13 +10,44 @@
   "reference_version": "helix 25.07.1",
   "schema": 1,
   "seed": {
-    "text": "line01\nline02\nline03\nline04\nline05\nline06\nline07\nline08\nline09\nline10\nline11\nline12\nline13\nline14\nline15\nline16\nline17\nline18\nline19\nline20\nline21\nline22\nline23\nline24\nline25\nline26\nline27\nline28\nline29\nline30\nline31\nline32\nline33\nline34\nline35\nline36\nline37\nline38\nline39\nline40\n",
     "cursor": [
       1,
       1
-    ]
+    ],
+    "text": "line01\nline02\nline03\nline04\nline05\nline06\nline07\nline08\nline09\nline10\nline11\nline12\nline13\nline14\nline15\nline16\nline17\nline18\nline19\nline20\nline21\nline22\nline23\nline24\nline25\nline26\nline27\nline28\nline29\nline30\nline31\nline32\nline33\nline34\nline35\nline36\nline37\nline38\nline39\nline40\n"
   },
-  "states": [],
-  "width": 60,
-  "height": 12
+  "states": [
+    {
+      "cursor": [
+        7,
+        1
+      ],
+      "cursors": [
+        [
+          7,
+          1
+        ]
+      ],
+      "mode": "normal",
+      "scroll": {
+        "left": 0,
+        "top_line": 1
+      },
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            7,
+            1
+          ],
+          "head": [
+            7,
+            2
+          ]
+        }
+      ],
+      "text": "line01\nline02\nline03\nline04\nline05\nline06\nline07\nline08\nline09\nline10\nline11\nline12\nline13\nline14\nline15\nline16\nline17\nline18\nline19\nline20\nline21\nline22\nline23\nline24\nline25\nline26\nline27\nline28\nline29\nline30\nline31\nline32\nline33\nline34\nline35\nline36\nline37\nline38\nline39\nline40\n"
+    }
+  ],
+  "width": 60
 }

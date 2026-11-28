@@ -1,6 +1,7 @@
 {
   "case": "tutor_copy_selection_C",
   "engine": "helix",
+  "height": 12,
   "keys": [
     "C"
   ],
@@ -31,6 +32,10 @@
         ]
       ],
       "mode": "normal",
+      "scroll": {
+        "left": 0,
+        "top_line": 1
+      },
       "selection_count": 2,
       "selections": [
         {

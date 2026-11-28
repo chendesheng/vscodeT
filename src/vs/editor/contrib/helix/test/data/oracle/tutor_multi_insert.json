@@ -1,6 +1,7 @@
 {
   "case": "tutor_multi_insert",
   "engine": "helix",
+  "height": 12,
   "keys": [
     "i",
     "X",
@@ -51,6 +52,10 @@
         ]
       ],
       "mode": "normal",
+      "scroll": {
+        "left": 0,
+        "top_line": 1
+      },
       "selection_count": 3,
       "selections": [
         {

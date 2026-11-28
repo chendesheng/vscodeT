@@ -1,6 +1,7 @@
 {
   "case": "replace_char_selection",
   "engine": "helix",
+  "height": 12,
   "keys": [
     "r",
     "X"
@@ -28,6 +29,10 @@
         ]
       ],
       "mode": "normal",
+      "scroll": {
+        "left": 0,
+        "top_line": 1
+      },
       "selection_count": 1,
       "selections": [
         {

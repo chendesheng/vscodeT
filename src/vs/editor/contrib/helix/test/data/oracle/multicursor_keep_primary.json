@@ -1,6 +1,7 @@
 {
   "case": "multicursor_keep_primary",
   "engine": "helix",
+  "height": 12,
   "keys": [
     ","
   ],
@@ -8,7 +9,6 @@
   "reference_version": "helix 25.07.1",
   "schema": 1,
   "seed": {
-    "text": "one\ntwo\nthree\n",
     "cursor": [
       1,
       1
@@ -26,9 +26,41 @@
         3,
         1
       ]
-    ]
+    ],
+    "text": "one\ntwo\nthree\n"
   },
-  "width": 60,
-  "height": 12,
-  "states": []
+  "states": [
+    {
+      "cursor": [
+        1,
+        1
+      ],
+      "cursors": [
+        [
+          1,
+          1
+        ]
+      ],
+      "mode": "normal",
+      "scroll": {
+        "left": 0,
+        "top_line": 1
+      },
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            1
+          ],
+          "head": [
+            1,
+            2
+          ]
+        }
+      ],
+      "text": "one\ntwo\nthree\n"
+    }
+  ],
+  "width": 60
 }

@@ -229,7 +229,7 @@ Run the focused suites with:
 
 ```sh
 zig build test-helix          # native engine unit tests
-zig build test-oracle-helix   # strict reference cassettes (162/162)
+zig build test-oracle-helix   # strict reference cassettes (207/207)
 ```
 
 ## Reference cassettes
@@ -254,12 +254,19 @@ one:
   grapheme boundary of a forward range's head, otherwise the head. The replay
   derives them the same way instead of reading the editor's selection head.
 - Every recorded field is asserted: text, mode, `selection_count`, every raw
-  `selections` anchor/head range (direction included), and the cursor set.
+  `selections` anchor/head range (direction included), the cursor set, and the
+  viewport (`scroll.top_line`/`scroll.left`). Cassettes carry a `height` (the
+  reference's inner text rows; default 12) and the replay uses the same
+  viewport, including Helix's default `scrolloff` reveal of the seeded cursor.
 - The reference commits pending changes to history after each non-insert key
   event; the engine does the same, which is why `d u` and `x d u` restore
   different states in the corpus.
 
-The Helix lane is green (162/162) and is gated in CI by the
+The corpus covers the reference's bracket/quote/word text objects, surround
+add/delete/replace, multiple cursors, and scrolling (`Ctrl-d`/`Ctrl-u`,
+`Ctrl-f`/`Ctrl-b`, view-only `z` scrolling, alignment and seed reveals).
+
+The Helix lane is green (207/207) and is gated in CI by the
 `cassette-conformance` job; the Vim lane is also green (329/329) and gated by
 `vim-cassette-conformance`. No cases or assertions are excluded from either
 lane. See

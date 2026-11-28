@@ -8,7 +8,7 @@
 // the recorded `cursor`/`cursors` are `Range::cursor()` values: the previous
 // grapheme boundary of the head for a forward range, otherwise the head.
 // Every recorded field is asserted: text, mode, selection count, raw
-// anchor/head selections and the cursor set.
+// anchor/head selections, the cursor set and the viewport scroll.
 const std = @import("std");
 const grapheme = @import("../../../../../base/common/graphemeBreak.zig");
 const oracle = @import("../../../../test/common/oracleCassette.zig");
@@ -106,8 +106,11 @@ fn runCase(allocator: std.mem.Allocator, case: oracle.Case) !void {
     harness.editor.beginUndoGroup();
     try harness.editor.replaceRange(harness.editor.model.getFullModelRange(), case.seed.text);
     try seedCursors(harness, case.seed);
-    // The reference reveals the seeded selection with scrolloff before the
-    // first key; the editor's `setSelections` only guarantees visibility.
+    // The reference starts from scroll position zero and then reveals the
+    // seeded selection with scrolloff before the first key. Replacing the
+    // seed text and selecting cursors through the editor scrolls instead, so
+    // reset the viewport first, then apply the same scrolloff reveal.
+    _ = harness.editor.setTopViewLine(1);
     harness.engine.revealCursor();
 
     for (case.keys) |token| {

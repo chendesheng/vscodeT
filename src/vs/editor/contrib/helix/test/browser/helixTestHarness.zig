@@ -34,7 +34,9 @@ pub const Harness = struct {
         const io = std.Io.Threaded.global_single_threaded.io();
         const self = try allocator.create(Harness);
         errdefer allocator.destroy(self);
-        const editor = try Editor.createFromText(allocator, io, text, "test.txt", width, height);
+        // The editor reserves one row for its statusline; `height` is the
+        // number of visible text rows, matching Helix's inner area.
+        const editor = try Editor.createFromText(allocator, io, text, "test.txt", width, height + 1);
         errdefer {
             editor.deinit();
             allocator.destroy(editor);

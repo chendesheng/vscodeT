@@ -1,6 +1,7 @@
 {
   "case": "tutor_regex_select",
   "engine": "helix",
+  "height": 12,
   "keys": [
     "s",
     "[",
@@ -35,6 +36,10 @@
         ]
       ],
       "mode": "normal",
+      "scroll": {
+        "left": 0,
+        "top_line": 1
+      },
       "selection_count": 1,
       "selections": [
         {

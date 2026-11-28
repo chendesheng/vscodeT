@@ -1,6 +1,7 @@
 {
   "case": "textobj_closest_inner",
   "engine": "helix",
+  "height": 12,
   "keys": [
     "m",
     "i",
@@ -11,13 +12,44 @@
   "reference_version": "helix 25.07.1",
   "schema": 1,
   "seed": {
-    "text": "f(g(h)i)\n",
     "cursor": [
       1,
       5
-    ]
+    ],
+    "text": "f(g(h)i)\n"
   },
-  "width": 60,
-  "height": 12,
-  "states": []
+  "states": [
+    {
+      "cursor": [
+        1,
+        5
+      ],
+      "cursors": [
+        [
+          1,
+          5
+        ]
+      ],
+      "mode": "normal",
+      "scroll": {
+        "left": 0,
+        "top_line": 1
+      },
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            5
+          ],
+          "head": [
+            1,
+            6
+          ]
+        }
+      ],
+      "text": "f(g()i)\n"
+    }
+  ],
+  "width": 60
 }

@@ -162,8 +162,9 @@ jobs:
   cassette-conformance:
     name: Helix cassette conformance
     runs-on: ubuntu-latest
-    # The Helix lane replays all 162 recorded cassettes and asserts every
-    # recorded field (text, mode, selection count, selections and cursors).
+    # The Helix lane replays all 207 recorded cassettes and asserts every
+    # recorded field (text, mode, selection count, selections, cursors and
+    # viewport scroll).
     # It is expected to stay green, so this job gates the main CI.
     steps:
       - uses: actions/checkout@v4
