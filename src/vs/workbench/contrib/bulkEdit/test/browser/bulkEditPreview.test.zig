@@ -263,9 +263,9 @@ test "BulkEditPreview: checked changes update the same real preview model and le
     var scratch = std.heap.ArenaAllocator.init(a);
     defer scratch.deinit();
     const arena = scratch.allocator();
-    for ([_]struct { native: []const u8, expected: []const u8 }{
-        .{ .native = "C:\\Users\\me\\preview.txt", .expected = "/C:/Users/me/preview.txt" },
-        .{ .native = "\\\\server\\share\\preview.txt", .expected = "/share/preview.txt" },
+    for ([_]struct { native: []const u8, expected: []const u8, key_path: []const u8 }{
+        .{ .native = "C:\\Users\\me\\preview.txt", .expected = "/C:/Users/me/preview.txt", .key_path = "/c:/Users/me/preview.txt" },
+        .{ .native = "\\\\server\\share\\preview.txt", .expected = "/share/preview.txt", .key_path = "/share/preview.txt" },
     }) |fixture| {
         const original: std.Uri = .{ .scheme = "file", .path = .{ .raw = fixture.native } };
         const preview_uri = try provider.asPreviewUri(original);
@@ -273,7 +273,9 @@ test "BulkEditPreview: checked changes update the same real preview model and le
         const key = try uri_util.resourceKey(arena, preview_uri);
         const parsed = try std.Uri.parse(key);
         try std.testing.expectEqualStrings(try uri_util.authority(preview_uri, arena), try uri_util.authority(parsed, arena));
-        try std.testing.expectEqualStrings(fixture.expected, try uri_util.path(parsed, arena));
+        // Raw URI components retain the spelling; URI.toString() and the
+        // serialized resource key canonicalize drive letters.
+        try std.testing.expectEqualStrings(fixture.key_path, try uri_util.path(parsed, arena));
         try std.testing.expectEqualStrings(try uri_util.encodedResource(arena, original), try uri_util.query(preview_uri, arena));
     }
     for (0..16) |_| _ = queue.dispatch(std.math.maxInt(i64));
