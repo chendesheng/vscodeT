@@ -577,9 +577,7 @@ pub const ExtensionEditor = struct {
                     if (self.layout) |*layout| if (layout.linkAt(self.scroll + event.y - 7, event.x -| (document_x + 1))) |href| {
                         if ((self.active_tab == .dependencies or self.active_tab == .extensionPack) and std.mem.startsWith(u8, href, "minecode-extension-id:")) {
                             const identifier = href["minecode-extension-id:".len..];
-                            const query = try std.fmt.allocPrint(self.allocator, "@id:{s}", .{identifier});
-                            defer self.allocator.free(query);
-                            try self.service.openSearch(query);
+                            try self.service.open(identifier);
                         } else if (std.mem.startsWith(u8, href, "#")) {
                             if (layout.anchorElement(href)) |target| self.scroll = @intFromFloat(@max(0, target.top));
                         } else if (std.mem.startsWith(u8, href, "https://") or std.mem.startsWith(u8, href, "http://")) {

@@ -3521,6 +3521,7 @@ pub const TerminalWorkbench = struct {
         service.pane_service = self.pane_composite_api;
         service.dialog_service = self.dialog_api;
         service.context_menu = self.context_menu_api;
+        service.open_editor = .{ .context = self, .run = @import("extensionsViewHost.zig").openExtension };
         if (self.extensions_view) |contribution| contribution.setService(service) catch {};
     }
 

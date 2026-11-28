@@ -52,7 +52,7 @@ pub fn detach(workbench: *TerminalWorkbench) void {
     workbench.extensions_list = null;
 }
 
-fn openExtension(context: *anyopaque, identifier: []const u8) anyerror!void {
+pub fn openExtension(context: *anyopaque, identifier: []const u8) anyerror!void {
     const workbench: *TerminalWorkbench = @ptrCast(@alignCast(context));
     const service = workbench.extensions_service orelse return;
     try workbench.editor_opening.openExtension(service, identifier);

@@ -14132,7 +14132,7 @@ test "Workbench: extensions panel lists, filters, opens and disables" {
     });
     try tmp.dir.createDirPath(io, "user/pub.user-ext-1.0.0");
     try tmp.dir.writeFile(io, .{ .sub_path = "user/pub.user-ext-1.0.0/package.json", .data =
-        \\{"name":"user-ext","publisher":"pub","version":"2.0.0","engines":{"vscode":"*"},"displayName":"User Ext","description":"User extension."}
+        \\{"name":"user-ext","publisher":"pub","version":"2.0.0","engines":{"vscode":"*"},"displayName":"User Ext","description":"User extension.","extensionDependencies":["pub.system-ext"]}
     });
     try tmp.dir.writeFile(io, .{ .sub_path = "user/pub.user-ext-1.0.0/README.md", .data = "# User extension guide\n\nHello from README." });
     try tmp.dir.writeFile(io, .{ .sub_path = "user/pub.user-ext-1.0.0/CHANGELOG.md", .data = "# Changes\n\nVersion two." });
@@ -14237,7 +14237,7 @@ test "Workbench: extensions panel lists, filters, opens and disables" {
     try std.testing.expectEqualStrings("pub.user-ext", active.extension_input.?.identifier);
     const detail = active.extension_editor orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("# User extension guide\n\nHello from README.", detail.readme);
-    try std.testing.expectEqual(@as(usize, 3), detail.tab_count);
+    try std.testing.expectEqual(@as(usize, 4), detail.tab_count);
     try detail.selectTab(.changelog);
     try std.testing.expectEqualStrings("# Changes\n\nVersion two.", detail.changelog.?);
     try workbench.editor_opening.openExtension(service, "PUB.USER-EXT");
@@ -14263,6 +14263,19 @@ test "Workbench: extensions panel lists, filters, opens and disables" {
     try chooseContextMenuItem(workbench, "Auto Update");
     try std.testing.expect(!service.isAutoUpdateEnabledFor(service.findLocal("pub.user-ext").?.*));
     try std.testing.expectEqualStrings("[\"pub.user-ext\"]", workbench.storage_api.get("extensions.donotAutoUpdate", .application, null).?);
+    try detail.selectTab(.dependencies);
+    out.clearRetainingCapacity();
+    try renderFrame(workbench, &out.writer);
+    const link = detail.layout.?.links[0];
+    try std.testing.expectEqualStrings("minecode-extension-id:pub.system-ext", link.href);
+    try std.testing.expect(try detail.handleMouse(&.{ .kind = .down, .button = .left, .x = 1 + link.start, .y = 7 + link.row }));
+    // Opening a preview is deferred past the originating mouse handler.
+    try std.testing.expect(workbench.activeTab().? == active);
+    const deadline = time_compat.milliTimestamp(io) + 2_000;
+    while (!std.mem.eql(u8, workbench.activeTab().?.extension_input.?.identifier, "pub.system-ext") and time_compat.milliTimestamp(io) < deadline) {
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp(io));
+    }
+    try std.testing.expectEqualStrings("pub.system-ext", workbench.activeTab().?.extension_input.?.identifier);
 }
 
 test "Workbench: window Io yields through the native dispatcher and resumes on the window thread" {

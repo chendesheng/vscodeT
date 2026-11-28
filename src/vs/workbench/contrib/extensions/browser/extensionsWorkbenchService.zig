@@ -42,7 +42,7 @@ const ModelState = struct {
     enabled: std.array_list.Managed(*const scanner.ScannedExtension),
 };
 
-pub const GalleryKind = enum { search, popular, recommended };
+pub const GalleryKind = enum { search, popular, recommended, lookup };
 
 const GalleryState = struct {
     arena: std.heap.ArenaAllocator,
@@ -189,6 +189,25 @@ fn runManagement(job: *ManagementJob) anyerror!void {
     }
 }
 
+const OpenJob = struct {
+    service: *ExtensionsWorkbenchService,
+    identifier: []u8,
+    url: ?[]u8,
+    completion: dispatch.Task,
+    future: ?std.Io.Future(anyerror!gallery.Page) = null,
+    fn deinit(self: *OpenJob) void {
+        const allocator = self.service.allocator;
+        allocator.free(self.identifier);
+        if (self.url) |url| allocator.free(url);
+        allocator.destroy(self);
+    }
+};
+fn runOpen(job: *OpenJob) anyerror!gallery.Page {
+    defer job.completion.post();
+    const io = job.service.window.?.io;
+    return dispatch.workerCall(io, queryVersions, .{ job.service.allocator, dispatch.backingIo(io), job.url.?, job.identifier });
+}
+
 const VersionMode = enum { picker, release, prerelease };
 const VersionJob = struct {
     service: *ExtensionsWorkbenchService,
@@ -276,6 +295,9 @@ pub const ExtensionsWorkbenchService = struct {
     gallery_state: ?GalleryState = null,
     popular_state: ?GalleryState = null,
     recommended_state: ?GalleryState = null,
+    lookup_state: ?GalleryState = null,
+    open_job: ?*OpenJob = null,
+    open_editor: ?struct { context: *anyopaque, run: *const fn (*anyopaque, []const u8) anyerror!void } = null,
     updates: ?UpdateState = null,
     update_job: ?*UpdateJob = null,
     update_timer: dispatch.Task = .{},
@@ -348,6 +370,7 @@ pub const ExtensionsWorkbenchService = struct {
         if (self.gallery_state) |*state| state.deinit();
         if (self.popular_state) |*state| state.deinit();
         if (self.recommended_state) |*state| state.deinit();
+        if (self.lookup_state) |*state| state.deinit();
         if (self.updates) |*updates| updates.deinit();
         if (self.gallery_url) |url| self.allocator.free(url);
         self.on_change.deinit();
@@ -774,6 +797,8 @@ pub const ExtensionsWorkbenchService = struct {
         if (self.runtime_status_listener) |listener| listener.dispose();
         self.runtime_status_listener = null;
         self.runtime_status = null;
+        self.cancelOpen();
+        self.open_editor = null;
         self.cancelVersions();
         self.update_timer.schedule(null);
         self.update_timer = .{};
@@ -808,6 +833,65 @@ pub const ExtensionsWorkbenchService = struct {
         self.workspace = null;
     }
 
+    /// Resolve an installed or gallery identifier before opening a typed
+    /// extension editor. Defer even a cached result so following a link from
+    /// a preview cannot destroy that preview during its mouse handler.
+    pub fn open(self: *ExtensionsWorkbenchService, identifier: []const u8) !void {
+        const window = self.window orelse return error.ExtensionViewUnavailable;
+        if (self.open_editor == null) return error.ExtensionViewUnavailable;
+        self.cancelOpen();
+        const owned_id = try self.allocator.dupe(u8, identifier);
+        errdefer self.allocator.free(owned_id);
+        const url = if (self.find(identifier) == null) try self.allocator.dupe(u8, self.gallery_url orelse return error.GalleryUnavailable) else null;
+        errdefer if (url) |value| self.allocator.free(value);
+        const job = try self.allocator.create(OpenJob);
+        job.* = .{ .service = self, .identifier = owned_id, .url = url, .completion = .{ .queue = window, .context = self, .run = applyOpen, .progress = true } };
+        self.open_job = job;
+        if (url != null) job.future = window.io.async(runOpen, .{job}) else job.completion.post();
+    }
+
+    fn cancelOpen(self: *ExtensionsWorkbenchService) void {
+        const job = self.open_job orelse return;
+        self.open_job = null;
+        if (job.future) |*future| {
+            if (future.cancel(self.window.?.io)) |page| {
+                var owned = page;
+                owned.deinit();
+            } else |_| {}
+        }
+        job.completion.schedule(null);
+        job.deinit();
+    }
+
+    fn applyOpen(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *ExtensionsWorkbenchService = @ptrCast(@alignCast(context));
+        const job = self.open_job orelse return false;
+        self.open_job = null;
+        defer job.deinit();
+        if (job.future) |*future| {
+            const page = future.await(self.window.?.io) catch |err| {
+                self.management_error = err;
+                self.on_change.fire({}) catch {};
+                return true;
+            };
+            self.setGalleryPage(page, false, .lookup) catch |err| {
+                self.management_error = err;
+                self.on_change.fire({}) catch {};
+                return true;
+            };
+        }
+        if (self.find(job.identifier) == null) {
+            self.management_error = error.ExtensionNotFound;
+            self.on_change.fire({}) catch {};
+            return true;
+        }
+        if (self.open_editor) |editor| editor.run(editor.context, job.identifier) catch |err| {
+            self.management_error = err;
+            self.on_change.fire({}) catch {};
+        };
+        return true;
+    }
+
     pub fn openSearch(self: *ExtensionsWorkbenchService, query: []const u8) !void {
         const panes = self.pane_service orelse return error.ExtensionViewUnavailable;
         _ = try panes.openPaneComposite(model.VIEW_ID, .sidebar, true);
@@ -815,7 +899,7 @@ pub const ExtensionsWorkbenchService = struct {
     }
 
     pub fn galleryInfo(self: *const ExtensionsWorkbenchService, identifier: []const u8) ?*const IExtension {
-        for ([_]GalleryKind{ .search, .popular, .recommended }) |kind| {
+        for ([_]GalleryKind{ .search, .popular, .recommended, .lookup }) |kind| {
             for (self.galleryExtensionsFor(kind)) |*extension| if (util.areSameExtensions(extension.identifier, identifier)) return extension;
         }
         if (self.updates) |updates| for (updates.rows) |*extension| if (util.areSameExtensions(extension.identifier, identifier)) return extension;
@@ -828,7 +912,7 @@ pub const ExtensionsWorkbenchService = struct {
         const current = std.SemanticVersion.parse(local.version) catch return null;
         var best: ?*const IExtension = null;
         var best_version = current;
-        const sources = [_][]const IExtension{ self.galleryExtensions(), self.galleryExtensionsFor(.popular), self.galleryExtensionsFor(.recommended), if (self.updates) |updates| updates.rows else &.{} };
+        const sources = [_][]const IExtension{ self.galleryExtensions(), self.galleryExtensionsFor(.popular), self.galleryExtensionsFor(.recommended), self.galleryExtensionsFor(.lookup), if (self.updates) |updates| updates.rows else &.{} };
         for (sources) |rows| for (rows) |*remote| {
             if (!util.areSameExtensions(remote.identifier, identifier) or remote.vsix_url == null) continue;
             if (remote.is_pre_release and !local.is_pre_release) continue;
@@ -1050,6 +1134,7 @@ pub const ExtensionsWorkbenchService = struct {
             .search => self.gallery_state,
             .popular => self.popular_state,
             .recommended => self.recommended_state,
+            .lookup => self.lookup_state,
         };
         return if (state) |value| value.rows else &.{};
     }
@@ -1117,6 +1202,7 @@ pub const ExtensionsWorkbenchService = struct {
             .search => &self.gallery_state,
             .popular => &self.popular_state,
             .recommended => &self.recommended_state,
+            .lookup => &self.lookup_state,
         };
         var previous = slot.*;
         slot.* = next;
@@ -1126,7 +1212,7 @@ pub const ExtensionsWorkbenchService = struct {
     }
 
     fn updateGalleryLocalState(self: *ExtensionsWorkbenchService) void {
-        const sources = [_][]IExtension{ if (self.gallery_state) |state| state.rows else &.{}, if (self.popular_state) |state| state.rows else &.{}, if (self.recommended_state) |state| state.rows else &.{}, if (self.updates) |updates| updates.rows else &.{} };
+        const sources = [_][]IExtension{ if (self.gallery_state) |state| state.rows else &.{}, if (self.popular_state) |state| state.rows else &.{}, if (self.recommended_state) |state| state.rows else &.{}, if (self.lookup_state) |state| state.rows else &.{}, if (self.updates) |updates| updates.rows else &.{} };
         for (sources) |rows| for (rows) |*row| {
             const local = self.findLocal(row.identifier);
             row.state = if (local != null) .Installed else .Uninstalled;
