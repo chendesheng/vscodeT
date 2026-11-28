@@ -14276,6 +14276,15 @@ test "Workbench: extensions panel lists, filters, opens and disables" {
         _ = workbench.window_events.dispatch(time_compat.milliTimestamp(io));
     }
     try std.testing.expectEqualStrings("pub.system-ext", workbench.activeTab().?.extension_input.?.identifier);
+    // Exact-ID search includes installed results before querying Marketplace.
+    service.gallery_url = try allocator.dupe(u8, "http://127.0.0.1:1");
+    try view.input_box.setValue("@id:pub.user-ext");
+    try std.testing.expectEqual(@as(usize, 1), view.rows.len);
+    try std.testing.expectEqualStrings("pub.user-ext", view.rows[0].identifier);
+    try view.input_box.setValue("@sort:updateDate");
+    try std.testing.expect(workbench.extensions_view.?.model.isVisible("workbench.views.extensions.installed"));
+    try std.testing.expectEqual(@as(usize, 1), view.rows.len);
+    try std.testing.expectEqualStrings("pub.user-ext", view.rows[0].identifier);
 }
 
 test "Workbench: window Io yields through the native dispatcher and resumes on the window thread" {

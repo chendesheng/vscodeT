@@ -150,3 +150,20 @@ test "Test description text matches" {
     defer allocator.free(filtered);
     try testing.expectEqual(@as(usize, 1), filtered.len);
 }
+
+test "Sort-only query selects installed extensions by update date" {
+    const allocator = testing.allocator;
+    var entries = [_]IExtension{
+        extension("pub.first", "First", &no_categories, true, false),
+        extension("pub.second", "Second", &no_categories, true, false),
+        extension("pub.builtin", "Builtin", &no_categories, true, true),
+    };
+    entries[0].installed_timestamp = 100;
+    entries[1].installed_timestamp = 200;
+    entries[2].installed_timestamp = 300;
+    const filtered = try views.filterExtensions(allocator, &entries, "@sort:updateDate");
+    defer allocator.free(filtered);
+    try testing.expectEqual(@as(usize, 2), filtered.len);
+    try testing.expectEqualStrings("pub.second", filtered[0].identifier);
+    try testing.expectEqualStrings("pub.first", filtered[1].identifier);
+}

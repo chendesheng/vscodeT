@@ -116,3 +116,10 @@ test "Extension query suggestions hide duplicate filters and completed sort/cate
     }
     try testing.expect(builtin);
 }
+
+test "Extension query lone sort token is an installed query" {
+    try testing.expect(Query.isSortInstalled("@sort:updateDate"));
+    try testing.expect(Query.isSortInstalled(" @SORT:name "));
+    try testing.expect(!Query.isSortInstalled("@sort:name foo"));
+    try testing.expect(!Query.isSortInstalled("foo @sort:name"));
+}

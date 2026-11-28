@@ -22,8 +22,8 @@ pub const Query = struct {
             for (result.items) |item| allocator.free(item);
             result.deinit(allocator);
         }
-        for ([_][]const u8{ "installed", "updates", "enabled", "disabled", "builtin", "popular", "recommended", "recentlyUpdated", "restartRequired" }) |command| {
-            if (!has_gallery and (std.mem.eql(u8, command, "popular") or std.mem.eql(u8, command, "recommended") or std.mem.eql(u8, command, "updates"))) continue;
+        for ([_][]const u8{ "installed", "updates", "enabled", "disabled", "builtin", "popular", "recommended", "recentlyPublished", "recentlyUpdated", "restartRequired" }) |command| {
+            if (!has_gallery and (std.mem.eql(u8, command, "popular") or std.mem.eql(u8, command, "recommended") or std.mem.eql(u8, command, "updates") or std.mem.eql(u8, command, "recentlyPublished"))) continue;
             var buffer: [64]u8 = undefined;
             const token = try std.fmt.bufPrint(&buffer, "@{s}", .{command});
             if (std.mem.indexOf(u8, query, token) != null) continue;
@@ -52,9 +52,21 @@ pub const Query = struct {
                 result.appendAssumeCapacity(try std.fmt.allocPrint(allocator, "@category:\"{s}\" ", .{category}));
             }
         }
+        if (has_gallery) for ([_][]const u8{ "@tag:", "@ext:" }) |token| {
+            try result.ensureUnusedCapacity(allocator, 1);
+            result.appendAssumeCapacity(try allocator.dupe(u8, token));
+        };
         try result.ensureUnusedCapacity(allocator, 1);
         result.appendAssumeCapacity(try allocator.dupe(u8, "@id:"));
         return result.toOwnedSlice(allocator);
+    }
+
+    /// A lone sort token selects the installed view, not Marketplace.
+    pub fn isSortInstalled(query: []const u8) bool {
+        const trimmed = std.mem.trim(u8, query, " \t\r\n");
+        if (!startsWithIgnoreCase(trimmed, "@sort:")) return false;
+        for (trimmed["@sort:".len..]) |ch| if (std.ascii.isWhitespace(ch)) return false;
+        return true;
     }
 
     pub fn parse(allocator: std.mem.Allocator, input: []const u8) !Query {

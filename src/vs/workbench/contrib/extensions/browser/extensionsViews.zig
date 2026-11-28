@@ -72,12 +72,14 @@ fn queryGallery(allocator: Allocator, io: std.Io, url: []const u8, text: []const
     const parsed = try parseFilter(arena.allocator(), query.value);
     var criteria: std.ArrayList(gallery.Criterion) = .empty;
     defer criteria.deinit(allocator);
-    if ((parsed.updates or parsed.recommended) and names.len == 0) return gallery.Page.parse(allocator, "{\"results\":[]}");
+    if ((parsed.updates or parsed.recommended or parsed.ids.len > 0) and names.len == 0) return gallery.Page.parse(allocator, "{\"results\":[]}");
     for (names) |id| try criteria.append(allocator, .{ .filterType = @backingInt(gallery.FilterType.extension_name), .value = id });
-    if (parsed.text.len > 0) try criteria.append(allocator, .{ .filterType = @backingInt(gallery.FilterType.search_text), .value = parsed.text });
-    for (parsed.ids) |id| try criteria.append(allocator, .{ .filterType = @backingInt(gallery.FilterType.extension_name), .value = id });
-    for (parsed.included_categories) |category| try criteria.append(allocator, .{ .filterType = @backingInt(gallery.FilterType.category), .value = category });
-    const sort: gallery.SortBy = if (parsed.popular or query.value.len == 0 or std.ascii.eqlIgnoreCase(query.sort_by, "installs")) .installs else if (std.ascii.eqlIgnoreCase(query.sort_by, "rating")) .rating else if (std.ascii.eqlIgnoreCase(query.sort_by, "name")) .name else if (std.ascii.eqlIgnoreCase(query.sort_by, "publishedDate")) .published else if (std.ascii.eqlIgnoreCase(query.sort_by, "updateDate")) .updated else .relevance;
+    if (parsed.ids.len == 0) {
+        if (parsed.text.len > 0) try criteria.append(allocator, .{ .filterType = @backingInt(gallery.FilterType.search_text), .value = parsed.text });
+        for (parsed.included_categories) |category| try criteria.append(allocator, .{ .filterType = @backingInt(gallery.FilterType.category), .value = category });
+        for (parsed.tags) |tag| try criteria.append(allocator, .{ .filterType = @backingInt(gallery.FilterType.tag), .value = tag });
+    }
+    const sort: gallery.SortBy = if (std.ascii.eqlIgnoreCase(query.sort_by, "installs")) .installs else if (std.ascii.eqlIgnoreCase(query.sort_by, "rating")) .rating else if (std.ascii.eqlIgnoreCase(query.sort_by, "name")) .name else if (std.ascii.eqlIgnoreCase(query.sort_by, "publishedDate")) .published else if (parsed.recently_published) .published else if (parsed.popular or query.value.len == 0) .installs else .relevance;
     return (gallery.ExtensionGalleryService{ .allocator = allocator, .io = io, .service_url = url }).query(.{ .criteria = criteria.items, .sort_by = sort, .page = page });
 }
 
@@ -192,7 +194,7 @@ pub const ExtensionsListView = struct {
     }
 
     fn onServiceChange(self: *ExtensionsListView) !void {
-        if (self.queryText().len == 0) if (self.query_changed) |callback| callback.run(callback.context);
+        if (self.queryText().len == 0 or query_mod.Query.isSortInstalled(self.queryText())) if (self.query_changed) |callback| callback.run(callback.context);
         try self.rebuild();
     }
 
@@ -286,7 +288,7 @@ pub const ExtensionsListView = struct {
         const service = self.service orelse return false;
         if (service.gallery_url == null or self.host.window == null) return false;
         const text = std.mem.trim(u8, self.queryText(), " \t");
-        if (text.len == 0) return false;
+        if (text.len == 0 or query_mod.Query.isSortInstalled(text)) return false;
         for ([_][]const u8{ "@installed", "@builtin", "@enabled", "@disabled", "@recentlyUpdated", "@updates", "@outdated", "@restartRequired", "@contribute:" }) |token| {
             if (containsIgnoreCase(text, token)) return false;
         }
@@ -319,6 +321,15 @@ pub const ExtensionsListView = struct {
         errdefer {
             for (names.items) |name| self.allocator.free(name);
             names.deinit(self.allocator);
+        }
+        if (filter.ids.len > 0) {
+            for (filter.ids) |id| {
+                if (service.findLocal(id) != null) continue;
+                const copy = try self.allocator.dupe(u8, id);
+                errdefer self.allocator.free(copy);
+                try names.append(self.allocator, copy);
+            }
+            return names.toOwnedSlice(self.allocator);
         }
         if (filter.updates) for (service.queryLocal()) |extension| {
             if (extension.is_builtin) continue;
@@ -445,7 +456,14 @@ pub const ExtensionsListView = struct {
             errdefer result.deinit(self.allocator);
             const updates = containsIgnoreCase(self.queryText(), "@updates") or containsIgnoreCase(self.queryText(), "@outdated");
             const recommended = containsIgnoreCase(self.queryText(), "@recommended");
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+            const filter = try parseFilter(arena.allocator(), self.queryText());
+            if (filter.ids.len > 0) {
+                for (local) |*entry| if (matchesId(entry, filter.ids)) try result.append(self.allocator, entry);
+            }
             for (entries) |*entry| {
+                if (filter.ids.len > 0 and (!matchesId(entry, filter.ids) or self.service.?.findLocal(entry.identifier) != null)) continue;
                 if (updates and self.service.?.availableUpdate(entry.identifier) == null) continue;
                 if (recommended and self.service.?.findLocal(entry.identifier) != null) continue;
                 try result.append(self.allocator, entry);
@@ -907,6 +925,9 @@ const ParsedFilter = struct {
     updates: bool = false,
     recommended: bool = false,
     popular: bool = false,
+    recently_published: bool = false,
+    tags: []const []const u8 = &.{},
+    sort_update_date: bool = false,
     recently_updated: bool = false,
     restart_required: bool = false,
     feature_id: ?[]const u8 = null,
@@ -921,6 +942,7 @@ fn parseFilter(arena: Allocator, value: []const u8) !ParsedFilter {
     var ids: std.array_list.Managed([]const u8) = .init(arena);
     var included: std.array_list.Managed([]const u8) = .init(arena);
     var excluded: std.array_list.Managed([]const u8) = .init(arena);
+    var tags: std.array_list.Managed([]const u8) = .init(arena);
 
     var index: usize = 0;
     while (index < value.len) {
@@ -952,11 +974,24 @@ fn parseFilter(arena: Allocator, value: []const u8) !ParsedFilter {
             }
             continue;
         }
+        if (startsWithIgnoreCase(value[index..], "@tag:") or startsWithIgnoreCase(value[index..], "tag:")) {
+            if (value[index] == '@') index += 1;
+            index += "tag:".len;
+            const quoted = index < value.len and value[index] == '"';
+            if (quoted) index += 1;
+            const start = index;
+            while (index < value.len and (if (quoted) value[index] != '"' else !std.ascii.isWhitespace(value[index]))) : (index += 1) {}
+            if (index > start) try tags.append(value[start..index]);
+            if (quoted and index < value.len) index += 1;
+            continue;
+        }
         if (startsWithIgnoreCase(value[index..], "@sort:")) {
-            // The sort token is parsed by `Query`; local ordering always uses
-            // the display-name order, so the token itself is dropped.
+            // The local update-date sort uses installation metadata. Other
+            // sort modifiers are parsed by Query for gallery ordering.
             index += "@sort:".len;
+            const start = index;
             while (index < value.len and !std.ascii.isWhitespace(value[index])) : (index += 1) {}
+            result.sort_update_date = startsWithIgnoreCase(value[start..index], "updateDate");
             continue;
         }
         if (startsWithIgnoreCase(value[index..], "@contribute:")) {
@@ -1008,6 +1043,10 @@ fn parseFilter(arena: Allocator, value: []const u8) !ParsedFilter {
             result.restart_required = true;
             continue;
         }
+        if (tokenEquals(word, "@recentlyPublished")) {
+            result.recently_published = true;
+            continue;
+        }
         if (tokenEquals(word, "@popular")) {
             result.popular = true;
             continue;
@@ -1017,10 +1056,12 @@ fn parseFilter(arena: Allocator, value: []const u8) !ParsedFilter {
             continue;
         }
         if (text.items.len > 0) try text.append(' ');
-        try text.appendSlice(word);
+        try text.appendSlice(if (startsWithIgnoreCase(word, "@ext:")) word[1..] else word);
     }
 
     result.text = try std.ascii.allocLowerString(arena, text.items);
+    result.tags = try tags.toOwnedSlice();
+    if (query_mod.Query.isSortInstalled(value)) result.installed = true;
     result.ids = try ids.toOwnedSlice();
     result.included_categories = try included.toOwnedSlice();
     result.excluded_categories = try excluded.toOwnedSlice();
@@ -1107,7 +1148,7 @@ fn filterExtensionsWithService(allocator: Allocator, local: []const IExtension, 
     const parsed = try parseFilter(scratch, query_text);
     // These queries require gallery/update metadata; an unavailable gallery
     // does not turn them into an unfiltered list of installed extensions.
-    if (parsed.recommended or parsed.popular or ((parsed.updates or parsed.restart_required) and service == null)) return allocator.alloc(*const IExtension, 0);
+    if (parsed.recommended or parsed.popular or parsed.recently_published or parsed.tags.len > 0 or ((parsed.updates or parsed.restart_required) and service == null)) return allocator.alloc(*const IExtension, 0);
     var result: std.array_list.Managed(*const IExtension) = .init(allocator);
     errdefer result.deinit();
     if (parsed.feature_id) |id| {
@@ -1132,6 +1173,6 @@ fn filterExtensionsWithService(allocator: Allocator, local: []const IExtension, 
         if (!matchesText(extension, parsed.text)) continue;
         try result.append(extension);
     }
-    if (parsed.recently_updated) std.mem.sort(*const IExtension, result.items, {}, newerExtension) else std.mem.sort(*const IExtension, result.items, {}, lessThanExtension);
+    if (parsed.recently_updated or parsed.sort_update_date) std.mem.sort(*const IExtension, result.items, {}, newerExtension) else std.mem.sort(*const IExtension, result.items, {}, lessThanExtension);
     return result.toOwnedSlice();
 }
