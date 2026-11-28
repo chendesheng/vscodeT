@@ -65,6 +65,7 @@ pub fn build(b: *std.Build) void {
         const app_build_options = b.addOptions();
         app_build_options.addOption(bool, "e2e", false);
         app_build_options.addOption(bool, "fsevents", enable_fsevents);
+        app_build_options.addOption(bool, "allocator_stack_traces", b.option(bool, "allocator-stack-traces", "Record allocation stack traces in Debug editor builds") orelse false);
         exe.root_module.addOptions("build_options", app_build_options);
         exe.root_module.addImport("oniguruma", onig);
         exe.root_module.addImport("vscode_textmate", vscode_textmate);

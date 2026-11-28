@@ -203,6 +203,8 @@ keeps its immutable text while edits invalidate the tree’s reference.
   The debug allocator's unwinding used to be 70-94% of active CPU in the
   end-to-end profile; safety checks and the leak report at exit are kept, and
   the test suite still uses the fully instrumented testing allocator.
+  To diagnose a runtime leak with allocation stack traces, use
+  `zig build run -Dallocator-stack-traces=true -- <folder> [<file>...]`.
 - `zig build bench-open` runs the opt-in `benchmark:` tests: open stages, edit
   stage breakdown, one-line/page/wheel scroll frames, a full-workbench scroll
   frame, word-highlight scanning, and the viewport-tokenization contract. Pass
