@@ -546,9 +546,12 @@ pub fn main(init: std.process.Init) !void {
 
     const profile_storage_path = if (profile.user_data_dir) |dir| try std.fs.path.join(allocator, &.{ dir, "User", "globalStorage", "storage.state.json" }) else null;
     defer if (profile_storage_path) |path| allocator.free(path);
+    const application_storage_path = if (profile.user_data_dir) |dir| try std.fs.path.join(allocator, &.{ dir, "User", "globalStorage", "application.state.json" }) else null;
+    defer if (application_storage_path) |path| allocator.free(path);
     const startup_options: @import("./workbenchWindow.zig").IWorkbenchOptions = .{
         .initial_user_settings_paths = profile.settings_paths,
         .profile_storage_path = profile_storage_path,
+        .application_storage_path = application_storage_path,
     };
 
     var surface: ui.Surface = undefined;

@@ -1516,6 +1516,7 @@ pub const TerminalWorkbench = struct {
         _ = try self.view_descriptor_service.on_did_change_container.listen(self, onViewContainerChanged);
         self.notification_storage = storage_mod.InMemoryStorageService.init(self.allocator);
         errdefer self.notification_storage.deinit();
+        if (options.application_storage_path) |path| self.notification_storage.attachApplicationStorage(self.io, path) catch |err| std.log.scoped(.storage).warn("Application storage unavailable: {s}", .{@errorName(err)});
         if (options.profile_storage_path) |path| self.notification_storage.attachProfileStorage(self.io, path) catch |err| std.log.scoped(.storage).warn("Profile storage unavailable: {s}", .{@errorName(err)});
         self.notification_service = try @import("../vs/workbench/services/notification/common/notificationService.zig").NotificationService.create(self.allocator, &self.notification_storage);
         errdefer self.notification_service.deinit();

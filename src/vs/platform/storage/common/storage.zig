@@ -159,7 +159,10 @@ pub const InMemoryStorageService = struct {
     onWillSaveState: Emitter(IWillSaveStateEvent),
     filters: std.array_list.Managed(*ValueFilter),
     filter_ids: std.AutoHashMap(usize, FilterHandle),
-    profile_storage: ?struct { io: std.Io, path: []u8, dirty: bool = false } = null,
+    profile_storage: ?PersistentScope = null,
+    application_storage: ?PersistentScope = null,
+
+    const PersistentScope = struct { io: std.Io, path: []u8, dirty: bool = false };
 
     const StoredProfileEntry = struct { key: []const u8, value: []const u8, target: StorageTarget };
 
@@ -167,28 +170,50 @@ pub const InMemoryStorageService = struct {
     /// values use the normal storage cache and event path after loading.
     pub fn attachProfileStorage(self: *InMemoryStorageService, io: std.Io, path: []const u8) !void {
         if (self.profile_storage != null) return error.ProfileStorageAlreadyAttached;
+        self.profile_storage = try self.loadScope(io, path, .profile);
+    }
+
+    /// APPLICATION values have independent machine-local storage, shared by
+    /// all profiles rather than serialized into a particular user profile.
+    pub fn attachApplicationStorage(self: *InMemoryStorageService, io: std.Io, path: []const u8) !void {
+        if (self.application_storage != null) return error.ApplicationStorageAlreadyAttached;
+        self.application_storage = try self.loadScope(io, path, .application);
+    }
+
+    fn loadScope(self: *InMemoryStorageService, io: std.Io, path: []const u8, scope: StorageScope) !PersistentScope {
         const owned_path = try self.allocator.dupe(u8, path);
         errdefer self.allocator.free(owned_path);
         if (try readStateFile([]StoredProfileEntry, self.allocator, io, path)) |parsed| {
             defer parsed.deinit();
-            for (parsed.value) |entry| try self.storeInternal(entry.key, .{ .string = entry.value }, .profile, entry.target, true);
+            for (parsed.value) |entry| try self.storeInternal(entry.key, .{ .string = entry.value }, scope, entry.target, true);
         }
-        self.profile_storage = .{ .io = io, .path = owned_path };
+        return .{ .io = io, .path = owned_path };
     }
-    fn flushProfile(self: *InMemoryStorageService) !void {
-        const profile = if (self.profile_storage) |*value| value else return;
-        if (!profile.dirty) return;
-        const entries = try self.allocator.alloc(StoredProfileEntry, self.profile.values.count());
+
+    fn markDirty(self: *InMemoryStorageService, scope: StorageScope) void {
+        const persistence = switch (scope) {
+            .profile => &self.profile_storage,
+            .application => &self.application_storage,
+            else => return,
+        };
+        if (persistence.*) |*state| state.dirty = true;
+    }
+
+    fn flushScope(self: *InMemoryStorageService, scope: StorageScope, persistence: *?PersistentScope) !void {
+        const state = if (persistence.*) |*value| value else return;
+        if (!state.dirty) return;
+        const scope_data = self.data(scope);
+        const entries = try self.allocator.alloc(StoredProfileEntry, scope_data.values.count());
         defer self.allocator.free(entries);
-        var iterator = self.profile.values.iterator();
+        var iterator = scope_data.values.iterator();
         var index: usize = 0;
         while (iterator.next()) |entry| : (index += 1) entries[index] = .{
             .key = entry.key_ptr.*,
             .value = entry.value_ptr.*,
-            .target = self.profile.targets.get(entry.key_ptr.*) orelse .user,
+            .target = scope_data.targets.get(entry.key_ptr.*) orelse .user,
         };
-        try writeStateFile(self.allocator, profile.io, profile.path, entries);
-        profile.dirty = false;
+        try writeStateFile(self.allocator, state.io, state.path, entries);
+        state.dirty = false;
     }
 
     pub fn init(allocator: Allocator) InMemoryStorageService {
@@ -207,7 +232,9 @@ pub const InMemoryStorageService = struct {
     }
 
     pub fn deinit(self: *InMemoryStorageService) void {
-        self.flushProfile() catch {};
+        self.flushScope(.profile, &self.profile_storage) catch {};
+        self.flushScope(.application, &self.application_storage) catch {};
+        if (self.application_storage) |value| self.allocator.free(value.path);
         if (self.profile_storage) |value| self.allocator.free(value.path);
         self.application_shared.deinit(self.allocator);
         self.application.deinit(self.allocator);
@@ -300,9 +327,7 @@ pub const InMemoryStorageService = struct {
         const existing_target = scope_data.targets.get(owned_key);
         const target_changed = existing_target == null or existing_target.? != target;
         if (target_changed) scope_data.targets.putAssumeCapacity(owned_key, target);
-        if (scope == .profile) if (self.profile_storage) |*profile| {
-            profile.dirty = true;
-        };
+        self.markDirty(scope);
         if (target_changed) try self.onDidChangeTarget.fire(.{ .scope = scope });
         try self.onDidChangeValue.fire(.{ .scope = scope, .key = event_key, .target = target, .external = external });
     }
@@ -319,9 +344,7 @@ pub const InMemoryStorageService = struct {
             self.allocator.free(entry.key);
         };
         const had_target = scope_data.targets.remove(key);
-        if (removed != null and scope == .profile) if (self.profile_storage) |*profile| {
-            profile.dirty = true;
-        };
+        if (removed != null) self.markDirty(scope);
         if (had_target) self.onDidChangeTarget.fire(.{ .scope = scope }) catch {};
         self.onDidChangeValue.fire(.{ .scope = scope, .key = if (removed) |entry| entry.key else key, .target = null, .external = external }) catch {};
     }
@@ -436,7 +459,8 @@ pub const InMemoryStorageService = struct {
 
     pub fn flush(self: *InMemoryStorageService, reason: WillSaveStateReason) !void {
         try self.onWillSaveState.fire(.{ .reason = reason });
-        try self.flushProfile();
+        try self.flushScope(.profile, &self.profile_storage);
+        try self.flushScope(.application, &self.application_storage);
     }
 };
 
@@ -549,4 +573,36 @@ test "storage keys group by target" {
     defer allocator.free(machine_keys);
     try std.testing.expectEqual(@as(usize, 1), machine_keys.len);
     try std.testing.expectEqualStrings("b", machine_keys[0]);
+}
+
+test "application storage is independent of the profile and restores on startup" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const length = try tmp.dir.realPath(io, &buffer);
+    const path = try std.fs.path.join(allocator, &.{ buffer[0..length], "application.json" });
+    defer allocator.free(path);
+    {
+        var storage = InMemoryStorageService.init(allocator);
+        defer storage.deinit();
+        try storage.attachApplicationStorage(io, path);
+        try storage.store("shared", .{ .string = "application" }, .application, .user);
+        try storage.store("shared", .{ .string = "profile" }, .profile, .user);
+        try storage.flush(.shutdown);
+    }
+    {
+        var storage = InMemoryStorageService.init(allocator);
+        defer storage.deinit();
+        try storage.attachApplicationStorage(io, path);
+        try std.testing.expectEqualStrings("application", storage.get("shared", .application, null).?);
+        try std.testing.expect(storage.get("shared", .profile, null) == null);
+        storage.remove("shared", .application);
+        try storage.flush(.shutdown);
+    }
+    var storage = InMemoryStorageService.init(allocator);
+    defer storage.deinit();
+    try storage.attachApplicationStorage(io, path);
+    try std.testing.expect(storage.get("shared", .application, null) == null);
 }
