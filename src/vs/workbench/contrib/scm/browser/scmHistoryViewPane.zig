@@ -9,7 +9,8 @@
 // - hover is plain text (no markdown/avatars/commands);
 // - one click selects and a second click on the selected commit toggles
 //   expansion. Open Changes uses the host's single-file diff and picker;
-// - the page fetch is synchronous and capped; the terminal has no progress UI;
+// - pagination awaits a detached provider read on the window executor;
+//   initial loading and cursor reveal still use the synchronous provider API.
 // - the tree mode compresses single-child folders like `scm.compactFolders`.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -22,6 +23,7 @@ const Menu = @import("../../../../platform/contextview/browser/contextMenuServic
 const IConfigurationService = @import("../../../../platform/configuration/common/configuration.zig").IConfigurationService;
 const ui = @import("ui");
 const history = @import("../common/history.zig");
+const dispatch = @import("../../../../base/common/windowDispatch.zig");
 const scm_history = @import("./scmHistory.zig");
 const resource_tree = @import("../../../../base/common/resourceTree.zig");
 const storage_mod = @import("../../../../platform/storage/common/storage.zig");
@@ -106,6 +108,7 @@ pub const Host = struct {
     ) anyerror!void = null,
     focus_editor: *const fn (context: *anyopaque) void,
     status: ?*const fn (*anyopaque, []const u8) void = null,
+    window: ?*dispatch.Queue = null,
 };
 
 const FilterKind = enum { auto, all, selected };
@@ -145,6 +148,10 @@ pub const SCMHistoryViewPane = struct {
 
     arena: std.heap.ArenaAllocator,
     changes_arena: std.heap.ArenaAllocator,
+    graph_arena: std.heap.ArenaAllocator,
+    history_items: std.ArrayList(history.ISCMHistoryItem) = .empty,
+    page_job: ?*PageJob = null,
+    history_exhausted: bool = false,
     view_models: []const history.ISCMHistoryItemViewModel = &.{},
     filter_kind: FilterKind = .auto,
     filter_ids: std.array_list.Managed([]u8),
@@ -193,6 +200,7 @@ pub const SCMHistoryViewPane = struct {
             .storage = storage,
             .arena = std.heap.ArenaAllocator.init(allocator),
             .changes_arena = std.heap.ArenaAllocator.init(allocator),
+            .graph_arena = std.heap.ArenaAllocator.init(allocator),
             .filter_ids = std.array_list.Managed([]u8).init(allocator),
             .rows = std.array_list.Managed(Row).init(allocator),
             .expanded = std.StringHashMap(void).init(allocator),
@@ -205,6 +213,7 @@ pub const SCMHistoryViewPane = struct {
     }
 
     pub fn deinit(self: *SCMHistoryViewPane) void {
+        self.cancelPageJob();
         self.list_focus.deinit();
         if (self.ref_picker != null) self.quick_input.?.hide();
         self.clearOwnedKeys(&self.expanded);
@@ -218,6 +227,7 @@ pub const SCMHistoryViewPane = struct {
         if (self.surface) |*surface| surface.deinit();
         self.arena.deinit();
         self.changes_arena.deinit();
+        self.graph_arena.deinit();
         self.rows.deinit();
         self.* = undefined;
     }
@@ -372,6 +382,10 @@ pub const SCMHistoryViewPane = struct {
     }
 
     pub fn refresh(self: *SCMHistoryViewPane, kind: RefreshKind) !void {
+        if (kind == .more) return self.fetchNextPage();
+        self.cancelPageJob();
+        self.history_items = .empty;
+        self.history_exhausted = false;
         const provider = self.provider orelse {
             self.view_models = &.{};
             self.rows.clearRetainingCapacity();
@@ -391,7 +405,6 @@ pub const SCMHistoryViewPane = struct {
         const arena = self.arena.allocator();
         const current = provider.history_item_ref;
         const remote = provider.history_item_remote_ref;
-        const base = provider.history_item_base_ref;
 
         const filter_refs = self.resolveFilter(arena, provider) catch |err| blk: {
             self.last_error = err;
@@ -399,14 +412,6 @@ pub const SCMHistoryViewPane = struct {
         };
         self.filter_refs = filter_refs;
         self.updateFilterLabel();
-
-        var color_map = scm_history.ColorMap.init(arena);
-        if (current) |ref| try color_map.put(ref.id, ref.color);
-        if (remote) |ref| try color_map.put(ref.id, ref.color);
-        if (base) |ref| try color_map.put(ref.id, ref.color);
-        for (filter_refs) |ref| {
-            if (!color_map.contains(ref.id)) try color_map.put(ref.id, null);
-        }
 
         if (current != null and remote != null and self.merge_base == null) {
             self.merge_base = provider.resolveHistoryItemRefsCommonAncestor(
@@ -418,9 +423,7 @@ pub const SCMHistoryViewPane = struct {
             };
         }
 
-        if (kind == .more) {
-            if (self.loaded_pages < 20) self.loaded_pages += 1;
-        } else if (kind == .reload) {
+        if (kind == .reload) {
             self.loaded_pages = 1;
         }
 
@@ -469,6 +472,27 @@ pub const SCMHistoryViewPane = struct {
             }
         }
 
+        self.history_items.items = items.items;
+        self.history_items.capacity = items.capacity;
+        self.history_exhausted = items.items.len < wanted;
+        try self.publishGraph();
+    }
+
+    fn publishGraph(self: *SCMHistoryViewPane) !void {
+        const provider = self.provider orelse return;
+        self.clearHover();
+        self.view_models = &.{};
+        self.rows.clearRetainingCapacity();
+        _ = self.graph_arena.reset(.retain_capacity);
+        const arena = self.graph_arena.allocator();
+        const current = provider.history_item_ref;
+        const remote = provider.history_item_remote_ref;
+        const base = provider.history_item_base_ref;
+        var color_map = scm_history.ColorMap.init(arena);
+        if (current) |ref| try color_map.put(ref.id, ref.color);
+        if (remote) |ref| try color_map.put(ref.id, ref.color);
+        if (base) |ref| try color_map.put(ref.id, ref.color);
+        for (self.filter_refs) |ref| if (!color_map.contains(ref.id)) try color_map.put(ref.id, null);
         const add_incoming = self.config.show_incoming_changes and
             self.filter_refs.len > 0 and remote != null and
             self.isHistoryItemInFilter(remote.?.id);
@@ -477,7 +501,7 @@ pub const SCMHistoryViewPane = struct {
             self.isHistoryItemInFilter(current.?.id);
         const view_models = scm_history.toISCMHistoryItemViewModelArray(
             arena,
-            items.items,
+            self.history_items.items,
             &color_map,
             current,
             remote,
@@ -494,6 +518,96 @@ pub const SCMHistoryViewPane = struct {
         try self.rebuildRows();
         self.clampSelection();
         self.revision += 1;
+    }
+
+    const PageJob = struct {
+        arena: std.heap.ArenaAllocator,
+        request: history.HistoryItemsRequest,
+        completion: dispatch.Task,
+        future: std.Io.Future(void) = undefined,
+        result: anyerror![]history.ISCMHistoryItem = error.Canceled,
+        limit: usize,
+
+        fn read(job: *PageJob) !void {
+            job.result = job.request.read(job.request.context, job.arena.allocator(), job.completion.queue.?.workerIo());
+        }
+
+        fn run(job: *PageJob) void {
+            defer job.completion.post();
+            dispatch.workerCall(job.completion.queue.?.io, read, .{job}) catch {};
+        }
+
+        fn destroy(job: *PageJob) void {
+            job.arena.deinit();
+            std.heap.page_allocator.destroy(job);
+        }
+    };
+
+    fn cancelPageJob(self: *SCMHistoryViewPane) void {
+        const job = self.page_job orelse return;
+        job.future.cancel(job.completion.queue.?.io);
+        job.completion.schedule(null);
+        self.page_job = null;
+        job.destroy();
+    }
+
+    fn applyPageJob(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *SCMHistoryViewPane = @ptrCast(@alignCast(context));
+        const job = self.page_job.?;
+        job.future.await(job.completion.queue.?.io);
+        self.page_job = null;
+        defer job.destroy();
+        const page = job.result catch |err| {
+            self.last_error = err;
+            return true;
+        };
+        self.appendPage(page, job.limit) catch |err| {
+            self.last_error = err;
+        };
+        return true;
+    }
+
+    fn appendPage(self: *SCMHistoryViewPane, page: []const history.ISCMHistoryItem, limit: usize) !void {
+        const allocator = self.arena.allocator();
+        try self.history_items.ensureUnusedCapacity(allocator, page.len);
+        for (page) |item| self.history_items.appendAssumeCapacity(try item.clone(allocator));
+        self.history_exhausted = page.len < limit;
+        self.loaded_pages += 1;
+        try self.publishGraph();
+    }
+
+    fn fetchNextPage(self: *SCMHistoryViewPane) !void {
+        const provider = self.provider orelse return;
+        if (self.history_exhausted or self.page_job != null) return;
+        const limit = @max(self.config.page_size, 1);
+        const refs = try self.allocator.alloc([]const u8, self.filter_refs.len);
+        defer self.allocator.free(refs);
+        for (self.filter_refs, refs) |ref, *id| id.* = ref.revision orelse ref.id;
+        const options = history.ISCMHistoryOptions{
+            .history_item_refs = refs,
+            .limit = .{ .count = limit },
+            .skip = self.history_items.items.len,
+            .all_refs = self.filter_kind == .all,
+        };
+        if (self.host.window) |window| if (provider.capture_history_items_fn) |capture| {
+            const job = try std.heap.page_allocator.create(PageJob);
+            errdefer std.heap.page_allocator.destroy(job);
+            job.* = .{
+                .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator),
+                .request = undefined,
+                .completion = .{ .queue = window, .context = self, .run = applyPageJob, .progress = true },
+                .limit = limit,
+            };
+            errdefer job.arena.deinit();
+            job.request = try capture(provider.context, job.arena.allocator(), options);
+            job.future = try window.io.concurrent(PageJob.run, .{job});
+            self.page_job = job;
+            return;
+        };
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const page = try provider.provideHistoryItems(scratch.allocator(), options);
+        try self.appendPage(page, limit);
     }
 
     pub const RefreshKind = enum { reload, more, cursor };
@@ -610,7 +724,8 @@ pub const SCMHistoryViewPane = struct {
             self.last_error = err;
             break :blk &.{};
         };
-        self.changes.put(item.id, changes) catch {};
+        const key = self.changes_arena.allocator().dupe(u8, item.id) catch return changes;
+        self.changes.put(key, changes) catch {};
         return changes;
     }
 
@@ -645,7 +760,7 @@ pub const SCMHistoryViewPane = struct {
             }
         }
         const last_index = self.view_models.len - 1;
-        if (self.view_models[last_index].output_swimlanes.len > 0) {
+        if (!self.history_exhausted and self.view_models[last_index].output_swimlanes.len > 0) {
             try self.rows.append(.{ .load_more = .{ .vm = last_index } });
         }
     }

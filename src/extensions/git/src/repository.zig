@@ -332,6 +332,7 @@ pub const Repository = struct {
         self.rebuild();
 
         if (history_provider_mod.GitHistoryProvider.create(allocator, repository)) |history| {
+            if (git) |cli| history.attachGit(cli);
             self.history = history;
             self.base.history_provider = history.interface();
         } else |_| {}

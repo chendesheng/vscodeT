@@ -3,7 +3,8 @@
 // Terminal adaptations:
 // - The provider is backed by the mirrored `Repository`/`git.zig` instead of
 //   the extension host RPC and `Repository.log`/`getMergeBase`/... are
-//   synchronous.
+//   synchronous for standalone callers; live pagination captures a detached
+//   Git reader for the existing WindowIo executor.
 // - File decorations, avatars, emoji expansion, markdown tooltips and the
 //   chat-context methods are not ported; the Graph pane builds its own plain
 //   hover content from the returned history items.
@@ -17,6 +18,7 @@ const git_browser = @import("../../../vs/workbench/contrib/git/browser/gitServic
 const git_common = @import("../../../vs/workbench/contrib/git/common/gitService.zig");
 const scm_history = @import("../../../vs/workbench/contrib/scm/common/history.zig");
 const util = @import("./util.zig");
+const Git = @import("./git.zig").Git;
 
 const CancellationToken = git_common.CancellationToken;
 
@@ -33,6 +35,7 @@ pub const GitHistoryProvider = struct {
     refs_changed: Emitter(scm_history.ISCMHistoryItemRefsChangeEvent),
 
     commit_short_hash_length: usize = 7,
+    git: ?*Git = null,
     last_head_name: ?[]u8 = null,
     last_error: ?anyerror = null,
 
@@ -360,12 +363,61 @@ pub const GitHistoryProvider = struct {
         return result.toOwnedSlice();
     }
 
-    fn provideHistoryItems(
-        self: *GitHistoryProvider,
-        allocator: Allocator,
+    pub fn attachGit(self: *GitHistoryProvider, git: *Git) void {
+        self.git = git;
+        self.interface_value.capture_history_items_fn = captureHistoryItems;
+    }
+
+    const HistoryRead = struct {
+        exe: []const u8,
+        root: []const u8,
+        timeout: std.Io.Timeout,
+        max_file_size: usize,
+        has_current_ref: bool,
+        short_hash_length: usize,
         options: scm_history.ISCMHistoryOptions,
-    ) ![]scm_history.ISCMHistoryItem {
-        if (self.current_ref == null) return allocator.alloc(scm_history.ISCMHistoryItem, 0);
+
+        fn run(context: *anyopaque, allocator: Allocator, io: std.Io) ![]scm_history.ISCMHistoryItem {
+            const request: *HistoryRead = @ptrCast(@alignCast(context));
+            const git = try Git.init(allocator, .{ .git_path = request.exe, .io = io });
+            defer git.deinit();
+            git.timeout = request.timeout;
+            git.max_file_size = request.max_file_size;
+            var delegate = git.interface();
+            const repository = try git_browser.GitRepository.create(allocator, request.root, .{}, &delegate);
+            defer repository.destroy();
+            return readHistoryItems(repository, request.has_current_ref, request.short_hash_length, allocator, request.options);
+        }
+    };
+
+    fn captureHistoryItems(context: *anyopaque, allocator: Allocator, options: scm_history.ISCMHistoryOptions) !scm_history.HistoryItemsRequest {
+        const self: *GitHistoryProvider = @ptrCast(@alignCast(context));
+        const git = self.git.?;
+        const request = try allocator.create(HistoryRead);
+        var captured = options;
+        const refs = try allocator.alloc([]const u8, options.history_item_refs.len);
+        for (refs, options.history_item_refs) |*ref, source| ref.* = try allocator.dupe(u8, source);
+        captured.history_item_refs = refs;
+        if (options.filter_text) |filter| captured.filter_text = try allocator.dupe(u8, filter);
+        if (options.limit == .id) captured.limit = .{ .id = try allocator.dupe(u8, options.limit.id) };
+        request.* = .{
+            .exe = try allocator.dupe(u8, git.exe),
+            .root = try allocator.dupe(u8, self.repository.root_path),
+            .timeout = git.timeout,
+            .max_file_size = git.max_file_size,
+            .has_current_ref = self.current_ref != null and !git.isDisabled(),
+            .short_hash_length = self.commit_short_hash_length,
+            .options = captured,
+        };
+        return .{ .context = request, .read = HistoryRead.run };
+    }
+
+    fn provideHistoryItems(self: *GitHistoryProvider, allocator: Allocator, options: scm_history.ISCMHistoryOptions) ![]scm_history.ISCMHistoryItem {
+        return readHistoryItems(self.repository, self.current_ref != null, self.commit_short_hash_length, allocator, options);
+    }
+
+    fn readHistoryItems(repository: *git_browser.GitRepository, has_current_ref: bool, short_hash_length: usize, allocator: Allocator, options: scm_history.ISCMHistoryOptions) ![]scm_history.ISCMHistoryItem {
+        if (!has_current_ref) return allocator.alloc(scm_history.ISCMHistoryItem, 0);
         if (options.history_item_refs.len == 0 and !options.all_refs) {
             return allocator.alloc(scm_history.ISCMHistoryItem, 0);
         }
@@ -387,7 +439,7 @@ pub const GitHistoryProvider = struct {
             .none => {},
             .count => |count| max_entries = count,
             .id => |id| {
-                const commits = self.repository.log(allocator, .{
+                const commits = repository.log(allocator, .{
                     .ref_names = &.{id},
                     .max_entries = 1,
                 }, CancellationToken.None) catch return allocator.alloc(scm_history.ISCMHistoryItem, 0);
@@ -418,13 +470,13 @@ pub const GitHistoryProvider = struct {
                 var author_options = log_options;
                 author_options.ref_names = null;
                 author_options.author = trimmed;
-                const author_commits = self.repository.log(allocator, author_options, CancellationToken.None) catch
+                const author_commits = repository.log(allocator, author_options, CancellationToken.None) catch
                     try allocator.alloc(git_common.GitCommit, 0);
                 defer git_common.freeGitCommits(allocator, author_commits);
                 var grep_options = log_options;
                 grep_options.ref_names = null;
                 grep_options.grep = trimmed;
-                const grep_commits = self.repository.log(allocator, grep_options, CancellationToken.None) catch
+                const grep_commits = repository.log(allocator, grep_options, CancellationToken.None) catch
                     try allocator.alloc(git_common.GitCommit, 0);
                 defer git_common.freeGitCommits(allocator, grep_commits);
 
@@ -454,12 +506,12 @@ pub const GitHistoryProvider = struct {
                     commits = kept;
                 }
             } else {
-                commits = self.repository.log(allocator, log_options, CancellationToken.None) catch
+                commits = repository.log(allocator, log_options, CancellationToken.None) catch
                     try allocator.alloc(git_common.GitCommit, 0);
                 commits_owned = true;
             }
         } else {
-            commits = self.repository.log(allocator, log_options, CancellationToken.None) catch
+            commits = repository.log(allocator, log_options, CancellationToken.None) catch
                 try allocator.alloc(git_common.GitCommit, 0);
             commits_owned = true;
         }
@@ -471,15 +523,15 @@ pub const GitHistoryProvider = struct {
             items.deinit();
         }
         for (commits) |commit| {
-            try items.append(try self.commitToHistoryItem(allocator, commit));
+            try items.append(try commitToHistoryItem(allocator, commit, short_hash_length));
         }
         return items.toOwnedSlice();
     }
 
     fn commitToHistoryItem(
-        self: *GitHistoryProvider,
         allocator: Allocator,
         commit: git_common.GitCommit,
+        short_hash_length: usize,
     ) !scm_history.ISCMHistoryItem {
         const id = try allocator.dupe(u8, commit.hash);
         errdefer allocator.free(id);
@@ -491,7 +543,7 @@ pub const GitHistoryProvider = struct {
         errdefer allocator.free(author_name);
         const author_email = try allocator.dupe(u8, commit.author_email);
         errdefer allocator.free(author_email);
-        const display_id = try util.truncate(allocator, commit.hash, self.commit_short_hash_length);
+        const display_id = try util.truncate(allocator, commit.hash, short_hash_length);
         errdefer allocator.free(display_id);
 
         const parents = try allocator.alloc([]const u8, commit.parents.len);

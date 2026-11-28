@@ -1361,7 +1361,10 @@ stress and strict reference-conformance reports run separately.
   Commits start collapsed; expanding shows changed files in list or compressed tree mode;
   the inline Open Changes action opens the file diff or a picker for multiple files.
   `Enter` opens a parent↔commit diff and clicking the `Load More…` row pages
-  older commits in. `scm.graph.pageSize` (50),
+  older commits in. Pagination keeps loaded commits and requests only the next
+  page (`skip` and `limit`), using the existing WindowIo executor for a detached
+  Git read; completion publishes on the window. Initial loading and cursor reveal
+  still use the synchronous provider contract. `scm.graph.pageSize` (50),
   `scm.graph.pageOnScroll` (true), `scm.graph.badges` (`filter`),
   `scm.graph.showIncomingChanges`/`showOutgoingChanges` (true),
   `scm.defaultViewMode` (`list`), `scm.compactFolders` (true) and

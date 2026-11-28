@@ -3300,6 +3300,7 @@ pub const TerminalWorkbench = struct {
             .quick_input = self.quick_access.inputService(),
             .history_host = .{
                 .context = self,
+                .window = &self.window_events,
                 .open_change = historyOpenChange,
                 .open_changes = historyOpenChanges,
                 .status = scmViewStatus,

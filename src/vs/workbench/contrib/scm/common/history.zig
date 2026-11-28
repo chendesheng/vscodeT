@@ -5,7 +5,8 @@
 //   carry the repository-relative path plus the rename source.
 // - `IObservable` fields become plain state on the provider plus a
 //   `historyItemRefChanges` emitter, like the other ported SCM services.
-// - Promises become synchronous `!T` methods; results are owned by the caller
+// - Standalone promises become synchronous `!T` methods; the live pagination
+//   path captures a detached worker request. Results are owned by the caller
 //   and freed with the helpers below. Event payloads stay borrowed from the
 //   provider until the next refresh.
 // - Chat context methods, markdown tooltips and avatar URIs are not part of the
@@ -257,6 +258,13 @@ pub const ISCMHistoryItemChange = struct {
 
 /// Terminal port of `ISCMHistoryProvider`. The three current refs are owned by
 /// the provider and replaced on refresh; methods return caller-owned results.
+/// Detached history read: captured on the owning window, executed by its
+/// existing worker executor. All context and results belong to the job arena.
+pub const HistoryItemsRequest = struct {
+    context: *anyopaque,
+    read: *const fn (*anyopaque, Allocator, std.Io) anyerror![]ISCMHistoryItem,
+};
+
 pub const ISCMHistoryProvider = struct {
     context: *anyopaque,
     /// Current history item reference (HEAD/branch/tag/detached commit).
@@ -269,6 +277,7 @@ pub const ISCMHistoryProvider = struct {
         allocator: Allocator,
         history_item_refs: ?[]const []const u8,
     ) anyerror![]ISCMHistoryItemRef,
+    capture_history_items_fn: ?*const fn (*anyopaque, Allocator, ISCMHistoryOptions) anyerror!HistoryItemsRequest = null,
     provide_history_items_fn: *const fn (
         context: *anyopaque,
         allocator: Allocator,

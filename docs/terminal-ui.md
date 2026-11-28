@@ -2005,6 +2005,11 @@ synchronous startup paths retain their original host Io. Workflows include:
   `MarkdownPreview` image jobs; local reads/decodes and remote http(s) fetches
   never touch the TUI thread. Remote jobs have a 30 s deadline scheduled by
   the preview.
+- SCM history pagination retains prior commits and captures only the next
+  page of Git history in a detached reader. The existing WindowIo worker
+  returns the page to the owning view through the dispatcher; reload and
+  disposal cancel the pending request. Initial graph loads and cursor reveal
+  still use the synchronous provider contract.
 - `platform/request/node/requestService.zig` is a synchronous `std.http`
   request layer; callers schedule a window fiber and use the detached worker boundary when
   they need the TUI thread free.

@@ -103,6 +103,33 @@ const TestHistoryProvider = struct {
         return null;
     }
 
+    const CapturedPage = struct {
+        total: usize,
+        skip: usize,
+        limit: usize,
+        owner: std.Thread.Id,
+
+        fn run(context: *anyopaque, allocator: Allocator, _: std.Io) ![]history.ISCMHistoryItem {
+            const page: *CapturedPage = @ptrCast(@alignCast(context));
+            try testing.expect(page.owner != std.Thread.getCurrentId());
+            var snapshot: TestHistoryProvider = undefined;
+            snapshot.total = page.total;
+            snapshot.fetch_count = 0;
+            snapshot.merge_parents = false;
+            return provideItems(&snapshot, allocator, .{ .skip = page.skip, .limit = .{ .count = page.limit } });
+        }
+    };
+
+    fn capturePage(context: *anyopaque, allocator: Allocator, options: history.ISCMHistoryOptions) !history.HistoryItemsRequest {
+        const self: *TestHistoryProvider = @ptrCast(@alignCast(context));
+        const page = try allocator.create(CapturedPage);
+        self.fetch_count += 1;
+        self.last_skip = options.skip;
+        self.last_limit = options.limit.count;
+        page.* = .{ .total = self.total, .skip = options.skip.?, .limit = options.limit.count, .owner = std.Thread.getCurrentId() };
+        return .{ .context = page, .read = CapturedPage.run };
+    }
+
     fn provideItems(context: *anyopaque, allocator: Allocator, options: history.ISCMHistoryOptions) ![]history.ISCMHistoryItem {
         const self: *TestHistoryProvider = @ptrCast(@alignCast(context));
         self.fetch_count += 1;
@@ -248,13 +275,50 @@ test "SCM history view pane: load more appends the next page" {
     try testing.expectEqual(@as(usize, 2), provider.last_limit);
     try view.loadMore();
     try testing.expectEqual(@as(usize, 5), view.rows.items.len);
-    try testing.expectEqual(@as(usize, 4), provider.last_limit);
+    try testing.expectEqual(@as(usize, 2), provider.last_limit);
+    try testing.expectEqual(@as(?usize, 2), provider.last_skip);
     try testing.expectEqual(@as(usize, 4), view.rows.items.len - 1);
 
     // The third page consumes the rest of the history.
     try view.loadMore();
     try testing.expectEqual(@as(usize, 6), view.rows.items.len);
-    try testing.expectEqual(@as(usize, 6), provider.last_limit);
+    try testing.expectEqual(@as(usize, 2), provider.last_limit);
+    try testing.expectEqual(@as(?usize, 4), provider.last_skip);
+}
+
+test "SCM history view pane: WindowIo pagination publishes on completion and cancels on reload" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+    const dispatch = @import("../../../../../base/common/windowDispatch.zig");
+    const time = @import("../../../../../base/common/timeCompat.zig");
+    var scheduler = try ui.WindowIo.init(allocator, io);
+    defer scheduler.deinit();
+    var window = dispatch.Queue{ .io = scheduler.io(), .scheduler = &scheduler };
+    var host = TestHost{};
+    var provider: TestHistoryProvider = undefined;
+    try provider.init(allocator, 6);
+    defer provider.deinit();
+    provider.base.capture_history_items_fn = TestHistoryProvider.capturePage;
+    const view = try createView(allocator, &host, &provider);
+    defer {
+        view.deinit();
+        allocator.destroy(view);
+    }
+    view.host.window = &window;
+    try view.loadMore();
+    try view.loadMore(); // a second scroll must not start another request
+    try testing.expectEqual(@as(usize, 2), provider.fetch_count);
+    try testing.expectEqual(@as(usize, 3), view.rows.items.len);
+    const deadline = time.milliTimestamp() + 5000;
+    while (view.rows.items.len == 3 and time.milliTimestamp() < deadline) {
+        _ = window.dispatch(time.milliTimestamp());
+        if (view.rows.items.len == 3) try io.sleep(.fromMilliseconds(1), .awake);
+    }
+    try testing.expectEqual(@as(usize, 5), view.rows.items.len);
+    try view.loadMore();
+    view.setProvider(null);
+    _ = window.dispatch(time.milliTimestamp());
+    try testing.expectEqual(@as(usize, 1), view.rows.items.len);
 }
 
 test "SCM history view pane: one click on Load More loads the next page" {
@@ -287,7 +351,8 @@ test "SCM history view pane: one click on Load More loads the next page" {
     var click = ui.MouseEvent{ .kind = .down, .x = 2, .y = 2, .button = .left };
     try testing.expect(try view.handleMouse(&click, rect));
     try testing.expectEqual(@as(usize, 5), view.rows.items.len);
-    try testing.expectEqual(@as(usize, 4), provider.last_limit);
+    try testing.expectEqual(@as(usize, 2), provider.last_limit);
+    try testing.expectEqual(@as(?usize, 2), provider.last_skip);
 }
 
 test "SCM history view pane: merge graph uses orthogonal connectors" {
