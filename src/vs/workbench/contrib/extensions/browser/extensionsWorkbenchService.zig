@@ -131,6 +131,7 @@ fn queryInstalledUpdates(allocator: Allocator, io: std.Io, url: []const u8, requ
                     .target_platform = version.targetPlatform,
                     .uuid = entry.extensionId,
                     .last_updated = if (entry.lastUpdated orelse version.lastUpdated) |timestamp| gallery.parseGalleryTimestamp(timestamp) else null,
+                    .release_date = if (entry.releaseDate) |timestamp| gallery.parseGalleryTimestamp(timestamp) else null,
                     .executes_code = galleryExecutesCode(allocator, io, version, request.executes_code),
                 }).clone(scratch));
                 break;
@@ -286,6 +287,7 @@ pub const ExtensionsWorkbenchService = struct {
     version_job: ?*VersionJob = null,
     version_picker: ?*VersionPicker = null,
     quick_input: ?quick.IQuickInputService = null,
+    pane_service: ?@import("../../../services/panecomposite/browser/panecomposite.zig").IPaneCompositePartService = null,
     dialog_service: ?dialogs.IDialogService = null,
     pending_dialog: ?dialogs.IDialogHandle = null,
     runtime: ?RuntimeInventory = null,
@@ -294,6 +296,7 @@ pub const ExtensionsWorkbenchService = struct {
     on_change: Emitter(void),
     on_recommendations_change: Emitter(void),
     on_did_change_enabled_descriptions: Emitter(void),
+    on_search_request: Emitter([]const u8),
 
     pub fn init(allocator: Allocator, io: std.Io, options: Options) !*ExtensionsWorkbenchService {
         const self = try allocator.create(ExtensionsWorkbenchService);
@@ -310,6 +313,7 @@ pub const ExtensionsWorkbenchService = struct {
             .on_change = Emitter(void).init(allocator),
             .on_recommendations_change = Emitter(void).init(allocator),
             .on_did_change_enabled_descriptions = Emitter(void).init(allocator),
+            .on_search_request = Emitter([]const u8).init(allocator),
         };
         errdefer self.deinitContents();
         if (options.gallery_url) |url| self.gallery_url = try allocator.dupe(u8, url);
@@ -338,6 +342,7 @@ pub const ExtensionsWorkbenchService = struct {
         self.on_change.deinit();
         self.on_recommendations_change.deinit();
         self.on_did_change_enabled_descriptions.deinit();
+        self.on_search_request.deinit();
         if (self.system_location) |location| self.allocator.free(location);
         if (self.user_location) |location| self.allocator.free(location);
         self.system_location = null;
@@ -374,6 +379,7 @@ pub const ExtensionsWorkbenchService = struct {
             const pinned = if (metadata == .object) metadata.object.get("pinned") orelse .null else .null;
             const prerelease = if (metadata == .object) metadata.object.get("preRelease") orelse .null else .null;
             const uuid = if (metadata == .object) metadata.object.get("id") orelse .null else .null;
+            const source = if (metadata == .object) metadata.object.get("source") orelse .null else .null;
             local[index] = .{
                 .identifier = extension.identifier,
                 .name = extension.name,
@@ -390,6 +396,7 @@ pub const ExtensionsWorkbenchService = struct {
                 .pinned = pinned == .bool and pinned.bool,
                 .is_pre_release = prerelease == .bool and prerelease.bool,
                 .uuid = if (uuid == .string) uuid.string else null,
+                .source = if (source == .string) source.string else if (!extension.isBuiltin()) "local" else null,
                 .executes_code = manifest == .object and (manifest.object.contains("main") or manifest.object.contains("browser")),
             };
         }
@@ -654,6 +661,7 @@ pub const ExtensionsWorkbenchService = struct {
         if (self.version_picker) |picker| picker.owner = null;
         self.version_picker = null;
         self.quick_input = null;
+        self.pane_service = null;
         if (self.pending_dialog) |handle| {
             self.pending_dialog = null;
             handle.cancel();
@@ -669,6 +677,12 @@ pub const ExtensionsWorkbenchService = struct {
         self.workspace_listener = null;
         self.window = null;
         self.workspace = null;
+    }
+
+    pub fn openSearch(self: *ExtensionsWorkbenchService, query: []const u8) !void {
+        const panes = self.pane_service orelse return error.ExtensionViewUnavailable;
+        _ = try panes.openPaneComposite(model.VIEW_ID, .sidebar, true);
+        try self.on_search_request.fire(query);
     }
 
     pub fn galleryInfo(self: *const ExtensionsWorkbenchService, identifier: []const u8) ?*const IExtension {
@@ -962,6 +976,7 @@ pub const ExtensionsWorkbenchService = struct {
                     .target_platform = version.targetPlatform,
                     .uuid = entry.extensionId,
                     .last_updated = if (entry.lastUpdated orelse version.lastUpdated) |timestamp| gallery.parseGalleryTimestamp(timestamp) else null,
+                    .release_date = if (entry.releaseDate) |timestamp| gallery.parseGalleryTimestamp(timestamp) else null,
                     .executes_code = if (version.property("Microsoft.VisualStudio.Code.ExecutesCode")) |value| std.mem.eql(u8, value, "true") else null,
                 };
                 count += 1;

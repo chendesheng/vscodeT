@@ -82,12 +82,15 @@ pub const ExtensionEditor = struct {
     active_tab: Tab = .readme,
     content: ?markdown.Content = null,
     layout: ?document.Document = null,
+    additional_content: ?markdown.Content = null,
+    additional_layout: ?document.Document = null,
+    additional_scroll: usize = 0,
     scroll: usize = 0,
     viewport: usize = 0,
     width: usize = 0,
     palette: ?*const theme.ThemeColors = null,
     status: []const u8 = "",
-    focus_area: enum { body, actions, navbar } = .body,
+    focus_area: enum { body, actions, navbar, additional } = .body,
     focused_action: usize = 0,
     window: ?*dispatch.Queue = null,
     asset_job: ?*AssetJob = null,
@@ -109,6 +112,7 @@ pub const ExtensionEditor = struct {
         self.cancelRemote();
         if (self.remote_assets) |*assets| assets.deinit();
         self.clearContent();
+        self.clearAdditionalDetails();
         self.arena.deinit();
         self.allocator.destroy(self);
     }
@@ -158,6 +162,35 @@ pub const ExtensionEditor = struct {
         self.content = null;
     }
 
+    fn clearAdditionalDetails(self: *ExtensionEditor) void {
+        if (self.additional_layout) |*layout| layout.deinit();
+        self.additional_layout = null;
+        if (self.additional_content) |*content| content.deinit();
+        self.additional_content = null;
+    }
+
+    fn additionalWidth(self: *const ExtensionEditor) usize {
+        // Upstream hides the sidebar below 500 CSS pixels and reserves a
+        // quarter of the body otherwise. Use whole-cell geometry in the TUI.
+        return if (self.width >= 80 and self.additional_content != null) @max(24, self.width / 4) else 0;
+    }
+
+    fn bodyWidth(self: *const ExtensionEditor) usize {
+        const additional = self.additionalWidth();
+        return self.width -| (if (additional > 0) additional + 1 else 0);
+    }
+
+    fn refreshAdditionalDetails(self: *ExtensionEditor) !void {
+        self.clearAdditionalDetails();
+        const extension = self.extension orelse return;
+        const remote = self.service.galleryInfo(extension.identifier);
+        const source = try renderAdditionalDetails(self.allocator, extension, remote, self.manifest, self.service.gallery_url);
+        defer self.allocator.free(source);
+        self.additional_content = try markdown.parseDocument(self.allocator, self.io, source, .{});
+        const width = self.additionalWidth();
+        if (width > 0) self.additional_layout = try document.build(self.allocator, &self.additional_content.?, width -| 2, .{});
+    }
+
     fn readFile(self: *ExtensionEditor, location: []const u8, names: []const []const u8) ?[]const u8 {
         const allocator = self.arena.allocator();
         for (names) |name| {
@@ -178,6 +211,7 @@ pub const ExtensionEditor = struct {
 
     fn update(self: *ExtensionEditor) !void {
         self.clearContent();
+        self.clearAdditionalDetails();
         self.arena.deinit();
         self.arena = .init(self.allocator);
         self.extension = null;
@@ -222,6 +256,7 @@ pub const ExtensionEditor = struct {
         for (self.tabs[0..self.tab_count]) |tab| {
             if (tab == self.active_tab) break;
         } else self.active_tab = .readme;
+        try self.refreshAdditionalDetails();
         try self.refreshContent();
     }
 
@@ -232,7 +267,7 @@ pub const ExtensionEditor = struct {
         if (value == .array) for (value.array.items) |entry| {
             if (entry != .string) continue;
             const item = self.service.findLocal(entry.string);
-            try output.writer.print("- {s}{s}\n", .{ if (item) |extension| extension.display_name else entry.string, if (item != null) " (Installed)" else "" });
+            try output.writer.print("- [{s}](<minecode-extension-id:{s}>){s}\n", .{ if (item) |extension| extension.display_name else entry.string, entry.string, if (item != null) " (Installed)" else "" });
         };
         return output.toOwnedSlice();
     }
@@ -248,7 +283,7 @@ pub const ExtensionEditor = struct {
         };
         defer self.allocator.free(source);
         self.content = try markdown.parseDocument(self.allocator, self.io, source, .{});
-        if (self.width > 0) self.layout = try document.build(self.allocator, &self.content.?, self.width -| 2, .{});
+        if (self.width > 0) self.layout = try document.build(self.allocator, &self.content.?, self.bodyWidth() -| 2, .{});
         self.clampScroll();
     }
 
@@ -265,6 +300,7 @@ pub const ExtensionEditor = struct {
 
     fn clampScroll(self: *ExtensionEditor) void {
         self.scroll = @min(self.scroll, if (self.layout) |*layout| layout.maxScroll(self.viewport, false) else 0);
+        self.additional_scroll = @min(self.additional_scroll, if (self.additional_layout) |*layout| layout.maxScroll(self.viewport, false) else 0);
     }
 
     pub fn setThemeColors(self: *ExtensionEditor, palette: ?*const theme.ThemeColors) void {
@@ -283,9 +319,10 @@ pub const ExtensionEditor = struct {
             .tab, .backtab => {
                 const reverse = event.key == .backtab or event.mods.shift;
                 self.focus_area = switch (self.focus_area) {
-                    .body => if (reverse) .navbar else .actions,
+                    .body => if (reverse) (if (self.additionalWidth() > 0) .additional else .navbar) else .actions,
                     .actions => if (reverse) .body else .navbar,
-                    .navbar => if (reverse) .actions else .body,
+                    .navbar => if (reverse) .actions else if (self.additionalWidth() > 0) .additional else .body,
+                    .additional => if (reverse) .navbar else .body,
                 };
                 var available: [6]Action = undefined;
                 if (self.focus_area == .actions and self.actions(&available).len == 0) self.focus_area = if (reverse) .body else .navbar;
@@ -308,12 +345,18 @@ pub const ExtensionEditor = struct {
                     self.status = "Unable to manage extension.";
                 };
             },
-            .up => self.scroll -|= 1,
-            .down => self.scroll += 1,
-            .page_up => self.scroll -|= self.viewport,
-            .page_down => self.scroll += self.viewport,
-            .home => self.scroll = 0,
-            .end => self.scroll = std.math.maxInt(usize),
+            .up, .down, .page_up, .page_down, .home, .end => {
+                const scroll = if (self.focus_area == .additional) &self.additional_scroll else &self.scroll;
+                switch (event.key) {
+                    .up => scroll.* -|= 1,
+                    .down => scroll.* +|= 1,
+                    .page_up => scroll.* -|= self.viewport,
+                    .page_down => scroll.* +|= self.viewport,
+                    .home => scroll.* = 0,
+                    .end => scroll.* = std.math.maxInt(usize),
+                    else => unreachable,
+                }
+            },
             else => return false,
         }
         self.clampScroll();
@@ -419,7 +462,8 @@ pub const ExtensionEditor = struct {
     pub fn handleMouse(self: *ExtensionEditor, event: *const ui.MouseEvent) !bool {
         switch (event.kind) {
             .wheel => {
-                if (event.delta_y < 0) self.scroll -|= @abs(event.delta_y) else self.scroll +|= @intCast(event.delta_y);
+                const scroll = if (self.additionalWidth() > 0 and event.x > self.bodyWidth()) &self.additional_scroll else &self.scroll;
+                if (event.delta_y < 0) scroll.* -|= @abs(event.delta_y) else scroll.* +|= @intCast(event.delta_y);
             },
             .down => {
                 if (event.button != .left) return false;
@@ -450,9 +494,28 @@ pub const ExtensionEditor = struct {
                         x = end;
                     }
                 } else if (event.y >= 7 and event.x >= 1) {
+                    if (self.additionalWidth() > 0 and event.x > self.bodyWidth()) {
+                        self.focus_area = .additional;
+                        if (self.additional_layout) |*layout| if (layout.linkAt(self.additional_scroll + event.y - 7, event.x -| (self.bodyWidth() + 2))) |href| {
+                            if (std.mem.startsWith(u8, href, "minecode-extension-category:")) {
+                                const category = href["minecode-extension-category:".len..];
+                                const query = try std.fmt.allocPrint(self.allocator, "@category:\"{s}\"", .{category});
+                                defer self.allocator.free(query);
+                                try self.service.openSearch(query);
+                            } else if (std.mem.startsWith(u8, href, "https://") or std.mem.startsWith(u8, href, "http://")) {
+                                if (self.opener) |opener| opener.requestOpen(href) catch {};
+                            }
+                        };
+                        return true;
+                    }
                     self.focus_area = .body;
                     if (self.layout) |*layout| if (layout.linkAt(self.scroll + event.y - 7, event.x - 1)) |href| {
-                        if (std.mem.startsWith(u8, href, "#")) {
+                        if ((self.active_tab == .dependencies or self.active_tab == .extensionPack) and std.mem.startsWith(u8, href, "minecode-extension-id:")) {
+                            const identifier = href["minecode-extension-id:".len..];
+                            const query = try std.fmt.allocPrint(self.allocator, "@id:{s}", .{identifier});
+                            defer self.allocator.free(query);
+                            try self.service.openSearch(query);
+                        } else if (std.mem.startsWith(u8, href, "#")) {
                             if (layout.anchorElement(href)) |target| self.scroll = @intFromFloat(@max(0, target.top));
                         } else if (std.mem.startsWith(u8, href, "https://") or std.mem.startsWith(u8, href, "http://")) {
                             if (self.opener) |opener| opener.requestOpen(href) catch {};
@@ -517,27 +580,108 @@ pub const ExtensionEditor = struct {
             if (self.layout) |*layout| layout.deinit();
             self.layout = null;
             self.width = w;
-            if (self.content) |*content| self.layout = try document.build(self.allocator, content, w -| 2, .{});
+            if (self.content) |*content| self.layout = try document.build(self.allocator, content, self.bodyWidth() -| 2, .{});
+            if (self.additional_layout) |*layout| layout.deinit();
+            self.additional_layout = null;
+            if (self.additionalWidth() > 0) if (self.additional_content) |*content| {
+                self.additional_layout = try document.build(self.allocator, content, self.additionalWidth() -| 2, .{});
+            };
+            if (self.additionalWidth() == 0 and self.focus_area == .additional) self.focus_area = .body;
         }
         self.viewport = h -| 7;
         self.clampScroll();
-        const layout = if (self.layout) |*value| value else return;
-        for (layout.rows[self.scroll..@min(layout.rows.len, self.scroll + self.viewport)], 0..) |row, i| {
-            var col: usize = 1 + row.indent;
-            if (row.rule) {
-                while (col < w -| 1) : (col += 1) grid.putCodepoint(x + col, y + 7 + i, '─', 1, dim);
-                continue;
-            }
-            for (row.spans) |span| {
-                if (col >= w) break;
-                var style = normal;
-                if (span.style.color) |color| style.fg = ui.cell.packColor(color);
-                if (span.style.background) |color| style.bg = ui.cell.packColor(color);
-                if (span.style.bold orelse false) style.attrs |= ui.cell.Attr.bold;
-                if (span.style.italic orelse false) style.attrs |= ui.cell.Attr.italic;
-                if (span.style.underline orelse false) style.attrs |= ui.cell.Attr.underline;
-                col += list.drawTextEllipsis(grid, x + col, y + 7 + i, w - col, span.text, style).used;
-            }
+        if (self.layout) |*layout| paintDocument(grid, layout, self.scroll, self.viewport, x, y + 7, self.bodyWidth(), normal, dim);
+        if (self.additional_layout) |*layout| {
+            const left = x + self.bodyWidth();
+            grid.fillRect(@floatFromInt(left), @floatFromInt(y + 7), 1, @floatFromInt(self.viewport), dim);
+            var row: usize = 0;
+            while (row < self.viewport) : (row += 1) grid.putCodepoint(left, y + 7 + row, '│', 1, dim);
+            paintDocument(grid, layout, self.additional_scroll, self.viewport, left + 1, y + 7, self.additionalWidth(), normal, dim);
         }
     }
 };
+
+fn paintDocument(grid: *ui.CellGrid, layout: *const document.Document, scroll: usize, viewport: usize, x: usize, y: usize, width: usize, normal: ui.cell.PaintStyle, dim: ui.cell.PaintStyle) void {
+    for (layout.rows[scroll..@min(layout.rows.len, scroll + viewport)], 0..) |row, i| {
+        var col: usize = 1 + row.indent;
+        if (row.rule) {
+            while (col < width -| 1) : (col += 1) grid.putCodepoint(x + col, y + i, '─', 1, dim);
+            continue;
+        }
+        for (row.spans) |span| {
+            if (col >= width) break;
+            var style = normal;
+            if (span.style.color) |color| style.fg = ui.cell.packColor(color);
+            if (span.style.background) |color| style.bg = ui.cell.packColor(color);
+            if (span.style.bold orelse false) style.attrs |= ui.cell.Attr.bold;
+            if (span.style.italic orelse false) style.attrs |= ui.cell.Attr.italic;
+            if (span.style.underline orelse false) style.attrs |= ui.cell.Attr.underline;
+            col += list.drawTextEllipsis(grid, x + col, y + i, width - col, span.text, style).used;
+        }
+    }
+}
+
+/// AdditionalDetailsWidget in extensionEditor.ts. Values come from the same
+/// local/gallery inventory as the header; resource links are offered only
+/// when the manifest or configured gallery actually exposes them.
+pub fn renderAdditionalDetails(allocator: std.mem.Allocator, extension: model.IExtension, remote: ?*const model.IExtension, manifest: std.json.Value, gallery_url: ?[]const u8) ![]u8 {
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+    const writer = &output.writer;
+    if (extension.state == .Installed) {
+        try writer.print("### Installation\n\nIdentifier\n`{s}`\n\n", .{extension.identifier});
+        if (!extension.is_builtin) try writer.print("Version\n`{s}`\n\n", .{extension.version});
+        if (extension.installed_timestamp) |timestamp| try writeDate(writer, "Last Updated", timestamp);
+        if (extension.source) |source| {
+            if (!std.mem.eql(u8, source, "gallery")) try writer.print("Source\n{s}\n\n", .{if (std.mem.eql(u8, source, "vsix")) "VSIX" else "Local"});
+        }
+        if (extension.pinned) try writer.writeAll("Auto Update\nPinned version\n\n");
+    }
+    if (remote != null or extension.state == .Uninstalled) {
+        const gallery_extension = remote orelse &extension;
+        try writer.writeAll("### Marketplace\n\n");
+        if (extension.state == .Uninstalled) try writer.print("Identifier\n`{s}`\n\nVersion\n`{s}`\n\n", .{ extension.identifier, extension.version });
+        if (gallery_extension.release_date) |timestamp| try writeDate(writer, "Published", timestamp);
+        if (gallery_extension.last_updated) |timestamp| try writeDate(writer, "Last Released", timestamp);
+    }
+    if (extension.categories.len > 0) {
+        try writer.writeAll("### Categories\n\n");
+        for (extension.categories) |category| {
+            if (std.mem.indexOfAny(u8, category, "<>\r\n\"") != null) continue;
+            try writer.print("- [{s}](<minecode-extension-category:{s}>)\n", .{ category, category });
+        }
+        try writer.writeAll("\n");
+    }
+    try writer.writeAll("### Resources\n\n");
+    const repository = features.property(manifest, "repository");
+    const bugs = features.property(manifest, "bugs");
+    try writeLink(writer, "Repository", if (repository == .object) features.property(repository, "url") else repository);
+    try writeLink(writer, "Issues", if (bugs == .object) features.property(bugs, "url") else bugs);
+    try writeLink(writer, "Homepage", features.property(manifest, "homepage"));
+    if (extension.publisher_domain) |domain| try writeLink(writer, "Publisher", .{ .string = domain });
+    if (gallery_url) |value| {
+        const url = std.mem.trimEnd(u8, value, "/");
+        if (std.mem.endsWith(u8, url, "/vscode/gallery")) if (std.mem.indexOfScalar(u8, extension.identifier, '.')) |dot| {
+            const link = try std.fmt.allocPrint(allocator, "{s}/extension/{s}/{s}", .{ url[0 .. url.len - "/vscode/gallery".len], extension.identifier[0..dot], extension.identifier[dot + 1 ..] });
+            defer allocator.free(link);
+            try writeLink(writer, "Marketplace", .{ .string = link });
+        };
+    }
+    return output.toOwnedSlice();
+}
+
+fn writeLink(writer: *std.Io.Writer, label: []const u8, value: std.json.Value) !void {
+    if (value != .string) return;
+    const url = value.string;
+    if (!std.mem.startsWith(u8, url, "https://") and !std.mem.startsWith(u8, url, "http://")) return;
+    if (std.mem.indexOfAny(u8, url, "<>\r\n ") != null) return;
+    try writer.print("- [{s}](<{s}>)\n", .{ label, url });
+}
+
+fn writeDate(writer: *std.Io.Writer, label: []const u8, timestamp: i64) !void {
+    if (timestamp <= 0 or timestamp > 253402300799999) return;
+    const epoch: std.time.epoch.EpochSeconds = .{ .secs = @intCast(@divTrunc(timestamp, 1000)) };
+    const year = epoch.getEpochDay().calculateYearDay();
+    const month = year.calculateMonthDay();
+    try writer.print("{s}\n{d}-{d:0>2}-{d:0>2}\n\n", .{ label, year.year, month.month.numeric(), @as(u8, month.day_index) + 1 });
+}

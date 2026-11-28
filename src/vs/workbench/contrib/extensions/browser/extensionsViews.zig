@@ -99,6 +99,7 @@ pub const ExtensionsListView = struct {
     selected_id: std.array_list.Managed(u8),
     listener: ?SignalSubscription = null,
     recommendations_listener: ?SignalSubscription = null,
+    search_request_listener: ?SignalSubscription = null,
     message_buffer: [256]u8 = undefined,
     search_delayer: dispatch.Task = .{},
     gallery_job: ?*GalleryJob = null,
@@ -178,6 +179,7 @@ pub const ExtensionsListView = struct {
         const service = self.service orelse return;
         self.listener = try service.on_change.listenSignal(self, onServiceChange);
         self.recommendations_listener = try service.on_recommendations_change.listenSignal(self, onRecommendationsChange);
+        self.search_request_listener = try service.on_search_request.listenDisposable(self, onSearchRequest);
     }
 
     fn unsubscribe(self: *ExtensionsListView) void {
@@ -185,11 +187,20 @@ pub const ExtensionsListView = struct {
         self.listener = null;
         if (self.recommendations_listener) |listener| listener.dispose();
         self.recommendations_listener = null;
+        if (self.search_request_listener) |listener| listener.dispose();
+        self.search_request_listener = null;
     }
 
     fn onServiceChange(self: *ExtensionsListView) !void {
         if (self.queryText().len == 0) if (self.query_changed) |callback| callback.run(callback.context);
         try self.rebuild();
+    }
+
+    fn onSearchRequest(query: []const u8, self: *ExtensionsListView) !void {
+        if (self.filter_override != null) return;
+        try self.input_box.setValue(query);
+        self.setInputFocused(true);
+        self.requestFrame();
     }
 
     fn onRecommendationsChange(self: *ExtensionsListView) !void {

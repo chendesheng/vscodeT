@@ -20,3 +20,14 @@ test "ExtensionsInput: owns gallery identity across result replacement" {
     try std.testing.expectEqualStrings("extension:/pub.example/extension", first.resource);
     try std.testing.expectEqualStrings("https://example.test/readme", first.snapshot.readme_url.?);
 }
+
+test "ExtensionEditor: additional details include installation, category and resources" {
+    const allocator = std.testing.allocator;
+    const editor = @import("../../browser/extensionEditor.zig");
+    var manifest = try std.json.parseFromSlice(std.json.Value, allocator, "{\"repository\":{\"url\":\"https://example.test/repo\"},\"bugs\":{\"url\":\"https://example.test/issues\"}}", .{});
+    defer manifest.deinit();
+    const extension: IExtension = .{ .identifier = "pub.example", .name = "example", .display_name = "Example", .description = "", .version = "1.2.3", .publisher = "Pub", .categories = &.{"Programming Languages"}, .location = "/extensions/pub.example", .is_builtin = false, .installed_timestamp = 951782400000, .source = "vsix" };
+    const output = try editor.renderAdditionalDetails(allocator, extension, null, manifest.value, "https://open-vsx.org/vscode/gallery");
+    defer allocator.free(output);
+    for ([_][]const u8{ "Installation", "pub.example", "1.2.3", "2000-02-29", "VSIX", "Programming Languages", "https://example.test/repo", "https://example.test/issues", "https://open-vsx.org/extension/pub/example" }) |value| try std.testing.expect(std.mem.indexOf(u8, output, value) != null);
+}

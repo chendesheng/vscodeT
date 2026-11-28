@@ -3516,6 +3516,7 @@ pub const TerminalWorkbench = struct {
         service.attachWindow(&self.window_events);
         service.attachWorkspace(self.workspace) catch {};
         service.quick_input = self.quick_input_api;
+        service.pane_service = self.pane_composite_api;
         service.dialog_service = self.dialog_api;
         if (self.extensions_view) |contribution| contribution.setService(service) catch {};
     }
