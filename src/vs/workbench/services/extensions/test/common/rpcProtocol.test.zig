@@ -173,3 +173,97 @@ fn appendU32(out: *std.array_list.Managed(u8), value: u32) !void {
     std.mem.writeInt(u32, &bytes, value, .big);
     try out.appendSlice(&bytes);
 }
+
+const cancellation = @import("../../../../../base/common/cancellation.zig");
+
+const CancelableActor = struct {
+    token: ?cancellation.CancellationToken = null,
+    protocol: ?*rpc.RpcProtocol = null,
+    id: u32 = 0,
+    deferred: bool = false,
+    reply_on_cancel: bool = false,
+    cancellations: usize = 0,
+
+    fn invoke(context: *anyopaque, _: []const u8, _: []const rpc.Arg, token: ?cancellation.CancellationToken, _: std.mem.Allocator) anyerror!rpc.HandlerReply {
+        const self: *CancelableActor = @ptrCast(@alignCast(context));
+        self.token = token orelse return error.MissingCancellationToken;
+        if (!self.deferred) return .empty;
+        _ = try self.token.?.onCancellationRequested(cancellation.CancellationListener.from(CancelableActor, self, canceled));
+        return .{ .deferred = .{ .context = self, .start = start } };
+    }
+
+    fn start(context: *anyopaque, protocol: *rpc.RpcProtocol, id: u32) void {
+        const self: *CancelableActor = @ptrCast(@alignCast(context));
+        self.protocol = protocol;
+        self.id = id;
+    }
+
+    fn canceled(self: *CancelableActor) void {
+        self.cancellations += 1;
+        if (self.reply_on_cancel) self.protocol.?.sendReply(self.id, .empty);
+    }
+};
+
+const cancelable_request = "\x02\x00\x00\x00\x07\x0a\x05$wait\x00\x00\x00\x02[]";
+const cancel_request = "\x06\x00\x00\x00\x07";
+
+test "RPC receiver releases the cancellation source of an immediate reply" {
+    var capture = Capture.init(std.testing.allocator);
+    defer capture.deinit();
+    var protocol = rpc.RpcProtocol.init(std.testing.allocator, capture.transport());
+    defer protocol.deinit();
+    var actor = CancelableActor{};
+    protocol.set(.{ .nid = 10, .sid = "MainThreadCommands" }, .{ .context = &actor, .invoke = CancelableActor.invoke });
+    protocol.receive(cancelable_request);
+    try std.testing.expect(actor.token != null);
+    try std.testing.expectEqual(@as(usize, 2), capture.frames.items.len);
+    try std.testing.expectEqual(@as(usize, 0), protocol.cancel_handlers.count());
+}
+
+test "RPC receiver retains deferred cancellation state until reply" {
+    var capture = Capture.init(std.testing.allocator);
+    defer capture.deinit();
+    var protocol = rpc.RpcProtocol.init(std.testing.allocator, capture.transport());
+    defer protocol.deinit();
+    var actor = CancelableActor{ .deferred = true };
+    protocol.set(.{ .nid = 10, .sid = "MainThreadCommands" }, .{ .context = &actor, .invoke = CancelableActor.invoke });
+    protocol.receive(cancelable_request);
+    try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
+    try std.testing.expectEqual(@as(usize, 1), protocol.cancel_handlers.count());
+    try std.testing.expect(!actor.token.?.isCancellationRequested());
+    protocol.receive(cancel_request);
+    protocol.receive(cancel_request);
+    try std.testing.expect(actor.token.?.isCancellationRequested());
+    try std.testing.expectEqual(@as(usize, 1), actor.cancellations);
+    try std.testing.expectEqual(@as(usize, 1), protocol.cancel_handlers.count());
+    protocol.sendReply(actor.id, .empty);
+    try std.testing.expectEqual(@as(usize, 0), protocol.cancel_handlers.count());
+    try std.testing.expectEqual(@as(usize, 2), capture.frames.items.len);
+}
+
+test "RPC cancellation callback can complete the deferred reply synchronously" {
+    var capture = Capture.init(std.testing.allocator);
+    defer capture.deinit();
+    var protocol = rpc.RpcProtocol.init(std.testing.allocator, capture.transport());
+    defer protocol.deinit();
+    var actor = CancelableActor{ .deferred = true, .reply_on_cancel = true };
+    protocol.set(.{ .nid = 10, .sid = "MainThreadCommands" }, .{ .context = &actor, .invoke = CancelableActor.invoke });
+    protocol.receive(cancelable_request);
+    protocol.receive(cancel_request);
+    try std.testing.expectEqual(@as(usize, 1), actor.cancellations);
+    try std.testing.expectEqual(@as(usize, 0), protocol.cancel_handlers.count());
+    try std.testing.expectEqual(@as(usize, 2), capture.frames.items.len);
+}
+
+test "RPC disposal releases a deferred invocation that never replied" {
+    var capture = Capture.init(std.testing.allocator);
+    defer capture.deinit();
+    var protocol = rpc.RpcProtocol.init(std.testing.allocator, capture.transport());
+    defer protocol.deinit();
+    var actor = CancelableActor{ .deferred = true };
+    protocol.set(.{ .nid = 10, .sid = "MainThreadCommands" }, .{ .context = &actor, .invoke = CancelableActor.invoke });
+    protocol.receive(cancelable_request);
+    try std.testing.expectEqual(@as(usize, 1), protocol.cancel_handlers.count());
+    protocol.dispose();
+    try std.testing.expectEqual(@as(usize, 0), protocol.cancel_handlers.count());
+}

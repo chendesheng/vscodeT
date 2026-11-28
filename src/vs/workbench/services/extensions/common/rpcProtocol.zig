@@ -118,8 +118,28 @@ const PendingReply = struct {
 };
 
 const CancelHandler = struct {
-    source: *cancellation.CancellationTokenSource,
-    allocated: bool,
+    source: cancellation.CancellationTokenSource,
+    canceling: bool = false,
+    finished: bool = false,
+
+    fn finish(self: *CancelHandler, allocator: Allocator) void {
+        // A cancellation listener may complete its RPC synchronously. Keep
+        // the source alive until MutableToken.cancel has returned.
+        if (self.canceling) {
+            self.finished = true;
+            return;
+        }
+        self.source.deinit();
+        allocator.destroy(self);
+    }
+
+    fn cancel(self: *CancelHandler, allocator: Allocator) void {
+        if (self.canceling) return;
+        self.canceling = true;
+        self.source.cancel();
+        self.canceling = false;
+        if (self.finished) self.finish(allocator);
+    }
 };
 
 pub const RpcProtocol = struct {
@@ -127,7 +147,7 @@ pub const RpcProtocol = struct {
     transport: Transport,
     actors: [172]?ActorHandler = @splat(null),
     pending: std.AutoHashMap(u32, PendingReply),
-    cancel_handlers: std.AutoHashMap(u32, CancelHandler),
+    cancel_handlers: std.AutoHashMap(u32, *CancelHandler),
     last_message_id: u32 = 0,
     disposed: bool = false,
     unacknowledged_count: u32 = 0,
@@ -139,7 +159,7 @@ pub const RpcProtocol = struct {
             .allocator = allocator,
             .transport = transport,
             .pending = std.AutoHashMap(u32, PendingReply).init(allocator),
-            .cancel_handlers = std.AutoHashMap(u32, CancelHandler).init(allocator),
+            .cancel_handlers = std.AutoHashMap(u32, *CancelHandler).init(allocator),
         };
     }
 
@@ -175,10 +195,7 @@ pub const RpcProtocol = struct {
         self.pending.clearRetainingCapacity();
         var cancels = self.cancel_handlers.iterator();
         while (cancels.next()) |entry| {
-            if (entry.value_ptr.allocated) {
-                entry.value_ptr.source.dispose(false);
-                self.allocator.destroy(entry.value_ptr.source);
-            }
+            entry.value_ptr.*.finish(self.allocator);
         }
         self.cancel_handlers.clearRetainingCapacity();
     }
@@ -380,6 +397,7 @@ pub const RpcProtocol = struct {
     }
 
     fn receiveRequest(self: *RpcProtocol, payload: []const u8, request_id: u32, with_cancellation: bool) void {
+        if (self.cancel_handlers.contains(request_id)) return;
         var offset: usize = 5;
         if (offset >= payload.len) return;
         const nid = payload[offset];
@@ -390,32 +408,7 @@ pub const RpcProtocol = struct {
         defer arena.deinit();
         const args = decodeRequestArgs(payload, &offset, arena.allocator(), payload[0] == @backingInt(MessageType.request_mixed_args) or payload[0] == @backingInt(MessageType.request_mixed_args_with_cancellation)) catch return;
 
-        var token_source: ?*cancellation.CancellationTokenSource = null;
-        if (with_cancellation) {
-            token_source = self.allocator.create(cancellation.CancellationTokenSource) catch null;
-            if (token_source) |source| {
-                const initialized: ?cancellation.CancellationTokenSource = cancellation.CancellationTokenSource.init(self.allocator) catch null;
-                if (initialized) |value| {
-                    source.* = value;
-                    self.cancel_handlers.put(request_id, .{ .source = source, .allocated = true }) catch {
-                        source.dispose(false);
-                        self.allocator.destroy(source);
-                        token_source = null;
-                    };
-                } else {
-                    self.allocator.destroy(source);
-                    token_source = null;
-                }
-            }
-        }
-        defer if (with_cancellation) {
-            if (self.cancel_handlers.fetchRemove(request_id)) |entry| {
-                if (entry.value.allocated) {
-                    entry.value.source.dispose(false);
-                    self.allocator.destroy(entry.value.source);
-                }
-            }
-        };
+        const token = if (with_cancellation) self.createCancelHandler(request_id) catch null else null;
 
         var reply: HandlerReply = .empty;
         const actor = self.actors[nid];
@@ -425,7 +418,6 @@ pub const RpcProtocol = struct {
                 .message = "Unknown actor",
             } };
         } else {
-            const token = if (token_source) |source| (source.token() catch null) else null;
             reply = actor.?.invoke(actor.?.context, method, args, token, arena.allocator()) catch |err| .{ .err = .{
                 .name = @errorName(err),
                 .message = @errorName(err),
@@ -436,6 +428,21 @@ pub const RpcProtocol = struct {
         if (reply == .deferred) {
             reply.deferred.start(reply.deferred.context, self, request_id);
         } else self.sendReply(request_id, reply);
+    }
+
+    fn createCancelHandler(self: *RpcProtocol, request_id: u32) !cancellation.CancellationToken {
+        const handler = try self.allocator.create(CancelHandler);
+        errdefer self.allocator.destroy(handler);
+        handler.* = .{ .source = try cancellation.CancellationTokenSource.init(self.allocator) };
+        errdefer handler.source.deinit();
+        const token = try handler.source.token();
+        try self.cancel_handlers.putNoClobber(request_id, handler);
+        return token;
+    }
+
+    fn finishReceivedRequest(self: *RpcProtocol, request_id: u32) void {
+        const entry = self.cancel_handlers.fetchRemove(request_id) orelse return;
+        entry.value.finish(self.allocator);
     }
 
     fn decodeRequestArgs(payload: []const u8, offset: *usize, arena: Allocator, mixed: bool) ![]const Arg {
@@ -493,6 +500,9 @@ pub const RpcProtocol = struct {
 
     pub fn sendReply(self: *RpcProtocol, request_id: u32, reply: HandlerReply) void {
         if (self.disposed) return;
+        // Like the upstream promise handlers, release cancellation state only
+        // when the invocation settles, including deferred replies.
+        defer self.finishReceivedRequest(request_id);
         var message: std.array_list.Managed(u8) = .init(self.allocator);
         defer message.deinit();
         switch (reply) {
@@ -538,12 +548,10 @@ pub const RpcProtocol = struct {
     }
 
     fn receiveCancel(self: *RpcProtocol, request_id: u32) void {
-        const entry = self.cancel_handlers.fetchRemove(request_id) orelse return;
-        entry.value.source.cancel();
-        if (entry.value.allocated) {
-            entry.value.source.dispose(false);
-            self.allocator.destroy(entry.value.source);
-        }
+        // Cancellation is a signal, not completion. The actor may still be
+        // using its token until it produces the reply.
+        const handler = self.cancel_handlers.get(request_id) orelse return;
+        handler.cancel(self.allocator);
     }
 
     fn onWillSendRequest(self: *RpcProtocol) void {
