@@ -342,3 +342,18 @@ test "ExtensionsWorkbenchService: auto update respects delay, pin, channel and c
     local.executes_code = true;
     try testing.expect(service_mod.shouldAutoUpdate(local, remote, 1000 + twelve_hours, 12));
 }
+
+test "ExtensionsWorkbenchService: extension and publisher automatic-update preferences" {
+    const model = @import("../../common/extensions.zig");
+    var local: model.IExtension = .{ .identifier = "pub.extension", .name = "extension", .display_name = "Extension", .description = "", .version = "1.0.0", .publisher = "Pub", .categories = &.{}, .location = "", .is_builtin = false };
+    try testing.expect(service_mod.autoUpdatePolicy(true, &.{}, local));
+    try testing.expect(!service_mod.autoUpdatePolicy(true, &.{.{ .string = "pub.extension" }}, local));
+    try testing.expect(!service_mod.autoUpdatePolicy(false, &.{}, local));
+    try testing.expect(service_mod.autoUpdatePolicy(false, &.{.{ .string = "pub" }}, local));
+    try testing.expect(!service_mod.autoUpdatePolicy(false, &.{ .{ .string = "pub" }, .{ .string = "-pub.extension" } }, local));
+    try testing.expect(service_mod.autoUpdatePolicy(false, &.{ .{ .string = "pub" }, .{ .string = "pub.extension" } }, local));
+    local.pinned = true;
+    try testing.expect(!service_mod.autoUpdatePolicy(true, &.{}, local));
+    local.is_builtin = true;
+    try testing.expect(!service_mod.autoUpdatePolicy(false, &.{.{ .string = "pub" }}, local));
+}

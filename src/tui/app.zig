@@ -604,7 +604,7 @@ pub fn main(init: std.process.Init) !void {
     if (declarative) |*decl_ext| workbench.setDeclarativeExtensions(decl_ext);
     if (extension_service) |service| {
         workbench.setExtensionsService(service);
-        try service.attachUpdateChecks(workbench.configuration_api, workbench.lifecycle_api);
+        try service.attachUpdateChecks(workbench.configuration_api, workbench.lifecycle_api, workbench.storage_api);
     }
     workbench.enableAsyncTokenization();
     workbench.enableLanguageFeatures() catch |err| report(log_service, "language features unavailable: {s}", .{@errorName(err)});

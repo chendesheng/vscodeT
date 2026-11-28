@@ -19,6 +19,7 @@ const gallery = @import("../../../../platform/extensionManagement/common/extensi
 const dialogs = @import("../../../../platform/dialogs/common/dialogs.zig");
 const quick = @import("../../../../platform/quickinput/common/quickInput.zig");
 const EnablementState = model.EnablementState;
+const storage = @import("../../../../platform/storage/common/storage.zig");
 const configuration = @import("../../../../platform/configuration/common/configuration.zig");
 const lifecycle = @import("../../../services/lifecycle/common/lifecycle.zig");
 const time = @import("../../../../base/common/timeCompat.zig");
@@ -148,7 +149,7 @@ fn runUpdates(job: *UpdateJob) anyerror!UpdateState {
     return dispatch.workerCall(io, queryInstalledUpdates, .{ job.service.allocator, dispatch.backingIo(io), job.url, job.requests });
 }
 
-const Operation = enum { install, uninstall, install_vsix };
+const Operation = enum { install, uninstall, install_vsix, update_metadata };
 const ManagementJob = struct {
     service: *ExtensionsWorkbenchService,
     operation: Operation,
@@ -182,6 +183,7 @@ fn runManagement(job: *ManagementJob) anyerror!void {
     switch (job.operation) {
         .install => try dispatch.workerCall(io, management.installFromGallery, .{ job.service.allocator, dispatch.backingIo(io), job.location, job.system_location, job.gallery_url, job.url, job.identifier, job.version, job.prerelease, job.pinned, job.target_platform, job.uuid, job.verify_signature, job.require_verified }),
         .install_vsix => try dispatch.workerCall(io, management.installVSIXFile, .{ job.service.allocator, dispatch.backingIo(io), job.location, job.system_location, job.gallery_url, job.url }),
+        .update_metadata => try dispatch.workerCall(io, management.updatePinned, .{ job.service.allocator, dispatch.backingIo(io), job.location, job.identifier, job.pinned }),
         .uninstall => try dispatch.workerCall(io, management.uninstallMany, .{ job.service.allocator, dispatch.backingIo(io), job.location, job.identifiers }),
     }
 }
@@ -279,6 +281,8 @@ pub const ExtensionsWorkbenchService = struct {
     auto_update_timer: dispatch.Task = .{},
     auto_update_index: usize = 0,
     update_configuration: ?configuration.IConfigurationService = null,
+    update_storage: ?storage.IStorageService = null,
+    update_storage_listener: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
     configuration_listener: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
     window: ?*dispatch.Queue = null,
     workspace: ?*@import("../../../services/workspaces/common/workspaceContextService.zig").WorkspaceContextService = null,
@@ -290,6 +294,7 @@ pub const ExtensionsWorkbenchService = struct {
     quick_input: ?quick.IQuickInputService = null,
     pane_service: ?@import("../../../services/panecomposite/browser/panecomposite.zig").IPaneCompositePartService = null,
     dialog_service: ?dialogs.IDialogService = null,
+    context_menu: ?@import("../../../../platform/contextview/browser/contextMenuService.zig").IContextMenuService = null,
     pending_dialog: ?dialogs.IDialogHandle = null,
     runtime: ?RuntimeInventory = null,
     restart_host: ?struct { context: *anyopaque, restart: *const fn (*anyopaque) anyerror!void } = null,
@@ -509,9 +514,11 @@ pub const ExtensionsWorkbenchService = struct {
 
     /// Start the upstream automatic update check after Eventually. The
     /// timer and worker are owned by this service and disposed with the window.
-    pub fn attachUpdateChecks(self: *ExtensionsWorkbenchService, config: configuration.IConfigurationService, phases: lifecycle.ILifecycleService) !void {
+    pub fn attachUpdateChecks(self: *ExtensionsWorkbenchService, config: configuration.IConfigurationService, phases: lifecycle.ILifecycleService, state: storage.IStorageService) !void {
         if (self.update_configuration != null) return;
         self.update_configuration = config;
+        self.update_storage = state;
+        if (state.on_did_change_value) |event| self.update_storage_listener = try event.listenDisposable(self, updateStorageChanged);
         if (config.on_did_change_configuration) |event| self.configuration_listener = try event.listenDisposable(self, updateConfigurationChanged);
         try phases.when(.Eventually, .{ .context = self, .run = startUpdateChecks });
     }
@@ -526,6 +533,7 @@ pub const ExtensionsWorkbenchService = struct {
         if (configuration.affectsConfiguration(change, "extensions.autoUpdate") or configuration.affectsConfiguration(change, "extensions.autoUpdateDelay")) {
             self.auto_update_index = 0;
             self.scheduleAutoUpdate();
+            try self.on_change.fire({});
         }
         if (!configuration.affectsConfiguration(change, "extensions.autoCheckUpdates")) return;
         if (self.update_configuration.?.getBool("extensions.autoCheckUpdates", true)) self.scheduleUpdateCheck(0) else {
@@ -599,15 +607,100 @@ pub const ExtensionsWorkbenchService = struct {
         const config = self.update_configuration orelse return false;
         const setting = config.getValue("extensions.autoUpdate") orelse return true;
         return switch (setting.*) {
-            .string => |value| std.mem.eql(u8, value, "on"),
+            .string => |value| !std.mem.eql(u8, value, "off") and !std.mem.eql(u8, value, "onlySelectedExtensions"),
             .bool => |value| value,
             else => true,
         };
     }
 
+    const enabled_auto_update_key = "extensions.autoUpdate";
+    const disabled_auto_update_key = "extensions.donotAutoUpdate";
+
+    fn updateStorageChanged(change: storage.IStorageValueChangeEvent, self: *ExtensionsWorkbenchService) !void {
+        if (change.scope != .application or (!std.mem.eql(u8, change.key, enabled_auto_update_key) and !std.mem.eql(u8, change.key, disabled_auto_update_key))) return;
+        self.auto_update_index = 0;
+        self.scheduleAutoUpdate();
+        try self.on_change.fire({});
+    }
+
+    fn autoUpdateEntries(self: *const ExtensionsWorkbenchService, arena: Allocator, key: []const u8) []const std.json.Value {
+        const state = self.update_storage orelse return &.{};
+        const raw = state.get(key, .application, null) orelse return &.{};
+        const value = std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{}) catch return &.{};
+        return if (value == .array) value.array.items else &.{};
+    }
+
+    pub fn isAutoUpdateEnabledFor(self: *const ExtensionsWorkbenchService, extension: IExtension) bool {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const on = self.autoUpdateEnabled();
+        const entries = self.autoUpdateEntries(arena.allocator(), if (on) disabled_auto_update_key else enabled_auto_update_key);
+        return autoUpdatePolicy(on, entries, extension);
+    }
+
+    pub fn canToggleAutoUpdate(self: *const ExtensionsWorkbenchService, extension: IExtension) bool {
+        return self.update_storage != null and !extension.is_builtin and (!self.autoUpdateEnabled() or extension.isEnabled());
+    }
+
+    pub fn updateAutoUpdateEnablementFor(self: *ExtensionsWorkbenchService, extension: IExtension, enable: bool) !void {
+        if (!self.canToggleAutoUpdate(extension)) return error.AutoUpdateUnavailable;
+        const state = self.update_storage orelse return error.AutoUpdateUnavailable;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const id = try std.ascii.allocLowerString(allocator, extension.identifier);
+        const negated = try std.fmt.allocPrint(allocator, "-{s}", .{id});
+        const on = self.autoUpdateEnabled();
+        const key = if (on) disabled_auto_update_key else enabled_auto_update_key;
+        const entries = self.autoUpdateEntries(allocator, key);
+        var next: std.ArrayList([]const u8) = .empty;
+        for (entries) |entry| {
+            if (entry != .string) continue;
+            if (std.ascii.eqlIgnoreCase(entry.string, id) or std.ascii.eqlIgnoreCase(entry.string, negated)) continue;
+            try next.append(allocator, entry.string);
+        }
+        if (on) {
+            if (!enable) try next.append(allocator, id);
+            if (enable and extension.pinned) try self.startManagement(.update_metadata, id, "", "", false, false);
+        } else {
+            const publisher_enabled = hasAutoUpdateEntry(entries, extension.publisher);
+            if (enable and !publisher_enabled) try next.append(allocator, id);
+            if (!enable and publisher_enabled) try next.append(allocator, negated);
+        }
+        const raw = try std.json.Stringify.valueAlloc(allocator, next.items, .{});
+        try state.store(key, .{ .string = raw }, .application, .user);
+    }
+
+    pub fn canTogglePublisherAutoUpdate(self: *const ExtensionsWorkbenchService) bool {
+        return self.update_configuration != null and self.update_storage != null and !self.autoUpdateEnabled();
+    }
+
+    pub fn isPublisherAutoUpdateEnabled(self: *const ExtensionsWorkbenchService, publisher: []const u8) bool {
+        if (self.autoUpdateEnabled()) return true;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        return hasAutoUpdateEntry(self.autoUpdateEntries(arena.allocator(), enabled_auto_update_key), publisher);
+    }
+
+    pub fn updatePublisherAutoUpdate(self: *ExtensionsWorkbenchService, publisher: []const u8, enable: bool) !void {
+        if (!self.canTogglePublisherAutoUpdate()) return error.AutoUpdateUnavailable;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const entries = self.autoUpdateEntries(allocator, enabled_auto_update_key);
+        var next: std.ArrayList([]const u8) = .empty;
+        for (entries) |entry| {
+            if (entry != .string or std.ascii.eqlIgnoreCase(entry.string, publisher)) continue;
+            try next.append(allocator, entry.string);
+        }
+        if (enable) try next.append(allocator, try std.ascii.allocLowerString(allocator, publisher));
+        const raw = try std.json.Stringify.valueAlloc(allocator, next.items, .{});
+        try self.update_storage.?.store(enabled_auto_update_key, .{ .string = raw }, .application, .user);
+    }
+
     fn scheduleAutoUpdate(self: *ExtensionsWorkbenchService) void {
         const window = self.window orelse return;
-        if (!self.autoUpdateEnabled() or self.updates == null or self.gallery_url == null or !@import("../../../../platform/extensionManagement/node/extensionSignatureVerificationService.zig").supportsGallery(self.gallery_url.?)) {
+        if (self.update_configuration == null or self.updates == null or self.gallery_url == null or !@import("../../../../platform/extensionManagement/node/extensionSignatureVerificationService.zig").supportsGallery(self.gallery_url.?)) {
             self.auto_update_timer.schedule(null);
             return;
         }
@@ -627,7 +720,7 @@ pub const ExtensionsWorkbenchService = struct {
 
     fn autoUpdateTask(context: *anyopaque, now: i64, _: bool) bool {
         const self: *ExtensionsWorkbenchService = @ptrCast(@alignCast(context));
-        if (!self.autoUpdateEnabled() or self.management_job != null) return false;
+        if (self.update_configuration == null or self.management_job != null) return false;
         const updates = self.updates orelse return false;
         // Process each candidate once per gallery check. An unavailable or
         // unsigned version must not produce an immediate retry loop.
@@ -635,7 +728,7 @@ pub const ExtensionsWorkbenchService = struct {
             const remote = updates.rows[self.auto_update_index];
             self.auto_update_index += 1;
             const local = self.findLocal(remote.identifier) orelse continue;
-            if (!shouldAutoUpdate(local.*, remote, now, self.autoUpdateDelayHours())) continue;
+            if (!self.isAutoUpdateEnabledFor(local.*) or !isEligibleUpdate(local.*, remote, now, self.autoUpdateDelayHours())) continue;
             const url = remote.vsix_url orelse continue;
             self.startManagementTarget(.install, remote.identifier, remote.version, url, remote.is_pre_release, false, remote.target_platform, remote.uuid, true) catch continue;
             return true;
@@ -668,6 +761,9 @@ pub const ExtensionsWorkbenchService = struct {
         if (self.configuration_listener) |listener| listener.dispose();
         self.configuration_listener = null;
         self.update_configuration = null;
+        if (self.update_storage_listener) |listener| listener.dispose();
+        self.update_storage_listener = null;
+        self.update_storage = null;
         if (self.version_picker) |picker| picker.owner = null;
         self.version_picker = null;
         self.quick_input = null;
@@ -677,6 +773,7 @@ pub const ExtensionsWorkbenchService = struct {
             handle.cancel();
         }
         self.dialog_service = null;
+        self.context_menu = null;
         if (self.management_job) |job| {
             self.management_job = null;
             job.future.cancel(self.window.?.io) catch {};
@@ -838,6 +935,7 @@ pub const ExtensionsWorkbenchService = struct {
         return switch (job.operation) {
             .install, .install_vsix => .Installing,
             .uninstall => .Uninstalling,
+            .update_metadata => null,
         };
     }
 
@@ -1170,7 +1268,25 @@ pub const extensions_workbench_service_id = @import("../../../../platform/instan
 /// updates introducing executable code require a manual action. The install
 /// transaction independently enforces successful repository verification.
 pub fn shouldAutoUpdate(local: IExtension, remote: IExtension, now: i64, delay_hours: f64) bool {
-    if (local.is_builtin or local.pinned or !local.isEnabled() or remote.vsix_url == null) return false;
+    return autoUpdatePolicy(true, &.{}, local) and isEligibleUpdate(local, remote, now, delay_hours);
+}
+
+fn hasAutoUpdateEntry(entries: []const std.json.Value, value: []const u8) bool {
+    for (entries) |entry| if (entry == .string and std.ascii.eqlIgnoreCase(entry.string, value)) return true;
+    return false;
+}
+
+pub fn autoUpdatePolicy(global_enabled: bool, entries: []const std.json.Value, extension: IExtension) bool {
+    if (extension.is_builtin) return false;
+    if (global_enabled) return !extension.pinned and extension.isEnabled() and !hasAutoUpdateEntry(entries, extension.identifier);
+    if (hasAutoUpdateEntry(entries, extension.identifier)) return true;
+    if (!hasAutoUpdateEntry(entries, extension.publisher)) return false;
+    for (entries) |entry| if (entry == .string and entry.string.len > 0 and entry.string[0] == '-' and std.ascii.eqlIgnoreCase(entry.string[1..], extension.identifier)) return false;
+    return true;
+}
+
+fn isEligibleUpdate(local: IExtension, remote: IExtension, now: i64, delay_hours: f64) bool {
+    if (remote.vsix_url == null) return false;
     if (remote.is_pre_release and !local.is_pre_release) return false;
     const current = std.SemanticVersion.parse(local.version) catch return false;
     const candidate = std.SemanticVersion.parse(remote.version) catch return false;
