@@ -93,6 +93,8 @@ pub const ExtensionEditor = struct {
     status: []const u8 = "",
     focus_area: enum { body, actions, navbar, feature_list, additional } = .body,
     focused_action: usize = 0,
+    action_origin_x: usize = 0,
+    action_origin_y: usize = 0,
     window: ?*dispatch.Queue = null,
     asset_job: ?*AssetJob = null,
     remote_assets: ?RemoteAssets = null,
@@ -409,6 +411,7 @@ pub const ExtensionEditor = struct {
         uninstall,
         update,
         versions,
+        manage,
         restart_extensions,
         installing,
         uninstalling,
@@ -422,6 +425,7 @@ pub const ExtensionEditor = struct {
                 .uninstall => "Uninstall",
                 .update => "Update",
                 .versions => "Versions…",
+                .manage => "⚙",
                 .restart_extensions => "Restart Extensions",
                 .installing => "Installing…",
                 .uninstalling => "Uninstalling…",
@@ -448,7 +452,7 @@ pub const ExtensionEditor = struct {
                 return result[0..1];
             }
             result[0] = .install;
-            result[1] = .versions;
+            result[1] = if (self.service.context_menu != null) .manage else .versions;
             return result[0..2];
         }
         var count: usize = 0;
@@ -462,13 +466,14 @@ pub const ExtensionEditor = struct {
         }
         result[count] = if (extension.isEnabled()) .disable else .enable;
         count += 1;
-        if (self.service.enablement.has_workspace) {
-            result[count] = if (extension.isEnabled()) .disable_workspace else .enable_workspace;
-            count += 1;
-        }
         if (!extension.is_builtin) {
             result[count] = .uninstall;
             count += 1;
+        }
+        if (self.service.context_menu != null) {
+            result[count] = .manage;
+            count += 1;
+        } else if (!extension.is_builtin) {
             result[count] = .versions;
             count += 1;
         }
@@ -481,6 +486,22 @@ pub const ExtensionEditor = struct {
             .update => if (self.service.availableUpdate(self.input.identifier)) |extension| try self.service.install(extension.*),
             .uninstall => try self.service.uninstall(self.input.identifier),
             .versions => try self.service.showVersions(self.input.identifier),
+            .manage => {
+                const context = self.service.context_menu orelse return;
+                const extension = if (self.extension) |*entry| entry else return;
+                const menu = try @import("../../../../platform/contextview/browser/contextMenuService.zig").Menu.init(self.allocator, @as(u8, 0), struct {
+                    fn run(_: *u8, _: []const u8) !void {}
+                }.run);
+                errdefer menu.deinit();
+                try @import("extensionsActions.zig").addManagementActions(menu, self.service, extension, null);
+                var available: [6]Action = undefined;
+                var column: usize = 1;
+                for (self.actions(&available)) |item| {
+                    if (item == .manage) break;
+                    column += list.displayWidth(item.label()) + 3;
+                }
+                try context.showContextMenu(menu, .{ .x = self.action_origin_x + @min(column, self.width -| 1), .y = self.action_origin_y });
+            },
             .restart_extensions => try self.service.restartExtensions(),
             .enable, .disable, .enable_workspace, .disable_workspace => {
                 _ = try self.service.requestEnablement(self.input.identifier, switch (action) {
@@ -575,6 +596,8 @@ pub const ExtensionEditor = struct {
 
     pub fn paint(self: *ExtensionEditor, frame: *ui.Frame, x: usize, y: usize, w: usize, h: usize) !void {
         if (w == 0 or h == 0) return;
+        self.action_origin_x = x;
+        self.action_origin_y = y + 3;
         const grid = &frame.next;
         const colors = list.colors(self.palette);
         const bg = if (self.palette) |p| p.colorOr("editor.background", colors.background) else colors.background;

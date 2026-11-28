@@ -750,77 +750,24 @@ pub const ExtensionsListView = struct {
             fn run(_: *u8, _: []const u8) !void {}
         }.run);
         errdefer menu.deinit();
-        const arena = menu.arena.allocator();
-        const Command = struct {
+        const workbench_service = self.service orelse return error.ExtensionManagementUnavailable;
+        try @import("extensionsActions.zig").addManagementActions(menu, workbench_service, extension, .{ .context = self, .run = rowEnablement });
+        const OpenAction = struct {
             view: *ExtensionsListView,
-            identifier: []const u8 = "",
-            enable: bool = false,
-            workspace: bool = false,
-            open: bool = false,
-            install: bool = false,
-            uninstall: bool = false,
-            versions: bool = false,
-            switch_prerelease: ?bool = null,
-            restart: bool = false,
+            identifier: []const u8,
             pub fn run(action: *@This()) !void {
-                if (action.restart) {
-                    if (action.view.service) |view_service| try view_service.restartExtensions();
-                    return;
+                if (action.view.service) |view_service| {
+                    if (view_service.find(action.identifier)) |found| try action.view.openExtension(found);
                 }
-                if (action.switch_prerelease) |prerelease| {
-                    if (action.view.service) |view_service| try view_service.switchReleaseChannel(action.identifier, prerelease);
-                    return;
-                }
-                if (action.versions) {
-                    if (action.view.service) |view_service| try view_service.showVersions(action.identifier);
-                    return;
-                }
-                if (action.install or action.uninstall) {
-                    const view_service = action.view.service orelse return;
-                    if (action.install) {
-                        if (view_service.availableUpdate(action.identifier) orelse view_service.galleryInfo(action.identifier)) |entry| try view_service.install(entry.*);
-                    } else try view_service.uninstall(action.identifier);
-                    return;
-                }
-                if (action.open) {
-                    if (action.view.service) |view_service| {
-                        if (view_service.find(action.identifier)) |found| {
-                            return action.view.openExtension(found);
-                        }
-                    }
-                    return;
-                }
-                try action.view.toggleEnablement(action.identifier, action.enable, action.workspace);
             }
         };
-        const identifier = try arena.dupe(u8, extension.identifier);
-        if (extension.state == .Uninstalled) {
-            if (extension.vsix_url != null) try menu.addAction("extensions.install", "Install", null, Command{ .view = self, .identifier = identifier, .install = true });
-        } else if (extension.isEnabled()) {
-            try menu.addAction("extensions.disableGlobally", "Disable", null, Command{ .view = self, .identifier = identifier, .enable = false });
-        } else {
-            try menu.addAction("extensions.enableGlobally", "Enable", null, Command{ .view = self, .identifier = identifier, .enable = true });
-        }
-        if (extension.state == .Installed) if (self.service) |workbench_service| {
-            if (workbench_service.enablement.has_workspace) {
-                const enable = !extension.isEnabled();
-                try menu.addAction(if (enable) "extensions.enableForWorkspace" else "extensions.disableForWorkspace", if (enable) "Enable (Workspace)" else "Disable (Workspace)", null, Command{ .view = self, .identifier = identifier, .enable = enable, .workspace = true });
-            }
-        };
-        if (extension.state == .Installed and !extension.is_builtin) {
-            if (self.service) |view_service| if (view_service.availableUpdate(extension.identifier) != null) try menu.addAction("extensions.update", "Update", null, Command{ .view = self, .identifier = identifier, .install = true });
-            try menu.addAction("extensions.uninstall", "Uninstall", null, Command{ .view = self, .identifier = identifier, .uninstall = true });
-        }
-        if (self.service) |view_service| if (view_service.runtimeState(identifier) == .RestartExtensions) try menu.addAction("extensions.runtimeState", "Restart Extensions", null, Command{ .view = self, .identifier = identifier, .restart = true });
-        if (!extension.is_builtin) {
-            try menu.addAction("extensions.installAnotherVersion", "Install Another Version…", null, Command{ .view = self, .identifier = identifier, .versions = true });
-            if (self.service) |workbench_service| if (workbench_service.gallery_url != null) {
-                const prerelease = !(if (workbench_service.findLocal(identifier)) |local| local.is_pre_release else extension.is_pre_release);
-                try menu.addAction(if (prerelease) "extensions.installPreReleaseVersion" else "extensions.installReleaseVersion", if (prerelease) "Switch to Pre-Release Version" else "Switch to Release Version", null, Command{ .view = self, .identifier = identifier, .switch_prerelease = prerelease });
-            };
-        }
-        try menu.addAction("workbench.extensions.action.openExtension", "Open Extension", null, Command{ .view = self, .identifier = identifier, .open = true });
+        try menu.addAction("workbench.extensions.action.openExtension", "Open Extension", null, OpenAction{ .view = self, .identifier = try menu.arena.allocator().dupe(u8, extension.identifier) });
         try service.showContextMenu(menu, anchor);
+    }
+
+    fn rowEnablement(context: *anyopaque, identifier: []const u8, enable: bool, workspace: bool) !void {
+        const self: *ExtensionsListView = @ptrCast(@alignCast(context));
+        try self.toggleEnablement(identifier, enable, workspace);
     }
 
     fn toggleEnablement(self: *ExtensionsListView, identifier: []const u8, enable: bool, workspace: bool) !void {

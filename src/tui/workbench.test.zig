@@ -14158,6 +14158,7 @@ test "Workbench: extensions panel lists, filters, opens and disables" {
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
     workbench.setExtensionsService(service);
+    try service.attachUpdateChecks(workbench.configuration_api, workbench.lifecycle_api, workbench.storage_api);
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
 
@@ -14243,6 +14244,25 @@ test "Workbench: extensions panel lists, filters, opens and disables" {
     try std.testing.expect(workbench.activeTab().? == active);
     try service.refresh();
     try std.testing.expectEqualStrings("User Ext", detail.extension.?.display_name);
+    try std.testing.expect(try service.setEnablement("pub.user-ext", .EnabledGlobally));
+    try std.testing.expect(service.isAutoUpdateEnabledFor(service.findLocal("pub.user-ext").?.*));
+    out.clearRetainingCapacity();
+    try renderFrame(workbench, &out.writer);
+    // The action bar's management dropdown uses the same actions as the list.
+    detail.focus_area = .body;
+    try std.testing.expect(try detail.handleKey(&.{ .key = .tab }));
+    try std.testing.expect(try detail.handleKey(&.{ .key = .right }));
+    try std.testing.expect(try detail.handleKey(&.{ .key = .right }));
+    try std.testing.expect(try detail.handleKey(&.{ .key = .enter }));
+    const menu = workbench.context_menu_service.current orelse return error.ExpectedExtensionManagementMenu;
+    var checked = false;
+    for (menu.popup.?.items) |item| {
+        if (std.mem.eql(u8, item.label, "Auto Update")) checked = item.checked;
+    }
+    try std.testing.expect(checked);
+    try chooseContextMenuItem(workbench, "Auto Update");
+    try std.testing.expect(!service.isAutoUpdateEnabledFor(service.findLocal("pub.user-ext").?.*));
+    try std.testing.expectEqualStrings("[\"pub.user-ext\"]", workbench.storage_api.get("extensions.donotAutoUpdate", .application, null).?);
 }
 
 test "Workbench: window Io yields through the native dispatcher and resumes on the window thread" {

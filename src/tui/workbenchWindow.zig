@@ -3520,6 +3520,7 @@ pub const TerminalWorkbench = struct {
         service.quick_input = self.quick_input_api;
         service.pane_service = self.pane_composite_api;
         service.dialog_service = self.dialog_api;
+        service.context_menu = self.context_menu_api;
         if (self.extensions_view) |contribution| contribution.setService(service) catch {};
     }
 
