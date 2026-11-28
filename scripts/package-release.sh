@@ -70,6 +70,7 @@ chmod 0755 "$stage/bin/$(basename -- "$binary")" 2>/dev/null || true
 cp -R "$root/zig-out/share/minecode" "$stage/share/minecode"
 if [ -d "$root/zig-out/lib/minecode" ]; then
     cp -R "$root/zig-out/lib/minecode" "$stage/lib/minecode"
+    bash "$root/scripts/prune-release-runtime.sh" "$stage"
 fi
 
 cp "$root/README.md" "$stage/README.md"
