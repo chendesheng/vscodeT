@@ -1,6 +1,7 @@
 // Replays Vim cassettes recorded from Neovim.
 //
 // The cassettes live in `test/data/oracle`; see `scripts/oracle/README.md`.
+// Every state asserts text, mode, cursor and the recorded viewport scroll.
 const std = @import("std");
 const oracle = @import("../../../../test/common/oracleCassette.zig");
 const cassettes = @import("./vimCassettes.generated.zig");

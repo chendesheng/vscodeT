@@ -164,9 +164,9 @@ jobs:
   vim-cassette-conformance:
     name: Vim cassette conformance
     runs-on: ubuntu-latest
-    # The Vim lane replays all 329 recorded cassettes and asserts every
-    # recorded field (text, mode and cursor). It is expected to stay green,
-    # so this job gates the main CI.
+    # The Vim lane replays all 343 recorded cassettes and asserts every
+    # recorded field (text, mode, cursor and viewport scroll). It is expected
+    # to stay green, so this job gates the main CI.
     steps:
       - uses: actions/checkout@v4
         with:

@@ -162,10 +162,12 @@ lives in `test/data/oracle/`. Replay is hermetic, needs no Neovim, and runs
 via `zig build test-oracle` (both lanes) or `zig build test-oracle-vim` (this
 lane only).
 
-The corpus covers ASCII documents, one cursor, and final normal, insert and
-replace modes; the 329 cases are green and gate CI. Visual selections are not a
-recorded final mode, and register contents are checked through their resulting
-text rather than as raw register state. To
+The corpus covers ASCII documents, one seeded cursor, and final normal, insert
+and replace modes; the 343 cases are green and gate CI. Every cassette also
+records `height` and the viewport `scroll.top_line`/`scroll.left` (captured
+from `winsaveview()` after a redraw), and the replay asserts them. Visual
+selections are not a recorded final mode, and register contents are checked
+through their resulting text rather than as raw register state. To
 refresh or add recordings, see [scripts/oracle/README.md](../scripts/oracle/README.md):
 install the pinned Neovim, run the recorder, and regenerate the embedded index.
 The same recording/check also runs in the `Record cassettes` GitHub workflow.

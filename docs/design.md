@@ -262,8 +262,11 @@ uses only a developer virtualenv. Replay is hermetic:
 zig build test-oracle
 ```
 
-See [scripts/oracle/README.md](../scripts/oracle/README.md). The Helix pin is
-coupled to its patch and the committed cassettes; bump them together.
+See [scripts/oracle/README.md](../scripts/oracle/README.md). Both recorders
+capture the visible text height and the viewport top-left
+(`scroll.top_line`/`scroll.left`), and replay asserts them alongside text,
+mode, selections and cursors. The Helix pin is coupled to its patch and the
+committed cassettes; bump them together.
 
 Native and cross builds use the `third_party/oniguruma` git submodule by default,
 pinned to Oniguruma **6.9.10** at commit
