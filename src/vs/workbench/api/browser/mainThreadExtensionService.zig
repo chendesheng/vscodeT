@@ -6,12 +6,13 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const rpc = @import("../../services/extensions/common/rpcProtocol.zig");
+const ActivationTimes = @import("../../services/extensions/common/extensions.zig").ActivationTimes;
 const protocol = @import("../common/extHost.protocol.zig");
 
 pub const Host = struct {
     context: *anyopaque,
     on_will_activate: *const fn (context: *anyopaque, identifier: []const u8) anyerror!void,
-    on_did_activate: *const fn (context: *anyopaque) void,
+    on_did_activate: *const fn (context: *anyopaque, identifier: []const u8, times: ActivationTimes) anyerror!void,
     as_browser_uri: *const fn (context: *anyopaque, uri: std.json.Value) std.json.Value,
 };
 
@@ -29,7 +30,19 @@ pub const MainThreadExtensionService = struct {
             return .empty;
         }
         if (std.mem.eql(u8, method, "$onDidActivateExtension")) {
-            self.host.on_did_activate(self.host.context);
+            const identifier = identifierArg(args) orelse return error.InvalidArguments;
+            const reason = valueArg(args, 4) orelse return error.InvalidArguments;
+            if (reason != .object) return error.InvalidArguments;
+            const startup = reason.object.get("startup") orelse return error.InvalidArguments;
+            const activation_event = reason.object.get("activationEvent") orelse return error.InvalidArguments;
+            if (startup != .bool or activation_event != .string) return error.InvalidArguments;
+            try self.host.on_did_activate(self.host.context, identifier, .{
+                .code_loading_time = numberArg(args, 1) orelse return error.InvalidArguments,
+                .activate_call_time = numberArg(args, 2) orelse return error.InvalidArguments,
+                .activate_resolved_time = numberArg(args, 3) orelse return error.InvalidArguments,
+                .startup = startup.bool,
+                .activation_event = activation_event.string,
+            });
             return .empty;
         }
         if (std.mem.eql(u8, method, "$asBrowserUri")) {
@@ -58,4 +71,19 @@ fn methodKind(method: []const u8) protocol.MethodKind {
 fn valueArg(args: []const rpc.Arg, index: usize) ?std.json.Value {
     if (index >= args.len or args[index] != .json) return null;
     return args[index].json;
+}
+
+fn identifierArg(args: []const rpc.Arg) ?[]const u8 {
+    const identifier = valueArg(args, 0) orelse return null;
+    if (identifier != .object) return null;
+    const value = identifier.object.get("value") orelse return null;
+    return if (value == .string) value.string else null;
+}
+
+fn numberArg(args: []const rpc.Arg, index: usize) ?f64 {
+    return switch (valueArg(args, index) orelse return null) {
+        .integer => |number| @floatFromInt(number),
+        .float => |number| number,
+        else => null,
+    };
 }

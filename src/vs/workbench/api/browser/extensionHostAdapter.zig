@@ -22,6 +22,8 @@ const EditorDocument = @import("../../../editor/browser/widget/codeEditor/codeEd
 const LastContentChange = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").LastContentChange;
 const ChangeListener = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").ChangeListener;
 const TextEdit = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").TextEdit;
+const extension_status = @import("../../services/extensions/common/extensions.zig");
+const StatusEmitter = @import("../../../base/common/event.zig").Emitter(void);
 pub const Services = @import("extensionHostServices.zig").Services;
 const GroupPane = @import("../../browser/parts/editor/editorGroupView.zig").EditorGroupView(*Tab);
 const Tab = @import("../../browser/parts/editor/editorPane.zig").Tab;
@@ -131,6 +133,9 @@ pub const Extensions = struct {
     eager_start_request: ?u32 = null,
     activation_tracker: extension_service.ActivationTracker,
     activation_started: std.StringHashMapUnmanaged(void) = .empty,
+    activation_times: std.StringHashMapUnmanaged(extension_status.ActivationTimes) = .empty,
+    on_did_change_extensions_status: StatusEmitter,
+
     runtime_version: u32 = 1,
     pending_delta: ?*PendingDescriptionDelta = null,
     needs_render: bool = false,
@@ -265,11 +270,13 @@ pub const Extensions = struct {
             .extension_ptrs = extension_ptrs,
             .user_data_dir = data,
             .activation_tracker = extension_service.ActivationTracker.init(allocator),
+            .on_did_change_extensions_status = StatusEmitter.init(allocator),
             .last_selections = std.array_list.Managed(Selection).init(allocator),
             .models = documents_and_editors.ModelCollection.init(allocator, .{ .context = self, .notify = notifyModelMirror }),
             .active_selection_handler = ViewEventHandler.init(self, .{ .onCursorStateChanged = onActiveSelection }),
         };
 
+        errdefer self.on_did_change_extensions_status.deinit();
         self.rpc_task = .{ .queue = services.window, .context = self, .run = dispatchRpc, .progress = true };
         errdefer self.rpc_task.schedule(null);
         self.models_task = .{ .queue = services.window, .context = self, .run = updateModels, .progress = true };
@@ -463,6 +470,13 @@ pub const Extensions = struct {
         var activated = self.activation_started.keyIterator();
         while (activated.next()) |id| self.allocator.free(id.*);
         self.activation_started.deinit(self.allocator);
+        var times = self.activation_times.iterator();
+        while (times.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.activation_event);
+        }
+        self.activation_times.deinit(self.allocator);
+        self.on_did_change_extensions_status.deinit();
         self.last_selections.deinit();
         self.host.deinit();
         self.rpc_task.schedule(null);
@@ -974,15 +988,49 @@ pub const Extensions = struct {
 
     fn extensionServiceWillActivateHost(context: *anyopaque, identifier: []const u8) !void {
         const self: *Extensions = @ptrCast(@alignCast(context));
-        if (self.activation_started.contains(identifier)) return;
-        const owned = try self.allocator.dupe(u8, identifier);
+        const owned = try std.ascii.allocLowerString(self.allocator, identifier);
+        if (self.activation_started.contains(owned)) {
+            self.allocator.free(owned);
+            return;
+        }
         errdefer self.allocator.free(owned);
         try self.activation_started.put(self.allocator, owned, {});
+        self.on_did_change_extensions_status.fire({}) catch {};
     }
 
-    fn extensionServiceActivatedHost(context: *anyopaque) void {
+    fn extensionServiceActivatedHost(context: *anyopaque, identifier: []const u8, times: extension_status.ActivationTimes) !void {
         const self: *Extensions = @ptrCast(@alignCast(context));
+        const owned = try std.ascii.allocLowerString(self.allocator, identifier);
+        errdefer self.allocator.free(owned);
+        const event = try self.allocator.dupe(u8, times.activation_event);
+        errdefer self.allocator.free(event);
+        var next = times;
+        next.activation_event = event;
+        const entry = try self.activation_times.getOrPut(self.allocator, owned);
+        if (entry.found_existing) {
+            self.allocator.free(owned);
+            self.allocator.free(entry.value_ptr.activation_event);
+        }
+        entry.value_ptr.* = next;
         self.activated = true;
+        self.on_did_change_extensions_status.fire({}) catch {};
+    }
+
+    pub fn interface(self: *Extensions) extension_status.IExtensionStatusService {
+        return .{ .context = self, .get_status = getExtensionStatus, .on_did_change_extensions_status = &self.on_did_change_extensions_status };
+    }
+
+    fn getExtensionStatus(context: *anyopaque, identifier: []const u8) ?extension_status.IExtensionsStatus {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        for (self.descriptions) |description| {
+            if (!std.ascii.eqlIgnoreCase(description.identifier, identifier)) continue;
+            if (description.manifest != .object or !description.manifest.object.contains("main")) return null;
+            return .{
+                .activation_started = self.activation_started.contains(description.identifier),
+                .activation_times = self.activation_times.get(description.identifier),
+            };
+        }
+        return null;
     }
 
     fn extensionServiceBrowserUriHost(_: *anyopaque, uri: std.json.Value) std.json.Value {
