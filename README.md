@@ -64,6 +64,16 @@ sibling directories relative to its own location:
   HTML, CSS, Emmet, Git and the other Node-backed features stay disabled; Node
   must also be on `PATH` when this directory is present.
 
+`share/minecode/extensions` and `lib/minecode/extensions` are not duplicates of
+the same layer. The workbench scans `share` for declarative contributions
+(manifests, language configurations, grammars, snippets, themes and icons). For
+a built-in whose basename also exists under `lib/minecode/extensions`, the
+implementation passes that `lib` directory to the Node extension host instead,
+because it contains the bundled executable `main` and native assets. `share`
+therefore supplies the catalog and editor-facing metadata; `lib` supplies only
+the executable extension code. Keeping both lets a minimal install ship the
+catalog while leaving the Node-backed features optional.
+
 Keep the `bin/`, `share/` and `lib/` directories together when installing or
 moving the editor. A release archive already has this layout.
 
