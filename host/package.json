@@ -1,5 +1,5 @@
 {
-  "name": "vscode-textbuffer-extension-host",
+  "name": "minecode-extension-host",
   "private": true,
   "description": "Node launcher and build for the pinned VS Code extension host",
   "type": "module",

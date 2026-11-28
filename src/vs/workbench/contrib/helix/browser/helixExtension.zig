@@ -68,7 +68,7 @@ pub fn create(allocator: Allocator) !extension_api.IBuiltinExtension {
     state.* = HelixExtensionState.init(allocator);
     return .{
         .context = state,
-        .id = "vscode-textbuffer.helix",
+        .id = "minecode.helix",
         .display_name = "Helix",
         .version = "0.1.0",
         .activate_fn = activate,

@@ -305,12 +305,12 @@ fn parseStatus(status: c_int) Exit {
     return .{ .signal = signal_number };
 }
 
-extern "c" fn vscodet_process_exit_fd(pid: posix.pid_t) c_int;
+extern "c" fn minecode_process_exit_fd(pid: posix.pid_t) c_int;
 
 fn monitorExit(pid: posix.pid_t) !struct { fd: posix.fd_t, waiter: ?std.Thread = null } {
     switch (builtin.os.tag) {
         .macos, .freebsd, .netbsd, .openbsd, .dragonfly => {
-            const fd = vscodet_process_exit_fd(pid);
+            const fd = minecode_process_exit_fd(pid);
             if (fd < 0) return error.ProcessMonitorFailed;
             return .{ .fd = fd };
         },
@@ -338,10 +338,10 @@ fn monitorExit(pid: posix.pid_t) !struct { fd: posix.fd_t, waiter: ?std.Thread =
     return .{ .fd = wake[0], .waiter = waiter };
 }
 
-extern "c" fn vscodet_wait_for_process_exit(pid: posix.pid_t, wake_fd: c_int) void;
+extern "c" fn minecode_wait_for_process_exit(pid: posix.pid_t, wake_fd: c_int) void;
 
 fn waitForProcessExit(pid: posix.pid_t, wake_fd: c_int) void {
-    vscodet_wait_for_process_exit(pid, wake_fd);
+    minecode_wait_for_process_exit(pid, wake_fd);
 }
 
 fn reapChild(pid: posix.pid_t) Exit {

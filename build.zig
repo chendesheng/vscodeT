@@ -33,15 +33,26 @@ pub fn build(b: *std.Build) void {
         .include_dir = b.option([]const u8, "onig-include", "Directory containing oniguruma.h"),
         .lib_dir = b.option([]const u8, "onig-lib", "Directory containing the oniguruma library"),
     };
+    // Release binaries link the vendored Oniguruma sources so they do not need
+    // a system libonig at runtime. The default keeps the system library for
+    // ordinary development builds.
+    const onig_static = b.option(bool, "onig-static", "Compile and statically link the vendored Oniguruma sources") orelse false;
 
     if (!watcher_only and !wasm_only) {
-        const onig = onigModule(b, target, optimize, onig_paths);
+        const onig = onigModule(b, target, optimize, onig_paths, onig_static);
 
+        // A static build translates the same vendored header and lets this
+        // build link one Oniguruma archive instead of a second system copy.
+        const textmate_onig_include = if (onig_static)
+            vendoredOnigInclude(b)
+        else
+            onig_paths.include_dir orelse "";
         const vscode_textmate_dep = b.dependency("vscode_textmate", .{
             .target = target,
             .optimize = optimize,
-            .@"onig-include" = onig_paths.include_dir orelse "",
+            .@"onig-include" = textmate_onig_include,
             .@"onig-lib" = onig_paths.lib_dir orelse "",
+            .@"onig-link" = !onig_static,
         });
         const vscode_textmate = vscode_textmate_dep.module("vscode_textmate");
         const ui_dep = b.dependency("ui", .{ .target = target, .optimize = optimize });
@@ -54,7 +65,7 @@ pub fn build(b: *std.Build) void {
 
         // We will also create a module for our other entry point, 'main.zig'.
         const exe = b.addExecutable(.{
-            .name = "zig",
+            .name = "minecode",
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/main.zig"),
                 .target = target,
@@ -74,8 +85,10 @@ pub fn build(b: *std.Build) void {
         exe.root_module.addImport("markdown", markdown);
         exe.root_module.addImport("vscode-syntax", vscode_syntax);
         exe.root_module.addImport("ghostty-vt", ghostty_vt);
-        addOnigLibraryPath(b, exe.root_module, onig_paths);
-        exe.root_module.linkSystemLibrary("onig", .{});
+        if (!onig_static) {
+            addOnigLibraryPath(b, exe.root_module, onig_paths);
+            exe.root_module.linkSystemLibrary("onig", .{});
+        }
         linkPtyLibraries(b, exe.root_module, target);
         linkMacFrameworks(exe.root_module, target, enable_fsevents);
 
@@ -101,7 +114,7 @@ pub fn build(b: *std.Build) void {
         const run_step = b.step("run", "Run the app");
         run_step.dependOn(&run_cmd.step);
 
-        setupTests(b, target, optimize, onig, vscode_textmate, ui, markdown, vscode_syntax, ghostty_vt, onig_paths);
+        setupTests(b, target, optimize, onig, vscode_textmate, ui, markdown, vscode_syntax, ghostty_vt, onig_paths, onig_static);
     }
 
     if (!watcher_only) {
@@ -112,7 +125,7 @@ pub fn build(b: *std.Build) void {
     setupExtensionHost(b);
 }
 
-const catalog_path = "share/vscode-textbuffer/extensions";
+const catalog_path = "share/minecode/extensions";
 
 /// Install only data consumed by the workbench. Executable bundles use the
 /// separate host build and are never loaded from this manifest directory.
@@ -191,7 +204,7 @@ fn setupExtensionHost(b: *std.Build) void {
     const host_step = b.step("host", "Bundle the Node extension host (host/dist/extensionHost.mjs)");
     const host_build = b.addSystemCommand(&.{ "node", "build.js" });
     host_build.setCwd(b.path("host"));
-    const runtime_dir = "lib/vscode-textbuffer";
+    const runtime_dir = "lib/minecode";
     const extensions_build = b.addSystemCommand(&.{ "node", "build-builtin-extensions.js" });
     extensions_build.setCwd(b.path("host"));
     const install_host = b.addInstallFile(b.path("host/dist/extensionHost.mjs"), runtime_dir ++ "/extensionHost.mjs");
@@ -537,7 +550,29 @@ const OnigPaths = struct {
     lib_dir: ?[]const u8 = null,
 };
 
-fn onigModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, paths: OnigPaths) *std.Build.Module {
+fn onigModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.Optimize,
+    paths: OnigPaths,
+    static: bool,
+) *std.Build.Module {
+    if (static) {
+        const include_dir = "third_party/oniguruma/src";
+        const translate = b.addTranslateC(.{
+            .root_source_file = b.path("src/support/oniguruma.h"),
+            .target = target,
+            .optimize = optimize,
+        });
+        translate.addIncludePath(b.path(include_dir));
+        translate.defineCMacro("ONIG_STATIC", "1");
+
+        const module = translate.createModule();
+        module.addIncludePath(b.path(include_dir));
+        module.linkLibrary(onigStaticLibrary(b, target, optimize));
+        return module;
+    }
+
     const include_dir = onigIncludeDir(b, paths) orelse @panic(
         "oniguruma.h not found; install oniguruma " ++
             "(macOS: brew install oniguruma, Debian/Ubuntu: apt install libonig-dev)",
@@ -555,6 +590,52 @@ fn onigModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     addOnigLibraryPath(b, module, paths);
     module.linkSystemLibrary("onig", .{});
     return module;
+}
+
+/// Absolute include directory for the vendored Oniguruma header. Dependency
+/// build options take a path string, so this cannot stay a LazyPath.
+fn vendoredOnigInclude(b: *std.Build) []const u8 {
+    const build_dir = std.fs.path.dirname(@src().file) orelse ".";
+    const absolute_build_dir = std.Io.Dir.cwd().realPathFileAlloc(
+        b.graph.io,
+        build_dir,
+        b.allocator,
+    ) catch @panic("could not resolve the build root");
+    return b.pathJoin(&.{ absolute_build_dir, "third_party/oniguruma/src" });
+}
+
+/// Native static Oniguruma library built from the pinned submodule. POSIX
+/// 64-bit targets share the LP64 configuration used by the aarch64 script;
+/// Windows is LLP64 and uses Oniguruma's own win64 configuration.
+fn onigStaticLibrary(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize) *std.Build.Step.Compile {
+    const library = b.addLibrary(.{
+        .name = "onig",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    library.root_module.addCSourceFiles(.{
+        .root = b.path("third_party/oniguruma"),
+        .files = &onig_wasm_sources,
+        .flags = &.{ "-DHAVE_CONFIG_H", "-DONIG_STATIC" },
+    });
+    // The submodule stays untouched: config.h is supplied from this repository.
+    if (target.result.os.tag == .windows) {
+        const config = b.addWriteFiles();
+        _ = config.addCopyFile(
+            b.path("third_party/oniguruma/src/config.h.win64"),
+            "config.h",
+        );
+        library.root_module.addIncludePath(config.getDirectory());
+    } else {
+        library.root_module.addIncludePath(b.path("third_party/oniguruma-config-aarch64"));
+    }
+    library.root_module.addIncludePath(b.path("third_party/oniguruma"));
+    library.root_module.addIncludePath(b.path("third_party/oniguruma/src"));
+    return library;
 }
 
 const onig_include_candidates = [_][]const u8{
@@ -797,6 +878,7 @@ fn createTestRootModule(
     vscode_syntax: *std.Build.Module,
     ghostty_vt: *std.Build.Module,
     onig_paths: OnigPaths,
+    onig_static: bool,
     bench: bool,
     e2e: bool,
     bench_file: []const u8,
@@ -815,8 +897,10 @@ fn createTestRootModule(
     module.addImport("markdown", markdown);
     module.addImport("vscode-syntax", vscode_syntax);
     module.addImport("ghostty-vt", ghostty_vt);
-    addOnigLibraryPath(b, module, onig_paths);
-    module.linkSystemLibrary("onig", .{});
+    if (!onig_static) {
+        addOnigLibraryPath(b, module, onig_paths);
+        module.linkSystemLibrary("onig", .{});
+    }
     linkPtyLibraries(b, module, target);
 
     const build_options = b.addOptions();
@@ -830,7 +914,7 @@ fn createTestRootModule(
     return module;
 }
 
-fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module, vscode_textmate: *std.Build.Module, ui: *std.Build.Module, markdown: *std.Build.Module, vscode_syntax: *std.Build.Module, ghostty_vt: *std.Build.Module, onig_paths: OnigPaths) void {
+fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module, vscode_textmate: *std.Build.Module, ui: *std.Build.Module, markdown: *std.Build.Module, vscode_syntax: *std.Build.Module, ghostty_vt: *std.Build.Module, onig_paths: OnigPaths, onig_static: bool) void {
     const test_step = b.step("test", "Run all tests");
     const bench_file = b.option(
         []const u8,
@@ -851,6 +935,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
             vscode_syntax,
             ghostty_vt,
             onig_paths,
+            onig_static,
             false,
             false,
             bench_file,
@@ -916,6 +1001,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
         vscode_syntax,
         ghostty_vt,
         onig_paths,
+        onig_static,
         false,
         false,
         bench_file,
@@ -989,6 +1075,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
             vscode_syntax,
             ghostty_vt,
             onig_paths,
+            onig_static,
             false,
             true,
             bench_file,
@@ -1024,6 +1111,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
             vscode_syntax,
             ghostty_vt,
             onig_paths,
+            onig_static,
             true,
             false,
             bench_file,
@@ -1064,16 +1152,24 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const run_ui_tests = b.addRunArtifact(ui_tests);
     test_step.dependOn(&run_ui_tests.step);
 
+    const textmate_tests_onig_include = if (onig_static)
+        vendoredOnigInclude(b)
+    else
+        onig_paths.include_dir orelse "";
     const vscode_textmate_dep = b.dependency("vscode_textmate", .{
         .target = target,
         .optimize = optimize,
-        .@"onig-include" = onig_paths.include_dir orelse "",
+        .@"onig-include" = textmate_tests_onig_include,
         .@"onig-lib" = onig_paths.lib_dir orelse "",
+        .@"onig-link" = !onig_static,
     });
     const vscode_textmate_tests = b.addTest(.{
         .name = "vscode_textmate_tests",
         .root_module = vscode_textmate_dep.module("vscode_textmate"),
     });
+    // The textmate package no longer links Oniguruma itself when the embedder
+    // asks it not to; importing the shared module carries the static archive.
+    if (onig_static) vscode_textmate_tests.root_module.addImport("oniguruma", onig);
     const run_vscode_textmate_tests = b.addRunArtifact(vscode_textmate_tests);
     test_step.dependOn(&run_vscode_textmate_tests.step);
 }

@@ -1,6 +1,6 @@
 {
   "name": "copilot-inline",
-  "publisher": "vscode-textbuffer",
+  "publisher": "minecode",
   "displayName": "GitHub Copilot Inline Completions",
   "version": "1.0.0",
   "engines": { "vscode": "^1.147.0" },
@@ -9,8 +9,8 @@
   "activationEvents": ["onLanguage"],
   "contributes": {
     "commands": [
-      { "command": "vscode-textbuffer.copilot.signIn", "title": "Sign In", "category": "GitHub Copilot" },
-      { "command": "vscode-textbuffer.copilot.signOut", "title": "Sign Out", "category": "GitHub Copilot" }
+      { "command": "minecode.copilot.signIn", "title": "Sign In", "category": "GitHub Copilot" },
+      { "command": "minecode.copilot.signOut", "title": "Sign Out", "category": "GitHub Copilot" }
     ]
   }
 }

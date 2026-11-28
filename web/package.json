@@ -1,6 +1,6 @@
 {
-  "name": "vscodet-wasm-demo",
+  "name": "minecode-wasm-demo",
   "private": true,
   "type": "module",
-  "description": "Static browser demo for the vscodeT editor (wasm + ghostty-web)"
+  "description": "Static browser demo for the minecode editor (wasm + ghostty-web)"
 }

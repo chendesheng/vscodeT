@@ -1,2 +1,6 @@
 # Byte-for-byte command palette snapshot: keep LF on every platform.
 src/tui/fixtures/workbench-palette.jsonl text eol=lf
+
+# Shell scripts and workflow definitions run under bash on every runner.
+*.sh text eol=lf
+.github/workflows/*.yml text eol=lf

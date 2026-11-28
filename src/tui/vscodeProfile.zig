@@ -29,7 +29,7 @@ const environment_service = @import("../vs/platform/environment/common/environme
 
 /// The terminal product's data-folder name, the counterpart of VS Code's
 /// `Code` folder under the platform application-data directory.
-pub const product_data_folder = "vscode-textbuffer";
+pub const product_data_folder = "minecode";
 /// The stable VS Code data-folder name whose `User` profile is the base layer.
 pub const vscode_data_folder = "Code";
 
@@ -252,7 +252,7 @@ test "vscodeProfile: macOS defaults use Code/User and the TUI user data folder" 
     try expectPath(allocator, &.{ home, "Library", "Application Support", "Code", "User" }, profile.vscode_user_dir.?);
     try expectPath(
         allocator,
-        &.{ home, "Library", "Application Support", "vscode-textbuffer" },
+        &.{ home, "Library", "Application Support", "minecode" },
         profile.user_data_dir.?,
     );
     try std.testing.expectEqual(@as(usize, 2), profile.settings_paths.len);
@@ -263,18 +263,18 @@ test "vscodeProfile: macOS defaults use Code/User and the TUI user data folder" 
     );
     try expectPath(
         allocator,
-        &.{ home, "Library", "Application Support", "vscode-textbuffer", "User", "settings.json" },
+        &.{ home, "Library", "Application Support", "minecode", "User", "settings.json" },
         profile.tuiSettingsPath().?,
     );
     try expectPath(
         allocator,
-        &.{ home, "Library", "Application Support", "vscode-textbuffer", "User", "keybindings.json" },
+        &.{ home, "Library", "Application Support", "minecode", "User", "keybindings.json" },
         profile.tuiKeybindingsPath().?,
     );
     try expectPath(allocator, &.{ home, ".vscode", "extensions" }, profile.extensions_dir.?);
     try expectPath(
         allocator,
-        &.{ home, "Library", "Application Support", "vscode-textbuffer", "logs" },
+        &.{ home, "Library", "Application Support", "minecode", "logs" },
         profile.logs_dir.?,
     );
 }
@@ -297,7 +297,7 @@ test "vscodeProfile: Linux honours XDG_CONFIG_HOME" {
     );
     try expectPath(
         allocator,
-        &.{ xdg, "vscode-textbuffer", "User", "keybindings.json" },
+        &.{ xdg, "minecode", "User", "keybindings.json" },
         profile.tuiKeybindingsPath().?,
     );
 }
@@ -315,7 +315,7 @@ test "vscodeProfile: Windows uses APPDATA and USERPROFILE extensions" {
     try expectPath(allocator, &.{ appdata, "Code", "User", "settings.json" }, profile.settings_paths[0]);
     try expectPath(
         allocator,
-        &.{ appdata, "vscode-textbuffer", "User", "settings.json" },
+        &.{ appdata, "minecode", "User", "settings.json" },
         profile.tuiSettingsPath().?,
     );
 }
@@ -345,7 +345,7 @@ test "vscodeProfile: upstream portable and appdata variables win" {
         .env_appdata = appdata_root,
     });
     defer appdata.deinit();
-    try expectPath(allocator, &.{ appdata_root, "vscode-textbuffer" }, appdata.user_data_dir.?);
+    try expectPath(allocator, &.{ appdata_root, "minecode" }, appdata.user_data_dir.?);
 }
 
 test "vscodeProfile: --user-data-dir resolves against VSCODE_CWD" {

@@ -13,7 +13,7 @@ import termios
 import threading
 import time
 
-EDITOR = Path(__file__).resolve().parent.parent / "zig-out/bin/zig"
+EDITOR = Path(__file__).resolve().parent.parent / "zig-out/bin/minecode"
 
 
 class Site(BaseHTTPRequestHandler):

@@ -1,4 +1,4 @@
-# AGENTS.md — porting rules for vscodeT
+# AGENTS.md — porting rules for minecode
 
 This repository is a Zig 0.17 port of VS Code's editor, platform and workbench.
 The upstream checkout is expected at `vscode/`. Upstream source paths start with:

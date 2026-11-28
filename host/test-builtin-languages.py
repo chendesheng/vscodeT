@@ -13,7 +13,7 @@ import termios
 import time
 
 INSTALL = Path(__file__).resolve().parents[1] / "zig-out"
-CATALOG = INSTALL / "share/vscode-textbuffer/extensions"
+CATALOG = INSTALL / "share/minecode/extensions"
 # One independently recognizable token and filename per language-basics package.
 # Empty initial lines keep the syntax probe off the highlighted cursor row.
 SAMPLES = (
@@ -84,7 +84,7 @@ def check(filename, language, code, theme="Dark+", background=b"30;30;30"):
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 140, 0, 0))
         env = {"HOME": directory, "XDG_CONFIG_HOME": directory, "PATH": os.environ["PATH"],
                "TERM": "xterm-256color", "COLORTERM": "truecolor"}
-        process = subprocess.Popen([INSTALL / "bin/zig", "--user-data-dir", settings.parent.parent, source],
+        process = subprocess.Popen([INSTALL / "bin/minecode", "--user-data-dir", settings.parent.parent, source],
                                    cwd=root, env=env, stdin=slave, stdout=slave, stderr=slave)
         os.close(slave)
         try:

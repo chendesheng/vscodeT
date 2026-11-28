@@ -4,14 +4,14 @@ const vscode = require('vscode');
 const { spawn } = require('node:child_process');
 const { createMessageConnection, StreamMessageReader, StreamMessageWriter } = require('vscode-jsonrpc/node');
 
-const signInId = 'vscode-textbuffer.copilot.signIn';
-const signOutId = 'vscode-textbuffer.copilot.signOut';
-const acceptId = 'vscode-textbuffer.copilot.accept';
-const displayName = 'vscode-textbuffer';
+const signInId = 'minecode.copilot.signIn';
+const signOutId = 'minecode.copilot.signOut';
+const acceptId = 'minecode.copilot.accept';
+const displayName = 'minecode';
 const version = '1.0.0';
 
 function activate(context) {
-    const executable = process.env.VSCODE_TEXTBUFFER_COPILOT_SERVER;
+    const executable = process.env.MINECODE_COPILOT_SERVER;
     if (!executable) return;
 
     const status = vscode.window.createStatusBarItem('copilot.inline', vscode.StatusBarAlignment.Right, 0);

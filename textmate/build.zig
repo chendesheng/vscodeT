@@ -8,7 +8,8 @@ pub fn build(b: *std.Build) void {
         .include_dir = b.option([]const u8, "onig-include", "Directory containing oniguruma.h") orelse "",
         .lib_dir = b.option([]const u8, "onig-lib", "Directory containing the oniguruma library") orelse "",
     };
-    const onig = onigModule(b, target, optimize, onig_paths);
+    const onig_link = b.option(bool, "onig-link", "Link the system Oniguruma library (false when the embedder links a static build)") orelse true;
+    const onig = onigModule(b, target, optimize, onig_paths, onig_link);
 
     const module = b.addModule("vscode_textmate", .{
         .root_source_file = b.path("src/root.zig"),
@@ -53,7 +54,7 @@ const OnigPaths = struct {
     lib_dir: []const u8 = "",
 };
 
-fn onigModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, paths: OnigPaths) *std.Build.Module {
+fn onigModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, paths: OnigPaths, link: bool) *std.Build.Module {
     const include_dir = onigIncludeDir(b, paths) orelse @panic(
         "oniguruma.h not found; install oniguruma " ++
             "(macOS: brew install oniguruma, Debian/Ubuntu: apt install libonig-dev)",
@@ -65,11 +66,14 @@ fn onigModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
         .optimize = optimize,
     });
     translate.addIncludePath(.{ .cwd_relative = include_dir });
+    if (!link) translate.defineCMacro("ONIG_STATIC", "1");
 
     const module = translate.createModule();
     module.addIncludePath(.{ .cwd_relative = include_dir });
-    addOnigLibraryPath(b, module, paths);
-    module.linkSystemLibrary("onig", .{});
+    if (link) {
+        addOnigLibraryPath(b, module, paths);
+        module.linkSystemLibrary("onig", .{});
+    }
     return module;
 }
 

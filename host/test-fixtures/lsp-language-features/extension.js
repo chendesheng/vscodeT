@@ -20,7 +20,7 @@ async function activate(context) {
     synchronize: { configurationSection: 'lspFixture', fileEvents: watcher },
     outputChannelName: 'Mock LSP Fixture',
   };
-  client = new LanguageClient('vscodeT-mock-lsp', 'Mock LSP Fixture', serverOptions, clientOptions);
+  client = new LanguageClient('minecode-mock-lsp', 'Mock LSP Fixture', serverOptions, clientOptions);
   context.subscriptions.push(
     vscode.commands.registerCommand('fixture.lsp.status', () => client.sendRequest('fixture/status')),
     vscode.commands.registerCommand('fixture.lsp.applyEdit', () => client.sendRequest('fixture/applyEdit')),

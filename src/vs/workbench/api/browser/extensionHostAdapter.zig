@@ -5857,7 +5857,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             // A real OutputChannel uses the registered file-backed channel,
             // byte offsets, and panel visibility instead of a log-only stub.
             const output_id = @import("../../services/output/common/output.zig").OUTPUT_VIEW_ID;
-            const channel_id = "extension-output-vscode-textbuffer.transport-fixture-#1-Transport Output";
+            const channel_id = "extension-output-minecode.transport-fixture-#1-Transport Output";
             const steps = [_]struct { command: []const u8, content: ?[]const u8, visible: bool }{
                 .{ .command = "fixture.outputWrite", .content = "firsté\n", .visible = true },
                 .{ .command = "fixture.outputReplace", .content = "replacement\n", .visible = true },
@@ -5886,7 +5886,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try ext.host.executeContributedCommand("fixture.watchStart", &.{});
             const watcher_service = workbench.file_watcher_service.?;
             const watcher_actor = &ext.file_events_actor.?;
-            const watch_channel = "extension-output-vscode-textbuffer.transport-fixture-#2-Watcher Events";
+            const watch_channel = "extension-output-minecode.transport-fixture-#2-Watcher Events";
             const watch_deadline = time_compat.milliTimestamp() + 5000;
             while (time_compat.milliTimestamp() < watch_deadline) {
                 _ = workbench.window_events.dispatch(time_compat.milliTimestamp());

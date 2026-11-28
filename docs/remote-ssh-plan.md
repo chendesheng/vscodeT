@@ -1,4 +1,4 @@
-# Remote-SSH workspaces for vscodeT
+# Remote-SSH workspaces for minecode
 
 Proposed implementation against the [pinned VS Code source](../vscode) at `e31c2e52f563620846caab877103f630ea361b9c`.
 
@@ -6,9 +6,9 @@ The first milestone is a complete editing session. From the local terminal workb
 
 ## Design choices
 
-Start with a native POSIX client, a Linux SSH host with an SFTP subsystem, and one remote authority per window. Use the system OpenSSH client for host configuration, identity selection, jump hosts, host-key checks and authentication. Use SFTP over SSH for file operations and an SSH session with a PTY for the terminal. This gives the editing milestone a standard server-side dependency. Remote search, watching and extension execution can introduce a vscodeT-owned helper when they need one.
+Start with a native POSIX client, a Linux SSH host with an SFTP subsystem, and one remote authority per window. Use the system OpenSSH client for host configuration, identity selection, jump hosts, host-key checks and authentication. Use SFTP over SSH for file operations and an SSH session with a PTY for the terminal. This gives the editing milestone a standard server-side dependency. Remote search, watching and extension execution can introduce a minecode-owned helper when they need one.
 
-Port the workbench contracts from the pinned tree. The [remote indicator](../vscode/src/vs/workbench/contrib/remote/browser/remoteIndicator.ts) drives connection actions and status. The [remote filesystem client](../vscode/src/vs/workbench/services/remote/common/remoteFileSystemProviderClient.ts) registers a provider for `vscode-remote`. The [remote terminal backend](../vscode/src/vs/workbench/contrib/terminal/browser/remoteTerminalBackend.ts) gives a terminal an execution location. SFTP is a vscodeT transport choice. The upstream filesystem client uses the VS Code Server IPC channel.
+Port the workbench contracts from the pinned tree. The [remote indicator](../vscode/src/vs/workbench/contrib/remote/browser/remoteIndicator.ts) drives connection actions and status. The [remote filesystem client](../vscode/src/vs/workbench/services/remote/common/remoteFileSystemProviderClient.ts) registers a provider for `vscode-remote`. The [remote terminal backend](../vscode/src/vs/workbench/contrib/terminal/browser/remoteTerminalBackend.ts) gives a terminal an execution location. SFTP is a minecode transport choice. The upstream filesystem client uses the VS Code Server IPC channel.
 
 ## Implementation order
 

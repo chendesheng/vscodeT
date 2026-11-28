@@ -1,0 +1,155 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to package (without the leading v; defaults to 0.0.0-dev)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      MINECODE_TARGET_PLATFORM: ${{ matrix.target_platform }}
+      MINECODE_TARGET_ARCH: ${{ matrix.target_arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-x86_64
+            package_target: linux-x86_64
+            target_arg: '-Dcpu=baseline'
+            target_platform: linux
+            target_arch: x64
+          - os: ubuntu-latest
+            name: linux-aarch64-musl
+            package_target: linux-aarch64-musl
+            target_arg: '-Dtarget=aarch64-linux-musl'
+            target_platform: linux
+            target_arch: arm64
+          - os: macos-latest
+            name: macos-arm64
+            package_target: macos-arm64
+            target_arg: '-Dcpu=baseline'
+            target_platform: darwin
+            target_arch: arm64
+          - os: windows-latest
+            name: windows-x86_64
+            package_target: windows-x86_64
+            target_arg: '-Dcpu=baseline'
+            target_platform: win32
+            target_arch: x64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Initialize upstream submodules
+        run: git submodule update --init --depth 1 vscode vscode-textmate third_party/oniguruma
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            host/package-lock.json
+            host/runtime/package-lock.json
+      - name: Install Node host dependencies
+        working-directory: host
+        run: npm ci --ignore-scripts
+      - name: Bundle the JSON language server
+        working-directory: host
+        run: npm run build:json
+      - name: Bundle the pinned Node extension host
+        working-directory: host
+        run: npm run build
+      - name: Bundle builtin extensions and the TypeScript SDK
+        working-directory: host
+        run: node build-builtin-extensions.js
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${{ inputs.version }}"
+            version="${version#v}"
+          fi
+          if [ -z "$version" ]; then
+            version="0.0.0-dev"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build minecode
+        shell: bash
+        run: |
+          zig build -Doptimize=ReleaseSmall -Donig-static=true ${{ matrix.target_arg }}
+      - name: Install the Node host runtime
+        shell: bash
+        run: |
+          zig build host json-server -Doptimize=ReleaseSmall -Donig-static=true ${{ matrix.target_arg }}
+      - name: Verify the binary and runtime assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=zig-out/bin/minecode
+          if [ -f "$bin.exe" ]; then bin="$bin.exe"; fi
+          test -f "$bin"
+          test -d zig-out/share/minecode/extensions
+          test -f zig-out/lib/minecode/extensionHost.mjs
+          test -f zig-out/lib/minecode/jsonServer.mjs
+          if command -v ldd >/dev/null 2>&1; then
+            if ldd "$bin" | grep -qi onig; then
+              echo "release binary still depends on a system Oniguruma" >&2
+              ldd "$bin" >&2
+              exit 1
+            fi
+          fi
+      - name: Package
+        shell: bash
+        run: |
+          bash scripts/package-release.sh "${{ steps.version.outputs.version }}" "${{ matrix.package_target }}" dist
+          ls -lh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: minecode-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: minecode-*
+          merge-multiple: true
+          path: dist
+      - name: List release assets
+        run: ls -lh dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
