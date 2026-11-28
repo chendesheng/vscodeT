@@ -152,6 +152,18 @@ fn pumpDiffForTests(workbench: *Workbench) !void {
     try std.testing.expect(workbench.editor_opening.pending_diff == null);
 }
 
+// Pump the real window completion queue rather than assuming that the Git
+// provider's history result is available synchronously after refresh or click.
+fn pumpHistoryForTests(workbench: *Workbench) !void {
+    const view = workbench.scm.history orelse return error.TestExpectedHistoryView;
+    const deadline = time_compat.milliTimestamp() + 5000;
+    while (view.page_job != null and time_compat.milliTimestamp() < deadline) {
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+        if (view.page_job != null) try std.testing.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    try std.testing.expect(view.page_job == null);
+}
+
 fn pumpOpenForTests(workbench: *Workbench) void {
     var guard: usize = 0;
     while (workbench.editor_opening.pending_open != null and guard < 1000) : (guard += 1) {
@@ -8741,6 +8753,7 @@ test "Workbench: git scm integration, shared working files and read-only revisio
     workbench.refreshGitStatus();
     const history_view = workbench.scm.history.?;
     try history_view.refresh(.reload);
+    try pumpHistoryForTests(workbench);
     try std.testing.expect(history_view.view_models.len > 0);
     try std.testing.expect(history_view.rows.items.len > 0);
     try std.testing.expect(history_view.hasCurrentHistoryItem() or history_view.view_models.len > 0);
@@ -9141,6 +9154,7 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
     const view = workbench.scm.history orelse return error.TestExpectedHistoryView;
     view.setConfig(.{ .page_size = 2, .page_on_scroll = false });
     try view.refresh(.reload);
+    try pumpHistoryForTests(workbench);
     try std.testing.expectEqual(@as(usize, 3), view.rows.items.len);
 
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -9245,6 +9259,8 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
     const y = ui.cell.snap(body.y) + 2;
     var click = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
     try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &click));
+    try std.testing.expectEqual(@as(usize, 3), view.rows.items.len);
+    try pumpHistoryForTests(workbench);
     try std.testing.expectEqual(@as(usize, 4), view.rows.items.len);
 }
 
@@ -11950,6 +11966,7 @@ test "Workbench: git scm integration opens Graph Open Changes as a real virtuali
     try wb.setUserConfigurationValue("diffEditor.codeLens", .{ .bool = true });
     const graph = wb.scm.history orelse return error.TestExpectedHistoryView;
     try graph.refresh(.reload);
+    try pumpHistoryForTests(wb);
     graph.config.always_show_actions = true;
     var graph_frame = try ui.Frame.init(allocator, 80, 10);
     defer graph_frame.deinit();
