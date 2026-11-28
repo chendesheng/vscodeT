@@ -165,9 +165,11 @@ fn runManagement(job: *ManagementJob) anyerror!void {
     }
 }
 
+const VersionMode = enum { picker, release, prerelease };
 const VersionJob = struct {
     service: *ExtensionsWorkbenchService,
     input: quick.IQuickInputService,
+    mode: VersionMode,
     identifier: []u8,
     url: []u8,
     completion: dispatch.Task,
@@ -603,6 +605,14 @@ pub const ExtensionsWorkbenchService = struct {
     }
 
     pub fn showVersions(self: *ExtensionsWorkbenchService, identifier: []const u8) !void {
+        return self.queryVersionAction(identifier, .picker);
+    }
+
+    pub fn switchReleaseChannel(self: *ExtensionsWorkbenchService, identifier: []const u8, prerelease: bool) !void {
+        return self.queryVersionAction(identifier, if (prerelease) .prerelease else .release);
+    }
+
+    fn queryVersionAction(self: *ExtensionsWorkbenchService, identifier: []const u8, mode: VersionMode) !void {
         const window = self.window orelse return error.ExtensionManagementUnavailable;
         const input = self.quick_input orelse return error.QuickInputUnavailable;
         const url = self.gallery_url orelse return error.GalleryUnavailable;
@@ -612,7 +622,7 @@ pub const ExtensionsWorkbenchService = struct {
         const owned_url = try self.allocator.dupe(u8, url);
         errdefer self.allocator.free(owned_url);
         const job = try self.allocator.create(VersionJob);
-        job.* = .{ .service = self, .input = input, .identifier = owned_id, .url = owned_url, .completion = .{ .queue = window, .context = self, .run = applyVersions, .progress = true }, .future = undefined };
+        job.* = .{ .service = self, .input = input, .mode = mode, .identifier = owned_id, .url = owned_url, .completion = .{ .queue = window, .context = self, .run = applyVersions, .progress = true }, .future = undefined };
         self.version_job = job;
         job.future = window.io.async(runVersions, .{job});
     }
@@ -645,11 +655,23 @@ pub const ExtensionsWorkbenchService = struct {
             return true;
         };
         defer page.deinit();
-        self.presentVersions(job, page) catch |err| {
+        self.completeVersionAction(job, page) catch |err| {
             self.management_error = err;
             self.on_change.fire({}) catch {};
         };
         return true;
+    }
+
+    fn completeVersionAction(self: *ExtensionsWorkbenchService, job: *VersionJob, page: gallery.Page) !void {
+        if (job.mode == .picker) return self.presentVersions(job, page);
+        for (page.extensions) |entry| {
+            const id = try util.getGalleryExtensionId(self.allocator, entry.publisher.publisherName, entry.extensionName);
+            defer self.allocator.free(id);
+            if (!util.areSameExtensions(id, job.identifier)) continue;
+            const version = entry.selectReleaseChannel(job.mode == .prerelease) orelse return error.CompatibleVersionNotFound;
+            return self.startManagement(.install, job.identifier, version.version, version.asset("Microsoft.VisualStudio.Services.VSIXPackage").?, version.isPreRelease(), false);
+        }
+        return error.CompatibleVersionNotFound;
     }
 
     fn presentVersions(self: *ExtensionsWorkbenchService, job: *VersionJob, page: gallery.Page) !void {

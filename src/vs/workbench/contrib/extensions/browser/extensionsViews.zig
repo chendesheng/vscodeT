@@ -659,10 +659,15 @@ pub const ExtensionsListView = struct {
             install: bool = false,
             uninstall: bool = false,
             versions: bool = false,
+            switch_prerelease: ?bool = null,
             restart: bool = false,
             pub fn run(action: *@This()) !void {
                 if (action.restart) {
                     if (action.view.service) |view_service| try view_service.restartExtensions();
+                    return;
+                }
+                if (action.switch_prerelease) |prerelease| {
+                    if (action.view.service) |view_service| try view_service.switchReleaseChannel(action.identifier, prerelease);
                     return;
                 }
                 if (action.versions) {
@@ -706,7 +711,13 @@ pub const ExtensionsListView = struct {
             try menu.addAction("extensions.uninstall", "Uninstall", null, Command{ .view = self, .identifier = identifier, .uninstall = true });
         }
         if (self.service) |view_service| if (view_service.runtimeState(identifier) == .RestartExtensions) try menu.addAction("extensions.runtimeState", "Restart Extensions", null, Command{ .view = self, .identifier = identifier, .restart = true });
-        if (!extension.is_builtin) try menu.addAction("extensions.installAnotherVersion", "Install Another Version…", null, Command{ .view = self, .identifier = identifier, .versions = true });
+        if (!extension.is_builtin) {
+            try menu.addAction("extensions.installAnotherVersion", "Install Another Version…", null, Command{ .view = self, .identifier = identifier, .versions = true });
+            if (self.service) |workbench_service| if (workbench_service.gallery_url != null) {
+                const prerelease = !(if (workbench_service.findLocal(identifier)) |local| local.is_pre_release else extension.is_pre_release);
+                try menu.addAction(if (prerelease) "extensions.installPreReleaseVersion" else "extensions.installReleaseVersion", if (prerelease) "Switch to Pre-Release Version" else "Switch to Release Version", null, Command{ .view = self, .identifier = identifier, .switch_prerelease = prerelease });
+            };
+        }
         try menu.addAction("workbench.extensions.action.openExtension", "Open Extension", null, Command{ .view = self, .identifier = identifier, .open = true });
         try service.showContextMenu(menu, anchor);
     }
