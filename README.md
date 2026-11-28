@@ -864,6 +864,11 @@ Linux aarch64 musl, macOS arm64 and Windows x86_64 on native runners, using
 pushed `v*` tag creates a GitHub release with the archives and SHA-256
 checksums; `workflow_dispatch` builds the same artifacts without publishing.
 
+Release packaging installs the runtime-only Node manifest in
+`host/runtime/package.json` beside `lib/minecode`. Build-only packages such as
+`esbuild`, the telemetry/auth source trees and the Emmet helper remain in
+`host/package.json` for bundling but are not installed into the archive.
+
 ## Design docs
 
 - [Terminal UI architecture](docs/terminal-ui.md) — the standalone `ui/`

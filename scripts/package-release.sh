@@ -68,9 +68,28 @@ cp "$binary" "$stage/bin/$(basename -- "$binary")"
 chmod 0755 "$stage/bin/$(basename -- "$binary")" 2>/dev/null || true
 
 cp -R "$root/zig-out/share/minecode" "$stage/share/minecode"
-if [ -d "$root/zig-out/lib/minecode" ]; then
-    cp -R "$root/zig-out/lib/minecode" "$stage/lib/minecode"
-    bash "$root/scripts/prune-release-runtime.sh" "$stage"
+
+lib_src="$root/zig-out/lib/minecode"
+if [ -d "$lib_src" ]; then
+    mkdir -p "$stage/lib/minecode"
+    for item in extensionHost.mjs jsonServer.mjs render-math.mjs render-mermaid.mjs product.json extensions; do
+        if [ -e "$lib_src/$item" ]; then
+            cp -R "$lib_src/$item" "$stage/lib/minecode/$item"
+        fi
+    done
+    for required in extensionHost.mjs jsonServer.mjs extensions; do
+        if [ ! -e "$stage/lib/minecode/$required" ]; then
+            echo "missing Node runtime asset: $required; run 'zig build host' first" >&2
+            exit 1
+        fi
+    done
+    # Install only the runtime manifest. Build-only packages stay in
+    # host/package.json and never enter the archive.
+    runtime_tmp=$(mktemp -d)
+    cp "$root/host/runtime/package.json" "$root/host/runtime/package-lock.json" "$runtime_tmp/"
+    (cd "$runtime_tmp" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund)
+    mv "$runtime_tmp/node_modules" "$stage/lib/minecode/node_modules"
+    rm -rf "$runtime_tmp"
 fi
 
 cp "$root/README.md" "$stage/README.md"
