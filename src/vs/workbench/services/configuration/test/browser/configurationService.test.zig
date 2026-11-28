@@ -324,7 +324,10 @@ test "ConfigurationService: language overrides from workspace settings" {
     defer allocator.free(resource);
     try std.testing.expectEqual(@as(i64, 2), service.getValue("editor.tabSize", .{ .resource = resource }).?.integer);
     try std.testing.expectEqual(@as(i64, 4), service.getValue("editor.tabSize", .{ .resource = resource, .override_identifier = "typescript" }).?.integer);
+    const first = service.getValue("editor.tabSize", .{ .resource = resource, .override_identifier = "typescript" }).?;
     try std.testing.expectEqual(@as(i64, 2), service.getValue("editor.tabSize", .{ .resource = resource, .override_identifier = "python" }).?.integer);
+    try std.testing.expectEqual(first, service.getValue("editor.tabSize", .{ .resource = resource, .override_identifier = "typescript" }).?);
+    try std.testing.expectEqual(@as(i64, 4), first.integer);
     const typescript_inspect = service.inspect("editor.tabSize", .{ .resource = resource, .override_identifier = "typescript" });
     try std.testing.expectEqual(@as(i64, 4), typescript_inspect.value.?.integer);
     try std.testing.expectEqual(@as(usize, 1), typescript_inspect.override_identifiers.len);
@@ -407,6 +410,9 @@ test "ConfigurationService: application and machine settings ignore workspace va
     try std.testing.expectEqual(@as(i64, 2), service.inspect("application.setting", .{ .resource = resource }).value.?.integer);
     try std.testing.expect(service.inspect("application.setting", .{ .resource = resource }).workspace == null);
     try std.testing.expectEqual(@as(i64, 2), service.getValue("machine.setting", .{ .resource = resource }).?.integer);
+    const machine_value = service.getValue("machine.setting", .{ .resource = resource }).?;
+    try std.testing.expectEqual(machine_value, service.getValue("machine.setting", .{ .resource = resource }).?);
+    try std.testing.expectEqual(machine_value, service.inspect("machine.setting", .{ .resource = resource }).value.?);
     try std.testing.expect(service.inspect("machine.setting", .{ .resource = resource }).workspace == null);
 }
 

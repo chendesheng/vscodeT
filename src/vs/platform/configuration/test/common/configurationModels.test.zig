@@ -195,6 +195,26 @@ test "get overriding configuration model" {
     }
 }
 
+test "configuration model caches language overrides and invalidates on mutation" {
+    const allocator = std.testing.allocator;
+    var model = try configuration_models.ConfigurationModel.fromJson(allocator,
+        \\{"editor.tabSize":2,"editor.wordWrap":"off","files.associations":{"a":"zig"},"[zig][rust]":{"editor.tabSize":4},"[zig]":{"editor.tabSize":8}}
+    );
+    defer model.deinit();
+    try std.testing.expectEqual(&model, try model.resolveOverride("python"));
+    try std.testing.expectEqual(&model, try model.resolveOverride("python"));
+    const zig_model = try model.resolveOverride("zig");
+    try std.testing.expectEqual(zig_model, try model.resolveOverride("zig"));
+    try std.testing.expectEqual(@as(i64, 8), zig_model.getValue("editor.tabSize").?.integer);
+    try std.testing.expectEqual(@as(i64, 4), (try model.resolveOverride("rust")).getValue("editor.tabSize").?.integer);
+    try std.testing.expectEqual(model.getValue("files.associations.a"), zig_model.getValue("files.associations.a"));
+    try std.testing.expectEqualStrings("off", zig_model.getValue("editor.wordWrap").?.string);
+    try model.setValue("editor.wordWrap", .{ .string = "on" });
+    try std.testing.expectEqualStrings("on", (try model.resolveOverride("zig")).getValue("editor.wordWrap").?.string);
+    model.removeValue("[zig]");
+    try std.testing.expectEqual(@as(i64, 4), (try model.resolveOverride("zig")).getValue("editor.tabSize").?.integer);
+}
+
 test "simple merge" {
     const allocator = std.testing.allocator;
     var base = try modelFrom(allocator, "{\"a\":1,\"b\":2}", &.{ "a", "b" });

@@ -51,6 +51,9 @@ pub const ConfigurationModel = struct {
     contents: Value = .{ .object = .empty },
     keys: std.array_list.Managed([]const u8),
     overrides: []const OverrideIdentifier = &.{},
+    // Upstream ConfigurationModel.overrideConfigurations. A null entry
+    // denotes the base model itself, which must not be cloned or owned here.
+    override_configurations: std.StringHashMapUnmanaged(?*ConfigurationModel) = .empty,
 
     pub fn initEmpty(allocator: Allocator) !ConfigurationModel {
         return .{
@@ -63,8 +66,22 @@ pub const ConfigurationModel = struct {
     }
 
     pub fn deinit(self: *ConfigurationModel) void {
+        self.clearOverrideConfigurations();
         self.keys.deinit();
         self.arena.deinit();
+    }
+
+    fn clearOverrideConfigurations(self: *ConfigurationModel) void {
+        var iterator = self.override_configurations.iterator();
+        while (iterator.next()) |entry| {
+            if (entry.value_ptr.*) |model| {
+                model.deinit();
+                self.allocator.destroy(model);
+            }
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.override_configurations.deinit(self.allocator);
+        self.override_configurations = .empty;
     }
 
     /// Parses one settings document. Invalid JSON yields an empty model, as
@@ -174,6 +191,7 @@ pub const ConfigurationModel = struct {
     }
 
     pub fn setValue(self: *ConfigurationModel, key: []const u8, value: Value) !void {
+        self.clearOverrideConfigurations();
         const arena = self.arena.allocator();
         try configuration.addToValueTree(arena, &self.contents, key, value);
         if (!self.hasKey(key)) try self.keys.append(try arena.dupe(u8, key));
@@ -212,6 +230,7 @@ pub const ConfigurationModel = struct {
     }
 
     pub fn removeValue(self: *ConfigurationModel, key: []const u8) void {
+        self.clearOverrideConfigurations();
         configuration.removeFromValueTree(&self.contents, key);
         for (self.keys.items, 0..) |existing, index| {
             if (std.mem.eql(u8, existing, key)) {
@@ -235,6 +254,71 @@ pub const ConfigurationModel = struct {
             if (std.mem.eql(u8, existing, key)) return true;
         }
         return false;
+    }
+
+    /// Upstream override(identifier): return a borrowed, cached immutable
+    /// model. The view's unchanged values borrow this model's arena; mutation
+    /// or disposal invalidates the cache before releasing its source.
+    pub fn resolveOverride(self: *ConfigurationModel, identifier: []const u8) !*const ConfigurationModel {
+        if (self.overrides.len == 0) return self;
+        if (self.override_configurations.get(identifier)) |cached| return cached orelse self;
+        const model = try self.createOverrideConfigurationModel(identifier);
+        errdefer if (model) |value| {
+            value.deinit();
+            self.allocator.destroy(value);
+        };
+        const key = try self.allocator.dupe(u8, identifier);
+        errdefer self.allocator.free(key);
+        try self.override_configurations.put(self.allocator, key, model);
+        return model orelse self;
+    }
+
+    fn createOverrideConfigurationModel(self: *ConfigurationModel, identifier: []const u8) !?*ConfigurationModel {
+        // No matching nonempty block: upstream returns the original model.
+        var has_override = false;
+        for (self.overrides) |entry| {
+            if (entry.contents == .object and entry.contents.object.count() != 0 and containsIdentifier(entry.identifiers, identifier)) {
+                has_override = true;
+                break;
+            }
+        }
+        if (!has_override) return null;
+
+        const result = try self.allocator.create(ConfigurationModel);
+        errdefer self.allocator.destroy(result);
+        result.* = try ConfigurationModel.initEmpty(self.allocator);
+        errdefer result.deinit();
+        const arena = result.arena.allocator();
+        var override_contents: Value = .{ .object = .empty };
+        try result.keys.appendSlice(self.keys.items);
+        // Multi-identifier entries merge before the identifier-only entry.
+        for ([_]bool{ false, true }) |single| {
+            for (self.overrides) |entry| {
+                if ((entry.identifiers.len == 1) != single or !containsIdentifier(entry.identifiers, identifier) or entry.contents != .object) continue;
+                try configuration.mergeInto(arena, &override_contents, entry.contents);
+                for (entry.keys) |key| if (!result.hasKey(key)) try result.keys.append(key);
+            }
+        }
+        // Only top-level keys which have overrides need a deep clone/merge.
+        // Other values are immutable and can safely share the base arena.
+        if (self.contents == .object) {
+            var base_iterator = self.contents.object.iterator();
+            while (base_iterator.next()) |entry| try result.contents.object.put(arena, entry.key_ptr.*, entry.value_ptr.*);
+        }
+        var iterator = override_contents.object.iterator();
+        while (iterator.next()) |entry| {
+            var value = entry.value_ptr.*;
+            if (result.contents.object.get(entry.key_ptr.*)) |base| {
+                if (base == .object and value == .object) {
+                    var merged = try configuration.cloneValue(arena, base);
+                    try configuration.mergeInto(arena, &merged, value);
+                    value = merged;
+                }
+            }
+            try result.contents.object.put(arena, entry.key_ptr.*, value);
+        }
+        result.overrides = self.overrides;
+        return result;
     }
 
     /// Returns the model with every override block matching `identifier`

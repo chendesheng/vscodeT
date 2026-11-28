@@ -66,6 +66,9 @@ pub const ConfigurationService = struct {
     workspace_model: ConfigurationModel,
     scratch: std.heap.ArenaAllocator,
     folders: std.StringHashMap(*ConfigurationModel),
+    /// Consolidated non-workspace scopes, used by machine-scoped and
+    /// restricted settings just as the workspace/folder base models are.
+    user_consolidated: ConfigurationModel,
     workspace_consolidated: ConfigurationModel,
     folder_consolidated: std.StringHashMap(*ConfigurationModel),
 
@@ -101,6 +104,7 @@ pub const ConfigurationService = struct {
             .workspace_model = try ConfigurationModel.initEmpty(allocator),
             .scratch = std.heap.ArenaAllocator.init(allocator),
             .folders = std.StringHashMap(*ConfigurationModel).init(allocator),
+            .user_consolidated = try ConfigurationModel.initEmpty(allocator),
             .workspace_consolidated = try ConfigurationModel.initEmpty(allocator),
             .folder_consolidated = std.StringHashMap(*ConfigurationModel).init(allocator),
             .change_emitter = Emitter(configuration.Change).init(allocator),
@@ -120,6 +124,7 @@ pub const ConfigurationService = struct {
         self.change_emitter.deinit();
         deinitFolderModels(self.allocator, &self.folder_consolidated);
         deinitFolderModels(self.allocator, &self.folders);
+        self.user_consolidated.deinit();
         self.workspace_consolidated.deinit();
         self.workspace_model.deinit();
         self.user.deinit();
@@ -316,9 +321,11 @@ pub const ConfigurationService = struct {
             try new_folders.put(folder.resource, model);
         }
 
+        var new_user_consolidated = try mergeModels(self.allocator, &.{ &new_defaults, &new_user });
+        errdefer new_user_consolidated.deinit();
         var new_workspace_consolidated = try mergeModels(
             self.allocator,
-            &.{ &new_defaults, &new_user, &new_workspace },
+            &.{ &new_user_consolidated, &new_workspace },
         );
         errdefer new_workspace_consolidated.deinit();
 
@@ -330,7 +337,7 @@ pub const ConfigurationService = struct {
             errdefer self.allocator.destroy(consolidated);
             consolidated.* = try mergeModels(
                 self.allocator,
-                &.{ &new_defaults, &new_user, &new_workspace, entry.value_ptr.* },
+                &.{ &new_workspace_consolidated, entry.value_ptr.* },
             );
             errdefer consolidated.deinit();
             try new_folder_consolidated.put(entry.key_ptr.*, consolidated);
@@ -362,6 +369,8 @@ pub const ConfigurationService = struct {
         self.user = new_user;
         self.workspace_model.deinit();
         self.workspace_model = new_workspace;
+        self.user_consolidated.deinit();
+        self.user_consolidated = new_user_consolidated;
 
         deinitFolderModels(self.allocator, &self.folders);
         self.folders = new_folders;
@@ -462,20 +471,16 @@ pub const ConfigurationService = struct {
         const property = self.registry.getConfigurationProperties().get(section);
         const ignore_workspace = if (property) |registered| !self.allowsWorkspaceValue(registered) else !self.trusted;
         if (ignore_workspace) {
-            _ = self.scratch.reset(.retain_capacity);
-            var merged = mergeModels(self.scratch.allocator(), &.{ &self.defaults, &self.user }) catch return null;
-            if (overrides.override_identifier) |identifier| {
-                var overridden = merged.override(self.scratch.allocator(), identifier) catch return null;
-                if (overridden.getValue(section)) |value| return value;
-                return if (property) |registered| &registered.default else null;
-            }
-            if (merged.getValue(section)) |value| return value;
+            const model: *const ConfigurationModel = if (overrides.override_identifier) |identifier|
+                self.user_consolidated.resolveOverride(identifier) catch return null
+            else
+                &self.user_consolidated;
+            if (model.getValue(section)) |value| return value;
             return if (property) |registered| &registered.default else null;
         }
         const model = self.effectiveModel(overrides) orelse return null;
         if (overrides.override_identifier) |identifier| {
-            _ = self.scratch.reset(.retain_capacity);
-            var overridden = model.override(self.scratch.allocator(), identifier) catch return null;
+            const overridden = model.resolveOverride(identifier) catch return null;
             return overridden.getValue(section);
         }
         return model.getValue(section);
@@ -506,20 +511,17 @@ pub const ConfigurationService = struct {
             allow_workspace = false;
         }
         if (!allow_workspace) {
-            _ = self.scratch.reset(.retain_capacity);
-            var merged = mergeModels(self.scratch.allocator(), &.{ &self.defaults, &self.user }) catch return .{};
-            if (overrides.override_identifier) |identifier| {
-                const overridden = merged.override(self.scratch.allocator(), identifier) catch null;
-                value = if (overridden) |model| model.getValue(section) else merged.getValue(section);
-            } else {
-                value = merged.getValue(section);
-            }
+            const model: *const ConfigurationModel = if (overrides.override_identifier) |identifier|
+                self.user_consolidated.resolveOverride(identifier) catch &self.user_consolidated
+            else
+                &self.user_consolidated;
+            value = model.getValue(section);
         } else if (overrides.override_identifier) |identifier| {
-            _ = self.scratch.reset(.retain_capacity);
-            const overridden = effective.override(self.scratch.allocator(), identifier) catch null;
+            const overridden = effective.resolveOverride(identifier) catch null;
             if (overridden) |model| value = model.getValue(section);
         }
         if (overrides.override_identifier) |identifier| {
+            _ = self.scratch.reset(.retain_capacity);
             const ids = self.scratch.allocator().alloc([]const u8, 1) catch null;
             if (ids) |slice| {
                 slice[0] = identifier;
@@ -752,7 +754,7 @@ pub const ConfigurationService = struct {
         };
     }
 
-    fn effectiveModel(self: *const ConfigurationService, overrides: configuration.Overrides) ?*const ConfigurationModel {
+    fn effectiveModel(self: *ConfigurationService, overrides: configuration.Overrides) ?*ConfigurationModel {
         if (self.folderConsolidated(overrides.resource)) |model| return model;
         return &self.workspace_consolidated;
     }
@@ -763,7 +765,7 @@ pub const ConfigurationService = struct {
         return self.folders.get(folder.resource);
     }
 
-    fn folderConsolidated(self: *const ConfigurationService, resource: ?[]const u8) ?*const ConfigurationModel {
+    fn folderConsolidated(self: *const ConfigurationService, resource: ?[]const u8) ?*ConfigurationModel {
         const path = resource orelse return null;
         const folder = self.workspace.getWorkspaceFolder(path) orelse return null;
         return self.folder_consolidated.get(folder.resource);
