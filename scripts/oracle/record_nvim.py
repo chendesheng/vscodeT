@@ -102,10 +102,15 @@ def record_state(nvim) -> dict:
     lines = nvim.current.buffer[:]
     text = "\n".join(lines)
     _, line, column, _ = nvim.eval("getcurpos()")[:4]
+    view = nvim.funcs.winsaveview()
     return {
         "text": text,
         "cursor": [int(line), int(column)],
         "mode": {"n": "normal", "i": "insert", "R": "replace"}[mode],
+        "scroll": {
+            "top_line": int(view["topline"]),
+            "left": int(view["leftcol"]),
+        },
     }
 
 
@@ -114,6 +119,13 @@ def seed(nvim, case: dict) -> None:
     cursor = case["seed"]["cursor"]
     nvim.command("enew!")
     nvim.current.buffer[:] = text.split("\n")
+    # Match the replay editor's viewport: `height` is the number of text rows
+    # (Neovim's window height excludes the statusline), and `width` is the
+    # text column count. The replay editor reserves one row for its own status
+    # line and adds it to the cassette height.
+    window = nvim.current.window
+    window.height = int(case.get("height", 12))
+    window.width = int(case.get("width", 60))
     nvim.funcs.cursor(cursor[0], cursor[1])
     actual = "\n".join(nvim.current.buffer[:])
     if actual != text:
@@ -135,6 +147,9 @@ def record_case(nvim, case: dict) -> dict:
         raise SystemExit(f"{case['case']}: seed did not leave Neovim in normal mode")
     keys = nvim_key_sequence(case["keys"])
     nvim.funcs.feedkeys(keys, "x")
+    # Scroll state is only updated by the redraw loop; force it so the cassette
+    # records the viewport a UI would show.
+    nvim.command("redraw")
     return record_state(nvim)
 
 
@@ -177,6 +192,7 @@ def main() -> int:
                 continue
             state = record_case(nvim, case)
             case["reference_version"] = version
+            case["height"] = int(case.get("height", 12))
             new_states = [state]
             if args.check:
                 checked += 1

@@ -1974,14 +1974,11 @@ pub const VimEngine = struct {
     fn handleZ(self: *VimEngine, char: u21) !bool {
         const height = self.editor.textHeight();
         const cursor_view = self.editor.cursorViewLine();
-        const max_top = @max(1, self.editor.viewLineCount() -| height + 1);
+        const view_count = self.editor.viewLineCount();
         switch (char) {
-            'z' => {
-                const top = if (cursor_view > height / 2) cursor_view - height / 2 else 1;
-                _ = self.editor.setTopViewLine(@min(top, max_top));
-            },
-            't' => _ = self.editor.setTopViewLine(@min(cursor_view, max_top)),
-            'b' => _ = self.editor.setTopViewLine(@min(cursor_view -| (height -| 1), max_top)),
+            'z' => _ = self.editor.setTopViewLine(@min(cursor_view -| ((height -| 1) / 2), view_count)),
+            't' => _ = self.editor.setTopViewLine(@min(cursor_view, view_count)),
+            'b' => _ = self.editor.setTopViewLine(@min(cursor_view -| (height -| 1), view_count)),
             'a' => _ = try self.commands.execute("editor.toggleFold"),
             'c' => _ = try self.commands.execute("editor.fold"),
             'o' => _ = try self.commands.execute("editor.unfold"),
@@ -1996,17 +1993,22 @@ pub const VimEngine = struct {
         const delta: usize = @max(self.editor.textHeight() / 2, 1);
         const top = self.editor.topViewLine();
         const max_top = @max(1, self.editor.viewLineCount() -| self.editor.textHeight() + 1);
-        _ = self.editor.setTopViewLine(if (down) @min(top + delta, max_top) else top -| delta);
+        const new_top = if (down) @min(top + delta, max_top) else top -| delta;
+        // Moving the cursor through the editor reveals it and can move the
+        // viewport, so set the command's viewport after the motion.
         try self.editor.moveWrappedLine(down, false, delta);
+        _ = self.editor.setTopViewLine(new_top);
         self.editor.ensureCursorVisible();
     }
 
     fn scrollPage(self: *VimEngine, down: bool) !void {
-        const delta: usize = @max(self.editor.textHeight() -| 1, 1);
+        // Vim scrolls a page by two fewer lines than the window height.
+        const delta: usize = @max(self.editor.textHeight() -| 2, 1);
         const top = self.editor.topViewLine();
         const max_top = @max(1, self.editor.viewLineCount() -| self.editor.textHeight() + 1);
-        _ = self.editor.setTopViewLine(if (down) @min(top + delta, max_top) else top -| delta);
+        const new_top = if (down) @min(top + delta, max_top) else top -| delta;
         try self.editor.moveWrappedLine(down, false, delta);
+        _ = self.editor.setTopViewLine(new_top);
         self.editor.ensureCursorVisible();
     }
 
