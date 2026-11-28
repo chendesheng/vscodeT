@@ -3298,6 +3298,12 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(status.object.get("folders").?.array.items.len == 1);
             const mock_configuration = status.object.get("configuration") orelse return error.MockConfigurationMissing;
             try std.testing.expectEqualStrings("fixture setting", mock_configuration.object.get("value").?.string);
+            // An omitted string default must reach the languageclient as the
+            // empty string, not JSON null (the real Zig extension calls
+            // startsWith on its implicit zig.path default at activation).
+            const implicit_string = mock_configuration.object.get("implicitString") orelse return error.MockConfigurationMissing;
+            try std.testing.expect(implicit_string == .string);
+            try std.testing.expectEqualStrings("", implicit_string.string);
             var resource = try @import("../../../platform/markers/common/markers.zig").Resource.fromUri(allocator, model.uri());
             defer resource.deinit(allocator);
             const diagnostic_deadline = time_compat.milliTimestamp() + 5000;

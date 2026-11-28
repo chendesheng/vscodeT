@@ -497,9 +497,11 @@ present; otherwise the catalog location is used.
 ### Zig and ZLS (experimental)
 
 Install `ziglang.vscode-zig` in the effective extensions directory and build the
-Node host. With Zig and ZLS installed locally, set `"zig.path"`,
-`"zig.zls.path"` and `"zig.zls.enabled": "on"` in the VS Code settings used
-by the editor. The real Zig extension 0.7.0 with Zig/ZLS 0.17.0 has been
+Node host (`zig build host` installs the current runtime; a native-only rebuild
+leaves the installed Node bundle unchanged). With Zig and ZLS installed
+locally, enable `"zig.zls.enabled": "on"` in the VS Code settings used by the
+editor. The extension can discover Zig on PATH; set `"zig.path"` or
+`"zig.zls.path"` explicitly to select a particular executable. The real Zig extension 0.7.0 with Zig/ZLS 0.17.0 has been
 verified to activate from a standalone Zig file and a workspace containing
 `build.zig`, return hover content from ZLS, and publish both Zig language
 status items to the status bar. Incremental document edits are reflected in

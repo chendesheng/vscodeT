@@ -452,3 +452,37 @@ test "deregistering a node clears owner policies and reference keys" {
     try std.testing.expectEqual(@as(usize, 1), references.items.len);
     try std.testing.expectEqualStrings("policy.reference", references.items[0]);
 }
+
+test "configuration registry derives defaults from schema types without replacing explicit null" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const registry = try configuration_registry.ConfigurationRegistry.init(a);
+    defer registry.deinit();
+    try registry.registerConfiguration("implicit-defaults", &.{
+        .{ .key = "zig.path", .value_type = "string" },
+        .{ .key = "implicit.boolean", .value_type = "boolean" },
+        .{ .key = "implicit.integer", .value_type = "integer" },
+        .{ .key = "implicit.number", .value_type = "number" },
+        .{ .key = "implicit.array", .value_type = "array" },
+        .{ .key = "implicit.object", .value_type = "object" },
+        .{ .key = "implicit.unknown", .value_type = "unknown" },
+        .{ .key = "implicit.union", .value_type = "object", .value_types = &.{ "string", "null" } },
+        .{ .key = "implicit.emptyUnion", .value_types = &.{} },
+        .{ .key = "explicit.null", .value_type = "string", .default = .null },
+    });
+    const props = registry.getConfigurationProperties();
+    const scratch = arena.allocator();
+    for ([_][2][]const u8{
+        .{ "zig.path", "\"\"" },
+        .{ "implicit.boolean", "false" },
+        .{ "implicit.integer", "0" },
+        .{ "implicit.number", "0" },
+        .{ "implicit.array", "[]" },
+        .{ "implicit.object", "{}" },
+        .{ "implicit.unknown", "null" },
+        .{ "implicit.union", "\"\"" },
+        .{ "implicit.emptyUnion", "null" },
+        .{ "explicit.null", "null" },
+    }) |case| try expectDefault(props, case[0], case[1], scratch);
+}

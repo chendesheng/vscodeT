@@ -16,6 +16,18 @@ const ConfigurationModel = configurationModels.ConfigurationModel;
 
 pub const ConfigurationScope = configuration.ConfigurationScope;
 
+/// Upstream derives a default from the first schema type when the property
+/// does not declare one. An explicit JSON null remains an explicit default.
+pub fn getDefaultValue(allocator: Allocator, value_type: ?[]const u8) std.json.Value {
+    const kind = value_type orelse return .null;
+    if (std.mem.eql(u8, kind, "boolean")) return .{ .bool = false };
+    if (std.mem.eql(u8, kind, "integer") or std.mem.eql(u8, kind, "number")) return .{ .integer = 0 };
+    if (std.mem.eql(u8, kind, "string")) return .{ .string = "" };
+    if (std.mem.eql(u8, kind, "array")) return .{ .array = std.json.Array.init(allocator) };
+    if (std.mem.eql(u8, kind, "object")) return .{ .object = .{} };
+    return .null;
+}
+
 pub const PropertySchema = struct {
     key: []const u8,
     value_types: ?[]const []const u8 = null,
@@ -159,7 +171,7 @@ pub const ConfigurationRegistry = struct {
                 if (!entry.found_existing) entry.value_ptr.* = std.array_list.Managed([]const u8).init(arena);
                 try entry.value_ptr.append(try arena.dupe(u8, schema.key));
             }
-            const base_value = if (schema.default) |value| try cloneValue(arena, value) else if (std.mem.eql(u8, schema.value_type, "object")) std.json.Value{ .object = .{} } else std.json.Value.null;
+            const base_value = if (schema.default) |value| try cloneValue(arena, value) else getDefaultValue(arena, if (schema.value_types) |types| if (types.len > 0) types[0] else null else schema.value_type);
             const default_value = try cloneValue(arena, base_value);
             const property = Property{
                 .value_type = try arena.dupe(u8, schema.value_type),
