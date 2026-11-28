@@ -10,7 +10,7 @@ on:
         type: boolean
         default: false
       test_filter:
-        description: Zig E2E test name substring (Extensions: runs the entire Windows E2E suite)
+        description: 'Zig E2E test name substring (Extensions: runs the entire Windows E2E suite)'
         type: string
         default: 'language feature registration reaches the workbench registries'
 
