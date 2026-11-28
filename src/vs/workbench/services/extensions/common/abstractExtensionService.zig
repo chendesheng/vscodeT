@@ -382,3 +382,22 @@ test "DescriptionDelta: keeps unchanged manifests and rejects activated removals
     try std.testing.expect(current[0].identifier.ptr == original_manifest);
     try std.testing.expectEqual(@as(usize, 2), current.len);
 }
+
+const feature_registry = @import("../../extensionManagement/common/extensionFeatures.zig");
+
+fn shouldRenderActivationEvents(manifest: std.json.Value) bool {
+    return feature_registry.property(manifest, "activationEvents") != .null;
+}
+fn renderActivationEvents(allocator: std.mem.Allocator, manifest: std.json.Value) ![]u8 {
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+    for (feature_registry.items(feature_registry.property(manifest, "activationEvents"))) |event| if (event == .string) try output.writer.print("- `{s}`\n", .{event.string});
+    return output.toOwnedSlice();
+}
+
+pub const activation_events_feature: feature_registry.Descriptor = .{
+    .id = "activationEvents",
+    .label = "Activation Events",
+    .should_render = shouldRenderActivationEvents,
+    .render = renderActivationEvents,
+};
