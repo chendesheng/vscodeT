@@ -42,7 +42,10 @@ The sidebar uses `extensionsViewlet.zig`, `extensionsViews.zig` and
 suggestions. Separate gallery models keep the search, Popular, recommendations
 and update checks independent. The extension editor uses `ExtensionsInput`
 with the upstream input ID and owns its selected metadata across rescans and
-gallery replacement. `extensionEditor.zig` supplies the tab bar, Markdown
+gallery replacement. Exact-ID queries keep installed results and resolve
+remaining IDs through the gallery; dependency/pack navigation uses a separate
+identifier lookup rather than replacing the sidebar query.
+`extensionEditor.zig` supplies the tab bar, Markdown
 documentation, actions and responsive additional details.
 `extensionFeatures.zig` provides a window-owned feature registry with
 renderers registered by their command, configuration, language and theme

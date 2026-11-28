@@ -464,9 +464,10 @@ shown by default; a fresh user inventory also shows Popular results, while
 workspace recommendations come from `.vscode/extensions.json` or a workspace
 configuration file, respecting unwanted recommendations. `@builtin` separates Features, Themes and Programming
 Languages. `@installed`, `@enabled`, `@disabled`, `@updates`, `@outdated`,
-`@recentlyUpdated`, `@restartRequired`, `@recommended`, `@popular`,
-`@contribute:<feature>`, category and ID filters select local or gallery
-views. Ctrl+Space or the search filter control completes query tokens.
+`@recentlyUpdated`, `@recentlyPublished`, `@restartRequired`, `@recommended`,
+`@popular`, `@contribute:<feature>`, category, tag, file-extension and ID
+filters select local or gallery views. A sort-only search sorts the installed
+view; exact IDs resolve installed extensions before querying Marketplace. Ctrl+Space or the search filter control completes query tokens.
 The gallery is Open VSX by default (`MINECODE_EXTENSION_GALLERY_URL` overrides
 the compatible gallery endpoint). Searches are delayed, cancellable and paged
 on scroll; publisher, install counts, ratings, channel and update metadata
@@ -474,7 +475,8 @@ appear in list rows and the editor.
 
 Clicking a row or pressing Enter opens a read-only, singleton extension editor
 preview tab, not `package.json`. Its tabs display README, registered Features,
-changelog, dependencies and extension pack when available. Features include
+changelog, dependencies and extension pack when available. Dependency and pack
+links open the corresponding extension detail editor. Features include
 commands, settings/defaults, languages, themes and the actual local host
 activation status. The responsive additional
 details pane shows installation information, Marketplace dates, categories and
