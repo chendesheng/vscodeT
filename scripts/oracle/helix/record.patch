@@ -28,7 +28,7 @@ index 0000000..433289c
 +use anyhow::{bail, Context, Result};
 +use helix_core::{char_idx_at_visual_offset, Range, Rope, Selection, Transaction};
 +use helix_term::application::Application;
-+use helix_view::{current, current_ref, graphics::Rect};
++use helix_view::{current_ref, graphics::Rect};
 +use serde_json::{json, Value};
 +
 +use super::helpers::{test_key_sequence, AppBuilder};
@@ -187,7 +187,7 @@ index 0000000..433289c
 +
 +    for path in paths {
 +        let mut case: Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
-+        let case_name = case["case"].as_str().context("cassette is missing 'case'")?;
++        let case_name = case["case"].as_str().context("cassette is missing 'case'")?.to_owned();
 +        let width = case["width"].as_u64().unwrap_or(60) as u16;
 +        let height = case["height"].as_u64().unwrap_or(12) as u16;
 +        case["height"] = json!(height);
