@@ -299,6 +299,16 @@ pub fn installFromGallery(allocator: Allocator, io: std.Io, location: []const u8
     try installWithOptions(allocator, io, location, system_location, bytes, identifier, version, .{ .context = &source, .resolve = GallerySource.resolve }, prerelease, pinned);
 }
 
+/// Local installation through the workbench file-selection command. The
+/// selected VSIX itself chooses the exact version; the gallery is optional
+/// for resolving its dependency and pack manifests.
+pub fn installVSIXFile(allocator: Allocator, io: std.Io, location: []const u8, system_location: ?[]const u8, service_url: []const u8, path: []const u8) !void {
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024 * 1024 * 1024));
+    defer allocator.free(bytes);
+    var source: GallerySource = .{ .service_url = service_url };
+    try installWithOptions(allocator, io, location, system_location, bytes, null, null, if (service_url.len > 0) .{ .context = &source, .resolve = GallerySource.resolve } else null, false, true);
+}
+
 /// Remove only user versions of an explicitly selected extension. Scanner
 /// identities, not directory-name prefixes, determine which versions match.
 pub fn uninstall(allocator: Allocator, io: std.Io, location: []const u8, identifier: []const u8) !void {
