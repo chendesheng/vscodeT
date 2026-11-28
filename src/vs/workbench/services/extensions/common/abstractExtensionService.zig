@@ -138,3 +138,98 @@ test "ActivationTracker deduplicates languages" {
     try tracker.activated_languages.put(owned, {});
     try std.testing.expect(tracker.activated_languages.contains("typescript"));
 }
+
+/// The effective extension registry accepted by the local runtime. Keep an
+/// owned description identity after the installed inventory has been replaced.
+/// The terminal currently mounts declarative extension points at window startup;
+/// those changes require a window restart rather than only a host restart.
+pub const RuntimeInventory = struct {
+    const util = @import("../../../../platform/extensionManagement/common/extensionManagementUtil.zig");
+    pub const Action = enum { RestartExtensions, ReloadWindow };
+    const Entry = struct { identifier: []const u8, version: []const u8, location: []const u8, declarative: bool };
+    arena: std.heap.ArenaAllocator,
+    entries: []Entry,
+
+    pub fn init(allocator: Allocator, descriptions: []const *const scanner.ScannedExtension) !RuntimeInventory {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer arena.deinit();
+        const scratch = arena.allocator();
+        const entries = try scratch.alloc(Entry, descriptions.len);
+        for (descriptions, entries) |description, *entry| entry.* = .{
+            .identifier = try scratch.dupe(u8, description.identifier),
+            .version = try scratch.dupe(u8, description.version),
+            .location = try scratch.dupe(u8, description.location),
+            .declarative = hasWindowContributions(description.*),
+        };
+        return .{ .arena = arena, .entries = entries };
+    }
+
+    pub fn deinit(self: *RuntimeInventory) void {
+        self.arena.deinit();
+    }
+
+    fn hasWindowContributions(description: scanner.ScannedExtension) bool {
+        const manifest = description.manifest.value;
+        if (manifest != .object) return false;
+        const contributes = manifest.object.get("contributes") orelse return false;
+        if (contributes != .object) return false;
+        // These extension points are mounted in the startup registry and have
+        // no removal/replacement contract yet. Do not report a host-only
+        // restart as sufficient for changes to their definitions.
+        for ([_][]const u8{ "languages", "grammars", "themes", "iconThemes", "productIconThemes", "snippets", "configuration", "configurationDefaults" }) |key| {
+            if (contributes.object.contains(key)) return true;
+        }
+        return false;
+    }
+
+    pub fn getRuntimeState(self: *const RuntimeInventory, identifier: []const u8, desired: []const *const scanner.ScannedExtension) ?Action {
+        var running: ?Entry = null;
+        var next: ?*const scanner.ScannedExtension = null;
+        for (self.entries) |entry| if (util.areSameExtensions(entry.identifier, identifier)) {
+            running = entry;
+            break;
+        };
+        for (desired) |entry| if (util.areSameExtensions(entry.identifier, identifier)) {
+            next = entry;
+            break;
+        };
+        if (running) |entry| {
+            if (next) |description| {
+                if (std.mem.eql(u8, entry.version, description.version) and std.mem.eql(u8, entry.location, description.location)) return null;
+            }
+            if (entry.declarative) return .ReloadWindow;
+        } else if (next == null) return null;
+        if (next) |description| if (hasWindowContributions(description.*)) return .ReloadWindow;
+        return .RestartExtensions;
+    }
+
+    pub fn requiresReload(self: *const RuntimeInventory, desired: []const *const scanner.ScannedExtension) bool {
+        for (self.entries) |entry| if (self.getRuntimeState(entry.identifier, desired) == .ReloadWindow) return true;
+        for (desired) |entry| if (self.getRuntimeState(entry.identifier, desired) == .ReloadWindow) return true;
+        return false;
+    }
+};
+
+test "RuntimeInventory: distinguishes host-only changes from mounted extension points" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, "code", .default_dir);
+    try tmp.dir.createDir(io, "theme", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "code/package.json", .data = "{\"name\":\"code\",\"publisher\":\"pub\",\"version\":\"1.0.0\",\"engines\":{\"vscode\":\"*\"},\"main\":\"./main.js\"}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "theme/package.json", .data = "{\"name\":\"theme\",\"publisher\":\"pub\",\"version\":\"1.0.0\",\"engines\":{\"vscode\":\"*\"},\"contributes\":{\"themes\":[]}}" });
+    var path: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPath(io, &path);
+    var inventory = try scanner.scanAllExtensions(allocator, io, null, path[0..len]);
+    defer inventory.deinit(allocator);
+    const code = inventory.find("pub.code") orelse return error.TestUnexpectedResult;
+    const theme = inventory.find("pub.theme") orelse return error.TestUnexpectedResult;
+    var runtime = try RuntimeInventory.init(allocator, inventory.all);
+    defer runtime.deinit();
+    try std.testing.expectEqual(@as(?RuntimeInventory.Action, null), runtime.getRuntimeState("pub.code", inventory.all));
+    try std.testing.expectEqual(RuntimeInventory.Action.RestartExtensions, runtime.getRuntimeState("pub.code", &.{theme}).?);
+    try std.testing.expectEqual(RuntimeInventory.Action.ReloadWindow, runtime.getRuntimeState("pub.theme", &.{code}).?);
+    try std.testing.expect(!runtime.requiresReload(&.{theme}));
+    try std.testing.expect(runtime.requiresReload(&.{code}));
+}
