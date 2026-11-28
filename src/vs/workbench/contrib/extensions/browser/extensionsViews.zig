@@ -4,8 +4,8 @@
 // renders the current query's rows. Gallery work uses a delayed, cancellable
 // worker job; inventory and management events rebuild the list. Local
 // enablement filters use persisted state rather than a running-host registry.
-// Gallery pagination, search completions and some specialized query types
-// remain unported.
+// Pages are fetched on scrolling. Search completions and some specialized
+// query types remain unported.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
@@ -17,6 +17,7 @@ const views = @import("../../../common/views.zig");
 const list_renderer = @import("extensionsList.zig");
 const model = @import("../common/extensions.zig");
 const gallery = @import("../../../../platform/extensionManagement/common/extensionGalleryService.zig");
+const paging = @import("../../../../base/common/paging.zig");
 const dispatch = @import("../../../../base/common/windowDispatch.zig");
 const time = @import("../../../../base/common/timeCompat.zig");
 const query_mod = @import("../common/extensionQuery.zig");
@@ -51,6 +52,7 @@ const GalleryJob = struct {
     url: []u8,
     text: []u8,
     names: [][]u8,
+    page: usize,
     completion: dispatch.Task,
     future: std.Io.Future(anyerror!gallery.Page),
 };
@@ -58,10 +60,10 @@ const GalleryJob = struct {
 fn runGallery(job: *GalleryJob) anyerror!gallery.Page {
     defer job.completion.post();
     const io = job.view.host.window.?.io;
-    return dispatch.workerCall(io, queryGallery, .{ job.view.allocator, dispatch.backingIo(io), job.url, job.text, job.names });
+    return dispatch.workerCall(io, queryGallery, .{ job.view.allocator, dispatch.backingIo(io), job.url, job.text, job.names, job.page });
 }
 
-fn queryGallery(allocator: Allocator, io: std.Io, url: []const u8, text: []const u8, names: []const []const u8) !gallery.Page {
+fn queryGallery(allocator: Allocator, io: std.Io, url: []const u8, text: []const u8, names: []const []const u8, page: usize) !gallery.Page {
     var query = try query_mod.Query.parse(allocator, text);
     defer query.deinit(allocator);
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -75,7 +77,7 @@ fn queryGallery(allocator: Allocator, io: std.Io, url: []const u8, text: []const
     for (parsed.ids) |id| try criteria.append(allocator, .{ .filterType = @backingInt(gallery.FilterType.extension_name), .value = id });
     for (parsed.included_categories) |category| try criteria.append(allocator, .{ .filterType = @backingInt(gallery.FilterType.category), .value = category });
     const sort: gallery.SortBy = if (parsed.popular or query.value.len == 0 or std.ascii.eqlIgnoreCase(query.sort_by, "installs")) .installs else if (std.ascii.eqlIgnoreCase(query.sort_by, "rating")) .rating else if (std.ascii.eqlIgnoreCase(query.sort_by, "name")) .name else if (std.ascii.eqlIgnoreCase(query.sort_by, "publishedDate")) .published else if (std.ascii.eqlIgnoreCase(query.sort_by, "updateDate")) .updated else .relevance;
-    return (gallery.ExtensionGalleryService{ .allocator = allocator, .io = io, .service_url = url }).query(.{ .criteria = criteria.items, .sort_by = sort });
+    return (gallery.ExtensionGalleryService{ .allocator = allocator, .io = io, .service_url = url }).query(.{ .criteria = criteria.items, .sort_by = sort, .page = page });
 }
 
 pub const BuiltinGroup = enum { all, features, themes, languages };
@@ -95,11 +97,14 @@ pub const ExtensionsListView = struct {
     rows: []const *const IExtension = &.{},
     selected_id: std.array_list.Managed(u8),
     listener: ?SignalSubscription = null,
+    recommendations_listener: ?SignalSubscription = null,
     message_buffer: [256]u8 = undefined,
     search_delayer: dispatch.Task = .{},
     gallery_job: ?*GalleryJob = null,
     gallery_loading: bool = false,
     gallery_error: bool = false,
+    gallery_kind: service_mod.GalleryKind = .search,
+    gallery_pages: paging.PageIterator = .{ .page_size = 50 },
     initial_gallery_search_started: bool = false,
     builtin_group: BuiltinGroup = .all,
     filter_override: ?[]u8 = null,
@@ -157,6 +162,7 @@ pub const ExtensionsListView = struct {
         self.cancelGallery();
         self.gallery_loading = false;
         self.gallery_error = false;
+        self.gallery_pages = .{ .page_size = 50 };
         self.initial_gallery_search_started = false;
         self.unsubscribe();
         self.service = service;
@@ -167,16 +173,25 @@ pub const ExtensionsListView = struct {
     fn subscribe(self: *ExtensionsListView) !void {
         const service = self.service orelse return;
         self.listener = try service.on_change.listenSignal(self, onServiceChange);
+        self.recommendations_listener = try service.on_recommendations_change.listenSignal(self, onRecommendationsChange);
     }
 
     fn unsubscribe(self: *ExtensionsListView) void {
         if (self.listener) |listener| listener.dispose();
         self.listener = null;
+        if (self.recommendations_listener) |listener| listener.dispose();
+        self.recommendations_listener = null;
     }
 
     fn onServiceChange(self: *ExtensionsListView) !void {
         if (self.queryText().len == 0) if (self.query_changed) |callback| callback.run(callback.context);
         try self.rebuild();
+    }
+
+    fn onRecommendationsChange(self: *ExtensionsListView) !void {
+        if (self.gallery_kind == .recommended or (self.filter_override == null and containsIgnoreCase(self.queryText(), "@recommended"))) {
+            if (self.initial_gallery_search_started or self.gallery_kind == .search) self.searchChanged();
+        }
     }
 
     fn onInputChange(context: ?*anyopaque, _: []const u8) void {
@@ -190,11 +205,11 @@ pub const ExtensionsListView = struct {
     }
 
     fn searchesGallery(self: *const ExtensionsListView) bool {
-        if (self.filter_override != null) return false;
+        if (self.filter_override != null and self.gallery_kind == .search) return false;
         const service = self.service orelse return false;
         if (service.gallery_url == null or self.host.window == null) return false;
         const text = std.mem.trim(u8, self.queryText(), " \t");
-        if (text.len == 0) return self.showDefaultPopular();
+        if (text.len == 0) return false;
         for ([_][]const u8{ "@installed", "@builtin", "@enabled", "@disabled", "@recentlyUpdated" }) |token| {
             if (containsIgnoreCase(text, token)) return false;
         }
@@ -206,6 +221,12 @@ pub const ExtensionsListView = struct {
         if (service.gallery_url == null) return false;
         for (service.queryLocal()) |extension| if (!extension.is_builtin) return false;
         return true;
+    }
+
+    pub fn ensureGallery(self: *ExtensionsListView) void {
+        if (self.initial_gallery_search_started or !self.searchesGallery()) return;
+        self.initial_gallery_search_started = true;
+        self.searchChanged();
     }
 
     fn galleryNames(self: *ExtensionsListView, text: []const u8) ![][]u8 {
@@ -239,6 +260,7 @@ pub const ExtensionsListView = struct {
     fn searchChanged(self: *ExtensionsListView) void {
         self.cancelGallery();
         self.gallery_error = false;
+        self.gallery_pages = .{ .page_size = 50 };
         self.gallery_loading = self.searchesGallery();
         if (self.query_changed) |callback| callback.run(callback.context);
         self.rebuild() catch {};
@@ -275,6 +297,7 @@ pub const ExtensionsListView = struct {
     fn startGalleryJob(self: *ExtensionsListView) !void {
         const service = self.service orelse return error.GalleryUnavailable;
         const window = self.host.window orelse return error.GalleryUnavailable;
+        const page = self.gallery_pages.nextPage() orelse return;
         const url = try self.allocator.dupe(u8, service.gallery_url orelse return error.GalleryUnavailable);
         errdefer self.allocator.free(url);
         const text = try self.allocator.dupe(u8, self.queryText());
@@ -282,7 +305,7 @@ pub const ExtensionsListView = struct {
         const names = try self.galleryNames(text);
         errdefer self.freeNames(names);
         const job = try self.allocator.create(GalleryJob);
-        job.* = .{ .view = self, .url = url, .text = text, .names = names, .completion = .{ .queue = window, .context = self, .run = applyGallery, .progress = true }, .future = undefined };
+        job.* = .{ .view = self, .url = url, .text = text, .names = names, .page = page, .completion = .{ .queue = window, .context = self, .run = applyGallery, .progress = true }, .future = undefined };
         self.gallery_job = job;
         job.future = window.io.async(runGallery, .{job});
     }
@@ -298,8 +321,13 @@ pub const ExtensionsListView = struct {
         const result = job.future.await(self.host.window.?.io);
         self.gallery_loading = false;
         if (result) |page| {
-            if (self.service) |service| service.setGalleryPage(page) catch {
-                self.gallery_error = true;
+            const count = page.extensions.len;
+            const total = page.total;
+            if (self.service) |service| {
+                self.gallery_pages.accept(job.page, count, total) catch {};
+                service.setGalleryPage(page, job.page > 1, self.gallery_kind) catch {
+                    self.gallery_error = true;
+                };
             } else {
                 var owned = page;
                 owned.deinit();
@@ -332,7 +360,7 @@ pub const ExtensionsListView = struct {
         }
         const local = if (self.service) |service| service.queryLocal() else &[_]IExtension{};
         var rows = if (self.searchesGallery()) blk: {
-            const entries = if (self.gallery_loading or self.gallery_error) &[_]IExtension{} else self.service.?.galleryExtensions();
+            const entries = if (self.gallery_pages.page == 0) &[_]IExtension{} else self.service.?.galleryExtensionsFor(self.gallery_kind);
             var result: std.ArrayList(*const IExtension) = .empty;
             errdefer result.deinit(self.allocator);
             const updates = containsIgnoreCase(self.queryText(), "@updates") or containsIgnoreCase(self.queryText(), "@outdated");
@@ -395,7 +423,7 @@ pub const ExtensionsListView = struct {
                     break;
                 }
             }
-            self.list.setSelection(target orelse 0);
+            if (target) |index| self.list.selectOnly(index) else self.list.setSelection(0);
         }
         self.requestFrame();
     }
@@ -408,10 +436,7 @@ pub const ExtensionsListView = struct {
     pub fn setSearchFocused(self: *ExtensionsListView, focused: bool) void {
         self.focused = focused;
         self.setInputFocused(focused);
-        if (focused and !self.initial_gallery_search_started and self.showDefaultPopular() and self.queryText().len == 0) {
-            self.initial_gallery_search_started = true;
-            self.searchChanged();
-        }
+        if (focused and self.queryText().len == 0) if (self.query_changed) |callback| callback.run(callback.context);
     }
 
     pub fn handleSearchKey(self: *ExtensionsListView, event: *ui.KeyEvent) bool {
@@ -505,6 +530,20 @@ pub const ExtensionsListView = struct {
     // Input
     // ------------------------------------------------------------------
 
+    /// PagedList resolves a page when the visible range approaches its end.
+    /// Terminal input/scroll events trigger that resolution, never paint.
+    fn resolveVisiblePage(self: *ExtensionsListView) void {
+        if (!self.searchesGallery() or self.gallery_loading or self.gallery_pages.page == 0 or !self.gallery_pages.hasNextPage()) return;
+        const view = &self.list.view;
+        if (view.scroll_top + view.viewport_height + 9 < view.range_map.size()) return;
+        self.gallery_loading = true;
+        self.gallery_error = false;
+        self.startGalleryJob() catch {
+            self.gallery_loading = false;
+            self.gallery_error = true;
+        };
+    }
+
     pub fn handleKey(self: *ExtensionsListView, event: *const ui.KeyEvent) !bool {
         if (!self.focused) return false;
         switch (event.key) {
@@ -518,7 +557,10 @@ pub const ExtensionsListView = struct {
             else => {},
         }
         const handled = self.list.handleKey(@constCast(event));
-        if (handled) self.requestFrame();
+        if (handled) {
+            self.resolveVisiblePage();
+            self.requestFrame();
+        }
         return handled;
     }
 
@@ -574,12 +616,16 @@ pub const ExtensionsListView = struct {
                 }
                 try self.openExtension(extension);
             }
+            self.resolveVisiblePage();
             self.requestFrame();
             return true;
         }
 
         const handled = self.list.handleMouse(event);
-        if (handled) self.requestFrame();
+        if (handled) {
+            self.resolveVisiblePage();
+            self.requestFrame();
+        }
         return handled;
     }
 
@@ -626,7 +672,7 @@ pub const ExtensionsListView = struct {
                 if (action.install or action.uninstall) {
                     const view_service = action.view.service orelse return;
                     if (action.install) {
-                        if (view_service.galleryInfo(action.identifier)) |entry| try view_service.install(entry.*);
+                        if (view_service.availableUpdate(action.identifier) orelse view_service.galleryInfo(action.identifier)) |entry| try view_service.install(entry.*);
                     } else try view_service.uninstall(action.identifier);
                     return;
                 }

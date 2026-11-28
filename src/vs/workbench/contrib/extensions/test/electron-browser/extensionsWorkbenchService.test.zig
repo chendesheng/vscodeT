@@ -288,3 +288,29 @@ test "effective local extension host inventory uses enabled merged descriptions"
         } else return error.UnexpectedHostExtension;
     }
 }
+
+test "ExtensionsWorkbenchService: pages retain independent default gallery models" {
+    const allocator = testing.allocator;
+    const gallery = @import("../../../../../platform/extensionManagement/common/extensionGalleryService.zig");
+    var enablement = try ExtensionEnablementService.init(allocator, null);
+    defer enablement.deinit();
+    const service = try ExtensionsWorkbenchService.init(allocator, io, .{ .enablement = enablement });
+    defer service.deinit();
+    const first = try gallery.Page.parse(allocator,
+        \\{"results":[{"extensions":[{"extensionName":"one","publisher":{"publisherName":"pub"},"versions":[{"version":"1.0.0"}]}]}]}
+    );
+    try service.setGalleryPage(first, false, .popular);
+    const second = try gallery.Page.parse(allocator,
+        \\{"results":[{"extensions":[{"extensionName":"two","publisher":{"publisherName":"pub"},"versions":[{"version":"2.0.0"}]}]}]}
+    );
+    try service.setGalleryPage(second, true, .popular);
+    const search = try gallery.Page.parse(allocator,
+        \\{"results":[{"extensions":[{"extensionName":"three","publisher":{"publisherName":"pub"},"versions":[{"version":"3.0.0"}]}]}]}
+    );
+    try service.setGalleryPage(search, false, .search);
+    try testing.expectEqual(@as(usize, 2), service.galleryExtensionsFor(.popular).len);
+    try testing.expectEqual(@as(usize, 1), service.galleryExtensions().len);
+    try testing.expectEqualStrings("1.0.0", service.find("PUB.ONE").?.version);
+    try testing.expectEqualStrings("2.0.0", service.find("pub.two").?.version);
+    try testing.expectEqualStrings("3.0.0", service.find("pub.three").?.version);
+}

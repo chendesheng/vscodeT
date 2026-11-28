@@ -90,10 +90,28 @@ fn installVSIX(_: *anyopaque, accessor: Accessor) !void {
     try service.installFromVSIX();
 }
 
+pub const properties = [_]@import("../../../../platform/configuration/common/configurationRegistry.zig").PropertySchema{
+    .{ .key = "extensions.autoCheckUpdates", .value_type = "boolean", .default = .{ .bool = true }, .scope = .APPLICATION },
+    .{ .key = "extensions.showRecommendationsOnlyOnDemand", .value_type = "boolean", .default = .{ .bool = false }, .scope = .APPLICATION },
+};
+
+pub const check_updates_action: Action2 = .{
+    .command = .{ .id = "workbench.extensions.action.checkForUpdates", .title = "Check for Extension Updates", .category = model.EXTENSIONS_CATEGORY },
+    .f1 = true,
+    .context = @constCast(&{}),
+    .run_fn = checkUpdates,
+};
+
+fn checkUpdates(_: *anyopaque, accessor: Accessor) !void {
+    const service = try accessor.get(workbench_service.extensions_workbench_service_id);
+    try service.checkForUpdates();
+}
+
 pub const actions = [_]Action2{
     show_extensions_action,
     refresh_action,
     clear_search_action,
     restart_extensions_action,
     install_vsix_action,
+    check_updates_action,
 };

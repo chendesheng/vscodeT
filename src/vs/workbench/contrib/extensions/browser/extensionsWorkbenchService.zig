@@ -1,10 +1,10 @@
 // Port of `src/vs/workbench/contrib/extensions/browser/extensionsWorkbenchService.ts`.
 // Owns the local and gallery inventories, enablement, installation operations
-// and onChange delivery. The terminal uses a single local server and scans
-// the effective user directory; changes to the startup contribution registry
-// and running extension host still require a process restart. Automatic
-// update scheduling, full profile management and runtime reconciliation are
-// not yet ported.
+// and onChange delivery. The terminal uses a single local server and the
+// effective user directory. Host-only changes can restart the local host;
+// mounted declarative points still require restarting the window. Automatic
+// checks are separate from Marketplace queries; unattended installation,
+// additional profiles, and dynamic registry deltas remain unported.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
@@ -18,6 +18,9 @@ const management = @import("../../../../platform/extensionManagement/node/extens
 const gallery = @import("../../../../platform/extensionManagement/common/extensionGalleryService.zig");
 const quick = @import("../../../../platform/quickinput/common/quickInput.zig");
 const EnablementState = model.EnablementState;
+const configuration = @import("../../../../platform/configuration/common/configuration.zig");
+const lifecycle = @import("../../../services/lifecycle/common/lifecycle.zig");
+const time = @import("../../../../base/common/timeCompat.zig");
 const RuntimeInventory = @import("../../../services/extensions/common/abstractExtensionService.zig").RuntimeInventory;
 
 pub const Options = struct {
@@ -36,6 +39,8 @@ const ModelState = struct {
     enabled: std.array_list.Managed(*const scanner.ScannedExtension),
 };
 
+pub const GalleryKind = enum { search, popular, recommended };
+
 const GalleryState = struct {
     arena: std.heap.ArenaAllocator,
     page: gallery.Page,
@@ -46,6 +51,84 @@ const GalleryState = struct {
         self.page.deinit();
     }
 };
+
+const UpdateRequest = struct { identifier: []const u8, prerelease: bool };
+const UpdateState = struct {
+    arena: std.heap.ArenaAllocator,
+    rows: []IExtension = &.{},
+    fn deinit(self: *UpdateState) void {
+        self.arena.deinit();
+    }
+};
+const UpdateJob = struct {
+    service: *ExtensionsWorkbenchService,
+    arena: std.heap.ArenaAllocator,
+    requests: []UpdateRequest,
+    url: []const u8,
+    completion: dispatch.Task,
+    future: std.Io.Future(anyerror!UpdateState),
+    fn deinit(self: *UpdateJob) void {
+        const allocator = self.service.allocator;
+        self.arena.deinit();
+        allocator.destroy(self);
+    }
+};
+fn queryInstalledUpdates(allocator: Allocator, io: std.Io, url: []const u8, requests: []const UpdateRequest) !UpdateState {
+    const service: gallery.ExtensionGalleryService = .{ .allocator = allocator, .io = io, .service_url = url };
+    var result: UpdateState = .{ .arena = .init(allocator) };
+    errdefer result.deinit();
+    const scratch = result.arena.allocator();
+    var rows: std.ArrayList(IExtension) = .empty;
+    var offset: usize = 0;
+    // The gallery names filter is OR-ed within a filter. Batch so a large
+    // installed inventory does not silently drop entries from the response.
+    while (offset < requests.len) {
+        const batch = requests[offset..@min(offset + 50, requests.len)];
+        var criteria: [50]gallery.Criterion = undefined;
+        for (batch, 0..) |request, index| criteria[index] = .{ .filterType = @backingInt(gallery.FilterType.extension_name), .value = request.identifier };
+        var page = try service.query(.{ .criteria = criteria[0..batch.len], .page_size = batch.len, .all_versions = true });
+        defer page.deinit();
+        for (page.extensions) |entry| {
+            const id = try util.getGalleryExtensionId(scratch, entry.publisher.publisherName, entry.extensionName);
+            for (batch) |request| {
+                if (!util.areSameExtensions(request.identifier, id)) continue;
+                const version = entry.selectVersion(null, request.prerelease) orelse break;
+                try rows.append(scratch, try (IExtension{
+                    .identifier = id,
+                    .name = entry.extensionName,
+                    .display_name = entry.displayName orelse entry.extensionName,
+                    .description = entry.shortDescription orelse "",
+                    .version = version.version,
+                    .publisher = entry.publisher.displayName orelse entry.publisher.publisherName,
+                    .categories = entry.categories orelse &.{},
+                    .location = "",
+                    .is_builtin = false,
+                    .state = .Installed,
+                    .is_pre_release = version.isPreRelease(),
+                    .install_count = entry.statistic("install"),
+                    .rating = entry.statistic("averagerating"),
+                    .rating_count = entry.statistic("ratingcount"),
+                    .publisher_domain = entry.publisher.domain,
+                    .publisher_verified = entry.publisher.domain != null and (entry.publisher.isDomainVerified orelse false),
+                    .has_pre_release = entry.selectReleaseChannel(true) != null,
+                    .manifest_url = version.asset("Microsoft.VisualStudio.Code.Manifest"),
+                    .readme_url = version.asset("Microsoft.VisualStudio.Services.Content.Details"),
+                    .changelog_url = version.asset("Microsoft.VisualStudio.Services.Content.Changelog"),
+                    .vsix_url = version.asset("Microsoft.VisualStudio.Services.VSIXPackage"),
+                }).clone(scratch));
+                break;
+            }
+        }
+        offset += batch.len;
+    }
+    result.rows = rows.items;
+    return result;
+}
+fn runUpdates(job: *UpdateJob) anyerror!UpdateState {
+    defer job.completion.post();
+    const io = job.service.window.?.io;
+    return dispatch.workerCall(io, queryInstalledUpdates, .{ job.service.allocator, dispatch.backingIo(io), job.url, job.requests });
+}
 
 const Operation = enum { install, uninstall, install_vsix };
 const ManagementJob = struct {
@@ -131,6 +214,13 @@ pub const ExtensionsWorkbenchService = struct {
     state: ModelState,
     gallery_url: ?[]u8 = null,
     gallery_state: ?GalleryState = null,
+    popular_state: ?GalleryState = null,
+    recommended_state: ?GalleryState = null,
+    updates: ?UpdateState = null,
+    update_job: ?*UpdateJob = null,
+    update_timer: dispatch.Task = .{},
+    update_configuration: ?configuration.IConfigurationService = null,
+    configuration_listener: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
     window: ?*dispatch.Queue = null,
     workspace: ?*@import("../../../services/workspaces/common/workspaceContextService.zig").WorkspaceContextService = null,
     workspace_listener: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
@@ -143,6 +233,7 @@ pub const ExtensionsWorkbenchService = struct {
     restart_host: ?struct { context: *anyopaque, restart: *const fn (*anyopaque) anyerror!void } = null,
     enablement: *enablement_mod.ExtensionEnablementService,
     on_change: Emitter(void),
+    on_recommendations_change: Emitter(void),
 
     pub fn init(allocator: Allocator, io: std.Io, options: Options) !*ExtensionsWorkbenchService {
         const self = try allocator.create(ExtensionsWorkbenchService);
@@ -157,6 +248,7 @@ pub const ExtensionsWorkbenchService = struct {
             },
             .enablement = options.enablement,
             .on_change = Emitter(void).init(allocator),
+            .on_recommendations_change = Emitter(void).init(allocator),
         };
         errdefer self.deinitContents();
         if (options.gallery_url) |url| self.gallery_url = try allocator.dupe(u8, url);
@@ -178,8 +270,12 @@ pub const ExtensionsWorkbenchService = struct {
         self.freeState(self.state);
         if (self.runtime) |*runtime| runtime.deinit();
         if (self.gallery_state) |*state| state.deinit();
+        if (self.popular_state) |*state| state.deinit();
+        if (self.recommended_state) |*state| state.deinit();
+        if (self.updates) |*updates| updates.deinit();
         if (self.gallery_url) |url| self.allocator.free(url);
         self.on_change.deinit();
+        self.on_recommendations_change.deinit();
         if (self.system_location) |location| self.allocator.free(location);
         if (self.user_location) |location| self.allocator.free(location);
         self.system_location = null;
@@ -312,14 +408,96 @@ pub const ExtensionsWorkbenchService = struct {
 
     pub fn find(self: *const ExtensionsWorkbenchService, identifier: []const u8) ?*const IExtension {
         if (self.findLocal(identifier)) |extension| return extension;
-        if (self.gallery_state) |state| for (state.rows) |*extension| {
-            if (util.areSameExtensions(extension.identifier, identifier)) return extension;
-        };
-        return null;
+        return self.galleryInfo(identifier);
     }
 
     pub fn attachWindow(self: *ExtensionsWorkbenchService, window: *dispatch.Queue) void {
+        if (self.window == window) return;
+        if (self.window != null) self.detachWindow();
         self.window = window;
+        self.update_timer = .{ .queue = window, .context = self, .run = checkUpdatesTask };
+    }
+
+    /// Start the upstream automatic update check after Eventually. The
+    /// timer and worker are owned by this service and disposed with the window.
+    pub fn attachUpdateChecks(self: *ExtensionsWorkbenchService, config: configuration.IConfigurationService, phases: lifecycle.ILifecycleService) !void {
+        if (self.update_configuration != null) return;
+        self.update_configuration = config;
+        if (config.on_did_change_configuration) |event| self.configuration_listener = try event.listenDisposable(self, updateConfigurationChanged);
+        try phases.when(.Eventually, .{ .context = self, .run = startUpdateChecks });
+    }
+
+    fn startUpdateChecks(context: *anyopaque) !void {
+        const self: *ExtensionsWorkbenchService = @ptrCast(@alignCast(context));
+        self.scheduleUpdateCheck(0);
+    }
+
+    fn updateConfigurationChanged(change: configuration.Change, self: *ExtensionsWorkbenchService) !void {
+        if (configuration.affectsConfiguration(change, "extensions.showRecommendationsOnlyOnDemand")) try self.on_change.fire({});
+        if (!configuration.affectsConfiguration(change, "extensions.autoCheckUpdates")) return;
+        if (self.update_configuration.?.getBool("extensions.autoCheckUpdates", true)) self.scheduleUpdateCheck(0) else {
+            self.update_timer.schedule(null);
+            self.cancelUpdateCheck();
+        }
+    }
+
+    fn scheduleUpdateCheck(self: *ExtensionsWorkbenchService, delay: i64) void {
+        const window = self.window orelse return;
+        const config = self.update_configuration orelse return;
+        if (!config.getBool("extensions.autoCheckUpdates", true) or self.gallery_url == null) return;
+        self.update_timer.schedule(time.milliTimestamp(window.workerIo()) + delay);
+    }
+
+    fn checkUpdatesTask(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *ExtensionsWorkbenchService = @ptrCast(@alignCast(context));
+        self.checkForUpdates() catch {};
+        self.scheduleUpdateCheck(12 * 60 * 60 * 1000);
+        return false;
+    }
+
+    pub fn checkForUpdates(self: *ExtensionsWorkbenchService) !void {
+        const window = self.window orelse return error.ExtensionManagementUnavailable;
+        const url = self.gallery_url orelse return error.GalleryUnavailable;
+        self.cancelUpdateCheck();
+        const job = try self.allocator.create(UpdateJob);
+        errdefer self.allocator.destroy(job);
+        job.* = .{ .service = self, .arena = .init(self.allocator), .requests = &.{}, .url = "", .completion = .{ .queue = window, .context = self, .run = applyUpdates, .progress = true }, .future = undefined };
+        errdefer job.arena.deinit();
+        const allocator = job.arena.allocator();
+        job.url = try allocator.dupe(u8, url);
+        var requests: std.ArrayList(UpdateRequest) = .empty;
+        for (self.queryLocal()) |extension| {
+            if (extension.is_builtin) continue;
+            try requests.append(allocator, .{ .identifier = try allocator.dupe(u8, extension.identifier), .prerelease = extension.is_pre_release });
+        }
+        job.requests = requests.items;
+        self.update_job = job;
+        job.future = window.io.async(runUpdates, .{job});
+    }
+
+    fn cancelUpdateCheck(self: *ExtensionsWorkbenchService) void {
+        const job = self.update_job orelse return;
+        self.update_job = null;
+        if (job.future.cancel(self.window.?.io)) |result| {
+            var owned = result;
+            owned.deinit();
+        } else |_| {}
+        job.completion.schedule(null);
+        job.deinit();
+    }
+
+    fn applyUpdates(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *ExtensionsWorkbenchService = @ptrCast(@alignCast(context));
+        const job = self.update_job orelse return false;
+        self.update_job = null;
+        defer job.deinit();
+        const next = job.future.await(self.window.?.io) catch return false;
+        var previous = self.updates;
+        self.updates = next;
+        defer if (previous) |*old| old.deinit();
+        self.updateGalleryLocalState();
+        self.on_change.fire({}) catch {};
+        return true;
     }
 
     pub fn attachWorkspace(self: *ExtensionsWorkbenchService, workspace: *@import("../../../services/workspaces/common/workspaceContextService.zig").WorkspaceContextService) !void {
@@ -334,10 +512,16 @@ pub const ExtensionsWorkbenchService = struct {
     fn workspaceChanged(self: *ExtensionsWorkbenchService) !void {
         const workspace = self.workspace orelse return;
         if (try self.enablement.setWorkspace(workspace.getWorkspace())) try self.refreshEnablement();
+        try self.on_recommendations_change.fire({});
     }
 
     pub fn detachWindow(self: *ExtensionsWorkbenchService) void {
         self.cancelVersions();
+        self.update_timer.schedule(null);
+        self.cancelUpdateCheck();
+        if (self.configuration_listener) |listener| listener.dispose();
+        self.configuration_listener = null;
+        self.update_configuration = null;
         if (self.version_picker) |picker| picker.owner = null;
         self.version_picker = null;
         self.quick_input = null;
@@ -354,18 +538,29 @@ pub const ExtensionsWorkbenchService = struct {
     }
 
     pub fn galleryInfo(self: *const ExtensionsWorkbenchService, identifier: []const u8) ?*const IExtension {
-        for (self.galleryExtensions()) |*extension| if (util.areSameExtensions(extension.identifier, identifier)) return extension;
+        for ([_]GalleryKind{ .search, .popular, .recommended }) |kind| {
+            for (self.galleryExtensionsFor(kind)) |*extension| if (util.areSameExtensions(extension.identifier, identifier)) return extension;
+        }
+        if (self.updates) |updates| for (updates.rows) |*extension| if (util.areSameExtensions(extension.identifier, identifier)) return extension;
         return null;
     }
 
     pub fn availableUpdate(self: *const ExtensionsWorkbenchService, identifier: []const u8) ?*const IExtension {
         const local = self.findLocal(identifier) orelse return null;
         if (local.is_builtin) return null;
-        const remote = self.galleryInfo(identifier) orelse return null;
-        if (remote.vsix_url == null) return null;
         const current = std.SemanticVersion.parse(local.version) catch return null;
-        const candidate = std.SemanticVersion.parse(remote.version) catch return null;
-        return if (candidate.order(current) == .gt) remote else null;
+        var best: ?*const IExtension = null;
+        var best_version = current;
+        const sources = [_][]const IExtension{ self.galleryExtensions(), self.galleryExtensionsFor(.popular), self.galleryExtensionsFor(.recommended), if (self.updates) |updates| updates.rows else &.{} };
+        for (sources) |rows| for (rows) |*remote| {
+            if (!util.areSameExtensions(remote.identifier, identifier) or remote.vsix_url == null) continue;
+            if (remote.is_pre_release and !local.is_pre_release) continue;
+            const candidate = std.SemanticVersion.parse(remote.version) catch continue;
+            if (candidate.order(best_version) != .gt) continue;
+            best = remote;
+            best_version = candidate;
+        };
+        return best;
     }
 
     pub fn showVersions(self: *ExtensionsWorkbenchService, identifier: []const u8) !void {
@@ -525,63 +720,92 @@ pub const ExtensionsWorkbenchService = struct {
             self.management_error = err;
             self.on_change.fire({}) catch {};
         };
+        self.scheduleUpdateCheck(0);
         return true;
     }
 
     pub fn galleryExtensions(self: *const ExtensionsWorkbenchService) []const IExtension {
-        return if (self.gallery_state) |state| state.rows else &.{};
+        return self.galleryExtensionsFor(.search);
+    }
+
+    pub fn galleryExtensionsFor(self: *const ExtensionsWorkbenchService, kind: GalleryKind) []const IExtension {
+        const state = switch (kind) {
+            .search => self.gallery_state,
+            .popular => self.popular_state,
+            .recommended => self.recommended_state,
+        };
+        return if (state) |value| value.rows else &.{};
     }
 
     /// Consumes the gallery page on every outcome. Keep the old page alive
     /// through synchronous listener delivery just like local inventory refresh.
-    pub fn setGalleryPage(self: *ExtensionsWorkbenchService, page: gallery.Page) !void {
+    pub fn setGalleryPage(self: *ExtensionsWorkbenchService, page: gallery.Page, append: bool, kind: GalleryKind) !void {
         var next: GalleryState = .{ .arena = .init(self.allocator), .page = page, .rows = &.{} };
         var owned = true;
         defer if (owned) next.deinit();
         const allocator = next.arena.allocator();
-        const rows = try allocator.alloc(IExtension, page.extensions.len);
+        const previous_rows = if (append) self.galleryExtensionsFor(kind) else &.{};
+        const rows = try allocator.alloc(IExtension, previous_rows.len + page.extensions.len);
         var count: usize = 0;
-        for (page.extensions) |entry| {
-            if (entry.versions.len == 0) continue;
-            const version = entry.selectVersion(null, false) orelse entry.selectVersion(null, true) orelse entry.versions[0];
-            const identifier = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ entry.publisher.publisherName, entry.extensionName });
-            var local: ?IExtension = null;
-            for (self.state.local) |extension| if (util.areSameExtensions(extension.identifier, identifier)) {
-                local = extension;
-                break;
-            };
-            rows[count] = .{
-                .identifier = identifier,
-                .name = entry.extensionName,
-                .display_name = entry.displayName orelse entry.extensionName,
-                .description = entry.shortDescription orelse "",
-                .version = version.version,
-                .publisher = entry.publisher.displayName orelse entry.publisher.publisherName,
-                .categories = entry.categories orelse &.{},
-                .location = "",
-                .is_builtin = false,
-                .state = if (local != null) .Installed else .Uninstalled,
-                .enablement_state = if (local) |installed| installed.enablement_state else .EnabledGlobally,
-                .is_pre_release = version.isPreRelease(),
-                .install_count = entry.statistic("install"),
-                .rating = entry.statistic("averagerating"),
-                .manifest_url = version.asset("Microsoft.VisualStudio.Code.Manifest"),
-                .readme_url = version.asset("Microsoft.VisualStudio.Services.Content.Details"),
-                .changelog_url = version.asset("Microsoft.VisualStudio.Services.Content.Changelog"),
-                .vsix_url = if (version.isCompatible()) version.asset("Microsoft.VisualStudio.Services.VSIXPackage") else null,
-            };
+        for (previous_rows) |row| {
+            rows[count] = try row.clone(allocator);
             count += 1;
         }
+        for (page.extensions) |entry| {
+            if (entry.versions.len == 0) continue;
+            const identifier = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ entry.publisher.publisherName, entry.extensionName });
+            for (rows[0..count]) |row| {
+                if (util.areSameExtensions(row.identifier, identifier)) break;
+            } else {
+                var local: ?IExtension = null;
+                for (self.state.local) |extension| if (util.areSameExtensions(extension.identifier, identifier)) {
+                    local = extension;
+                    break;
+                };
+                const version = entry.selectVersion(null, if (local) |installed| installed.is_pre_release else false) orelse entry.selectVersion(null, true) orelse entry.versions[0];
+                rows[count] = .{
+                    .identifier = identifier,
+                    .name = entry.extensionName,
+                    .display_name = entry.displayName orelse entry.extensionName,
+                    .description = entry.shortDescription orelse "",
+                    .version = version.version,
+                    .publisher = entry.publisher.displayName orelse entry.publisher.publisherName,
+                    .categories = entry.categories orelse &.{},
+                    .location = "",
+                    .is_builtin = false,
+                    .state = if (local != null) .Installed else .Uninstalled,
+                    .enablement_state = if (local) |installed| installed.enablement_state else .EnabledGlobally,
+                    .is_pre_release = version.isPreRelease(),
+                    .install_count = entry.statistic("install"),
+                    .rating = entry.statistic("averagerating"),
+                    .rating_count = entry.statistic("ratingcount"),
+                    .publisher_domain = entry.publisher.domain,
+                    .publisher_verified = entry.publisher.domain != null and (entry.publisher.isDomainVerified orelse false),
+                    .has_pre_release = entry.selectReleaseChannel(true) != null,
+                    .manifest_url = version.asset("Microsoft.VisualStudio.Code.Manifest"),
+                    .readme_url = version.asset("Microsoft.VisualStudio.Services.Content.Details"),
+                    .changelog_url = version.asset("Microsoft.VisualStudio.Services.Content.Changelog"),
+                    .vsix_url = if (version.isCompatible()) version.asset("Microsoft.VisualStudio.Services.VSIXPackage") else null,
+                };
+                count += 1;
+            }
+        }
         next.rows = rows[0..count];
-        var previous = self.gallery_state;
-        self.gallery_state = next;
+        const slot = switch (kind) {
+            .search => &self.gallery_state,
+            .popular => &self.popular_state,
+            .recommended => &self.recommended_state,
+        };
+        var previous = slot.*;
+        slot.* = next;
         owned = false;
         defer if (previous) |*state| state.deinit();
         try self.on_change.fire({});
     }
 
     fn updateGalleryLocalState(self: *ExtensionsWorkbenchService) void {
-        if (self.gallery_state) |*state| for (state.rows) |*row| {
+        const sources = [_][]IExtension{ if (self.gallery_state) |state| state.rows else &.{}, if (self.popular_state) |state| state.rows else &.{}, if (self.recommended_state) |state| state.rows else &.{}, if (self.updates) |updates| updates.rows else &.{} };
+        for (sources) |rows| for (rows) |*row| {
             const local = self.findLocal(row.identifier);
             row.state = if (local != null) .Installed else .Uninstalled;
             row.enablement_state = if (local) |extension| extension.enablement_state else .EnabledGlobally;

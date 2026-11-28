@@ -599,7 +599,10 @@ pub fn main(init: std.process.Init) !void {
     // the sequence and the frame is unaffected.
     workbench.setPointerShapes(true);
     if (declarative) |*decl_ext| workbench.setDeclarativeExtensions(decl_ext);
-    if (extension_service) |service| workbench.setExtensionsService(service);
+    if (extension_service) |service| {
+        workbench.setExtensionsService(service);
+        try service.attachUpdateChecks(workbench.configuration_api, workbench.lifecycle_api);
+    }
     workbench.enableAsyncTokenization();
     workbench.enableLanguageFeatures() catch |err| report(log_service, "language features unavailable: {s}", .{@errorName(err)});
     workbench.setJsonLanguageClient(json_client);

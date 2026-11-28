@@ -25,6 +25,7 @@ pub fn registerConfigurations(registry: *@import("../platform/configuration/comm
     try registry.registerConfiguration("editor", &@import("../editor/contrib/codeAction/browser/codeActionContributions.zig").properties);
     try registry.registerConfiguration("diffEditor", &@import("../editor/common/config/editorConfigurationSchema.zig").diff_editor_properties);
     try registry.registerConfiguration("files", &@import("contrib/bulkEdit/browser/bulkEditService.zig").properties);
+    try registry.registerConfiguration("extensions", &@import("contrib/extensions/browser/extensions.contribution.zig").properties);
     try registry.registerConfiguration("problems", &@import("contrib/markers/browser/markers.contribution.zig").properties);
 }
 
