@@ -56,7 +56,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: host/package-lock.json
+          cache-dependency-path: |
+            host/package-lock.json
+            host/runtime/package-lock.json
       - name: Install Node host dependencies
         working-directory: host
         run: npm ci --ignore-scripts

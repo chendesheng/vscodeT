@@ -77,7 +77,7 @@ if [ -d "$lib_src" ]; then
             cp -R "$lib_src/$item" "$stage/lib/minecode/$item"
         fi
     done
-    for required in extensionHost.mjs jsonServer.mjs extensions; do
+    for required in extensionHost.mjs jsonServer.mjs product.json extensions; do
         if [ ! -e "$stage/lib/minecode/$required" ]; then
             echo "missing Node runtime asset: $required; run 'zig build host' first" >&2
             exit 1
