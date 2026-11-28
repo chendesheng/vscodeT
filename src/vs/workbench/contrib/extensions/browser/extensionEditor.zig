@@ -7,6 +7,7 @@ const ui = @import("ui");
 const model = @import("../common/extensions.zig");
 const service_mod = @import("extensionsWorkbenchService.zig");
 const input_mod = @import("../common/extensionsInput.zig");
+const widgets = @import("extensionsWidgets.zig");
 const features = @import("extensionFeaturesTab.zig");
 const list = @import("extensionsList.zig");
 const markdown = @import("../../../../editor/common/markdown/markdownTerminalRenderer.zig");
@@ -193,6 +194,14 @@ pub const ExtensionEditor = struct {
         };
         const allocator = self.arena.allocator();
         self.extension = try extension.clone(allocator);
+        if (local != null) if (self.service.galleryInfo(extension.identifier)) |remote| {
+            self.extension.?.install_count = remote.install_count;
+            self.extension.?.rating = remote.rating;
+            self.extension.?.rating_count = remote.rating_count;
+            self.extension.?.publisher_verified = remote.publisher_verified;
+            self.extension.?.publisher = try allocator.dupe(u8, remote.publisher);
+            self.extension.?.publisher_domain = if (remote.publisher_domain) |domain| try allocator.dupe(u8, domain) else null;
+        };
         if (local != null) {
             if (self.readFile(extension.location, &.{"package.json"})) |raw| {
                 self.manifest = std.json.parseFromSliceLeaky(std.json.Value, allocator, raw, .{}) catch .null;
@@ -472,7 +481,11 @@ pub const ExtensionEditor = struct {
             grid.putCodepoint(x, y, list.extension_glyph, 1, strong);
             _ = list.drawTextEllipsis(grid, x + 2, y, w -| 2, extension.display_name, strong);
             var info_buffer: [512]u8 = undefined;
-            const info = std.fmt.bufPrint(&info_buffer, "{s}  v{s}  {s}", .{ extension.publisher, extension.version, if (extension.state == .Uninstalled) "Marketplace" else if (extension.is_builtin) "Built-in" else "Installed" }) catch extension.publisher;
+            var count_buffer: [32]u8 = undefined;
+            var rating_buffer: [32]u8 = undefined;
+            const installs = widgets.InstallCountWidget.getInstallLabel(extension, false, &count_buffer);
+            const rating = widgets.RatingsWidget.getRatingLabel(extension, false, &rating_buffer);
+            const info = std.fmt.bufPrint(&info_buffer, "{s}{s}  v{s}  {s}{s}{s}{s}{s}", .{ if (extension.publisher_verified) "✓ " else "", extension.publisher, extension.version, if (extension.is_pre_release) "Pre-Release" else if (extension.state == .Uninstalled) "Marketplace" else if (extension.is_builtin) "Built-in" else "Installed", if (installs != null) "  ↓" else "", installs orelse "", if (rating != null) "  " else "", rating orelse "" }) catch extension.publisher;
             if (h > 1) _ = list.drawTextEllipsis(grid, x + 1, y + 1, w -| 1, info, dim);
             if (h > 2) _ = list.drawTextEllipsis(grid, x + 1, y + 2, w -| 1, extension.description, normal);
         } else _ = list.drawTextEllipsis(grid, x, y, w, self.input.base.getName(), strong);

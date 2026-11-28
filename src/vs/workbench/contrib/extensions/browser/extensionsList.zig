@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 const ui = @import("ui");
 const list = @import("../../../../base/browser/ui/list/list.zig");
 const theme_colors_mod = @import("../../../browser/themeColors.zig");
+const widgets = @import("extensionsWidgets.zig");
 const model = @import("../common/extensions.zig");
 const IExtension = model.IExtension;
 
@@ -129,8 +130,13 @@ pub fn drawTextEllipsis(grid: *ui.CellGrid, x: usize, y: usize, width: usize, te
     return .{ .used = 1, .truncated = true };
 }
 
+pub const RowActions = struct {
+    update_available: bool = false,
+    restart_required: bool = false,
+};
+
 /// Paints one extension row into the cell grid.
-pub fn renderRow(grid: *ui.CellGrid, row: *const list.Row, extension: *const IExtension, colors_value: Colors) void {
+pub fn renderRow(grid: *ui.CellGrid, row: *const list.Row, extension: *const IExtension, colors_value: Colors, actions: RowActions) void {
     grid.fillRect(@floatFromInt(row.x), @floatFromInt(row.y), @floatFromInt(row.width), @floatFromInt(row.height), .{
         .bg = ui.cell.packColor(rowBackground(colors_value, row)),
     });
@@ -144,25 +150,26 @@ pub fn renderRow(grid: *ui.CellGrid, row: *const list.Row, extension: *const IEx
     const icon_style = ui.cell.PaintStyle{ .fg = ui.cell.packColor(icon), .bg = ui.cell.packColor(background) };
     if (row.width == 0) return;
 
-    // First line: glyph + display name (+ disabled marker), version right-aligned.
-    if (row.offset_y == 0) grid.putCodepoint(row.x, row.y, extension_glyph, 1, icon_style);
+    // Upstream header: display name, restart indicator, install count and
+    // rating. Small statistics are shown only for uninstalled extensions.
+    if (row.offset_y == 0) grid.putCodepoint(row.x, row.y, if (extension.is_pre_release or extension.has_pre_release) '⚗' else extension_glyph, 1, icon_style);
     const name_width = row.width -| 2;
-    var version_text: []const u8 = "";
-    var version_buffer: [64]u8 = undefined;
-    if (extension.version.len > 0) {
-        version_text = std.fmt.bufPrint(&version_buffer, "v{s}", .{extension.version}) catch "";
-    }
-    var version_width: usize = if (version_text.len > 0) displayWidth(version_text) + 1 else 0;
-    if (version_width + 8 > name_width) version_width = 0;
-    const name_space = name_width -| version_width;
+    var install_buffer: [32]u8 = undefined;
+    var rating_buffer: [32]u8 = undefined;
+    var metrics_buffer: [96]u8 = undefined;
+    const show_metrics = extension.state == .Uninstalled;
+    const count = if (show_metrics) widgets.InstallCountWidget.getInstallLabel(extension.*, true, &install_buffer) else null;
+    const rating = if (show_metrics) widgets.RatingsWidget.getRatingLabel(extension.*, true, &rating_buffer) else null;
+    const metrics = std.fmt.bufPrint(&metrics_buffer, "{s}{s}{s}{s}{s}", .{ if (actions.restart_required) "↻ " else "", if (count != null) "↓" else "", count orelse "", if (count != null and rating != null) " " else "", rating orelse "" }) catch "";
+    var metrics_width = if (metrics.len > 0) displayWidth(metrics) + 1 else 0;
+    if (metrics_width + 5 > name_width) metrics_width = 0;
+    const name_space = name_width -| metrics_width;
     const disabled_suffix = if (extension.state == .Uninstalled or extension.isEnabled()) "" else " (disabled)";
     var name_buffer: [256]u8 = undefined;
     const name_text = std.fmt.bufPrint(&name_buffer, "{s}{s}", .{ extension.display_name, disabled_suffix }) catch extension.display_name;
     if (row.offset_y == 0) {
         _ = drawTextEllipsis(grid, row.x + 2, row.y, name_space, name_text, name_style);
-        if (version_width > 0 and row.width > version_width) {
-            _ = drawTextEllipsis(grid, row.x + row.width - version_width, row.y, version_width, version_text, dim_style);
-        }
+        if (metrics_width > 0) _ = drawTextEllipsis(grid, row.x + row.width - metrics_width, row.y, metrics_width, metrics, dim_style);
     }
     if (row.offset_y <= 1 and row.offset_y + row.height > 1) {
         const detail = if (extension.description.len > 0) extension.description else extension.identifier;
@@ -171,15 +178,19 @@ pub fn renderRow(grid: *ui.CellGrid, row: *const list.Row, extension: *const IEx
     if (row.offset_y > 2 or row.offset_y + row.height <= 2) return;
     const footer_y = row.y + 2 - row.offset_y;
     const status = switch (extension.state) {
-        .Installing => "Installing…",
-        .Uninstalling => "Uninstalling…",
-        .Uninstalled => "Marketplace",
-        .Installed => if (extension.is_builtin) "Built-in" else "Installed",
+        .Installing => " · Installing…",
+        .Uninstalling => " · Uninstalling…",
+        else => "",
     };
     var footer_buffer: [256]u8 = undefined;
-    const footer = if (extension.install_count) |count| std.fmt.bufPrint(&footer_buffer, "{s} · {d:.0} ↓", .{ extension.publisher, count }) catch extension.publisher else std.fmt.bufPrint(&footer_buffer, "{s} · {s}", .{ extension.publisher, status }) catch extension.publisher;
-    const action = if (extension.state == .Uninstalled and extension.vsix_url != null) "Install" else if (extension.state == .Installed) "⚙" else "";
-    const action_width = if (action.len > 0) displayWidth(action) + 2 else 0;
+    const footer = std.fmt.bufPrint(&footer_buffer, "{s}{s}{s}", .{ if (extension.publisher_verified) "✓ " else "", extension.publisher, status }) catch extension.publisher;
+    const manage = extension.state == .Installed;
+    const button = if (extension.state == .Uninstalled and extension.vsix_url != null) "Install" else if (manage and actions.update_available) "Update" else "";
+    const manage_width: usize = if (manage) 3 else 0;
+    const button_width = if (button.len != 0) displayWidth(button) + 2 else 0;
+    const action_width = manage_width + button_width;
     _ = drawTextEllipsis(grid, row.x + 2, footer_y, name_width -| action_width, footer, dim_style);
-    if (action_width > 0 and name_width >= action_width) _ = drawTextEllipsis(grid, row.x + row.width - action_width, footer_y, action_width, action, .{ .fg = ui.cell.packColor(colors_value.selection_foreground), .bg = ui.cell.packColor(colors_value.active_selection) });
+    const style: ui.cell.PaintStyle = .{ .fg = ui.cell.packColor(colors_value.selection_foreground), .bg = ui.cell.packColor(colors_value.active_selection) };
+    if (button_width > 0 and name_width >= action_width) _ = drawTextEllipsis(grid, row.x + row.width - action_width, footer_y, button_width, button, style);
+    if (manage and name_width >= manage_width) _ = drawTextEllipsis(grid, row.x + row.width - manage_width, footer_y, manage_width, "⚙", style);
 }

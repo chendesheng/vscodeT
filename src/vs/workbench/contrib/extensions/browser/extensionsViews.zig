@@ -609,6 +609,13 @@ pub const ExtensionsListView = struct {
                         self.requestFrame();
                         return true;
                     }
+                    if (extension.state == .Installed and event.x >= x + list_width - 11 and event.x < x + list_width - 3) {
+                        if (self.service) |service| if (service.availableUpdate(extension.identifier)) |update| {
+                            try service.install(update.*);
+                            self.requestFrame();
+                            return true;
+                        };
+                    }
                     if (extension.state == .Installed and event.x >= x + list_width - 3) {
                         try self.showRowMenu(extension, .mouse(event));
                         return true;
@@ -844,7 +851,8 @@ pub const ExtensionsListView = struct {
         if (self.service) |service| if (service.operationState(extension.identifier)) |state| {
             display.state = state;
         };
-        list_renderer.renderRow(row.grid, row, &display, list_renderer.colors(self.theme()));
+        const actions: list_renderer.RowActions = if (self.service) |service| .{ .update_available = service.availableUpdate(extension.identifier) != null, .restart_required = service.runtimeState(extension.identifier) != null } else .{};
+        list_renderer.renderRow(row.grid, row, &display, list_renderer.colors(self.theme()), actions);
     }
 };
 
