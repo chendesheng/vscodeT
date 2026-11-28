@@ -278,12 +278,12 @@ pub const ExtensionEditor = struct {
                     .actions => if (reverse) .body else .navbar,
                     .navbar => if (reverse) .actions else .body,
                 };
-                var available: [3]Action = undefined;
+                var available: [6]Action = undefined;
                 if (self.focus_area == .actions and self.actions(&available).len == 0) self.focus_area = if (reverse) .body else .navbar;
             },
             .left, .right => {
                 if (self.focus_area == .actions) {
-                    var available: [3]Action = undefined;
+                    var available: [6]Action = undefined;
                     const count = self.actions(&available).len;
                     if (count == 0) return false;
                     self.focused_action = @min(self.focused_action, count - 1);
@@ -292,7 +292,7 @@ pub const ExtensionEditor = struct {
             },
             .enter => {
                 if (self.focus_area != .actions) return false;
-                var available: [3]Action = undefined;
+                var available: [6]Action = undefined;
                 const actions_value = self.actions(&available);
                 if (actions_value.len == 0) return false;
                 self.runAction(actions_value[@min(self.focused_action, actions_value.len - 1)]) catch {
@@ -314,44 +314,73 @@ pub const ExtensionEditor = struct {
     const Action = enum {
         enable,
         disable,
+        enable_workspace,
+        disable_workspace,
         install,
         uninstall,
         update,
+        versions,
+        restart_extensions,
         installing,
         uninstalling,
         fn label(self: Action) []const u8 {
             return switch (self) {
                 .enable => "Enable",
                 .disable => "Disable",
+                .enable_workspace => "Enable (Workspace)",
+                .disable_workspace => "Disable (Workspace)",
                 .install => "Install",
                 .uninstall => "Uninstall",
                 .update => "Update",
+                .versions => "Versions…",
+                .restart_extensions => "Restart Extensions",
                 .installing => "Installing…",
                 .uninstalling => "Uninstalling…",
             };
         }
     };
 
-    fn actions(self: *ExtensionEditor, result: *[3]Action) []Action {
-        const extension = self.extension orelse return result[0..0];
+    fn actions(self: *ExtensionEditor, result: *[6]Action) []Action {
+        const restart = self.service.runtimeState(self.input.identifier) == .RestartExtensions;
+        const extension = self.extension orelse {
+            if (restart) {
+                result[0] = .restart_extensions;
+                return result[0..1];
+            }
+            return result[0..0];
+        };
         if (self.service.operationState(self.input.identifier)) |state| {
             result[0] = if (state == .Installing) .installing else .uninstalling;
             return result[0..1];
         }
         if (extension.state == .Uninstalled) {
-            if (extension.vsix_url == null) return result[0..0];
+            if (extension.vsix_url == null) {
+                result[0] = .versions;
+                return result[0..1];
+            }
             result[0] = .install;
-            return result[0..1];
+            result[1] = .versions;
+            return result[0..2];
         }
         var count: usize = 0;
+        if (restart) {
+            result[count] = .restart_extensions;
+            count += 1;
+        }
         if (self.service.availableUpdate(self.input.identifier) != null) {
             result[count] = .update;
             count += 1;
         }
         result[count] = if (extension.isEnabled()) .disable else .enable;
         count += 1;
+        if (self.service.enablement.has_workspace) {
+            result[count] = if (extension.isEnabled()) .disable_workspace else .enable_workspace;
+            count += 1;
+        }
         if (!extension.is_builtin) {
             result[count] = .uninstall;
+            count += 1;
+            result[count] = .versions;
             count += 1;
         }
         return result[0..count];
@@ -362,9 +391,17 @@ pub const ExtensionEditor = struct {
             .install => if (self.extension) |extension| try self.service.install(extension),
             .update => if (self.service.availableUpdate(self.input.identifier)) |extension| try self.service.install(extension.*),
             .uninstall => try self.service.uninstall(self.input.identifier),
-            .enable, .disable => {
-                _ = try self.service.setEnablement(self.input.identifier, if (action == .enable) .EnabledGlobally else .DisabledGlobally);
-                self.status = "Restart the editor to apply the change.";
+            .versions => try self.service.showVersions(self.input.identifier),
+            .restart_extensions => try self.service.restartExtensions(),
+            .enable, .disable, .enable_workspace, .disable_workspace => {
+                _ = try self.service.setEnablement(self.input.identifier, switch (action) {
+                    .enable => .EnabledGlobally,
+                    .disable => .DisabledGlobally,
+                    .enable_workspace => .EnabledWorkspace,
+                    .disable_workspace => .DisabledWorkspace,
+                    else => unreachable,
+                });
+                self.status = "";
             },
             .installing, .uninstalling => {},
         }
@@ -378,7 +415,7 @@ pub const ExtensionEditor = struct {
             .down => {
                 if (event.button != .left) return false;
                 if (event.y == 3 and event.x >= 1) {
-                    var available: [3]Action = undefined;
+                    var available: [6]Action = undefined;
                     var col: usize = 1;
                     for (self.actions(&available), 0..) |action, i| {
                         const end = col + list.displayWidth(action.label()) + 2;
@@ -438,19 +475,22 @@ pub const ExtensionEditor = struct {
             const info = std.fmt.bufPrint(&info_buffer, "{s}  v{s}  {s}", .{ extension.publisher, extension.version, if (extension.state == .Uninstalled) "Marketplace" else if (extension.is_builtin) "Built-in" else "Installed" }) catch extension.publisher;
             if (h > 1) _ = list.drawTextEllipsis(grid, x + 1, y + 1, w -| 1, info, dim);
             if (h > 2) _ = list.drawTextEllipsis(grid, x + 1, y + 2, w -| 1, extension.description, normal);
-            if (h > 3) {
-                var available: [3]Action = undefined;
-                var col: usize = 1;
-                for (self.actions(&available), 0..) |action, i| {
-                    if (col >= w) break;
-                    var label_buffer: [64]u8 = undefined;
-                    const label = std.fmt.bufPrint(&label_buffer, " {s} ", .{action.label()}) catch action.label();
-                    _ = list.drawTextEllipsis(grid, x + col, y + 3, w - col, label, .{ .fg = ui.cell.packColor(colors.selection_foreground), .bg = ui.cell.packColor(colors.active_selection), .attrs = if (self.focus_area == .actions and self.focused_action == i) ui.cell.Attr.underline else 0 });
-                    col += list.displayWidth(label) + 1;
-                }
-            }
         } else _ = list.drawTextEllipsis(grid, x, y, w, self.input.base.getName(), strong);
-        if (h > 4) _ = list.drawTextEllipsis(grid, x + 1, y + 4, w -| 1, if (self.service.management_error != null) "Extension management operation failed." else self.status, dim);
+        if (h > 3) {
+            var available: [6]Action = undefined;
+            var col: usize = 1;
+            for (self.actions(&available), 0..) |action, i| {
+                if (col >= w) break;
+                var label_buffer: [64]u8 = undefined;
+                const label = std.fmt.bufPrint(&label_buffer, " {s} ", .{action.label()}) catch action.label();
+                _ = list.drawTextEllipsis(grid, x + col, y + 3, w - col, label, .{ .fg = ui.cell.packColor(colors.selection_foreground), .bg = ui.cell.packColor(colors.active_selection), .attrs = if (self.focus_area == .actions and self.focused_action == i) ui.cell.Attr.underline else 0 });
+                col += list.displayWidth(label) + 1;
+            }
+        }
+        if (h > 4) _ = list.drawTextEllipsis(grid, x + 1, y + 4, w -| 1, if (self.service.management_error != null) "Extension management operation failed." else if (self.service.runtimeState(self.input.identifier)) |action| switch (action) {
+            .RestartExtensions => "Restart Extensions to apply the change.",
+            .ReloadWindow => "Restart the editor to apply the change.",
+        } else self.status, dim);
         if (h > 5) {
             var col: usize = 1;
             for (self.tabs[0..self.tab_count]) |tab| {

@@ -10,6 +10,7 @@ const views_service = @import("../../../services/views/common/viewsService.zig")
 const model = @import("../common/extensions.zig");
 const view_mod = @import("extensionsViews.zig");
 const ExtensionsListView = view_mod.ExtensionsListView;
+const workbench_service = @import("extensionsWorkbenchService.zig");
 
 /// Codicon `extensions` (EAE6); the activity bar and container share it.
 pub const extensions_glyph: u21 = 0xEAE6;
@@ -65,8 +66,34 @@ fn clearSearch(_: *anyopaque, accessor: Accessor) !void {
     view.clearSearch();
 }
 
+pub const restart_extensions_action: Action2 = .{
+    .command = .{ .id = "workbench.action.restartExtensionHost", .title = "Restart Extension Host", .category = "Developer" },
+    .f1 = true,
+    .context = @constCast(&{}),
+    .run_fn = restartExtensions,
+};
+
+fn restartExtensions(_: *anyopaque, accessor: Accessor) !void {
+    const service = try accessor.get(workbench_service.extensions_workbench_service_id);
+    try service.restartExtensions();
+}
+
+pub const install_vsix_action: Action2 = .{
+    .command = .{ .id = "workbench.extensions.action.installVSIX", .title = "Install from VSIX...", .category = model.EXTENSIONS_CATEGORY },
+    .f1 = true,
+    .context = @constCast(&{}),
+    .run_fn = installVSIX,
+};
+
+fn installVSIX(_: *anyopaque, accessor: Accessor) !void {
+    const service = try accessor.get(workbench_service.extensions_workbench_service_id);
+    try service.installFromVSIX();
+}
+
 pub const actions = [_]Action2{
     show_extensions_action,
     refresh_action,
     clear_search_action,
+    restart_extensions_action,
+    install_vsix_action,
 };

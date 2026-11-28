@@ -608,10 +608,21 @@ pub const ExtensionsListView = struct {
             view: *ExtensionsListView,
             identifier: []const u8 = "",
             enable: bool = false,
+            workspace: bool = false,
             open: bool = false,
             install: bool = false,
             uninstall: bool = false,
+            versions: bool = false,
+            restart: bool = false,
             pub fn run(action: *@This()) !void {
+                if (action.restart) {
+                    if (action.view.service) |view_service| try view_service.restartExtensions();
+                    return;
+                }
+                if (action.versions) {
+                    if (action.view.service) |view_service| try view_service.showVersions(action.identifier);
+                    return;
+                }
                 if (action.install or action.uninstall) {
                     const view_service = action.view.service orelse return;
                     if (action.install) {
@@ -627,7 +638,7 @@ pub const ExtensionsListView = struct {
                     }
                     return;
                 }
-                try action.view.toggleEnablement(action.identifier, action.enable);
+                try action.view.toggleEnablement(action.identifier, action.enable, action.workspace);
             }
         };
         const identifier = try arena.dupe(u8, extension.identifier);
@@ -638,17 +649,25 @@ pub const ExtensionsListView = struct {
         } else {
             try menu.addAction("extensions.enableGlobally", "Enable", null, Command{ .view = self, .identifier = identifier, .enable = true });
         }
+        if (extension.state == .Installed) if (self.service) |workbench_service| {
+            if (workbench_service.enablement.has_workspace) {
+                const enable = !extension.isEnabled();
+                try menu.addAction(if (enable) "extensions.enableForWorkspace" else "extensions.disableForWorkspace", if (enable) "Enable (Workspace)" else "Disable (Workspace)", null, Command{ .view = self, .identifier = identifier, .enable = enable, .workspace = true });
+            }
+        };
         if (extension.state == .Installed and !extension.is_builtin) {
             if (self.service) |view_service| if (view_service.availableUpdate(extension.identifier) != null) try menu.addAction("extensions.update", "Update", null, Command{ .view = self, .identifier = identifier, .install = true });
             try menu.addAction("extensions.uninstall", "Uninstall", null, Command{ .view = self, .identifier = identifier, .uninstall = true });
         }
+        if (self.service) |view_service| if (view_service.runtimeState(identifier) == .RestartExtensions) try menu.addAction("extensions.runtimeState", "Restart Extensions", null, Command{ .view = self, .identifier = identifier, .restart = true });
+        if (!extension.is_builtin) try menu.addAction("extensions.installAnotherVersion", "Install Another Version…", null, Command{ .view = self, .identifier = identifier, .versions = true });
         try menu.addAction("workbench.extensions.action.openExtension", "Open Extension", null, Command{ .view = self, .identifier = identifier, .open = true });
         try service.showContextMenu(menu, anchor);
     }
 
-    fn toggleEnablement(self: *ExtensionsListView, identifier: []const u8, enable: bool) !void {
+    fn toggleEnablement(self: *ExtensionsListView, identifier: []const u8, enable: bool, workspace: bool) !void {
         const service = self.service orelse return;
-        const state: EnablementState = if (enable) .EnabledGlobally else .DisabledGlobally;
+        const state: EnablementState = if (workspace) (if (enable) .EnabledWorkspace else .DisabledWorkspace) else if (enable) .EnabledGlobally else .DisabledGlobally;
         _ = service.setEnablement(identifier, state) catch {
             if (self.host.notifications) |notifications| notifications.err(.{ .text = "Unable to change extension enablement." });
             self.host.status(self.host.context, "Unable to change extension enablement");
@@ -656,10 +675,14 @@ pub const ExtensionsListView = struct {
         };
         self.rebuild() catch {};
         const name = if (service.find(identifier)) |extension| extension.display_name else identifier;
-        const message = std.fmt.bufPrint(&self.message_buffer, "Extension '{s}' {s}. Restart the editor to apply the change.", .{
+        const message = std.fmt.bufPrint(&self.message_buffer, "Extension '{s}' {s}.{s}", .{
             name,
             if (enable) "enabled" else "disabled",
-        }) catch "Extension enablement changed. Restart the editor to apply the change.";
+            if (service.runtimeState(identifier)) |action| switch (action) {
+                .RestartExtensions => " Restart Extensions to apply the change.",
+                .ReloadWindow => " Restart the editor to apply the change.",
+            } else "",
+        }) catch "Extension enablement changed.";
         if (self.host.notifications) |notifications| notifications.info(.{ .text = message });
     }
 

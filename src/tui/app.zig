@@ -334,6 +334,38 @@ pub fn main(init: std.process.Init) !void {
     const installed_extensions = try std.fs.path.resolveAlloc(allocator, &.{ executable_dir, "../share/minecode/extensions" });
     defer allocator.free(installed_extensions);
 
+    var folders = ArrayList([]u8).init(allocator);
+    defer {
+        for (folders.items) |folder| allocator.free(folder);
+        folders.deinit();
+    }
+    var files = ArrayList([]const u8).init(allocator);
+    defer files.deinit();
+
+    const cwd = Io.Dir.cwd();
+    var cwd_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const cwd_len = cwd.realPath(io, &cwd_buffer) catch 0;
+    const cwd_path = cwd_buffer[0..cwd_len];
+
+    for (paths.items) |path| {
+        const stat = cwd.statFile(io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound => null,
+            else => return err,
+        };
+        if (stat) |info| {
+            if (info.kind == .directory) {
+                try folders.append(try std.fs.path.resolveAlloc(allocator, &.{ cwd_path, path }));
+                continue;
+            }
+        }
+        try files.append(path);
+    }
+
+    if (args.session == null and folders.items.len == 0 and files.items.len == 0) {
+        report(log_service, "no files or folders to open", .{});
+        return;
+    }
+
     // Extension inventory: installed built-ins plus the effective VS Code
     // extensions directory. The scanner owns the manifests; the enablement
     // service persists the disabled ids in the profile's global storage.
@@ -355,6 +387,10 @@ pub fn main(init: std.process.Init) !void {
     defer if (extension_enablement) |service| service.deinit();
     var extension_service: ?*ExtensionsWorkbenchService = null;
     if (extension_enablement) |enablement| {
+        try enablement.configureWorkspaceStorage(io, profile.user_data_dir);
+        const initial_workspace = try @import("../vs/workbench/services/workspaces/common/workspaceContextService.zig").WorkspaceContextService.initWithFolders(allocator, "workspace", folders.items);
+        defer initial_workspace.deinit();
+        _ = try enablement.setWorkspace(initial_workspace.getWorkspace());
         extension_service = ExtensionsWorkbenchService.init(allocator, io, .{
             .system_location = installed_extensions,
             .user_location = profile.extensions_dir,
@@ -483,38 +519,6 @@ pub fn main(init: std.process.Init) !void {
         image_probe.graphics_ok,
         image_probe.feature_ok,
     });
-
-    var folders = ArrayList([]u8).init(allocator);
-    defer {
-        for (folders.items) |folder| allocator.free(folder);
-        folders.deinit();
-    }
-    var files = ArrayList([]const u8).init(allocator);
-    defer files.deinit();
-
-    const cwd = Io.Dir.cwd();
-    var cwd_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const cwd_len = cwd.realPath(io, &cwd_buffer) catch 0;
-    const cwd_path = cwd_buffer[0..cwd_len];
-
-    for (paths.items) |path| {
-        const stat = cwd.statFile(io, path, .{}) catch |err| switch (err) {
-            error.FileNotFound => null,
-            else => return err,
-        };
-        if (stat) |info| {
-            if (info.kind == .directory) {
-                try folders.append(try std.fs.path.resolveAlloc(allocator, &.{ cwd_path, path }));
-                continue;
-            }
-        }
-        try files.append(path);
-    }
-
-    if (args.session == null and folders.items.len == 0 and files.items.len == 0) {
-        report(log_service, "no files or folders to open", .{});
-        return;
-    }
 
     var file_serializer: ?FileEditorSerializer = null;
     defer if (file_serializer) |*value| value.deinit();
@@ -725,6 +729,15 @@ pub fn main(init: std.process.Init) !void {
     } else {
         infoLog(log_service, "extension host disabled: no enabled extensions installed", .{});
     }
+    const HostRuntime = @import("extensionHostRuntime.zig").ExtensionHostRuntime;
+    var extension_runtime: ?HostRuntime = null;
+    if (extension_service) |service| if (profile.user_data_dir) |data_dir| {
+        if (extension_host != null or extension_paths.len == 0) {
+            extension_runtime = .{ .workbench = workbench, .service = service, .host = &extension_host, .user_data_dir = data_dir, .runtime_dir = runtime_dir };
+            try extension_runtime.?.attach();
+        }
+    };
+    defer if (extension_runtime) |*runtime| runtime.detach();
     infoLog(log_service, "startup: extension-host={d}ms", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
     });

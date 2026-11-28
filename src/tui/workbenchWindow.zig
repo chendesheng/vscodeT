@@ -3512,8 +3512,10 @@ pub const TerminalWorkbench = struct {
     pub fn setExtensionsService(self: *TerminalWorkbench, service: *extensions_workbench_service.ExtensionsWorkbenchService) void {
         if (self.extensions_service) |old| if (old != service) old.detachWindow();
         self.extensions_service = service;
+        _ = self.services.set(extensions_workbench_service.extensions_workbench_service_id, service) catch {};
         service.attachWindow(&self.window_events);
-        service.workspace = self.workspace;
+        service.attachWorkspace(self.workspace) catch {};
+        service.quick_input = self.quick_input_api;
         if (self.extensions_view) |contribution| contribution.setService(service) catch {};
     }
 

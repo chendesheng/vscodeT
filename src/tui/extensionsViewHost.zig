@@ -16,7 +16,8 @@ pub fn attach(workbench: *TerminalWorkbench) !void {
     if (workbench.extensions_view != null) return;
     if (workbench.extensions_service) |service| {
         service.attachWindow(&workbench.window_events);
-        service.workspace = workbench.workspace;
+        try service.attachWorkspace(workbench.workspace);
+        service.quick_input = workbench.quick_input_api;
     }
     const contribution = try ExtensionsViewPaneContainer.attach(
         workbench.allocator,
