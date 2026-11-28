@@ -3512,6 +3512,7 @@ pub const TerminalWorkbench = struct {
     pub fn setExtensionsService(self: *TerminalWorkbench, service: *extensions_workbench_service.ExtensionsWorkbenchService) void {
         if (self.extensions_service) |old| if (old != service) old.detachWindow();
         self.extensions_service = service;
+        if (service.feature_registry.getExtensionFeatures().len == 0) @import("../vs/workbench/workbench.common.main.zig").registerExtensionFeatures(&service.feature_registry) catch {};
         _ = self.services.set(extensions_workbench_service.extensions_workbench_service_id, service) catch {};
         service.attachWindow(&self.window_events);
         service.attachWorkspace(self.workspace) catch {};

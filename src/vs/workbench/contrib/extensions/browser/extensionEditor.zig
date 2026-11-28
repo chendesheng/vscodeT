@@ -75,6 +75,7 @@ pub const ExtensionEditor = struct {
     arena: std.heap.ArenaAllocator,
     extension: ?model.IExtension = null,
     manifest: std.json.Value = .null,
+    feature_tab: features.ExtensionFeaturesTab,
     readme: []const u8 = "No README available.",
     changelog: ?[]const u8 = null,
     tabs: [5]Tab = undefined,
@@ -90,7 +91,7 @@ pub const ExtensionEditor = struct {
     width: usize = 0,
     palette: ?*const theme.ThemeColors = null,
     status: []const u8 = "",
-    focus_area: enum { body, actions, navbar, additional } = .body,
+    focus_area: enum { body, actions, navbar, feature_list, additional } = .body,
     focused_action: usize = 0,
     window: ?*dispatch.Queue = null,
     asset_job: ?*AssetJob = null,
@@ -99,7 +100,7 @@ pub const ExtensionEditor = struct {
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, service: *service_mod.ExtensionsWorkbenchService, input: *input_mod.ExtensionsInput, window: ?*dispatch.Queue) !*ExtensionEditor {
         const self = try allocator.create(ExtensionEditor);
-        self.* = .{ .allocator = allocator, .io = io, .service = service, .input = input, .arena = std.heap.ArenaAllocator.init(allocator), .window = window };
+        self.* = .{ .allocator = allocator, .io = io, .service = service, .input = input, .arena = std.heap.ArenaAllocator.init(allocator), .window = window, .feature_tab = features.ExtensionFeaturesTab.init(allocator, &service.feature_registry) };
         errdefer self.deinit();
         if (input.snapshot.state == .Uninstalled and window != null) try self.requestRemote();
         try self.update();
@@ -113,6 +114,7 @@ pub const ExtensionEditor = struct {
         if (self.remote_assets) |*assets| assets.deinit();
         self.clearContent();
         self.clearAdditionalDetails();
+        self.feature_tab.deinit();
         self.arena.deinit();
         self.allocator.destroy(self);
     }
@@ -178,6 +180,22 @@ pub const ExtensionEditor = struct {
     fn bodyWidth(self: *const ExtensionEditor) usize {
         const additional = self.additionalWidth();
         return self.width -| (if (additional > 0) additional + 1 else 0);
+    }
+
+    fn featureListWidth(self: *const ExtensionEditor) usize {
+        return if (self.active_tab == .features and self.feature_tab.available.len > 0 and self.bodyWidth() >= 35) @min(24, @max(16, self.bodyWidth() / 3)) else 0;
+    }
+
+    fn documentWidth(self: *const ExtensionEditor) usize {
+        const feature_width = self.featureListWidth();
+        return self.bodyWidth() -| (if (feature_width > 0) feature_width + 1 else 0);
+    }
+
+    fn selectFeature(self: *ExtensionEditor, index: usize) !void {
+        if (self.feature_tab.select(index)) {
+            self.scroll = 0;
+            try self.refreshContent();
+        }
     }
 
     fn refreshAdditionalDetails(self: *ExtensionEditor) !void {
@@ -256,6 +274,7 @@ pub const ExtensionEditor = struct {
         for (self.tabs[0..self.tab_count]) |tab| {
             if (tab == self.active_tab) break;
         } else self.active_tab = .readme;
+        try self.feature_tab.setManifest(self.manifest);
         try self.refreshAdditionalDetails();
         try self.refreshContent();
     }
@@ -277,13 +296,13 @@ pub const ExtensionEditor = struct {
         const source = switch (self.active_tab) {
             .readme => try self.allocator.dupe(u8, self.readme),
             .changelog => try self.allocator.dupe(u8, self.changelog orelse "No changelog available."),
-            .features => try features.render(self.allocator, self.manifest),
+            .features => try self.feature_tab.renderSelected(self.manifest),
             .dependencies => try self.dependencyContent("extensionDependencies"),
             .extensionPack => try self.dependencyContent("extensionPack"),
         };
         defer self.allocator.free(source);
         self.content = try markdown.parseDocument(self.allocator, self.io, source, .{});
-        if (self.width > 0) self.layout = try document.build(self.allocator, &self.content.?, self.bodyWidth() -| 2, .{});
+        if (self.width > 0) self.layout = try document.build(self.allocator, &self.content.?, self.documentWidth() -| 2, .{});
         self.clampScroll();
     }
 
@@ -292,6 +311,7 @@ pub const ExtensionEditor = struct {
             if (candidate != tab) continue;
             if (self.active_tab == tab) return;
             self.active_tab = tab;
+            if (tab != .features and self.focus_area == .feature_list) self.focus_area = .body;
             self.scroll = 0;
             try self.refreshContent();
             return;
@@ -318,11 +338,13 @@ pub const ExtensionEditor = struct {
         switch (event.key) {
             .tab, .backtab => {
                 const reverse = event.key == .backtab or event.mods.shift;
+                const has_features = self.active_tab == .features and self.feature_tab.available.len > 0;
                 self.focus_area = switch (self.focus_area) {
-                    .body => if (reverse) (if (self.additionalWidth() > 0) .additional else .navbar) else .actions,
+                    .body => if (reverse) (if (self.additionalWidth() > 0) .additional else if (has_features) .feature_list else .navbar) else .actions,
                     .actions => if (reverse) .body else .navbar,
-                    .navbar => if (reverse) .actions else if (self.additionalWidth() > 0) .additional else .body,
-                    .additional => if (reverse) .navbar else .body,
+                    .navbar => if (reverse) .actions else if (has_features) .feature_list else if (self.additionalWidth() > 0) .additional else .body,
+                    .feature_list => if (reverse) .navbar else if (self.additionalWidth() > 0) .additional else .body,
+                    .additional => if (reverse) (if (has_features) .feature_list else .navbar) else .body,
                 };
                 var available: [6]Action = undefined;
                 if (self.focus_area == .actions and self.actions(&available).len == 0) self.focus_area = if (reverse) .body else .navbar;
@@ -334,6 +356,9 @@ pub const ExtensionEditor = struct {
                     if (count == 0) return false;
                     self.focused_action = @min(self.focused_action, count - 1);
                     self.focused_action = if (event.key == .left) (self.focused_action + count - 1) % count else (self.focused_action + 1) % count;
+                } else if (self.focus_area == .feature_list and self.feature_tab.available.len > 0) {
+                    const count = self.feature_tab.available.len;
+                    try self.selectFeature(if (event.key == .left) (self.feature_tab.selected + count - 1) % count else (self.feature_tab.selected + 1) % count);
                 } else try self.cycleTab(event.key == .left);
             },
             .enter => {
@@ -346,6 +371,18 @@ pub const ExtensionEditor = struct {
                 };
             },
             .up, .down, .page_up, .page_down, .home, .end => {
+                if (self.focus_area == .feature_list and self.feature_tab.available.len > 0) {
+                    const selected = self.feature_tab.selected;
+                    const index = switch (event.key) {
+                        .up, .page_up => selected -| 1,
+                        .down, .page_down => @min(selected + 1, self.feature_tab.available.len - 1),
+                        .home => 0,
+                        .end => self.feature_tab.available.len - 1,
+                        else => selected,
+                    };
+                    try self.selectFeature(index);
+                    return true;
+                }
                 const scroll = if (self.focus_area == .additional) &self.additional_scroll else &self.scroll;
                 switch (event.key) {
                     .up => scroll.* -|= 1,
@@ -508,8 +545,15 @@ pub const ExtensionEditor = struct {
                         };
                         return true;
                     }
+                    const feature_width = self.featureListWidth();
+                    if (feature_width > 0 and event.x < feature_width) {
+                        self.focus_area = .feature_list;
+                        try self.selectFeature(event.y - 7);
+                        return true;
+                    }
                     self.focus_area = .body;
-                    if (self.layout) |*layout| if (layout.linkAt(self.scroll + event.y - 7, event.x - 1)) |href| {
+                    const document_x = if (feature_width > 0) feature_width + 1 else 0;
+                    if (self.layout) |*layout| if (layout.linkAt(self.scroll + event.y - 7, event.x -| (document_x + 1))) |href| {
                         if ((self.active_tab == .dependencies or self.active_tab == .extensionPack) and std.mem.startsWith(u8, href, "minecode-extension-id:")) {
                             const identifier = href["minecode-extension-id:".len..];
                             const query = try std.fmt.allocPrint(self.allocator, "@id:{s}", .{identifier});
@@ -580,7 +624,7 @@ pub const ExtensionEditor = struct {
             if (self.layout) |*layout| layout.deinit();
             self.layout = null;
             self.width = w;
-            if (self.content) |*content| self.layout = try document.build(self.allocator, content, self.bodyWidth() -| 2, .{});
+            if (self.content) |*content| self.layout = try document.build(self.allocator, content, self.documentWidth() -| 2, .{});
             if (self.additional_layout) |*layout| layout.deinit();
             self.additional_layout = null;
             if (self.additionalWidth() > 0) if (self.additional_content) |*content| {
@@ -590,7 +634,18 @@ pub const ExtensionEditor = struct {
         }
         self.viewport = h -| 7;
         self.clampScroll();
-        if (self.layout) |*layout| paintDocument(grid, layout, self.scroll, self.viewport, x, y + 7, self.bodyWidth(), normal, dim);
+        const feature_width = self.featureListWidth();
+        if (feature_width > 0) {
+            for (self.feature_tab.available[0..@min(self.feature_tab.available.len, self.viewport)], 0..) |feature, index| {
+                const selected = index == self.feature_tab.selected;
+                const style: ui.cell.PaintStyle = if (selected) .{ .fg = ui.cell.packColor(colors.selection_foreground), .bg = ui.cell.packColor(colors.inactive_selection), .attrs = if (self.focus_area == .feature_list) ui.cell.Attr.underline else 0 } else normal;
+                grid.fillRect(@floatFromInt(x), @floatFromInt(y + 7 + index), @floatFromInt(feature_width), 1, style);
+                _ = list.drawTextEllipsis(grid, x + 1, y + 7 + index, feature_width -| 1, feature.label, style);
+            }
+            for (0..self.viewport) |row| grid.putCodepoint(x + feature_width, y + 7 + row, '│', 1, dim);
+        }
+        const document_x = x + if (feature_width > 0) feature_width + 1 else 0;
+        if (self.layout) |*layout| paintDocument(grid, layout, self.scroll, self.viewport, document_x, y + 7, self.documentWidth(), normal, dim);
         if (self.additional_layout) |*layout| {
             const left = x + self.bodyWidth();
             grid.fillRect(@floatFromInt(left), @floatFromInt(y + 7), 1, @floatFromInt(self.viewport), dim);

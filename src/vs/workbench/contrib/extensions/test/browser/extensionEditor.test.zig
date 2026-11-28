@@ -31,3 +31,34 @@ test "ExtensionEditor: additional details include installation, category and res
     defer allocator.free(output);
     for ([_][]const u8{ "Installation", "pub.example", "1.2.3", "2000-02-29", "VSIX", "Programming Languages", "https://example.test/repo", "https://example.test/issues", "https://open-vsx.org/extension/pub/example" }) |value| try std.testing.expect(std.mem.indexOf(u8, output, value) != null);
 }
+
+test "ExtensionEditor: registered feature renderers preserve command and language table data" {
+    const allocator = std.testing.allocator;
+    const features = @import("../../../../services/extensionManagement/common/extensionFeatures.zig");
+    const tab_mod = @import("../../browser/extensionFeaturesTab.zig");
+    var registry = features.ExtensionFeaturesRegistry.init(allocator);
+    defer registry.deinit();
+    try @import("../../../../workbench.common.main.zig").registerExtensionFeatures(&registry);
+    var manifest = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"contributes":{"commands":[{"command":"pub.run","title":"Run Example"}],"keybindings":[{"command":"pub.run","key":"ctrl+r"}],"menus":{"editor/context":[{"command":"pub.run"}]},"languages":[{"id":"example","aliases":["Example"],"extensions":[".ex"]}],"grammars":[{"language":"example","scopeName":"source.example"}],"snippets":[{"language":"example","path":"snippets.json"}],"configuration":{"properties":{"pub.enabled":{"type":"boolean","default":true,"description":"Enable it"}}}}}
+    , .{});
+    defer manifest.deinit();
+    var tab = tab_mod.ExtensionFeaturesTab.init(allocator, &registry);
+    defer tab.deinit();
+    try tab.setManifest(manifest.value);
+    try std.testing.expectEqual(@as(usize, 3), tab.available.len);
+    try std.testing.expectEqualStrings("Commands", tab.available[0].label);
+    const commands = try tab.renderSelected(manifest.value);
+    defer allocator.free(commands);
+    for ([_][]const u8{ "pub.run", "Run Example", "ctrl+r", "editor/context", "commandPalette" }) |value| try std.testing.expect(std.mem.indexOf(u8, commands, value) != null);
+    try std.testing.expect(tab.select(1));
+    const languages = try tab.renderSelected(manifest.value);
+    defer allocator.free(languages);
+    for ([_][]const u8{ "Programming Languages", "example", ".ex", "Grammar", "Snippets", "✓" }) |value| try std.testing.expect(std.mem.indexOf(u8, languages, value) != null);
+    try tab.setManifest(manifest.value);
+    try std.testing.expectEqualStrings("languages", tab.available[tab.selected].id);
+    try std.testing.expect(tab.select(2));
+    const settings = try tab.renderSelected(manifest.value);
+    defer allocator.free(settings);
+    for ([_][]const u8{ "pub.enabled", "Enable it", "true" }) |value| try std.testing.expect(std.mem.indexOf(u8, settings, value) != null);
+}

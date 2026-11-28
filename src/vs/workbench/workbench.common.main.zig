@@ -20,6 +20,14 @@ pub fn registerAccessibleViews(registry: *@import("../platform/accessibility/bro
     try registry.register(@import("../editor/contrib/hover/browser/hoverAccessibleViews.zig").HoverAccessibilityHelp.registration);
 }
 
+pub fn registerExtensionFeatures(registry: *@import("services/extensionManagement/common/extensionFeatures.zig").ExtensionFeaturesRegistry) !void {
+    try registry.registerExtensionFeature(@import("services/actions/common/menusExtensionPoint.zig").commands_feature);
+    try registry.registerExtensionFeature(@import("api/common/configurationExtensionPoint.zig").settings_feature);
+    try registry.registerExtensionFeature(@import("api/common/configurationExtensionPoint.zig").defaults_feature);
+    try registry.registerExtensionFeature(@import("services/language/common/languageService.zig").languages_feature);
+    try registry.registerExtensionFeature(@import("services/themes/common/themeExtensionPoints.zig").themes_feature);
+}
+
 pub fn registerConfigurations(registry: *@import("../platform/configuration/common/configurationRegistry.zig").ConfigurationRegistry) !void {
     try registry.registerConfiguration("multiDiffEditor", &@import("contrib/multiDiffEditor/common/multiDiffEditor.zig").properties);
     try registry.registerConfiguration("editor", &@import("../editor/contrib/codeAction/browser/codeActionContributions.zig").properties);

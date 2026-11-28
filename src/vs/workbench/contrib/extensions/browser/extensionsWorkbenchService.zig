@@ -268,6 +268,7 @@ pub const ExtensionsWorkbenchService = struct {
     system_location: ?[]u8 = null,
     user_location: ?[]u8 = null,
     state: ModelState,
+    feature_registry: @import("../../../services/extensionManagement/common/extensionFeatures.zig").ExtensionFeaturesRegistry,
     gallery_url: ?[]u8 = null,
     gallery_state: ?GalleryState = null,
     popular_state: ?GalleryState = null,
@@ -310,6 +311,7 @@ pub const ExtensionsWorkbenchService = struct {
                 .enabled = std.array_list.Managed(*const scanner.ScannedExtension).init(allocator),
             },
             .enablement = options.enablement,
+            .feature_registry = .init(allocator),
             .on_change = Emitter(void).init(allocator),
             .on_recommendations_change = Emitter(void).init(allocator),
             .on_did_change_enabled_descriptions = Emitter(void).init(allocator),
@@ -333,6 +335,7 @@ pub const ExtensionsWorkbenchService = struct {
     fn deinitContents(self: *ExtensionsWorkbenchService) void {
         self.detachWindow();
         self.freeState(self.state);
+        self.feature_registry.deinit();
         if (self.runtime) |*runtime| runtime.deinit();
         if (self.gallery_state) |*state| state.deinit();
         if (self.popular_state) |*state| state.deinit();
