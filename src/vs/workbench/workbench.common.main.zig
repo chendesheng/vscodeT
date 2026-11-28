@@ -26,6 +26,18 @@ pub fn registerExtensionFeatures(registry: *@import("services/extensionManagemen
     try registry.registerExtensionFeature(@import("api/common/configurationExtensionPoint.zig").defaults_feature);
     try registry.registerExtensionFeature(@import("services/language/common/languageService.zig").languages_feature);
     try registry.registerExtensionFeature(@import("services/themes/common/themeExtensionPoints.zig").themes_feature);
+    try registry.registerExtensionFeature(@import("api/common/jsonValidationExtensionPoint.zig").json_validation_feature);
+    try registry.registerExtensionFeature(@import("contrib/debug/common/debugSchemas.zig").debuggers_feature);
+    try registry.registerExtensionFeature(@import("services/themes/common/colorExtensionPoint.zig").colors_feature);
+    try registry.registerExtensionFeature(@import("contrib/customEditor/common/extensionPoint.zig").custom_editors_feature);
+    try registry.registerExtensionFeature(@import("api/browser/viewsExtensionPoint.zig").containers_feature);
+    try registry.registerExtensionFeature(@import("api/browser/viewsExtensionPoint.zig").views_feature);
+    try registry.registerExtensionFeature(@import("contrib/localization/common/localization.contribution.zig").localizations_feature);
+    try registry.registerExtensionFeature(@import("contrib/authentication/browser/authentication.contribution.zig").authentication_feature);
+    try registry.registerExtensionFeature(@import("contrib/notebook/browser/notebookExtensionPoint.zig").notebooks_feature);
+    try registry.registerExtensionFeature(@import("contrib/notebook/browser/notebookExtensionPoint.zig").renderers_feature);
+    try registry.registerExtensionFeature(@import("services/extensions/common/abstractExtensionService.zig").activation_events_feature);
+    try registry.registerExtensionFeature(@import("services/extensions/common/extensionsProposedApi.zig").proposals_feature);
 }
 
 pub fn registerConfigurations(registry: *@import("../platform/configuration/common/configurationRegistry.zig").ConfigurationRegistry) !void {

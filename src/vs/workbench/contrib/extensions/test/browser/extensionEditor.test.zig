@@ -82,3 +82,37 @@ test "ExtensionEditor: runtime feature reports activation and replaces status" {
     try tab.setManifestWithRuntime(.null, false);
     try std.testing.expectEqual(@as(usize, 0), tab.available.len);
 }
+
+test "ExtensionEditor: contribution tables preserve upstream columns and grouped view locations" {
+    const allocator = std.testing.allocator;
+    const features = @import("../../../../services/extensionManagement/common/extensionFeatures.zig");
+    var registry = features.ExtensionFeaturesRegistry.init(allocator);
+    defer registry.deinit();
+    try @import("../../../../workbench.common.main.zig").registerExtensionFeatures(&registry);
+    var manifest = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"activationEvents":["onCommand:pub.run"],"originalEnabledApiProposals":["oldProposal"],"enabledApiProposals":["newProposal"],"contributes":{"jsonValidation":[{"fileMatch":["a.json","b.json"],"url":"./schema.json"}],"debuggers":[{"label":"Example Debugger","type":"example"}],"colors":[{"id":"example.fg","description":"Example foreground","defaults":{"dark":"#abc","light":"editor.foreground","highContrast":"#fff"}}],"customEditors":[{"viewType":"example.editor","priority":{"textEditor":"default","diffEditor":"option"},"selector":[{"filenamePattern":"*.example"}]}],"viewsContainers":{"activitybar":[{"id":"example.container","title":"Example"}]},"views":{"example.container":[{"id":"example.view","name":"Example View"}]},"localizations":[{"languageId":"fr","languageName":"French","localizedLanguageName":"Français"}],"authentication":[{"label":"Example Login","id":"example","authorizationServerGlobs":["https://example.test/*"]}],"notebooks":[{"type":"example-notebook","displayName":"Example Notebook"}],"notebookRenderer":[{"displayName":"Example Renderer","mimeTypes":["application/example","text/plain"]}]}}
+    , .{});
+    defer manifest.deinit();
+    const cases = [_]struct { id: []const u8, matches: []const []const u8 }{
+        .{ .id = "jsonValidation", .matches = &.{ "File Match", "a.json, b.json", "./schema.json" } },
+        .{ .id = "debuggers", .matches = &.{ "Name", "Type", "Example Debugger", "example" } },
+        .{ .id = "colors", .matches = &.{ "High Contrast Default", "example.fg", "#abc", "editor.foreground", "#fff" } },
+        .{ .id = "customEditors", .matches = &.{ "View Type", "example.editor", "textEditor: default, diffEditor: option", "*.example" } },
+        .{ .id = "viewsContainers", .matches = &.{ "Where", "example.container", "activitybar" } },
+        .{ .id = "views", .matches = &.{ "Example View", "example.view", "example.container" } },
+        .{ .id = "localizations", .matches = &.{ "Language Name (Localized)", "French", "Français" } },
+        .{ .id = "authentication", .matches = &.{ "MCP Authorization Servers", "Example Login", "https://example.test/*" } },
+        .{ .id = "notebooks", .matches = &.{ "example-notebook", "Example Notebook" } },
+        .{ .id = "notebookRenderer", .matches = &.{ "Mimetypes", "application/example,text/plain", "Example Renderer" } },
+        .{ .id = "activationEvents", .matches = &.{"onCommand:pub.run"} },
+        .{ .id = "enabledApiProposals", .matches = &.{"oldProposal"} },
+    };
+    for (cases) |item| {
+        const descriptor = registry.getExtensionFeature(item.id) orelse return error.FeatureNotRegistered;
+        try std.testing.expect(descriptor.should_render(manifest.value));
+        const rendered = try descriptor.render(allocator, manifest.value);
+        defer allocator.free(rendered);
+        for (item.matches) |part| try std.testing.expect(std.mem.indexOf(u8, rendered, part) != null);
+        if (std.mem.eql(u8, item.id, "enabledApiProposals")) try std.testing.expect(std.mem.indexOf(u8, rendered, "newProposal") == null);
+    }
+}
