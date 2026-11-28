@@ -14134,6 +14134,8 @@ test "Workbench: extensions panel lists, filters, opens and disables" {
     try tmp.dir.writeFile(io, .{ .sub_path = "user/pub.user-ext-1.0.0/package.json", .data =
         \\{"name":"user-ext","publisher":"pub","version":"2.0.0","engines":{"vscode":"*"},"displayName":"User Ext","description":"User extension."}
     });
+    try tmp.dir.writeFile(io, .{ .sub_path = "user/pub.user-ext-1.0.0/README.md", .data = "# User extension guide\n\nHello from README." });
+    try tmp.dir.writeFile(io, .{ .sub_path = "user/pub.user-ext-1.0.0/CHANGELOG.md", .data = "# Changes\n\nVersion two." });
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path_length = try tmp.dir.realPath(io, &path_buffer);
     const root = try allocator.dupe(u8, path_buffer[0..path_length]);
@@ -14162,15 +14164,22 @@ test "Workbench: extensions panel lists, filters, opens and disables" {
     try std.testing.expect(try workbench.showActivityById("extensions"));
     try std.testing.expect(workbench.extensions_list != null);
     const view = workbench.extensions_list.?;
-    try std.testing.expectEqual(@as(usize, 2), view.rows.len);
+    try std.testing.expectEqual(@as(usize, 1), view.rows.len);
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "EXTENSIONS") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "System Ext") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "System Ext") == null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "User Ext") != null);
 
-    // Typing filters the list; the user extension sorts before the built-in.
+    // Built-ins live in separate upstream view descriptors, rather than the default installed pane.
+    try view.input_box.setValue("@builtin");
+    try std.testing.expect(workbench.extensions_view.?.model.isVisible("workbench.views.extensions.builtinFeatureExtensions"));
+    try std.testing.expect(workbench.extensions_view.?.model.isVisible("workbench.views.extensions.builtinThemeExtensions"));
+    try std.testing.expectEqual(@as(usize, 1), view.rows.len);
+    try std.testing.expectEqualStrings("pub.system-ext", view.rows[0].identifier);
+    view.clearSearch();
+    // Typing filters the list; local fixture searches need no network.
     const typed = "user";
     for (typed) |ch| {
         var event = ui.KeyEvent{ .key = .{ .char = ch } };
@@ -14183,7 +14192,7 @@ test "Workbench: extensions panel lists, filters, opens and disables" {
     var escape = ui.KeyEvent{ .key = .escape };
     _ = try terminal_workbench.handleSidebarKey(workbench, &escape);
     try std.testing.expectEqual(@as(usize, 0), view.queryText().len);
-    try std.testing.expectEqual(@as(usize, 2), view.rows.len);
+    try std.testing.expectEqual(@as(usize, 1), view.rows.len);
     _ = try terminal_workbench.handleSidebarKey(workbench, &escape);
     try std.testing.expectEqual(Focus.editor, workbench.focus);
 
@@ -14206,18 +14215,27 @@ test "Workbench: extensions panel lists, filters, opens and disables" {
     try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "User Ext") != null);
 
-    // Refresh and open the selected extension's manifest. The user extension
+    // Refresh and open the selected extension's detail editor. The user extension
     // sorts first, so one Down from the search box followed by Enter opens it.
     _ = try workbench.commands.execute("workbench.extensions.action.refreshExtension");
-    try std.testing.expectEqual(@as(usize, 2), view.rows.len);
+    try std.testing.expectEqual(@as(usize, 1), view.rows.len);
     var down = ui.KeyEvent{ .key = .down };
     _ = try terminal_workbench.handleSidebarKey(workbench, &down);
     var enter = ui.KeyEvent{ .key = .enter };
     _ = try terminal_workbench.handleSidebarKey(workbench, &enter);
     pumpOpenForTests(workbench);
     const active = workbench.activeTab() orelse return error.TestUnexpectedResult;
-    try std.testing.expect(std.mem.indexOf(u8, active.editor.path, "user-ext") != null);
-    try std.testing.expect(std.mem.endsWith(u8, active.editor.path, "package.json"));
+    try std.testing.expectEqualStrings("Extension: User Ext", active.input.getName());
+    try std.testing.expectEqualStrings("pub.user-ext", active.extension_input.?.identifier);
+    const detail = active.extension_editor orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("# User extension guide\n\nHello from README.", detail.readme);
+    try std.testing.expectEqual(@as(usize, 3), detail.tab_count);
+    try detail.selectTab(.changelog);
+    try std.testing.expectEqualStrings("# Changes\n\nVersion two.", detail.changelog.?);
+    try workbench.editor_opening.openExtension(service, "PUB.USER-EXT");
+    try std.testing.expect(workbench.activeTab().? == active);
+    try service.refresh();
+    try std.testing.expectEqualStrings("User Ext", detail.extension.?.display_name);
 }
 
 test "Workbench: window Io yields through the native dispatcher and resumes on the window thread" {

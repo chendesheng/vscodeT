@@ -1,12 +1,7 @@
 // Port of the Extensions view-container, view and command registrations in
 // `src/vs/workbench/contrib/extensions/browser/extensions.contribution.ts`.
-//
-// Terminal adaptation: the container/view ids use the workbench's native
-// "extensions" alias for upstream `workbench.view.extensions` /
-// `workbench.views.extensions.installed`. The container hosts one combined
-// view, so the one visible view cannot be hidden. Marketplace actions,
-// recommendations, update checks and the extension-details editor are not
-// ported.
+// The activity container retains the terminal's historic "extensions" alias;
+// individual views use upstream IDs and query-driven availability.
 const views = @import("../../../common/views.zig");
 const Action2 = @import("../../../../platform/actions/common/actions.zig").Action2;
 const Accessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
@@ -29,15 +24,7 @@ pub fn registerViewContainer(registry: *views.ViewContainersRegistry) !void {
 }
 
 pub fn registerViews(registry: *views.ViewsRegistry) !void {
-    // The single combined view merges with the container title. It cannot be
-    // hidden because that would leave the activity-bar container empty.
-    try registry.registerViews(&.{.{
-        .id = model.VIEW_ID,
-        .name = "Extensions",
-        .order = 0,
-        .weight = 100,
-        .can_toggle_visibility = false,
-    }}, model.VIEW_ID);
+    try @import("extensionsViewlet.zig").registerViews(registry);
 }
 
 pub const show_extensions_action: Action2 = .{

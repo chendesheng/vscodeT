@@ -1808,7 +1808,7 @@ pub fn handleSidebarKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
         // The Extensions search box consumes Escape while it has text or the
         // list owns focus; a second Escape leaves the side bar.
         if (std.mem.eql(u8, self.activity_bar_part.active_id orelse "", "extensions")) {
-            if (self.extensions_list) |view| {
+            if (self.extensions_view) |view| {
                 if (view.handleEscape()) return true;
             }
         }
@@ -2052,8 +2052,8 @@ fn updateSidebarBodyHover(
         if (self.scm.changes) |view| self.pointer = view.pointerAt(event, rect);
     } else if (std.mem.eql(u8, id, "graph")) {
         if (self.scm.history) |view| self.pointer = view.pointerAt();
-    } else if (std.mem.eql(u8, id, "extensions")) {
-        if (self.extensions_list) |view| self.pointer = view.pointerAt(event, rect);
+    } else if (std.mem.eql(u8, container.model.container.id, "extensions")) {
+        if (self.extensions_view) |view| self.pointer = view.pointerAt(id, event, rect);
     }
 }
 
