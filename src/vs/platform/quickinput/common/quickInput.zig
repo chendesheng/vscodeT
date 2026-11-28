@@ -16,12 +16,19 @@ pub const IPickOptions = struct {
 /// pick borrows its item until the result handler completes.
 pub const PickResultHandler = *const fn (*anyopaque, ?*const Item) anyerror!void;
 
+pub const InputResultHandler = *const fn (*anyopaque, ?[]const u8) anyerror!void;
+
 pub const IQuickInputService = struct {
     quick_access: @import("quickAccess.zig").IQuickAccessController,
     context: *anyopaque,
     pick_fn: *const fn (*anyopaque, []const QuickPickItem, IPickOptions, PickResultHandler, *anyopaque) anyerror!void,
+    input_fn: *const fn (*anyopaque, []const u8, InputResultHandler, *anyopaque) anyerror!void,
     on_show: *@import("../../../base/common/event.zig").Emitter(void),
     on_hide: *@import("../../../base/common/event.zig").Emitter(void),
+
+    pub fn input(self: IQuickInputService, placeholder: []const u8, handler: InputResultHandler, context: *anyopaque) !void {
+        try self.input_fn(self.context, placeholder, handler, context);
+    }
 
     pub fn pick(self: IQuickInputService, items: []const QuickPickItem, options: IPickOptions, handler: PickResultHandler, context: *anyopaque) !void {
         try self.pick_fn(self.context, items, options, handler, context);

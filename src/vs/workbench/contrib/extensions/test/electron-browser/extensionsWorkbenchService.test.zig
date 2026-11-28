@@ -288,3 +288,72 @@ test "effective local extension host inventory uses enabled merged descriptions"
         } else return error.UnexpectedHostExtension;
     }
 }
+
+test "ExtensionsWorkbenchService: pages retain independent default gallery models" {
+    const allocator = testing.allocator;
+    const gallery = @import("../../../../../platform/extensionManagement/common/extensionGalleryService.zig");
+    var enablement = try ExtensionEnablementService.init(allocator, null);
+    defer enablement.deinit();
+    const service = try ExtensionsWorkbenchService.init(allocator, io, .{ .enablement = enablement });
+    defer service.deinit();
+    const first = try gallery.Page.parse(allocator,
+        \\{"results":[{"extensions":[{"extensionName":"one","publisher":{"publisherName":"pub"},"versions":[{"version":"1.0.0"}]}]}]}
+    );
+    try service.setGalleryPage(first, false, .popular);
+    const second = try gallery.Page.parse(allocator,
+        \\{"results":[{"extensions":[{"extensionName":"two","publisher":{"publisherName":"pub"},"versions":[{"version":"2.0.0"}]}]}]}
+    );
+    try service.setGalleryPage(second, true, .popular);
+    const search = try gallery.Page.parse(allocator,
+        \\{"results":[{"extensions":[{"extensionName":"three","publisher":{"publisherName":"pub"},"versions":[{"version":"3.0.0"}]}]}]}
+    );
+    try service.setGalleryPage(search, false, .search);
+    try testing.expectEqual(@as(usize, 2), service.galleryExtensionsFor(.popular).len);
+    try testing.expectEqual(@as(usize, 1), service.galleryExtensions().len);
+    try testing.expectEqualStrings("1.0.0", service.find("PUB.ONE").?.version);
+    try testing.expectEqualStrings("2.0.0", service.find("pub.two").?.version);
+    try testing.expectEqualStrings("3.0.0", service.find("pub.three").?.version);
+}
+
+test "ExtensionsWorkbenchService: auto update respects delay, pin, channel and consent" {
+    const model = @import("../../common/extensions.zig");
+    var local: model.IExtension = .{ .identifier = "pub.extension", .name = "extension", .display_name = "Extension", .description = "", .version = "1.0.0", .publisher = "pub", .categories = &.{}, .location = "", .is_builtin = false, .uuid = "uuid", .executes_code = false };
+    var remote = local;
+    remote.version = "2.0.0";
+    remote.vsix_url = "https://example.test/package";
+    remote.last_updated = 1000;
+    const twelve_hours = 12 * 60 * 60 * 1000;
+    try testing.expect(!service_mod.shouldAutoUpdate(local, remote, 1000 + twelve_hours - 1, 12));
+    try testing.expect(service_mod.shouldAutoUpdate(local, remote, 1000 + twelve_hours, 12));
+    local.pinned = true;
+    try testing.expect(!service_mod.shouldAutoUpdate(local, remote, 1000 + twelve_hours, 12));
+    local.pinned = false;
+    local.enablement_state = .DisabledWorkspace;
+    try testing.expect(!service_mod.shouldAutoUpdate(local, remote, 1000 + twelve_hours, 12));
+    local.enablement_state = .EnabledGlobally;
+    remote.is_pre_release = true;
+    try testing.expect(!service_mod.shouldAutoUpdate(local, remote, 1000 + twelve_hours, 12));
+    remote.is_pre_release = false;
+    remote.uuid = "republished";
+    try testing.expect(!service_mod.shouldAutoUpdate(local, remote, 1000 + twelve_hours, 12));
+    remote.uuid = local.uuid;
+    remote.executes_code = true;
+    try testing.expect(!service_mod.shouldAutoUpdate(local, remote, 1000 + twelve_hours, 12));
+    local.executes_code = true;
+    try testing.expect(service_mod.shouldAutoUpdate(local, remote, 1000 + twelve_hours, 12));
+}
+
+test "ExtensionsWorkbenchService: extension and publisher automatic-update preferences" {
+    const model = @import("../../common/extensions.zig");
+    var local: model.IExtension = .{ .identifier = "pub.extension", .name = "extension", .display_name = "Extension", .description = "", .version = "1.0.0", .publisher = "Pub", .categories = &.{}, .location = "", .is_builtin = false };
+    try testing.expect(service_mod.autoUpdatePolicy(true, &.{}, local));
+    try testing.expect(!service_mod.autoUpdatePolicy(true, &.{.{ .string = "pub.extension" }}, local));
+    try testing.expect(!service_mod.autoUpdatePolicy(false, &.{}, local));
+    try testing.expect(service_mod.autoUpdatePolicy(false, &.{.{ .string = "pub" }}, local));
+    try testing.expect(!service_mod.autoUpdatePolicy(false, &.{ .{ .string = "pub" }, .{ .string = "-pub.extension" } }, local));
+    try testing.expect(service_mod.autoUpdatePolicy(false, &.{ .{ .string = "pub" }, .{ .string = "pub.extension" } }, local));
+    local.pinned = true;
+    try testing.expect(!service_mod.autoUpdatePolicy(true, &.{}, local));
+    local.is_builtin = true;
+    try testing.expect(!service_mod.autoUpdatePolicy(false, &.{.{ .string = "pub" }}, local));
+}

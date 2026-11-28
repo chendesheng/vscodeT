@@ -2551,3 +2551,18 @@ symbol resolves its optional location before opening the target UTF-16 position.
 The terminal picker currently shows names and container/file descriptions;
 symbol-kind icons, background/side-by-side acceptance, richer highlights and
 preview configuration remain portable view gaps.
+
+### Extensions views and editor
+
+The Extensions view container reserves a fixed search-input row above its
+registered panes. The shared `ListWidget` paints three cell rows per extension
+and carries the clipped row's original cell offset so the description and
+footer stay aligned while scrolling. The terminal detail editor replaces the
+browser README/changelog webview with the existing Markdown document layout,
+uses a text action bar and navbar, and opens supported external links via the
+native opener. Extension icon assets and browser-only webview styles are not
+rendered in this port; the generic extension codicon is used for list rows
+and editor tabs. The pre-release bookmark uses the cell below the list icon
+(instead of a browser overlay), with the upstream visibility and theme color.
+See [the extensions design notes](design.md#extensions-management-and-detail-editor)
+for portable gaps.

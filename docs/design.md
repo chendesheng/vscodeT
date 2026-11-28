@@ -21,6 +21,7 @@ themselves live in [AGENTS.md](../AGENTS.md), user-facing setup lives in
 - [File watcher](#file-watcher)
 - [Node extension host](#node-extension-host-experimental)
 - [Language features and built-in extensions](#language-features-and-built-in-extensions)
+- [Extensions management and detail editor](#extensions-management-and-detail-editor)
 - [Build, packaging, and CI](#build-packaging-and-ci)
 - [Browser demo](#browser-demo)
 - [Terminal host and window I/O](#terminal-host-and-window-io)
@@ -495,6 +496,36 @@ keys, find) are pushed to the host with upstream's `source` string so Node
 language extensions stay in step. Still missing: the command/menu/keybinding
 contribution scanners, configuration writes, full `tabGroups`, the rest of the
 built-in command set, and the extension keybinding registry. See [extensions.md](extensions.md) for the port status and the remaining work.
+
+## Extensions management and detail editor
+
+The workbench Extensions contribution drives the registered list panes and
+shared input through the workbench services. The gallery uses the compatible
+Open VSX API by default. Search, recommendations, Popular and update models are
+independent; exact-ID resolution and dependency navigation do not replace the
+sidebar query. Queries and management operations are dispatched through
+cancellable work owned by the corresponding services, not render-time scans.
+The profile selection service records the active version; the management
+service validates, verifies and stages VSIX dependencies before publication.
+Global and workspace enablement and application-scope update preferences are
+persisted through their respective services.
+
+The editor uses the registered extension input and the shared terminal
+Markdown renderer. Manifest feature renderers are registered by their upstream
+contribution owners and are shared with feature-filter search. The icon and
+pre-release bookmark occupy separate terminal cells, as illustrated in
+[terminal UI](terminal-ui.md#extensions-views-and-editor); browser icon assets
+and webview rendering are not ported.
+
+The local host receives enabled-description deltas where supported and
+reports activation timings. Already-activated extensions that cannot be
+removed via a delta require Restart Extensions. Startup-owned language,
+grammar, theme, snippet and configuration contributions still require an
+editor restart. Full profile/server switching, additional recommendation
+providers, runtime error/access telemetry, chat/MCP-specific renderers, trust
+and policy integration, and dynamic declarative registration remain portable
+gaps. See [Extensions UI and host architecture](extensions.md#current-extensions-ui-port)
+and [usage](usage.md#extensions-side-panel) for specifics.
 
 ## Build, packaging, and CI
 

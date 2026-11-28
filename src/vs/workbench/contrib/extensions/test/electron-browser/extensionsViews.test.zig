@@ -128,16 +128,17 @@ test "Test installed extensions sort before built-ins" {
     try testing.expectEqualStrings("aaa-builtin", filtered[1].display_name);
 }
 
-test "Test sort token keeps display-name order" {
+test "Sort token keeps installed display-name order and built-ins have a separate query" {
+    // VS Code's filterInstalledExtensions excludes built-ins when a
+    // sort is specified. The explicit builtin query still sorts them.
     try expectNames("@sort:name", &.{
         "first-disabled-extension",
         "first-enabled-extension",
         "random-enabled-extension",
         "second-disabled-extension",
         "second-enabled-extension",
-        "my-lang",
-        "my-theme",
     });
+    try expectNames("@builtin @sort:name", &.{ "my-lang", "my-theme" });
 }
 
 test "Test description text matches" {
@@ -149,4 +150,62 @@ test "Test description text matches" {
     const filtered = try views.filterExtensions(allocator, &entries, "snippets");
     defer allocator.free(filtered);
     try testing.expectEqual(@as(usize, 1), filtered.len);
+}
+
+test "Sort-only query selects installed extensions by update date" {
+    const allocator = testing.allocator;
+    var entries = [_]IExtension{
+        extension("pub.first", "First", &no_categories, true, false),
+        extension("pub.second", "Second", &no_categories, true, false),
+        extension("pub.builtin", "Builtin", &no_categories, true, true),
+    };
+    entries[0].installed_timestamp = 100;
+    entries[1].installed_timestamp = 200;
+    entries[2].installed_timestamp = 300;
+    const filtered = try views.filterExtensions(allocator, &entries, "@sort:updateDate");
+    defer allocator.free(filtered);
+    try testing.expectEqual(@as(usize, 2), filtered.len);
+    try testing.expectEqualStrings("pub.second", filtered[0].identifier);
+    try testing.expectEqualStrings("pub.first", filtered[1].identifier);
+}
+
+test "Extension list pre-release bookmark does not replace the extension icon" {
+    const ui = @import("ui");
+    const list_renderer = @import("../../browser/extensionsList.zig");
+    const widgets = @import("../../browser/extensionsWidgets.zig");
+    var grid = try ui.CellGrid.init(testing.allocator, 24, 3);
+    defer grid.deinit();
+    const row: @import("../../../../../base/browser/ui/list/list.zig").Row = .{
+        .grid = &grid,
+        .x = 0,
+        .y = 0,
+        .width = 24,
+        .height = 3,
+        .index = 0,
+        .selected = false,
+        .focused = false,
+        .focused_selection = false,
+    };
+    var entry = extension("redhat.vscode-yaml", "YAML", &no_categories, true, false);
+    entry.has_pre_release = true;
+    // An installed stable version with a pre-release available still uses
+    // the ordinary icon and has no bookmark.
+    list_renderer.renderRow(&grid, &row, &entry, list_renderer.colors(null), .{});
+    try testing.expectEqual(@as(u32, list_renderer.extension_glyph), grid.cluster[0]);
+    try testing.expect(grid.cluster[grid.cols] != widgets.PreReleaseBookmarkWidget.glyph);
+
+    // The bookmark is separate for an installed pre-release version.
+    grid.clear();
+    entry.is_pre_release = true;
+    list_renderer.renderRow(&grid, &row, &entry, list_renderer.colors(null), .{});
+    try testing.expectEqual(@as(u32, list_renderer.extension_glyph), grid.cluster[0]);
+    try testing.expectEqual(@as(u32, widgets.PreReleaseBookmarkWidget.glyph), grid.cluster[grid.cols]);
+
+    // Gallery extensions advertise available pre-release versions.
+    grid.clear();
+    entry.state = .Uninstalled;
+    entry.is_pre_release = false;
+    list_renderer.renderRow(&grid, &row, &entry, list_renderer.colors(null), .{});
+    try testing.expectEqual(@as(u32, list_renderer.extension_glyph), grid.cluster[0]);
+    try testing.expectEqual(@as(u32, widgets.PreReleaseBookmarkWidget.glyph), grid.cluster[grid.cols]);
 }

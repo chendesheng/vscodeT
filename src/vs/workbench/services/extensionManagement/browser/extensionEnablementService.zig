@@ -1,25 +1,17 @@
-// Port of the global-enablement portion of
-// `src/vs/workbench/services/extensionManagement/browser/extensionEnablementService.ts`
-// and the profile-storage `StorageManager` from
-// `src/vs/platform/extensionManagement/common/extensionEnablementService.ts`.
-//
-// Terminal adaptation: the workbench has no profile storage database, so the
-// service receives a narrow `Store` that the native window binds to
-// `<user-data-dir>/User/globalStorage/extensions.state.json`. The stored value
-// is upstream's profile value for `extensionsIdentifiers/disabled`:
-// `[{"id":"publisher.name"}]`. Workspace enablement, workspace trust,
-// extension kind, dependency, bisect and malicious-extension layers are not
-// ported, so only `EnabledGlobally`/`DisabledGlobally` can be set.
-//
-// The change event carries the changed identifier instead of upstream's
-// `IExtensionIdentifier[]`; every consumer in the TUI updates its own model
-// from the call site, and the event exists for observers/tests.
+// Port of user and workspace enablement in
+// `src/vs/workbench/services/extensionManagement/browser/extensionEnablementService.ts`.
+// The profile store retains the upstream disabled-identifier representation.
+// Workspace overrides are stored atomically per workspace under workspaceStorage.
+// Trust, environment, kind and other computed restrictions are separate layers.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
 const util = @import("../../../../platform/extensionManagement/common/extensionManagementUtil.zig");
 const management = @import("../common/extensionManagement.zig");
 const EnablementState = management.EnablementState;
+const Workspace = @import("../../../../platform/workspace/common/workspace.zig").Workspace;
+const storage = @import("../../../../platform/storage/common/storage.zig");
+const Ids = std.array_list.Managed([]u8);
 
 /// Native persistence boundary. `load` returns the raw stored JSON value or
 /// null when no value has been stored; `save` stores the raw JSON value.
@@ -34,9 +26,16 @@ const StoredIdentifier = struct { id: []const u8 };
 pub const ExtensionEnablementService = struct {
     allocator: Allocator,
     store: ?Store = null,
-    /// Owned, lowercased ids of globally disabled extensions.
+    /// Owned identifiers of globally disabled extensions; comparisons are case-insensitive.
     disabled: std.array_list.Managed([]u8),
     on_did_change: Emitter([]const u8),
+    workspace_io: ?std.Io = null,
+    workspace_storage_root: ?[]u8 = null,
+    workspace_path: ?[]u8 = null,
+    workspace_key: ?[]u8 = null,
+    has_workspace: bool = false,
+    workspace_enabled: Ids,
+    workspace_disabled: Ids,
 
     pub fn init(allocator: Allocator, store: ?Store) !*ExtensionEnablementService {
         const self = try allocator.create(ExtensionEnablementService);
@@ -46,6 +45,8 @@ pub const ExtensionEnablementService = struct {
             .store = store,
             .disabled = std.array_list.Managed([]u8).init(allocator),
             .on_did_change = Emitter([]const u8).init(allocator),
+            .workspace_enabled = .init(allocator),
+            .workspace_disabled = .init(allocator),
         };
         errdefer self.deinitContents();
         try self.load();
@@ -58,8 +59,12 @@ pub const ExtensionEnablementService = struct {
     }
 
     fn deinitContents(self: *ExtensionEnablementService) void {
-        for (self.disabled.items) |identifier| self.allocator.free(identifier);
-        self.disabled.deinit();
+        freeIds(self.allocator, &self.disabled);
+        freeIds(self.allocator, &self.workspace_enabled);
+        freeIds(self.allocator, &self.workspace_disabled);
+        if (self.workspace_path) |path| self.allocator.free(path);
+        if (self.workspace_key) |key| self.allocator.free(key);
+        if (self.workspace_storage_root) |path| self.allocator.free(path);
         self.on_did_change.deinit();
     }
 
@@ -87,43 +92,141 @@ pub const ExtensionEnablementService = struct {
     }
 
     pub fn isEnabled(self: *const ExtensionEnablementService, identifier: []const u8) bool {
-        return self.find(identifier) == null;
+        return self.getEnablementState(identifier).isEnabled();
     }
 
     pub fn getEnablementState(self: *const ExtensionEnablementService, identifier: []const u8) EnablementState {
+        if (self.has_workspace) {
+            if (contains(self.workspace_enabled.items, identifier)) return .EnabledWorkspace;
+            if (contains(self.workspace_disabled.items, identifier)) return .DisabledWorkspace;
+        }
         return if (self.find(identifier) != null) .DisabledGlobally else .EnabledGlobally;
     }
 
-    /// Returns whether the state changed. The new value is persisted before it
-    /// is committed, so a storage failure leaves the in-memory state intact.
+    const WorkspaceState = struct {
+        @"extensionsIdentifiers/enabled": []const StoredIdentifier = &.{},
+        @"extensionsIdentifiers/disabled": []const StoredIdentifier = &.{},
+    };
+
+    pub fn configureWorkspaceStorage(self: *ExtensionEnablementService, io: std.Io, profile: ?[]const u8) !void {
+        const root = if (profile) |dir| try std.fs.path.join(self.allocator, &.{ dir, "User", "workspaceStorage" }) else null;
+        if (self.workspace_storage_root) |old| self.allocator.free(old);
+        self.workspace_storage_root = root;
+        self.workspace_io = io;
+    }
+
+    /// Switch to the new workspace before computing effective enablement.
+    /// Empty windows never expose workspace actions or stale overrides.
+    pub fn setWorkspace(self: *ExtensionEnablementService, workspace: *const Workspace) !bool {
+        const has_workspace = workspace.folders.items.len != 0 or workspace.configuration != null;
+        const key = if (has_workspace) blk: {
+            if (workspace.configuration) |config| break :blk try std.fmt.allocPrint(self.allocator, "{x:0>16}", .{std.hash.Wyhash.hash(0, config)});
+            break :blk try storage.workspaceFolderStatePath(self.allocator, "", workspace.folders.items, "extensions.state.json");
+        } else null;
+        var own_key = true;
+        defer if (own_key) if (key) |value| self.allocator.free(value);
+        const path = if (has_workspace and self.workspace_storage_root != null) blk: {
+            if (workspace.configuration != null) break :blk try std.fs.path.join(self.allocator, &.{ self.workspace_storage_root.?, key.?, "extensions.state.json" });
+            break :blk try storage.workspaceFolderStatePath(self.allocator, self.workspace_storage_root.?, workspace.folders.items, "extensions.state.json");
+        } else null;
+        var own_path = true;
+        defer if (own_path) if (path) |value| self.allocator.free(value);
+        if (has_workspace == self.has_workspace and samePath(self.workspace_key, key) and samePath(self.workspace_path, path)) return false;
+        var enabled: Ids = .init(self.allocator);
+        errdefer freeIds(self.allocator, &enabled);
+        var disabled: Ids = .init(self.allocator);
+        errdefer freeIds(self.allocator, &disabled);
+        if (path) |value| {
+            if (try storage.readStateFile(WorkspaceState, self.allocator, self.workspace_io.?, value)) |parsed| {
+                defer parsed.deinit();
+                for (parsed.value.@"extensionsIdentifiers/enabled") |id| try appendUnique(&enabled, id.id);
+                for (parsed.value.@"extensionsIdentifiers/disabled") |id| try appendUnique(&disabled, id.id);
+            }
+        }
+        freeIds(self.allocator, &self.workspace_enabled);
+        freeIds(self.allocator, &self.workspace_disabled);
+        if (self.workspace_path) |old| self.allocator.free(old);
+        self.workspace_enabled = enabled;
+        self.workspace_disabled = disabled;
+        self.workspace_path = path;
+        if (self.workspace_key) |old| self.allocator.free(old);
+        self.workspace_key = key;
+        self.has_workspace = has_workspace;
+        own_path = false;
+        own_key = false;
+        return true;
+    }
+
+    fn samePath(left: ?[]const u8, right: ?[]const u8) bool {
+        if (left) |a| return if (right) |b| std.mem.eql(u8, a, b) else false;
+        return right == null;
+    }
+
+    fn contains(ids: []const []u8, identifier: []const u8) bool {
+        for (ids) |id| if (util.areSameExtensions(id, identifier)) return true;
+        return false;
+    }
+
+    fn appendUnique(ids: *Ids, identifier: []const u8) !void {
+        if (identifier.len == 0 or contains(ids.items, identifier)) return;
+        const value = try ids.allocator.dupe(u8, identifier);
+        errdefer ids.allocator.free(value);
+        try ids.append(value);
+    }
+
+    fn freeIds(allocator: Allocator, ids: *Ids) void {
+        for (ids.items) |id| allocator.free(id);
+        ids.deinit();
+    }
+
+    fn withId(self: *ExtensionEnablementService, ids: []const []u8, identifier: []const u8, included: bool) !Ids {
+        var next: Ids = .init(self.allocator);
+        errdefer freeIds(self.allocator, &next);
+        for (ids) |id| if (!util.areSameExtensions(id, identifier)) try appendUnique(&next, id);
+        if (included) try appendUnique(&next, identifier);
+        return next;
+    }
+
+    fn persistWorkspace(self: *ExtensionEnablementService, enabled: []const []u8, disabled: []const []u8) !void {
+        const path = self.workspace_path orelse return;
+        const enabled_items = try self.allocator.alloc(StoredIdentifier, enabled.len);
+        defer self.allocator.free(enabled_items);
+        for (enabled, enabled_items) |id, *entry| entry.* = .{ .id = id };
+        const disabled_items = try self.allocator.alloc(StoredIdentifier, disabled.len);
+        defer self.allocator.free(disabled_items);
+        for (disabled, disabled_items) |id, *entry| entry.* = .{ .id = id };
+        try storage.writeStateFile(self.allocator, self.workspace_io.?, path, WorkspaceState{ .@"extensionsIdentifiers/enabled" = enabled_items, .@"extensionsIdentifiers/disabled" = disabled_items });
+    }
+
+    /// Global actions clear workspace overrides. Workspace actions only
+    /// change the selected workspace's explicit enable/disable lists.
     pub fn setEnablement(self: *ExtensionEnablementService, identifier: []const u8, state: EnablementState) !bool {
-        const disable = switch (state) {
-            .DisabledGlobally => true,
-            .EnabledGlobally => false,
+        const workspace = switch (state) {
+            .EnabledWorkspace, .DisabledWorkspace => true,
+            .EnabledGlobally, .DisabledGlobally => false,
             else => return error.UnsupportedEnablementState,
         };
-        const existing = self.find(identifier);
-        if (disable == (existing != null)) return false;
-
-        var next: std.array_list.Managed([]u8) = .init(self.allocator);
-        errdefer {
-            for (next.items) |entry| self.allocator.free(entry);
-            next.deinit();
-        }
-        try next.ensureTotalCapacity(self.disabled.items.len + 1);
-        for (self.disabled.items) |entry| {
-            if (util.areSameExtensions(entry, identifier)) continue;
-            next.appendAssumeCapacity(try self.allocator.dupe(u8, entry));
-        }
-        if (disable) next.appendAssumeCapacity(try self.allocator.dupe(u8, identifier));
-        try self.persist(next.items);
-
-        const previous = self.disabled;
-        self.disabled = next;
-        for (previous.items) |entry| self.allocator.free(entry);
-        previous.deinit();
-
-        try self.on_did_change.fire(identifier);
+        if (workspace and !self.has_workspace) return error.UnsupportedEnablementState;
+        if (self.getEnablementState(identifier) == state) return false;
+        var next_global = try self.withId(self.disabled.items, identifier, if (workspace) contains(self.disabled.items, identifier) else state == .DisabledGlobally);
+        errdefer freeIds(self.allocator, &next_global);
+        var next_enabled = try self.withId(self.workspace_enabled.items, identifier, state == .EnabledWorkspace);
+        errdefer freeIds(self.allocator, &next_enabled);
+        var next_disabled = try self.withId(self.workspace_disabled.items, identifier, state == .DisabledWorkspace);
+        errdefer freeIds(self.allocator, &next_disabled);
+        try self.persistWorkspace(next_enabled.items, next_disabled.items);
+        if (!workspace) self.persist(next_global.items) catch |err| {
+            self.persistWorkspace(self.workspace_enabled.items, self.workspace_disabled.items) catch {};
+            return err;
+        };
+        freeIds(self.allocator, &self.disabled);
+        freeIds(self.allocator, &self.workspace_enabled);
+        freeIds(self.allocator, &self.workspace_disabled);
+        self.disabled = next_global;
+        self.workspace_enabled = next_enabled;
+        self.workspace_disabled = next_disabled;
+        // Storage has committed. Listener failures do not free the new lists.
+        self.on_did_change.fire(identifier) catch {};
         return true;
     }
 

@@ -22,6 +22,8 @@ const EditorDocument = @import("../../../editor/browser/widget/codeEditor/codeEd
 const LastContentChange = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").LastContentChange;
 const ChangeListener = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").ChangeListener;
 const TextEdit = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").TextEdit;
+const extension_status = @import("../../services/extensions/common/extensions.zig");
+const StatusEmitter = @import("../../../base/common/event.zig").Emitter(void);
 pub const Services = @import("extensionHostServices.zig").Services;
 const GroupPane = @import("../../browser/parts/editor/editorGroupView.zig").EditorGroupView(*Tab);
 const Tab = @import("../../browser/parts/editor/editorPane.zig").Tab;
@@ -130,6 +132,12 @@ pub const Extensions = struct {
     activated: bool = false,
     eager_start_request: ?u32 = null,
     activation_tracker: extension_service.ActivationTracker,
+    activation_started: std.StringHashMapUnmanaged(void) = .empty,
+    activation_times: std.StringHashMapUnmanaged(extension_status.ActivationTimes) = .empty,
+    on_did_change_extensions_status: StatusEmitter,
+
+    runtime_version: u32 = 1,
+    pending_delta: ?*PendingDescriptionDelta = null,
     needs_render: bool = false,
     editor_service: EditorService,
     active_editor_listener: ?usize = null,
@@ -262,11 +270,13 @@ pub const Extensions = struct {
             .extension_ptrs = extension_ptrs,
             .user_data_dir = data,
             .activation_tracker = extension_service.ActivationTracker.init(allocator),
+            .on_did_change_extensions_status = StatusEmitter.init(allocator),
             .last_selections = std.array_list.Managed(Selection).init(allocator),
             .models = documents_and_editors.ModelCollection.init(allocator, .{ .context = self, .notify = notifyModelMirror }),
             .active_selection_handler = ViewEventHandler.init(self, .{ .onCursorStateChanged = onActiveSelection }),
         };
 
+        errdefer self.on_did_change_extensions_status.deinit();
         self.rpc_task = .{ .queue = services.window, .context = self, .run = dispatchRpc, .progress = true };
         errdefer self.rpc_task.schedule(null);
         self.models_task = .{ .queue = services.window, .context = self, .run = updateModels, .progress = true };
@@ -344,6 +354,7 @@ pub const Extensions = struct {
         self.window_actor = .{ .allocator = allocator, .window = services.window, .host = .{ .context = self, .open_uri = windowOpenUriHost } };
         self.extension_service_actor = .{ .host = .{
             .context = self,
+            .on_will_activate = extensionServiceWillActivateHost,
             .on_did_activate = extensionServiceActivatedHost,
             .as_browser_uri = extensionServiceBrowserUriHost,
         } };
@@ -403,6 +414,7 @@ pub const Extensions = struct {
     }
 
     pub fn deinit(self: *Extensions) void {
+        self.cancelDescriptionDelta(false);
         if (self.workspace_listener) |listener| self.services.workspace.on_did_change_workspace_folders.unlisten(listener);
         if (self.save_participant_registered) self.services.text_files.removeDocumentSaveParticipant(&self.save_participant);
         self.save_participant_registered = false;
@@ -455,6 +467,16 @@ pub const Extensions = struct {
         }
         self.pending_tab_closes.deinit(self.allocator);
         self.activation_tracker.deinit();
+        var activated = self.activation_started.keyIterator();
+        while (activated.next()) |id| self.allocator.free(id.*);
+        self.activation_started.deinit(self.allocator);
+        var times = self.activation_times.iterator();
+        while (times.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.activation_event);
+        }
+        self.activation_times.deinit(self.allocator);
+        self.on_did_change_extensions_status.deinit();
         self.last_selections.deinit();
         self.host.deinit();
         self.rpc_task.schedule(null);
@@ -463,6 +485,102 @@ pub const Extensions = struct {
         self.allocator.free(self.extension_ptrs);
         self.allocator.free(self.user_data_dir);
         self.allocator.destroy(self);
+    }
+
+    pub const DeltaResult = enum { unchanged, pending, restart_required };
+    pub const DeltaCompletion = struct { context: *anyopaque, complete: *const fn (*anyopaque, bool) void };
+    const PendingDescriptionDelta = struct {
+        owner: *Extensions,
+        delta: extension_service.DescriptionDelta,
+        pointers: []*const manager.ExtensionDescription,
+        completion: DeltaCompletion,
+        request: u32 = undefined,
+
+        fn destroy(self: *PendingDescriptionDelta) void {
+            const allocator = self.owner.allocator;
+            self.delta.deinit();
+            allocator.free(self.pointers);
+            allocator.destroy(self);
+        }
+
+        fn complete(context: *anyopaque, reply: rpc.Reply) void {
+            const self: *PendingDescriptionDelta = @ptrCast(@alignCast(context));
+            const owner = self.owner;
+            owner.pending_delta = null;
+            defer self.destroy();
+            if (reply == .err) {
+                self.completion.complete(self.completion.context, false);
+                return;
+            }
+            owner.allocator.free(owner.extension_ptrs);
+            owner.descriptions = self.delta.commit(owner.descriptions);
+            for (owner.descriptions, self.pointers) |*description, *pointer| pointer.* = description;
+            owner.extension_ptrs = self.pointers;
+            self.pointers = &.{};
+            owner.runtime_version += 1;
+            if (owner.commands_actor) |*actor| actor.extensions = owner.descriptions;
+            owner.accounts.extensions = owner.descriptions;
+            owner.accounts.action.extensions = owner.descriptions;
+            owner.task_service.extensions = owner.descriptions;
+            for (self.delta.added) |description| owner.activateAddedExtension(description) catch {};
+            self.completion.complete(self.completion.context, true);
+            owner.requestRender();
+        }
+    };
+
+    /// The local host owns its extension-description delta. Keep the previous
+    /// registry alive until the RPC acknowledgement, then transfer ownership
+    /// of unchanged manifests and rebind the actor description consumers.
+    pub fn applyDescriptionDelta(self: *Extensions, paths: []const ExtensionPath, completion: DeltaCompletion) !DeltaResult {
+        if (self.pending_delta != null) return error.ExtensionOperationInProgress;
+        if (self.eager_start_request != null or self.host.hasEof()) return .restart_required;
+        var delta = extension_service.DescriptionDelta.plan(self.allocator, self.io, self.descriptions, paths, &self.activation_started) catch |err| switch (err) {
+            error.RequiresRestart => return .restart_required,
+            else => return err,
+        };
+        var owned = true;
+        defer if (owned) delta.deinit();
+        if (delta.added.len == 0 and delta.removed.len == 0) return .unchanged;
+        const pending = try self.allocator.create(PendingDescriptionDelta);
+        errdefer self.allocator.destroy(pending);
+        const pointers = try self.allocator.alloc(*const manager.ExtensionDescription, delta.next.len);
+        errdefer self.allocator.free(pointers);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const data = try manager.buildExtensionsDelta(arena.allocator(), self.runtime_version + 1, delta.removed, delta.added);
+        pending.* = .{ .owner = self, .delta = delta, .pointers = pointers, .completion = completion };
+        pending.request = try self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostExtensionService), "$deltaExtensions", &.{.{ .json = data }}, null, .{ .context = pending, .callback = PendingDescriptionDelta.complete });
+        self.pending_delta = pending;
+        owned = false;
+        return .pending;
+    }
+
+    pub fn cancelDescriptionDelta(self: *Extensions, notify: bool) void {
+        const pending = self.pending_delta orelse return;
+        self.pending_delta = null;
+        self.host.rpc.cancel(pending.request);
+        if (notify) pending.completion.complete(pending.completion.context, false);
+        pending.destroy();
+    }
+
+    fn activateAddedExtension(self: *Extensions, extension: *const manager.ExtensionDescription) !void {
+        var reason: ?[]const u8 = null;
+        for (extension.activation_events) |event| {
+            if (self.host.requested_activation_events.contains(event) or std.mem.eql(u8, event, "*") or std.mem.eql(u8, event, "onStartupFinished")) {
+                reason = event;
+                break;
+            }
+        }
+        const event = reason orelse return;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const identifier = try manager.extensionIdentifierJson(allocator, extension.identifier);
+        var activation_reason: std.json.ObjectMap = .empty;
+        try activation_reason.put(allocator, "startup", .{ .bool = false });
+        try activation_reason.put(allocator, "extensionId", identifier);
+        try activation_reason.put(allocator, "activationEvent", .{ .string = event });
+        _ = try self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostExtensionService), "$activate", &.{ .{ .json = identifier }, .{ .json = .{ .object = activation_reason } } }, null, manager.noop_callback);
     }
 
     fn registerActors(self: *Extensions) void {
@@ -868,9 +986,51 @@ pub const Extensions = struct {
         return true;
     }
 
-    fn extensionServiceActivatedHost(context: *anyopaque) void {
+    fn extensionServiceWillActivateHost(context: *anyopaque, identifier: []const u8) !void {
         const self: *Extensions = @ptrCast(@alignCast(context));
+        const owned = try std.ascii.allocLowerString(self.allocator, identifier);
+        if (self.activation_started.contains(owned)) {
+            self.allocator.free(owned);
+            return;
+        }
+        errdefer self.allocator.free(owned);
+        try self.activation_started.put(self.allocator, owned, {});
+        self.on_did_change_extensions_status.fire({}) catch {};
+    }
+
+    fn extensionServiceActivatedHost(context: *anyopaque, identifier: []const u8, times: extension_status.ActivationTimes) !void {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        const owned = try std.ascii.allocLowerString(self.allocator, identifier);
+        errdefer self.allocator.free(owned);
+        const event = try self.allocator.dupe(u8, times.activation_event);
+        errdefer self.allocator.free(event);
+        var next = times;
+        next.activation_event = event;
+        const entry = try self.activation_times.getOrPut(self.allocator, owned);
+        if (entry.found_existing) {
+            self.allocator.free(owned);
+            self.allocator.free(entry.value_ptr.activation_event);
+        }
+        entry.value_ptr.* = next;
         self.activated = true;
+        self.on_did_change_extensions_status.fire({}) catch {};
+    }
+
+    pub fn interface(self: *Extensions) extension_status.IExtensionStatusService {
+        return .{ .context = self, .get_status = getExtensionStatus, .on_did_change_extensions_status = &self.on_did_change_extensions_status };
+    }
+
+    fn getExtensionStatus(context: *anyopaque, identifier: []const u8) ?extension_status.IExtensionsStatus {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        for (self.descriptions) |description| {
+            if (!std.ascii.eqlIgnoreCase(description.identifier, identifier)) continue;
+            if (description.manifest != .object or !description.manifest.object.contains("main")) return null;
+            return .{
+                .activation_started = self.activation_started.contains(description.identifier),
+                .activation_times = self.activation_times.get(description.identifier),
+            };
+        }
+        return null;
     }
 
     fn extensionServiceBrowserUriHost(_: *anyopaque, uri: std.json.Value) std.json.Value {
@@ -1497,6 +1657,7 @@ pub const Extensions = struct {
     /// repaint (an edit, selection, or status entry changed).
     pub fn pump(self: *Extensions) bool {
         _ = self.host.pump();
+        if (self.host.hasEof()) self.cancelDescriptionDelta(true);
         if (self.diagnostics_actor) |actor| actor.flush() catch {};
         if (self.accounts.changed) {
             self.accounts.changed = false;
@@ -2452,6 +2613,62 @@ fn countListenerCall(context: *anyopaque) void {
 pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) type {
     return struct {
         const TestWindow = @import("../../test/browser/workbenchTestServices.zig").TestWindow(terminal_window_type, factory);
+        test "Extensions: acknowledged live delta activates added extension and protects active removal" {
+            if (!build_options.e2e) return error.SkipZigTest;
+            const allocator = std.testing.allocator;
+            const io = std.testing.io;
+            try std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{});
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try tmp.dir.createDir(io, "old", .default_dir);
+            try tmp.dir.createDir(io, "new", .default_dir);
+            try tmp.dir.writeFile(io, .{ .sub_path = "old/package.json", .data = "{\"name\":\"old\",\"publisher\":\"fixture\",\"version\":\"1.0.0\",\"engines\":{\"vscode\":\"*\"},\"main\":\"./main.js\",\"activationEvents\":[\"onCommand:fixture.inert\"]}" });
+            try tmp.dir.writeFile(io, .{ .sub_path = "old/main.js", .data = "exports.activate = () => {};" });
+            try tmp.dir.writeFile(io, .{ .sub_path = "new/package.json", .data = "{\"name\":\"new\",\"publisher\":\"fixture\",\"version\":\"1.0.0\",\"engines\":{\"vscode\":\"*\"},\"main\":\"./main.js\",\"activationEvents\":[\"onStartupFinished\"],\"contributes\":{\"commands\":[{\"command\":\"fixture.delta.hello\",\"title\":\"Delta Hello\"}]}}" });
+            try tmp.dir.writeFile(io, .{ .sub_path = "new/main.js", .data = "exports.activate = context => context.subscriptions.push(require('vscode').commands.registerCommand('fixture.delta.hello', () => 'hello'));" });
+            const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+            defer allocator.free(root);
+            const old_path = try std.fs.path.join(allocator, &.{ root, "old" });
+            defer allocator.free(old_path);
+            const new_path = try std.fs.path.join(allocator, &.{ root, "new" });
+            defer allocator.free(new_path);
+            const window = try TestWindow.init(allocator, io, &.{}, 80, 24);
+            defer window.deinit();
+            const workbench = window.workbench;
+            const host = try Extensions.init(allocator, io, workbench.extensionHostServices(), &.{.{ .path = old_path }}, root, "host/dist");
+            defer host.deinit();
+            const deadline = time_compat.milliTimestamp(io) + 10_000;
+            while (host.eager_start_request != null and time_compat.milliTimestamp(io) < deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(io));
+                time_compat.sleepMillis(io, 10);
+            }
+            try std.testing.expect(host.eager_start_request == null);
+            const Result = struct {
+                done: bool = false,
+                accepted: bool = false,
+                fn complete(context: *anyopaque, accepted: bool) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    self.done = true;
+                    self.accepted = accepted;
+                }
+            };
+            var result: Result = .{};
+            const completion: Extensions.DeltaCompletion = .{ .context = &result, .complete = Result.complete };
+            try std.testing.expectEqual(Extensions.DeltaResult.pending, try host.applyDescriptionDelta(&.{.{ .path = new_path }}, completion));
+            // Acknowledgement precedes the added extension's activation.
+            const delta_deadline = time_compat.milliTimestamp(io) + 10_000;
+            while ((!result.done or workbench.commands.get("fixture.delta.hello") == null) and time_compat.milliTimestamp(io) < delta_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(io));
+                time_compat.sleepMillis(io, 10);
+            }
+            try std.testing.expect(result.done and result.accepted);
+            try std.testing.expectEqual(@as(usize, 1), host.descriptions.len);
+            try std.testing.expectEqualStrings("fixture.new", host.descriptions[0].identifier);
+            try std.testing.expect(workbench.commands.get("fixture.delta.hello") != null);
+            try std.testing.expect(host.activation_started.contains("fixture.new"));
+            try std.testing.expectEqual(Extensions.DeltaResult.restart_required, try host.applyDescriptionDelta(&.{}, completion));
+        }
+
         test "Extensions: editor-pane disposal detaches listeners before the editor is destroyed" {
             const allocator = std.testing.allocator;
             const io = std.testing.io;

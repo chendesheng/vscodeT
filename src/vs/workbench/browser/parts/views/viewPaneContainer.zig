@@ -103,6 +103,9 @@ pub const ViewPaneContainer = struct {
     headers: std.array_list.Managed(view_pane.Header),
     sections: std.array_list.Managed(Section),
     active_id: ?[]const u8 = null,
+    fixed_header: ?Pane = null,
+    fixed_header_rect: ui.Rect = .{},
+    fixed_header_focused: bool = false,
     visible: bool = false,
     visibility: []PaneVisibility,
     model_listeners: [5]?SignalSubscription = @splat(null),
@@ -192,6 +195,14 @@ pub const ViewPaneContainer = struct {
     }
 
     fn onModelVisibilityChanged(self: *ViewPaneContainer) !void {
+        if (self.active_id == null or !self.model.isVisible(self.active_id.?)) {
+            const visible = try self.model.visibleViews(self.allocator);
+            defer self.allocator.free(visible);
+            self.active_id = if (visible.len > 0) visible[0].id else null;
+            if (self.active_id) |id| self.model.setActiveView(id);
+            self.focused_header = null;
+            self.focused_action = null;
+        }
         self.updateBodyVisibility();
         self.updateFocusedBody();
         self.updateTitleArea();
@@ -227,13 +238,32 @@ pub const ViewPaneContainer = struct {
         return self.visibility[index].body;
     }
 
+    pub fn setFixedHeader(self: *ViewPaneContainer, header: Pane) void {
+        self.fixed_header = header;
+        self.fixed_header_focused = true;
+    }
+
+    pub fn focusFixedHeader(self: *ViewPaneContainer, focused: bool) void {
+        const header = self.fixed_header orelse return;
+        if (self.fixed_header_focused == focused) return;
+        if (!focused) if (header.set_focused) |callback| callback(header.context, false);
+        self.fixed_header_focused = focused;
+        self.updateFocusedBody();
+        if (focused and self.focused) if (header.set_focused) |callback| callback(header.context, true);
+    }
+
     pub fn setFocused(self: *ViewPaneContainer, focused: bool) void {
+        const changed = self.focused != focused;
         self.focused = focused;
+        if (changed) if (self.fixed_header) |header| {
+            if (focused) self.fixed_header_focused = true;
+            if (header.set_focused) |callback| callback(header.context, focused and self.fixed_header_focused);
+        };
         self.updateFocusedBody();
     }
 
     fn updateFocusedBody(self: *ViewPaneContainer) void {
-        const next = if (self.focused and self.focused_header == null and self.active_id != null and self.model.isVisible(self.active_id.?) and !self.model.isCollapsed(self.active_id.?)) self.active_id else null;
+        const next = if (self.focused and !self.fixed_header_focused and self.focused_header == null and self.active_id != null and self.model.isVisible(self.active_id.?) and !self.model.isCollapsed(self.active_id.?)) self.active_id else null;
         if (next == null and self.focused_body == null) return;
         if (next) |id| if (idEquals(self.focused_body, id)) return;
         if (self.focused_body) |id| if (self.paneIndex(id)) |index| {
@@ -254,6 +284,7 @@ pub const ViewPaneContainer = struct {
     pub fn setActive(self: *ViewPaneContainer, id: []const u8) void {
         if (!self.model.isVisible(id)) return;
         self.active_id = id;
+        self.focusFixedHeader(false);
         self.focused_header = null;
         self.focused_action = null;
         self.model.setActiveView(id);
@@ -261,7 +292,14 @@ pub const ViewPaneContainer = struct {
     }
 
     /// Recomputes section rectangles for the container content area.
-    pub fn layout(self: *ViewPaneContainer, content: ui.Rect) !void {
+    pub fn layout(self: *ViewPaneContainer, bounds: ui.Rect) !void {
+        var content = bounds;
+        self.fixed_header_rect = .{};
+        if (self.fixed_header != null and content.h > 0) {
+            self.fixed_header_rect = .{ .x = content.x, .y = content.y, .w = content.w, .h = 1 };
+            content.y += 1;
+            content.h -= 1;
+        }
         self.sections.clearRetainingCapacity();
         self.sashes.clearRetainingCapacity();
         const visible = try self.model.visibleViews(self.allocator);
@@ -278,7 +316,10 @@ pub const ViewPaneContainer = struct {
                 .collapsed = false,
                 .merged = true,
             });
-            if (!idEquals(self.active_id, visible[0].id)) self.setActive(visible[0].id);
+            if (!idEquals(self.active_id, visible[0].id)) {
+                self.active_id = visible[0].id;
+                self.updateFocusedBody();
+            }
             return;
         }
 
@@ -432,10 +473,11 @@ pub const ViewPaneContainer = struct {
         grid.fillRect(content.x, content.y, content.w, content.h, .{
             .bg = ui.cell.packColor(background),
         });
+        if (self.fixed_header) |header| if (self.fixed_header_rect.h > 0) try header.render_body(header.context, grid, self.fixed_header_rect, focused and self.fixed_header_focused);
         for (self.sections.items) |section| {
             const index = self.paneIndex(section.id) orelse continue;
             const pane = self.panes[index];
-            const pane_focused = focused and idEquals(self.active_id, section.id);
+            const pane_focused = focused and !self.fixed_header_focused and idEquals(self.active_id, section.id);
             const header_focused = focused and idEquals(self.focused_header, section.id);
             if (section.header_rect.h > 0) {
                 const header = &self.headers.items[index];
@@ -518,6 +560,10 @@ pub const ViewPaneContainer = struct {
 
     pub fn hitTest(self: *ViewPaneContainer, content: ui.Rect, x: usize, y: usize) ?Hit {
         _ = content;
+        if (self.fixed_header) |header| {
+            const rect = self.fixed_header_rect;
+            if (rect.h > 0 and x >= ui.cell.snap(rect.x) and x < ui.cell.snap(rect.right()) and y == ui.cell.snap(rect.y)) return .{ .body = header.id };
+        }
         for (self.sections.items) |section| {
             const index = self.paneIndex(section.id) orelse continue;
             if (section.header_rect.h > 0 and
@@ -546,6 +592,7 @@ pub const ViewPaneContainer = struct {
     }
 
     pub fn bodyRect(self: *const ViewPaneContainer, id: []const u8) ?ui.Rect {
+        if (self.fixed_header) |header| if (std.mem.eql(u8, id, header.id)) return self.fixed_header_rect;
         for (self.sections.items) |section| {
             if (std.mem.eql(u8, section.id, id)) return section.body_rect;
         }
@@ -566,6 +613,7 @@ pub const ViewPaneContainer = struct {
     fn focusHeader(self: *ViewPaneContainer, id: []const u8) void {
         if (!self.model.isVisible(id)) return;
         self.active_id = id;
+        self.focusFixedHeader(false);
         self.focused_header = id;
         self.focused_action = null;
         self.model.setActiveView(id);
@@ -573,6 +621,14 @@ pub const ViewPaneContainer = struct {
     }
 
     pub fn handleKey(self: *ViewPaneContainer, event: *ui.KeyEvent) !bool {
+        if (self.fixed_header_focused) if (self.fixed_header) |header| {
+            if (try header.handle_key(header.context, event)) return true;
+            if (event.key == .down or event.key == .enter or event.key == .tab) {
+                self.focusFixedHeader(false);
+                return true;
+            }
+            return false;
+        };
         const id = self.active_id orelse return false;
         const index = self.paneIndex(id) orelse return false;
         const pane = self.panes[index];
@@ -611,7 +667,12 @@ pub const ViewPaneContainer = struct {
             }
             break;
         }
-        return pane.handle_key(pane.context, event);
+        const handled = try pane.handle_key(pane.context, event);
+        if (!handled and self.fixed_header != null and (event.key == .up or event.key == .tab or event.key == .backtab)) {
+            self.focusFixedHeader(true);
+            return true;
+        }
+        return handled;
     }
 
     fn handleToolbarKey(self: *ViewPaneContainer, pane: Pane, section: Section, section_index: usize, event: *ui.KeyEvent, reverse_tab: bool) void {
@@ -755,6 +816,10 @@ pub const ViewPaneContainer = struct {
         const hit = self.hitTest(content, event.x, event.y) orelse return false;
         if (hit != .body) return true;
         const id = hit.body;
+        if (self.fixed_header) |header| if (std.mem.eql(u8, id, header.id)) {
+            if ((event.kind == .down or event.kind == .click) and event.button == .left) self.focusFixedHeader(true);
+            return header.handle_mouse(header.context, event, self.fixed_header_rect);
+        };
         const index = self.paneIndex(id) orelse return false;
         if ((event.kind == .down or event.kind == .click) and event.button == .left) self.setActive(id);
         const pane = self.panes[index];

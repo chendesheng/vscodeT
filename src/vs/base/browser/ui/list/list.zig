@@ -16,6 +16,8 @@ pub const Row = struct {
     y: usize,
     width: usize,
     height: usize,
+    /// Cell offset from the beginning of the unclipped element.
+    offset_y: usize = 0,
     index: usize,
     /// Compressed tree depth of this row (1 = top-level row). Kept on the row
     /// because the async/compressed renderer only receives the final element.

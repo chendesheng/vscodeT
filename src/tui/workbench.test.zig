@@ -14125,15 +14125,17 @@ test "Workbench: extensions panel lists, filters, opens and disables" {
     // extension.
     try tmp.dir.createDirPath(io, "system/pub.system-ext-1.0.0");
     try tmp.dir.writeFile(io, .{ .sub_path = "system/pub.system-ext-1.0.0/package.json", .data =
-        \\{"name":"system-ext","publisher":"pub","version":"1.0.0","engines":{"vscode":"*"},"displayName":"%displayName%","description":"%description%"}
+        \\{"name":"system-ext","publisher":"pub","version":"1.0.0","engines":{"vscode":"*"},"displayName":"%displayName%","description":"%description%","contributes":{"commands":[{"command":"pub.run","title":"Run"}]}}
     });
     try tmp.dir.writeFile(io, .{ .sub_path = "system/pub.system-ext-1.0.0/package.nls.json", .data =
         \\{"displayName":"System Ext","description":"Built-in extension."}
     });
     try tmp.dir.createDirPath(io, "user/pub.user-ext-1.0.0");
     try tmp.dir.writeFile(io, .{ .sub_path = "user/pub.user-ext-1.0.0/package.json", .data =
-        \\{"name":"user-ext","publisher":"pub","version":"2.0.0","engines":{"vscode":"*"},"displayName":"User Ext","description":"User extension."}
+        \\{"name":"user-ext","publisher":"pub","version":"2.0.0","engines":{"vscode":"*"},"displayName":"User Ext","description":"User extension.","extensionDependencies":["pub.system-ext"]}
     });
+    try tmp.dir.writeFile(io, .{ .sub_path = "user/pub.user-ext-1.0.0/README.md", .data = "# User extension guide\n\nHello from README." });
+    try tmp.dir.writeFile(io, .{ .sub_path = "user/pub.user-ext-1.0.0/CHANGELOG.md", .data = "# Changes\n\nVersion two." });
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path_length = try tmp.dir.realPath(io, &path_buffer);
     const root = try allocator.dupe(u8, path_buffer[0..path_length]);
@@ -14156,21 +14158,36 @@ test "Workbench: extensions panel lists, filters, opens and disables" {
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
     workbench.setExtensionsService(service);
+    try service.attachUpdateChecks(workbench.configuration_api, workbench.lifecycle_api, workbench.storage_api);
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
 
     try std.testing.expect(try workbench.showActivityById("extensions"));
     try std.testing.expect(workbench.extensions_list != null);
     const view = workbench.extensions_list.?;
-    try std.testing.expectEqual(@as(usize, 2), view.rows.len);
+    try std.testing.expectEqual(@as(usize, 1), view.rows.len);
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "EXTENSIONS") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "System Ext") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "System Ext") == null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "User Ext") != null);
 
-    // Typing filters the list; the user extension sorts before the built-in.
+    // Built-ins live in separate upstream view descriptors, rather than the default installed pane.
+    try view.input_box.setValue("@builtin");
+    try std.testing.expect(workbench.extensions_view.?.model.isVisible("workbench.views.extensions.builtinFeatureExtensions"));
+    try std.testing.expect(workbench.extensions_view.?.model.isVisible("workbench.views.extensions.builtinThemeExtensions"));
+    try std.testing.expectEqual(@as(usize, 1), view.rows.len);
+    try std.testing.expectEqualStrings("pub.system-ext", view.rows[0].identifier);
+    view.clearSearch();
+    try view.input_box.setValue("@contribute:commands");
+    try std.testing.expect(workbench.extensions_view.?.model.isVisible("workbench.views.extensions.searchInstalled"));
+    try std.testing.expectEqual(@as(usize, 1), view.rows.len);
+    try std.testing.expectEqualStrings("pub.system-ext", view.rows[0].identifier);
+    try view.input_box.setValue("@contribute:unknown");
+    try std.testing.expectEqual(@as(usize, 0), view.rows.len);
+    view.clearSearch();
+    // Typing filters the list; local fixture searches need no network.
     const typed = "user";
     for (typed) |ch| {
         var event = ui.KeyEvent{ .key = .{ .char = ch } };
@@ -14183,7 +14200,7 @@ test "Workbench: extensions panel lists, filters, opens and disables" {
     var escape = ui.KeyEvent{ .key = .escape };
     _ = try terminal_workbench.handleSidebarKey(workbench, &escape);
     try std.testing.expectEqual(@as(usize, 0), view.queryText().len);
-    try std.testing.expectEqual(@as(usize, 2), view.rows.len);
+    try std.testing.expectEqual(@as(usize, 1), view.rows.len);
     _ = try terminal_workbench.handleSidebarKey(workbench, &escape);
     try std.testing.expectEqual(Focus.editor, workbench.focus);
 
@@ -14206,18 +14223,68 @@ test "Workbench: extensions panel lists, filters, opens and disables" {
     try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "User Ext") != null);
 
-    // Refresh and open the selected extension's manifest. The user extension
+    // Refresh and open the selected extension's detail editor. The user extension
     // sorts first, so one Down from the search box followed by Enter opens it.
     _ = try workbench.commands.execute("workbench.extensions.action.refreshExtension");
-    try std.testing.expectEqual(@as(usize, 2), view.rows.len);
+    try std.testing.expectEqual(@as(usize, 1), view.rows.len);
     var down = ui.KeyEvent{ .key = .down };
     _ = try terminal_workbench.handleSidebarKey(workbench, &down);
     var enter = ui.KeyEvent{ .key = .enter };
     _ = try terminal_workbench.handleSidebarKey(workbench, &enter);
     pumpOpenForTests(workbench);
     const active = workbench.activeTab() orelse return error.TestUnexpectedResult;
-    try std.testing.expect(std.mem.indexOf(u8, active.editor.path, "user-ext") != null);
-    try std.testing.expect(std.mem.endsWith(u8, active.editor.path, "package.json"));
+    try std.testing.expectEqualStrings("Extension: User Ext", active.input.getName());
+    try std.testing.expectEqualStrings("pub.user-ext", active.extension_input.?.identifier);
+    const detail = active.extension_editor orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("# User extension guide\n\nHello from README.", detail.readme);
+    try std.testing.expectEqual(@as(usize, 4), detail.tab_count);
+    try detail.selectTab(.changelog);
+    try std.testing.expectEqualStrings("# Changes\n\nVersion two.", detail.changelog.?);
+    try workbench.editor_opening.openExtension(service, "PUB.USER-EXT");
+    try std.testing.expect(workbench.activeTab().? == active);
+    try service.refresh();
+    try std.testing.expectEqualStrings("User Ext", detail.extension.?.display_name);
+    try std.testing.expect(try service.setEnablement("pub.user-ext", .EnabledGlobally));
+    try std.testing.expect(service.isAutoUpdateEnabledFor(service.findLocal("pub.user-ext").?.*));
+    out.clearRetainingCapacity();
+    try renderFrame(workbench, &out.writer);
+    // The action bar's management dropdown uses the same actions as the list.
+    detail.focus_area = .body;
+    try std.testing.expect(try detail.handleKey(&.{ .key = .tab }));
+    try std.testing.expect(try detail.handleKey(&.{ .key = .right }));
+    try std.testing.expect(try detail.handleKey(&.{ .key = .right }));
+    try std.testing.expect(try detail.handleKey(&.{ .key = .enter }));
+    const menu = workbench.context_menu_service.current orelse return error.ExpectedExtensionManagementMenu;
+    var checked = false;
+    for (menu.popup.?.items) |item| {
+        if (std.mem.eql(u8, item.label, "Auto Update")) checked = item.checked;
+    }
+    try std.testing.expect(checked);
+    try chooseContextMenuItem(workbench, "Auto Update");
+    try std.testing.expect(!service.isAutoUpdateEnabledFor(service.findLocal("pub.user-ext").?.*));
+    try std.testing.expectEqualStrings("[\"pub.user-ext\"]", workbench.storage_api.get("extensions.donotAutoUpdate", .application, null).?);
+    try detail.selectTab(.dependencies);
+    out.clearRetainingCapacity();
+    try renderFrame(workbench, &out.writer);
+    const link = detail.layout.?.links[0];
+    try std.testing.expectEqualStrings("minecode-extension-id:pub.system-ext", link.href);
+    try std.testing.expect(try detail.handleMouse(&.{ .kind = .down, .button = .left, .x = 1 + link.start, .y = 7 + link.row }));
+    // Opening a preview is deferred past the originating mouse handler.
+    try std.testing.expect(workbench.activeTab().? == active);
+    const deadline = time_compat.milliTimestamp(io) + 2_000;
+    while (!std.mem.eql(u8, workbench.activeTab().?.extension_input.?.identifier, "pub.system-ext") and time_compat.milliTimestamp(io) < deadline) {
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp(io));
+    }
+    try std.testing.expectEqualStrings("pub.system-ext", workbench.activeTab().?.extension_input.?.identifier);
+    // Exact-ID search includes installed results before querying Marketplace.
+    service.gallery_url = try allocator.dupe(u8, "http://127.0.0.1:1");
+    try view.input_box.setValue("@id:pub.user-ext");
+    try std.testing.expectEqual(@as(usize, 1), view.rows.len);
+    try std.testing.expectEqualStrings("pub.user-ext", view.rows[0].identifier);
+    try view.input_box.setValue("@sort:updateDate");
+    try std.testing.expect(workbench.extensions_view.?.model.isVisible("workbench.views.extensions.installed"));
+    try std.testing.expectEqual(@as(usize, 1), view.rows.len);
+    try std.testing.expectEqualStrings("pub.user-ext", view.rows[0].identifier);
 }
 
 test "Workbench: window Io yields through the native dispatcher and resumes on the window thread" {
@@ -14468,4 +14535,60 @@ test "Workbench: wrapping inlay hints retire inserted and deleted view line DOM 
     tree.markFullRebuild();
     try renderFrame(wb, &output.writer);
     try std.testing.expectEqualStrings("line 1", try model.borrowLineContent(2));
+}
+
+test "Workbench: Restart Extensions applies active removal without closing editors" {
+    if (!@import("build_options").e2e) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    try std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{});
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "extensions/fixture-active");
+    try tmp.dir.writeFile(io, .{ .sub_path = "extensions/fixture-active/package.json", .data = "{\"name\":\"active\",\"publisher\":\"fixture\",\"version\":\"1.0.0\",\"engines\":{\"vscode\":\"*\"},\"main\":\"./main.js\",\"activationEvents\":[\"*\"]}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "extensions/fixture-active/main.js", .data = "exports.activate = context => context.subscriptions.push(require('vscode').commands.registerCommand('fixture.active.command', () => {}));" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "editor.txt", .data = "retain this editor" });
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const extension_dir = try std.fs.path.join(allocator, &.{ root, "extensions" });
+    defer allocator.free(extension_dir);
+    const editor_path = try std.fs.path.join(allocator, &.{ root, "editor.txt" });
+    defer allocator.free(editor_path);
+    const enablement = try extensions_enablement.ExtensionEnablementService.init(allocator, null);
+    defer enablement.deinit();
+    const service = try extensions_service_mod.ExtensionsWorkbenchService.init(allocator, io, .{ .user_location = extension_dir, .enablement = enablement });
+    defer service.deinit();
+    const window = try TestWindow.init(allocator, io, &.{editor_path}, 80, 24);
+    defer window.deinit();
+    const workbench = window.workbench;
+    workbench.setExtensionsService(service);
+    const abstract = @import("../vs/workbench/services/extensions/common/abstractExtensionService.zig");
+    const paths = try abstract.resolveEnabledPaths(allocator, io, service.enabledDescriptions(), "host/dist");
+    defer abstract.freePaths(allocator, paths);
+    const Extensions = @import("../vs/workbench/api/browser/extensionHostAdapter.zig").Extensions;
+    var host: ?*Extensions = try Extensions.init(allocator, io, workbench.extensionHostServices(), paths, root, "host/dist");
+    defer if (host) |ext| ext.deinit();
+    var runtime: @import("extensionHostRuntime.zig").ExtensionHostRuntime = .{ .workbench = workbench, .service = service, .host = &host, .user_data_dir = root, .runtime_dir = "host/dist" };
+    try runtime.attach();
+    defer runtime.detach();
+    const deadline = time_compat.milliTimestamp(io) + 10_000;
+    while ((workbench.commands.get("fixture.active.command") == null or service.getRuntimeStatus("fixture.active").?.activation_times == null) and time_compat.milliTimestamp(io) < deadline) {
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp(io));
+        time_compat.sleepMillis(io, 10);
+    }
+    try std.testing.expect(workbench.commands.get("fixture.active.command") != null);
+    const activation = service.getRuntimeStatus("FIXTURE.ACTIVE").?.activation_times orelse return error.ExpectedActivationStatus;
+    try std.testing.expect(activation.startup);
+    try std.testing.expectEqualStrings("*", activation.activation_event);
+    try std.testing.expect(activation.activate_call_time >= 0);
+    const tab = workbench.activeTab().?;
+    try std.testing.expect(try service.setEnablement("fixture.active", .DisabledGlobally));
+    _ = workbench.window_events.dispatch(time_compat.milliTimestamp(io));
+    try std.testing.expectEqual(abstract.RuntimeInventory.Action.RestartExtensions, service.runtimeState("fixture.active").?);
+    try workbench.commands.execute("workbench.action.restartExtensionHost");
+    try std.testing.expect(host == null);
+    try std.testing.expect(service.getRuntimeStatus("fixture.active") == null);
+    try std.testing.expect(workbench.commands.get("fixture.active.command") == null);
+    try std.testing.expect(workbench.activeTab().? == tab);
+    try std.testing.expect(service.runtimeState("fixture.active") == null);
 }

@@ -20,11 +20,32 @@ pub fn registerAccessibleViews(registry: *@import("../platform/accessibility/bro
     try registry.register(@import("../editor/contrib/hover/browser/hoverAccessibleViews.zig").HoverAccessibilityHelp.registration);
 }
 
+pub fn registerExtensionFeatures(registry: *@import("services/extensionManagement/common/extensionFeatures.zig").ExtensionFeaturesRegistry) !void {
+    try registry.registerExtensionFeature(@import("services/actions/common/menusExtensionPoint.zig").commands_feature);
+    try registry.registerExtensionFeature(@import("api/common/configurationExtensionPoint.zig").settings_feature);
+    try registry.registerExtensionFeature(@import("api/common/configurationExtensionPoint.zig").defaults_feature);
+    try registry.registerExtensionFeature(@import("services/language/common/languageService.zig").languages_feature);
+    try registry.registerExtensionFeature(@import("services/themes/common/themeExtensionPoints.zig").themes_feature);
+    try registry.registerExtensionFeature(@import("api/common/jsonValidationExtensionPoint.zig").json_validation_feature);
+    try registry.registerExtensionFeature(@import("contrib/debug/common/debugSchemas.zig").debuggers_feature);
+    try registry.registerExtensionFeature(@import("services/themes/common/colorExtensionPoint.zig").colors_feature);
+    try registry.registerExtensionFeature(@import("contrib/customEditor/common/extensionPoint.zig").custom_editors_feature);
+    try registry.registerExtensionFeature(@import("api/browser/viewsExtensionPoint.zig").containers_feature);
+    try registry.registerExtensionFeature(@import("api/browser/viewsExtensionPoint.zig").views_feature);
+    try registry.registerExtensionFeature(@import("contrib/localization/common/localization.contribution.zig").localizations_feature);
+    try registry.registerExtensionFeature(@import("contrib/authentication/browser/authentication.contribution.zig").authentication_feature);
+    try registry.registerExtensionFeature(@import("contrib/notebook/browser/notebookExtensionPoint.zig").notebooks_feature);
+    try registry.registerExtensionFeature(@import("contrib/notebook/browser/notebookExtensionPoint.zig").renderers_feature);
+    try registry.registerExtensionFeature(@import("services/extensions/common/abstractExtensionService.zig").activation_events_feature);
+    try registry.registerExtensionFeature(@import("services/extensions/common/extensionsProposedApi.zig").proposals_feature);
+}
+
 pub fn registerConfigurations(registry: *@import("../platform/configuration/common/configurationRegistry.zig").ConfigurationRegistry) !void {
     try registry.registerConfiguration("multiDiffEditor", &@import("contrib/multiDiffEditor/common/multiDiffEditor.zig").properties);
     try registry.registerConfiguration("editor", &@import("../editor/contrib/codeAction/browser/codeActionContributions.zig").properties);
     try registry.registerConfiguration("diffEditor", &@import("../editor/common/config/editorConfigurationSchema.zig").diff_editor_properties);
     try registry.registerConfiguration("files", &@import("contrib/bulkEdit/browser/bulkEditService.zig").properties);
+    try registry.registerConfiguration("extensions", &@import("contrib/extensions/browser/extensions.contribution.zig").properties);
     try registry.registerConfiguration("problems", &@import("contrib/markers/browser/markers.contribution.zig").properties);
 }
 

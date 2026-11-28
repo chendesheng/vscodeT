@@ -288,3 +288,44 @@ pub const ConfiguredLanguageAssociations = struct {
         editor.applyFileAssociations(associations.items) catch {};
     }
 };
+
+const extension_features = @import("../../extensionManagement/common/extensionFeatures.zig");
+const FeatureLanguage = struct { id: []const u8, name: []const u8, extensions: []const u8 = "", grammar: bool = false, snippets: bool = false };
+fn featureLanguageFor(entries: *std.ArrayList(FeatureLanguage), allocator: Allocator, id: []const u8) !*FeatureLanguage {
+    for (entries.items) |*language| if (std.mem.eql(u8, language.id, id)) return language;
+    try entries.append(allocator, .{ .id = id, .name = id });
+    return &entries.items[entries.items.len - 1];
+}
+fn shouldRenderLanguages(manifest: std.json.Value) bool {
+    for ([_][]const u8{ "languages", "grammars", "snippets" }) |key| if (extension_features.contribution(manifest, key) != .null) return true;
+    return false;
+}
+fn renderLanguages(allocator: Allocator, manifest: std.json.Value) ![]u8 {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var entries: std.ArrayList(FeatureLanguage) = .empty;
+    for (extension_features.items(extension_features.contribution(manifest, "languages"))) |entry| {
+        const id = extension_features.asString(extension_features.property(entry, "id"));
+        if (id.len == 0) continue;
+        const language = try featureLanguageFor(&entries, scratch, id);
+        const aliases = extension_features.items(extension_features.property(entry, "aliases"));
+        if (aliases.len > 0 and aliases[0] == .string) language.name = aliases[0].string;
+        language.extensions = try extension_features.joinStrings(scratch, extension_features.property(entry, "extensions"));
+    }
+    for (extension_features.items(extension_features.contribution(manifest, "grammars"))) |entry| {
+        const id = extension_features.asString(extension_features.property(entry, "language"));
+        if (id.len == 0) continue;
+        (try featureLanguageFor(&entries, scratch, id)).grammar = true;
+    }
+    for (extension_features.items(extension_features.contribution(manifest, "snippets"))) |entry| {
+        const id = extension_features.asString(extension_features.property(entry, "language"));
+        if (id.len == 0) continue;
+        (try featureLanguageFor(&entries, scratch, id)).snippets = true;
+    }
+    var table: extension_features.Table = .{ .allocator = scratch, .headers = &.{ "ID", "Name", "File Extensions", "Grammar", "Snippets" } };
+    for (entries.items) |language| try table.append(&.{ language.id, language.name, language.extensions, if (language.grammar) "✓" else "—", if (language.snippets) "✓" else "—" });
+    table.sort();
+    return table.markdown(allocator);
+}
+pub const languages_feature: extension_features.Descriptor = .{ .id = "languages", .label = "Programming Languages", .should_render = shouldRenderLanguages, .render = renderLanguages };

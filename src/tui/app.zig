@@ -334,6 +334,38 @@ pub fn main(init: std.process.Init) !void {
     const installed_extensions = try std.fs.path.resolveAlloc(allocator, &.{ executable_dir, "../share/minecode/extensions" });
     defer allocator.free(installed_extensions);
 
+    var folders = ArrayList([]u8).init(allocator);
+    defer {
+        for (folders.items) |folder| allocator.free(folder);
+        folders.deinit();
+    }
+    var files = ArrayList([]const u8).init(allocator);
+    defer files.deinit();
+
+    const cwd = Io.Dir.cwd();
+    var cwd_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const cwd_len = cwd.realPath(io, &cwd_buffer) catch 0;
+    const cwd_path = cwd_buffer[0..cwd_len];
+
+    for (paths.items) |path| {
+        const stat = cwd.statFile(io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound => null,
+            else => return err,
+        };
+        if (stat) |info| {
+            if (info.kind == .directory) {
+                try folders.append(try std.fs.path.resolveAlloc(allocator, &.{ cwd_path, path }));
+                continue;
+            }
+        }
+        try files.append(path);
+    }
+
+    if (args.session == null and folders.items.len == 0 and files.items.len == 0) {
+        report(log_service, "no files or folders to open", .{});
+        return;
+    }
+
     // Extension inventory: installed built-ins plus the effective VS Code
     // extensions directory. The scanner owns the manifests; the enablement
     // service persists the disabled ids in the profile's global storage.
@@ -355,10 +387,15 @@ pub fn main(init: std.process.Init) !void {
     defer if (extension_enablement) |service| service.deinit();
     var extension_service: ?*ExtensionsWorkbenchService = null;
     if (extension_enablement) |enablement| {
+        try enablement.configureWorkspaceStorage(io, profile.user_data_dir);
+        const initial_workspace = try @import("../vs/workbench/services/workspaces/common/workspaceContextService.zig").WorkspaceContextService.initWithFolders(allocator, "workspace", folders.items);
+        defer initial_workspace.deinit();
+        _ = try enablement.setWorkspace(initial_workspace.getWorkspace());
         extension_service = ExtensionsWorkbenchService.init(allocator, io, .{
             .system_location = installed_extensions,
             .user_location = profile.extensions_dir,
             .enablement = enablement,
+            .gallery_url = init.environ_map.get("MINECODE_EXTENSION_GALLERY_URL") orelse @import("../vs/platform/product/common/product.zig").extension_gallery_service_url,
         }) catch |err| blk: {
             report(log_service, "extension scan failed: {s}", .{@errorName(err)});
             break :blk null;
@@ -483,38 +520,6 @@ pub fn main(init: std.process.Init) !void {
         image_probe.feature_ok,
     });
 
-    var folders = ArrayList([]u8).init(allocator);
-    defer {
-        for (folders.items) |folder| allocator.free(folder);
-        folders.deinit();
-    }
-    var files = ArrayList([]const u8).init(allocator);
-    defer files.deinit();
-
-    const cwd = Io.Dir.cwd();
-    var cwd_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const cwd_len = cwd.realPath(io, &cwd_buffer) catch 0;
-    const cwd_path = cwd_buffer[0..cwd_len];
-
-    for (paths.items) |path| {
-        const stat = cwd.statFile(io, path, .{}) catch |err| switch (err) {
-            error.FileNotFound => null,
-            else => return err,
-        };
-        if (stat) |info| {
-            if (info.kind == .directory) {
-                try folders.append(try std.fs.path.resolveAlloc(allocator, &.{ cwd_path, path }));
-                continue;
-            }
-        }
-        try files.append(path);
-    }
-
-    if (args.session == null and folders.items.len == 0 and files.items.len == 0) {
-        report(log_service, "no files or folders to open", .{});
-        return;
-    }
-
     var file_serializer: ?FileEditorSerializer = null;
     defer if (file_serializer) |*value| value.deinit();
     var image_serializer: ?ImagePreviewEditorInputSerializer = null;
@@ -541,9 +546,12 @@ pub fn main(init: std.process.Init) !void {
 
     const profile_storage_path = if (profile.user_data_dir) |dir| try std.fs.path.join(allocator, &.{ dir, "User", "globalStorage", "storage.state.json" }) else null;
     defer if (profile_storage_path) |path| allocator.free(path);
+    const application_storage_path = if (profile.user_data_dir) |dir| try std.fs.path.join(allocator, &.{ dir, "User", "globalStorage", "application.state.json" }) else null;
+    defer if (application_storage_path) |path| allocator.free(path);
     const startup_options: @import("./workbenchWindow.zig").IWorkbenchOptions = .{
         .initial_user_settings_paths = profile.settings_paths,
         .profile_storage_path = profile_storage_path,
+        .application_storage_path = application_storage_path,
     };
 
     var surface: ui.Surface = undefined;
@@ -594,7 +602,10 @@ pub fn main(init: std.process.Init) !void {
     // the sequence and the frame is unaffected.
     workbench.setPointerShapes(true);
     if (declarative) |*decl_ext| workbench.setDeclarativeExtensions(decl_ext);
-    if (extension_service) |service| workbench.setExtensionsService(service);
+    if (extension_service) |service| {
+        workbench.setExtensionsService(service);
+        try service.attachUpdateChecks(workbench.configuration_api, workbench.lifecycle_api, workbench.storage_api);
+    }
     workbench.enableAsyncTokenization();
     workbench.enableLanguageFeatures() catch |err| report(log_service, "language features unavailable: {s}", .{@errorName(err)});
     workbench.setJsonLanguageClient(json_client);
@@ -724,6 +735,15 @@ pub fn main(init: std.process.Init) !void {
     } else {
         infoLog(log_service, "extension host disabled: no enabled extensions installed", .{});
     }
+    const HostRuntime = @import("extensionHostRuntime.zig").ExtensionHostRuntime;
+    var extension_runtime: ?HostRuntime = null;
+    if (extension_service) |service| if (profile.user_data_dir) |data_dir| {
+        if (extension_host != null or extension_paths.len == 0) {
+            extension_runtime = .{ .workbench = workbench, .service = service, .host = &extension_host, .user_data_dir = data_dir, .runtime_dir = runtime_dir };
+            try extension_runtime.?.attach();
+        }
+    };
+    defer if (extension_runtime) |*runtime| runtime.detach();
     infoLog(log_service, "startup: extension-host={d}ms", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
     });
@@ -849,7 +869,7 @@ pub fn main(init: std.process.Init) !void {
                     const modal_host = helix_runtime.host orelse vim_runtime.host;
                     if (modal_host) |host| {
                         const editor_focused = workbench.focus == .editor;
-                        const normal_tab = if (workbench.activeTab()) |tab| !tab.isDiff() and !tab.isMultiDiff() and !tab.isImage() and tab.markdown_preview == null and tab.terminal_input == null else false;
+                        const normal_tab = if (workbench.activeTab()) |tab| !tab.isDiff() and !tab.isMultiDiff() and !tab.isImage() and tab.extension_editor == null and tab.markdown_preview == null and tab.terminal_input == null else false;
                         if (!workbench.is_pasting and editor_focused and normal_tab and
                             dispatchExtensionKey(workbench, host, event))
                         {
@@ -868,6 +888,10 @@ pub fn main(init: std.process.Init) !void {
                     if (terminal_workbench.handleWatermarkKey(workbench, event)) continue;
 
                     const current = workbench.activeTab() orelse continue;
+                    if (current.extension_editor) |pane| {
+                        if (try pane.handleKey(event)) needs_render = true;
+                        continue;
+                    }
                     if (current.markdown_preview) |preview| {
                         preview.handleKey(event);
                         continue;
@@ -969,6 +993,11 @@ pub fn main(init: std.process.Init) !void {
                     var target = terminal_workbench.editorMouseEvent(workbench, event.*) orelse continue;
                     const current = target.tab;
                     const adjusted = &target.event;
+                    if (current.extension_editor) |pane| {
+                        if (event.kind == .down) workbench.focusEditor();
+                        if (try pane.handleMouse(adjusted)) needs_render = true;
+                        continue;
+                    }
                     if (current.isImage()) {
                         const focus_gained = workbench.focus != .editor;
                         if (event.kind == .down) workbench.focusEditor();

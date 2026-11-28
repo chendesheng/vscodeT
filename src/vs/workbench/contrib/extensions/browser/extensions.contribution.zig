@@ -1,12 +1,7 @@
 // Port of the Extensions view-container, view and command registrations in
 // `src/vs/workbench/contrib/extensions/browser/extensions.contribution.ts`.
-//
-// Terminal adaptation: the container/view ids use the workbench's native
-// "extensions" alias for upstream `workbench.view.extensions` /
-// `workbench.views.extensions.installed`. The container hosts one combined
-// view, so the one visible view cannot be hidden. Marketplace actions,
-// recommendations, update checks and the extension-details editor are not
-// ported.
+// The activity container retains the terminal's historic "extensions" alias;
+// individual views use upstream IDs and query-driven availability.
 const views = @import("../../../common/views.zig");
 const Action2 = @import("../../../../platform/actions/common/actions.zig").Action2;
 const Accessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
@@ -15,6 +10,7 @@ const views_service = @import("../../../services/views/common/viewsService.zig")
 const model = @import("../common/extensions.zig");
 const view_mod = @import("extensionsViews.zig");
 const ExtensionsListView = view_mod.ExtensionsListView;
+const workbench_service = @import("extensionsWorkbenchService.zig");
 
 /// Codicon `extensions` (EAE6); the activity bar and container share it.
 pub const extensions_glyph: u21 = 0xEAE6;
@@ -29,15 +25,7 @@ pub fn registerViewContainer(registry: *views.ViewContainersRegistry) !void {
 }
 
 pub fn registerViews(registry: *views.ViewsRegistry) !void {
-    // The single combined view merges with the container title. It cannot be
-    // hidden because that would leave the activity-bar container empty.
-    try registry.registerViews(&.{.{
-        .id = model.VIEW_ID,
-        .name = "Extensions",
-        .order = 0,
-        .weight = 100,
-        .can_toggle_visibility = false,
-    }}, model.VIEW_ID);
+    try @import("extensionsViewlet.zig").registerViews(registry);
 }
 
 pub const show_extensions_action: Action2 = .{
@@ -78,8 +66,55 @@ fn clearSearch(_: *anyopaque, accessor: Accessor) !void {
     view.clearSearch();
 }
 
+pub const restart_extensions_action: Action2 = .{
+    .command = .{ .id = "workbench.action.restartExtensionHost", .title = "Restart Extension Host", .category = "Developer" },
+    .f1 = true,
+    .context = @constCast(&{}),
+    .run_fn = restartExtensions,
+};
+
+fn restartExtensions(_: *anyopaque, accessor: Accessor) !void {
+    const service = try accessor.get(workbench_service.extensions_workbench_service_id);
+    try service.restartExtensions();
+}
+
+pub const install_vsix_action: Action2 = .{
+    .command = .{ .id = "workbench.extensions.action.installVSIX", .title = "Install from VSIX...", .category = model.EXTENSIONS_CATEGORY },
+    .f1 = true,
+    .context = @constCast(&{}),
+    .run_fn = installVSIX,
+};
+
+fn installVSIX(_: *anyopaque, accessor: Accessor) !void {
+    const service = try accessor.get(workbench_service.extensions_workbench_service_id);
+    try service.installFromVSIX();
+}
+
+pub const properties = [_]@import("../../../../platform/configuration/common/configurationRegistry.zig").PropertySchema{
+    .{ .key = "extensions.verifySignature", .value_type = "boolean", .default = .{ .bool = true }, .scope = .APPLICATION },
+    .{ .key = "extensions.autoUpdate", .value_type = "string", .default = .{ .string = "on" }, .enum_values = &.{ "on", "off" }, .scope = .APPLICATION },
+    .{ .key = "extensions.autoUpdateDelay", .value_type = "number", .default = .{ .integer = 12 }, .scope = .APPLICATION },
+    .{ .key = "extensions.autoCheckUpdates", .value_type = "boolean", .default = .{ .bool = true }, .scope = .APPLICATION },
+    .{ .key = "extensions.showRecommendationsOnlyOnDemand", .value_type = "boolean", .default = .{ .bool = false }, .scope = .APPLICATION },
+};
+
+pub const check_updates_action: Action2 = .{
+    .command = .{ .id = "workbench.extensions.action.checkForUpdates", .title = "Check for Extension Updates", .category = model.EXTENSIONS_CATEGORY },
+    .f1 = true,
+    .context = @constCast(&{}),
+    .run_fn = checkUpdates,
+};
+
+fn checkUpdates(_: *anyopaque, accessor: Accessor) !void {
+    const service = try accessor.get(workbench_service.extensions_workbench_service_id);
+    try service.checkForUpdates();
+}
+
 pub const actions = [_]Action2{
     show_extensions_action,
     refresh_action,
     clear_search_action,
+    restart_extensions_action,
+    install_vsix_action,
+    check_updates_action,
 };

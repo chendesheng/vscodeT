@@ -304,3 +304,20 @@ test "manifest with JSONC comments is accepted" {
     try std.testing.expectEqual(1, actual.len);
     try std.testing.expectEqualStrings("commented", actual[0].name);
 }
+
+test "scanAllExtensions honors selected profile version instead of newest cached version" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "pub.example-1.0.0");
+    try tmp.dir.createDirPath(io, "pub.example-2.0.0");
+    try tmp.dir.writeFile(io, .{ .sub_path = "pub.example-1.0.0/package.json", .data = "{\"publisher\":\"pub\",\"name\":\"example\",\"version\":\"1.0.0\",\"engines\":{\"vscode\":\"*\"}}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "pub.example-2.0.0/package.json", .data = "{\"publisher\":\"pub\",\"name\":\"example\",\"version\":\"2.0.0\",\"engines\":{\"vscode\":\"*\"}}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "extensions.json", .data = "[{\"identifier\":{\"id\":\"pub.example\"},\"version\":\"1.0.0\",\"relativeLocation\":\"pub.example-1.0.0\"}]" });
+    var path: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPath(io, &path);
+    var inventory = try scanner.scanAllExtensions(allocator, io, null, path[0..len]);
+    defer inventory.deinit(allocator);
+    try std.testing.expectEqualStrings("1.0.0", inventory.find("pub.example").?.version);
+    try std.testing.expectEqual(@as(usize, 2), inventory.user.len);
+}

@@ -1516,6 +1516,7 @@ pub const TerminalWorkbench = struct {
         _ = try self.view_descriptor_service.on_did_change_container.listen(self, onViewContainerChanged);
         self.notification_storage = storage_mod.InMemoryStorageService.init(self.allocator);
         errdefer self.notification_storage.deinit();
+        if (options.application_storage_path) |path| self.notification_storage.attachApplicationStorage(self.io, path) catch |err| std.log.scoped(.storage).warn("Application storage unavailable: {s}", .{@errorName(err)});
         if (options.profile_storage_path) |path| self.notification_storage.attachProfileStorage(self.io, path) catch |err| std.log.scoped(.storage).warn("Profile storage unavailable: {s}", .{@errorName(err)});
         self.notification_service = try @import("../vs/workbench/services/notification/common/notificationService.zig").NotificationService.create(self.allocator, &self.notification_storage);
         errdefer self.notification_service.deinit();
@@ -1683,6 +1684,7 @@ pub const TerminalWorkbench = struct {
     }
 
     fn deinitShellModels(self: *TerminalWorkbench) void {
+        extensions_view_host.detach(self);
         self.deinitBulkEditPreview();
         self.lists.deinit();
         self.core.disposeListeners();
@@ -1713,7 +1715,6 @@ pub const TerminalWorkbench = struct {
             self.allocator.free(panes);
             self.explorer_panes = null;
         }
-        extensions_view_host.detach(self);
         self.scm_multi_diff_resolvers.dispose();
         self.multi_diff_sources.deinit();
         self.scm.deinit();
@@ -3510,7 +3511,17 @@ pub const TerminalWorkbench = struct {
     /// Borrows the app-owned extension inventory for the Extensions panel and
     /// its enablement actions. Called before the sidebar mounts the container.
     pub fn setExtensionsService(self: *TerminalWorkbench, service: *extensions_workbench_service.ExtensionsWorkbenchService) void {
+        if (self.extensions_service) |old| if (old != service) old.detachWindow();
         self.extensions_service = service;
+        if (service.feature_registry.getExtensionFeatures().len == 0) @import("../vs/workbench/workbench.common.main.zig").registerExtensionFeatures(&service.feature_registry) catch {};
+        _ = self.services.set(extensions_workbench_service.extensions_workbench_service_id, service) catch {};
+        service.attachWindow(&self.window_events);
+        service.attachWorkspace(self.workspace) catch {};
+        service.quick_input = self.quick_input_api;
+        service.pane_service = self.pane_composite_api;
+        service.dialog_service = self.dialog_api;
+        service.context_menu = self.context_menu_api;
+        service.open_editor = .{ .context = self, .run = @import("extensionsViewHost.zig").openExtension };
         if (self.extensions_view) |contribution| contribution.setService(service) catch {};
     }
 
@@ -3696,7 +3707,7 @@ pub const TerminalWorkbench = struct {
     /// the key reaches that widget through the normal view dispatch.
     pub fn notifyEditorKeyDown(self: *TerminalWorkbench, event: *ui.KeyEvent) bool {
         const tab = self.activeTab() orelse return false;
-        if (tab.isDiff() or tab.isMultiDiff() or tab.isImage()) return false;
+        if (tab.isDiff() or tab.isMultiDiff() or tab.isImage() or tab.extension_editor != null) return false;
         tab.ensureControllers() catch return false;
         const controllers = tab.controllers orelse return false;
         controllers.editor.onBeforeInteractionEvent();
@@ -4746,7 +4757,7 @@ fn outlinePaneBodyVisible(context: *anyopaque, visible: bool) void {
 fn outlineActiveEditor(context: *anyopaque) ?OutlineEditor {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     const tab = self.activeTab() orelse return null;
-    if (tab.isImage() or tab.isDiff() or tab.isMultiDiff() or tab.markdown_panel != null or tab.terminal_input != null) return null;
+    if (tab.isImage() or tab.isDiff() or tab.isMultiDiff() or tab.markdown_panel != null or tab.terminal_input != null or tab.extension_editor != null) return null;
     return .{
         .context = @ptrCast(tab),
         .control = tab.editor,

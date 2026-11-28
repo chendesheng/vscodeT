@@ -1,17 +1,11 @@
-// Port of the local-extension query handling and the Extensions list view in
-// `src/vs/workbench/contrib/extensions/browser/extensionsViews.ts` (and the
-// list wrapper from `extensionsViewer.ts`).
-//
-// Terminal adaptation: the combined list shows user-installed and built-in
-// extensions (upstream's default Installed view lists only user extensions and
-// exposes built-ins through `@builtin` views). User-installed rows sort first,
-// then built-ins, each alphabetically by display name. The browser header's
-// search box becomes one cell row at the top of the body; the body is the
-// shared terminal `ListWidget`. Rows are two cell rows (name/version and
-// origin/description) instead of a 72 px template. Gallery-only queries
-// (`@updates`, `@outdated`, `@recommended`, `@popular`, …) have no local
-// equivalent and fall through to text matching. `@enabled`/`@disabled` map to
-// the local enablement state because the TUI has no running-extension list.
+// Port of `src/vs/workbench/contrib/extensions/browser/extensionsViews.ts`
+// and the list wrapper from `extensionsViewer.ts`.
+// The view container owns the common search header, and the shared ListWidget
+// renders the current query's rows. Gallery work uses a delayed, cancellable
+// worker job; inventory and management events rebuild the list. Local
+// enablement filters use persisted state rather than a running-host registry.
+// Pages are fetched on scrolling. Search completions and some specialized
+// query types remain unported.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
@@ -22,6 +16,11 @@ const SignalSubscription = @import("../../../../base/common/event.zig").SignalSu
 const views = @import("../../../common/views.zig");
 const list_renderer = @import("extensionsList.zig");
 const model = @import("../common/extensions.zig");
+const gallery = @import("../../../../platform/extensionManagement/common/extensionGalleryService.zig");
+const paging = @import("../../../../base/common/paging.zig");
+const dispatch = @import("../../../../base/common/windowDispatch.zig");
+const time = @import("../../../../base/common/timeCompat.zig");
+const quick = @import("../../../../platform/quickinput/common/quickInput.zig");
 const query_mod = @import("../common/extensionQuery.zig");
 const service_mod = @import("extensionsWorkbenchService.zig");
 const IExtension = model.IExtension;
@@ -31,16 +30,16 @@ const Anchor = @import("../../../../platform/contextview/browser/contextMenuServ
 const Menu = @import("../../../../platform/contextview/browser/contextMenuService.zig").Menu;
 const INotificationService = @import("../../../../platform/notification/common/notification.zig").INotificationService;
 
-/// Host capability boundary for the TUI. `open_extension` receives the path of
-/// the extension's `package.json`.
+/// Host capability boundary for opening a typed extension editor by identifier.
 pub const Host = struct {
     context: *anyopaque,
-    open_extension: *const fn (context: *anyopaque, path: []const u8) anyerror!void,
+    open_extension: *const fn (context: *anyopaque, identifier: []const u8) anyerror!void,
     request_frame: *const fn (context: *anyopaque) void,
     status: *const fn (context: *anyopaque, message: []const u8) void,
     context_menu: ?IContextMenuService = null,
     notifications: ?INotificationService = null,
     theme: list_renderer.ThemeGetter,
+    window: ?*dispatch.Queue = null,
 };
 
 pub const refresh_action_id = "workbench.extensions.action.refreshExtension";
@@ -48,6 +47,43 @@ pub const clear_search_action_id = "workbench.extensions.action.clearExtensionsS
 
 const refresh_action = views.TitleAction{ .id = refresh_action_id, .label = "Refresh", .glyph = '\u{21BB}' };
 const title_actions = [_]views.TitleAction{refresh_action};
+
+const GalleryJob = struct {
+    view: *ExtensionsListView,
+    url: []u8,
+    text: []u8,
+    names: [][]u8,
+    page: usize,
+    completion: dispatch.Task,
+    future: std.Io.Future(anyerror!gallery.Page),
+};
+
+fn runGallery(job: *GalleryJob) anyerror!gallery.Page {
+    defer job.completion.post();
+    const io = job.view.host.window.?.io;
+    return dispatch.workerCall(io, queryGallery, .{ job.view.allocator, dispatch.backingIo(io), job.url, job.text, job.names, job.page });
+}
+
+fn queryGallery(allocator: Allocator, io: std.Io, url: []const u8, text: []const u8, names: []const []const u8, page: usize) !gallery.Page {
+    var query = try query_mod.Query.parse(allocator, text);
+    defer query.deinit(allocator);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const parsed = try parseFilter(arena.allocator(), query.value);
+    var criteria: std.ArrayList(gallery.Criterion) = .empty;
+    defer criteria.deinit(allocator);
+    if ((parsed.updates or parsed.recommended or parsed.ids.len > 0) and names.len == 0) return gallery.Page.parse(allocator, "{\"results\":[]}");
+    for (names) |id| try criteria.append(allocator, .{ .filterType = @backingInt(gallery.FilterType.extension_name), .value = id });
+    if (parsed.ids.len == 0) {
+        if (parsed.text.len > 0) try criteria.append(allocator, .{ .filterType = @backingInt(gallery.FilterType.search_text), .value = parsed.text });
+        for (parsed.included_categories) |category| try criteria.append(allocator, .{ .filterType = @backingInt(gallery.FilterType.category), .value = category });
+        for (parsed.tags) |tag| try criteria.append(allocator, .{ .filterType = @backingInt(gallery.FilterType.tag), .value = tag });
+    }
+    const sort: gallery.SortBy = if (std.ascii.eqlIgnoreCase(query.sort_by, "installs")) .installs else if (std.ascii.eqlIgnoreCase(query.sort_by, "rating")) .rating else if (std.ascii.eqlIgnoreCase(query.sort_by, "name")) .name else if (std.ascii.eqlIgnoreCase(query.sort_by, "publishedDate")) .published else if (parsed.recently_published) .published else if (parsed.popular or query.value.len == 0) .installs else .relevance;
+    return (gallery.ExtensionGalleryService{ .allocator = allocator, .io = io, .service_url = url }).query(.{ .criteria = criteria.items, .sort_by = sort, .page = page });
+}
+
+pub const BuiltinGroup = enum { all, features, themes, languages };
 
 pub const ExtensionsListView = struct {
     pub const ID = model.VIEW_ID;
@@ -64,7 +100,20 @@ pub const ExtensionsListView = struct {
     rows: []const *const IExtension = &.{},
     selected_id: std.array_list.Managed(u8),
     listener: ?SignalSubscription = null,
+    recommendations_listener: ?SignalSubscription = null,
+    search_request_listener: ?SignalSubscription = null,
     message_buffer: [256]u8 = undefined,
+    search_delayer: dispatch.Task = .{},
+    gallery_job: ?*GalleryJob = null,
+    gallery_loading: bool = false,
+    gallery_error: bool = false,
+    gallery_kind: service_mod.GalleryKind = .search,
+    gallery_pages: paging.PageIterator = .{ .page_size = 50 },
+    initial_gallery_search_started: bool = false,
+    suggestion_picker: ?*SuggestionPicker = null,
+    builtin_group: BuiltinGroup = .all,
+    filter_override: ?[]u8 = null,
+    query_changed: ?struct { context: *anyopaque, run: *const fn (*anyopaque) void } = null,
 
     pub fn init(allocator: Allocator, options: struct { service: ?*service_mod.ExtensionsWorkbenchService = null, host: Host }) !*ExtensionsListView {
         const self = try allocator.create(ExtensionsListView);
@@ -89,6 +138,7 @@ pub const ExtensionsListView = struct {
             .selected_id = std.array_list.Managed(u8).init(allocator),
         };
         errdefer self.deinitContents();
+        self.search_delayer = .{ .queue = self.host.window, .context = self, .run = startGallery };
         try self.subscribe();
         // An empty inventory still opens the view.
         self.rebuild() catch {};
@@ -101,7 +151,11 @@ pub const ExtensionsListView = struct {
     }
 
     fn deinitContents(self: *ExtensionsListView) void {
+        self.cancelGallery();
+        if (self.suggestion_picker) |picker| picker.view = null;
+        self.suggestion_picker = null;
         self.unsubscribe();
+        if (self.filter_override) |query| self.allocator.free(query);
         self.list.deinit();
         self.input_box.deinit();
         if (self.input_surface) |*surface| surface.deinit();
@@ -112,6 +166,11 @@ pub const ExtensionsListView = struct {
     }
 
     pub fn setService(self: *ExtensionsListView, service: ?*service_mod.ExtensionsWorkbenchService) !void {
+        self.cancelGallery();
+        self.gallery_loading = false;
+        self.gallery_error = false;
+        self.gallery_pages = .{ .page_size = 50 };
+        self.initial_gallery_search_started = false;
         self.unsubscribe();
         self.service = service;
         try self.subscribe();
@@ -121,21 +180,102 @@ pub const ExtensionsListView = struct {
     fn subscribe(self: *ExtensionsListView) !void {
         const service = self.service orelse return;
         self.listener = try service.on_change.listenSignal(self, onServiceChange);
+        self.recommendations_listener = try service.on_recommendations_change.listenSignal(self, onRecommendationsChange);
+        self.search_request_listener = try service.on_search_request.listenDisposable(self, onSearchRequest);
     }
 
     fn unsubscribe(self: *ExtensionsListView) void {
         if (self.listener) |listener| listener.dispose();
         self.listener = null;
+        if (self.recommendations_listener) |listener| listener.dispose();
+        self.recommendations_listener = null;
+        if (self.search_request_listener) |listener| listener.dispose();
+        self.search_request_listener = null;
     }
 
     fn onServiceChange(self: *ExtensionsListView) !void {
+        if (self.queryText().len == 0 or query_mod.Query.isSortInstalled(self.queryText())) if (self.query_changed) |callback| callback.run(callback.context);
         try self.rebuild();
+    }
+
+    fn onSearchRequest(query: []const u8, self: *ExtensionsListView) !void {
+        if (self.filter_override != null) return;
+        try self.input_box.setValue(query);
+        self.setInputFocused(true);
+        self.requestFrame();
+    }
+
+    fn onRecommendationsChange(self: *ExtensionsListView) !void {
+        if (self.gallery_kind == .recommended or (self.filter_override == null and containsIgnoreCase(self.queryText(), "@recommended"))) {
+            if (self.initial_gallery_search_started or self.gallery_kind == .search) self.searchChanged();
+        }
+    }
+
+    const SuggestionPicker = struct {
+        view: ?*ExtensionsListView,
+        allocator: Allocator,
+        arena: std.heap.ArenaAllocator,
+        before: []const u8,
+        after: []const u8,
+        fn dispose(self: *SuggestionPicker) void {
+            self.arena.deinit();
+            self.allocator.destroy(self);
+        }
+        fn selected(context: *anyopaque, item: ?*const quick.Item) !void {
+            const self: *SuggestionPicker = @ptrCast(@alignCast(context));
+            defer self.dispose();
+            const view = self.view orelse return;
+            view.suggestion_picker = null;
+            const choice = item orelse return;
+            const value = try std.mem.concat(self.arena.allocator(), u8, &.{ self.before, choice.id, self.after });
+            try view.input_box.setValue(value);
+            const caret = self.before.len + choice.id.len;
+            view.input_box.select(.{ .start = caret, .end = caret });
+            view.requestFrame();
+        }
+    };
+
+    pub fn showSuggestions(self: *ExtensionsListView) !void {
+        const service = self.service orelse return;
+        const input = service.quick_input orelse return;
+        const value = self.input_box.getValue();
+        const caret = @min(self.input_box.cursor, value.len);
+        var start = caret;
+        while (start > 0 and !std.ascii.isWhitespace(value[start - 1])) start -= 1;
+        const prefix = if (start < caret and value[start] == '@') value[start..caret] else "";
+        if (prefix.len == 0) start = caret;
+        var end = caret;
+        if (prefix.len > 0) while (end < value.len and !std.ascii.isWhitespace(value[end])) : (end += 1) {};
+        const picker = try self.allocator.create(SuggestionPicker);
+        picker.* = .{ .view = self, .allocator = self.allocator, .arena = .init(self.allocator), .before = "", .after = "" };
+        var adopted = false;
+        defer if (!adopted) picker.dispose();
+        const allocator = picker.arena.allocator();
+        picker.before = try std.mem.concat(allocator, u8, &.{ value[0..start], if (start > 0 and !std.ascii.isWhitespace(value[start - 1])) " " else "" });
+        picker.after = try allocator.dupe(u8, value[end..]);
+        const query = try std.mem.concat(allocator, u8, &.{ picker.before, picker.after });
+        const suggestions = try query_mod.Query.suggestionsWithFeatures(allocator, query, service.gallery_url != null, service.feature_registry.getExtensionFeatures());
+        var items: std.ArrayList(quick.QuickPickItem) = .empty;
+        for (suggestions) |suggestion| {
+            if (prefix.len > 0 and !startsWithIgnoreCase(suggestion, prefix)) continue;
+            try items.append(allocator, .{ .item = .{ .id = suggestion, .label = std.mem.trimEnd(u8, suggestion, " ") } });
+        }
+        if (items.items.len == 0) return;
+        if (self.suggestion_picker) |previous| previous.view = null;
+        self.suggestion_picker = picker;
+        errdefer self.suggestion_picker = null;
+        try input.pick(items.items, .{ .placeholder = "Filter Extensions" }, SuggestionPicker.selected, picker);
+        adopted = true;
     }
 
     fn onInputChange(context: ?*anyopaque, _: []const u8) void {
         const self: *ExtensionsListView = @ptrCast(@alignCast(context orelse return));
-        self.rebuild() catch {};
-        self.requestFrame();
+        self.searchChanged();
+        // A fresh @ token opens the terminal's quick-input suggestion list;
+        // Ctrl+Space can reopen it when completing a longer token.
+        const value = self.input_box.getValue();
+        const caret = self.input_box.cursor;
+        if (self.input_focused and caret > 0 and value[caret - 1] == '@' and (caret == 1 or std.ascii.isWhitespace(value[caret - 2]))) self.showSuggestions() catch {};
     }
 
     fn onInputEnter(context: ?*anyopaque) void {
@@ -143,8 +283,161 @@ pub const ExtensionsListView = struct {
         self.focusList();
     }
 
+    fn searchesGallery(self: *const ExtensionsListView) bool {
+        if (self.filter_override != null and self.gallery_kind == .search) return false;
+        const service = self.service orelse return false;
+        if (service.gallery_url == null or self.host.window == null) return false;
+        const text = std.mem.trim(u8, self.queryText(), " \t");
+        if (text.len == 0 or query_mod.Query.isSortInstalled(text)) return false;
+        for ([_][]const u8{ "@installed", "@builtin", "@enabled", "@disabled", "@recentlyUpdated", "@updates", "@outdated", "@restartRequired", "@contribute:" }) |token| {
+            if (containsIgnoreCase(text, token)) return false;
+        }
+        return true;
+    }
+
+    pub fn showDefaultPopular(self: *const ExtensionsListView) bool {
+        const service = self.service orelse return false;
+        if (service.gallery_url == null) return false;
+        for (service.queryLocal()) |extension| if (!extension.is_builtin) return false;
+        return true;
+    }
+
+    pub fn ensureGallery(self: *ExtensionsListView) void {
+        if (self.initial_gallery_search_started or !self.searchesGallery()) return;
+        self.initial_gallery_search_started = true;
+        self.searchChanged();
+    }
+
+    fn galleryNames(self: *ExtensionsListView, text: []const u8) ![][]u8 {
+        const service = self.service orelse return self.allocator.alloc([]u8, 0);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const filter = try parseFilter(arena.allocator(), text);
+        if (filter.recommended) {
+            const workspace = service.workspace orelse return self.allocator.alloc([]u8, 0);
+            return @import("workspaceRecommendations.zig").read(self.allocator, service.io, workspace.getWorkspace());
+        }
+        var names: std.ArrayList([]u8) = .empty;
+        errdefer {
+            for (names.items) |name| self.allocator.free(name);
+            names.deinit(self.allocator);
+        }
+        if (filter.ids.len > 0) {
+            for (filter.ids) |id| {
+                if (service.findLocal(id) != null) continue;
+                const copy = try self.allocator.dupe(u8, id);
+                errdefer self.allocator.free(copy);
+                try names.append(self.allocator, copy);
+            }
+            return names.toOwnedSlice(self.allocator);
+        }
+        if (filter.updates) for (service.queryLocal()) |extension| {
+            if (extension.is_builtin) continue;
+            const copy = try self.allocator.dupe(u8, extension.identifier);
+            errdefer self.allocator.free(copy);
+            try names.append(self.allocator, copy);
+        };
+        return names.toOwnedSlice(self.allocator);
+    }
+
+    fn freeNames(self: *ExtensionsListView, names: [][]u8) void {
+        for (names) |name| self.allocator.free(name);
+        self.allocator.free(names);
+    }
+
+    fn searchChanged(self: *ExtensionsListView) void {
+        self.cancelGallery();
+        self.gallery_error = false;
+        self.gallery_pages = .{ .page_size = 50 };
+        self.gallery_loading = self.searchesGallery();
+        if (containsIgnoreCase(self.queryText(), "@updates") or containsIgnoreCase(self.queryText(), "@outdated")) {
+            if (self.service) |service| if (service.gallery_url != null and service.update_job == null) service.checkForUpdates() catch {};
+        }
+        if (self.query_changed) |callback| callback.run(callback.context);
+        self.rebuild() catch {};
+        if (self.gallery_loading) self.search_delayer.schedule(time.milliTimestamp(self.host.window.?.workerIo()) + 500);
+        self.requestFrame();
+    }
+
+    fn cancelGallery(self: *ExtensionsListView) void {
+        self.search_delayer.schedule(null);
+        const job = self.gallery_job orelse return;
+        self.gallery_job = null;
+        const result = job.future.cancel(self.host.window.?.io);
+        job.completion.schedule(null);
+        if (result) |page| {
+            var owned = page;
+            owned.deinit();
+        } else |_| {}
+        self.freeNames(job.names);
+        self.allocator.free(job.text);
+        self.allocator.free(job.url);
+        self.allocator.destroy(job);
+    }
+
+    fn startGallery(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *ExtensionsListView = @ptrCast(@alignCast(context));
+        self.startGalleryJob() catch {
+            self.gallery_loading = false;
+            self.gallery_error = true;
+            self.rebuild() catch {};
+        };
+        return true;
+    }
+
+    fn startGalleryJob(self: *ExtensionsListView) !void {
+        const service = self.service orelse return error.GalleryUnavailable;
+        const window = self.host.window orelse return error.GalleryUnavailable;
+        const page = self.gallery_pages.nextPage() orelse return;
+        const url = try self.allocator.dupe(u8, service.gallery_url orelse return error.GalleryUnavailable);
+        errdefer self.allocator.free(url);
+        const text = try self.allocator.dupe(u8, self.queryText());
+        errdefer self.allocator.free(text);
+        const names = try self.galleryNames(text);
+        errdefer self.freeNames(names);
+        const job = try self.allocator.create(GalleryJob);
+        job.* = .{ .view = self, .url = url, .text = text, .names = names, .page = page, .completion = .{ .queue = window, .context = self, .run = applyGallery, .progress = true }, .future = undefined };
+        self.gallery_job = job;
+        job.future = window.io.async(runGallery, .{job});
+    }
+
+    fn applyGallery(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *ExtensionsListView = @ptrCast(@alignCast(context));
+        const job = self.gallery_job orelse return false;
+        self.gallery_job = null;
+        defer self.allocator.destroy(job);
+        defer self.allocator.free(job.url);
+        defer self.allocator.free(job.text);
+        defer self.freeNames(job.names);
+        const result = job.future.await(self.host.window.?.io);
+        self.gallery_loading = false;
+        if (result) |page| {
+            const count = page.extensions.len;
+            const total = page.total;
+            if (self.service) |service| {
+                self.gallery_pages.accept(job.page, count, total) catch {};
+                service.setGalleryPage(page, job.page > 1, self.gallery_kind) catch {
+                    self.gallery_error = true;
+                };
+            } else {
+                var owned = page;
+                owned.deinit();
+            }
+        } else |_| self.gallery_error = true;
+        self.rebuild() catch {};
+        return true;
+    }
+
     pub fn queryText(self: *const ExtensionsListView) []const u8 {
-        return self.input_box.getValue();
+        return self.filter_override orelse self.input_box.getValue();
+    }
+
+    pub fn setFilter(self: *ExtensionsListView, query: []const u8, group: BuiltinGroup) !void {
+        const text = try self.allocator.dupe(u8, query);
+        if (self.filter_override) |previous| self.allocator.free(previous);
+        self.filter_override = text;
+        self.builtin_group = group;
+        try self.rebuild();
     }
 
     /// Recomputes the filtered rows and updates the list widget. Selection is
@@ -157,14 +450,65 @@ pub const ExtensionsListView = struct {
             }
         }
         const local = if (self.service) |service| service.queryLocal() else &[_]IExtension{};
-        const rows = try filterExtensions(self.allocator, local, self.queryText());
-        self.allocator.free(self.rows);
-        self.rows = rows;
-
+        var rows = if (self.searchesGallery()) blk: {
+            const entries = if (self.gallery_pages.page == 0) &[_]IExtension{} else self.service.?.galleryExtensionsFor(self.gallery_kind);
+            var result: std.ArrayList(*const IExtension) = .empty;
+            errdefer result.deinit(self.allocator);
+            const updates = containsIgnoreCase(self.queryText(), "@updates") or containsIgnoreCase(self.queryText(), "@outdated");
+            const recommended = containsIgnoreCase(self.queryText(), "@recommended");
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+            const filter = try parseFilter(arena.allocator(), self.queryText());
+            if (filter.ids.len > 0) {
+                for (local) |*entry| if (matchesId(entry, filter.ids)) try result.append(self.allocator, entry);
+            }
+            for (entries) |*entry| {
+                if (filter.ids.len > 0 and (!matchesId(entry, filter.ids) or self.service.?.findLocal(entry.identifier) != null)) continue;
+                if (updates and self.service.?.availableUpdate(entry.identifier) == null) continue;
+                if (recommended and self.service.?.findLocal(entry.identifier) != null) continue;
+                try result.append(self.allocator, entry);
+            }
+            break :blk try result.toOwnedSlice(self.allocator);
+        } else try filterExtensionsWithService(self.allocator, local, if (self.queryText().len == 0) "@installed" else self.queryText(), self.service);
+        errdefer self.allocator.free(rows);
+        if (containsIgnoreCase(self.queryText(), "@recentlyUpdated")) {
+            const now = if (self.service) |service| time.milliTimestamp(service.io) else 0;
+            var filtered: std.ArrayList(*const IExtension) = .empty;
+            defer filtered.deinit(self.allocator);
+            for (rows) |entry| {
+                const timestamp = entry.installed_timestamp orelse continue;
+                if (now -| timestamp >= 7 * 24 * 60 * 60 * 1000) continue;
+                if (self.service) |service| if (service.availableUpdate(entry.identifier) != null) continue;
+                try filtered.append(self.allocator, entry);
+            }
+            const result = try filtered.toOwnedSlice(self.allocator);
+            self.allocator.free(rows);
+            rows = result;
+        }
+        if (self.builtin_group != .all) {
+            var filtered: std.ArrayList(*const IExtension) = .empty;
+            defer filtered.deinit(self.allocator);
+            for (rows) |extension| {
+                const is_theme = extension.hasCategory("themes");
+                const is_language = extension.hasCategory("programming languages");
+                const include = switch (self.builtin_group) {
+                    .features => !is_theme and !is_language,
+                    .themes => is_theme,
+                    .languages => is_language,
+                    .all => true,
+                };
+                if (include) try filtered.append(self.allocator, extension);
+            }
+            const result = try filtered.toOwnedSlice(self.allocator);
+            self.allocator.free(rows);
+            rows = result;
+        }
         var elements = try self.allocator.alloc(list_mod.Element, rows.len);
         defer self.allocator.free(elements);
         for (rows, 0..) |extension, index| elements[index] = @ptrCast(extension);
         try self.list.replaceAll(elements);
+        self.allocator.free(self.rows);
+        self.rows = rows;
 
         if (rows.len == 0) {
             self.list.setSelection(null);
@@ -177,22 +521,57 @@ pub const ExtensionsListView = struct {
                     break;
                 }
             }
-            self.list.setSelection(target orelse 0);
+            if (target) |index| self.list.selectOnly(index) else self.list.setSelection(0);
         }
         self.requestFrame();
     }
 
-    /// Port of `ExtensionsViewPaneContainer.focus`: the search box owns focus
-    /// when the view is focused.
     pub fn setFocused(self: *ExtensionsListView, focused: bool) void {
         self.focused = focused;
-        if (focused) {
-            self.setInputFocused(true);
-        } else {
-            self.input_box.focused = false;
-            self.list.setFocus(false);
+        self.setInputFocused(false);
+    }
+
+    pub fn setSearchFocused(self: *ExtensionsListView, focused: bool) void {
+        self.focused = focused;
+        self.setInputFocused(focused);
+        if (focused and self.queryText().len == 0) if (self.query_changed) |callback| callback.run(callback.context);
+    }
+
+    pub fn handleSearchKey(self: *ExtensionsListView, event: *ui.KeyEvent) bool {
+        if (event.mods.ctrl and event.key == .char and event.key.char == ' ') {
+            self.showSuggestions() catch {};
+            return true;
         }
-        self.requestFrame();
+        switch (event.key) {
+            .down, .enter, .tab, .backtab => return false,
+            else => {},
+        }
+        const handled = self.input_box.handleKey(event);
+        if (handled) self.requestFrame();
+        return handled;
+    }
+
+    pub fn handleSearchMouse(self: *ExtensionsListView, event: *const ui.MouseEvent, rect: ui.Rect) bool {
+        const width = ui.cell.snap(rect.w);
+        if (width >= 6 and event.x >= ui.cell.snap(rect.x) + width - 3 and event.kind == .down and event.button == .left) {
+            self.showSuggestions() catch {};
+            return true;
+        }
+        var local = event.*;
+        local.x -|= ui.cell.snap(rect.x);
+        local.y = 0;
+        const handled = self.input_box.handleMouse(&local);
+        if (handled) self.requestFrame();
+        return handled;
+    }
+
+    pub fn renderSearch(self: *ExtensionsListView, grid: *ui.CellGrid, rect: ui.Rect) !void {
+        const width = ui.cell.snap(rect.w);
+        const x = ui.cell.snap(rect.x);
+        const y = ui.cell.snap(rect.y);
+        const palette = list_renderer.colors(self.theme());
+        try self.renderInput(grid, x, y, if (width >= 6) width - 3 else width, palette);
+        if (width >= 6) _ = list_renderer.drawTextEllipsis(grid, x + width - 3, y, 3, " ≡ ", .{ .fg = ui.cell.packColor(palette.input_foreground), .bg = ui.cell.packColor(palette.input_background) });
     }
 
     fn setInputFocused(self: *ExtensionsListView, focused: bool) void {
@@ -212,8 +591,8 @@ pub const ExtensionsListView = struct {
     }
 
     pub fn pointerAt(self: *const ExtensionsListView, event: *const ui.MouseEvent, rect: ui.Rect) ui.Pointer {
-        const y = ui.cell.snap(rect.y);
-        if (event.y == y) return .text;
+        _ = event;
+        _ = rect;
         if (self.list.hasHoveredRow()) return .pointer;
         return .default;
     }
@@ -233,8 +612,7 @@ pub const ExtensionsListView = struct {
     pub fn clearSearch(self: *ExtensionsListView) void {
         self.input_box.setValue("") catch {};
         self.setInputFocused(true);
-        self.rebuild() catch {};
-        self.requestFrame();
+        self.searchChanged();
     }
 
     pub fn refresh(self: *ExtensionsListView) !void {
@@ -244,7 +622,7 @@ pub const ExtensionsListView = struct {
             self.host.status(self.host.context, "Unable to refresh extensions");
             return err;
         };
-        self.requestFrame();
+        self.searchChanged();
     }
 
     pub fn titleActions(self: *const ExtensionsListView) []const views.TitleAction {
@@ -264,44 +642,26 @@ pub const ExtensionsListView = struct {
     // Input
     // ------------------------------------------------------------------
 
+    /// PagedList resolves a page when the visible range approaches its end.
+    /// Terminal input/scroll events trigger that resolution, never paint.
+    fn resolveVisiblePage(self: *ExtensionsListView) void {
+        if (!self.searchesGallery() or self.gallery_loading or self.gallery_pages.page == 0 or !self.gallery_pages.hasNextPage()) return;
+        const view = &self.list.view;
+        if (view.scroll_top + view.viewport_height + 9 < view.range_map.size()) return;
+        self.gallery_loading = true;
+        self.gallery_error = false;
+        self.startGalleryJob() catch {
+            self.gallery_loading = false;
+            self.gallery_error = true;
+        };
+    }
+
     pub fn handleKey(self: *ExtensionsListView, event: *const ui.KeyEvent) !bool {
         if (!self.focused) return false;
-        if (self.input_focused) {
-            switch (event.key) {
-                .down => {
-                    self.focusList();
-                    return true;
-                },
-                .enter => {
-                    self.focusList();
-                    return true;
-                },
-                .tab => {
-                    self.focusList();
-                    return true;
-                },
-                .backtab => return false,
-                .escape => return self.handleEscape(),
-                else => {},
-            }
-            self.input_box.focused = true;
-            const handled = self.input_box.handleKey(@constCast(event));
-            if (handled) self.requestFrame();
-            return handled;
-        }
-
         switch (event.key) {
-            .tab, .backtab => {
-                self.setInputFocused(true);
-                return true;
-            },
-            .up => {
-                if (self.list.selection() == null or self.list.selection().? == 0) {
-                    self.setInputFocused(true);
-                    return true;
-                }
-            },
-            .escape => return self.handleEscape(),
+            .tab, .backtab => return false,
+            .up => if (self.list.selection() == null or self.list.selection().? == 0) return false,
+            .escape => return false,
             .enter => {
                 try self.openSelected();
                 return true;
@@ -309,7 +669,10 @@ pub const ExtensionsListView = struct {
             else => {},
         }
         const handled = self.list.handleKey(@constCast(event));
-        if (handled) self.requestFrame();
+        if (handled) {
+            self.resolveVisiblePage();
+            self.requestFrame();
+        }
         return handled;
     }
 
@@ -324,18 +687,8 @@ pub const ExtensionsListView = struct {
             return false;
         }
 
-        if (event.y == y) {
-            self.list.clearHover();
-            if (event.kind == .down and event.button == .left) self.setInputFocused(true);
-            var local = event.*;
-            local.x = event.x - x;
-            local.y = 0;
-            _ = self.input_box.handleMouse(&local);
-            return true;
-        }
-
-        const list_top = y + 1;
-        const list_height = height -| 1;
+        const list_top = y;
+        const list_height = height;
         const content_rows: usize = @intFromFloat(@max(0, self.list.view.range_map.size()));
         const list_width = list_scrollbar.contentWidth(width, list_height, content_rows);
         if (event.x >= x + list_width) {
@@ -356,15 +709,42 @@ pub const ExtensionsListView = struct {
         if (event.kind == .down and event.button == .left) {
             self.setInputFocused(false);
             _ = self.list.handleMouse(event);
-            if (self.list.selection()) |index| {
-                if (index < self.rows.len) try self.openExtension(self.rows[index]);
+            const position = self.list.view.scroll_top + @as(f64, @floatFromInt(event.y - list_top));
+            const hit = self.list.view.indexAt(position);
+            if (hit >= 0 and hit < @as(i64, @intCast(self.rows.len))) {
+                const index: usize = @intCast(hit);
+                const extension = self.rows[index];
+                const row_top = self.list.view.range_map.positionAt(hit);
+                if (position - row_top >= 2 and list_width >= 10) {
+                    if (extension.state == .Uninstalled and extension.vsix_url != null and event.x >= x + list_width - 9) {
+                        if (self.service) |service| service.install(extension.*) catch {};
+                        self.requestFrame();
+                        return true;
+                    }
+                    if (extension.state == .Installed and event.x >= x + list_width - 11 and event.x < x + list_width - 3) {
+                        if (self.service) |service| if (service.availableUpdate(extension.identifier)) |update| {
+                            try service.install(update.*);
+                            self.requestFrame();
+                            return true;
+                        };
+                    }
+                    if (extension.state == .Installed and event.x >= x + list_width - 3) {
+                        try self.showRowMenu(extension, .mouse(event));
+                        return true;
+                    }
+                }
+                try self.openExtension(extension);
             }
+            self.resolveVisiblePage();
             self.requestFrame();
             return true;
         }
 
         const handled = self.list.handleMouse(event);
-        if (handled) self.requestFrame();
+        if (handled) {
+            self.resolveVisiblePage();
+            self.requestFrame();
+        }
         return handled;
     }
 
@@ -379,9 +759,7 @@ pub const ExtensionsListView = struct {
     }
 
     fn openExtension(self: *ExtensionsListView, extension: *const IExtension) !void {
-        const path = try std.fs.path.join(self.allocator, &.{ extension.location, "package.json" });
-        defer self.allocator.free(path);
-        try self.host.open_extension(self.host.context, path);
+        try self.host.open_extension(self.host.context, extension.identifier);
     }
 
     fn showRowMenu(self: *ExtensionsListView, extension: *const IExtension, anchor: Anchor) !void {
@@ -390,48 +768,45 @@ pub const ExtensionsListView = struct {
             fn run(_: *u8, _: []const u8) !void {}
         }.run);
         errdefer menu.deinit();
-        const arena = menu.arena.allocator();
-        const Command = struct {
+        const workbench_service = self.service orelse return error.ExtensionManagementUnavailable;
+        try @import("extensionsActions.zig").addManagementActions(menu, workbench_service, extension, .{ .context = self, .run = rowEnablement });
+        const OpenAction = struct {
             view: *ExtensionsListView,
-            identifier: []const u8 = "",
-            enable: bool = false,
-            open: bool = false,
+            identifier: []const u8,
             pub fn run(action: *@This()) !void {
-                if (action.open) {
-                    if (action.view.service) |view_service| {
-                        if (view_service.find(action.identifier)) |found| {
-                            return action.view.openExtension(found);
-                        }
-                    }
-                    return;
+                if (action.view.service) |view_service| {
+                    if (view_service.find(action.identifier)) |found| try action.view.openExtension(found);
                 }
-                try action.view.toggleEnablement(action.identifier, action.enable);
             }
         };
-        const identifier = try arena.dupe(u8, extension.identifier);
-        if (extension.isEnabled()) {
-            try menu.addAction("extensions.disableGlobally", "Disable", null, Command{ .view = self, .identifier = identifier, .enable = false });
-        } else {
-            try menu.addAction("extensions.enableGlobally", "Enable", null, Command{ .view = self, .identifier = identifier, .enable = true });
-        }
-        try menu.addAction("workbench.extensions.action.openExtension", "Open Extension", null, Command{ .view = self, .identifier = identifier, .open = true });
+        try menu.addAction("workbench.extensions.action.openExtension", "Open Extension", null, OpenAction{ .view = self, .identifier = try menu.arena.allocator().dupe(u8, extension.identifier) });
         try service.showContextMenu(menu, anchor);
     }
 
-    fn toggleEnablement(self: *ExtensionsListView, identifier: []const u8, enable: bool) !void {
+    fn rowEnablement(context: *anyopaque, identifier: []const u8, enable: bool, workspace: bool) !void {
+        const self: *ExtensionsListView = @ptrCast(@alignCast(context));
+        try self.toggleEnablement(identifier, enable, workspace);
+    }
+
+    fn toggleEnablement(self: *ExtensionsListView, identifier: []const u8, enable: bool, workspace: bool) !void {
         const service = self.service orelse return;
-        const state: EnablementState = if (enable) .EnabledGlobally else .DisabledGlobally;
-        _ = service.setEnablement(identifier, state) catch {
+        const state: EnablementState = if (workspace) (if (enable) .EnabledWorkspace else .DisabledWorkspace) else if (enable) .EnabledGlobally else .DisabledGlobally;
+        const changed = service.requestEnablement(identifier, state) catch {
             if (self.host.notifications) |notifications| notifications.err(.{ .text = "Unable to change extension enablement." });
             self.host.status(self.host.context, "Unable to change extension enablement");
             return;
         };
+        if (!changed) return;
         self.rebuild() catch {};
         const name = if (service.find(identifier)) |extension| extension.display_name else identifier;
-        const message = std.fmt.bufPrint(&self.message_buffer, "Extension '{s}' {s}. Restart the editor to apply the change.", .{
+        const message = std.fmt.bufPrint(&self.message_buffer, "Extension '{s}' {s}.{s}", .{
             name,
             if (enable) "enabled" else "disabled",
-        }) catch "Extension enablement changed. Restart the editor to apply the change.";
+            if (service.runtimeState(identifier)) |action| switch (action) {
+                .RestartExtensions => " Restart Extensions to apply the change.",
+                .ReloadWindow => " Restart the editor to apply the change.",
+            } else "",
+        }) catch "Extension enablement changed.";
         if (self.host.notifications) |notifications| notifications.info(.{ .text = message });
     }
 
@@ -452,14 +827,14 @@ pub const ExtensionsListView = struct {
             .bg = ui.cell.packColor(palette.background),
         });
 
-        try self.renderInput(grid, x, y, width, palette);
-        const list_top = y + 1;
-        const list_height = height -| 1;
+        const list_top = y;
+        const list_height = height;
         if (list_height == 0) return;
 
         if (self.rows.len == 0) {
             var buffer: [256]u8 = undefined;
-            const message = if (self.queryText().len == 0)
+            const checking = (containsIgnoreCase(self.queryText(), "@updates") or containsIgnoreCase(self.queryText(), "@outdated")) and if (self.service) |service| service.update_job != null else false;
+            const message = if (checking) "Checking for updates…" else if (self.gallery_loading) "Searching Marketplace…" else if (self.gallery_error) "Unable to search Marketplace." else if (self.queryText().len == 0)
                 "No extensions found."
             else
                 std.fmt.bufPrint(&buffer, "No extensions match '{s}'.", .{self.queryText()}) catch "No extensions match.";
@@ -522,7 +897,7 @@ pub const ExtensionsListView = struct {
     }
 
     fn delegateHeight(_: *anyopaque, _: list_mod.Element) f64 {
-        return 2;
+        return 3;
     }
 
     fn delegateTemplateId(_: *anyopaque, _: list_mod.Element) usize {
@@ -532,7 +907,12 @@ pub const ExtensionsListView = struct {
     fn renderElement(context: *anyopaque, row: *const list_mod.Row, element: list_mod.Element) void {
         const self: *ExtensionsListView = @ptrCast(@alignCast(context));
         const extension: *const IExtension = @ptrCast(@alignCast(element));
-        list_renderer.renderRow(row.grid, row, extension, list_renderer.colors(self.theme()));
+        var display = extension.*;
+        if (self.service) |service| if (service.operationState(extension.identifier)) |state| {
+            display.state = state;
+        };
+        const actions: list_renderer.RowActions = if (self.service) |service| .{ .update_available = service.availableUpdate(extension.identifier) != null, .restart_required = service.runtimeState(extension.identifier) != null } else .{};
+        list_renderer.renderRow(row.grid, row, &display, list_renderer.colors(self.theme()), actions);
     }
 };
 
@@ -542,6 +922,15 @@ const ParsedFilter = struct {
     builtin: bool = false,
     enabled: bool = false,
     disabled: bool = false,
+    updates: bool = false,
+    recommended: bool = false,
+    popular: bool = false,
+    recently_published: bool = false,
+    tags: []const []const u8 = &.{},
+    sort_update_date: bool = false,
+    recently_updated: bool = false,
+    restart_required: bool = false,
+    feature_id: ?[]const u8 = null,
     ids: []const []const u8 = &.{},
     included_categories: []const []const u8 = &.{},
     excluded_categories: []const []const u8 = &.{},
@@ -553,12 +942,14 @@ fn parseFilter(arena: Allocator, value: []const u8) !ParsedFilter {
     var ids: std.array_list.Managed([]const u8) = .init(arena);
     var included: std.array_list.Managed([]const u8) = .init(arena);
     var excluded: std.array_list.Managed([]const u8) = .init(arena);
+    var tags: std.array_list.Managed([]const u8) = .init(arena);
 
     var index: usize = 0;
     while (index < value.len) {
         while (index < value.len and std.ascii.isWhitespace(value[index])) : (index += 1) {}
         if (index >= value.len) break;
-        if (startsWithIgnoreCase(value[index..], "category:")) {
+        if (startsWithIgnoreCase(value[index..], "category:") or startsWithIgnoreCase(value[index..], "@category:")) {
+            if (value[index] == '@') index += 1;
             index += "category:".len;
             var category: []const u8 = "";
             if (index < value.len and value[index] == '"') {
@@ -583,11 +974,31 @@ fn parseFilter(arena: Allocator, value: []const u8) !ParsedFilter {
             }
             continue;
         }
+        if (startsWithIgnoreCase(value[index..], "@tag:") or startsWithIgnoreCase(value[index..], "tag:")) {
+            if (value[index] == '@') index += 1;
+            index += "tag:".len;
+            const quoted = index < value.len and value[index] == '"';
+            if (quoted) index += 1;
+            const start = index;
+            while (index < value.len and (if (quoted) value[index] != '"' else !std.ascii.isWhitespace(value[index]))) : (index += 1) {}
+            if (index > start) try tags.append(value[start..index]);
+            if (quoted and index < value.len) index += 1;
+            continue;
+        }
         if (startsWithIgnoreCase(value[index..], "@sort:")) {
-            // The sort token is parsed by `Query`; local ordering always uses
-            // the display-name order, so the token itself is dropped.
+            // The local update-date sort uses installation metadata. Other
+            // sort modifiers are parsed by Query for gallery ordering.
             index += "@sort:".len;
+            const start = index;
             while (index < value.len and !std.ascii.isWhitespace(value[index])) : (index += 1) {}
+            result.sort_update_date = startsWithIgnoreCase(value[start..index], "updateDate");
+            continue;
+        }
+        if (startsWithIgnoreCase(value[index..], "@contribute:")) {
+            index += "@contribute:".len;
+            const start = index;
+            while (index < value.len and !std.ascii.isWhitespace(value[index])) : (index += 1) {}
+            result.feature_id = value[start..index];
             continue;
         }
         if (startsWithIgnoreCase(value[index..], "@id:")) {
@@ -616,15 +1027,41 @@ fn parseFilter(arena: Allocator, value: []const u8) !ParsedFilter {
             result.enabled = true;
             continue;
         }
+        if (tokenEquals(word, "@updates") or tokenEquals(word, "@outdated")) {
+            result.updates = true;
+            continue;
+        }
+        if (tokenEquals(word, "@recommended")) {
+            result.recommended = true;
+            continue;
+        }
+        if (tokenEquals(word, "@recentlyUpdated")) {
+            result.recently_updated = true;
+            continue;
+        }
+        if (tokenEquals(word, "@restartRequired")) {
+            result.restart_required = true;
+            continue;
+        }
+        if (tokenEquals(word, "@recentlyPublished")) {
+            result.recently_published = true;
+            continue;
+        }
+        if (tokenEquals(word, "@popular")) {
+            result.popular = true;
+            continue;
+        }
         if (tokenEquals(word, "@disabled")) {
             result.disabled = true;
             continue;
         }
         if (text.items.len > 0) try text.append(' ');
-        try text.appendSlice(word);
+        try text.appendSlice(if (startsWithIgnoreCase(word, "@ext:")) word[1..] else word);
     }
 
     result.text = try std.ascii.allocLowerString(arena, text.items);
+    result.tags = try tags.toOwnedSlice();
+    if (query_mod.Query.isSortInstalled(value)) result.installed = true;
     result.ids = try ids.toOwnedSlice();
     result.included_categories = try included.toOwnedSlice();
     result.excluded_categories = try excluded.toOwnedSlice();
@@ -688,20 +1125,46 @@ fn lessThanExtension(_: void, a: *const IExtension, b: *const IExtension) bool {
     return std.mem.order(u8, a.identifier, b.identifier) == .lt;
 }
 
+fn newerExtension(_: void, a: *const IExtension, b: *const IExtension) bool {
+    const a_time = a.installed_timestamp orelse 0;
+    const b_time = b.installed_timestamp orelse 0;
+    if (a_time != b_time) return a_time > b_time;
+    return lessThanExtension({}, a, b);
+}
+
 /// Port of the local filtered-query behavior: plain text, `@installed`,
 /// `@builtin`, `@enabled`, `@disabled`, `category:` and `@id:` combine as
 /// predicates. User-installed extensions sort before built-ins, then by
 /// display name. Fixed allocation per call; the returned slice is owned by the
 /// caller.
 pub fn filterExtensions(allocator: Allocator, local: []const IExtension, query_text: []const u8) ![]const *const IExtension {
+    return filterExtensionsWithService(allocator, local, query_text, null);
+}
+
+fn filterExtensionsWithService(allocator: Allocator, local: []const IExtension, query_text: []const u8, service: ?*service_mod.ExtensionsWorkbenchService) ![]const *const IExtension {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
     const parsed = try parseFilter(scratch, query_text);
+    // These queries require gallery/update metadata; an unavailable gallery
+    // does not turn them into an unfiltered list of installed extensions.
+    if (parsed.recommended or parsed.popular or parsed.recently_published or parsed.tags.len > 0 or ((parsed.updates or parsed.restart_required) and service == null)) return allocator.alloc(*const IExtension, 0);
     var result: std.array_list.Managed(*const IExtension) = .init(allocator);
     errdefer result.deinit();
+    if (parsed.feature_id) |id| {
+        const workbench = service orelse return result.toOwnedSlice();
+        const descriptor = workbench.feature_registry.getExtensionFeature(id) orelse return result.toOwnedSlice();
+        for (local) |*extension| {
+            const manifest = workbench.localManifest(extension.identifier) orelse continue;
+            if (descriptor.should_render(manifest)) try result.append(extension);
+        }
+        return result.toOwnedSlice();
+    }
     for (local) |*extension| {
+        if (parsed.updates and service.?.availableUpdate(extension.identifier) == null) continue;
+        if (parsed.restart_required and service.?.runtimeState(extension.identifier) == null) continue;
         if (parsed.installed and extension.is_builtin) continue;
+        if (parsed.recently_updated and (extension.is_builtin or !extension.updated or extension.installed_timestamp == null)) continue;
         if (parsed.builtin and !extension.is_builtin) continue;
         if (parsed.enabled and !extension.isEnabled()) continue;
         if (parsed.disabled and extension.isEnabled()) continue;
@@ -710,6 +1173,6 @@ pub fn filterExtensions(allocator: Allocator, local: []const IExtension, query_t
         if (!matchesText(extension, parsed.text)) continue;
         try result.append(extension);
     }
-    std.mem.sort(*const IExtension, result.items, {}, lessThanExtension);
+    if (parsed.recently_updated or parsed.sort_update_date) std.mem.sort(*const IExtension, result.items, {}, newerExtension) else std.mem.sort(*const IExtension, result.items, {}, lessThanExtension);
     return result.toOwnedSlice();
 }

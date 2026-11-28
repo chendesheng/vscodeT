@@ -274,37 +274,73 @@ the port status.
 
 ## Extensions side panel
 
-The Extensions activity (`Ctrl-Shift-X`, `View: Show Extensions`) lists the
-local extension inventory in a single combined view: the 87 installed built-in
-extensions plus extensions found in the effective VS Code extensions directory
-(`--extensions-dir`, `VSCODE_EXTENSIONS`, `VSCODE_PORTABLE`, or
-`~/.vscode/extensions`). Rows show the NLS-resolved display name, version,
-origin (`Installed`/`Built-in`) and description; user-installed extensions
-sort first. The search row filters the list with plain text and the upstream
-tokens `@installed`, `@builtin`, `@enabled`, `@disabled`, `category:"…"`,
-`category:-…` and `@id:publisher.name`. `Enter` or a left click opens the
-extension's `package.json`; the row context menu offers Enable/Disable and
-Open Extension.
+The Extensions activity (`Ctrl-Shift-X`, `View: Show Extensions`) has a shared
+search header and registered query-specific views. Installed extensions are
+shown by default; a fresh user inventory also shows Popular results, while
+workspace recommendations come from `.vscode/extensions.json` or a workspace
+configuration file, respecting unwanted recommendations. `@builtin` separates Features, Themes and Programming
+Languages. `@installed`, `@enabled`, `@disabled`, `@updates`, `@outdated`,
+`@recentlyUpdated`, `@recentlyPublished`, `@restartRequired`, `@recommended`,
+`@popular`, `@contribute:<feature>`, category, tag, file-extension and ID
+filters select local or gallery views. A sort-only search sorts the installed
+view; exact IDs resolve installed extensions before querying Marketplace. Ctrl+Space or the search filter control completes query tokens.
+The gallery is Open VSX by default (`MINECODE_EXTENSION_GALLERY_URL` overrides
+the compatible gallery endpoint). Searches are delayed, cancellable and paged
+on scroll; publisher, install counts, ratings, channel and update metadata
+appear in list rows and the editor. The extension icon remains unchanged when
+a pre-release bookmark is shown.
 
-Enablement is global and persisted in
-`<user-data-dir>/User/globalStorage/extensions.state.json` using upstream's
-profile value shape (`[{"id":"publisher.name"}]`, the
-`extensionsIdentifiers/disabled` key). It applies on the next launch: enabled
-user extensions' declarative contributions (languages, grammars, snippets,
-icon themes, themes, `configurationDefaults`) are loaded at startup, and
-disabled extensions are excluded from the declarative catalog and from the
-effective installed extensions passed to the Node extension host. The TUI has no
-reload command, so a change shows a restart notification instead of reloading
-in place. `Refresh` (`workbench.extensions.action.refreshExtension`) rescans
-the directories; `Clear Extensions Search Results` is also an F1 command.
+Clicking a row or pressing Enter opens a read-only, singleton extension editor
+preview tab, not `package.json`. Its tabs display README, registered Features,
+changelog, dependencies and extension pack when available. Dependency and pack
+links open the corresponding extension detail editor. Features include
+commands, settings/defaults, languages, themes, activation events, API
+proposals, JSON validation, debugger declarations, colors, views and view
+containers, custom editors, language packs, authentication providers,
+notebooks and notebook renderers, plus actual local host activation status.
+The contribution tables describe manifests; they do not imply that all of
+those contribution runtimes are implemented. The responsive additional
+details pane shows installation information, Marketplace dates, categories and
+resource links. The terminal uses shared Markdown layout rather than browser
+webviews, fetching gallery documentation asynchronously. Arrow keys switch tabs
+or scroll; Tab moves between content, actions and navigation. List and editor
+actions expose Enable/Disable (global and workspace), Install/Update,
+Uninstall, release/pre-release switching, and specific version selection. The
+shared management menu (the detail editor gear and row context menu) includes
+checked extension/publisher Auto Update preferences.
+Dependency and pack relationships are resolved for installation and checked for
+uninstall and enablement; confirmation is requested when other members change.
 
-Not ported: the marketplace (install/uninstall/update/recommendations),
-extension-details editor, extension icons/ratings/install counts, workspace
-`.vscode/extensions` and development extensions, per-workspace enablement,
-engine-range compatibility checks, and remote/web extension hosts. Enabled
-user extensions can activate in the local Node host; their individual API
-requirements may still be unported. See
-[extensions.md](extensions.md) for the implementation map.
+Gallery installation stages downloaded VSIX packages in the effective user
+extensions directory (`--extensions-dir`, `VSCODE_EXTENSIONS`,
+`VSCODE_PORTABLE`, or `~/.vscode/extensions`), validates identity, version,
+engine and archive entries, and publishes the selected versions together.
+The active version is recorded in the extension profile; cached versions can
+be selected again. Open VSX Ed25519 signatures are verified natively when
+available; unsupported signatures are not treated as verified. The command
+`Extensions: Install from VSIX...` accepts a local package path. Built-ins
+cannot be uninstalled. Global enablement is persisted in
+`<user-data-dir>/User/globalStorage/extensions.state.json` under
+`extensionsIdentifiers/disabled`; workspace overrides are persisted separately.
+
+Update checks are independent of sidebar searches. The configuration controls
+`extensions.autoCheckUpdates`, `extensions.autoUpdate`,
+`extensions.autoUpdateDelay` and `extensions.verifySignature` govern checks
+and delayed unattended installation; unattended updates require verification
+and the upstream automatic-update eligibility policy (enabled and unpinned by
+default, with explicit selection when global automatic updates are off). Host inventory changes use
+extension-host deltas where supported; activated extensions that cannot be
+removed live expose Restart Extensions. Changes to startup-owned declarative
+contributions (languages, grammars, themes, configuration and snippets) still
+require restarting the editor.
+
+Remaining portable parity gaps include full profile/server management,
+additional recommendation sources, chat/MCP-specific feature renderers and
+runtime error/access telemetry, dynamic declarative contribution
+registration, and the complete trust and extension-policy services. The
+terminal uses text/glyphs instead of gallery artwork and browser webviews;
+remote/web extension hosts and browser file-picker multi-selection are not
+implemented. See [the extension system documentation](extensions.md).
 
 ## Zig and ZLS
 

@@ -8,3 +8,8 @@
 // install that owns the extensions on the machine; other products are reached
 // through `--extensions-dir` or `VSCODE_EXTENSIONS`, exactly like VS Code.
 pub const data_folder_name = ".vscode";
+
+// Open VSX provides the Code - OSS-compatible extension gallery API.
+pub const extension_gallery_service_url = "https://open-vsx.org/vscode/gallery";
+pub const extension_gallery_item_url = "https://open-vsx.org/vscode/item";
+pub const extension_engine_version = "1.147.0";
