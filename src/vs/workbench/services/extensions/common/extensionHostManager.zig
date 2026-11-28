@@ -495,26 +495,36 @@ pub const HostManager = struct {
         timeout_ms: u32,
     ) !std.json.Value {
         if (!builtin.is_test) return error.NotInWindowFiber;
+        const trace = builtin.os.tag == .windows and std.mem.eql(u8, method, "$provideHover");
+        if (trace) std.debug.print("[hover-rpc] allocate reply slot\n", .{});
         const slot = try allocator.create(SyncSlot);
         slot.* = .{ .allocator = allocator, .arena = std.heap.ArenaAllocator.init(allocator) };
         errdefer {
             slot.arena.deinit();
             allocator.destroy(slot);
         }
+        if (trace) std.debug.print("[hover-rpc] queue request\n", .{});
         const id = try self.rpc.call(identifier, method, args, token, .{ .context = slot, .callback = SyncSlot.callback });
+        if (trace) std.debug.print("[hover-rpc] request queued\n", .{});
         const deadline = time_compat.milliTimestamp(self.io) + timeout_ms;
+        var first = true;
         while (!slot.done) {
+            if (trace and first) std.debug.print("[hover-rpc] first pump\n", .{});
             _ = self.pump();
+            if (trace and first) std.debug.print("[hover-rpc] first pump returned\n", .{});
+            first = false;
             if (self.hasEof()) {
                 self.rpc.cancel(id);
                 return ExtensionHostError.HostExited;
             }
             if (time_compat.milliTimestamp(self.io) > deadline) {
+                if (trace) std.debug.print("[hover-rpc] timeout\n", .{});
                 self.rpc.cancel(id);
                 return ExtensionHostError.HostTimeout;
             }
             self.io.sleep(.fromMilliseconds(1), .awake) catch {};
         }
+        if (trace) std.debug.print("[hover-rpc] reply received\n", .{});
         if (slot.failed) return error.RequestFailed;
         const value = slot.value orelse std.json.Value.null;
         const result = try rpcProtocol.cloneJsonValue(allocator, value);

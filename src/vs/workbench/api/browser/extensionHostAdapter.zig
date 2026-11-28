@@ -2639,6 +2639,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const hover_providers = try features.hover_provider.ordered(allocator, model, false);
             defer allocator.free(hover_providers);
             try std.testing.expect(hover_providers.len > 0);
+            std.debug.print("[language-fixture] hover providers ordered\n", .{});
             const hover = try hover_providers[0].provide_hover(
                 hover_providers[0].context,
                 model,
@@ -2646,10 +2647,12 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                 @import("../../../base/common/cancellation.zig").CancellationToken.None,
                 null,
             );
+            std.debug.print("[language-fixture] initial hover returned\n", .{});
             try std.testing.expect(hover != null);
             try std.testing.expect(hover.?.id != null and hover.?.can_increase_verbosity.?);
             const verbosity_context: @import("../../../editor/common/languages.zig").HoverContext = .{ .verbosity_request = .{ .verbosity_delta = 2, .previous_hover = hover.? } };
             const verbose = (try hover_providers[0].provide_hover(hover_providers[0].context, model, Position.init(1, 1), .None, &verbosity_context)).?;
+            std.debug.print("[language-fixture] verbose hover returned\n", .{});
             try std.testing.expectEqualStrings("fixture hover verbosity 2: fixture hover", verbose.contents[0].value);
             try std.testing.expect(verbose.can_decrease_verbosity.?);
 
@@ -4113,13 +4116,19 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             modified.updateSettings(.{ .delay = 60, .sticky = false });
             const features = wb.language_features.?;
             const deadline = time_compat.milliTimestamp(std.testing.io) + 10_000;
-            while (time_compat.milliTimestamp(std.testing.io) < deadline) {
-                _ = extensions.pump();
-                const providers = try features.hover_provider.ordered(a, diff.originalModel(), false);
-                defer a.free(providers);
-                if (providers.len > 2) break;
-                time_compat.sleepMillis(std.testing.io, 10);
+            // Both diff documents must be mirrored before the extension can
+            // provide a hover. Dispatch the real model/task queue as well as
+            // waiting for the eager extension activation barrier; the test
+            // controls the hover timers manually only after startup settles.
+            while ((extensions.eager_start_request != null or extensions.models_task.at != null) and time_compat.milliTimestamp(io) < deadline) {
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp(io));
+                time_compat.sleepMillis(io, 10);
             }
+            try std.testing.expect(extensions.eager_start_request == null);
+            try std.testing.expect(extensions.models_task.at == null);
+            const providers = try features.hover_provider.ordered(a, diff.originalModel(), false);
+            defer a.free(providers);
+            try std.testing.expect(providers.len > 2);
             var scratch = std.heap.ArenaAllocator.init(a);
             defer scratch.deinit();
             const arena = scratch.allocator();
