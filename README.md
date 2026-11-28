@@ -460,41 +460,60 @@ stream's exclusion paths and filtered on the worker.
 
 The Extensions activity (`Ctrl-Shift-X`, `View: Show Extensions`) has a shared
 search header and registered query-specific views. Installed extensions are
-shown by default; `@builtin` shows separate Features, Themes and Programming
-Languages panes. `@installed`, `@enabled`, `@disabled`, `@updates`, `@outdated`,
-`@recentlyUpdated`, `@recommended`, `@popular`, category and ID filters select
-or query the corresponding extension views. The gallery is Open VSX by default
-(`MINECODE_EXTENSION_GALLERY_URL` overrides the compatible gallery endpoint).
-Text search is delayed and cancellable; gallery results carry publisher,
-version, description, install counts and asset metadata. A fresh user inventory
-also shows Popular results, and workspace recommendations can be queried from
-`.vscode/extensions.json` or a workspace configuration file.
+shown by default; a fresh user inventory also shows Popular results, while
+workspace recommendations come from `.vscode/extensions.json` or a workspace
+configuration file. `@builtin` separates Features, Themes and Programming
+Languages. `@installed`, `@enabled`, `@disabled`, `@updates`, `@outdated`,
+`@recentlyUpdated`, `@restartRequired`, `@recommended`, `@popular`,
+`@contribute:<feature>`, category and ID filters select local or gallery
+views. Ctrl+Space or the search filter control completes query tokens.
+The gallery is Open VSX by default (`MINECODE_EXTENSION_GALLERY_URL` overrides
+the compatible gallery endpoint). Searches are delayed, cancellable and paged
+on scroll; publisher, install counts, ratings, channel and update metadata
+appear in list rows and the editor.
 
 Clicking a row or pressing Enter opens a read-only, singleton extension editor
-preview tab, not `package.json`. The detail editor shows the manifest metadata,
-README, contributed features, changelog, dependencies and extension pack when
-available. It uses the terminal Markdown document layout and fetches gallery
-assets asynchronously. Arrow keys switch tabs or scroll; Tab moves between
-content, actions and navigation. The context menu, inline list actions and
-editor action bar expose local Enable/Disable, gallery Install/Update and
-user-extension Uninstall.
+preview tab, not `package.json`. Its tabs display README, registered Features,
+changelog, dependencies and extension pack when available. Features include
+commands, settings/defaults, languages and themes. The responsive additional
+details pane shows installation information, Marketplace dates, categories and
+resource links. The terminal uses shared Markdown layout rather than browser
+webviews, fetching gallery documentation asynchronously. Arrow keys switch tabs
+or scroll; Tab moves between content, actions and navigation. List and editor
+actions expose Enable/Disable (global and workspace), Install/Update,
+Uninstall, release/pre-release switching, and specific version selection.
+Dependency and pack relationships are resolved for installation and checked for
+uninstall and enablement; confirmation is requested when other members change.
 
-Gallery installation stages the downloaded VSIX in the effective user
+Gallery installation stages downloaded VSIX packages in the effective user
 extensions directory (`--extensions-dir`, `VSCODE_EXTENSIONS`,
-`VSCODE_PORTABLE`, or `~/.vscode/extensions`), validates package identity,
-version, engine and archive entries, then publishes the version. This directory
-can be shared with VS Code. Built-ins are not uninstalled. Global enablement is
-persisted in `<user-data-dir>/User/globalStorage/extensions.state.json` under
-`extensionsIdentifiers/disabled`. A restart still applies inventory changes
-and enablement to the startup contribution registry and local Node host.
+`VSCODE_PORTABLE`, or `~/.vscode/extensions`), validates identity, version,
+engine and archive entries, and publishes the selected versions together.
+The active version is recorded in the extension profile; cached versions can
+be selected again. Open VSX Ed25519 signatures are verified natively when
+available; unsupported signatures are not treated as verified. The command
+`Extensions: Install from VSIX...` accepts a local package path. Built-ins
+cannot be uninstalled. Global enablement is persisted in
+`<user-data-dir>/User/globalStorage/extensions.state.json` under
+`extensionsIdentifiers/disabled`; workspace overrides are persisted separately.
 
-Remaining parity gaps: automatic update checks, gallery pagination and search
-suggestions, dependency/pack installation transactions, signature verification,
-VSIX file-picker command, specific version/pre-release selection, full profile
-and workspace enablement, runtime extension reconciliation, additional
-recommendation providers, image/badge/rating rendering and remote/web hosts.
-The details Features tab is a manifest-based presentation, not the complete
-upstream interactive feature-renderer registry. See `docs/extensions.md`.
+Update checks are independent of sidebar searches. The configuration controls
+`extensions.autoCheckUpdates`, `extensions.autoUpdate`,
+`extensions.autoUpdateDelay` and `extensions.verifySignature` govern checks
+and delayed unattended installation; unattended updates require verification,
+an enabled extension and an unpinned version. Host inventory changes use
+extension-host deltas where supported; activated extensions that cannot be
+removed live expose Restart Extensions. Changes to startup-owned declarative
+contributions (languages, grammars, themes, configuration and snippets) still
+require restarting the editor.
+
+Remaining portable parity gaps include full profile/server management,
+additional recommendation sources, per-extension auto-update controls, more
+registered feature renderers/runtime status, dynamic declarative contribution
+registration, and the complete trust and extension-policy services. The
+terminal uses text/glyphs instead of gallery artwork and browser webviews;
+remote/web extension hosts and browser file-picker multi-selection are not
+implemented. See [the extension system documentation](docs/extensions.md).
 
 ## Extension host (experimental)
 

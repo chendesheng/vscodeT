@@ -37,23 +37,39 @@ How to read paths and numbers in this document:
 
 ## Current Extensions UI port
 
-The current sidebar uses `extensionsViewlet.zig`, `extensionsViews.zig` and
-`extensionsList.zig` for query-driven views, including Marketplace through the
-Open VSX-compatible gallery API. `extensionGalleryService.zig` and
-`extensionManagementService.zig` own HTTP queries/assets and staged VSIX
-publication, respectively. `extensionsWorkbenchService.zig` delivers local and
-gallery inventory/management changes to its subscribers. The extension editor
-uses `ExtensionsInput` with the upstream input ID and owns its selected
-extension metadata across rescans and gallery query replacement. `extensionEditor.zig`
-uses the Markdown document renderer for local and downloaded documentation.
+The sidebar uses `extensionsViewlet.zig`, `extensionsViews.zig` and
+`extensionsList.zig` for query-driven views, scrolling/paging and search
+suggestions. Separate gallery models keep the search, Popular, recommendations
+and update checks independent. The extension editor uses `ExtensionsInput`
+with the upstream input ID and owns its selected metadata across rescans and
+gallery replacement. `extensionEditor.zig` supplies the tab bar, Markdown
+documentation, actions and responsive additional details.
+`extensionFeatures.zig` provides a window-owned feature registry with
+renderers registered by their command, configuration, language and theme
+contribution owners; the Features tab and `@contribute:` search use the
+same registry.
 
-This is not yet the complete upstream management and detail-editor port.
-The local extension host and declarative registry are still startup-owned;
-profile and signature services, live host delta/restart handling, dependency
-transactions, version selection, pagination, additional recommendation sources,
-and complete feature renderers remain to be ported. See the README for
-user-visible scope. The historical implementation proposal below predates
-these changes.
+`extensionGalleryService.zig` and `extensionManagementService.zig` own
+HTTP queries/assets, signature validation and staged VSIX publication. The
+management transaction resolves dependencies/pack members before publishing
+active profile selections. Enablement accounts for dependency state and
+persists global/workspace overrides. `extensionsWorkbenchService.zig` delivers
+inventory, gallery, management and update changes to subscribers, schedules
+signed delayed automatic updates, and publishes the desired enabled extension
+descriptions. The window-owned extension-host runtime reconciles these
+descriptions through the pinned host delta RPC; active removal requires a
+host restart. The startup registry remains the owner of static contribution
+points and changes to those points require restarting the editor.
+
+The port does not yet have all upstream management services and renderers:
+additional recommendation providers, full profile switching and multiple
+extension servers, extension-specific automatic update settings, trust/policy
+integration, runtime-status and other feature renderers, and live replacement
+of startup declarative contributions remain portable gaps. Browser webview
+rendering, image artwork and native browser multi-file selection are terminal
+adaptations/limitations, not evidence that the portable functionality is
+complete. See README for user-facing commands and configuration. The historical
+implementation proposal below predates these changes.
 
 ## 1. Context
 
