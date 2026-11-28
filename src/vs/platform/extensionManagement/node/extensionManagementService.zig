@@ -309,29 +309,35 @@ pub fn installVSIXFile(allocator: Allocator, io: std.Io, location: []const u8, s
     try installWithOptions(allocator, io, location, system_location, bytes, null, null, if (service_url.len > 0) .{ .context = &source, .resolve = GallerySource.resolve } else null, false, true);
 }
 
-/// Remove only user versions of an explicitly selected extension. Scanner
-/// identities, not directory-name prefixes, determine which versions match.
-pub fn uninstall(allocator: Allocator, io: std.Io, location: []const u8, identifier: []const u8) !void {
+/// Remove the selected identifiers from the default profile together. The
+/// package cache is shared by profiles, and is not deleted by this operation.
+/// Validate remaining dependents before making the profile change visible.
+pub fn uninstallMany(allocator: Allocator, io: std.Io, location: []const u8, identifiers: []const []const u8) !void {
     var profile = try profiles.Profile.load(allocator, io, location);
     defer profile.deinit();
-    if (profile.exists) {
-        // Other VS Code profiles can share these package directories. The
-        // default profile's removal is logical; retain cached versions.
-        profile.remove(identifier);
-        try profile.save(io);
-        return;
+    var inventory = try scanner.scanAllExtensions(allocator, io, null, location);
+    defer inventory.deinit(allocator);
+    for (inventory.all) |extension| {
+        if (containsIdentifier(identifiers, extension.identifier)) continue;
+        if (extension.manifest.value == .object) if (extension.manifest.value.object.get("extensionDependencies")) |dependencies| {
+            if (dependencies == .array) for (dependencies.array.items) |dependency| {
+                if (dependency == .string and containsIdentifier(identifiers, dependency.string)) return error.ExtensionHasDependents;
+            };
+        };
+        if (!profile.exists) {
+            const metadata = if (extension.manifest.value == .object) extension.manifest.value.object.get("__metadata") else null;
+            try profile.select(extension.identifier, extension.version, extension.location, metadata);
+        }
     }
-    const extensions = try scanner.scanExtensionsFromLocation(allocator, io, location, .user);
-    defer {
-        for (extensions) |*extension| extension.deinit(allocator);
-        allocator.free(extensions);
-    }
-    var root = try std.Io.Dir.cwd().openDir(io, location, .{});
-    defer root.close(io);
-    for (extensions) |extension| {
-        if (!util.areSameExtensions(extension.identifier, identifier)) continue;
-        const name = std.fs.path.basename(extension.location);
-        if (name.len == 0 or std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return error.InvalidExtensionLocation;
-        try root.deleteTree(io, name);
-    }
+    for (identifiers) |identifier| profile.remove(identifier);
+    try profile.save(io);
+}
+
+fn containsIdentifier(identifiers: []const []const u8, identifier: []const u8) bool {
+    for (identifiers) |id| if (util.areSameExtensions(id, identifier)) return true;
+    return false;
+}
+
+pub fn uninstall(allocator: Allocator, io: std.Io, location: []const u8, identifier: []const u8) !void {
+    return uninstallMany(allocator, io, location, &.{identifier});
 }

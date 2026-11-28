@@ -88,3 +88,21 @@ test "ExtensionManagementService: failed required dependency leaves no staged pu
     try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "pub.root-1.0.0", .{}));
     try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "pub.depa-1.0.0", .{}));
 }
+
+test "ExtensionManagementService: dependent removal validates before changing profile" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPath(io, &buffer);
+    const root = buffer[0..len];
+    var source: Source = .{};
+    try management.installWithSource(allocator, io, root, null, @embedFile("fixture-root.vsix"), "pub.root", "1.0.0", source.interface(), false);
+    try std.testing.expectError(error.ExtensionHasDependents, management.uninstall(allocator, io, root, "pub.depa"));
+    try management.uninstallMany(allocator, io, root, &.{ "pub.root", "pub.depa", "pub.depb", "pub.pack" });
+    const scanner = @import("../../common/extensionsScannerService.zig");
+    var inventory = try scanner.scanAllExtensions(allocator, io, null, root);
+    defer inventory.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), inventory.all.len);
+}
