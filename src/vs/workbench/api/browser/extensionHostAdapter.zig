@@ -4539,6 +4539,307 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try verifyRealZig(extension_path, zig_path, zls_path, true);
         }
 
+        // This is deliberately separate from the synthetic LSP matrix: it
+        // opens the actual checkout, build.zig and real editor implementation.
+        test "Extensions: real Zig extension works on this repository" {
+            if (!build_options.e2e) return error.SkipZigTest;
+            const extension_path = std.mem.span(std.c.getenv("VSCODE_T_ZIG_EXTENSION") orelse return error.SkipZigTest);
+            const zig_path = std.mem.span(std.c.getenv("VSCODE_T_ZIG_PATH") orelse return error.SkipZigTest);
+            const zls_path = std.mem.span(std.c.getenv("VSCODE_T_ZLS_PATH") orelse return error.SkipZigTest);
+            const allocator = std.testing.allocator;
+            const io = time_compat.io;
+            var scratch = std.heap.ArenaAllocator.init(allocator);
+            defer scratch.deinit();
+            const a = scratch.allocator();
+            const repo = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", a);
+            try std.Io.Dir.cwd().access(io, "build.zig", .{});
+            try std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{});
+            const source_path = try std.Io.Dir.cwd().realPathFileAlloc(io, "src/vs/editor/common/core/range.zig", a);
+            const definition_path = try std.Io.Dir.cwd().realPathFileAlloc(io, "src/vs/editor/common/core/position.zig", a);
+            const theme_root = try std.Io.Dir.cwd().realPathFileAlloc(io, "vscode/extensions/theme-defaults", a);
+            const original_source = try std.Io.Dir.cwd().readFileAlloc(io, source_path, a, .limited(1024 * 1024));
+            const original_definition = try std.Io.Dir.cwd().readFileAlloc(io, definition_path, a, .limited(1024 * 1024));
+
+            // Store settings and extension data outside the checked-in files.
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            const data_path = try tmp.dir.realPathFileAlloc(io, ".", a);
+            const settings_path = try std.fs.path.join(a, &.{ data_path, "settings.json" });
+            const settings = try std.json.Stringify.valueAlloc(a, .{
+                .@"zig.path" = zig_path,
+                .@"zig.zls.path" = zls_path,
+                .@"zig.zls.enabled" = "on",
+                .@"zig.zls.trace.server" = "verbose",
+                .@"workbench.colorTheme" = "Dark 2026",
+            }, .{});
+            try tmp.dir.writeFile(io, .{ .sub_path = "settings.json", .data = settings });
+            var catalog = try @import("../../services/extensions/common/extensionsRegistry.zig").scan(allocator, &.{extension_path});
+            defer catalog.deinit();
+            const window = try TestWindow.initWithOptions(allocator, io, &.{}, 100, 30, .{ .initial_user_settings_paths = &.{settings_path} }, null);
+            defer window.deinit();
+            const workbench = window.workbench;
+            workbench.setDeclarativeExtensions(&catalog);
+            try workbench.registerThemeSources(&.{.{ .root = theme_root, .id = "Dark 2026", .settings_id = "Dark 2026", .label = "Dark 2026", .ui_theme = "vs-dark", .path = "themes/2026-dark.json" }});
+            workbench.applyThemeSettings();
+            try workbench.setWorkspaceFolders(&.{repo});
+            try workbench.openPath(source_path);
+            try workbench.enableLanguageFeatures();
+            const editor = workbench.activeTab().?.editor;
+            const model = editor.model;
+            try std.testing.expectEqualStrings("zig", model.getLanguageId());
+            const fields = try repositorySourcePosition(model, "startLineNumber: usize");
+            const type_offset = fields.column - 1 + "startLineNumber: ".len;
+            const registry = @import("../../../editor/common/tokenizationRegistry.zig").TokenizationRegistry;
+            model.forceTokenization(fields.lineNumber);
+            var lexical_tokens = try model.tokenization().getLineTokens(fields.lineNumber);
+            defer lexical_tokens.deinit();
+            const lexical_color = registry.instance.getColorForToken(lexical_tokens.getForeground(lexical_tokens.findTokenIndexAtOffset(type_offset))) orelse return error.RepositoryLexicalColorMissing;
+            const call = try repositorySourcePosition(model, "Position.init(self.startLineNumber");
+            const method = Position.init(call.lineNumber, call.column + "Position.".len + 1);
+            const range_declaration = try repositorySourcePosition(model, "pub const Range = struct");
+            const literal_call = try repositorySourcePosition(model, "Range.init(1, 2, 1, 3)");
+            const extension_host = try Extensions.init(allocator, io, workbench.extensionHostServices(), &.{.{ .path = extension_path }}, data_path, "host/dist");
+            defer extension_host.deinit();
+            const features = workbench.language_features.?;
+
+            const deadline = time_compat.milliTimestamp() + 60_000;
+            while ((!model.hasCompleteSemanticTokens() or !features.hover_provider.has(model) or !features.completion_provider.has(model)) and time_compat.milliTimestamp() < deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(20);
+            }
+            try std.testing.expect(extension_host.activated);
+            try std.testing.expect(model.hasCompleteSemanticTokens() and model.hasSomeSemanticTokens());
+            // Use the real default theme, not an all-token fixture override.
+            model.forceTokenization(fields.lineNumber);
+            var tokens = try model.tokenization().getLineTokens(fields.lineNumber);
+            defer tokens.deinit();
+            const type_color = @import("../../../editor/common/tokenizationRegistry.zig").TokenizationRegistry.instance.getColorForToken(tokens.getForeground(tokens.findTokenIndexAtOffset(type_offset))) orelse return error.RepositorySemanticColorMissing;
+            try std.testing.expectEqual(@as(u8, 0x4e), type_color.r);
+            try std.testing.expectEqual(@as(u8, 0xc9), type_color.g);
+            try std.testing.expectEqual(@as(u8, 0xb0), type_color.b);
+            try std.testing.expect(lexical_color.r != type_color.r or lexical_color.g != type_color.g or lexical_color.b != type_color.b);
+            // Exercise the native editor DOM/layout/paint path, not just
+            // the semantic store. At least one actual `usize` must use the
+            // semantic foreground in the rendered terminal cell grid.
+            try editor.setCursorPosition(fields);
+            const watermark = @import("../../browser/parts/editor/editorGroupWatermark.zig");
+            const surface = workbench.editor_surface;
+            try workbench.part.layoutEditorArea(surface, false, watermark.Colors.fromTheme(workbench.theme_palette), workbench.watermarkShortcuts());
+            try workbench.activeTab().?.view.paint();
+            try surface.paintFrame();
+            const grid = surface.grid();
+            const wanted = ui.cell.packColor(.{ .r = type_color.r, .g = type_color.g, .b = type_color.b });
+            var painted_type = false;
+            const glyphs = [_]u32{ 'u', 's', 'i', 'z', 'e' };
+            for (0..grid.rows) |row| for (0..grid.cols -| (glyphs.len - 1)) |col| {
+                const index = grid.index(col, row);
+                if (std.mem.eql(u32, grid.cluster[index..][0..glyphs.len], &glyphs)) {
+                    var matched = true;
+                    for (grid.fg[index..][0..glyphs.len]) |color| if (color != wanted) {
+                        matched = false;
+                        break;
+                    };
+                    painted_type = painted_type or matched;
+                }
+            };
+            try std.testing.expect(painted_type);
+
+            const HoverController = @import("../../../editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
+            try editor.setCursorPosition(method);
+            try workbench.commands.execute("editor.action.showHover");
+            const hover = editor.getInstantiatedContribution(HoverController).?;
+            var hover_found = false;
+            const hover_deadline = time_compat.milliTimestamp() + 10000;
+            while (!hover_found and time_compat.milliTimestamp() < hover_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                for (0..12) |i| if (hover.wrapper.getAccessibleWidgetContentAtIndex(@intCast(i))) |content| {
+                    hover_found = hover_found or (std.mem.indexOf(u8, content, "fn init") != null and std.mem.indexOf(u8, content, "Position") != null);
+                };
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(hover_found and hover.isVisible());
+            hover.hideContentHover();
+
+            const Probe = struct {
+                completion: ?bool = null,
+                symbol: ?bool = null,
+                fn completions(context: *anyopaque, _: *anyopaque, result: anyerror!@import("../../../editor/common/languages/completion.zig").CompletionList) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    self.completion = false;
+                    if (result) |list| {
+                        for (list.items) |item| if (std.mem.eql(u8, item.label, "init")) {
+                            self.completion = true;
+                            break;
+                        };
+                    } else |_| {}
+                }
+                fn symbols(context: *anyopaque, result: []const @import("../../../editor/common/languages.zig").DocumentSymbol) void {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    self.symbol = false;
+                    for (result) |symbol| if (std.mem.eql(u8, symbol.name, "Range")) {
+                        self.symbol = true;
+                        break;
+                    };
+                }
+            };
+            var probe: Probe = .{};
+            const completion_providers = try features.completion_provider.ordered(a, model, false);
+            var completion: ?@import("../../../editor/common/languages/completion.zig").CompletionRequest = null;
+            for (completion_providers) |provider| if (provider.provide_completion_items_deferred) |request| {
+                completion = try request(provider.context, a, model, Position.init(call.lineNumber, call.column + "Position.ini".len), .{}, .None);
+                if (completion != null) break;
+            };
+            const completion_request = completion orelse return error.RepositoryCompletionMissing;
+            defer completion_request.cancel(completion_request.context);
+            completion_request.on_complete(completion_request.context, &probe, Probe.completions);
+            const symbols = try features.document_symbol_provider.ordered(a, model, false);
+            const symbol_provider = symbols[0];
+            const symbol_request = (try symbol_provider.request_document_symbols.?(symbol_provider.context, a, model, .{ .context = &probe, .complete = Probe.symbols })).?;
+            defer if (probe.symbol == null) symbol_request.dispose();
+            const probe_deadline = time_compat.milliTimestamp() + 10000;
+            while ((probe.completion == null or probe.symbol == null) and time_compat.milliTimestamp() < probe_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(probe.completion orelse false);
+            try std.testing.expect(probe.symbol orelse false);
+
+            try editor.setCursorPosition(method);
+            try editor.growSelection(true);
+            const selection_deadline = time_compat.milliTimestamp() + 5000;
+            while (editor.smart_select.pending != null and time_compat.milliTimestamp() < selection_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            const selections = try editor.getModelSelections();
+            defer allocator.free(selections);
+            try std.testing.expect(!selections[0].isEmpty());
+            try std.testing.expect(editor.folding.regionStartingAt(range_declaration.lineNumber) != null);
+
+            try editor.setCursorPosition(Position.init(literal_call.lineNumber, literal_call.column + "Range.init(1,".len));
+            try workbench.commands.execute("editor.action.triggerParameterHints");
+            const ParameterHintsController = @import("../../../editor/contrib/parameterHints/browser/parameterHints.zig").ParameterHintsController;
+            const hints = editor.getInstantiatedContribution(ParameterHintsController).?;
+            const InlayController = @import("../../../editor/contrib/inlayHints/browser/inlayHintsController.zig").InlayHintsController;
+            const inlay = editor.getInstantiatedContribution(InlayController).?;
+            const hints_deadline = time_compat.milliTimestamp() + 10000;
+            var literal_inlay = false;
+            while ((hints.model.hints() == null or !literal_inlay) and time_compat.milliTimestamp() < hints_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                for (inlay.parts) |part| if (part.item.anchor.range.startLineNumber == literal_call.lineNumber) {
+                    literal_inlay = true;
+                    break;
+                };
+                time_compat.sleepMillis(10);
+            }
+            const signature = hints.model.hints() orelse return error.RepositorySignatureMissing;
+            try std.testing.expect(std.mem.indexOf(u8, signature.signatures[0].label, "startLineNumber") != null);
+            try std.testing.expect(literal_inlay);
+            try workbench.commands.execute("closeParameterHints");
+
+            // Real workspace symbol search must find the checked-in Range
+            // method, not a symbol in the synthetic fixture.
+            try workbench.commands.execute("workbench.action.showAllSymbols");
+            const picker = workbench.quick_access.controller.pickerRef();
+            try picker.setValue("#strictContainsRange");
+            const workspace_deadline = time_compat.milliTimestamp() + 60_000;
+            var symbol_found = false;
+            while (!symbol_found and time_compat.milliTimestamp() < workspace_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                for (picker.items.items, 0..) |item, index| if (item == .item and std.mem.eql(u8, item.item.label, "strictContainsRange")) {
+                    picker.setActiveIndex(index);
+                    symbol_found = true;
+                    break;
+                };
+                time_compat.sleepMillis(20);
+            }
+            try std.testing.expect(symbol_found);
+            picker.accept();
+            try std.testing.expect(!workbench.quick_access.isOpen());
+            const selected_path = try std_uri.fsPath(workbench.activeTab().?.editor.model.uri(), a);
+            try std.testing.expectEqualStrings(source_path, try std.Io.Dir.cwd().realPathFileAlloc(io, selected_path, a));
+            const strict_contains = try repositorySourcePosition(model, "pub fn strictContainsRange(");
+            try std.testing.expectEqual(strict_contains.lineNumber, editor.modelCursorPosition().lineNumber);
+
+            // Exercise prepareRename against an actual local symbol and
+            // cancel the input so no repo source is changed.
+            const parameter = try repositorySourcePosition(model, "otherRange: *const Range");
+            try editor.setCursorPosition(Position.init(parameter.lineNumber, parameter.column + 1));
+            try workbench.commands.execute("editor.action.rename");
+            const RenameController = @import("../../../editor/contrib/rename/browser/rename.zig").RenameController;
+            const rename = editor.getInstantiatedContribution(RenameController).?;
+            const rename_deadline = time_compat.milliTimestamp() + 10000;
+            while (!rename.widget.visible and time_compat.milliTimestamp() < rename_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(rename.widget.visible);
+            try std.testing.expectEqualStrings("otherRange", rename.widget.input.getValue());
+            try workbench.commands.execute("cancelRenameInput");
+            try std.testing.expect(!rename.widget.visible);
+
+            // Navigate from the real Range implementation into its imported
+            // Position definition; this requires real cross-file resolution.
+            try editor.setCursorPosition(method);
+            try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.revealDefinition"));
+            try waitNavigation(workbench);
+            const opened = workbench.activeTab().?.editor;
+            const actual_path = try std_uri.fsPath(opened.model.uri(), a);
+            try std.testing.expectEqualStrings(definition_path, try std.Io.Dir.cwd().realPathFileAlloc(io, actual_path, a));
+            const definition = try repositorySourcePosition(opened.model, "pub fn init(line:");
+            try std.testing.expectEqual(definition.lineNumber, opened.modelCursorPosition().lineNumber);
+
+            // The reported real-world crash used wakeSignal.zig while ZLS
+            // updated semantic tokens and inlay hints. Mount and paint before
+            // those requests complete, then keep painting the retained view
+            // as callbacks arrive and change wrapping/visible rows.
+            const wake_path = try std.Io.Dir.cwd().realPathFileAlloc(io, "src/tui/wakeSignal.zig", a);
+            const original_wake = try std.Io.Dir.cwd().readFileAlloc(io, wake_path, a, .limited(1024 * 1024));
+            try workbench.openPath(wake_path);
+            const wake_editor = workbench.activeTab().?.editor;
+            const wake_model = wake_editor.model;
+            wake_editor.setWordWrapOptions(.word_wrap_column, 50, .Same, false);
+            try wake_editor.setCursorPosition(Position.init(18, 1));
+            try paintRepositoryEditor(workbench);
+            const wake_inlay = wake_editor.getInstantiatedContribution(InlayController).?;
+            const wake_deadline = time_compat.milliTimestamp() + 15000;
+            while ((!wake_model.hasCompleteSemanticTokens() or wake_inlay.active == null) and time_compat.milliTimestamp() < wake_deadline) {
+                if (workbench.window_events.dispatch(time_compat.milliTimestamp())) try paintRepositoryEditor(workbench);
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(wake_model.hasCompleteSemanticTokens() and wake_model.hasSomeSemanticTokens());
+            try std.testing.expect(wake_inlay.active != null);
+            for (0..24) |step| {
+                _ = wake_editor.scrollViewLines(if (step % 8 < 4) 3 else -3);
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                try paintRepositoryEditor(workbench);
+            }
+            workbench.editor_surface.box_tree.markFullRebuild();
+            try paintRepositoryEditor(workbench);
+
+            // Neither navigation nor the provider requests may write to disk.
+            try std.testing.expectEqualStrings(original_source, try std.Io.Dir.cwd().readFileAlloc(io, source_path, a, .limited(1024 * 1024)));
+            try std.testing.expectEqualStrings(original_definition, try std.Io.Dir.cwd().readFileAlloc(io, definition_path, a, .limited(1024 * 1024)));
+            try std.testing.expectEqualStrings(original_wake, try std.Io.Dir.cwd().readFileAlloc(io, wake_path, a, .limited(1024 * 1024)));
+        }
+
+        fn paintRepositoryEditor(workbench: *terminal_window_type) !void {
+            const watermark = @import("../../browser/parts/editor/editorGroupWatermark.zig");
+            const surface = workbench.editor_surface;
+            const tab = workbench.activeTab().?;
+            try tab.view.refresh();
+            try workbench.part.layoutEditorArea(surface, false, watermark.Colors.fromTheme(workbench.theme_palette), workbench.watermarkShortcuts());
+            try tab.view.paint();
+            try surface.paintFrame();
+        }
+
+        fn repositorySourcePosition(model: *TextModel, needle: []const u8) !Position {
+            for (1..model.getLineCount() + 1) |line| {
+                if (std.mem.indexOf(u8, try model.borrowLineContent(line), needle)) |offset| return Position.init(line, offset + 1);
+            }
+            return error.RepositorySourceAnchorMissing;
+        }
+
         fn verifyRealZig(extension_path: []const u8, zig_path: []const u8, zls_path: []const u8, workspace_activation: bool) !void {
             const io = time_compat.io;
             const allocator = std.testing.allocator;

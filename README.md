@@ -522,7 +522,12 @@ negotiated capabilities are recorded in
 [the reference capture](docs/zig-zls-reference-capabilities.json). The full LSP capability matrix
 is still in progress; see [the integration plan](docs/zig-extension-lsp-plan.md). The default end-to-end suite also
 runs a real `vscode-languageclient` against a deterministic mock LSP server,
-including nested save and workspace edits.
+including nested save and workspace edits. The opt-in real-Zig suite also opens this repository as a workspace and
+checks its actual `range.zig`/`position.zig` sources, including a semantic-color
+change in the default Dark 2026 theme's terminal cells, cross-file navigation,
+workspace symbols, inlay hints and rename preparation without writing source
+files. It also paints and scrolls `src/tui/wakeSignal.zig` while real ZLS
+semantic and inlay updates arrive.
 
 `zig build json-server` builds and installs the optional standalone JSON server.
 The intermediate bundles under `host/dist` are also used by the repository's
