@@ -91,6 +91,9 @@ fn installVSIX(_: *anyopaque, accessor: Accessor) !void {
 }
 
 pub const properties = [_]@import("../../../../platform/configuration/common/configurationRegistry.zig").PropertySchema{
+    .{ .key = "extensions.verifySignature", .value_type = "boolean", .default = .{ .bool = true }, .scope = .APPLICATION },
+    .{ .key = "extensions.autoUpdate", .value_type = "string", .default = .{ .string = "on" }, .enum_values = &.{ "on", "off" }, .scope = .APPLICATION },
+    .{ .key = "extensions.autoUpdateDelay", .value_type = "number", .default = .{ .integer = 12 }, .scope = .APPLICATION },
     .{ .key = "extensions.autoCheckUpdates", .value_type = "boolean", .default = .{ .bool = true }, .scope = .APPLICATION },
     .{ .key = "extensions.showRecommendationsOnlyOnDemand", .value_type = "boolean", .default = .{ .bool = false }, .scope = .APPLICATION },
 };

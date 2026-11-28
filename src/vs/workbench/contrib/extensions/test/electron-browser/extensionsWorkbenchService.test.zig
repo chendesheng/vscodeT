@@ -314,3 +314,31 @@ test "ExtensionsWorkbenchService: pages retain independent default gallery model
     try testing.expectEqualStrings("2.0.0", service.find("pub.two").?.version);
     try testing.expectEqualStrings("3.0.0", service.find("pub.three").?.version);
 }
+
+test "ExtensionsWorkbenchService: auto update respects delay, pin, channel and consent" {
+    const model = @import("../../common/extensions.zig");
+    var local: model.IExtension = .{ .identifier = "pub.extension", .name = "extension", .display_name = "Extension", .description = "", .version = "1.0.0", .publisher = "pub", .categories = &.{}, .location = "", .is_builtin = false, .uuid = "uuid", .executes_code = false };
+    var remote = local;
+    remote.version = "2.0.0";
+    remote.vsix_url = "https://example.test/package";
+    remote.last_updated = 1000;
+    const twelve_hours = 12 * 60 * 60 * 1000;
+    try testing.expect(!service_mod.shouldAutoUpdate(local, remote, 1000 + twelve_hours - 1, 12));
+    try testing.expect(service_mod.shouldAutoUpdate(local, remote, 1000 + twelve_hours, 12));
+    local.pinned = true;
+    try testing.expect(!service_mod.shouldAutoUpdate(local, remote, 1000 + twelve_hours, 12));
+    local.pinned = false;
+    local.enablement_state = .DisabledWorkspace;
+    try testing.expect(!service_mod.shouldAutoUpdate(local, remote, 1000 + twelve_hours, 12));
+    local.enablement_state = .EnabledGlobally;
+    remote.is_pre_release = true;
+    try testing.expect(!service_mod.shouldAutoUpdate(local, remote, 1000 + twelve_hours, 12));
+    remote.is_pre_release = false;
+    remote.uuid = "republished";
+    try testing.expect(!service_mod.shouldAutoUpdate(local, remote, 1000 + twelve_hours, 12));
+    remote.uuid = local.uuid;
+    remote.executes_code = true;
+    try testing.expect(!service_mod.shouldAutoUpdate(local, remote, 1000 + twelve_hours, 12));
+    local.executes_code = true;
+    try testing.expect(service_mod.shouldAutoUpdate(local, remote, 1000 + twelve_hours, 12));
+}

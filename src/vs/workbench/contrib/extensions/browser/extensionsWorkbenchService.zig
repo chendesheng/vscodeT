@@ -53,7 +53,7 @@ const GalleryState = struct {
     }
 };
 
-const UpdateRequest = struct { identifier: []const u8, prerelease: bool };
+const UpdateRequest = struct { identifier: []const u8, prerelease: bool, executes_code: bool };
 const UpdateState = struct {
     arena: std.heap.ArenaAllocator,
     rows: []IExtension = &.{},
@@ -74,6 +74,18 @@ const UpdateJob = struct {
         allocator.destroy(self);
     }
 };
+fn galleryExecutesCode(allocator: Allocator, io: std.Io, version: gallery.Version, local_executes_code: bool) ?bool {
+    if (version.property("Microsoft.VisualStudio.Code.ExecutesCode")) |value| return std.mem.eql(u8, value, "true");
+    if (local_executes_code) return null; // no new code consent check needed
+    const url = version.asset("Microsoft.VisualStudio.Code.Manifest") orelse return null;
+    const bytes = gallery.getAsset(allocator, io, url) catch return null;
+    defer allocator.free(bytes);
+    const manifest = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return null;
+    defer manifest.deinit();
+    if (manifest.value != .object) return null;
+    return manifest.value.object.contains("main") or manifest.value.object.contains("browser");
+}
+
 fn queryInstalledUpdates(allocator: Allocator, io: std.Io, url: []const u8, requests: []const UpdateRequest) !UpdateState {
     const service: gallery.ExtensionGalleryService = .{ .allocator = allocator, .io = io, .service_url = url };
     var result: UpdateState = .{ .arena = .init(allocator) };
@@ -116,6 +128,10 @@ fn queryInstalledUpdates(allocator: Allocator, io: std.Io, url: []const u8, requ
                     .readme_url = version.asset("Microsoft.VisualStudio.Services.Content.Details"),
                     .changelog_url = version.asset("Microsoft.VisualStudio.Services.Content.Changelog"),
                     .vsix_url = version.asset("Microsoft.VisualStudio.Services.VSIXPackage"),
+                    .target_platform = version.targetPlatform,
+                    .uuid = entry.extensionId,
+                    .last_updated = if (entry.lastUpdated orelse version.lastUpdated) |timestamp| gallery.parseGalleryTimestamp(timestamp) else null,
+                    .executes_code = galleryExecutesCode(allocator, io, version, request.executes_code),
                 }).clone(scratch));
                 break;
             }
@@ -145,6 +161,10 @@ const ManagementJob = struct {
     gallery_url: []const u8,
     prerelease: bool,
     pinned: bool,
+    target_platform: ?[]const u8,
+    uuid: ?[]const u8,
+    verify_signature: bool,
+    require_verified: bool,
     future: std.Io.Future(anyerror!void),
     completion: dispatch.Task,
 
@@ -159,7 +179,7 @@ fn runManagement(job: *ManagementJob) anyerror!void {
     defer job.completion.post();
     const io = job.service.window.?.io;
     switch (job.operation) {
-        .install => try dispatch.workerCall(io, management.installFromGallery, .{ job.service.allocator, dispatch.backingIo(io), job.location, job.system_location, job.gallery_url, job.url, job.identifier, job.version, job.prerelease, job.pinned }),
+        .install => try dispatch.workerCall(io, management.installFromGallery, .{ job.service.allocator, dispatch.backingIo(io), job.location, job.system_location, job.gallery_url, job.url, job.identifier, job.version, job.prerelease, job.pinned, job.target_platform, job.uuid, job.verify_signature, job.require_verified }),
         .install_vsix => try dispatch.workerCall(io, management.installVSIXFile, .{ job.service.allocator, dispatch.backingIo(io), job.location, job.system_location, job.gallery_url, job.url }),
         .uninstall => try dispatch.workerCall(io, management.uninstallMany, .{ job.service.allocator, dispatch.backingIo(io), job.location, job.identifiers }),
     }
@@ -189,6 +209,7 @@ const VersionPicker = struct {
     arena: std.heap.ArenaAllocator,
     identifier: []const u8,
     choices: []gallery.Version,
+    uuid: ?[]const u8 = null,
 
     fn dispose(self: *VersionPicker) void {
         self.arena.deinit();
@@ -204,7 +225,7 @@ const VersionPicker = struct {
         for (self.choices) |version| {
             if (!std.mem.eql(u8, choice.id, version.version)) continue;
             const url = version.asset("Microsoft.VisualStudio.Services.VSIXPackage") orelse return;
-            try service.startManagement(.install, self.identifier, version.version, url, version.isPreRelease(), true);
+            try service.startManagementTarget(.install, self.identifier, version.version, url, version.isPreRelease(), true, version.targetPlatform, self.uuid, false);
             return;
         }
     }
@@ -226,7 +247,7 @@ const PendingDependencyChange = struct {
                 self.owner.on_change.fire({}) catch {};
                 return;
             };
-        } else self.owner.startManagementMany(.uninstall, self.identifiers[0], "", "", false, false, self.identifiers) catch |err| {
+        } else self.owner.startManagementMany(.uninstall, self.identifiers[0], "", "", false, false, self.identifiers, null, null, false) catch |err| {
             self.owner.management_error = err;
             self.owner.on_change.fire({}) catch {};
         };
@@ -253,6 +274,8 @@ pub const ExtensionsWorkbenchService = struct {
     updates: ?UpdateState = null,
     update_job: ?*UpdateJob = null,
     update_timer: dispatch.Task = .{},
+    auto_update_timer: dispatch.Task = .{},
+    auto_update_index: usize = 0,
     update_configuration: ?configuration.IConfigurationService = null,
     configuration_listener: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
     window: ?*dispatch.Queue = null,
@@ -347,6 +370,7 @@ pub const ExtensionsWorkbenchService = struct {
             const updated = if (metadata == .object) metadata.object.get("updated") orelse .null else .null;
             const pinned = if (metadata == .object) metadata.object.get("pinned") orelse .null else .null;
             const prerelease = if (metadata == .object) metadata.object.get("preRelease") orelse .null else .null;
+            const uuid = if (metadata == .object) metadata.object.get("id") orelse .null else .null;
             local[index] = .{
                 .identifier = extension.identifier,
                 .name = extension.name,
@@ -362,6 +386,8 @@ pub const ExtensionsWorkbenchService = struct {
                 .updated = updated == .bool and updated.bool,
                 .pinned = pinned == .bool and pinned.bool,
                 .is_pre_release = prerelease == .bool and prerelease.bool,
+                .uuid = if (uuid == .string) uuid.string else null,
+                .executes_code = manifest == .object and (manifest.object.contains("main") or manifest.object.contains("browser")),
             };
         }
 
@@ -452,6 +478,7 @@ pub const ExtensionsWorkbenchService = struct {
         if (self.window != null) self.detachWindow();
         self.window = window;
         self.update_timer = .{ .queue = window, .context = self, .run = checkUpdatesTask };
+        self.auto_update_timer = .{ .queue = window, .context = self, .run = autoUpdateTask };
     }
 
     /// Start the upstream automatic update check after Eventually. The
@@ -470,6 +497,10 @@ pub const ExtensionsWorkbenchService = struct {
 
     fn updateConfigurationChanged(change: configuration.Change, self: *ExtensionsWorkbenchService) !void {
         if (configuration.affectsConfiguration(change, "extensions.showRecommendationsOnlyOnDemand")) try self.on_change.fire({});
+        if (configuration.affectsConfiguration(change, "extensions.autoUpdate") or configuration.affectsConfiguration(change, "extensions.autoUpdateDelay")) {
+            self.auto_update_index = 0;
+            self.scheduleAutoUpdate();
+        }
         if (!configuration.affectsConfiguration(change, "extensions.autoCheckUpdates")) return;
         if (self.update_configuration.?.getBool("extensions.autoCheckUpdates", true)) self.scheduleUpdateCheck(0) else {
             self.update_timer.schedule(null);
@@ -504,7 +535,7 @@ pub const ExtensionsWorkbenchService = struct {
         var requests: std.ArrayList(UpdateRequest) = .empty;
         for (self.queryLocal()) |extension| {
             if (extension.is_builtin) continue;
-            try requests.append(allocator, .{ .identifier = try allocator.dupe(u8, extension.identifier), .prerelease = extension.is_pre_release });
+            try requests.append(allocator, .{ .identifier = try allocator.dupe(u8, extension.identifier), .prerelease = extension.is_pre_release, .executes_code = extension.executes_code orelse false });
         }
         job.requests = requests.items;
         self.update_job = job;
@@ -530,10 +561,60 @@ pub const ExtensionsWorkbenchService = struct {
         const next = job.future.await(self.window.?.io) catch return false;
         var previous = self.updates;
         self.updates = next;
+        self.auto_update_index = 0;
+        self.scheduleAutoUpdate();
         defer if (previous) |*old| old.deinit();
         self.updateGalleryLocalState();
         self.on_change.fire({}) catch {};
         return true;
+    }
+
+    fn autoUpdateEnabled(self: *const ExtensionsWorkbenchService) bool {
+        const config = self.update_configuration orelse return false;
+        const setting = config.getValue("extensions.autoUpdate") orelse return true;
+        return switch (setting.*) {
+            .string => |value| std.mem.eql(u8, value, "on"),
+            .bool => |value| value,
+            else => true,
+        };
+    }
+
+    fn scheduleAutoUpdate(self: *ExtensionsWorkbenchService) void {
+        const window = self.window orelse return;
+        if (!self.autoUpdateEnabled() or self.updates == null or self.gallery_url == null or !@import("../../../../platform/extensionManagement/node/extensionSignatureVerificationService.zig").supportsGallery(self.gallery_url.?)) {
+            self.auto_update_timer.schedule(null);
+            return;
+        }
+        self.auto_update_timer.schedule(time.milliTimestamp(window.workerIo()) + 1000);
+    }
+
+    fn autoUpdateDelayHours(self: *const ExtensionsWorkbenchService) f64 {
+        const config = self.update_configuration orelse return 12;
+        const value = config.getValue("extensions.autoUpdateDelay") orelse return 12;
+        const hours: f64 = switch (value.*) {
+            .integer => |number| @floatFromInt(number),
+            .float => |number| number,
+            else => 12,
+        };
+        return if (std.math.isFinite(hours)) @max(0, hours) else 12;
+    }
+
+    fn autoUpdateTask(context: *anyopaque, now: i64, _: bool) bool {
+        const self: *ExtensionsWorkbenchService = @ptrCast(@alignCast(context));
+        if (!self.autoUpdateEnabled() or self.management_job != null) return false;
+        const updates = self.updates orelse return false;
+        // Process each candidate once per gallery check. An unavailable or
+        // unsigned version must not produce an immediate retry loop.
+        while (self.auto_update_index < updates.rows.len) {
+            const remote = updates.rows[self.auto_update_index];
+            self.auto_update_index += 1;
+            const local = self.findLocal(remote.identifier) orelse continue;
+            if (!shouldAutoUpdate(local.*, remote, now, self.autoUpdateDelayHours())) continue;
+            const url = remote.vsix_url orelse continue;
+            self.startManagementTarget(.install, remote.identifier, remote.version, url, remote.is_pre_release, false, remote.target_platform, remote.uuid, true) catch continue;
+            return true;
+        }
+        return false;
     }
 
     pub fn attachWorkspace(self: *ExtensionsWorkbenchService, workspace: *@import("../../../services/workspaces/common/workspaceContextService.zig").WorkspaceContextService) !void {
@@ -554,6 +635,9 @@ pub const ExtensionsWorkbenchService = struct {
     pub fn detachWindow(self: *ExtensionsWorkbenchService) void {
         self.cancelVersions();
         self.update_timer.schedule(null);
+        self.update_timer = .{};
+        self.auto_update_timer.schedule(null);
+        self.auto_update_timer = .{};
         self.cancelUpdateCheck();
         if (self.configuration_listener) |listener| listener.dispose();
         self.configuration_listener = null;
@@ -669,7 +753,7 @@ pub const ExtensionsWorkbenchService = struct {
             defer self.allocator.free(id);
             if (!util.areSameExtensions(id, job.identifier)) continue;
             const version = entry.selectReleaseChannel(job.mode == .prerelease) orelse return error.CompatibleVersionNotFound;
-            return self.startManagement(.install, job.identifier, version.version, version.asset("Microsoft.VisualStudio.Services.VSIXPackage").?, version.isPreRelease(), false);
+            return self.startManagementTarget(.install, job.identifier, version.version, version.asset("Microsoft.VisualStudio.Services.VSIXPackage").?, version.isPreRelease(), false, version.targetPlatform, entry.extensionId, false);
         }
         return error.CompatibleVersionNotFound;
     }
@@ -686,6 +770,7 @@ pub const ExtensionsWorkbenchService = struct {
         for (page.extensions) |entry| {
             const id = try util.getGalleryExtensionId(allocator, entry.publisher.publisherName, entry.extensionName);
             if (!util.areSameExtensions(id, job.identifier)) continue;
+            picker.uuid = if (entry.extensionId) |uuid| try allocator.dupe(u8, uuid) else null;
             for (entry.versions) |version| {
                 if (!version.isCompatible()) continue;
                 const url = version.asset("Microsoft.VisualStudio.Services.VSIXPackage") orelse continue;
@@ -697,7 +782,8 @@ pub const ExtensionsWorkbenchService = struct {
                     const assets = try allocator.alloc(gallery.Asset, 1);
                     assets[0] = .{ .assetType = "Microsoft.VisualStudio.Services.VSIXPackage", .source = owned_url };
                     const properties: ?[]const gallery.Property = if (version.isPreRelease()) &[_]gallery.Property{.{ .key = "Microsoft.VisualStudio.Code.PreRelease", .value = "true" }} else null;
-                    try choices.append(allocator, .{ .version = owned_version, .files = assets, .properties = properties });
+                    const target = if (version.targetPlatform) |platform| try allocator.dupe(u8, platform) else null;
+                    try choices.append(allocator, .{ .version = owned_version, .files = assets, .properties = properties, .targetPlatform = target });
                     try items.append(allocator, .{ .item = .{ .id = owned_version, .label = owned_version, .description = if (version.isPreRelease()) "Pre-Release" else "Release" } });
                 }
             }
@@ -737,7 +823,7 @@ pub const ExtensionsWorkbenchService = struct {
 
     pub fn install(self: *ExtensionsWorkbenchService, extension: IExtension) !void {
         const url = extension.vsix_url orelse return error.ExtensionPackageUnavailable;
-        return self.startManagement(.install, extension.identifier, extension.version, url, extension.is_pre_release, false);
+        return self.startManagementTarget(.install, extension.identifier, extension.version, url, extension.is_pre_release, false, extension.target_platform, extension.uuid, false);
     }
 
     pub fn uninstall(self: *ExtensionsWorkbenchService, identifier: []const u8) !void {
@@ -747,14 +833,18 @@ pub const ExtensionsWorkbenchService = struct {
         defer plan.deinit(self.allocator);
         if (plan.has_dependents) {
             try self.confirmDependencyChange(plan.ids.items, null);
-        } else try self.startManagementMany(.uninstall, identifier, "", "", false, false, plan.ids.items);
+        } else try self.startManagementMany(.uninstall, identifier, "", "", false, false, plan.ids.items, null, null, false);
     }
 
     fn startManagement(self: *ExtensionsWorkbenchService, operation: Operation, identifier: []const u8, version: []const u8, url: []const u8, prerelease: bool, pinned: bool) !void {
-        return self.startManagementMany(operation, identifier, version, url, prerelease, pinned, &.{identifier});
+        return self.startManagementTarget(operation, identifier, version, url, prerelease, pinned, null, null, false);
     }
 
-    fn startManagementMany(self: *ExtensionsWorkbenchService, operation: Operation, identifier: []const u8, version: []const u8, url: []const u8, prerelease: bool, pinned: bool, identifiers: []const []const u8) !void {
+    fn startManagementTarget(self: *ExtensionsWorkbenchService, operation: Operation, identifier: []const u8, version: []const u8, url: []const u8, prerelease: bool, pinned: bool, target: ?[]const u8, uuid: ?[]const u8, require_verified: bool) !void {
+        return self.startManagementMany(operation, identifier, version, url, prerelease, pinned, &.{identifier}, target, uuid, require_verified);
+    }
+
+    fn startManagementMany(self: *ExtensionsWorkbenchService, operation: Operation, identifier: []const u8, version: []const u8, url: []const u8, prerelease: bool, pinned: bool, identifiers: []const []const u8, target: ?[]const u8, uuid: ?[]const u8, require_verified: bool) !void {
         if (self.management_job != null) return error.ExtensionOperationInProgress;
         const window = self.window orelse return error.ExtensionManagementUnavailable;
         const location = self.user_location orelse return error.ExtensionsDirectoryUnavailable;
@@ -771,7 +861,10 @@ pub const ExtensionsWorkbenchService = struct {
         const url_copy = try allocator.dupe(u8, url);
         const system_location = if (self.system_location) |value| try allocator.dupe(u8, value) else null;
         const gallery_url = try allocator.dupe(u8, self.gallery_url orelse "");
-        job.* = .{ .service = self, .operation = operation, .arena = arena, .location = location_copy, .identifier = identifier_copy, .identifiers = ids, .version = version_copy, .url = url_copy, .system_location = system_location, .gallery_url = gallery_url, .prerelease = prerelease, .pinned = pinned, .future = undefined, .completion = .{ .queue = window, .context = self, .run = applyManagement, .progress = true } };
+        const target_platform = if (target) |platform| try allocator.dupe(u8, platform) else null;
+        const uuid_copy = if (uuid) |value| try allocator.dupe(u8, value) else null;
+        const verify_signature = if (self.update_configuration) |config| config.getBool("extensions.verifySignature", true) else true;
+        job.* = .{ .service = self, .operation = operation, .arena = arena, .location = location_copy, .identifier = identifier_copy, .identifiers = ids, .version = version_copy, .url = url_copy, .system_location = system_location, .gallery_url = gallery_url, .prerelease = prerelease, .pinned = pinned, .target_platform = target_platform, .uuid = uuid_copy, .verify_signature = verify_signature, .require_verified = require_verified, .future = undefined, .completion = .{ .queue = window, .context = self, .run = applyManagement, .progress = true } };
         self.management_error = null;
         self.management_job = job;
         job.future = window.io.async(runManagement, .{job});
@@ -791,7 +884,7 @@ pub const ExtensionsWorkbenchService = struct {
             self.management_error = err;
             self.on_change.fire({}) catch {};
         };
-        self.scheduleUpdateCheck(0);
+        if (job.require_verified) self.scheduleAutoUpdate() else self.scheduleUpdateCheck(0);
         return true;
     }
 
@@ -857,6 +950,10 @@ pub const ExtensionsWorkbenchService = struct {
                     .readme_url = version.asset("Microsoft.VisualStudio.Services.Content.Details"),
                     .changelog_url = version.asset("Microsoft.VisualStudio.Services.Content.Changelog"),
                     .vsix_url = if (version.isCompatible()) version.asset("Microsoft.VisualStudio.Services.VSIXPackage") else null,
+                    .target_platform = version.targetPlatform,
+                    .uuid = entry.extensionId,
+                    .last_updated = if (entry.lastUpdated orelse version.lastUpdated) |timestamp| gallery.parseGalleryTimestamp(timestamp) else null,
+                    .executes_code = if (version.property("Microsoft.VisualStudio.Code.ExecutesCode")) |value| std.mem.eql(u8, value, "true") else null,
                 };
                 count += 1;
             }
@@ -1030,3 +1127,23 @@ pub const ExtensionsWorkbenchService = struct {
 };
 
 pub const extensions_workbench_service_id = @import("../../../../platform/instantiation/common/instantiation.zig").ServiceIdentifier(ExtensionsWorkbenchService, "extensionsWorkbenchService");
+
+/// The upstream unattended-update conditions: only enabled, unpinned user
+/// extensions with a newer compatible version. Publisher/UUID changes and
+/// updates introducing executable code require a manual action. The install
+/// transaction independently enforces successful repository verification.
+pub fn shouldAutoUpdate(local: IExtension, remote: IExtension, now: i64, delay_hours: f64) bool {
+    if (local.is_builtin or local.pinned or !local.isEnabled() or remote.vsix_url == null) return false;
+    if (remote.is_pre_release and !local.is_pre_release) return false;
+    const current = std.SemanticVersion.parse(local.version) catch return false;
+    const candidate = std.SemanticVersion.parse(remote.version) catch return false;
+    if (candidate.order(current) != .gt) return false;
+    if (local.uuid) |uuid| {
+        if (!std.ascii.eqlIgnoreCase(uuid, remote.uuid orelse return false)) return false;
+    }
+    if (!(local.executes_code orelse false) and (remote.executes_code orelse true)) return false;
+    if (remote.last_updated) |published| {
+        if (published > 0 and now >= published and @as(f64, @floatFromInt(now - published)) < delay_hours * 60 * 60 * 1000) return false;
+    }
+    return true;
+}
