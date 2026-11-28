@@ -24,7 +24,12 @@
         2,
         1
       ],
-      "mode": "normal"
+      "mode": "normal",
+      "scroll": {
+        "top_line": 1,
+        "left": 0
+      }
     }
-  ]
+  ],
+  "height": 12
 }
