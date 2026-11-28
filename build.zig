@@ -973,7 +973,15 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
         ),
         .filters = &.{b.option([]const u8, "e2e-filter", "Filter extension-host integration tests") orelse "Extensions:"},
     });
-    const run_e2e_tests = b.addRunArtifact(e2e_tests);
+    // The server-mode test runner reports after each test returns. In CI a
+    // stuck interoperability test must also identify itself before it runs.
+    const e2e_progress = b.option(bool, "e2e-progress", "Stream E2E test names and results directly") orelse false;
+    const run_e2e_tests = if (e2e_progress) blk: {
+        const run = std.Build.Step.Run.create(b, "run E2E tests with progress");
+        run.addArtifactArg(e2e_tests);
+        run.stdio = .inherit;
+        break :blk run;
+    } else b.addRunArtifact(e2e_tests);
     const e2e_test_step = b.step("test-e2e", "Run the extension-host interop tests");
     e2e_test_step.dependOn(&run_e2e_tests.step);
 

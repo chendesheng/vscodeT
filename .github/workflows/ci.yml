@@ -116,11 +116,12 @@ jobs:
             if (!(Test-Path -LiteralPath $asset -PathType Leaf)) { throw "Integration test asset missing: $asset" }
           }
       - name: Test extension-host and language-server interoperability
+        timeout-minutes: 20
         shell: pwsh
         run: |
           $zigOptions = @()
           if ($env:ONIG_DIR) { $zigOptions = @("-Donig-include=$(Join-Path $env:ONIG_DIR include)", "-Donig-lib=$(Join-Path $env:ONIG_DIR lib)") }
-          zig build test-e2e --summary all @zigOptions
+          zig build test-e2e -De2e-progress=true --summary all @zigOptions
       - name: Test
         if: ${{ !cancelled() && steps.integration_assets.outcome == 'success' }}
         shell: pwsh
