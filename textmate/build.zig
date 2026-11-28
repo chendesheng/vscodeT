@@ -66,6 +66,7 @@ fn onigModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
         .optimize = optimize,
     });
     translate.addIncludePath(.{ .cwd_relative = include_dir });
+    if (!link) translate.defineCMacro("ONIG_STATIC", "1");
 
     const module = translate.createModule();
     module.addIncludePath(.{ .cwd_relative = include_dir });

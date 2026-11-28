@@ -572,6 +572,7 @@ fn onigModule(
             .optimize = optimize,
         });
         translate.addIncludePath(b.path(include_dir));
+        translate.defineCMacro("ONIG_STATIC", "1");
 
         const module = translate.createModule();
         module.addIncludePath(b.path(include_dir));
@@ -614,7 +615,7 @@ fn onigStaticLibrary(b: *std.Build, target: std.Build.ResolvedTarget, optimize: 
     library.root_module.addCSourceFiles(.{
         .root = b.path("third_party/oniguruma"),
         .files = &onig_wasm_sources,
-        .flags = &.{"-DHAVE_CONFIG_H"},
+        .flags = &.{ "-DHAVE_CONFIG_H", "-DONIG_STATIC" },
     });
     // The submodule stays untouched: config.h is supplied from this repository.
     if (target.result.os.tag == .windows) {
