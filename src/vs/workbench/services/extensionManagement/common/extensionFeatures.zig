@@ -100,3 +100,53 @@ pub const Table = struct {
         try writer.writeByte('\n');
     }
 };
+
+/// Shared terminal projection for upstream table renderers whose rows are
+/// manifest contribution fields. Each feature's own contribution module
+/// supplies the column order and whether upstream sorts by its first column.
+pub const Column = struct {
+    label: []const u8,
+    key: []const u8,
+    separator: []const u8 = ", ",
+};
+
+fn propertyPath(value: std.json.Value, path: []const u8) std.json.Value {
+    var current = value;
+    var parts = std.mem.splitScalar(u8, path, '.');
+    while (parts.next()) |part| current = property(current, part);
+    return current;
+}
+
+pub fn manifestTable(comptime id: []const u8, comptime label: []const u8, comptime columns: []const Column, comptime sorted: bool) Descriptor {
+    const Renderer = struct {
+        fn shouldRender(manifest: std.json.Value) bool {
+            return contribution(manifest, id) != .null;
+        }
+
+        fn render(allocator: Allocator, manifest: std.json.Value) ![]u8 {
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+            const scratch = arena.allocator();
+            const entries = items(contribution(manifest, id));
+            if (entries.len == 0) return allocator.dupe(u8, "");
+            var headers: [columns.len][]const u8 = undefined;
+            for (columns, &headers) |column, *header| header.* = column.label;
+            var table: Table = .{ .allocator = scratch, .headers = &headers };
+            for (entries) |entry| {
+                var row: [columns.len][]const u8 = undefined;
+                for (columns, &row) |column, *cell| {
+                    const value = propertyPath(entry, column.key);
+                    if (value == .array) {
+                        var strings: std.ArrayList([]const u8) = .empty;
+                        for (value.array.items) |item| if (item == .string) try strings.append(scratch, item.string);
+                        cell.* = try std.mem.join(scratch, column.separator, strings.items);
+                    } else cell.* = asString(value);
+                }
+                try table.append(&row);
+            }
+            if (sorted) table.sort();
+            return table.markdown(allocator);
+        }
+    };
+    return .{ .id = id, .label = label, .should_render = Renderer.shouldRender, .render = Renderer.render };
+}
