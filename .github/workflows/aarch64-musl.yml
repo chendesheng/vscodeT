@@ -2,6 +2,7 @@ name: aarch64 musl build
 
 on:
   push:
+    branches-ignore: [ci/windows-debug]
   pull_request:
   workflow_dispatch:
 

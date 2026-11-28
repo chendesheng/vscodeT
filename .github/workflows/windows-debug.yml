@@ -1,0 +1,109 @@
+name: Windows debug
+
+on:
+  push:
+    branches: [ci/windows-debug]
+  workflow_dispatch:
+    inputs:
+      build_only:
+        description: Build the Windows executable instead of running an E2E fixture
+        type: boolean
+        default: false
+      test_filter:
+        description: Zig E2E test name substring (Extensions: runs the entire Windows E2E suite)
+        type: string
+        default: 'language feature registration reaches the workbench registries'
+
+concurrency:
+  group: windows-debug-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    name: Windows debug
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      E2E_FILTER: ${{ inputs.test_filter || 'language feature registration reaches the workbench registries' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Initialize upstream submodules
+        run: git submodule update --init --depth 1 vscode vscode-textmate
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+      - uses: actions/setup-node@v4
+        if: ${{ !inputs.build_only }}
+        with:
+          node-version: 24
+      - name: Install oniguruma and ripgrep
+        shell: pwsh
+        run: |
+          choco install ripgrep -y --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $vcpkg = if ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT } else { "C:\vcpkg" }
+          & "$vcpkg\vcpkg.exe" install oniguruma:x64-windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "ONIG_DIR=$vcpkg\installed\x64-windows" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$vcpkg\installed\x64-windows\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Build Windows executable
+        if: ${{ inputs.build_only }}
+        shell: pwsh
+        run: |
+          zig build "-Donig-include=$(Join-Path $env:ONIG_DIR include)" "-Donig-lib=$(Join-Path $env:ONIG_DIR lib)"
+      - name: Install Node host dependencies
+        if: ${{ !inputs.build_only }}
+        working-directory: host
+        run: npm ci --ignore-scripts
+      - name: Bundle required integration assets
+        if: ${{ !inputs.build_only }}
+        working-directory: host
+        shell: pwsh
+        run: |
+          npm run build:json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node build-builtin-extensions.js
+      - name: Run selected Windows integration fixture
+        if: ${{ !inputs.build_only }}
+        timeout-minutes: 12
+        shell: pwsh
+        run: |
+          $zigOptions = @("-Donig-include=$(Join-Path $env:ONIG_DIR include)", "-Donig-lib=$(Join-Path $env:ONIG_DIR lib)")
+          $arguments = @('build', 'test-e2e', '-De2e-progress=true', "-De2e-filter=$env:E2E_FILTER", '--summary', 'all') + $zigOptions
+          $build = Start-Process -FilePath (Get-Command zig).Source -ArgumentList ($arguments | ForEach-Object { '"' + $_ + '"' }) -NoNewWindow -PassThru
+          while (!$build.WaitForExit(1000)) {
+            $test = Get-Process -Name e2e_tests -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (!$test) { continue }
+            try { $age = ((Get-Date) - $test.StartTime).TotalSeconds } catch { continue }
+            if ($test.HasExited -or $age -lt 180) { continue }
+            Write-Host "Integration fixture stalled; collecting native stacks for process $($test.Id)"
+            $debugger = Get-Command cdb.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+            if (!$debugger) {
+              $debugger = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
+            }
+            if (Test-Path -LiteralPath $debugger) {
+              $diagnostic = Start-Process -FilePath $debugger -ArgumentList @('-pv', '-p', "$($test.Id)", '-c', '"~* k; q"') -NoNewWindow -PassThru
+              if (!$diagnostic.WaitForExit(30000)) { $diagnostic.Kill() }
+            } else {
+              Write-Host 'Windows SDK debugger is unavailable on this runner.'
+            }
+            Stop-Process -Id $test.Id -Force -ErrorAction SilentlyContinue
+            break
+          }
+          $build.WaitForExit()
+          exit $build.ExitCode
+      - name: Preserve extension-host logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-debug-extension-host-logs
+          path: .cache-ext/**/logs/extension-host*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
