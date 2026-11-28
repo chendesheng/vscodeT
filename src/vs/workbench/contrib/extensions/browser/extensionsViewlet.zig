@@ -140,10 +140,16 @@ pub const ExtensionsViewPaneContainer = struct {
         return false;
     }
 
+    fn hasPrefixToken(query: []const u8, prefix: []const u8) bool {
+        var words = std.mem.tokenizeAny(u8, query, " \t\r\n");
+        while (words.next()) |word| if (word.len >= prefix.len and std.ascii.eqlIgnoreCase(word[0..prefix.len], prefix)) return true;
+        return false;
+    }
+
     fn queryChanged(context: *anyopaque) void {
         const self: *ExtensionsViewPaneContainer = @ptrCast(@alignCast(context));
         const text = std.mem.trim(u8, self.view.queryText(), " \t\r\n");
-        const mode: Mode = if (text.len == 0) .installed else if (hasToken(text, "@builtin")) .builtin_features else if (hasToken(text, "@installed")) .search_installed else if (hasToken(text, "@enabled")) .enabled else if (hasToken(text, "@disabled")) .disabled else if (hasToken(text, "@updates") or hasToken(text, "@outdated")) .outdated else if (hasToken(text, "@restartRequired")) .restart_required else if (hasToken(text, "@recentlyUpdated")) .recently_updated else if (hasToken(text, "@recommended")) .search_recommended else .marketplace;
+        const mode: Mode = if (text.len == 0) .installed else if (hasToken(text, "@builtin")) .builtin_features else if (hasToken(text, "@installed") or hasPrefixToken(text, "@contribute:")) .search_installed else if (hasToken(text, "@enabled")) .enabled else if (hasToken(text, "@disabled")) .disabled else if (hasToken(text, "@updates") or hasToken(text, "@outdated")) .outdated else if (hasToken(text, "@restartRequired")) .restart_required else if (hasToken(text, "@recentlyUpdated")) .recently_updated else if (hasToken(text, "@recommended")) .search_recommended else .marketplace;
         const default = mode == .installed;
         const has_gallery = if (self.view.service) |service| service.gallery_url != null else false;
         const popular = default and self.view.showDefaultPopular();

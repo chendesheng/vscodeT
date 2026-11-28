@@ -252,7 +252,7 @@ pub const ExtensionsListView = struct {
         picker.before = try std.mem.concat(allocator, u8, &.{ value[0..start], if (start > 0 and !std.ascii.isWhitespace(value[start - 1])) " " else "" });
         picker.after = try allocator.dupe(u8, value[end..]);
         const query = try std.mem.concat(allocator, u8, &.{ picker.before, picker.after });
-        const suggestions = try query_mod.Query.suggestions(allocator, query, service.gallery_url != null);
+        const suggestions = try query_mod.Query.suggestionsWithFeatures(allocator, query, service.gallery_url != null, service.feature_registry.getExtensionFeatures());
         var items: std.ArrayList(quick.QuickPickItem) = .empty;
         for (suggestions) |suggestion| {
             if (prefix.len > 0 and !startsWithIgnoreCase(suggestion, prefix)) continue;
@@ -287,7 +287,7 @@ pub const ExtensionsListView = struct {
         if (service.gallery_url == null or self.host.window == null) return false;
         const text = std.mem.trim(u8, self.queryText(), " \t");
         if (text.len == 0) return false;
-        for ([_][]const u8{ "@installed", "@builtin", "@enabled", "@disabled", "@recentlyUpdated", "@updates", "@outdated", "@restartRequired" }) |token| {
+        for ([_][]const u8{ "@installed", "@builtin", "@enabled", "@disabled", "@recentlyUpdated", "@updates", "@outdated", "@restartRequired", "@contribute:" }) |token| {
             if (containsIgnoreCase(text, token)) return false;
         }
         return true;
@@ -962,6 +962,7 @@ const ParsedFilter = struct {
     popular: bool = false,
     recently_updated: bool = false,
     restart_required: bool = false,
+    feature_id: ?[]const u8 = null,
     ids: []const []const u8 = &.{},
     included_categories: []const []const u8 = &.{},
     excluded_categories: []const []const u8 = &.{},
@@ -1009,6 +1010,13 @@ fn parseFilter(arena: Allocator, value: []const u8) !ParsedFilter {
             // the display-name order, so the token itself is dropped.
             index += "@sort:".len;
             while (index < value.len and !std.ascii.isWhitespace(value[index])) : (index += 1) {}
+            continue;
+        }
+        if (startsWithIgnoreCase(value[index..], "@contribute:")) {
+            index += "@contribute:".len;
+            const start = index;
+            while (index < value.len and !std.ascii.isWhitespace(value[index])) : (index += 1) {}
+            result.feature_id = value[start..index];
             continue;
         }
         if (startsWithIgnoreCase(value[index..], "@id:")) {
@@ -1155,6 +1163,15 @@ fn filterExtensionsWithService(allocator: Allocator, local: []const IExtension, 
     if (parsed.recommended or parsed.popular or ((parsed.updates or parsed.restart_required) and service == null)) return allocator.alloc(*const IExtension, 0);
     var result: std.array_list.Managed(*const IExtension) = .init(allocator);
     errdefer result.deinit();
+    if (parsed.feature_id) |id| {
+        const workbench = service orelse return result.toOwnedSlice();
+        const descriptor = workbench.feature_registry.getExtensionFeature(id) orelse return result.toOwnedSlice();
+        for (local) |*extension| {
+            const manifest = workbench.localManifest(extension.identifier) orelse continue;
+            if (descriptor.should_render(manifest)) try result.append(extension);
+        }
+        return result.toOwnedSlice();
+    }
     for (local) |*extension| {
         if (parsed.updates and service.?.availableUpdate(extension.identifier) == null) continue;
         if (parsed.restart_required and service.?.runtimeState(extension.identifier) == null) continue;

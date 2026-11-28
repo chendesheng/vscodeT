@@ -480,6 +480,13 @@ pub const ExtensionsWorkbenchService = struct {
         return self.state.local;
     }
 
+    pub fn localManifest(self: *const ExtensionsWorkbenchService, identifier: []const u8) ?std.json.Value {
+        for (self.state.inventory.all) |extension| {
+            if (util.areSameExtensions(extension.identifier, identifier)) return extension.manifest.value;
+        }
+        return null;
+    }
+
     pub fn findLocal(self: *const ExtensionsWorkbenchService, identifier: []const u8) ?*const IExtension {
         for (self.state.local) |*extension| {
             if (util.areSameExtensions(extension.identifier, identifier)) return extension;

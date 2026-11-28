@@ -14125,7 +14125,7 @@ test "Workbench: extensions panel lists, filters, opens and disables" {
     // extension.
     try tmp.dir.createDirPath(io, "system/pub.system-ext-1.0.0");
     try tmp.dir.writeFile(io, .{ .sub_path = "system/pub.system-ext-1.0.0/package.json", .data =
-        \\{"name":"system-ext","publisher":"pub","version":"1.0.0","engines":{"vscode":"*"},"displayName":"%displayName%","description":"%description%"}
+        \\{"name":"system-ext","publisher":"pub","version":"1.0.0","engines":{"vscode":"*"},"displayName":"%displayName%","description":"%description%","contributes":{"commands":[{"command":"pub.run","title":"Run"}]}}
     });
     try tmp.dir.writeFile(io, .{ .sub_path = "system/pub.system-ext-1.0.0/package.nls.json", .data =
         \\{"displayName":"System Ext","description":"Built-in extension."}
@@ -14178,6 +14178,13 @@ test "Workbench: extensions panel lists, filters, opens and disables" {
     try std.testing.expect(workbench.extensions_view.?.model.isVisible("workbench.views.extensions.builtinThemeExtensions"));
     try std.testing.expectEqual(@as(usize, 1), view.rows.len);
     try std.testing.expectEqualStrings("pub.system-ext", view.rows[0].identifier);
+    view.clearSearch();
+    try view.input_box.setValue("@contribute:commands");
+    try std.testing.expect(workbench.extensions_view.?.model.isVisible("workbench.views.extensions.searchInstalled"));
+    try std.testing.expectEqual(@as(usize, 1), view.rows.len);
+    try std.testing.expectEqualStrings("pub.system-ext", view.rows[0].identifier);
+    try view.input_box.setValue("@contribute:unknown");
+    try std.testing.expectEqual(@as(usize, 0), view.rows.len);
     view.clearSearch();
     // Typing filters the list; local fixture searches need no network.
     const typed = "user";

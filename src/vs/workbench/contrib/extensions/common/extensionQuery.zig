@@ -2,7 +2,7 @@
 //
 // Terminal adaptation: suggestions expose the query capabilities implemented
 // by the terminal gallery and local views. Unsupported specialized views and
-// the unported feature registry are not advertised in the search picker.
+// unsupported gallery capabilities are not advertised in the search picker.
 const std = @import("std");
 
 pub const Query = struct {
@@ -13,6 +13,10 @@ pub const Query = struct {
     /// category/sort modifier out of the suggestion model. The caller owns
     /// the strings (a picker-owned arena is convenient).
     pub fn suggestions(allocator: std.mem.Allocator, query: []const u8, has_gallery: bool) ![][]const u8 {
+        return suggestionsWithFeatures(allocator, query, has_gallery, &.{});
+    }
+
+    pub fn suggestionsWithFeatures(allocator: std.mem.Allocator, query: []const u8, has_gallery: bool, features: []const @import("../../../services/extensionManagement/common/extensionFeatures.zig").Descriptor) ![][]const u8 {
         var result: std.ArrayList([]const u8) = .empty;
         errdefer {
             for (result.items) |item| allocator.free(item);
@@ -25,6 +29,10 @@ pub const Query = struct {
             if (std.mem.indexOf(u8, query, token) != null) continue;
             try result.ensureUnusedCapacity(allocator, 1);
             result.appendAssumeCapacity(try std.fmt.allocPrint(allocator, "{s} ", .{token}));
+        }
+        for (features) |feature| {
+            try result.ensureUnusedCapacity(allocator, 1);
+            result.appendAssumeCapacity(try std.fmt.allocPrint(allocator, "@contribute:{s} ", .{feature.id}));
         }
         const sort = [_][]const u8{ "installs", "rating", "name", "publishedDate", "updateDate" };
         var has_sort = false;
