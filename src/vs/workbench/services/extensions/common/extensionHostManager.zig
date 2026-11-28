@@ -192,6 +192,7 @@ pub const HostManager = struct {
     eof: bool = false,
     started: bool = false,
     stopped: bool = false,
+    requested_activation_events: std.StringHashMapUnmanaged(void) = .empty,
 
     pub fn start(allocator: Allocator, options: Options) !*HostManager {
         const self = try allocator.create(HostManager);
@@ -261,6 +262,9 @@ pub const HostManager = struct {
         self.allocator.destroy(self.sender);
         for (self.queue.items) |frame| self.allocator.free(frame);
         self.queue.deinit();
+        var events = self.requested_activation_events.keyIterator();
+        while (events.next()) |event| self.allocator.free(event.*);
+        self.requested_activation_events.deinit(self.allocator);
         self.io_state.deinit();
         self.allocator.destroy(self);
     }
@@ -545,6 +549,11 @@ pub const HostManager = struct {
     }
 
     pub fn activateByEvent(self: *HostManager, activation_event: []const u8, activation_kind: u32) !void {
+        if (!self.requested_activation_events.contains(activation_event)) {
+            const owned = try self.allocator.dupe(u8, activation_event);
+            errdefer self.allocator.free(owned);
+            try self.requested_activation_events.put(self.allocator, owned, {});
+        }
         var args = [_]rpcProtocol.Arg{
             .{ .json = .{ .string = activation_event } },
             .{ .json = .{ .integer = @intCast(activation_kind) } },
@@ -637,6 +646,57 @@ pub fn fileUri(arena: Allocator, path: []const u8) !std.json.Value {
     return std_uri.jsonComponents(arena, .{ .scheme = "file", .path = .{ .raw = path } });
 }
 
+pub fn extensionIdentifierJson(arena: Allocator, identifier: []const u8) !std.json.Value {
+    var result: std.json.ObjectMap = .empty;
+    try result.put(arena, "value", .{ .string = try arena.dupe(u8, identifier) });
+    try result.put(arena, "_lower", .{ .string = try std.ascii.allocLowerString(arena, identifier) });
+    return .{ .object = result };
+}
+
+/// Common IExtensionDescription shape used by both initial data and deltas.
+pub fn extensionDescriptionJson(arena: Allocator, extension: *const ExtensionDescription) !std.json.Value {
+    var description = switch (extension.manifest) {
+        .object => |object| try object.clone(arena),
+        else => return error.InvalidManifest,
+    };
+    try description.put(arena, "id", .{ .string = try arena.dupe(u8, extension.identifier) });
+    try description.put(arena, "identifier", try extensionIdentifierJson(arena, extension.identifier));
+    try description.put(arena, "extensionLocation", try fileUri(arena, extension.path));
+    try description.put(arena, "isBuiltin", .{ .bool = extension.is_builtin });
+    try description.put(arena, "isUserBuiltin", .{ .bool = false });
+    try description.put(arena, "isUnderDevelopment", .{ .bool = extension.is_under_development });
+    try description.put(arena, "targetPlatform", .{ .string = "undefined" });
+    try description.put(arena, "preRelease", .{ .bool = false });
+    var events = std.json.Array.init(arena);
+    for (extension.activation_events) |event| try events.append(.{ .string = try arena.dupe(u8, event) });
+    try description.put(arena, "activationEvents", .{ .array = events });
+    return .{ .object = description };
+}
+
+/// ExtensionHostManager.deltaExtensions: all extensions and the local host's
+/// assigned extensions change together in the single-host terminal topology.
+pub fn buildExtensionsDelta(arena: Allocator, version: u32, remove: []const []const u8, add: []const *const ExtensionDescription) !std.json.Value {
+    var to_remove = std.json.Array.init(arena);
+    for (remove) |identifier| try to_remove.append(try extensionIdentifierJson(arena, identifier));
+    var to_add = std.json.Array.init(arena);
+    var my_to_add = std.json.Array.init(arena);
+    var activation_events: std.json.ObjectMap = .empty;
+    for (add) |extension| {
+        const value = try extensionDescriptionJson(arena, extension);
+        try to_add.append(value);
+        try my_to_add.append(value.object.get("identifier").?);
+        try activation_events.put(arena, extension.identifier, value.object.get("activationEvents").?);
+    }
+    var delta: std.json.ObjectMap = .empty;
+    try delta.put(arena, "versionId", .{ .integer = version });
+    try delta.put(arena, "toRemove", .{ .array = to_remove });
+    try delta.put(arena, "toAdd", .{ .array = to_add });
+    try delta.put(arena, "addActivationEvents", .{ .object = activation_events });
+    try delta.put(arena, "myToRemove", .{ .array = to_remove });
+    try delta.put(arena, "myToAdd", .{ .array = my_to_add });
+    return .{ .object = delta };
+}
+
 pub fn buildInitData(
     arena: Allocator,
     options: Options,
@@ -690,33 +750,10 @@ pub fn buildInitData(
     var my_extensions = std.json.Array.init(arena);
 
     for (options.extensions) |extension| {
-        // Init-only metadata belongs to the handshake arena. Keep the parsed
-        // manifest available to the command and configuration registries.
-        var description = switch (extension.manifest) {
-            .object => |object| try object.clone(arena),
-            else => return error.InvalidManifest,
-        };
-        try description.put(arena, "id", .{ .string = try arena.dupe(u8, extension.identifier) });
-        var identifier: std.json.ObjectMap = .empty;
-        try identifier.put(arena, "value", .{ .string = try arena.dupe(u8, extension.identifier) });
-        try identifier.put(arena, "_lower", .{ .string = try std.ascii.allocLowerString(arena, extension.identifier) });
-        try description.put(arena, "identifier", .{ .object = identifier });
-        try description.put(arena, "extensionLocation", try fileUri(arena, extension.path));
-        try description.put(arena, "isBuiltin", .{ .bool = extension.is_builtin });
-        try description.put(arena, "isUserBuiltin", .{ .bool = false });
-        try description.put(arena, "isUnderDevelopment", .{ .bool = extension.is_under_development });
-        try description.put(arena, "targetPlatform", .{ .string = "undefined" });
-        try description.put(arena, "preRelease", .{ .bool = false });
-
-        var activation_events = std.json.Array.init(arena);
-        for (extension.activation_events) |event| {
-            try activation_events.append(.{ .string = try arena.dupe(u8, event) });
-        }
-        try description.put(arena, "activationEvents", .{ .array = activation_events });
-
-        try all_extensions.append(.{ .object = description });
-        try activation_map.put(arena, try arena.dupe(u8, extension.identifier), .{ .array = activation_events });
-        try my_extensions.append(.{ .object = identifier });
+        const description = try extensionDescriptionJson(arena, extension);
+        try all_extensions.append(description);
+        try activation_map.put(arena, try arena.dupe(u8, extension.identifier), description.object.get("activationEvents").?);
+        try my_extensions.append(description.object.get("identifier").?);
     }
 
     try extensions.put(arena, "allExtensions", .{ .array = all_extensions });

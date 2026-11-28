@@ -203,6 +203,12 @@ pub const RuntimeInventory = struct {
         return .RestartExtensions;
     }
 
+    pub fn hasChanges(self: *const RuntimeInventory, desired: []const *const scanner.ScannedExtension) bool {
+        for (self.entries) |entry| if (self.getRuntimeState(entry.identifier, desired) != null) return true;
+        for (desired) |entry| if (self.getRuntimeState(entry.identifier, desired) != null) return true;
+        return false;
+    }
+
     pub fn requiresReload(self: *const RuntimeInventory, desired: []const *const scanner.ScannedExtension) bool {
         for (self.entries) |entry| if (self.getRuntimeState(entry.identifier, desired) == .ReloadWindow) return true;
         for (desired) |entry| if (self.getRuntimeState(entry.identifier, desired) == .ReloadWindow) return true;
@@ -232,4 +238,147 @@ test "RuntimeInventory: distinguishes host-only changes from mounted extension p
     try std.testing.expectEqual(RuntimeInventory.Action.ReloadWindow, runtime.getRuntimeState("pub.theme", &.{code}).?);
     try std.testing.expect(!runtime.requiresReload(&.{theme}));
     try std.testing.expect(runtime.requiresReload(&.{code}));
+}
+
+/// Registry delta planned before sending IExtensionDescriptionDelta to the
+/// local host. Existing descriptions retain their allocations so contributed
+/// command metadata and other borrowed strings remain valid across a delta.
+/// Activated extensions cannot be removed. The terminal does not yet have
+/// dynamic registration/removal for every extension point; changes involving
+/// those points return RequiresRestart rather than silently leaving stale UI.
+pub const DescriptionDelta = struct {
+    allocator: Allocator,
+    next: []manager.ExtensionDescription,
+    new_to_old: []?usize,
+    old_retained: []bool,
+    added: []const *const manager.ExtensionDescription,
+    removed: []const []const u8,
+
+    fn version(description: manager.ExtensionDescription) []const u8 {
+        if (description.manifest != .object) return "";
+        const value = description.manifest.object.get("version") orelse return "";
+        return if (value == .string) value.string else "";
+    }
+
+    fn equivalent(left: manager.ExtensionDescription, right: manager.ExtensionDescription) bool {
+        return std.ascii.eqlIgnoreCase(left.identifier, right.identifier) and std.mem.eql(u8, left.path, right.path) and std.mem.eql(u8, version(left), version(right));
+    }
+
+    fn supportsDelta(description: manager.ExtensionDescription) bool {
+        if (std.ascii.eqlIgnoreCase(description.identifier, "vscode.terminal-suggest")) return false;
+        if (description.manifest == .object) if (description.manifest.object.get("contributes")) |contributes| {
+            if (contributes == .object) {
+                for (contributes.object.keys()) |key| {
+                    // Commands are registered through MainThreadCommands and
+                    // become visible when the extension activates. Other
+                    // extension points still need a registry-delta port.
+                    if (!std.mem.eql(u8, key, "commands") and !std.mem.eql(u8, key, "menus")) return false;
+                }
+            }
+        };
+        for (description.activation_events) |event| if (std.mem.startsWith(u8, event, "workspaceContains")) return false;
+        return true;
+    }
+
+    pub fn plan(allocator: Allocator, io: Io, current: []const manager.ExtensionDescription, paths: []const ExtensionPath, activation_started: *const std.StringHashMapUnmanaged(void)) !DescriptionDelta {
+        const next = if (paths.len == 0) try allocator.alloc(manager.ExtensionDescription, 0) else try readExtensions(allocator, io, paths);
+        errdefer {
+            for (next) |*description| description.deinit(allocator);
+            allocator.free(next);
+        }
+        const mapping = try allocator.alloc(?usize, next.len);
+        errdefer allocator.free(mapping);
+        @memset(mapping, null);
+        const retained = try allocator.alloc(bool, current.len);
+        errdefer allocator.free(retained);
+        @memset(retained, false);
+        var add: std.ArrayList(*const manager.ExtensionDescription) = .empty;
+        errdefer add.deinit(allocator);
+        var remove: std.ArrayList([]const u8) = .empty;
+        errdefer remove.deinit(allocator);
+        for (next, 0..) |*candidate, i| {
+            for (current, 0..) |old, index| {
+                if (!equivalent(old, candidate.*)) continue;
+                retained[index] = true;
+                mapping[i] = index;
+                break;
+            } else {
+                if (!supportsDelta(candidate.*)) return error.RequiresRestart;
+                try add.append(allocator, candidate);
+            }
+        }
+        for (current, 0..) |description, i| {
+            if (retained[i]) continue;
+            if (!supportsDelta(description)) return error.RequiresRestart;
+            var iterator = activation_started.keyIterator();
+            while (iterator.next()) |id| if (std.ascii.eqlIgnoreCase(id.*, description.identifier)) return error.RequiresRestart;
+            try remove.append(allocator, description.identifier);
+        }
+        const added = try add.toOwnedSlice(allocator);
+        errdefer allocator.free(added);
+        return .{ .allocator = allocator, .next = next, .new_to_old = mapping, .old_retained = retained, .added = added, .removed = try remove.toOwnedSlice(allocator) };
+    }
+
+    pub fn deinit(self: *DescriptionDelta) void {
+        for (self.next) |*description| description.deinit(self.allocator);
+        self.allocator.free(self.next);
+        self.allocator.free(self.new_to_old);
+        self.allocator.free(self.old_retained);
+        self.allocator.free(self.added);
+        self.allocator.free(self.removed);
+    }
+
+    /// Commit only after the host has acknowledged the registry delta.
+    pub fn commit(self: *DescriptionDelta, current: []manager.ExtensionDescription) []manager.ExtensionDescription {
+        for (self.next, self.new_to_old) |*candidate, previous| if (previous) |index| {
+            candidate.deinit(self.allocator);
+            candidate.* = current[index];
+        };
+        for (current, self.old_retained) |*description, retained| if (!retained) description.deinit(self.allocator);
+        self.allocator.free(current);
+        const result = self.next;
+        self.next = &.{};
+        return result;
+    }
+};
+
+test "DescriptionDelta: keeps unchanged manifests and rejects activated removals" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, "old", .default_dir);
+    try tmp.dir.createDir(io, "new", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "old/package.json", .data = "{\"name\":\"old\",\"publisher\":\"pub\",\"version\":\"1.0.0\",\"main\":\"./main.js\"}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "new/package.json", .data = "{\"name\":\"new\",\"publisher\":\"pub\",\"version\":\"1.0.0\",\"main\":\"./main.js\",\"activationEvents\":[\"onLanguage:zig\"]}" });
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPath(io, &buffer);
+    const old_path = try std.fs.path.join(allocator, &.{ buffer[0..len], "old" });
+    defer allocator.free(old_path);
+    const new_path = try std.fs.path.join(allocator, &.{ buffer[0..len], "new" });
+    defer allocator.free(new_path);
+    var current = try readExtensions(allocator, io, &.{.{ .path = old_path }});
+    defer {
+        for (current) |*description| description.deinit(allocator);
+        allocator.free(current);
+    }
+    const original_manifest = current[0].identifier.ptr;
+    var activated: std.StringHashMapUnmanaged(void) = .empty;
+    defer activated.deinit(allocator);
+    try activated.put(allocator, "pub.old", {});
+    try std.testing.expectError(error.RequiresRestart, DescriptionDelta.plan(allocator, io, current, &.{.{ .path = new_path }}, &activated));
+    var delta = try DescriptionDelta.plan(allocator, io, current, &.{ .{ .path = old_path }, .{ .path = new_path } }, &activated);
+    defer delta.deinit();
+    try std.testing.expectEqual(@as(usize, 1), delta.added.len);
+    try std.testing.expectEqual(@as(usize, 0), delta.removed.len);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const payload = try manager.buildExtensionsDelta(arena.allocator(), 2, delta.removed, delta.added);
+    try std.testing.expectEqual(@as(i64, 2), payload.object.get("versionId").?.integer);
+    const added = payload.object.get("toAdd").?.array.items[0];
+    try std.testing.expectEqualStrings("pub.new", added.object.get("identifier").?.object.get("value").?.string);
+    try std.testing.expectEqualStrings("onLanguage:zig", payload.object.get("addActivationEvents").?.object.get("pub.new").?.array.items[0].string);
+    current = delta.commit(current);
+    try std.testing.expect(current[0].identifier.ptr == original_manifest);
+    try std.testing.expectEqual(@as(usize, 2), current.len);
 }

@@ -1,9 +1,8 @@
 // Port of the terminal subset of
 // `src/vs/workbench/api/browser/mainThreadExtensionService.ts`.
 //
-// Activation bookkeeping, performance marks and browser-URI translation are
-// no-ops/identity here. `$onDidActivateExtension` notifies the adapter so boot
-// can wait for `onStartupFinished` extensions.
+// Activation-start bookkeeping prevents removing an extension once its code
+// has started. Performance marks and browser-URI translation remain no-ops/identity.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const rpc = @import("../../services/extensions/common/rpcProtocol.zig");
@@ -11,6 +10,7 @@ const protocol = @import("../common/extHost.protocol.zig");
 
 pub const Host = struct {
     context: *anyopaque,
+    on_will_activate: *const fn (context: *anyopaque, identifier: []const u8) anyerror!void,
     on_did_activate: *const fn (context: *anyopaque) void,
     as_browser_uri: *const fn (context: *anyopaque, uri: std.json.Value) std.json.Value,
 };
@@ -20,6 +20,14 @@ pub const MainThreadExtensionService = struct {
 
     pub fn invoke(self: *MainThreadExtensionService, method: []const u8, args: []const rpc.Arg, arena: Allocator) !rpc.HandlerReply {
         _ = arena;
+        if (std.mem.eql(u8, method, "$onWillActivateExtension")) {
+            const identifier = valueArg(args, 0) orelse return error.InvalidArguments;
+            if (identifier != .object) return error.InvalidArguments;
+            const value = identifier.object.get("value") orelse return error.InvalidArguments;
+            if (value != .string) return error.InvalidArguments;
+            try self.host.on_will_activate(self.host.context, value.string);
+            return .empty;
+        }
         if (std.mem.eql(u8, method, "$onDidActivateExtension")) {
             self.host.on_did_activate(self.host.context);
             return .empty;
