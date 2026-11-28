@@ -359,6 +359,7 @@ pub fn main(init: std.process.Init) !void {
             .system_location = installed_extensions,
             .user_location = profile.extensions_dir,
             .enablement = enablement,
+            .gallery_url = init.environ_map.get("MINECODE_EXTENSION_GALLERY_URL") orelse @import("../vs/platform/product/common/product.zig").extension_gallery_service_url,
         }) catch |err| blk: {
             report(log_service, "extension scan failed: {s}", .{@errorName(err)});
             break :blk null;
@@ -849,7 +850,7 @@ pub fn main(init: std.process.Init) !void {
                     const modal_host = helix_runtime.host orelse vim_runtime.host;
                     if (modal_host) |host| {
                         const editor_focused = workbench.focus == .editor;
-                        const normal_tab = if (workbench.activeTab()) |tab| !tab.isDiff() and !tab.isMultiDiff() and !tab.isImage() and tab.markdown_preview == null and tab.terminal_input == null else false;
+                        const normal_tab = if (workbench.activeTab()) |tab| !tab.isDiff() and !tab.isMultiDiff() and !tab.isImage() and tab.extension_editor == null and tab.markdown_preview == null and tab.terminal_input == null else false;
                         if (!workbench.is_pasting and editor_focused and normal_tab and
                             dispatchExtensionKey(workbench, host, event))
                         {
@@ -868,6 +869,10 @@ pub fn main(init: std.process.Init) !void {
                     if (terminal_workbench.handleWatermarkKey(workbench, event)) continue;
 
                     const current = workbench.activeTab() orelse continue;
+                    if (current.extension_editor) |pane| {
+                        if (try pane.handleKey(event)) needs_render = true;
+                        continue;
+                    }
                     if (current.markdown_preview) |preview| {
                         preview.handleKey(event);
                         continue;
@@ -969,6 +974,11 @@ pub fn main(init: std.process.Init) !void {
                     var target = terminal_workbench.editorMouseEvent(workbench, event.*) orelse continue;
                     const current = target.tab;
                     const adjusted = &target.event;
+                    if (current.extension_editor) |pane| {
+                        if (event.kind == .down) workbench.focusEditor();
+                        if (try pane.handleMouse(adjusted)) needs_render = true;
+                        continue;
+                    }
                     if (current.isImage()) {
                         const focus_gained = workbench.focus != .editor;
                         if (event.kind == .down) workbench.focusEditor();

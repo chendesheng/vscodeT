@@ -3510,7 +3510,10 @@ pub const TerminalWorkbench = struct {
     /// Borrows the app-owned extension inventory for the Extensions panel and
     /// its enablement actions. Called before the sidebar mounts the container.
     pub fn setExtensionsService(self: *TerminalWorkbench, service: *extensions_workbench_service.ExtensionsWorkbenchService) void {
+        if (self.extensions_service) |old| if (old != service) old.detachWindow();
         self.extensions_service = service;
+        service.attachWindow(&self.window_events);
+        service.workspace = self.workspace;
         if (self.extensions_view) |contribution| contribution.setService(service) catch {};
     }
 
@@ -3696,7 +3699,7 @@ pub const TerminalWorkbench = struct {
     /// the key reaches that widget through the normal view dispatch.
     pub fn notifyEditorKeyDown(self: *TerminalWorkbench, event: *ui.KeyEvent) bool {
         const tab = self.activeTab() orelse return false;
-        if (tab.isDiff() or tab.isMultiDiff() or tab.isImage()) return false;
+        if (tab.isDiff() or tab.isMultiDiff() or tab.isImage() or tab.extension_editor != null) return false;
         tab.ensureControllers() catch return false;
         const controllers = tab.controllers orelse return false;
         controllers.editor.onBeforeInteractionEvent();
@@ -4746,7 +4749,7 @@ fn outlinePaneBodyVisible(context: *anyopaque, visible: bool) void {
 fn outlineActiveEditor(context: *anyopaque) ?OutlineEditor {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     const tab = self.activeTab() orelse return null;
-    if (tab.isImage() or tab.isDiff() or tab.isMultiDiff() or tab.markdown_panel != null or tab.terminal_input != null) return null;
+    if (tab.isImage() or tab.isDiff() or tab.isMultiDiff() or tab.markdown_panel != null or tab.terminal_input != null or tab.extension_editor != null) return null;
     return .{
         .context = @ptrCast(tab),
         .control = tab.editor,

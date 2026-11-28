@@ -321,6 +321,9 @@ fn computeTabLabels(scratch: std.mem.Allocator, pane: *GroupView, ordered: []con
         if (tab.search_editor_input != null) {
             info.file_name = "";
             info.icon = .{ .glyph = 0xf002, .color = if (options.palette) |palette| palette.color("tab.activeForeground", .{ 110, 164, 118 }) else .{ .r = 110, .g = 164, .b = 118 } };
+        } else if (tab.extension_input != null) {
+            info.file_name = "";
+            info.icon = .{ .glyph = 0xEAE6, .color = if (options.palette) |palette| palette.color("icon.foreground", .{ 197, 197, 197 }) else .{ .r = 197, .g = 197, .b = 197 } };
         } else if (tab.markdown_panel != null) {
             info.file_name = "";
         } else if (tab.terminal_input != null) {

@@ -58,6 +58,9 @@ const MarkdownPreview = @import("../../../contrib/markdown/browser/markdownPrevi
 const MarkdownPreviewConfig = @import("../../../contrib/markdown/browser/markdownPreviewConfig.zig").MarkdownPreviewConfig;
 const StickyScrollHost = @import("../../../../editor/contrib/stickyScroll/browser/stickyScrollHost.zig").StickyScrollHost;
 const StickyScrollController = @import("../../../../editor/contrib/stickyScroll/browser/stickyScrollController.zig").StickyScrollController;
+const ExtensionEditor = @import("../../../contrib/extensions/browser/extensionEditor.zig").ExtensionEditor;
+const ExtensionsInput = @import("../../../contrib/extensions/common/extensionsInput.zig").ExtensionsInput;
+const ExtensionsWorkbenchService = @import("../../../contrib/extensions/browser/extensionsWorkbenchService.zig").ExtensionsWorkbenchService;
 const ImagePreviewPane = @import("../../../contrib/mediaPreview/browser/imagePreviewPane.zig").ImagePreviewPane;
 const ImagePreviewEditorInput = @import("../../../contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInput;
 
@@ -234,6 +237,8 @@ pub const Tab = struct {
     /// Image preview pane; also marks this as an image tab.
     image_preview: ?*ImagePreviewPane = null,
     image_input: ?*ImagePreviewEditorInput = null,
+    extension_editor: ?*ExtensionEditor = null,
+    extension_input: ?*ExtensionsInput = null,
     terminal_input: ?*TerminalEditorInput = null,
     search_editor_input: ?*SearchEditorInput = null,
     image_runtime: ?*ui.image.Runtime = null,
@@ -405,6 +410,22 @@ pub const Tab = struct {
         return self;
     }
 
+    pub fn initExtension(factory: EditorViewFactory, allocator: Allocator, io: Io, input: *ExtensionsInput, service: *ExtensionsWorkbenchService, width: usize, height: usize, window: ?*@import("../../../../base/common/windowDispatch.zig").Queue) !*Tab {
+        const self = try allocator.create(Tab);
+        errdefer allocator.destroy(self);
+        const editor = try Editor.createFromText(allocator, io, "", input.resource, width, height);
+        errdefer {
+            editor.deinit();
+            allocator.destroy(editor);
+        }
+        editor.setReadOnly(true);
+        const view = try factory(allocator, editor);
+        errdefer view.deinit();
+        const pane = try ExtensionEditor.init(allocator, io, service, input, window);
+        self.* = .{ .allocator = allocator, .editor = editor, .view = view, .file_input = null, .input = input.interface(), .extension_input = input, .extension_editor = pane };
+        return self;
+    }
+
     /// The shell owns rendering and input. The editor shell carries a
     /// read-only placeholder for workbench paths that still require Editor/View.
     pub fn initTerminal(factory: EditorViewFactory, allocator: Allocator, io: Io, instance: *TerminalInstance) !*Tab {
@@ -532,7 +553,7 @@ pub const Tab = struct {
     }
 
     pub fn attachCodeLensServices(self: *Tab, features: *LanguageFeaturesService, cache: *@import("../../../../editor/contrib/codelens/browser/codeLensCache.zig").CodeLensCache, commands: @import("../../../../editor/contrib/codelens/browser/codelensWidget.zig").CommandHost, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
-        if (self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
+        if (self.extension_editor != null or self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
         const services: CodeLensServices = .{ .features = features, .cache = cache, .commands = commands, .window = window };
         self.code_lens_services = services;
         self.ensureControllers() catch return;
@@ -541,7 +562,7 @@ pub const Tab = struct {
     }
 
     pub fn attachInlayHintsServices(self: *Tab, services: InlayHintsServices) void {
-        if (self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
+        if (self.extension_editor != null or self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
         self.inlay_hints_services = services;
         self.ensureControllers() catch return;
         if (self.controllers) |controllers| controllers.attachInlayHintsServices(services) catch {};
@@ -549,7 +570,7 @@ pub const Tab = struct {
     }
 
     pub fn attachSemanticTokensServices(self: *Tab, services: SemanticTokensServices) void {
-        if (self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
+        if (self.extension_editor != null or self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
         self.semantic_tokens_services = services;
         self.ensureControllers() catch return;
         if (self.controllers) |controllers| controllers.attachSemanticTokensServices(services) catch {};
@@ -557,7 +578,7 @@ pub const Tab = struct {
     }
 
     pub fn attachRenameServices(self: *Tab, services: RenameServices) void {
-        if (self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
+        if (self.extension_editor != null or self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
         self.rename_services = services;
         self.ensureControllers() catch return;
         if (self.controllers) |controllers| controllers.attachRenameServices(services) catch {};
@@ -565,7 +586,7 @@ pub const Tab = struct {
     }
 
     pub fn attachCodeActionServices(self: *Tab, services: CodeActionServices) void {
-        if (self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
+        if (self.extension_editor != null or self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
         self.code_action_services = services;
         self.ensureControllers() catch return;
         if (self.controllers) |controllers| controllers.attachCodeActionServices(services) catch {};
@@ -580,7 +601,7 @@ pub const Tab = struct {
     }
 
     pub fn attachMarkerNavigationServices(self: *Tab, services: MarkerNavigationServices) void {
-        if (self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
+        if (self.extension_editor != null or self.image_preview != null or self.terminal_input != null or self.markdown_panel != null or self.multi_diff != null) return;
         self.marker_navigation_services = services;
         self.ensureControllers() catch return;
         if (self.controllers) |controllers| controllers.attachMarkerNavigationServices(services) catch {};
@@ -623,7 +644,7 @@ pub const Tab = struct {
     }
 
     pub fn ensureControllers(self: *Tab) !void {
-        if (self.markdown_preview != null or self.image_preview != null or self.terminal_input != null or self.multi_diff != null) return;
+        if (self.extension_editor != null or self.markdown_preview != null or self.image_preview != null or self.terminal_input != null or self.multi_diff != null) return;
         if (self.controllers == null) {
             self.controllers = try self.createControllers(self.editor, self.view);
         }
@@ -664,6 +685,10 @@ pub const Tab = struct {
     }
 
     pub fn setThemeColors(self: *Tab, palette: ?*const @import("../../themeColors.zig").ThemeColors) void {
+        if (self.extension_editor) |pane| {
+            pane.setThemeColors(palette);
+            return;
+        }
         if (self.multi_diff) |multi| {
             multi.setThemeColors(palette);
         } else if (self.diff) |diff| {
@@ -674,6 +699,7 @@ pub const Tab = struct {
     }
 
     pub fn refresh(self: *Tab) !void {
+        if (self.extension_editor != null) return;
         if (self.markdown_preview != null) return;
         if (self.terminal_input != null) return;
         if (self.image_preview) |pane| {
@@ -803,7 +829,7 @@ pub const Tab = struct {
             if (container.first_child) |old| _ = container.removeChild(old);
             _ = try container.appendChild(element);
         }
-        if (self.terminal_input != null or self.isImage() or self.markdown_preview != null or self.multi_diff != null) return;
+        if (self.extension_editor != null or self.terminal_input != null or self.isImage() or self.markdown_preview != null or self.multi_diff != null) return;
         if (self.last_width != w or self.last_height != h) self.layoutCells(w, h);
         if (self.diff) |diff| {
             try diff.widget.mount(surface, element, x, y);
@@ -814,6 +840,7 @@ pub const Tab = struct {
 
     /// Prepares shared editor elements and paints preview and terminal cells.
     pub fn paint(self: *Tab, frame: *ui.Frame, x: usize, y: usize, w: usize, h: usize) !void {
+        if (self.extension_editor) |pane| return pane.paint(frame, x, y, w, h);
         if (self.terminalInstance()) |instance| {
             try terminal_editor.paint(instance, &frame.next, .{ .x = @floatFromInt(x), .y = @floatFromInt(y), .w = @floatFromInt(w), .h = @floatFromInt(h) });
             return;
@@ -844,6 +871,7 @@ pub const Tab = struct {
     /// Markdown preview, the image pane and the diff
     /// widget; every surface answers from its own style tree.
     pub fn pointerAt(self: *Tab, x: usize, y: usize) !ui.Pointer {
+        if (self.extension_editor != null) return if (y == 3 or y == 5) .pointer else .default;
         if (self.terminal_input != null) return .text;
         if (self.image_preview) |pane| {
             return (try pane.pointerAt(x, y)) orelse .default;
@@ -859,7 +887,7 @@ pub const Tab = struct {
             const cursor = terminal_editor.cursorCell(instance, .{ .w = @floatFromInt(self.last_width), .h = @floatFromInt(self.last_height) }) orelse return null;
             return .{ .row = cursor.row, .col = cursor.col };
         }
-        if (self.image_preview != null or self.markdown_preview != null) return null;
+        if (self.extension_editor != null or self.image_preview != null or self.markdown_preview != null) return null;
         if (self.multi_diff) |multi| {
             const cell = multi.cursorCell() orelse return null;
             return .{ .row = cell.row, .col = cell.col };
@@ -872,6 +900,7 @@ pub const Tab = struct {
     }
 
     pub fn focusEditor(self: *Tab) void {
+        if (self.extension_editor != null) return;
         if (self.markdown_preview != null) return;
         if (self.terminal_input != null) return;
         if (self.image_preview) |pane| {
@@ -1013,6 +1042,7 @@ pub const Tab = struct {
             .get_control_fn = struct {
                 fn get(context: *anyopaque) ?*anyopaque {
                     const tab: *Tab = @ptrCast(@alignCast(context));
+                    if (tab.extension_editor) |pane| return pane;
                     if (tab.image_preview) |pane| return pane;
                     if (tab.markdown_preview) |pane| return pane;
                     if (tab.multi_diff) |multi| return multi.widget;
@@ -1046,7 +1076,7 @@ pub const Tab = struct {
     /// getCodeEditor(activeEditorPane.getControl()) in the single-window
     /// terminal. A diff exposes its modified text control.
     pub fn codeEditorControl(self: *Tab) ?*Editor {
-        if (self.isImage() or self.terminal_input != null or self.markdown_preview != null) return null;
+        if (self.extension_editor != null or self.isImage() or self.terminal_input != null or self.markdown_preview != null) return null;
         if (self.multi_diff) |multi| return if (multi.widget.activeControl()) |editor| editor.interface().getModifiedEditor() else null;
         if (self.diff) |diff| return diff.widget.interface().getModifiedEditor();
         return self.editor;
@@ -1241,7 +1271,7 @@ pub const Tab = struct {
     }
 
     pub fn getSelection(self: *Tab, allocator: Allocator) !?editor_common.IEditorPaneSelection {
-        if (self.isImage()) return null;
+        if (self.extension_editor != null or self.isImage()) return null;
         const selections = try self.editor.getSelections();
         defer self.editor.allocator.free(selections);
         if (selections.len == 0) return null;
@@ -1306,6 +1336,10 @@ pub const Tab = struct {
             self.allocator.destroy(listeners);
             self.selection_listeners = null;
         }
+        if (self.extension_editor) |pane| {
+            pane.deinit();
+            self.extension_editor = null;
+        }
         if (self.image_preview) |pane| {
             pane.deinit();
             self.image_preview = null;
@@ -1334,6 +1368,10 @@ pub const Tab = struct {
             multi.destroy();
             self.editor.deinit();
             self.allocator.destroy(self.editor);
+        } else if (self.extension_input) |input| {
+            self.editor.deinit();
+            self.allocator.destroy(self.editor);
+            input.deinit();
         } else if (self.image_input) |input| {
             self.editor.deinit();
             self.allocator.destroy(self.editor);

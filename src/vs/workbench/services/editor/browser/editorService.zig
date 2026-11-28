@@ -1247,6 +1247,38 @@ pub const EditorOpening = struct {
         self.pruneTabs(pane);
     }
 
+    pub fn openExtension(self: *EditorOpening, service: *@import("../../../contrib/extensions/browser/extensionsWorkbenchService.zig").ExtensionsWorkbenchService, identifier: []const u8) !void {
+        const extension = service.find(identifier) orelse return error.ExtensionNotFound;
+        const Input = @import("../../../contrib/extensions/common/extensionsInput.zig").ExtensionsInput;
+        const input = try Input.init(self.allocator, extension);
+        var input_owned = true;
+        defer if (input_owned) input.deinit();
+        const opened = try self.part.service.openEditor(input.interface(), null, .{ .open = .{ .pinned = false, .active = true } });
+        const pane = self.part.viewForGroup(opened.group) orelse return error.GroupPaneMissing;
+        if (!opened.result.is_new) {
+            if (pane.tabForInput(opened.result.editor)) |tab| try pane.activateTab(tab);
+            self.pruneTabs(pane);
+            return;
+        }
+        var owned_tab: ?*Tab = null;
+        var mounted = false;
+        errdefer if (!mounted) {
+            _ = opened.group.model.closeEditor(input.interface(), .UNKNOWN, true) catch {};
+            if (owned_tab) |tab| tab.deinit();
+        };
+        const dimensions = self.host.image_dimensions(self.host.context);
+        const tab = try Tab.initExtension(self.view_factory, self.allocator, self.io, input, service, dimensions.width, dimensions.height, self.window_events);
+        tab.extension_editor.?.opener = self.external_opener;
+        input_owned = false;
+        owned_tab = tab;
+        try tab.view.setStatusBarVisible(false);
+        try pane.addTab(tab);
+        mounted = true;
+        owned_tab = null;
+        try pane.activateTab(tab);
+        self.pruneTabs(pane);
+    }
+
     fn openImagePath(self: *EditorOpening, path: []const u8, options: OpenOptions, window: ?*@import("../../../../base/common/windowDispatch.zig").Queue) !void {
         const input = try ImagePreviewEditorInput.init(self.allocator, path);
         var input_owned = true;
