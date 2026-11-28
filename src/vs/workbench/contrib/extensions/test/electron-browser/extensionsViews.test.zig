@@ -128,16 +128,17 @@ test "Test installed extensions sort before built-ins" {
     try testing.expectEqualStrings("aaa-builtin", filtered[1].display_name);
 }
 
-test "Test sort token keeps display-name order" {
+test "Sort token keeps installed display-name order and built-ins have a separate query" {
+    // VS Code's filterInstalledExtensions excludes built-ins when a
+    // sort is specified. The explicit builtin query still sorts them.
     try expectNames("@sort:name", &.{
         "first-disabled-extension",
         "first-enabled-extension",
         "random-enabled-extension",
         "second-disabled-extension",
         "second-enabled-extension",
-        "my-lang",
-        "my-theme",
     });
+    try expectNames("@builtin @sort:name", &.{ "my-lang", "my-theme" });
 }
 
 test "Test description text matches" {
