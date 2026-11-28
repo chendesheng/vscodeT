@@ -4576,7 +4576,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                 .@"workbench.colorTheme" = "Dark 2026",
             }, .{});
             try tmp.dir.writeFile(io, .{ .sub_path = "settings.json", .data = settings });
-            var catalog = try @import("../../services/extensions/common/extensionsRegistry.zig").scan(allocator, &.{extension_path});
+            var catalog = try @import("../../services/extensions/common/extensionsRegistry.zig").scan(allocator, io, &.{extension_path});
             defer catalog.deinit();
             const window = try TestWindow.initWithOptions(allocator, io, &.{}, 100, 30, .{ .initial_user_settings_paths = &.{settings_path} }, null);
             defer window.deinit();
@@ -4879,7 +4879,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try directory.writeFile(io, .{ .sub_path = "sample.zig", .data = "/// Returns the answer.\npub fn answer() u32 { return 42; }\npub fn example() u32 { return answer(); }\npub fn multiline() void {\n    const x = 1;\n    _ = x;\n}\npub fn add(value: u32, other: u32) u32 { return value + other; }\npub fn callAdd() u32 { return add(1, 2); }\npub const Thing = struct { value: u32 };\npub fn makeThing() Thing { return .{ .value = 1 }; }\npub fn useThing() u32 { const t = makeThing(); return t.value; }\n" });
             const document_path = try std.fs.path.join(allocator, &.{ root, "sample.zig" });
             defer allocator.free(document_path);
-            var catalog = try @import("../../services/extensions/common/extensionsRegistry.zig").scan(allocator, &.{extension_path});
+            var catalog = try @import("../../services/extensions/common/extensionsRegistry.zig").scan(allocator, io, &.{extension_path});
             defer catalog.deinit();
             const window = try TestWindow.initWithOptions(allocator, io, &.{}, 100, 30, .{ .initial_user_settings_paths = &.{settings_path} }, null);
             defer window.deinit();
@@ -5647,7 +5647,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const io = std.testing.io;
             std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
             const allocator = std.testing.allocator;
-            var catalog = try @import("../../services/extensions/common/extensionsRegistry.zig").scan(allocator, &.{ "vscode/extensions/configuration-editing", "vscode/extensions/lua" });
+            var catalog = try @import("../../services/extensions/common/extensionsRegistry.zig").scan(allocator, io, &.{ "vscode/extensions/configuration-editing", "vscode/extensions/lua" });
             defer catalog.deinit();
             var tmp = std.testing.tmpDir(.{});
             defer tmp.cleanup();
