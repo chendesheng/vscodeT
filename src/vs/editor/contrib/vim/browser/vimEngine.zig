@@ -1993,8 +1993,11 @@ pub const VimEngine = struct {
         const delta: usize = @max(self.editor.textHeight() / 2, 1);
         const top = self.editor.topViewLine();
         const max_top = @max(1, self.editor.viewLineCount() -| self.editor.textHeight() + 1);
-        _ = self.editor.setTopViewLine(if (down) @min(top + delta, max_top) else top -| delta);
+        const new_top = if (down) @min(top + delta, max_top) else top -| delta;
+        // Moving the cursor through the editor reveals it and can move the
+        // viewport, so set the command's viewport after the motion.
         try self.editor.moveWrappedLine(down, false, delta);
+        _ = self.editor.setTopViewLine(new_top);
         self.editor.ensureCursorVisible();
     }
 
@@ -2003,8 +2006,9 @@ pub const VimEngine = struct {
         const delta: usize = @max(self.editor.textHeight() -| 2, 1);
         const top = self.editor.topViewLine();
         const max_top = @max(1, self.editor.viewLineCount() -| self.editor.textHeight() + 1);
-        _ = self.editor.setTopViewLine(if (down) @min(top + delta, max_top) else top -| delta);
+        const new_top = if (down) @min(top + delta, max_top) else top -| delta;
         try self.editor.moveWrappedLine(down, false, delta);
+        _ = self.editor.setTopViewLine(new_top);
         self.editor.ensureCursorVisible();
     }
 
