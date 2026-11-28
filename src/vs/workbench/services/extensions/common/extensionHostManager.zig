@@ -238,7 +238,9 @@ pub const HostManager = struct {
             .stream = self.stream,
             .io = self.io,
             .owner = self,
-            .writer = .{ .allocator = allocator, .io = self.io, .sink = .{ .context = self.sender, .write = SendContext.writeDetached, .failed = SendContext.failed } },
+            // Transport frames have no window lifetime. Keep the detached
+            // producer/consumer allocation independent of the RPC allocator.
+            .writer = .{ .allocator = std.heap.page_allocator, .io = self.io, .sink = .{ .context = self.sender, .write = SendContext.writeDetached, .failed = SendContext.failed } },
         };
         try self.sender.writer.start();
         errdefer {

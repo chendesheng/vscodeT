@@ -159,7 +159,9 @@ pub const Client = struct {
         if (self.child.stdin == null or self.child.stdout == null) return Error.ServerUnavailable;
 
         self.writer_file = self.child.stdin.?;
-        self.writer = .{ .allocator = allocator, .io = self.io, .sink = .{ .context = self, .write = writeDetached, .failed = writerFailed } };
+        // The detached writer owns transport bytes independently of the
+        // language client's window-owned JSON and provider allocations.
+        self.writer = .{ .allocator = std.heap.page_allocator, .io = self.io, .sink = .{ .context = self, .write = writeDetached, .failed = writerFailed } };
         try self.writer.?.start();
         self.reader = try std.Thread.spawn(.{}, readerLoop, .{ self, self.child.stdout.? });
         var arena = std.heap.ArenaAllocator.init(allocator);

@@ -121,6 +121,35 @@ jobs:
         run: |
           $zigOptions = @()
           if ($env:ONIG_DIR) { $zigOptions = @("-Donig-include=$(Join-Path $env:ONIG_DIR include)", "-Donig-lib=$(Join-Path $env:ONIG_DIR lib)") }
+          # Windows has intermittently stalled in the first extension-host
+          # fixture. Capture the test process's native thread stacks if it
+          # remains alive for three minutes, then fail rather than wait for
+          # the enclosing job timeout. Run precisely the same test target.
+          if ($IsWindows) {
+            $arguments = @('build', 'test-e2e', '-De2e-progress=true', '--summary', 'all') + $zigOptions
+            $build = Start-Process -FilePath (Get-Command zig).Source -ArgumentList ($arguments | ForEach-Object { '"' + $_ + '"' }) -NoNewWindow -PassThru
+            while (!$build.WaitForExit(1000)) {
+              $test = Get-Process -Name e2e_tests -ErrorAction SilentlyContinue | Select-Object -First 1
+              if (!$test) { continue }
+              try { $age = ((Get-Date) - $test.StartTime).TotalSeconds } catch { continue }
+              if ($test.HasExited -or $age -lt 180) { continue }
+              Write-Host "Extension-host tests stalled; collecting native stacks for process $($test.Id)"
+              $debugger = Get-Command cdb.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+              if (!$debugger) {
+                $debugger = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
+              }
+              if (Test-Path -LiteralPath $debugger) {
+                $diagnostic = Start-Process -FilePath $debugger -ArgumentList @('-pv', '-p', "$($test.Id)", '-c', '"~* k; q"') -NoNewWindow -PassThru
+                if (!$diagnostic.WaitForExit(30000)) { $diagnostic.Kill() }
+              } else {
+                Write-Host 'Windows SDK debugger is unavailable on this runner.'
+              }
+              Stop-Process -Id $test.Id -Force -ErrorAction SilentlyContinue
+              break
+            }
+            $build.WaitForExit()
+            exit $build.ExitCode
+          }
           zig build test-e2e -De2e-progress=true --summary all @zigOptions
       - name: Test
         if: ${{ !cancelled() && steps.integration_assets.outcome == 'success' }}

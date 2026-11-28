@@ -1,6 +1,6 @@
 // Port of the buffered ProtocolWriter in `src/vs/base/parts/ipc/common/ipc.net.ts`.
 // Native socket/pipe writes may block. The producer owns framing; this writer
-// copies the frame into an ordered queue and a transport thread drains it.
+// copies the frame into an ordered queue and an owned worker Io task drains it.
 // Closing the underlying transport interrupts the detached writer before join.
 const std = @import("std");
 const Io = std.Io;
@@ -14,7 +14,7 @@ pub const ProtocolWriter = struct {
     available: Io.Condition = .init,
     drained: Io.Event = .is_set,
     queue: std.ArrayList([]u8) = .empty,
-    thread: ?std.Thread = null,
+    worker: ?Io.Future(void) = null,
     stopped: bool = false,
 
     pub const Sink = struct {
@@ -24,7 +24,7 @@ pub const ProtocolWriter = struct {
     };
 
     pub fn start(self: *ProtocolWriter) !void {
-        self.thread = try std.Thread.spawn(.{}, run, .{self});
+        self.worker = try self.io.concurrent(run, .{self});
     }
 
     /// Copies the producer's borrowed frame before returning. No transport
@@ -60,8 +60,8 @@ pub const ProtocolWriter = struct {
 
     pub fn deinit(self: *ProtocolWriter) void {
         self.stop();
-        if (self.thread) |thread| thread.join();
-        self.thread = null;
+        if (self.worker) |*worker| worker.await(self.io);
+        self.worker = null;
         for (self.queue.items) |bytes| self.allocator.free(bytes);
         self.queue.deinit(self.allocator);
     }
