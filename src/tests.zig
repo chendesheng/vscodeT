@@ -778,6 +778,8 @@ comptime {
     _ = @import("./vs/platform/extensionManagement/common/extensionManagementUtil.zig");
     _ = @import("./vs/platform/extensionManagement/test/node/extensionsScannerService.test.zig");
     _ = @import("./vs/workbench/services/extensions/common/extensionsRegistry.zig");
+    _ = @import("./vs/platform/extensionManagement/test/common/extensionGalleryService.test.zig");
+    _ = @import("./vs/platform/extensions/test/common/extensionValidator.test.zig");
     _ = @import("./vs/workbench/contrib/extensions/test/common/extensionQuery.test.zig");
     _ = @import("./vs/workbench/contrib/extensions/test/electron-browser/extensionsViews.test.zig");
     _ = @import("./vs/workbench/contrib/extensions/test/electron-browser/extensionsWorkbenchService.test.zig");
