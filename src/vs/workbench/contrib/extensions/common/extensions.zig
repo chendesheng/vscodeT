@@ -74,6 +74,11 @@ pub const IExtension = struct {
         return result;
     }
 
+    pub fn publisherIdentifier(self: IExtension) []const u8 {
+        const separator = std.mem.indexOfScalar(u8, self.identifier, '.') orelse return self.publisher;
+        return self.identifier[0..separator];
+    }
+
     pub fn isEnabled(self: IExtension) bool {
         return self.enablement_state.isEnabled();
     }

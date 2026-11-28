@@ -28,7 +28,7 @@ const Command = struct {
             .channel => try self.service.switchReleaseChannel(self.identifier, self.prerelease),
             .restart => try self.service.restartExtensions(),
             .auto_update => if (self.service.find(self.identifier)) |extension| try self.service.updateAutoUpdateEnablementFor(extension.*, !self.service.isAutoUpdateEnabledFor(extension.*)),
-            .publisher_auto_update => if (self.service.find(self.identifier)) |extension| try self.service.updatePublisherAutoUpdate(extension.publisher, !self.service.isPublisherAutoUpdateEnabled(extension.publisher)),
+            .publisher_auto_update => if (self.service.find(self.identifier)) |extension| try self.service.updatePublisherAutoUpdate(extension.publisherIdentifier(), !self.service.isPublisherAutoUpdateEnabled(extension.publisherIdentifier())),
             .enable, .disable => {
                 const enable = self.operation == .enable;
                 if (self.enablement) |callback| return callback.run(callback.context, self.identifier, enable, self.workspace);
@@ -61,7 +61,7 @@ pub fn addManagementActions(menu: *Menu, service: *Service, extension: *const mo
         try menu.addAction(if (prerelease) "extensions.installPreReleaseVersion" else "extensions.installReleaseVersion", if (prerelease) "Switch to Pre-Release Version" else "Switch to Release Version", null, Command{ .service = service, .identifier = identifier, .operation = .channel, .prerelease = prerelease });
     }
     if (service.canTogglePublisherAutoUpdate() and !extension.is_builtin) {
-        try menu.addAction("workbench.extensions.action.toggleAutoUpdatesForPublisher", "Auto Update All (From Publisher)", service.isPublisherAutoUpdateEnabled(extension.publisher), Command{ .service = service, .identifier = identifier, .operation = .publisher_auto_update });
+        try menu.addAction("workbench.extensions.action.toggleAutoUpdatesForPublisher", "Auto Update All (From Publisher)", service.isPublisherAutoUpdateEnabled(extension.publisherIdentifier()), Command{ .service = service, .identifier = identifier, .operation = .publisher_auto_update });
     }
     if (service.canToggleAutoUpdate(extension.*)) {
         try menu.addAction("workbench.extensions.action.toggleAutoUpdateForExtension", "Auto Update", service.isAutoUpdateEnabledFor(extension.*), Command{ .service = service, .identifier = identifier, .operation = .auto_update });

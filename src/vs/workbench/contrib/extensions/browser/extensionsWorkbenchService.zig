@@ -682,7 +682,7 @@ pub const ExtensionsWorkbenchService = struct {
             if (!enable) try next.append(allocator, id);
             if (enable and extension.pinned) try self.startManagement(.update_metadata, id, "", "", false, false);
         } else {
-            const publisher_enabled = hasAutoUpdateEntry(entries, extension.publisher);
+            const publisher_enabled = hasAutoUpdateEntry(entries, extension.publisherIdentifier());
             if (enable and !publisher_enabled) try next.append(allocator, id);
             if (!enable and publisher_enabled) try next.append(allocator, negated);
         }
@@ -1302,7 +1302,7 @@ pub fn autoUpdatePolicy(global_enabled: bool, entries: []const std.json.Value, e
     if (extension.is_builtin) return false;
     if (global_enabled) return !extension.pinned and extension.isEnabled() and !hasAutoUpdateEntry(entries, extension.identifier);
     if (hasAutoUpdateEntry(entries, extension.identifier)) return true;
-    if (!hasAutoUpdateEntry(entries, extension.publisher)) return false;
+    if (!hasAutoUpdateEntry(entries, extension.publisherIdentifier())) return false;
     for (entries) |entry| if (entry == .string and entry.string.len > 0 and entry.string[0] == '-' and std.ascii.eqlIgnoreCase(entry.string[1..], extension.identifier)) return false;
     return true;
 }
