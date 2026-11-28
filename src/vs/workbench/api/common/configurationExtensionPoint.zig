@@ -179,3 +179,57 @@ test "configuration extension point registers defaults and scopes" {
         registry.getConfigurationProperties().get("js/ts.format.enabled").?.scope,
     );
 }
+
+const extension_features = @import("../../services/extensionManagement/common/extensionFeatures.zig");
+
+fn shouldRenderSettings(manifest: std.json.Value) bool {
+    return extension_features.contribution(manifest, "configuration") != .null;
+}
+fn addSettings(table: *extension_features.Table, node: std.json.Value) !void {
+    const properties = extension_features.property(node, "properties");
+    if (properties != .object) return;
+    var iterator = properties.object.iterator();
+    while (iterator.next()) |entry| {
+        const schema = entry.value_ptr.*;
+        const markdown_description = extension_features.asString(extension_features.property(schema, "markdownDescription"));
+        const description = if (markdown_description.len > 0) markdown_description else extension_features.asString(extension_features.property(schema, "description"));
+        const default_value = if (schema == .object) schema.object.get("default") orelse configurationRegistry.getDefaultValue(table.allocator, extension_features.asString(extension_features.property(schema, "type"))) else std.json.Value.null;
+        try table.append(&.{ entry.key_ptr.*, description, try std.json.Stringify.valueAlloc(table.allocator, default_value, .{}) });
+    }
+}
+fn renderSettings(allocator: Allocator, manifest: std.json.Value) ![]u8 {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var table: extension_features.Table = .{ .allocator = arena.allocator(), .headers = &.{ "ID", "Description", "Default" } };
+    const value = extension_features.contribution(manifest, "configuration");
+    if (value == .array) {
+        for (value.array.items) |node| try addSettings(&table, node);
+    } else try addSettings(&table, value);
+    table.sort();
+    return table.markdown(allocator);
+}
+fn shouldRenderDefaults(manifest: std.json.Value) bool {
+    return extension_features.contribution(manifest, "configurationDefaults") != .null;
+}
+fn renderDefaults(allocator: Allocator, manifest: std.json.Value) ![]u8 {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var table: extension_features.Table = .{ .allocator = scratch, .headers = &.{ "Language", "ID", "Default" } };
+    const defaults = extension_features.contribution(manifest, "configurationDefaults");
+    if (defaults == .object) {
+        var iterator = defaults.object.iterator();
+        while (iterator.next()) |entry| {
+            const key = entry.key_ptr.*;
+            const value = entry.value_ptr.*;
+            if (key.len > 2 and key[0] == '[' and key[key.len - 1] == ']' and value == .object) {
+                var overrides = value.object.iterator();
+                while (overrides.next()) |override| try table.append(&.{ key, override.key_ptr.*, try std.json.Stringify.valueAlloc(scratch, override.value_ptr.*, .{}) });
+            } else try table.append(&.{ "", key, try std.json.Stringify.valueAlloc(scratch, value, .{}) });
+        }
+    }
+    table.sort();
+    return table.markdown(allocator);
+}
+pub const settings_feature: extension_features.Descriptor = .{ .id = "configuration", .label = "Settings", .should_render = shouldRenderSettings, .render = renderSettings };
+pub const defaults_feature: extension_features.Descriptor = .{ .id = "configurationDefaults", .label = "Settings Default Overrides", .should_render = shouldRenderDefaults, .render = renderDefaults };
