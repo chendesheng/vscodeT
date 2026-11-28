@@ -785,6 +785,7 @@ comptime {
     _ = @import("./vs/platform/extensionManagement/test/node/extensionManagementService.test.zig");
     _ = @import("./vs/platform/extensions/test/common/extensionValidator.test.zig");
     _ = @import("./vs/workbench/contrib/extensions/test/browser/extensionEditor.test.zig");
+    _ = @import("./vs/workbench/contrib/extensions/test/browser/workspaceRecommendations.test.zig");
     _ = @import("./vs/workbench/contrib/extensions/test/common/extensionQuery.test.zig");
     _ = @import("./vs/workbench/contrib/extensions/test/electron-browser/extensionsViews.test.zig");
     _ = @import("./vs/workbench/contrib/extensions/test/electron-browser/extensionsWorkbenchService.test.zig");
