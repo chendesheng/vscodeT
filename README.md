@@ -1298,8 +1298,9 @@ stress and strict reference-conformance reports run separately.
   `src/vs/workbench/contrib/git/{common,browser}/gitService.zig` keep the
   upstream repository state/ref/diff/commit contract. The native extension
   `src/extensions/git/src/model.zig` owns repository discovery and service lifetime
-  for the single workspace root; multi-repository discovery and parent, ignored
-  and unsafe repository tracking remain unported. The terminal provider
+  for workspace roots, submodules and worktrees. Background discovery is
+  cancellable when its workspace is removed or the window closes; parent,
+  ignored and unsafe repository tracking remain unported. The terminal provider
   (`src/extensions/git/src/repository.zig`) exposes the upstream `Merge Changes`,
   `Staged Changes` and `Changes` groups (untracked files mixed into `Changes`,
   matching `git.untrackedChanges=mixed`), v2 status letters, rename/delete and

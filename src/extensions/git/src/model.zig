@@ -23,7 +23,6 @@ const WindowQueue = dispatch.Queue;
 const time = @import("../../../vs/base/common/timeCompat.zig");
 const INotificationService = @import("../../../vs/platform/notification/common/notification.zig").INotificationService;
 const Emitter = @import("../../../vs/base/common/event.zig").Emitter;
-const worker_mod = @import("../../../vs/editor/browser/services/editorWorkerService.zig");
 const workspace_context = @import("../../../vs/workbench/services/workspaces/common/workspaceContextService.zig");
 const editor_service = @import("../../../vs/workbench/services/editor/common/editorService.zig");
 
@@ -278,7 +277,6 @@ pub const Model = struct {
     repository_scans: std.ArrayList(*RepositoryScan) = .empty,
     pending_repository_scans: std.AutoHashMapUnmanaged(*RepositoryScan, void) = .empty,
     repository_scan_task: dispatch.Task = .{},
-    repository_open_worker: ?*worker_mod.EditorWorkerService = null,
     pending_repository_openings: std.ArrayList(*PendingRepositoryOpen) = .empty,
     workspace_binding: ?WorkspaceBinding = null,
     repository_count_key: ?@import("../../../vs/platform/contextkey/common/contextkey.zig").IContextKey = null,
@@ -439,32 +437,43 @@ pub const Model = struct {
     }
 
     const PendingRepositoryOpen = struct {
-        worker_request: worker_mod.Request = .{ .compute = compute, .reply = reply },
-        owner: ?*Model,
+        owner: *Model,
         request: *RepositoryOpenRequest,
         listener: RepositoryOpenListener,
+        completion: dispatch.Task,
+        future: std.Io.Future(void) = undefined,
 
-        fn compute(message: *worker_mod.Request) void {
-            const self: *PendingRepositoryOpen = @fieldParentPtr("worker_request", message);
-            self.request.discover() catch {};
+        fn run(self: *PendingRepositoryOpen) void {
+            defer self.completion.post();
+            dispatch.workerCall(self.completion.queue.?.io, RepositoryOpenRequest.discover, .{self.request}) catch {};
         }
 
-        fn reply(message: *worker_mod.Request) bool {
-            const self: *PendingRepositoryOpen = @fieldParentPtr("worker_request", message);
-            defer {
-                self.request.destroy();
-                std.heap.page_allocator.destroy(self);
-            }
-            const owner = self.owner orelse return false;
+        fn complete(context: *anyopaque, _: i64, _: bool) bool {
+            const self: *PendingRepositoryOpen = @ptrCast(@alignCast(context));
+            self.future.await(self.completion.queue.?.io);
+            defer self.destroy();
+            const owner = self.owner;
             owner.removePendingRepositoryOpen(self);
             const before = owner.open_repositories.items.len;
             self.listener.publish(self.listener.context, self.request) catch return false;
             return before != owner.open_repositories.items.len;
         }
+
+        fn cancel(self: *PendingRepositoryOpen) void {
+            // Cancellation interrupts the detached subprocess I/O. Join only
+            // this canceled future, then detach a completion posted by it.
+            self.future.cancel(self.completion.queue.?.io);
+            self.completion.schedule(null);
+            self.destroy();
+        }
+
+        fn destroy(self: *PendingRepositoryOpen) void {
+            self.request.destroy();
+            std.heap.page_allocator.destroy(self);
+        }
     };
 
     fn removePendingRepositoryOpen(self: *Model, pending: *PendingRepositoryOpen) void {
-        pending.owner = null;
         for (self.pending_repository_openings.items, 0..) |candidate, index| {
             if (candidate != pending) continue;
             _ = self.pending_repository_openings.orderedRemove(index);
@@ -476,6 +485,7 @@ pub const Model = struct {
         for (self.pending_repository_openings.items) |pending| {
             if (!(git_util.pathEquals(self.allocator, pending.request.path, path) catch false)) continue;
             self.removePendingRepositoryOpen(pending);
+            pending.cancel();
             return;
         }
     }
@@ -491,16 +501,16 @@ pub const Model = struct {
         errdefer request.destroy();
         const pending = try std.heap.page_allocator.create(PendingRepositoryOpen);
         errdefer std.heap.page_allocator.destroy(pending);
-        pending.* = .{ .owner = self, .request = request, .listener = listener };
-        const worker = self.repository_open_worker orelse blk: {
-            const created = try self.allocator.create(worker_mod.EditorWorkerService);
-            created.* = .init();
-            created.attachWindow(options.window);
-            self.repository_open_worker = created;
-            break :blk created;
+        request.io = options.window.workerIo();
+        pending.* = .{
+            .owner = self,
+            .request = request,
+            .listener = listener,
+            .completion = .{ .queue = options.window, .context = pending, .run = PendingRepositoryOpen.complete, .progress = true },
         };
         try self.pending_repository_openings.append(self.allocator, pending);
-        worker.computeDiff(&pending.worker_request, time.milliTimestamp());
+        errdefer self.removePendingRepositoryOpen(pending);
+        pending.future = try options.window.io.concurrent(PendingRepositoryOpen.run, .{pending});
     }
 
     pub const OpenOptions = struct {
@@ -864,12 +874,8 @@ pub const Model = struct {
         if (self.repository_count_key) |key| key.reset();
         if (self.git_missing_key) |key| key.reset();
         self.repository_scan_task.schedule(null);
-        for (self.pending_repository_openings.items) |pending| pending.owner = null;
+        while (self.pending_repository_openings.pop()) |pending| pending.cancel();
         self.pending_repository_openings.deinit(self.allocator);
-        if (self.repository_open_worker) |worker| {
-            worker.deinit();
-            self.allocator.destroy(worker);
-        }
         for (self.repository_scans.items) |binding| binding.dispose();
         self.repository_scans.deinit(self.allocator);
         self.pending_repository_scans.deinit(self.allocator);
@@ -889,3 +895,64 @@ pub const Model = struct {
         self.* = init(self.allocator);
     }
 };
+
+test "Model disposal cancels in-flight repository discovery before publishing" {
+    const testing = std.testing;
+    const io = testing.io;
+    const Probe = struct {
+        started: std.atomic.Value(bool) = .init(false),
+        canceled: std.atomic.Value(bool) = .init(false),
+        published: bool = false,
+
+        fn wait(self: *@This(), worker_io: std.Io) std.Io.Cancelable!void {
+            self.started.store(true, .release);
+            try worker_io.sleep(.fromMilliseconds(5000), .awake);
+        }
+
+        fn run(self: *@This(), pending: *Model.PendingRepositoryOpen) void {
+            defer pending.completion.post();
+            dispatch.workerCall(pending.completion.queue.?.io, wait, .{ self, pending.request.io }) catch |err| {
+                if (err == error.Canceled) self.canceled.store(true, .release);
+            };
+        }
+
+        fn publish(context: *anyopaque, _: *RepositoryOpenRequest) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.published = true;
+        }
+    };
+    var probe = Probe{};
+    var scheduler = try @import("ui").WindowIo.init(testing.allocator, io);
+    defer scheduler.deinit();
+    var window = WindowQueue{ .io = scheduler.io(), .scheduler = &scheduler };
+    const cli = try Git.init(testing.allocator, .{ .io = io });
+    defer cli.deinit();
+    var model = Model.init(testing.allocator);
+    defer model.deinit();
+    {
+        const request = try RepositoryOpenRequest.create(cli, "pending-repository");
+        errdefer request.destroy();
+        const pending = try std.heap.page_allocator.create(Model.PendingRepositoryOpen);
+        errdefer std.heap.page_allocator.destroy(pending);
+        pending.* = .{
+            .owner = &model,
+            .request = request,
+            .listener = .{ .context = &probe, .publish = Probe.publish },
+            .completion = .{ .queue = &window, .context = pending, .run = Model.PendingRepositoryOpen.complete, .progress = true },
+        };
+        try model.pending_repository_openings.append(testing.allocator, pending);
+        errdefer _ = model.pending_repository_openings.pop();
+        pending.future = try window.io.concurrent(Probe.run, .{ &probe, pending });
+    }
+    const deadline = time.milliTimestamp() + 2000;
+    while (!probe.started.load(.acquire) and time.milliTimestamp() < deadline) {
+        _ = window.dispatch(time.milliTimestamp());
+        try io.sleep(.fromMilliseconds(1), .awake);
+    }
+    try testing.expect(probe.started.load(.acquire));
+    model.deinit();
+    try testing.expect(probe.canceled.load(.acquire));
+    try testing.expect(!probe.published);
+    try testing.expect(!window.dispatch(time.milliTimestamp()));
+    try testing.expectEqual(@as(usize, 0), model.pending_repository_openings.items.len);
+}

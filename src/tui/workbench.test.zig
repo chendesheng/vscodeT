@@ -13247,13 +13247,9 @@ test "Workbench: git scm integration discovers Git URI repositories in empty win
             try std.testing.expectEqual(@as(usize, 1), wb.git_model.pending_repository_openings.items.len);
             try wb.setWorkspaceFolders(&.{});
             try std.testing.expectEqual(@as(usize, 0), wb.git_model.pending_repository_openings.items.len);
-            const worker = wb.git_model.repository_open_worker.?;
-            worker.waitForReply();
-            for (0..5000) |_| {
-                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
-                if (worker.replies_ready.at == null) break;
-                std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
-            }
+            // Canceling joins the discovery future and removes its posted
+            // completion; no detached reply remains to drain.
+            _ = wb.window_events.dispatch(time_compat.milliTimestamp());
             try std.testing.expect(wb.git_model.repositoryForRoot(roots[0]) == null);
 
             try wb.setWorkspaceFolders(&.{roots[0]});
