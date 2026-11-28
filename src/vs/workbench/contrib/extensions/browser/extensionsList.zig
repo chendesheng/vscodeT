@@ -1,12 +1,8 @@
-// Port of the row rendering in
-// `src/vs/workbench/contrib/extensions/browser/extensionsList.ts`.
-//
-// Terminal adaptation: the browser template (72 px icon/name/description/
-// publisher/footer action bar) becomes two cell rows. Images, ratings, install
-// counts, verified-publisher badges, badges/action bars and hovers need DOM
-// layout or assets and are not ported. A single generic extension glyph
-// replaces the extension icon; the managed/enablement actions live in the
-// row's context menu (see `extensionsViews.zig`).
+// Port of `src/vs/workbench/contrib/extensions/browser/extensionsList.ts`.
+// The terminal row uses three cells high for name/version, description and
+// publisher/status/action. Gallery install counts are shown when available.
+// The generic extension codicon substitutes for per-extension icon assets;
+// browser hovers, verified badges and full action bar styling are unported.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
@@ -149,7 +145,7 @@ pub fn renderRow(grid: *ui.CellGrid, row: *const list.Row, extension: *const IEx
     if (row.width == 0) return;
 
     // First line: glyph + display name (+ disabled marker), version right-aligned.
-    grid.putCodepoint(row.x, row.y, extension_glyph, 1, icon_style);
+    if (row.offset_y == 0) grid.putCodepoint(row.x, row.y, extension_glyph, 1, icon_style);
     const name_width = row.width -| 2;
     var version_text: []const u8 = "";
     var version_buffer: [64]u8 = undefined;
@@ -159,21 +155,31 @@ pub fn renderRow(grid: *ui.CellGrid, row: *const list.Row, extension: *const IEx
     var version_width: usize = if (version_text.len > 0) displayWidth(version_text) + 1 else 0;
     if (version_width + 8 > name_width) version_width = 0;
     const name_space = name_width -| version_width;
-    const disabled_suffix = if (extension.isEnabled()) "" else " (disabled)";
+    const disabled_suffix = if (extension.state == .Uninstalled or extension.isEnabled()) "" else " (disabled)";
     var name_buffer: [256]u8 = undefined;
     const name_text = std.fmt.bufPrint(&name_buffer, "{s}{s}", .{ extension.display_name, disabled_suffix }) catch extension.display_name;
-    _ = drawTextEllipsis(grid, row.x + 2, row.y, name_space, name_text, name_style);
-    if (version_width > 0 and row.width > version_width) {
-        _ = drawTextEllipsis(grid, row.x + row.width - version_width, row.y, version_width, version_text, dim_style);
+    if (row.offset_y == 0) {
+        _ = drawTextEllipsis(grid, row.x + 2, row.y, name_space, name_text, name_style);
+        if (version_width > 0 and row.width > version_width) {
+            _ = drawTextEllipsis(grid, row.x + row.width - version_width, row.y, version_width, version_text, dim_style);
+        }
     }
-    if (row.height < 2) return;
-
-    // Second line: origin, then description (or the identifier when empty).
-    const detail = if (extension.description.len > 0) extension.description else extension.identifier;
-    var detail_buffer: [512]u8 = undefined;
-    const detail_text = std.fmt.bufPrint(&detail_buffer, "{s} · {s}", .{
-        if (extension.is_builtin) "Built-in" else "Installed",
-        detail,
-    }) catch detail;
-    _ = drawTextEllipsis(grid, row.x + 2, row.y + 1, name_width, detail_text, dim_style);
+    if (row.offset_y <= 1 and row.offset_y + row.height > 1) {
+        const detail = if (extension.description.len > 0) extension.description else extension.identifier;
+        _ = drawTextEllipsis(grid, row.x + 2, row.y + 1 - row.offset_y, name_width, detail, dim_style);
+    }
+    if (row.offset_y > 2 or row.offset_y + row.height <= 2) return;
+    const footer_y = row.y + 2 - row.offset_y;
+    const status = switch (extension.state) {
+        .Installing => "Installing…",
+        .Uninstalling => "Uninstalling…",
+        .Uninstalled => "Marketplace",
+        .Installed => if (extension.is_builtin) "Built-in" else "Installed",
+    };
+    var footer_buffer: [256]u8 = undefined;
+    const footer = if (extension.install_count) |count| std.fmt.bufPrint(&footer_buffer, "{s} · {d:.0} ↓", .{ extension.publisher, count }) catch extension.publisher else std.fmt.bufPrint(&footer_buffer, "{s} · {s}", .{ extension.publisher, status }) catch extension.publisher;
+    const action = if (extension.state == .Uninstalled and extension.vsix_url != null) "Install" else if (extension.state == .Installed) "⚙" else "";
+    const action_width = if (action.len > 0) displayWidth(action) + 2 else 0;
+    _ = drawTextEllipsis(grid, row.x + 2, footer_y, name_width -| action_width, footer, dim_style);
+    if (action_width > 0 and name_width >= action_width) _ = drawTextEllipsis(grid, row.x + row.width - action_width, footer_y, action_width, action, .{ .fg = ui.cell.packColor(colors_value.selection_foreground), .bg = ui.cell.packColor(colors_value.active_selection) });
 }
