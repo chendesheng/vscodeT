@@ -794,9 +794,16 @@ Details that the trace hides:
   `waitForInitializeCall()` when `$initializeWorkspace` is *called*, not when
   its reply is sent.
 - `$startExtensionHost` returns a promise that resolves after the host's eager
-  `*` activation. The startup-finished pass is scheduled after the eager race
-  (up to ten seconds) and may complete after that reply. The TUI must not block
-  its main loop on the promise; it pumps frames while the host works.
+  activation (including workspaceContains). The startup-finished pass races
+  that work against ten seconds; the promise itself can remain pending longer.
+  The TUI sends the request after mirroring existing documents but does not
+  wait for its reply before mounting the editor. The window dispatcher handles
+  replies and provider registrations as they arrive; the host owns
+  `onStartupFinished`. If bootstrap fails, the same owner teardown as normal
+  host disposal cancels the pending start request, deregisters providers and
+  removes their scheduled editor work before freeing the host. The delayed
+  activation fixture verifies both eventual completion and disposal while a
+  CodeLens provider and its outstanding request are live.
 - `Terminate` is filtered by the host's protocol wrapper
   (`extensionHostProcess.ts:297-330`), so it never produces a reply. It is
   still framed like every other payload: `00 00 00 01 03`.

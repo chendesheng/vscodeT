@@ -1,0 +1,11 @@
+{
+  "name": "slow-startup",
+  "publisher": "vscode-textbuffer",
+  "version": "1.0.0",
+  "engines": { "vscode": "^1.74.0" },
+  "main": "./extension.js",
+  "activationEvents": ["*"],
+  "contributes": {
+    "commands": [{ "command": "fixture.slowStartup.release", "title": "Release slow activation" }]
+  }
+}

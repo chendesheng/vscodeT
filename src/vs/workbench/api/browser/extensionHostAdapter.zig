@@ -128,6 +128,7 @@ pub const Extensions = struct {
     active: ?ActiveDocument = null,
     decoration_count: usize = 0,
     activated: bool = false,
+    eager_start_request: ?u32 = null,
     activation_tracker: extension_service.ActivationTracker,
     needs_render: bool = false,
     editor_service: EditorService,
@@ -174,6 +175,7 @@ pub const Extensions = struct {
     configuration_actor: ?MainThreadConfiguration = null,
     documents_actor: ?MainThreadDocuments = null,
     save_participant: @import("mainThreadSaveParticipant.zig").MainThreadSaveParticipant = undefined,
+    save_participant_registered: bool = false,
     pending_document_saves: std.ArrayList(*DocumentSaveRequest) = .empty,
     text_editors_actor: ?MainThreadTextEditors = null,
     editor_tabs_actor: ?MainThreadEditorTabs = null,
@@ -192,6 +194,34 @@ pub const Extensions = struct {
     pub const ExtensionPath = extension_service.ExtensionPath;
 
     pub fn init(
+        allocator: Allocator,
+        io: Io,
+        services: Services,
+        extension_paths: []const ExtensionPath,
+        user_data_dir: []const u8,
+        runtime_dir: []const u8,
+    ) !*Extensions {
+        // Once all actors exist, a failed handshake must follow the very
+        // same teardown as a normal host shutdown: bootstrap can already
+        // receive provider registrations and schedule editor callbacks.
+        const self = try create(allocator, io, services, extension_paths, user_data_dir, runtime_dir);
+        errdefer self.deinit();
+        try self.boot(runtime_dir);
+        try self.registerEditorListeners();
+        self.workspace_listener = try services.workspace.on_did_change_workspace_folders.listen(self, onWorkspaceChanged);
+        self.save_participant = .{
+            .allocator = allocator,
+            .host = self.host,
+            .window = services.window,
+            .models = .{ .context = self, .synchronize = synchronizeSaveModel },
+        };
+        try services.text_files.addDocumentSaveParticipant(self.save_participant.interface());
+        self.save_participant_registered = true;
+        self.host.attachReadyTask(&self.rpc_task);
+        return self;
+    }
+
+    fn create(
         allocator: Allocator,
         io: Io,
         services: Services,
@@ -367,26 +397,15 @@ pub const Extensions = struct {
         self.initLanguageActors() catch |err| {
             std.log.warn("language feature actors unavailable: {s}", .{@errorName(err)});
         };
-        errdefer self.removeActiveDocument() catch {};
-        try self.boot(runtime_dir);
-        try self.registerEditorListeners();
-        errdefer self.unregisterEditorListeners();
-        self.workspace_listener = try services.workspace.on_did_change_workspace_folders.listen(self, onWorkspaceChanged);
-        errdefer if (self.workspace_listener) |listener| services.workspace.on_did_change_workspace_folders.unlisten(listener);
-        self.save_participant = .{
-            .allocator = allocator,
-            .host = self.host,
-            .window = services.window,
-            .models = .{ .context = self, .synchronize = synchronizeSaveModel },
-        };
-        try services.text_files.addDocumentSaveParticipant(self.save_participant.interface());
-        self.host.attachReadyTask(&self.rpc_task);
         return self;
     }
 
     pub fn deinit(self: *Extensions) void {
         if (self.workspace_listener) |listener| self.services.workspace.on_did_change_workspace_folders.unlisten(listener);
-        self.services.text_files.removeDocumentSaveParticipant(&self.save_participant);
+        if (self.save_participant_registered) self.services.text_files.removeDocumentSaveParticipant(&self.save_participant);
+        self.save_participant_registered = false;
+        if (self.eager_start_request) |request| self.host.rpc.cancel(request);
+        self.eager_start_request = null;
         while (self.pending_document_saves.items.len != 0) {
             const request = self.pending_document_saves.items[self.pending_document_saves.items.len - 1];
             request.channel = null;
@@ -1253,17 +1272,27 @@ pub const Extensions = struct {
         try delta.put(arena, "myToRemove", .{ .array = std.json.Array.init(arena) });
         try delta.put(arena, "myToAdd", .{ .array = std.json.Array.init(arena) });
         var start_args = [_]rpc.Arg{.{ .json = .{ .object = delta } }};
-        try self.callAndWait(
+        // The upstream start promise resolves only when *all* eager
+        // activation completes. It is not a workbench startup barrier;
+        // the host itself schedules onStartupFinished after eager activation
+        // or its 10-second grace period. Providers can register while other
+        // extensions are still activating, so keep the window responsive.
+        self.eager_start_request = try self.host.call(
             proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostExtensionService),
             "$startExtensionHost",
             &start_args,
-            10_000,
-            error.StartExtensionHostRejected,
+            null,
+            .{ .context = self, .callback = onEagerStartComplete },
         );
 
         try self.syncActiveDocument();
         try self.syncTabs();
-        try self.host.activateByEvent("onStartupFinished", 0);
+    }
+
+    fn onEagerStartComplete(context: *anyopaque, reply: rpc.Reply) void {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        self.eager_start_request = null;
+        if (reply == .err) std.log.warn("extension host eager activation rejected", .{});
     }
 
     /// Calls a host method and waits for its reply. A rejected reply becomes
@@ -1341,6 +1370,13 @@ pub const Extensions = struct {
         if (self.add_group_listener) |id| part.on_did_add_group.unlisten(id);
         if (self.remove_group_listener) |id| part.on_did_remove_group.unlisten(id);
         if (self.move_group_listener) |id| part.on_did_move_group.unlisten(id);
+        self.active_editor_listener = null;
+        self.visible_editors_listener = null;
+        self.group_model_listener = null;
+        self.input_resources_listener = null;
+        self.add_group_listener = null;
+        self.remove_group_listener = null;
+        self.move_group_listener = null;
         self.tabs_task.schedule(null);
         self.models_task.schedule(null);
         self.selection_task.schedule(null);
@@ -2575,15 +2611,15 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             defer extension_host.deinit();
 
             const deadline = time_compat.milliTimestamp() + 10_000;
-            while (time_compat.milliTimestamp() < deadline) {
-                _ = extension_host.pump();
-                if (extension_host.active != null) break;
-                time_compat.sleepMillis(10);
-            }
-            _ = extension_host.pump();
-
             const features = workbench.language_features.?;
             const model = workbench.activeTab().?.editor.model;
+            // A mirrored active editor is not an activation barrier. These
+            // fixture assertions require *all* eager provider registrations.
+            while (extension_host.eager_start_request != null and time_compat.milliTimestamp() < deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(extension_host.eager_start_request == null);
             const hover_providers = try features.hover_provider.ordered(allocator, model, false);
             defer allocator.free(hover_providers);
             try std.testing.expect(hover_providers.len > 0);
@@ -3216,6 +3252,81 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             }
             try std.testing.expect(model.hasSomeSemanticTokens());
             try std.testing.expect(!model.hasCompleteSemanticTokens());
+        }
+
+        test "Extensions: eager activation does not block workbench startup" {
+            if (!build_options.e2e) return error.SkipZigTest;
+            try verifySlowStartup(false);
+        }
+
+        test "Extensions: disposing a partially started host unregisters providers and cancels editor work" {
+            if (!build_options.e2e) return error.SkipZigTest;
+            try verifySlowStartup(true);
+        }
+
+        fn verifySlowStartup(abort_start: bool) !void {
+            const a = std.testing.allocator;
+            const io = time_compat.io;
+            try std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{});
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try tmp.dir.writeFile(io, .{ .sub_path = "slow.txt", .data = "hello\n" });
+            const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+            defer a.free(root);
+            const path = try tmp.dir.realPathFileAlloc(io, "slow.txt", a);
+            defer a.free(path);
+            const window = try TestWindow.init(a, io, &.{path}, 100, 30);
+            defer window.deinit();
+            const workbench = window.workbench;
+            try workbench.enableLanguageFeatures();
+            const editor = workbench.activeTab().?.editor;
+            const registry = &workbench.language_features.?.code_lens_provider;
+            try std.testing.expect(!registry.has(editor.model));
+            const extension_paths = &[_]Extensions.ExtensionPath{.{ .path = "host/test-fixtures/slow-startup", .is_under_development = true }};
+            // The aborted case exercises the same owner teardown used by
+            // init's error path, before the save participant is registered.
+            var host: ?*Extensions = if (abort_start)
+                try Extensions.create(a, io, workbench.extensionHostServices(), extension_paths, root, "host/dist")
+            else
+                try Extensions.init(a, io, workbench.extensionHostServices(), extension_paths, root, "host/dist");
+            defer if (host) |extension_host| extension_host.deinit();
+            const extension_host = host.?;
+            if (abort_start) {
+                try extension_host.boot("host/dist");
+                extension_host.host.attachReadyTask(&extension_host.rpc_task);
+            }
+            // Startup returned even though the fixture can only finish when
+            // it receives the explicit release command below.
+            try std.testing.expect(extension_host.eager_start_request != null);
+            const Lens = @import("../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution;
+            const lens = editor.getInstantiatedContribution(Lens) orelse return error.CodeLensContributionMissing;
+            const deadline = time_compat.milliTimestamp() + 5000;
+            while ((!registry.has(editor.model) or lens.pending_fetch == null) and time_compat.milliTimestamp() < deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(registry.has(editor.model));
+            try std.testing.expect(lens.pending_fetch != null);
+            try std.testing.expect(extension_host.eager_start_request != null);
+            if (!abort_start) {
+                try extension_host.host.notify(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands), "$executeContributedCommand", &.{.{ .json = .{ .string = "fixture.slowStartup.release" } }});
+                const finish_deadline = time_compat.milliTimestamp() + 5000;
+                while ((extension_host.eager_start_request != null or lens.pending_fetch != null) and time_compat.milliTimestamp() < finish_deadline) {
+                    _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                    time_compat.sleepMillis(10);
+                }
+                try std.testing.expect(extension_host.eager_start_request == null);
+                try std.testing.expect(lens.pending_fetch == null);
+            }
+            extension_host.deinit();
+            host = null;
+            try std.testing.expect(!registry.has(editor.model));
+            try std.testing.expect(lens.pending_fetch == null);
+            try std.testing.expectEqual(@as(usize, 0), lens.providers.len);
+            // The real crash occurred after the workbench continued to
+            // dispatch a stale CodeLens deadline against the freed host.
+            _ = workbench.window_events.dispatch(time_compat.milliTimestamp() + 1000);
+            try std.testing.expect(lens.pending_fetch == null);
         }
 
         test "Extensions: real vscode-languageclient negotiates mock LSP and applies nested save and workspace edits" {
