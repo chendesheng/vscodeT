@@ -1078,6 +1078,26 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(widget.modified_editor.wrap_mode == .bounded);
         }
 
+        test "diffEditorWidget: sub-editors attach with adjusted options before constructing views" {
+            const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+            const Factory = struct {
+                fn create(allocator: std.mem.Allocator, editor: *Editor) !*View {
+                    // This boundary occurs before the first widget layout.
+                    // A wrapping projection must never have been constructed
+                    // for an explicitly unwrapped diff.
+                    try testing.expectEqual(.off, editor.wrap_mode);
+                    try testing.expectEqual(editor.model.getLineCount(), editor.viewLineCount());
+                    try testing.expect(!editor.hasFoldControl());
+                    try testing.expect(!editor.status_row);
+                    try testing.expectEqual(@as(usize, 1), editor.lineDecorationsWidth());
+                    return View.init(allocator, editor);
+                }
+            };
+            const text = "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789\nsecond line";
+            const widget = try DiffEditorWidget.create(Factory.create, testing.allocator, testing.io, "a.txt", "b.txt", text, text ++ "!", "Original", "Modified", 80, 8, .{ .diff_word_wrap = .off, .render_indicators = true });
+            defer widget.destroy();
+        }
+
         test "diffEditorWidget: whitespace transaction delivers layout before zone notification" {
             const widget = try DiffEditorWidget.create(View.init, testing.allocator, Io.Threaded.global_single_threaded.io(), "a.txt", "b.txt", "a\nb\nc", "a\nB\nc", "Original", "Modified", 80, 3, .{});
             defer widget.destroy();

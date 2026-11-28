@@ -859,6 +859,97 @@ fn benchNativeDiffInteractions(wb: *terminal_workbench.TerminalWorkbench, tab: *
     );
 }
 
+// Matched, short profiling run using the normal app-style allocator rather
+// than mapping an OS page for each small allocation in the matrix below.
+test "benchmark: Git diff allocation profile" {
+    if (!enabled()) return error.SkipZigTest;
+    try benchmarkGitDiffAllocationProfile(false);
+}
+
+test "benchmark: Git diff code allocation profile" {
+    if (!enabled()) return error.SkipZigTest;
+    try benchmarkGitDiffAllocationProfile(true);
+}
+
+fn benchmarkGitDiffAllocationProfile(code: bool) !void {
+    const io = std.testing.io;
+    var backing: std.heap.DebugAllocator(.{ .stack_trace_frames = 0 }) = .{};
+    defer _ = backing.deinit();
+    var counter = AllocationCounter{ .child = backing.allocator() };
+    const a = counter.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = root_buffer[0..try tmp.dir.realPath(io, &root_buffer)];
+    try benchGit(a, io, root, &.{"init"});
+    try benchGit(a, io, root, &.{ "config", "core.autocrlf", "false" });
+    try benchGit(a, io, root, &.{ "config", "user.name", "Diff Benchmark" });
+    try benchGit(a, io, root, &.{ "config", "user.email", "benchmark@example.invalid" });
+    const name = if (code) std.fs.path.basename(benchFile()) else "diff.txt";
+    const path = try std.fs.path.join(a, &.{ root, name });
+    defer a.free(path);
+    const original = if (code) try std.Io.Dir.cwd().readFileAlloc(io, benchFile(), a, .unlimited) else try benchDiffText(a, 10000, .many, false);
+    defer a.free(original);
+    try tmp.dir.writeFile(io, .{ .sub_path = name, .data = original });
+    try benchGit(a, io, root, &.{ "add", "." });
+    try benchGit(a, io, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "benchmark fixture" });
+    var requested_hunks: usize = if (code) 0 else 1000;
+    const modified = if (code) blk: {
+        var writer: std.Io.Writer.Allocating = .init(a);
+        defer writer.deinit();
+        var lines = std.mem.splitScalar(u8, original, '\n');
+        var i: usize = 0;
+        while (lines.next()) |line| : (i += 1) {
+            if (i != 0) try writer.writer.writeByte('\n');
+            try writer.writer.writeAll(line);
+            if (i % 200 == 5) {
+                try writer.writer.writeAll(" // changed");
+                requested_hunks += 1;
+            }
+        }
+        break :blk try writer.toOwnedSlice();
+    } else try benchDiffText(a, 10000, .many, true);
+    defer a.free(modified);
+    try tmp.dir.writeFile(io, .{ .sub_path = name, .data = modified });
+    const initial = counter.snapshot();
+    {
+        const window = try BenchWindow.init(a, io, &.{}, 160, 55);
+        defer window.deinit();
+        const wb = window.workbench;
+        const settings = try std.fs.path.join(a, &.{ root, ".git", "bench-settings.json" });
+        defer a.free(settings);
+        try wb.setUserSettingsPaths(&.{settings});
+        try wb.initSidebar(root);
+        while (wb.sidebar.?.hasPendingLoad()) {
+            _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            if (wb.sidebar.?.hasPendingLoad()) std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
+        }
+        try wb.initGit();
+        try wb.setUserConfigurationValue("diffEditor.renderSideBySide", .{ .bool = true });
+        try wb.setUserConfigurationValue("diffEditor.useInlineViewWhenSpaceIsLimited", .{ .bool = false });
+        try wb.setUserConfigurationValue("diffEditor.hideUnchangedRegions.enabled", .{ .bool = false });
+        try wb.setUserConfigurationValue("diffEditor.diffAlgorithm", .{ .string = "advanced" });
+        try wb.setUserConfigurationValue("diffEditor.wordWrap", .{ .string = "off" });
+        try wb.setUserConfigurationValue("diffEditor.maxComputationTime", .{ .integer = 5000 });
+        try wb.setUserConfigurationValue("diffEditor.experimental.showMoves", .{ .bool = false });
+        var out: std.Io.Writer.Allocating = .init(a);
+        defer out.deinit();
+        var times: BenchDiffTimes = .{};
+        var before = counter.snapshot();
+        std.debug.print("[profile] opening diff\n", .{});
+        const tab = try benchNativeDiffOpen(wb, io, path, false, &times, &out);
+        const state = tab.diff.?.widget.state() orelse return error.BenchmarkExpectedDiff;
+        std.debug.print("[profile] acquisition={d}us worker={d}us mount={d}us first_frame={d}us total={d}us hunks={d} timeout={}\n", .{ times.acquisition_us.load(.acquire), times.worker_us, times.mount_us, times.first_frame_us, times.total_us, state.mappings.len, state.quit_early });
+        counter.report("diff-open", before);
+        std.debug.print("[profile] interactions\n", .{});
+        before = counter.snapshot();
+        try benchNativeDiffInteractions(wb, tab, io, &out, requested_hunks);
+        counter.report("diff-interactions", before);
+    }
+    counter.report("diff-window-through-disposal", initial);
+    try std.testing.expectEqual(initial.live, counter.snapshot().live);
+}
+
 test "benchmark: native Git diff editor open, scroll, input and refresh" {
     if (!enabled()) return error.SkipZigTest;
     const io = std.testing.io;

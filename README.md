@@ -1455,6 +1455,9 @@ stress and strict reference-conformance reports run separately.
   character ranges fill through the end of a continuing row. Refresh retains both
   resource inputs, models, mounted views, split, cursors and scroll state. Git snapshot resolution and diff computation run on
   the editor worker; identical content/options reuse a bounded result cache.
+  The advanced Myers algorithm uses upstream's dense signed-diagonal arrays,
+  and diff-specific wrapping/folding options are applied before mounting either
+  model. See the [Git diff performance measurements](docs/perf/2026-11-28/git-diff.md).
   Model-content events debounce a new diff by 200 ms and computation-option
   changes schedule immediate work. Presentation-only changes retain the mounted
   views and models; obsolete results are detached, including on disposal.

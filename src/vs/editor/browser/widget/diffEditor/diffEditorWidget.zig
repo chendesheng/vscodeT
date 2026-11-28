@@ -614,6 +614,19 @@ pub fn DiffEditorWidget(comptime View: type) type {
             const is_inline = !normalized_options.renderSideBySide(width);
             const original_editor = self.original_editor;
             const modified_editor = self.modified_editor;
+            // DiffEditorEditors constructs both CodeEditorWidgets with the
+            // adjusted options before setModel. In particular an explicit
+            // diff wordWrap override must be in effect before the initial
+            // view-model projection, not only during the first layout.
+            diff_editor_editors.applyWordWrap(original_editor, modified_editor, normalized_options.diff_word_wrap, !is_inline);
+            original_editor.setReadOnly(!normalized_options.original_editable);
+            modified_editor.setReadOnly(normalized_options.read_only);
+            original_editor.setStatusRow(false);
+            modified_editor.setStatusRow(false);
+            original_editor.setLineDecorationsWidth(if (normalized_options.render_indicators) 1 else 0);
+            modified_editor.setLineDecorationsWidth(if (normalized_options.render_indicators) 1 else 0);
+            original_editor.disableFolding();
+            modified_editor.disableFolding();
             original_editor.setViewport(@max(width, 1), @max(height, 1));
             modified_editor.setViewport(@max(width, 1), @max(height, 1));
             try original_editor.setModel(binding.original);
@@ -640,16 +653,8 @@ pub fn DiffEditorWidget(comptime View: type) type {
             retained.modified = null;
             errdefer modified_view.deinit();
 
-            original_editor.setReadOnly(!normalized_options.original_editable);
-            modified_editor.setReadOnly(normalized_options.read_only);
-            original_editor.setStatusRow(false);
-            modified_editor.setStatusRow(false);
-            original_editor.setLineDecorationsWidth(if (normalized_options.render_indicators) 1 else 0);
-            modified_editor.setLineDecorationsWidth(if (normalized_options.render_indicators) 1 else 0);
             original_view.setStatusBarVisible(false) catch {};
             modified_view.setStatusBarVisible(false) catch {};
-            original_editor.disableFolding();
-            modified_editor.disableFolding();
 
             // The model decorations store pointers into the options structs owned
             // by `DiffEditorDecorations`, so it must live at a stable address

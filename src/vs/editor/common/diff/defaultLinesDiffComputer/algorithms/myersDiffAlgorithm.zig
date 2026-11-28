@@ -1,3 +1,6 @@
+// Port of `src/vs/editor/common/diff/defaultLinesDiffComputer/algorithms/myersDiffAlgorithm.ts`.
+// Upstream's FastInt32Array/FastArrayNegativeIndices are native growable
+// arrays. X offsets use usize to match the Zig sequence interface.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
@@ -11,8 +14,42 @@ const SnakePath = struct {
     length: usize,
 };
 
-const FastIntMap = std.AutoHashMapUnmanaged(isize, usize);
-const FastPathMap = std.AutoHashMapUnmanaged(isize, ?*SnakePath);
+/// Upstream FastInt32Array and FastArrayNegativeIndices use two contiguous
+/// arrays, one for each sign. A negative index -1 maps to slot 0. Preserve
+/// the growing diagonal band rather than allocating space for every line.
+fn FastArrayNegativeIndices(comptime T: type, comptime default: T) type {
+    return struct {
+        const Self = @This();
+        positive: std.ArrayList(T) = .empty,
+        negative: std.ArrayList(T) = .empty,
+
+        fn deinit(self: *Self, allocator: Allocator) void {
+            self.positive.deinit(allocator);
+            self.negative.deinit(allocator);
+        }
+
+        fn get(self: *const Self, idx: isize) T {
+            const arr = if (idx < 0) &self.negative else &self.positive;
+            const index: usize = @intCast(if (idx < 0) -(idx + 1) else idx);
+            return if (index < arr.items.len) arr.items[index] else default;
+        }
+
+        fn set(self: *Self, allocator: Allocator, idx: isize, value: T) !void {
+            const arr = if (idx < 0) &self.negative else &self.positive;
+            const index: usize = @intCast(if (idx < 0) -(idx + 1) else idx);
+            if (index >= arr.items.len) {
+                const old_len = arr.items.len;
+                const new_len = @max(10, @max(old_len * 2, index + 1));
+                try arr.resize(allocator, new_len);
+                @memset(arr.items[old_len..], default);
+            }
+            arr.items[index] = value;
+        }
+    };
+}
+
+const FastIntArray = FastArrayNegativeIndices(usize, 0);
+const FastPathArray = FastArrayNegativeIndices(?*SnakePath, null);
 
 /// An O(ND) diff algorithm that has a quadratic space worst-case complexity.
 pub const MyersDiffAlgorithm = struct {
@@ -32,20 +69,22 @@ pub const MyersDiffAlgorithm = struct {
 
         const seq_x = seq1; // Text on the x axis
         const seq_y = seq2; // Text on the y axis
+        const len_x = seq_x.length();
+        const len_y = seq_y.length();
 
-        var v: FastIntMap = .empty;
+        var v: FastIntArray = .{};
         defer v.deinit(allocator);
 
-        var paths: FastPathMap = .empty;
+        var paths: FastPathArray = .{};
         defer paths.deinit(allocator);
 
         var path_arena = std.heap.ArenaAllocator.init(allocator);
         defer path_arena.deinit();
         const path_allocator = path_arena.allocator();
 
-        const initial_x = getXAfterSnake(seq_x, seq_y, 0, 0);
-        try v.put(allocator, 0, initial_x);
-        try paths.put(allocator, 0, if (initial_x == 0) null else try newPath(path_allocator, null, 0, 0, initial_x));
+        const initial_x = getXAfterSnake(seq_x, seq_y, len_x, len_y, 0, 0);
+        try v.set(allocator, 0, initial_x);
+        try paths.set(allocator, 0, if (initial_x == 0) null else try newPath(path_allocator, null, 0, 0, initial_x));
 
         var d: usize = 0;
         var k: isize = 0;
@@ -58,18 +97,18 @@ pub const MyersDiffAlgorithm = struct {
                 }
             }
 
-            const lower_bound: isize = -@as(isize, @intCast(@min(d, seq_y.length() + (d % 2))));
-            const upper_bound: isize = @intCast(@min(d, seq_x.length() + (d % 2)));
+            const lower_bound: isize = -@as(isize, @intCast(@min(d, len_y + (d % 2))));
+            const upper_bound: isize = @intCast(@min(d, len_x + (d % 2)));
 
             k = lower_bound;
             while (k <= upper_bound) : (k += 2) {
-                const max_x_of_d_line_top: isize = if (k == upper_bound) -1 else @intCast(v.get(k + 1) orelse 0);
-                const max_x_of_d_line_left: isize = if (k == lower_bound) -1 else @as(isize, @intCast(v.get(k - 1) orelse 0)) + 1;
+                const max_x_of_d_line_top: isize = if (k == upper_bound) -1 else @intCast(v.get(k + 1));
+                const max_x_of_d_line_left: isize = if (k == lower_bound) -1 else @as(isize, @intCast(v.get(k - 1))) + 1;
 
-                const x: isize = @min(@max(max_x_of_d_line_top, max_x_of_d_line_left), @as(isize, @intCast(seq_x.length())));
+                const x: isize = @min(@max(max_x_of_d_line_top, max_x_of_d_line_left), @as(isize, @intCast(len_x)));
                 const y: isize = x - k;
 
-                if (x > @as(isize, @intCast(seq_x.length())) or y > @as(isize, @intCast(seq_y.length()))) {
+                if (x > @as(isize, @intCast(len_x)) or y > @as(isize, @intCast(len_y))) {
                     // This diagonal is irrelevant for the result.
                     continue;
                 }
@@ -81,27 +120,27 @@ pub const MyersDiffAlgorithm = struct {
                 const new_max_x = if (y < 0)
                     @as(usize, @intCast(x))
                 else
-                    getXAfterSnake(seq_x, seq_y, @intCast(x), @intCast(y));
-                try v.put(allocator, k, new_max_x);
+                    getXAfterSnake(seq_x, seq_y, len_x, len_y, @intCast(x), @intCast(y));
+                try v.set(allocator, k, new_max_x);
 
                 const last_path: ?*SnakePath = if (x == max_x_of_d_line_top)
-                    paths.get(k + 1) orelse null
+                    paths.get(k + 1)
                 else
-                    paths.get(k - 1) orelse null;
-                try paths.put(allocator, k, if (new_max_x != @as(usize, @intCast(x))) try newPath(path_allocator, last_path, @intCast(x), @intCast(y), new_max_x - @as(usize, @intCast(x))) else last_path);
+                    paths.get(k - 1);
+                try paths.set(allocator, k, if (new_max_x != @as(usize, @intCast(x))) try newPath(path_allocator, last_path, @intCast(x), @intCast(y), new_max_x - @as(usize, @intCast(x))) else last_path);
 
-                if (v.get(k).? == seq_x.length() and @as(isize, @intCast(v.get(k).?)) - k == @as(isize, @intCast(seq_y.length()))) {
+                if (new_max_x == len_x and @as(isize, @intCast(new_max_x)) - k == @as(isize, @intCast(len_y))) {
                     break :loop;
                 }
             }
         }
 
-        var path = paths.get(k) orelse null;
+        var path = paths.get(k);
         var result = ArrayList(diff.SequenceDiff).init(allocator);
         errdefer result.deinit();
 
-        var last_aligning_pos_s1: usize = seq_x.length();
-        var last_aligning_pos_s2: usize = seq_y.length();
+        var last_aligning_pos_s1: usize = len_x;
+        var last_aligning_pos_s2: usize = len_y;
 
         while (true) {
             const end_x = if (path) |p| p.x + p.length else 0;
@@ -124,10 +163,10 @@ pub const MyersDiffAlgorithm = struct {
         return diff.DiffAlgorithmResult.init(try result.toOwnedSlice(), false);
     }
 
-    fn getXAfterSnake(seq_x: diff.ISequence, seq_y: diff.ISequence, start_x: usize, start_y: usize) usize {
+    fn getXAfterSnake(seq_x: diff.ISequence, seq_y: diff.ISequence, len_x: usize, len_y: usize, start_x: usize, start_y: usize) usize {
         var x = start_x;
         var y = start_y;
-        while (x < seq_x.length() and y < seq_y.length() and seq_x.getElement(x) == seq_y.getElement(y)) {
+        while (x < len_x and y < len_y and seq_x.getElement(x) == seq_y.getElement(y)) {
             x += 1;
             y += 1;
         }
@@ -140,6 +179,44 @@ pub const MyersDiffAlgorithm = struct {
         return path;
     }
 };
+
+test "MyersDiffAlgorithm: dense diagonal arrays preserve signed indices and growth" {
+    const allocator = std.testing.allocator;
+    var v: FastIntArray = .{};
+    defer v.deinit(allocator);
+    try v.set(allocator, 0, 7);
+    try v.set(allocator, -1, 9);
+    try v.set(allocator, 40, 11);
+    try v.set(allocator, -42, 13);
+    try std.testing.expectEqual(@as(usize, 7), v.get(0));
+    try std.testing.expectEqual(@as(usize, 9), v.get(-1));
+    try std.testing.expectEqual(@as(usize, 11), v.get(40));
+    try std.testing.expectEqual(@as(usize, 13), v.get(-42));
+    try std.testing.expectEqual(@as(usize, 0), v.get(39));
+    try std.testing.expectEqual(@as(usize, 0), v.get(-41));
+    try std.testing.expectEqual(@as(usize, 0), v.get(-1000));
+}
+
+test "MyersDiffAlgorithm: many separated edits retain exact ranges after diagonal growth" {
+    const allocator = std.testing.allocator;
+    var original: [128]u64 = undefined;
+    var modified: [128]u64 = undefined;
+    for (&original, &modified, 0..) |*before, *after, i| {
+        before.* = i;
+        after.* = if (i % 4 == 2) i + original.len else i;
+    }
+    var seq1 = TestSequence.init(&original);
+    var seq2 = TestSequence.init(&modified);
+    var result = try MyersDiffAlgorithm.compute(.{}, allocator, seq1.sequence(), seq2.sequence(), null);
+    defer result.deinit(allocator);
+    try std.testing.expect(!result.hit_timeout);
+    try std.testing.expectEqual(@as(usize, 32), result.diffs.len);
+    for (result.diffs, 0..) |change, i| {
+        const offset = i * 4 + 2;
+        try std.testing.expectEqual(OffsetRange.init(offset, offset + 1), change.seq1Range);
+        try std.testing.expectEqual(OffsetRange.init(offset, offset + 1), change.seq2Range);
+    }
+}
 
 test "MyersDiffAlgorithm: simple diff" {
     const allocator = std.testing.allocator;
