@@ -119,6 +119,32 @@ pub const QuickInputService = struct {
         }, PickBridge.invoke, state);
     }
 
+    const InputBridge = struct {
+        allocator: Allocator,
+        handler: quick_input.InputResultHandler,
+        context: *anyopaque,
+        accepted: bool = false,
+
+        fn invoke(context: *anyopaque, picker: *QuickPick) !void {
+            const state: *InputBridge = @ptrCast(@alignCast(context));
+            state.accepted = true;
+            try state.handler(state.context, picker.value.items);
+        }
+
+        fn cleanup(context: *anyopaque) void {
+            const state: *InputBridge = @ptrCast(@alignCast(context));
+            defer state.allocator.destroy(state);
+            if (!state.accepted) state.handler(state.context, null) catch {};
+        }
+    };
+
+    pub fn input(self: *QuickInputService, placeholder: []const u8, handler: quick_input.InputResultHandler, context: *anyopaque) !void {
+        const state = try self.allocator.create(InputBridge);
+        errdefer self.allocator.destroy(state);
+        state.* = .{ .allocator = self.allocator, .handler = handler, .context = context };
+        try self.showPick(&.{}, .{ .placeholder = placeholder, .allow_free_input = true, .cleanup = InputBridge.cleanup, .cleanup_context = state }, InputBridge.invoke, state);
+    }
+
     /// Shows a one-shot picker. Items are copied into the service; labels and
     /// descriptions must stay alive until the picker is accepted or hidden.
     pub fn showPick(
@@ -311,4 +337,30 @@ test "QuickInputService: one-shot picker filters, scrolls and accepts" {
     try std.testing.expectEqualStrings("tabs", state.accepted_id[0..state.accepted_len]);
     try std.testing.expectEqual(@as(usize, 1), state.hidden);
     try std.testing.expect(state.cleaned_after_accept);
+}
+
+test "QuickInputService: input accepts the typed value and dismisses with null" {
+    const State = struct {
+        accepted: bool = false,
+        dismissed: bool = false,
+        fn show(_: *anyopaque, _: *QuickPick) !void {}
+        fn hide(_: *anyopaque) void {}
+        fn result(context: *anyopaque, value: ?[]const u8) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (value) |text| {
+                try std.testing.expectEqualStrings("package.vsix", text);
+                self.accepted = true;
+            } else self.dismissed = true;
+        }
+    };
+    var state: State = .{};
+    const service = try QuickInputService.init(std.testing.allocator, std.testing.io, .{ .context = &state, .show = State.show, .hide = State.hide });
+    defer service.deinit();
+    try service.input("Path", State.result, &state);
+    try service.picker.setValue("package.vsix");
+    service.picker.accept();
+    try std.testing.expect(state.accepted);
+    try service.input("Path", State.result, &state);
+    service.hide();
+    try std.testing.expect(state.dismissed);
 }

@@ -274,9 +274,15 @@ pub const QuickAccessService = struct {
             .quick_access = .{ .context = self, .show_fn = showQuickAccess },
             .context = self.input,
             .pick_fn = pick,
+            .input_fn = promptInput,
             .on_show = &self.on_show,
             .on_hide = &self.on_hide,
         };
+    }
+
+    fn promptInput(context: *anyopaque, placeholder: []const u8, handler: quick_input.InputResultHandler, handler_context: *anyopaque) !void {
+        const input: *QuickInputService = @ptrCast(@alignCast(context));
+        try input.input(placeholder, handler, handler_context);
     }
 
     fn pick(context: *anyopaque, items: []const QuickPickItem, options: quick_input.IPickOptions, handler: quick_input.PickResultHandler, handler_context: *anyopaque) anyerror!void {
