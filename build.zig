@@ -624,10 +624,11 @@ fn onigStaticLibrary(b: *std.Build, target: std.Build.ResolvedTarget, optimize: 
     // The submodule stays untouched: config.h is supplied from this repository.
     if (target.result.os.tag == .windows) {
         const config = b.addWriteFiles();
-        library.root_module.addIncludePath(config.addCopyFile(
+        _ = config.addCopyFile(
             b.path("third_party/oniguruma/src/config.h.win64"),
             "config.h",
-        ));
+        );
+        library.root_module.addIncludePath(config.getDirectory());
     } else {
         library.root_module.addIncludePath(b.path("third_party/oniguruma-config-aarch64"));
     }
