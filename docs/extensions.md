@@ -4,6 +4,10 @@ The native TUI installs and scans 87 desktop extension manifests. Its built-in c
 
 `zig build host` builds the pinned TypeScript, HTML, CSS, Emmet, PHP, Git Base, Search Result, configuration and manifest authoring, Merge Conflict, Simple Browser, npm, Grunt, Gulp and Jake packages. An optional adapter connects GitHub's Copilot Language Server to the terminal editor. `zig build test-e2e` exercises the provider bridge. Configuration writes, extension keybindings and several main-thread APIs remain incomplete. The local extension-host IPC uses Unix sockets or Windows named pipes.
 
+The [Open VSX compatibility plan](open-vsx-compatibility.md) tracks 25
+additional gallery extensions, the shared port backlog and per-extension
+qualification workflows across Linux, macOS and Windows.
+
 Upstream reference: `vscode/`, the shallow git submodule, at **1.147.0**,
 commit `e31c2e52f563620846caab877103f630ea361b9c`. The actor table, method
 inventory, init-data shape and line counts below were taken from that tree.

@@ -2,6 +2,10 @@
 
 **Status:** implemented for the four qualified language-feature extensions.
 
+For additional third-party packages, see the
+[25-extension compatibility plan and feature backlog](open-vsx-compatibility.md).
+That qualification is separate from the slim-release inventory below.
+
 ## Decision
 
 Use the existing Extensions workbench and Open VSX gallery, not a separate
