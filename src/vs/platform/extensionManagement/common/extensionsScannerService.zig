@@ -4,9 +4,8 @@
 // `scanExtensionManifest`, `scanAllExtensions`, `dedupExtensions` and the
 // NLS subset of `extensionNls.ts`).
 //
-// The TUI has no user-data profiles, so it performs the location scan that
-// upstream's `scanAllUserExtensions` uses instead of the profile
-// (`extensions.json`) scan. The scanner owns the manifest metadata the
+// The scanner reads package manifests and uses the default profile
+// (`extensions.json`) to choose active user versions when present. It owns the manifest metadata the
 // Extensions view and the declarative registry consume: NLS-resolved
 // displayName/description, the gallery identifier, the contributed categories
 // and the parsed manifest.
@@ -24,6 +23,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const util = @import("extensionManagementUtil.zig");
+const profiles = @import("extensionsProfileScannerService.zig");
 const configuration_models = @import("../../configuration/common/configurationModels.zig");
 
 pub const ExtensionType = enum { system, user };
@@ -198,11 +198,23 @@ pub fn scanAllExtensions(
         allocator.free(user);
     }
 
+    var profile: ?profiles.Profile = if (user_location) |location| try profiles.Profile.load(allocator, io, location) else null;
+    defer if (profile) |*value| value.deinit();
     var merged: std.array_list.Managed(*const ScannedExtension) = .init(allocator);
     errdefer merged.deinit();
     try merged.ensureTotalCapacity(system.len + user.len);
     for (system) |*extension| merged.appendAssumeCapacity(extension);
     for (user) |*extension| {
+        if (profile) |*selection| {
+            if (!selection.selected(extension.identifier, extension.version, std.fs.path.basename(extension.location))) continue;
+            if (selection.metadata(extension.identifier, extension.version)) |metadata| {
+                if (metadata == .object and extension.manifest.value == .object) {
+                    const scratch = extension.manifest.arena.allocator();
+                    const raw = try std.json.Stringify.valueAlloc(scratch, metadata, .{});
+                    try extension.manifest.value.object.put(scratch, "__metadata", try std.json.parseFromSliceLeaky(std.json.Value, scratch, raw, .{}));
+                }
+            }
+        }
         var existing_index: ?usize = null;
         for (merged.items, 0..) |existing, index| {
             if (!util.areSameExtensions(existing.identifier, extension.identifier)) continue;

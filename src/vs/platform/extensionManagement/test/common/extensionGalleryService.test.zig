@@ -23,3 +23,18 @@ test "ExtensionGalleryService: owns result strings and preserves assets and stat
     try std.testing.expectEqual(@as(f64, 123), page.extensions[0].statistic("install").?);
     try std.testing.expectEqualStrings("https://example.test/readme", page.extensions[0].versions[0].asset("Microsoft.VisualStudio.Services.Content.Details").?);
 }
+
+test "ExtensionGalleryService: selects compatible release or explicitly requested prerelease" {
+    const asset = gallery.Asset{ .assetType = "Microsoft.VisualStudio.Services.VSIXPackage", .source = "https://example.test/package" };
+    const prerelease = gallery.Property{ .key = "Microsoft.VisualStudio.Code.PreRelease", .value = "true" };
+    const incompatible = gallery.Property{ .key = "Microsoft.VisualStudio.Code.Engine", .value = "^10.0.0" };
+    const entry = gallery.GalleryExtension{ .extensionName = "extension", .publisher = .{ .publisherName = "pub" }, .versions = &.{
+        .{ .version = "3.0.0", .files = &.{asset}, .properties = &.{incompatible} },
+        .{ .version = "2.0.0", .files = &.{asset}, .properties = &.{prerelease} },
+        .{ .version = "1.0.0", .files = &.{asset} },
+    } };
+    try std.testing.expectEqualStrings("1.0.0", entry.selectVersion(null, false).?.version);
+    try std.testing.expectEqualStrings("2.0.0", entry.selectVersion(null, true).?.version);
+    try std.testing.expectEqualStrings("2.0.0", entry.selectVersion("2.0.0", false).?.version);
+    try std.testing.expect(entry.selectVersion("3.0.0", true) == null);
+}

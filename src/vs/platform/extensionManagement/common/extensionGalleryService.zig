@@ -20,6 +20,7 @@ pub const Query = struct {
     page_size: usize = 50,
     sort_by: SortBy = .relevance,
     sort_order: u8 = 0,
+    all_versions: bool = false,
 
     pub fn encode(self: Query, allocator: Allocator) ![]u8 {
         const criteria = try allocator.alloc(Criterion, self.criteria.len + 1);
@@ -31,7 +32,7 @@ pub const Query = struct {
             .assetTypes = &[_][]const u8{},
             // Files, categories/tags, version properties, validated results,
             // asset URIs, statistics and the latest version.
-            .flags = @as(u32, 0x2 | 0x4 | 0x10 | 0x20 | 0x80 | 0x100 | 0x200),
+            .flags = @as(u32, 0x2 | 0x4 | 0x10 | 0x20 | 0x80 | 0x100 | (if (self.all_versions) @as(u32, 0x1) else 0x200)),
         }, .{ .emit_null_optional_fields = false });
     }
 };
@@ -52,6 +53,11 @@ pub const Version = struct {
     pub fn property(self: Version, key: []const u8) ?[]const u8 {
         for (self.properties orelse &.{}) |item| if (std.mem.eql(u8, item.key, key)) return item.value;
         return null;
+    }
+
+    pub fn isPreRelease(self: Version) bool {
+        const value = self.property("Microsoft.VisualStudio.Code.PreRelease") orelse return false;
+        return std.ascii.eqlIgnoreCase(value, "true");
     }
 
     pub fn isCompatible(self: Version) bool {
@@ -88,6 +94,26 @@ pub const GalleryExtension = struct {
     versions: []const Version = &.{},
     categories: ?[]const []const u8 = null,
     statistics: ?[]const Statistic = null,
+
+    /// Choose the newest compatible release (or prerelease when requested).
+    /// An explicit version never silently falls back to a different version.
+    pub fn selectVersion(self: GalleryExtension, exact: ?[]const u8, prefer_prerelease: bool) ?Version {
+        var best: ?Version = null;
+        for (self.versions) |version| {
+            if (!version.isCompatible()) continue;
+            if (version.asset("Microsoft.VisualStudio.Services.VSIXPackage") == null) continue;
+            if (exact) |value| {
+                if (!std.mem.eql(u8, value, version.version)) continue;
+            } else if (!prefer_prerelease and version.isPreRelease()) continue;
+            if (best) |previous| {
+                const current = std.SemanticVersion.parse(version.version) catch continue;
+                const old = std.SemanticVersion.parse(previous.version) catch continue;
+                if (current.order(old) != .gt) continue;
+            }
+            best = version;
+        }
+        return best;
+    }
 
     pub fn statistic(self: GalleryExtension, name: []const u8) ?f64 {
         for (self.statistics orelse &.{}) |item| if (std.mem.eql(u8, item.statisticName, name)) return item.value;
@@ -126,6 +152,10 @@ pub const ExtensionGalleryService = struct {
     allocator: Allocator,
     io: std.Io,
     service_url: []const u8,
+
+    pub fn getExtension(self: ExtensionGalleryService, identifier: []const u8) !Page {
+        return self.query(.{ .criteria = &.{.{ .filterType = @backingInt(FilterType.extension_name), .value = identifier }}, .page_size = 1, .all_versions = true });
+    }
 
     pub fn query(self: ExtensionGalleryService, options: Query) !Page {
         var request = request_mod.RequestService.init(self.allocator, self.io);
