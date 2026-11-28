@@ -1,0 +1,53 @@
+{
+  "case": "match_brackets_inner",
+  "engine": "helix",
+  "height": 12,
+  "keys": [
+    "m",
+    "m"
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      4
+    ],
+    "text": "f(g(h)i)\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        1,
+        6
+      ],
+      "cursors": [
+        [
+          1,
+          6
+        ]
+      ],
+      "mode": "normal",
+      "scroll": {
+        "left": 0,
+        "top_line": 1
+      },
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            6
+          ],
+          "head": [
+            1,
+            7
+          ]
+        }
+      ],
+      "text": "f(g(h)i)\n"
+    }
+  ],
+  "width": 60
+}

@@ -27,6 +27,10 @@ const KeyInputEvent = extension_api.KeyInputEvent;
 /// unbounded decoration list.
 const SEARCH_HIGHLIGHT_LIMIT: usize = 999;
 
+/// Helix's default `scrolloff`. The reference keeps the cursor at least this
+/// many view lines away from the viewport edges, clipped for short viewports.
+const HELIX_SCROLLOFF: usize = 5;
+
 pub const Mode = enum {
     normal,
     select,
@@ -354,6 +358,7 @@ pub const HelixEngine = struct {
             }
         }
         const consumed = try self.dispatchKey(event);
+        self.ensureCursorInView();
         // The reference commits pending changes to history after each
         // non-insert key event; this is what makes `d u` undo the seeded edit
         // together with the delete while `x d u` undoes only the delete.
@@ -1464,22 +1469,102 @@ pub const HelixEngine = struct {
         try self.setNormalizedSelections(updated);
     }
 
-    fn halfPage(self: *HelixEngine, down: bool, extend: bool) !void {
-        const delta: usize = @max(self.editor.textHeight() / 2, 1);
+    /// Helix `scroll()`: move the viewport by `offset` view lines. With
+    /// `sync_cursor` the selection moves by the same amount; otherwise the
+    /// primary cursor is only pulled back inside the scrolloff window.
+    fn scrollView(self: *HelixEngine, offset: usize, down: bool, sync_cursor: bool, extend: bool) !void {
+        const height = self.editor.textHeight();
+        const scrolloff = @min(HELIX_SCROLLOFF, (height -| 1) / 2);
+        const view_count = self.editor.viewLineCount();
         const top = self.editor.topViewLine();
-        const max_top = @max(1, self.editor.viewLineCount() -| self.editor.textHeight() + 1);
-        _ = self.editor.setTopViewLine(if (down) @min(top + delta, max_top) else top -| delta);
-        try self.editor.moveWrappedLine(down, extend, delta);
-        self.editor.ensureCursorVisible();
+        const new_top = if (down) @min(top +| offset, view_count) else @max(top -| offset, 1);
+        _ = self.editor.setTopViewLine(new_top);
+        if (sync_cursor) {
+            // Move from Helix's block cursors, preserving the desired column.
+            try self.verticalMove(down, extend, offset);
+            return;
+        }
+        const cursor = self.scrollCursorLine();
+        if (down) {
+            const head = @min(new_top +| scrolloff, view_count);
+            if (cursor < head) try self.movePrimaryToViewLine(head, extend);
+        } else {
+            const head = @min(new_top +| (height -| scrolloff -| 1), view_count);
+            if (cursor > head) try self.movePrimaryToViewLine(head, extend);
+        }
+    }
+
+    fn movePrimaryToViewLine(self: *HelixEngine, view_line: usize, extend: bool) !void {
+        const model_line = self.editor.modelLineNumber(view_line);
+        const target = Position.init(model_line, 1);
+        const selections = try self.getSelections();
+        defer self.allocator.free(selections);
+        if (selections.len == 0) {
+            try self.editor.setCursor(target);
+            return;
+        }
+        const updated = try self.allocator.alloc(Selection, selections.len);
+        defer self.allocator.free(updated);
+        @memcpy(updated, selections);
+        const primary = selections[0];
+        updated[0] = if (extend)
+            Selection.init(
+                primary.getSelectionStart().lineNumber,
+                primary.getSelectionStart().column,
+                target.lineNumber,
+                target.column,
+            )
+        else
+            Selection.init(target.lineNumber, target.column, target.lineNumber, target.column);
+        try self.setSelections(updated);
+    }
+
+    fn halfPage(self: *HelixEngine, down: bool, extend: bool) !void {
+        try self.scrollView(@max(self.editor.textHeight() / 2, 1), down, true, extend);
     }
 
     fn page(self: *HelixEngine, down: bool, extend: bool) !void {
-        const delta: usize = @max(self.editor.textHeight() -| 1, 1);
+        // Helix `page_up`/`page_down` scroll a full inner viewport and only
+        // move the cursor when it leaves the viewport.
+        try self.scrollView(@max(self.editor.textHeight(), 1), down, false, extend);
+    }
+
+    /// Reveal the seeded selection with the same scrolloff rule the reference
+    /// applies before the first replayed key.
+    pub fn revealCursor(self: *HelixEngine) void {
+        self.ensureCursorInView();
+    }
+
+    /// View line of the cursor Helix scrolls into view. In normal mode that is
+    /// the block cursor (`Range::cursor`), which is one grapheme before a
+    /// forward range's head; insert/replace use the insertion point.
+    fn scrollCursorLine(self: *HelixEngine) usize {
+        if (self.mode == .insert) return self.editor.cursorViewLine();
+        if (self.editor.viewLineCount() > self.editor.model.getLineCount()) return self.editor.cursorViewLine();
+        const selections = self.getSelections() catch return self.editor.cursorViewLine();
+        defer self.allocator.free(selections);
+        if (selections.len == 0) return self.editor.cursorViewLine();
+        return self.selectionCursor(selections[0]).lineNumber;
+    }
+
+    /// Helix `ensure_cursor_in_view` with the configured scrolloff. Called
+    /// after every key so cursor motions, edits and jumps keep the same
+    /// margins as the reference.
+    fn ensureCursorInView(self: *HelixEngine) void {
+        const height = self.editor.textHeight();
+        if (height == 0) return;
+        const scrolloff = @min(HELIX_SCROLLOFF, (height -| 1) / 2);
+        const view_count = self.editor.viewLineCount();
+        const cursor = self.scrollCursorLine();
         const top = self.editor.topViewLine();
-        const max_top = @max(1, self.editor.viewLineCount() -| self.editor.textHeight() + 1);
-        _ = self.editor.setTopViewLine(if (down) @min(top + delta, max_top) else top -| delta);
-        try self.editor.moveWrappedLine(down, extend, delta);
-        self.editor.ensureCursorVisible();
+        var next = top;
+        if (cursor < top +| scrolloff) {
+            next = cursor -| scrolloff;
+        } else if (cursor +| scrolloff >= top +| height) {
+            next = cursor -| (height -| scrolloff -| 1);
+        }
+        next = std.math.clamp(next, 1, view_count);
+        if (next != top) _ = self.editor.setTopViewLine(next);
     }
 
     fn recordJump(self: *HelixEngine) void {
@@ -2003,11 +2088,15 @@ pub const HelixEngine = struct {
         defer text.deinit();
         const selections = try self.getSelections();
         defer self.allocator.free(selections);
-        const normalized = try self.normalizeSelections(selections);
-        defer self.allocator.free(normalized);
-        const ranges = try self.allocator.alloc(helixSelection.Range, normalized.len);
+        // Preserve selection order: index 0 is Helix's primary selection.
+        const ordered = try self.allocator.alloc(Selection, selections.len);
+        defer self.allocator.free(ordered);
+        for (selections, 0..) |selection, index| {
+            ordered[index] = self.ensureSelection(text.items, selection);
+        }
+        const ranges = try self.allocator.alloc(helixSelection.Range, ordered.len);
         defer self.allocator.free(ranges);
-        for (normalized, 0..) |selection, index| {
+        for (ordered, 0..) |selection, index| {
             const range = self.selectionRange(selection);
             ranges[index] = switch (kind) {
                 // Helix `insert_mode` reverses the selection.
@@ -2125,7 +2214,8 @@ pub const HelixEngine = struct {
             }
             self.insert_ranges.clearRetainingCapacity();
             self.insert_restore_cursor = false;
-            try self.setNormalizedSelections(updated);
+            // Preserve selection order: index 0 is Helix's primary selection.
+            try self.setSelections(updated);
             return;
         }
 
@@ -3300,8 +3390,21 @@ pub const HelixEngine = struct {
     }
 
     fn bracketObject(self: *HelixEngine, around: bool, open_text: []const u8, close_text: []const u8, cursor: Position) !?Range {
-        const pair = try bracket_text_objects.ofType(self.editor.model, cursor, open_text, close_text) orelse return null;
-        return if (around) pair.around() else pair.inside();
+        if (try bracket_text_objects.ofType(self.editor.model, cursor, open_text, close_text)) |pair| {
+            return if (around) pair.around() else pair.inside();
+        }
+        // The editor's bracket-pair configuration does not know every pair
+        // Helix accepts (notably `<`/`>`); fall back to the plain-text pair
+        // search used by the surround commands.
+        if (open_text.len != 1 or close_text.len != 1) return null;
+        var value = try self.modelValue();
+        defer value.deinit();
+        const offset = self.editor.model.getOffsetAt(cursor);
+        const pair = try self.findSurroundOffsets(value.items, .{ .anchor = offset, .head = offset }, open_text[0]) orelse return null;
+        if (pair.open >= pair.close) return null;
+        const start = self.editor.model.getPositionAt(if (around) pair.open else pair.open + 1);
+        const end = self.editor.model.getPositionAt(if (around) pair.close + 1 else pair.close);
+        return Range.fromPositions(start, end);
     }
 
     fn quoteObject(self: *HelixEngine, around: bool, quote: u8, cursor: Position) !?Range {
@@ -3407,8 +3510,8 @@ pub const HelixEngine = struct {
                         'z', 'c' => self.alignView(.center),
                         't' => self.alignView(.top),
                         'b' => self.alignView(.bottom),
-                        'j' => _ = self.editor.scrollViewLines(1),
-                        'k' => _ = self.editor.scrollViewLines(-1),
+                        'j' => try self.scrollView(1, true, false, self.extendMode()),
+                        'k' => try self.scrollView(1, false, false, self.extendMode()),
                         'm' => {},
                         else => {},
                     }
@@ -3499,14 +3602,15 @@ pub const HelixEngine = struct {
 
     fn alignView(self: *HelixEngine, where: enum { center, top, bottom }) void {
         const height = self.editor.textHeight();
-        const cursor_view = self.editor.cursorViewLine();
-        const max_top = @max(1, self.editor.viewLineCount() -| height + 1);
+        const cursor_view = self.scrollCursorLine();
+        // Helix `align_view` measures from the last visible line.
+        const last_line_height = height -| 1;
         const top = switch (where) {
-            .center => if (cursor_view > height / 2) cursor_view - height / 2 else 1,
+            .center => cursor_view -| (last_line_height / 2),
             .top => cursor_view,
-            .bottom => cursor_view -| (height -| 1),
+            .bottom => cursor_view -| last_line_height,
         };
-        _ = self.editor.setTopViewLine(@min(top, max_top));
+        _ = self.editor.setTopViewLine(@max(top, 1));
     }
 
     fn viewportTarget(self: *HelixEngine, where: enum { top, middle, bottom }) !Position {
@@ -3833,13 +3937,13 @@ pub const HelixEngine = struct {
         const normalized_result = try self.normalizeSelections(result.items);
         defer self.allocator.free(normalized_result);
         if (normalized_result.len > 1) {
+            // Helix keeps the copy of the primary range primary. The engine
+            // stores the primary selection first, so move that copy to index 0.
+            const wanted = self.selectionCursor(primary_selection);
             for (normalized_result, 0..) |candidate, index| {
                 if (index == 0) continue;
-                if (candidate.selectionStartLineNumber == primary_selection.selectionStartLineNumber and
-                    candidate.selectionStartColumn == primary_selection.selectionStartColumn and
-                    candidate.positionLineNumber == primary_selection.positionLineNumber and
-                    candidate.positionColumn == primary_selection.positionColumn)
-                {
+                const cursor = self.selectionCursor(candidate);
+                if (cursor.lineNumber == wanted.lineNumber and cursor.column == wanted.column) {
                     const primary = normalized_result[index];
                     std.mem.copyBackwards(Selection, normalized_result[1 .. index + 1], normalized_result[0..index]);
                     normalized_result[0] = primary;
@@ -3986,6 +4090,100 @@ pub const HelixEngine = struct {
         try self.window.openPath(content.items[start..end]);
     }
 
+    const SurroundPairOffsets = struct { open: usize, close: usize };
+
+    /// Helix `surround::get_surround_pos` plain-text behavior: find the pair
+    /// characters surrounding `range`, or the closest pair when `ch` is null.
+    fn findSurroundOffsets(self: *HelixEngine, text: []const u8, range: helixSelection.Range, ch: ?u8) !?SurroundPairOffsets {
+        const from = range.from();
+        const to = range.upper();
+        if (from < to and to <= text.len) {
+            const first = codepointAt(text, from);
+            const last_at = prevCodepointOffset(text, to);
+            const last = codepointAt(text, last_at);
+            if (first != null and last != null and first.? <= 0xFF and last.? <= 0xFF and
+                isPair(@intCast(first.?), @intCast(last.?)))
+            {
+                return .{ .open = from, .close = last_at };
+            }
+        }
+
+        const cursor = range.cursor(text);
+        if (ch == null) {
+            const position = self.editor.model.getPositionAt(cursor);
+            const around = try self.closestSurround(true, position) orelse return null;
+            const open = self.editor.model.getOffsetAt(around.startPosition());
+            const end = self.editor.model.getOffsetAt(around.endPosition());
+            if (open >= end) return null;
+            return .{ .open = open, .close = prevCodepointOffset(text, end) };
+        }
+
+        const pair = surroundPair(ch.?);
+        if (pair.open == pair.close) {
+            if (cursor < text.len and text[cursor] == pair.open) return null;
+            var open: ?usize = null;
+            var index = cursor;
+            while (index > 0) {
+                index -= 1;
+                if (text[index] == pair.open and !isEscaped(text, index)) {
+                    open = index;
+                    break;
+                }
+            }
+            const open_at = open orelse return null;
+            var close: ?usize = null;
+            index = cursor;
+            while (index < text.len) : (index += 1) {
+                if (text[index] == pair.close and !isEscaped(text, index)) {
+                    close = index;
+                    break;
+                }
+            }
+            const close_at = close orelse return null;
+            if (open_at >= close_at) return null;
+            return .{ .open = open_at, .close = close_at };
+        }
+
+        var open: ?usize = null;
+        if (cursor < text.len and text[cursor] == pair.open) {
+            open = cursor;
+        } else {
+            var depth: usize = 0;
+            var index = @min(cursor, text.len);
+            while (index > 0) {
+                index -= 1;
+                const byte = text[index];
+                if (byte == pair.close) {
+                    depth += 1;
+                } else if (byte == pair.open) {
+                    if (depth == 0) {
+                        open = index;
+                        break;
+                    }
+                    depth -= 1;
+                }
+            }
+        }
+        const open_at = open orelse return null;
+        var close: ?usize = null;
+        var depth: usize = 0;
+        var index = open_at + 1;
+        while (index < text.len) : (index += 1) {
+            const byte = text[index];
+            if (byte == pair.open) {
+                depth += 1;
+            } else if (byte == pair.close) {
+                if (depth == 0) {
+                    close = index;
+                    break;
+                }
+                depth -= 1;
+            }
+        }
+        const close_at = close orelse return null;
+        return .{ .open = open_at, .close = close_at };
+    }
+
     fn applySurround(self: *HelixEngine, kind: SurroundKind, from: u8, to: u8) !void {
         const selections = try self.getSelections();
         defer self.allocator.free(selections);
@@ -4000,86 +4198,107 @@ pub const HelixEngine = struct {
             for (owned.items) |text| self.allocator.free(text);
             owned.deinit();
         }
-        for (normalized) |selection| {
-            const range = try self.effectiveRange(selection);
-            switch (kind) {
-                .add => {
-                    const pair = surroundPair(from);
-                    var text = ArrayList(u8).init(self.allocator);
-                    errdefer text.deinit();
-                    try text.append(pair.open);
-                    const inner = try self.rangeText(range);
-                    defer self.allocator.free(inner);
-                    try text.appendSlice(inner);
-                    try text.append(pair.close);
-                    const slice = try text.toOwnedSlice();
-                    try owned.append(slice);
-                    try edits.append(.{ .range = range, .text = slice });
-                },
-                .delete, .replace => {
-                    var value = try self.modelValue();
-                    defer value.deinit();
-                    const text = value.items;
-                    const sel_from = self.editor.model.getOffsetAt(range.startPosition());
-                    const sel_to = self.editor.model.getOffsetAt(range.endPosition());
-                    var open_offset: ?usize = null;
-                    var close_offset: ?usize = null;
 
-                    // The selection may already include the pair characters
-                    // (for example after `ms(`), or the pair may surround it.
-                    const first = codepointAt(text, sel_from);
-                    const last_start = prevCodepointOffset(text, sel_to);
-                    const last = codepointAt(text, last_start);
-                    if (first != null and last != null and first.? <= 0xFF and last.? <= 0xFF and
-                        isPair(@intCast(first.?), @intCast(last.?)))
-                    {
-                        open_offset = sel_from;
-                        close_offset = last_start;
-                    } else {
-                        const before_offset = prevCodepointOffset(text, sel_from);
-                        const before = codepointAt(text, before_offset);
-                        const after = codepointAt(text, sel_to);
-                        if (before != null and after != null and before.? <= 0xFF and after.? <= 0xFF and
-                            isPair(@intCast(before.?), @intCast(after.?)))
-                        {
-                            open_offset = before_offset;
-                            close_offset = sel_to;
-                        }
-                    }
-                    const open_at = open_offset orelse continue;
-                    const close_at = close_offset orelse continue;
-                    if (open_at + 1 > close_at or close_at + 1 > text.len) continue;
+        if (kind == .add) {
+            for (normalized) |selection| {
+                const range = try self.effectiveRange(selection);
+                const pair = surroundPair(from);
+                var text = ArrayList(u8).init(self.allocator);
+                errdefer text.deinit();
+                try text.append(pair.open);
+                const inner = try self.rangeText(range);
+                defer self.allocator.free(inner);
+                try text.appendSlice(inner);
+                try text.append(pair.close);
+                const slice = try text.toOwnedSlice();
+                try owned.append(slice);
+                try edits.append(.{ .range = range, .text = slice });
+            }
+            if (edits.items.len == 0) return;
+            self.beginUndoGroup();
+            defer self.endUndoGroup();
+            // Helix selects the original text plus both pair characters.
+            try self.applyEditBatch(edits.items, .inserted_range);
+            return;
+        }
 
-                    const inner = text[open_at + 1 .. close_at];
-                    var replacement = ArrayList(u8).init(self.allocator);
-                    errdefer replacement.deinit();
-                    if (kind == .replace) {
-                        const pair = surroundPair(to);
-                        try replacement.append(pair.open);
-                        try replacement.appendSlice(inner);
-                        try replacement.append(pair.close);
-                    } else {
-                        try replacement.appendSlice(inner);
-                    }
-                    const slice = try replacement.toOwnedSlice();
-                    try owned.append(slice);
-                    try edits.append(.{
-                        .range = Range.fromPositions(
-                            self.editor.model.getPositionAt(open_at),
-                            self.editor.model.getPositionAt(close_at + 1),
-                        ),
-                        .text = slice,
-                    });
-                },
+        var text_value = try self.modelValue();
+        defer text_value.deinit();
+        const text = text_value.items;
+
+        var original_ranges = ArrayList(helixSelection.Range).init(self.allocator);
+        defer original_ranges.deinit();
+        var found = ArrayList(usize).init(self.allocator);
+        defer found.deinit();
+        var changes = ArrayList(helixSelection.Change).init(self.allocator);
+        defer changes.deinit();
+
+        const replace_pair = surroundPair(to);
+        var replace_open: [1]u8 = .{replace_pair.open};
+        var replace_close: [1]u8 = .{replace_pair.close};
+
+        for (normalized, 0..) |selection, index| {
+            const range = self.selectionRange(selection);
+            const lookup: ?u8 = if (from == 'm') null else from;
+            const pair = try self.findSurroundOffsets(text, range, lookup) orelse continue;
+            if (pair.open + 1 > pair.close or pair.close + 1 > text.len) continue;
+            try original_ranges.append(range);
+            try found.append(index);
+            if (kind == .delete) {
+                try edits.append(.{ .range = Range.fromPositions(
+                    self.editor.model.getPositionAt(pair.open),
+                    self.editor.model.getPositionAt(pair.open + 1),
+                ), .text = "" });
+                try edits.append(.{ .range = Range.fromPositions(
+                    self.editor.model.getPositionAt(pair.close),
+                    self.editor.model.getPositionAt(pair.close + 1),
+                ), .text = "" });
+                try changes.append(.{ .start = pair.open, .end = pair.open + 1, .inserted_len = 0 });
+                try changes.append(.{ .start = pair.close, .end = pair.close + 1, .inserted_len = 0 });
+            } else {
+                var replacement = ArrayList(u8).init(self.allocator);
+                errdefer replacement.deinit();
+                try replacement.appendSlice(&replace_open);
+                try replacement.appendSlice(text[pair.open + 1 .. pair.close]);
+                try replacement.appendSlice(&replace_close);
+                const slice = try replacement.toOwnedSlice();
+                try owned.append(slice);
+                try edits.append(.{
+                    .range = Range.fromPositions(
+                        self.editor.model.getPositionAt(pair.open),
+                        self.editor.model.getPositionAt(pair.close + 1),
+                    ),
+                    .text = slice,
+                });
             }
         }
         if (edits.items.len == 0) return;
         self.beginUndoGroup();
         defer self.endUndoGroup();
-        // `inserted_range` selects the replacement, which is exactly Helix's
-        // range for `surround_add` (the previously selected text plus both
-        // pair characters) and for `surround_delete` (the inner text).
-        try self.applyEditBatch(edits.items, .inserted_range);
+        try self.applyEditBatch(edits.items, .cursor_start);
+
+        if (kind == .replace) {
+            try self.setSelections(normalized);
+            return;
+        }
+
+        std.mem.sort(helixSelection.Change, changes.items, {}, struct {
+            fn lessThan(_: void, a: helixSelection.Change, b: helixSelection.Change) bool {
+                return a.start < b.start;
+            }
+        }.lessThan);
+        var new_text = try self.modelValue();
+        defer new_text.deinit();
+        const updated = try self.allocator.alloc(Selection, normalized.len);
+        defer self.allocator.free(updated);
+        @memcpy(updated, normalized);
+        for (original_ranges.items, found.items) |range, selection_index| {
+            const mapped = helixSelection.mapRange(changes.items, range);
+            updated[selection_index] = self.selectionFromRange(
+                helixSelection.ensureInvariants(new_text.items, mapped),
+            );
+        }
+        try self.setSelections(updated);
     }
 
     fn charAt(self: *HelixEngine, position: Position) ?u21 {

@@ -1,0 +1,55 @@
+{
+  "case": "textobj_inside_brackets",
+  "engine": "helix",
+  "height": 12,
+  "keys": [
+    "m",
+    "i",
+    "[",
+    "d"
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      4
+    ],
+    "text": "a [one two] b\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        1,
+        4
+      ],
+      "cursors": [
+        [
+          1,
+          4
+        ]
+      ],
+      "mode": "normal",
+      "scroll": {
+        "left": 0,
+        "top_line": 1
+      },
+      "selection_count": 1,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            4
+          ],
+          "head": [
+            1,
+            5
+          ]
+        }
+      ],
+      "text": "a [] b\n"
+    }
+  ],
+  "width": 60
+}

@@ -1,6 +1,7 @@
 {
   "case": "tutor_multi_delete",
   "engine": "helix",
+  "height": 12,
   "keys": [
     "d"
   ],
@@ -49,6 +50,10 @@
         ]
       ],
       "mode": "normal",
+      "scroll": {
+        "left": 0,
+        "top_line": 1
+      },
       "selection_count": 3,
       "selections": [
         {

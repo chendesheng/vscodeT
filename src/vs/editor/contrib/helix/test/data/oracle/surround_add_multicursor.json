@@ -1,0 +1,99 @@
+{
+  "case": "surround_add_multicursor",
+  "engine": "helix",
+  "height": 12,
+  "keys": [
+    "m",
+    "i",
+    "w",
+    "m",
+    "s",
+    "("
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "cursor": [
+      1,
+      1
+    ],
+    "cursors": [
+      [
+        1,
+        1
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        3,
+        1
+      ]
+    ],
+    "text": "one\ntwo\nthree\n"
+  },
+  "states": [
+    {
+      "cursor": [
+        1,
+        5
+      ],
+      "cursors": [
+        [
+          1,
+          5
+        ],
+        [
+          2,
+          5
+        ],
+        [
+          3,
+          7
+        ]
+      ],
+      "mode": "normal",
+      "scroll": {
+        "left": 0,
+        "top_line": 1
+      },
+      "selection_count": 3,
+      "selections": [
+        {
+          "anchor": [
+            1,
+            1
+          ],
+          "head": [
+            1,
+            6
+          ]
+        },
+        {
+          "anchor": [
+            2,
+            1
+          ],
+          "head": [
+            2,
+            6
+          ]
+        },
+        {
+          "anchor": [
+            3,
+            1
+          ],
+          "head": [
+            3,
+            8
+          ]
+        }
+      ],
+      "text": "(one)\n(two)\n(three)\n"
+    }
+  ],
+  "width": 60
+}
