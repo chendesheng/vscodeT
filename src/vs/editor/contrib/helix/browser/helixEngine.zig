@@ -1528,6 +1528,12 @@ pub const HelixEngine = struct {
         try self.scrollView(@max(self.editor.textHeight(), 1), down, false, extend);
     }
 
+    /// Reveal the seeded selection with the same scrolloff rule the reference
+    /// applies before the first replayed key.
+    pub fn revealCursor(self: *HelixEngine) void {
+        self.ensureCursorInView();
+    }
+
     /// Helix `ensure_cursor_in_view` with the configured scrolloff. Called
     /// after every key so cursor motions, edits and jumps keep the same
     /// margins as the reference.

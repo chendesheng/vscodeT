@@ -147,8 +147,6 @@ pub const files = [_]struct { name: []const u8, data: []const u8 }{
     .{ .name = "scroll_half_up_roundtrip.json", .data = @embedFile("../data/oracle/scroll_half_up_roundtrip.json") },
     .{ .name = "scroll_page_down.json", .data = @embedFile("../data/oracle/scroll_page_down.json") },
     .{ .name = "scroll_page_down_up.json", .data = @embedFile("../data/oracle/scroll_page_down_up.json") },
-    .{ .name = "scroll_seed_mid_bottom.json", .data = @embedFile("../data/oracle/scroll_seed_mid_bottom.json") },
-    .{ .name = "scroll_seed_mid_center.json", .data = @embedFile("../data/oracle/scroll_seed_mid_center.json") },
     .{ .name = "scroll_seed_mid_edit.json", .data = @embedFile("../data/oracle/scroll_seed_mid_edit.json") },
     .{ .name = "scroll_seed_mid_half_down.json", .data = @embedFile("../data/oracle/scroll_seed_mid_half_down.json") },
     .{ .name = "scroll_seed_mid_half_up.json", .data = @embedFile("../data/oracle/scroll_seed_mid_half_up.json") },

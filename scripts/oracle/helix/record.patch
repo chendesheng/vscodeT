@@ -1,12 +1,15 @@
 diff --git a/helix-term/src/application.rs b/helix-term/src/application.rs
 --- a/helix-term/src/application.rs
 +++ b/helix-term/src/application.rs
-@@ -93,6 +93,15 @@
+@@ -93,6 +93,18 @@
  }
  
  impl Application {
 +    #[cfg(feature = "integration")]
 +    pub fn set_test_terminal_size(&mut self, width: u16, height: u16) {
++        // `Terminal::resize` alone does not change the TestBackend size, and
++        // the next `autoresize` would restore the default 120x150 area.
++        self.terminal.backend_mut().resize(width, height);
 +        self.terminal
 +            .resize(Rect::new(0, 0, width, height))
 +            .expect("Unable to resize test terminal");

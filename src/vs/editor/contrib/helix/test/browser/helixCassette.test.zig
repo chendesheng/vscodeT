@@ -106,6 +106,9 @@ fn runCase(allocator: std.mem.Allocator, case: oracle.Case) !void {
     harness.editor.beginUndoGroup();
     try harness.editor.replaceRange(harness.editor.model.getFullModelRange(), case.seed.text);
     try seedCursors(harness, case.seed);
+    // The reference reveals the seeded selection with scrolloff before the
+    // first key; the editor's `setSelections` only guarantees visibility.
+    harness.engine.revealCursor();
 
     for (case.keys) |token| {
         const event = oracle.keyEvent(token) catch |err| {
