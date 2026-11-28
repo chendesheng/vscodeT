@@ -35,6 +35,26 @@ How to read paths and numbers in this document:
 - "Host" is the reused Node program; "workbench" is the Zig side; "TUI" is
   the terminal adapter in `src/tui/`.
 
+## Current Extensions UI port
+
+The current sidebar uses `extensionsViewlet.zig`, `extensionsViews.zig` and
+`extensionsList.zig` for query-driven views, including Marketplace through the
+Open VSX-compatible gallery API. `extensionGalleryService.zig` and
+`extensionManagementService.zig` own HTTP queries/assets and staged VSIX
+publication, respectively. `extensionsWorkbenchService.zig` delivers local and
+gallery inventory/management changes to its subscribers. The extension editor
+uses `ExtensionsInput` with the upstream input ID and owns its selected
+extension metadata across rescans and gallery query replacement. `extensionEditor.zig`
+uses the Markdown document renderer for local and downloaded documentation.
+
+This is not yet the complete upstream management and detail-editor port.
+The local extension host and declarative registry are still startup-owned;
+profile and signature services, live host delta/restart handling, dependency
+transactions, version selection, pagination, additional recommendation sources,
+and complete feature renderers remain to be ported. See the README for
+user-visible scope. The historical implementation proposal below predates
+these changes.
+
 ## 1. Context
 
 The TUI editor has the portable editor core ported: text model, tokens,

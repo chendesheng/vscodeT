@@ -458,37 +458,43 @@ stream's exclusion paths and filtered on the worker.
 
 ## Extensions side panel
 
-The Extensions activity (`Ctrl-Shift-X`, `View: Show Extensions`) lists the
-local extension inventory in a single combined view: the 87 installed built-in
-extensions plus extensions found in the effective VS Code extensions directory
-(`--extensions-dir`, `VSCODE_EXTENSIONS`, `VSCODE_PORTABLE`, or
-`~/.vscode/extensions`). Rows show the NLS-resolved display name, version,
-origin (`Installed`/`Built-in`) and description; user-installed extensions
-sort first. The search row filters the list with plain text and the upstream
-tokens `@installed`, `@builtin`, `@enabled`, `@disabled`, `category:"…"`,
-`category:-…` and `@id:publisher.name`. `Enter` or a left click opens the
-extension's `package.json`; the row context menu offers Enable/Disable and
-Open Extension.
+The Extensions activity (`Ctrl-Shift-X`, `View: Show Extensions`) has a shared
+search header and registered query-specific views. Installed extensions are
+shown by default; `@builtin` shows separate Features, Themes and Programming
+Languages panes. `@installed`, `@enabled`, `@disabled`, `@updates`, `@outdated`,
+`@recentlyUpdated`, `@recommended`, `@popular`, category and ID filters select
+or query the corresponding extension views. The gallery is Open VSX by default
+(`MINECODE_EXTENSION_GALLERY_URL` overrides the compatible gallery endpoint).
+Text search is delayed and cancellable; gallery results carry publisher,
+version, description, install counts and asset metadata. A fresh user inventory
+also shows Popular results, and workspace recommendations can be queried from
+`.vscode/extensions.json` or a workspace configuration file.
 
-Enablement is global and persisted in
-`<user-data-dir>/User/globalStorage/extensions.state.json` using upstream's
-profile value shape (`[{"id":"publisher.name"}]`, the
-`extensionsIdentifiers/disabled` key). It applies on the next launch: enabled
-user extensions' declarative contributions (languages, grammars, snippets,
-icon themes, themes, `configurationDefaults`) are loaded at startup, and
-disabled extensions are excluded from the declarative catalog and from the
-effective installed extensions passed to the Node extension host. The TUI has no
-reload command, so a change shows a restart notification instead of reloading
-in place. `Refresh` (`workbench.extensions.action.refreshExtension`) rescans
-the directories; `Clear Extensions Search Results` is also an F1 command.
+Clicking a row or pressing Enter opens a read-only, singleton extension editor
+preview tab, not `package.json`. The detail editor shows the manifest metadata,
+README, contributed features, changelog, dependencies and extension pack when
+available. It uses the terminal Markdown document layout and fetches gallery
+assets asynchronously. Arrow keys switch tabs or scroll; Tab moves between
+content, actions and navigation. The context menu, inline list actions and
+editor action bar expose local Enable/Disable, gallery Install/Update and
+user-extension Uninstall.
 
-Not ported: the marketplace (install/uninstall/update/recommendations),
-extension-details editor, extension icons/ratings/install counts, workspace
-`.vscode/extensions` and development extensions, per-workspace enablement,
-engine-range compatibility checks, and remote/web extension hosts. Enabled
-user extensions can activate in the local Node host; their individual API
-requirements may still be unported. See
-`docs/extensions.md` for the implementation map.
+Gallery installation stages the downloaded VSIX in the effective user
+extensions directory (`--extensions-dir`, `VSCODE_EXTENSIONS`,
+`VSCODE_PORTABLE`, or `~/.vscode/extensions`), validates package identity,
+version, engine and archive entries, then publishes the version. This directory
+can be shared with VS Code. Built-ins are not uninstalled. Global enablement is
+persisted in `<user-data-dir>/User/globalStorage/extensions.state.json` under
+`extensionsIdentifiers/disabled`. A restart still applies inventory changes
+and enablement to the startup contribution registry and local Node host.
+
+Remaining parity gaps: automatic update checks, gallery pagination and search
+suggestions, dependency/pack installation transactions, signature verification,
+VSIX file-picker command, specific version/pre-release selection, full profile
+and workspace enablement, runtime extension reconciliation, additional
+recommendation providers, image/badge/rating rendering and remote/web hosts.
+The details Features tab is a manifest-based presentation, not the complete
+upstream interactive feature-renderer registry. See `docs/extensions.md`.
 
 ## Extension host (experimental)
 
