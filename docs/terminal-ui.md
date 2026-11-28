@@ -461,8 +461,11 @@ try layout.layoutSubtree(tree, doc, box); // solve one out-of-flow subtree
 The editor view uses this mode for its retained, windowed line DOM: only the
 visible lines have nodes (`ViewLine.dom_node`), a scroll translates the retained
 lines instead of rewriting them, and the layout scratch is not reset by a
-targeted solve, so clean lines keep their text fragments. Nodes are recycled
-through `Document.destroy`/`Node.clearChildren`; the document arena is reset
+targeted solve, so clean lines keep their text fragments. All line retirement
+paths (scroll, flush, and rows removed or ejected by `ViewLinesDeleted` /
+`ViewLinesInserted`, including wrapped injected text) invoke the retained DOM
+and box disposal hook before freeing the render allocation borrowed by the
+text nodes. Nodes are recycled through `Document.destroy`/`Node.clearChildren`; the document arena is reset
 only when it crosses a bound. Text runs share interned `PaintStyle` objects
 (the CSS-class analogue); `Element.pointer_events` is the hit-testing
 `pointer-events` analogue for transparent layout containers.

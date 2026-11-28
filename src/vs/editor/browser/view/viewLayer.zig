@@ -198,10 +198,6 @@ pub fn RenderedLinesCollection(comptime T: type) type {
             list.items.len -= count;
         }
 
-        pub fn disposeLineLine(self: *Self, line: *T) void {
-            if (@hasDecl(T, "deinit")) line.deinit(self.allocator);
-        }
-
         fn lineAt(self: *const Self, line_number: usize) *T {
             const line_index = line_number - self.rend_line_number_start;
             return &self.lines.items[line_index];
@@ -335,7 +331,10 @@ pub fn VisibleLinesCollection(comptime T: type) type {
         pub fn onLinesDeleted(self: *Self, event: *const viewEvents.ViewLinesDeletedEvent) !bool {
             const deleted = try self.lines.onLinesDeleted(event.fromLineNumber, event.toLineNumber);
             if (deleted) |slice| {
-                for (slice) |*line| self.lines.disposeLineLine(line);
+                // Upstream removes deleted line DOM nodes here; the native
+                // disposal hook also retires their boxes before deinit frees
+                // the text borrowed by those nodes.
+                for (slice) |*line| self.lines.disposeLine(line);
                 self.allocator.free(slice);
             }
             return true;
@@ -344,7 +343,9 @@ pub fn VisibleLinesCollection(comptime T: type) type {
         pub fn onLinesInserted(self: *Self, event: *const viewEvents.ViewLinesInsertedEvent) !bool {
             const pushed = try self.lines.onLinesInserted(event.fromLineNumber, event.toLineNumber);
             if (pushed) |slice| {
-                for (slice) |*line| self.lines.disposeLineLine(line);
+                // Insertion can push existing lines out of the visible
+                // window; retire them in exactly the same order as deletion.
+                for (slice) |*line| self.lines.disposeLine(line);
                 self.allocator.free(slice);
             }
             return true;

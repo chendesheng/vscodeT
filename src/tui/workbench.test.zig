@@ -14370,3 +14370,61 @@ test "Workbench: inlay decorations paint and hit-test injected text without chan
     try editor.insertText("!");
     try std.testing.expectEqualStrings("ab!c", try model.borrowLineContent(1));
 }
+
+test "Workbench: wrapping inlay hints retire inserted and deleted view line DOM and boxes before layout" {
+    const a = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // More model lines than the viewport so a new wrapped view line ejects
+    // a previously painted line. No source text changes in this scenario.
+    var source: std.Io.Writer.Allocating = .init(a);
+    defer source.deinit();
+    for (0..60) |i| try source.writer.print("line {d}\n", .{i});
+    try tmp.dir.writeFile(io, .{ .sub_path = "lines.txt", .data = source.written() });
+    try tmp.dir.writeFile(io, .{ .sub_path = "settings.json", .data = "{\"editor.wordWrap\":\"wordWrapColumn\",\"editor.wordWrapColumn\":20}" });
+    const path = try tmp.dir.realPathFileAlloc(io, "lines.txt", a);
+    defer a.free(path);
+    const settings = try tmp.dir.realPathFileAlloc(io, "settings.json", a);
+    defer a.free(settings);
+    const window = try TestWindow.initWithOptions(a, io, &.{path}, 100, 24, .{ .initial_user_settings_paths = &.{settings} }, null);
+    defer window.deinit();
+    const wb = window.workbench;
+    const tab = wb.activeTab().?;
+    const editor = tab.editor;
+    const model = editor.model;
+    const model_types = @import("../vs/editor/common/model.zig");
+    var output: std.Io.Writer.Allocating = .init(a);
+    defer output.deinit();
+    try renderFrame(wb, &output.writer);
+    const lines = tab.view.terminal_view_host.viewRef().getViewLines();
+    try std.testing.expect(lines.windowEnd() > 4);
+    const tree = wb.editor_surface.box_tree;
+    const old_tail = lines.lineAt(lines.windowEnd()).dom_node.?;
+    try std.testing.expect(old_tail.parent != null and tree.find(old_tail) != null);
+
+    var options = model_types.ModelDecorationOptions.init("InlayHint", .AlwaysGrowsWhenTypingAtEdges);
+    options.after = .{ .content = " a very long type hint which causes this previously short line to wrap into several visible rows", .inlineClassName = "inlay-hint-type", .inlineClassNameAffectsLetterSpacing = false, .attachedData = null, .cursorStops = .Right };
+    const previous_count = editor.viewLineCount();
+    const ids = try model.deltaDecorations(&.{}, &.{.{ .range = Range.init(2, 1, 2, 2), .options = &options }}, 0);
+    defer a.free(ids);
+    try std.testing.expect(editor.viewLineCount() > previous_count);
+    // The injected-text ViewLinesInserted event must remove ejected lines
+    // and their borrowed DOM nodes before the next layout.
+    try std.testing.expect(old_tail.recycled);
+    try std.testing.expect(tree.find(old_tail) == null);
+    try renderFrame(wb, &output.writer);
+
+    const removed = lines.lineAt(3).dom_node.?;
+    try std.testing.expect(removed.parent != null and tree.find(removed) != null);
+    const empty = try model.deltaDecorations(ids, &.{}, 0);
+    defer a.free(empty);
+    try std.testing.expectEqual(previous_count, editor.viewLineCount());
+    // Removing the hint emits ViewLinesDeleted; the wrapped view row and
+    // its borrowed text must be retired through the same lifecycle.
+    try std.testing.expect(removed.recycled);
+    try std.testing.expect(tree.find(removed) == null);
+    tree.markFullRebuild();
+    try renderFrame(wb, &output.writer);
+    try std.testing.expectEqualStrings("line 1", try model.borrowLineContent(2));
+}
