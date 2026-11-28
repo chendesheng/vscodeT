@@ -30,7 +30,7 @@ jobs:
           - os: ubuntu-latest
             name: linux-x86_64
             package_target: linux-x86_64
-            target_arg: ''
+            target_arg: '-Dcpu=baseline'
           - os: ubuntu-latest
             name: linux-aarch64-musl
             package_target: linux-aarch64-musl
@@ -38,11 +38,11 @@ jobs:
           - os: macos-latest
             name: macos-arm64
             package_target: macos-arm64
-            target_arg: ''
+            target_arg: '-Dcpu=baseline'
           - os: windows-latest
             name: windows-x86_64
             package_target: windows-x86_64
-            target_arg: ''
+            target_arg: '-Dcpu=baseline'
     steps:
       - uses: actions/checkout@v4
         with:
