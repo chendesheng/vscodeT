@@ -13,7 +13,7 @@ const Loader = struct {
     injections: ?[]const []const u8,
     initial_scope: []const u8,
 
-    fn load(context: *anyopaque, scope_name: []const u8) anyerror!?*rawGrammar.RawGrammar {
+    fn load(context: *anyopaque, _: std.Io, scope_name: []const u8) anyerror!?*rawGrammar.RawGrammar {
         const self: *Loader = @ptrCast(@alignCast(context));
         return self.grammars.get(scope_name);
     }
@@ -26,7 +26,7 @@ const Loader = struct {
 };
 
 fn readFile(allocator: Allocator, path: []const u8) ![]u8 {
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(64 * 1024 * 1024));
 }
 
@@ -125,7 +125,7 @@ fn assertTokenizationSuite(test_location: []const u8) !void {
         });
         defer registry.dispose();
 
-        const grammar = (try registry.loadGrammar(owned_initial_scope)) orelse {
+        const grammar = (try registry.loadGrammar(std.testing.io, owned_initial_scope)) orelse {
             std.debug.print("could not load grammar for {s}\n", .{desc});
             return error.TestUnexpectedResult;
         };
@@ -136,7 +136,7 @@ fn assertTokenizationSuite(test_location: []const u8) !void {
             const line = line_object.get("line").?.string;
             const expected = line_object.get("tokens").?.array.items;
 
-            const result = grammar.tokenizeLine(line, prev_state, 0) catch |err| {
+            const result = grammar.tokenizeLine(std.testing.io, line, prev_state, 0) catch |err| {
                 std.debug.print("tokenization failed for {s}: {s}: {s}\n", .{ desc, line, @errorName(err) });
                 return err;
             };

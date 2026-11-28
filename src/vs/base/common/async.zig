@@ -10,8 +10,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-pub fn nowMs() i64 {
-    return std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).toMilliseconds();
+pub fn nowMs(io: std.Io) i64 {
+    return std.Io.Timestamp.now(io, .real).toMilliseconds();
 }
 
 pub const Continuation = struct {

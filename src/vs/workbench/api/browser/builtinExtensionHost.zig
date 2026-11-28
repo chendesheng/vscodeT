@@ -246,7 +246,7 @@ fn tabDispatchEditorKey(context: *anyopaque, event: *const key_input.KeyInputEve
     const tab: *Tab = @ptrCast(@alignCast(context));
     var key = event.*;
     var is_pasting = false;
-    _ = tab.handleEditorKey(&key, &is_pasting, time_compat.milliTimestamp(), fallback) catch |err| {
+    _ = tab.handleEditorKey(&key, &is_pasting, time_compat.milliTimestamp(tab.editor.clockIo()), fallback) catch |err| {
         tab.editor.setMessage("edit failed: {s}", .{@errorName(err)});
     };
 }

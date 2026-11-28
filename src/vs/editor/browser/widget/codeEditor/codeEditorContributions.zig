@@ -102,12 +102,13 @@ pub const CodeEditorContributions = struct {
         self.eventually = .{ .queue = queue, .context = self, .run = onEventually, .idle = true };
         if (!self.isFinished(.after_first_render)) self.after_first_render.schedule(std.math.maxInt(i64));
         if (!self.isFinished(.before_first_interaction)) self.before_first_interaction.schedule(std.math.maxInt(i64));
-        if (!self.isFinished(.eventually)) self.eventually.schedule(time.milliTimestamp() + 5000);
+        if (!self.isFinished(.eventually)) self.eventually.schedule(time.milliTimestamp(queue.io) + 5000);
     }
 
     pub fn onAfterModelAttached(self: *CodeEditorContributions) void {
         if (self.isFinished(.after_first_render)) return;
-        const deadline = time.milliTimestamp() + 50;
+        const queue = self.after_first_render.queue orelse return;
+        const deadline = time.milliTimestamp(queue.io) + 50;
         // Keep an earlier idle/deadline request; a new model must never
         // postpone the first-render instantiation.
         if (self.after_first_render.at == null or self.after_first_render.at.? > deadline) self.after_first_render.schedule(deadline);
@@ -247,19 +248,19 @@ test "CodeEditorContributions: upstream instantiation phases and model-bound fac
     registry.onBeforeInteractionEvent();
     try std.testing.expect(registry.getInstantiated(Before) == &before.value);
     try std.testing.expect(registry.getInstantiated(After) == null);
-    try std.testing.expect(queue.dispatch(time.milliTimestamp()));
+    try std.testing.expect(queue.dispatch(time.milliTimestamp(std.testing.io)));
     try std.testing.expect(registry.getInstantiated(After) == &after.value);
     try std.testing.expect(registry.getInstantiated(Rebound) == null);
     // The widget survives model replacement. A factory attached after its
     // instantiation phase has completed executes as soon as it can bind.
     try registry.registerFactory(allocator, rebound.description(.after_first_render));
     try std.testing.expect(registry.getInstantiated(Rebound) == &rebound.value);
-    try std.testing.expect(queue.dispatch(time.milliTimestamp()));
+    try std.testing.expect(queue.dispatch(time.milliTimestamp(std.testing.io)));
     try std.testing.expect(registry.getInstantiated(Eventually) == &eventually.value);
     try std.testing.expect(registry.getInstantiated(Lazy) == null);
     try std.testing.expect(registry.get(Lazy) == &lazy.value);
     try std.testing.expect(registry.get(Lazy) == &lazy.value);
     try std.testing.expectEqual(@as(usize, 1), lazy.value.calls);
     try std.testing.expectEqual(@as(usize, 1), rebound.value.calls);
-    try std.testing.expect(!queue.dispatch(time.milliTimestamp()));
+    try std.testing.expect(!queue.dispatch(time.milliTimestamp(std.testing.io)));
 }

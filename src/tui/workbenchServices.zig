@@ -103,7 +103,9 @@ pub fn builtinExtensionServices(self: *TerminalWorkbench) @import("../vs/workben
             return service.getInstanceFromId(id);
         }
         fn updateConfiguration(context: *anyopaque, key: []const u8, value: ?std.json.Value) !void {
-            try get(context).setUserConfigurationValue(key, value);
+            const host = get(context);
+            host.ensureConfigurationReady();
+            try host.configuration_api.requestUpdateValue(key, value, .USER);
         }
         fn statusHint(context: *anyopaque, message: []const u8) void {
             get(context).setStatusHint("{s}", .{message});

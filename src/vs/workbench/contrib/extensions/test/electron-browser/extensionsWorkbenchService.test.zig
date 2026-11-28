@@ -13,7 +13,7 @@ const ExtensionsWorkbenchService = service_mod.ExtensionsWorkbenchService;
 const ExtensionEnablementService = enablement_mod.ExtensionEnablementService;
 const Store = enablement_mod.Store;
 
-const io = std.Io.Threaded.global_single_threaded.io();
+const io = std.testing.io;
 const testing = std.testing;
 
 const TestStore = struct {

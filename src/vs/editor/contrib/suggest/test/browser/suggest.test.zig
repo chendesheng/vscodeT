@@ -42,7 +42,7 @@ pub fn Tests(comptime ViewType: type) type {
 
         test "SuggestController: typing opens suggestions and Enter accepts" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const editor = try Editor.createFromText(allocator, io, "alpha\na", "test.txt", 40, 8);
             defer {
                 editor.deinit();
@@ -91,7 +91,7 @@ pub fn Tests(comptime ViewType: type) type {
 
         test "SuggestController: Escape dismisses and focus change cancels" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const editor = try Editor.createFromText(allocator, io, "alpha\nal", "test.txt", 40, 8);
             defer {
                 editor.deinit();
@@ -136,7 +136,7 @@ pub fn Tests(comptime ViewType: type) type {
 
         test "SuggestController: widget renders below the caret and filters" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const editor = try Editor.createFromText(allocator, io, "alpha\n", "test.txt", 40, 8);
             defer {
                 editor.deinit();
@@ -239,7 +239,7 @@ pub fn Tests(comptime ViewType: type) type {
 
         test "SuggestController: additional edits and multi-cursor acceptance" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 40, 8);
             defer {
                 editor.deinit();
@@ -277,7 +277,7 @@ pub fn Tests(comptime ViewType: type) type {
 
         test "SuggestController: commit character accepts before inserting" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const editor = try Editor.createFromText(allocator, io, "foo\nf", "test.txt", 40, 8);
             defer {
                 editor.deinit();
@@ -307,7 +307,7 @@ pub fn Tests(comptime ViewType: type) type {
 
         test "SuggestController: resolve supplies documentation" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const editor = try Editor.createFromText(allocator, io, "foo\nf", "test.txt", 40, 8);
             defer {
                 editor.deinit();
@@ -330,7 +330,7 @@ pub fn Tests(comptime ViewType: type) type {
 
         test "SuggestController: snippet placeholders become a session" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const editor = try Editor.createFromText(allocator, io, "", "test.txt", 40, 8);
             defer {
                 editor.deinit();
@@ -368,7 +368,7 @@ pub fn Tests(comptime ViewType: type) type {
 
         test "SuggestController: deferred provider reports loading then results" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const editor = try Editor.createFromText(allocator, io, "foo\nf", "test.txt", 40, 8);
             defer {
                 editor.deinit();
@@ -481,7 +481,7 @@ pub fn Tests(comptime ViewType: type) type {
 
         test "SuggestController: resolved documentation appears in the details pane" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const editor = try Editor.createFromText(allocator, io, "foo\nf", "test.txt", 60, 10);
             defer {
                 editor.deinit();
@@ -523,7 +523,7 @@ pub fn Tests(comptime ViewType: type) type {
 
         test "SuggestController: snippet variables and mirrors" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const editor = try Editor.createFromText(allocator, io, "", "sample.zig", 40, 8);
             defer {
                 editor.deinit();
@@ -559,7 +559,7 @@ pub fn Tests(comptime ViewType: type) type {
 
         test "SuggestController: snippet choice opens options and accepts one" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const editor = try Editor.createFromText(allocator, io, "", "test.txt", 40, 8);
             defer {
                 editor.deinit();
@@ -598,7 +598,7 @@ pub fn Tests(comptime ViewType: type) type {
 
         test "SuggestController: accepting a snippet inside a placeholder merges it" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const editor = try Editor.createFromText(allocator, io, "", "test.txt", 40, 8);
             defer {
                 editor.deinit();
@@ -632,7 +632,7 @@ pub fn Tests(comptime ViewType: type) type {
 
         test "SuggestController: snippet placeholder navigation helpers" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const editor = try Editor.createFromText(allocator, io, "", "test.txt", 40, 8);
             defer {
                 editor.deinit();

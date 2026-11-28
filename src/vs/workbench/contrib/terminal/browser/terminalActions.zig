@@ -199,12 +199,20 @@ pub const TerminalActionServices = struct {
         const action = action_id[0..separator];
         const argument = action_id[separator + 1 ..];
         if (std.mem.eql(u8, action, "tabs")) {
-            if (std.mem.eql(u8, argument, "hide")) {
-                try self.configuration_api.updateValue("terminal.integrated.tabs.enabled", .{ .bool = false }, .USER);
-            } else {
-                try self.configuration_api.updateValue("terminal.integrated.tabs.location", .{ .string = argument }, .USER);
-            }
-            self.layout(self.context);
+            const configuration = @import("../../../../platform/configuration/common/configuration.zig");
+            const hide = std.mem.eql(u8, argument, "hide");
+            const key = if (hide) "terminal.integrated.tabs.enabled" else "terminal.integrated.tabs.location";
+            const value: configuration.Value = if (hide) .{ .bool = false } else .{ .string = argument };
+            _ = try self.configuration_api.requestUpdateResourceValue(key, value, .{}, .USER, .{ .context = self, .complete = struct {
+                fn complete(context: *anyopaque, result: anyerror!void) void {
+                    const owner: *TerminalActionServices = @ptrCast(@alignCast(context));
+                    result catch |err| {
+                        if (err != error.Canceled) std.log.warn("Terminal tab configuration failed: {s}", .{@errorName(err)});
+                        return;
+                    };
+                    owner.layout(owner.context);
+                }
+            }.complete });
             return;
         }
         if (std.mem.eql(u8, action, "editor-profile")) {

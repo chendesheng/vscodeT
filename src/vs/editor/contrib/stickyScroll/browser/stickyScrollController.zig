@@ -358,7 +358,7 @@ pub const StickyScrollController = struct {
 
     fn scheduleUpdate(self: *StickyScrollController) void {
         if (!self.host_bound or !self.enabled or !self.editor.hasModel()) return;
-        self.scheduler.schedule(time_compat.milliTimestamp(), null);
+        self.scheduler.schedule(time_compat.milliTimestamp(self.editor.clockIo()), null);
     }
 
     fn onSchedulerDue(context: *StickyScrollController) void {

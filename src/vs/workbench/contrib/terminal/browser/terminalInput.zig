@@ -242,7 +242,7 @@ test "terminalInput: named keys encode through ghostty" {
     const builtin = @import("builtin");
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var emulator: TerminalEmulator = undefined;
     try emulator.init(allocator, io, .{
         .cols = 80,

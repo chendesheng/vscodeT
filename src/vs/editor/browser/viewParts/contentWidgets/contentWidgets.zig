@@ -168,7 +168,7 @@ pub const ViewContentWidgets = struct {
 test "content widgets place below the anchor and clamp to the text area" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree", "test.txt", 30, 6);
     defer {
         editor.deinit();
@@ -250,7 +250,7 @@ test "content widgets place below the anchor and clamp to the text area" {
 test "content widgets preserve insertion order and restore focus" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const Position = @import("../../../common/core/position.zig").Position;
 
     const editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree", "test.txt", 30, 6);

@@ -153,7 +153,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
             var text = try self.textModel().getLineContent(lineNumber);
             defer text.deinit();
             self.super.resetScratch();
-            const r = try safeTokenize(self.super.scratchAllocator(), allocator, self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, state);
+            const r = try safeTokenize(self.textModel().clockIo(), self.super.scratchAllocator(), allocator, self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, state);
             try builder.add(lineNumber, r.tokens);
             if (can_record_states) {
                 _ = try self.getStore().setEndState(lineNumber, r.endState);
@@ -174,7 +174,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
             defer text.deinit();
 
             self.super.resetScratch();
-            const r = try safeTokenize(self.super.scratchAllocator(), allocator, self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, lineToTokenize.second);
+            const r = try safeTokenize(self.textModel().clockIo(), self.super.scratchAllocator(), allocator, self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, lineToTokenize.second);
             try builder.add(lineToTokenize.first, r.tokens);
             _ = try self.getStore().setEndState(lineToTokenize.first, r.endState);
         }
@@ -196,7 +196,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
 
         const allocator = self.super.stateAllocator();
         self.super.resetScratch();
-        const r = try safeTokenize(self.super.scratchAllocator(), allocator, self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, lineStartState);
+        const r = try safeTokenize(self.textModel().clockIo(), self.super.scratchAllocator(), allocator, self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, lineStartState);
 
         var tokens = ArrayList(TokenPacked).init(self.textModel().getAllocator());
         errdefer tokens.deinit();
@@ -224,7 +224,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         var state = lineStartState;
         for (lines) |line| {
             self.super.resetScratch();
-            const r = try safeTokenize(self.super.scratchAllocator(), self.super.stateAllocator(), self._languageIdCodec, languageId, self.tokenizationSupport, line, true, state);
+            const r = try safeTokenize(self.textModel().clockIo(), self.super.scratchAllocator(), self.super.stateAllocator(), self._languageIdCodec, languageId, self.tokenizationSupport, line, true, state);
             var tokens = ArrayList(TokenPacked).init(allocator);
             errdefer tokens.deinit();
             try tokens.appendSlice(r.tokens);
@@ -267,7 +267,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
             var text = try self.textModel().getLineContent(lineNumber);
             defer text.deinit();
             self.super.resetScratch();
-            const r = try safeTokenize(self.super.scratchAllocator(), self.super.stateAllocator(), self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, state);
+            const r = try safeTokenize(self.textModel().clockIo(), self.super.scratchAllocator(), self.super.stateAllocator(), self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, state);
             try builder.add(lineNumber, r.tokens);
             state = r.endState;
         }
@@ -288,7 +288,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         var state = initialState orelse (self.tokenizationSupport.getInitialState(self.super.stateAllocator()) catch return error.StartStateMustBeDefined);
         for (likelyRelevantLines.items) |line| {
             self.super.resetScratch();
-            const r = try safeTokenize(self.super.scratchAllocator(), self.super.stateAllocator(), self._languageIdCodec, languageId, self.tokenizationSupport, line.items, false, state);
+            const r = try safeTokenize(self.textModel().clockIo(), self.super.scratchAllocator(), self.super.stateAllocator(), self._languageIdCodec, languageId, self.tokenizationSupport, line.items, false, state);
             state = r.endState;
         }
         return state;
@@ -443,8 +443,8 @@ pub const TokenizationStateStore = struct {
 /// Tokenize one line. Token arrays are allocated in the caller-owned scratch
 /// arena and copied by the caller before the next reset; the end state is
 /// cloned into the long-lived state arena so it survives the reset.
-fn safeTokenize(scratch: Allocator, state_allocator: Allocator, languageIdCodec: *LanguageIdCodec, languageId: []const u8, tokenizationSupport: ITokenizationSupport, text: []const u8, hasEOL: bool, state: IState) !EncodedTokenizationResult {
-    var r: ?EncodedTokenizationResult = tokenizationSupport.tokenizeEncodedWithStateAllocator(scratch, state_allocator, text, hasEOL, state) catch null;
+fn safeTokenize(io: std.Io, scratch: Allocator, state_allocator: Allocator, languageIdCodec: *LanguageIdCodec, languageId: []const u8, tokenizationSupport: ITokenizationSupport, text: []const u8, hasEOL: bool, state: IState) !EncodedTokenizationResult {
+    var r: ?EncodedTokenizationResult = tokenizationSupport.tokenizeEncodedWithStateAllocator(io, scratch, state_allocator, text, hasEOL, state) catch null;
     if (r == null) {
         r = try nullTokenizeEncoded(scratch, @fromBackingInt(@intCast(try languageIdCodec.encodeLanguageId(languageId))), state);
     }
@@ -494,7 +494,7 @@ pub const DefaultBackgroundTokenizer = struct {
             return;
         }
         self._hasPendingWork = true;
-        if (self.idle_task.at == null) self.idle_task.schedule(@import("../../../base/common/timeCompat.zig").milliTimestamp());
+        if (self.idle_task.at == null) self.idle_task.schedule(@import("../../../base/common/timeCompat.zig").milliTimestamp(self.tokenizerWithStateStore.textModel().clockIo()));
     }
 
     /// Advances the background pass for at most ~1 ms, like upstream's idle
@@ -526,7 +526,7 @@ pub const DefaultBackgroundTokenizer = struct {
         const lineCount = self.tokenizerWithStateStore.textModel().getLineCount();
         var builder = ContiguousMultilineTokensBuilder.init(self.tokenizerWithStateStore.textModel().getAllocator());
         defer builder.deinit();
-        const sw = StopWatch.init();
+        const sw = StopWatch.init(self.tokenizerWithStateStore.textModel().clockIo());
 
         while (true) {
             if (sw.elapsed() > 1) break;
@@ -593,7 +593,7 @@ fn testGetInitialState(_: *anyopaque, allocator: Allocator) anyerror!IState {
     return .{ .context = state, .vtable = &test_state_vtable };
 }
 
-fn testTokenizeEncoded(_: *anyopaque, allocator: Allocator, line: []const u8, _: bool, state: IState) anyerror!EncodedTokenizationResult {
+fn testTokenizeEncoded(_: *anyopaque, _: std.Io, allocator: Allocator, line: []const u8, _: bool, state: IState) anyerror!EncodedTokenizationResult {
     const tokens = try allocator.alloc(TokenPacked, 64);
     for (tokens, 0..) |*token, i| {
         token.* = .{
@@ -630,6 +630,7 @@ test "tokenization: token arrays stay in the scratch arena" {
     for (0..5000) |_| {
         _ = scratch.reset(.retain_capacity);
         const result = try safeTokenize(
+            std.testing.io,
             scratch.allocator(),
             state_arena.allocator(),
             &codec,

@@ -76,6 +76,7 @@ test "getBuiltin computes a diff" {
     const modified = [_][]const u8{ "a", "c", "b" };
     var result = try computer.computeDiff(allocator, &original, &modified, .{
         .ignoreTrimWhitespace = false,
+        .io = std.testing.io,
         .maxComputationTimeMs = 0,
         .computeMoves = false,
     });

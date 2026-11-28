@@ -744,18 +744,19 @@ pub const BracketPairsTextModelPart = struct {
     };
 
     const ContinueSearchPredicate = struct {
+        io: std.Io,
         deadline_ms: i64,
         calls: usize = 0,
 
-        fn init(max_duration: ?i64) ContinueSearchPredicate {
-            return .{ .deadline_ms = if (max_duration) |d| time_compat.milliTimestamp() + d else 0 };
+        fn init(io: std.Io, max_duration: ?i64) ContinueSearchPredicate {
+            return .{ .io = io, .deadline_ms = if (max_duration) |d| time_compat.milliTimestamp(io) + d else 0 };
         }
 
         fn tick(self: *ContinueSearchPredicate) bool {
             self.calls += 1;
             if (self.calls % 100 != 0) return true;
             if (self.deadline_ms == 0) return true;
-            return time_compat.milliTimestamp() < self.deadline_ms;
+            return time_compat.milliTimestamp(self.io) < self.deadline_ms;
         }
     };
 
@@ -826,7 +827,7 @@ pub const BracketPairsTextModelPart = struct {
     }
 
     fn matchBracketFallback(self: *Self, position: Position, max_duration: ?i64) ?[2]Range {
-        var predicate = ContinueSearchPredicate.init(max_duration);
+        var predicate = ContinueSearchPredicate.init(self.textModel.clockIo(), max_duration);
         return switch (self.matchBracketWithPredicate(position, &predicate)) {
             .pair => |pair| pair,
             else => null,
@@ -1147,7 +1148,7 @@ pub const BracketPairsTextModelPart = struct {
         const closing = resolved.bracketsNew.getClosingBracketInfo(bracket) orelse return null;
         const rich = resolved.getBrackets() orelse return null;
         const data = rich.textIsBracket.get(closing.bracketText) orelse return null;
-        var predicate = ContinueSearchPredicate.init(max_duration);
+        var predicate = ContinueSearchPredicate.init(self.textModel.clockIo(), max_duration);
         return switch (self.findMatchingBracketUpGroup(data, position, &predicate)) {
             .range => |range| range,
             else => null,
@@ -1214,7 +1215,7 @@ pub const BracketPairsTextModelPart = struct {
     }
 
     fn findEnclosingBracketsFallback(self: *Self, position: Position, max_duration: ?i64) ?[2]Range {
-        var predicate = ContinueSearchPredicate.init(max_duration);
+        var predicate = ContinueSearchPredicate.init(self.textModel.clockIo(), max_duration);
         const line_count = self.textModel.getLineCount();
         var saved = ArrayList(CountsEntry).init(self.allocator);
         defer {

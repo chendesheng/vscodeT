@@ -39,7 +39,7 @@ const Support = struct {
         return NullState;
     }
 
-    fn tokenizeEncoded(_: *anyopaque, allocator: Allocator, line: []const u8, _: bool, _: IState) anyerror!EncodedTokenizationResult {
+    fn tokenizeEncoded(_: *anyopaque, _: std.Io, allocator: Allocator, line: []const u8, _: bool, _: IState) anyerror!EncodedTokenizationResult {
         var tokens = ArrayList(TokenPacked).init(allocator);
         errdefer tokens.deinit();
         if (std.mem.eql(u8, line, " { } begin end")) {

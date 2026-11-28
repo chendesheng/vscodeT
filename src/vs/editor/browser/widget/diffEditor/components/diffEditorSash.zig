@@ -76,7 +76,7 @@ pub const DiffEditorSash = struct {
             .x = input.x,
             .y = input.y,
         };
-        const result = self.dispatchMouse(host.layout, &event, geometry.sash_left, geometry.content_width, geometry.enabled, @import("../../../../../base/common/timeCompat.zig").milliTimestamp());
+        const result = self.dispatchMouse(host.layout, &event, geometry.sash_left, geometry.content_width, geometry.enabled, @import("../../../../../base/common/timeCompat.zig").milliTimestamp(self.capture_window.?.io));
         if (result == .changed) host.changed(host.context);
         return result != .none;
     }

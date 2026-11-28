@@ -975,9 +975,17 @@ fn pumpSidebar(sidebar: *Sidebar, io: Io) void {
     }
 }
 
+fn pumpWindowSidebar(sidebar: *Sidebar, window: *@import("../../../../../base/common/windowDispatch.zig").Queue) void {
+    var guard: usize = 0;
+    while (sidebar.hasPendingLoad() and guard < 2000) : (guard += 1) {
+        _ = window.dispatch(@import("../../../../../base/common/timeCompat.zig").milliTimestamp(window.io));
+        if (sidebar.hasPendingLoad()) std.testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
+    }
+}
+
 test "explorer tree sidebar: renders and uses the ported tree view" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1032,7 +1040,7 @@ test "explorer tree sidebar: renders and uses the ported tree view" {
 
 test "explorer tree sidebar: nerd font icons and hover indent guides" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1089,7 +1097,7 @@ test "explorer tree sidebar: nerd font icons and hover indent guides" {
 
 test "explorer tree sidebar: row text keeps the theme side bar background" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const color_theme = @import("../../../../services/themes/common/colorThemeData.zig");
     const color_utils = @import("../../../../../platform/theme/common/colorUtils.zig");
 
@@ -1145,7 +1153,7 @@ test "explorer tree sidebar: row text keeps the theme side bar background" {
 
 test "explorer tree sidebar: wheel scrolls the tree viewport" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1181,7 +1189,7 @@ test "explorer tree sidebar: wheel scrolls the tree viewport" {
 
 test "explorer tree sidebar: revealPath expands ancestors and selects the file" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1213,7 +1221,7 @@ test "explorer tree sidebar: revealPath expands ancestors and selects the file" 
 
 test "explorer tree sidebar: directory rows only toggle from the twistie" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1244,7 +1252,7 @@ test "explorer tree sidebar: directory rows only toggle from the twistie" {
 
 test "explorer tree sidebar: sort order comes from settings" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1278,7 +1286,7 @@ test "explorer tree sidebar: sort order comes from settings" {
 
 test "explorer tree sidebar: tree filter hides ignored children without dropping them" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1310,7 +1318,7 @@ test "explorer tree sidebar: tree filter hides ignored children without dropping
 
 test "explorer tree sidebar: compactFolders compresses single-child chains" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1366,7 +1374,7 @@ test "explorer tree sidebar: compactFolders compresses single-child chains" {
 
 test "explorer tree sidebar: compactFolders false keeps folders separate" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1431,7 +1439,7 @@ test "explorer tree sidebar: compactFolders false keeps folders separate" {
 
 test "explorer tree sidebar: compressed paths keep the tree filter" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1472,7 +1480,7 @@ test "explorer tree sidebar: compressed paths keep the tree filter" {
 
 test "explorer tree sidebar: expansion reads directories on the async Io" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1488,12 +1496,13 @@ test "explorer tree sidebar: expansion reads directories on the async Io" {
     const configuration = try ConfigurationService.init(allocator, io, context, .{});
     defer configuration.deinit();
 
-    var async_state = Io.Threaded.init(allocator, .{});
+    var async_state = try ui.WindowIo.init(allocator, std.testing.io);
     defer async_state.deinit();
+    var window = @import("../../../../../base/common/windowDispatch.zig").Queue{ .io = async_state.io(), .scheduler = &async_state };
 
-    const sidebar = try Sidebar.initWithAsyncIo(allocator, io, async_state.io(), context, configuration, null);
+    const sidebar = try Sidebar.initWithAsyncIo(allocator, io, window.io, context, configuration, &window);
     defer sidebar.deinit();
-    pumpSidebar(sidebar, io);
+    pumpWindowSidebar(sidebar, &window);
 
     var home = ui.KeyEvent{ .key = .home };
     _ = try sidebar.handleKey(&home);
@@ -1507,7 +1516,7 @@ test "explorer tree sidebar: expansion reads directories on the async Io" {
     try std.testing.expect(!alpha.is_directory_resolved);
     try std.testing.expectEqual(@as(usize, 1), sidebar.count());
 
-    pumpSidebar(sidebar, io);
+    pumpWindowSidebar(sidebar, &window);
     try std.testing.expect(!sidebar.hasPendingLoad());
     try std.testing.expect(sidebar.isExpanded(alpha));
     try std.testing.expect(alpha.is_directory_resolved);
@@ -1517,7 +1526,7 @@ test "explorer tree sidebar: expansion reads directories on the async Io" {
 test "explorer tree sidebar: async expansion resolves a symbolic link directory" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1534,12 +1543,13 @@ test "explorer tree sidebar: async expansion resolves a symbolic link directory"
     const configuration = try ConfigurationService.init(allocator, io, context, .{});
     defer configuration.deinit();
 
-    var async_state = Io.Threaded.init(allocator, .{});
+    var async_state = try ui.WindowIo.init(allocator, std.testing.io);
     defer async_state.deinit();
+    var window = @import("../../../../../base/common/windowDispatch.zig").Queue{ .io = async_state.io(), .scheduler = &async_state };
 
-    const sidebar = try Sidebar.initWithAsyncIo(allocator, io, async_state.io(), context, configuration, null);
+    const sidebar = try Sidebar.initWithAsyncIo(allocator, io, window.io, context, configuration, &window);
     defer sidebar.deinit();
-    pumpSidebar(sidebar, io);
+    pumpWindowSidebar(sidebar, &window);
 
     const link = sidebar.model.roots.items[0].getChild("link").?;
     try std.testing.expect(link.is_directory);
@@ -1549,7 +1559,8 @@ test "explorer tree sidebar: async expansion resolves a symbolic link directory"
     try std.testing.expect(sidebar.hasPendingLoad());
 
     var waited: usize = 0;
-    while (!sidebar.pollLoad() and waited < 2000) : (waited += 1) {
+    while (sidebar.hasPendingLoad() and waited < 2000) : (waited += 1) {
+        _ = window.dispatch(@import("../../../../../base/common/timeCompat.zig").milliTimestamp(std.testing.io));
         io.sleep(.fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(!sidebar.hasPendingLoad());
@@ -1563,7 +1574,7 @@ test "explorer tree sidebar: async expansion resolves a symbolic link directory"
 test "explorer tree sidebar: symbolic link directories render and expand" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1630,7 +1641,7 @@ test "explorer tree sidebar: symbolic link directories render and expand" {
 
 test "explorer tree sidebar: sticky headers pin folder ancestors" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1744,7 +1755,7 @@ test "explorer tree sidebar: sticky headers pin folder ancestors" {
 
 test "explorer tree sidebar: sticky headers honor the tree settings" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1820,7 +1831,7 @@ test "explorer tree sidebar: sticky headers honor the tree settings" {
 
 test "explorer tree sidebar: sticky rows use a header tint and bottom cell border" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const color_theme = @import("../../../../services/themes/common/colorThemeData.zig");
     const color_utils = @import("../../../../../platform/theme/common/colorUtils.zig");
 

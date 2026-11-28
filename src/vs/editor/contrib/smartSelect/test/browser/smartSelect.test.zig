@@ -46,6 +46,7 @@ const TokenSupport = struct {
 
     fn tokenizeEncoded(
         context: *anyopaque,
+        _: std.Io,
         allocator: Allocator,
         line: []const u8,
         has_eol: bool,

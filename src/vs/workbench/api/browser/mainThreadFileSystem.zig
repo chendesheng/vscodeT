@@ -7,9 +7,75 @@ const files = @import("../../../platform/files/common/files.zig");
 const std_uri = @import("../../../base/common/stdUri.zig");
 const rpc = @import("../../services/extensions/common/rpcProtocol.zig");
 const Allocator = std.mem.Allocator;
+const window_dispatch = @import("../../../base/common/windowDispatch.zig");
 
 pub const MainThreadFileSystem = struct {
     service: files.IFileService,
+    window: ?*window_dispatch.Queue = null,
+    allocator: Allocator = std.heap.page_allocator,
+    requests: std.Io.Group = .init,
+
+    pub fn deinit(self: *MainThreadFileSystem) void {
+        if (self.window) |window| self.requests.cancel(window.io);
+    }
+
+    /// The RPC decoder's arena and frame are borrowed until invoke returns.
+    /// Keep a separate owned request for the window fiber, and settle the
+    /// protocol reply only when its filesystem operation has completed.
+    pub fn invokeAsync(self: *MainThreadFileSystem, method: []const u8, args: []const rpc.Arg, arena: Allocator) !rpc.HandlerReply {
+        if (self.window == null or self.window.?.scheduler == null)
+            return self.invoke(method, args, arena);
+
+        const request = try self.allocator.create(Request);
+        errdefer self.allocator.destroy(request);
+        request.* = .{ .owner = self, .arena = .init(self.allocator), .method = undefined, .args = undefined };
+        errdefer request.arena.deinit();
+        const a = request.arena.allocator();
+        request.method = try a.dupe(u8, method);
+        const owned = try a.alloc(rpc.Arg, args.len);
+        for (args, owned) |arg, *target| target.* = switch (arg) {
+            .json => |value| .{ .json = try rpc.cloneJsonValue(a, value) },
+            .buffer => |bytes| .{ .buffer = try a.dupe(u8, bytes) },
+            .undefined => .undefined,
+        };
+        request.args = owned;
+        return .{ .deferred = .{ .context = request, .start = Request.start } };
+    }
+
+    const Request = struct {
+        owner: *MainThreadFileSystem,
+        arena: std.heap.ArenaAllocator,
+        method: []const u8,
+        args: []const rpc.Arg,
+
+        fn start(context: *anyopaque, channel: *rpc.RpcProtocol, id: u32) void {
+            const self: *Request = @ptrCast(@alignCast(context));
+            const owner = self.owner;
+            owner.requests.concurrent(owner.window.?.io, run, .{ self, channel, id }) catch {
+                channel.sendReply(id, .{ .err = .{ .name = "Unavailable", .message = "File operation could not be scheduled" } });
+                self.destroy();
+            };
+        }
+
+        fn run(self: *Request, channel: *rpc.RpcProtocol, id: u32) void {
+            defer self.destroy();
+            self.owner.window.?.io.checkCancel() catch {
+                channel.sendReply(id, .{ .err = .{ .name = "Canceled", .message = "File operation canceled" } });
+                return;
+            };
+            const io = self.owner.window.?.io;
+            const previous = io.swapCancelProtection(.blocked);
+            defer _ = io.swapCancelProtection(previous);
+            const reply = self.owner.invoke(self.method, self.args, self.arena.allocator()) catch |err| rpc.HandlerReply{ .err = .{ .name = @errorName(err), .message = @errorName(err) } };
+            channel.sendReply(id, reply);
+        }
+
+        fn destroy(self: *Request) void {
+            const allocator = self.owner.allocator;
+            self.arena.deinit();
+            allocator.destroy(self);
+        }
+    };
 
     pub fn invoke(self: *const MainThreadFileSystem, method: []const u8, args: []const rpc.Arg, arena: Allocator) !rpc.HandlerReply {
         return self.dispatch(method, args, arena) catch |err| .{ .err = .{

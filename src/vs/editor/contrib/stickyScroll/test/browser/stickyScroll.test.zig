@@ -198,7 +198,7 @@ pub fn Tests(comptime ViewType: type) type {
                 content: []const u8,
                 symbols_value: []const languages.DocumentSymbol,
             ) !void {
-                const io = std.Io.Threaded.global_single_threaded.io();
+                const io = std.testing.io;
                 self.allocator = allocator;
                 self.editor = try Editor.createFromText(allocator, io, content, "test.txt", 80, 12);
                 errdefer {
@@ -303,7 +303,7 @@ pub fn Tests(comptime ViewType: type) type {
             const allocator = testing.allocator;
             var plain_features = LanguageFeaturesService.init(allocator);
             defer plain_features.deinit();
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const editor = try Editor.createFromText(allocator, io, text, "test.txt", 80, 20);
             defer {
                 editor.deinit();
@@ -602,7 +602,7 @@ pub fn Tests(comptime ViewType: type) type {
 
         test "outline symbols keep the scope above the viewport sticky" {
             const allocator = testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const source = std.Io.Dir.cwd().readFileAlloc(
                 io,
                 "vscode/scripts/code-web.js",
@@ -624,7 +624,7 @@ pub fn Tests(comptime ViewType: type) type {
 
         test "real JavaScript file produces sticky scopes from indentation" {
             const allocator = testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const source = std.Io.Dir.cwd().readFileAlloc(
                 io,
                 "vscode/scripts/code-web.js",

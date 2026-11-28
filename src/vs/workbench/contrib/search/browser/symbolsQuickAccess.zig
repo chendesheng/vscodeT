@@ -101,7 +101,7 @@ pub const SymbolsQuickAccessProvider = struct {
         picker.setBusy(true);
         if (self.timer.queue != null) {
             // Replace the deadline on each keystroke.
-            self.timer.schedule(time.milliTimestamp() + TYPING_SEARCH_DELAY);
+            self.timer.schedule(time.milliTimestamp(self.timer.queue.?.io) + TYPING_SEARCH_DELAY);
         } else try self.runQuery();
     }
 

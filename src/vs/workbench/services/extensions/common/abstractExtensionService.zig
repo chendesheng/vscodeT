@@ -82,7 +82,7 @@ pub fn readExtensions(
     for (paths) |entry| {
         const absolute_path = try std.Io.Dir.cwd().realPathFileAlloc(io, entry.path, allocator);
         defer allocator.free(absolute_path);
-        var description = try manager.readExtensionDescription(allocator, absolute_path);
+        var description = try manager.readExtensionDescription(allocator, io, absolute_path);
         description.is_builtin = entry.is_builtin;
         description.is_under_development = entry.is_under_development;
         errdefer description.deinit(allocator);

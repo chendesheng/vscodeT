@@ -189,7 +189,7 @@ pub const InlayHintsController = struct {
     }
     fn schedule(self: *InlayHintsController) void {
         self.cancelPending();
-        if (self.enabled()) self.timer.schedule(time.milliTimestamp() + 150);
+        if (self.enabled()) self.timer.schedule(time.milliTimestamp(self.editor.clockIo()) + 150);
     }
     fn onDeadline(context: *anyopaque, _: i64, _: bool) bool {
         const self: *InlayHintsController = @ptrCast(@alignCast(context));
@@ -320,7 +320,7 @@ pub const InlayHintsController = struct {
                 self.resolveClick(part, false);
             }
         } else if (event.event.kind == .up) {
-            const now = time.milliTimestamp();
+            const now = time.milliTimestamp(self.editor.clockIo());
             if (self.last_click_part == part and now - self.last_click_ms <= 400) {
                 self.last_click_part = null;
                 self.resolveClick(part, true);

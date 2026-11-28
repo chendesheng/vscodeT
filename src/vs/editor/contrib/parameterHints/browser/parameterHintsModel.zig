@@ -62,7 +62,7 @@ pub const ParameterHintsModel = struct {
     pub fn attachWindow(self: *ParameterHintsModel, window: *dispatch.Queue) void {
         self.timer.schedule(null);
         self.timer.queue = window;
-        if (self.trigger_context != null) self.timer.schedule(time.milliTimestamp() + delay_ms);
+        if (self.trigger_context != null) self.timer.schedule(time.milliTimestamp(self.editor.clockIo()) + delay_ms);
     }
 
     pub fn detach(self: *ParameterHintsModel) void {
@@ -177,7 +177,7 @@ pub const ParameterHintsModel = struct {
         if (self.trigger_context == null or context.trigger_kind != .ContentChange) self.trigger_context = context;
         if (self.timer.queue != null) {
             self.timer.schedule(null);
-            self.timer.schedule(time.milliTimestamp() + (delay orelse delay_ms));
+            self.timer.schedule(time.milliTimestamp(self.editor.clockIo()) + (delay orelse delay_ms));
         } else try self.doTrigger();
     }
 

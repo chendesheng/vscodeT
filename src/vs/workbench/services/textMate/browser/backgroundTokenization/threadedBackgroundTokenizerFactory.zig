@@ -121,7 +121,7 @@ pub const Factory = struct {
     fn create(context: *anyopaque, model: *TextModel, store: IBackgroundTokenizationStore) ?IBackgroundTokenizer {
         const self: *Factory = @ptrCast(@alignCast(context));
         if (self.disabled or model.isTooLargeForSyncing() or model.isTooLargeForTokenization()) return null;
-        if (!textMateTokenizer.hasGrammar(model.getLanguageId())) return null;
+        if (!textMateTokenizer.hasGrammar(model.clockIo(), model.getLanguageId())) return null;
         self.startWorker() catch return null;
 
         const id = self.next_id;

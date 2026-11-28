@@ -146,7 +146,7 @@ fn paneTextAlloc(allocator: Allocator, pane: *@import("../vs/workbench/contrib/m
 fn pumpDiffForTests(workbench: *Workbench) !void {
     var guard: usize = 0;
     while (workbench.editor_opening.pending_diff != null and guard < 5000) : (guard += 1) {
-        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         if (workbench.editor_opening.pending_diff != null) std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(workbench.editor_opening.pending_diff == null);
@@ -156,9 +156,9 @@ fn pumpDiffForTests(workbench: *Workbench) !void {
 // provider's history result is available synchronously after refresh or click.
 fn pumpHistoryForTests(workbench: *Workbench) !void {
     const view = workbench.scm.history orelse return error.TestExpectedHistoryView;
-    const deadline = time_compat.milliTimestamp() + 5000;
-    while (view.page_job != null and time_compat.milliTimestamp() < deadline) {
-        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+    const deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+    while (view.page_job != null and time_compat.milliTimestamp(std.testing.io) < deadline) {
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         if (view.page_job != null) try std.testing.io.sleep(.fromMilliseconds(1), .awake);
     }
     try std.testing.expect(view.page_job == null);
@@ -167,7 +167,7 @@ fn pumpHistoryForTests(workbench: *Workbench) !void {
 fn pumpOpenForTests(workbench: *Workbench) void {
     var guard: usize = 0;
     while (workbench.editor_opening.pending_open != null and guard < 1000) : (guard += 1) {
-        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         if (workbench.editor_opening.pending_open != null) std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
     }
 }
@@ -220,7 +220,7 @@ fn writeKeybindingsFile(
 
 test "Workbench: empty editor renders the watermark and runs its shortcuts" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "watermark.txt", "");
@@ -279,7 +279,7 @@ test "Workbench: empty editor renders the watermark and runs its shortcuts" {
 
 test "Workbench: watermark tips respond to resized panes, settings, and keybindings" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "watermark-keybindings.json",
@@ -322,7 +322,7 @@ test "Workbench: watermark tips respond to resized panes, settings, and keybindi
 
 test "Workbench: threaded tokenizer shuts down after tabs" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -338,7 +338,7 @@ test "Workbench: threaded tokenizer shuts down after tabs" {
 
 test "Workbench: sticky scroll paints scope headers" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -376,17 +376,17 @@ test "Workbench: sticky scroll paints scope headers" {
 
 test "Workbench: declarative markdown configuration applies to open tabs" {
     const allocator = std.testing.allocator;
-    var registry = extensions_registry.scan(allocator, &.{"vscode/extensions/markdown-basics"}) catch return error.SkipZigTest;
+    var registry = extensions_registry.scan(allocator, std.testing.io, &.{"vscode/extensions/markdown-basics"}) catch return error.SkipZigTest;
     defer registry.deinit();
     if (registry.language("markdown") == null) return error.SkipZigTest;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(time_compat.io, .{ .sub_path = "README.md", .data = "# Hello\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "README.md", .data = "# Hello\n" });
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const length = try tmp.dir.realPathFile(time_compat.io, "README.md", &buffer);
+    const length = try tmp.dir.realPathFile(std.testing.io, "README.md", &buffer);
 
-    const workbench_window = try TestWindow.init(allocator, time_compat.io, &.{buffer[0..length]}, 40, 9);
+    const workbench_window = try TestWindow.init(allocator, std.testing.io, &.{buffer[0..length]}, 40, 9);
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
     workbench.setDeclarativeExtensions(&registry);
@@ -408,7 +408,7 @@ test "Workbench: declarative markdown configuration applies to open tabs" {
 
 test "Workbench: extension configuration contributions reload as one delta" {
     const a = std.testing.allocator;
-    const window = try TestWindow.init(a, time_compat.io, &.{}, 40, 9);
+    const window = try TestWindow.init(a, std.testing.io, &.{}, 40, 9);
     defer window.deinit();
     const workbench = window.workbench;
     workbench.ensureConfigurationReady();
@@ -473,7 +473,7 @@ test "Workbench: resource tab focus option is ORed with the global toggle" {
 
 test "Workbench: opens two files, switches tabs and closes them" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -513,7 +513,7 @@ test "Workbench: opens two files, switches tabs and closes them" {
 
 test "Workbench: ownsEditor follows tab ownership across close" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -542,7 +542,7 @@ test "Workbench: ownsEditor follows tab ownership across close" {
 
 test "Workbench: reopening an open file reuses its tab and editor" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -563,7 +563,7 @@ test "Workbench: reopening an open file reuses its tab and editor" {
 
 test "Workbench: opening a new file rebuilds its view once" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -587,7 +587,7 @@ test "Workbench: opening a new file rebuilds its view once" {
 
 test "Workbench: markdown preview toggle changes the current editor in place" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -640,7 +640,7 @@ test "Workbench: markdown preview toggle changes the current editor in place" {
 
 test "Workbench: markdown preview title action is absent for plain text" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -661,7 +661,7 @@ test "Workbench: markdown preview title action is absent for plain text" {
 
 test "Workbench: markdown preview follows editor scroll and can reveal the editor" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -684,7 +684,7 @@ test "Workbench: markdown preview follows editor scroll and can reveal the edito
     try std.testing.expect(preview_tab.markdown_preview != null);
 
     _ = tab.editor.setTopViewLine(30);
-    const now = @import("../vs/base/common/timeCompat.zig").milliTimestamp();
+    const now = @import("../vs/base/common/timeCompat.zig").milliTimestamp(std.testing.io);
     while (workbench.window_events.nextTimeout(now + 60, 1) == 0) _ = workbench.window_events.dispatch(now + 60);
     try std.testing.expect(preview_tab.markdown_preview.?.scroll > 0);
     while (workbench.window_events.nextTimeout(now + 120, 1) == 0) _ = workbench.window_events.dispatch(now + 120);
@@ -702,7 +702,7 @@ test "Workbench: markdown preview follows editor scroll and can reveal the edito
 
 test "Workbench: split duplicates the active editor and shares its buffer" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -756,7 +756,7 @@ test "Workbench: split duplicates the active editor and shares its buffer" {
 
 test "Workbench: split copy shares rendered edits after changing focus" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -803,7 +803,7 @@ test "Workbench: split copy shares rendered edits after changing focus" {
 
 test "Workbench: editor group focus stays put when wheeling over another pane" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -860,7 +860,7 @@ test "Workbench: editor group focus stays put when wheeling over another pane" {
 
 test "Workbench: editor group focus, new group and close group commands" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -941,7 +941,7 @@ test "Workbench: new editor group preserves sidebar focus" {
 
 test "Workbench: new group below and above focus commands" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -964,7 +964,7 @@ test "Workbench: new group below and above focus commands" {
 
 test "Workbench: move and duplicate editor group commands" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1004,7 +1004,7 @@ test "Workbench: move and duplicate editor group commands" {
 
 test "Workbench: move editor into group and split editor into group" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1049,7 +1049,7 @@ test "Workbench: move editor into group and split editor into group" {
 
 test "Workbench: splitEditorToRightGroup creates a group without a neighbour" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1071,7 +1071,7 @@ test "Workbench: splitEditorToRightGroup creates a group without a neighbour" {
 
 test "Workbench: directional split commands place the copy on each side" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1110,7 +1110,7 @@ test "Workbench: directional split commands place the copy on each side" {
 
 test "Workbench: splitEditor follows openSideBySideDirection" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1138,7 +1138,7 @@ test "Workbench: splitEditor follows openSideBySideDirection" {
 
 test "Workbench: directional group navigation and join all groups" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1172,7 +1172,7 @@ test "Workbench: directional group navigation and join all groups" {
 
 test "Workbench: sash drag resizes the split" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1207,7 +1207,7 @@ test "Workbench: sash drag resizes the split" {
 
 test "Workbench: tabs and editor content resolve pointer shapes" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1250,7 +1250,7 @@ test "Workbench: tabs and editor content resolve pointer shapes" {
 
 test "Workbench: render emits OSC 22 only when the pointer changes" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1286,7 +1286,7 @@ test "Workbench: render emits OSC 22 only when the pointer changes" {
 
 test "Workbench: closing the last tab collapses the empty group" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1309,7 +1309,7 @@ test "Workbench: closing the last tab collapses the empty group" {
 
 test "Workbench: dragging a tab into a pane moves it there" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1356,7 +1356,7 @@ test "Workbench: dragging a tab into a pane moves it there" {
 
 test "Workbench: dragging over a tab strip previews the insertion and reorders on drop" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1416,7 +1416,7 @@ test "Workbench: dragging over a tab strip previews the insertion and reorders o
 
 test "Workbench: dropping a tab on another strip inserts at the previewed index" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1480,7 +1480,7 @@ test "Workbench: dropping a tab on another strip inserts at the previewed index"
 
 test "Workbench: editor drag moves, copies, and merges a whole group" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const a = try seedFile(allocator, io, &tmp, "a.txt", "alpha");
@@ -1536,7 +1536,7 @@ test "Workbench: editor drag moves, copies, and merges a whole group" {
 
 test "Workbench: editor drag opens the hovered tab only after its deadline" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const a = try seedFile(allocator, io, &tmp, "a.txt", "alpha");
@@ -1575,7 +1575,7 @@ test "Workbench: editor drag opens the hovered tab only after its deadline" {
 
 test "Workbench: openPath reveals an already-open file in another group" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1601,7 +1601,7 @@ test "Workbench: openPath reveals an already-open file in another group" {
 
 test "Workbench: serialize and restore a group" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1654,7 +1654,7 @@ test "Workbench: serialize and restore a group" {
 
 test "Workbench: serialize and restore multiple groups" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1791,7 +1791,7 @@ test "Workbench: serialize and restore multiple editor inputs including a real f
 
 test "Workbench: sidebar renders and opens a file" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1867,15 +1867,15 @@ test "Search palette actions open the named view after the activity bar changes"
 // Exercise the same deadlines and native worker wakeups as an idle window.
 fn waitForSaveCompletion(workbench: *Workbench, completion: enum { closed, next_dialog, quit }) !void {
     const clock = @import("../vs/base/common/timeCompat.zig");
-    const deadline = clock.milliTimestamp() + 5000;
-    while (clock.milliTimestamp() < deadline) {
+    const deadline = clock.milliTimestamp(std.testing.io) + 5000;
+    while (clock.milliTimestamp(std.testing.io) < deadline) {
         const done = switch (completion) {
             .closed => workbench.tabCount() == 0,
             .next_dialog => workbench.isDialogOpen(),
             .quit => workbench.shouldQuit(),
         };
         if (done) return;
-        _ = workbench.window_events.dispatch(clock.milliTimestamp());
+        _ = workbench.window_events.dispatch(clock.milliTimestamp(std.testing.io));
         std.testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
     }
     return error.SaveTimeout;
@@ -1888,13 +1888,13 @@ fn waitForSearch(workbench: *Workbench) !void {
     defer signal.deinit();
     workbench.window_events.setWake(.{ .context = &signal, .signal = Signal.notify });
     defer workbench.window_events.setWake(null);
-    const end = clock.milliTimestamp() + 5000;
+    const end = clock.milliTimestamp(std.testing.io) + 5000;
     while (true) {
         const sidebar_busy = if (workbench.search_window.view) |view| view.isSearchPending() else false;
         const tab = workbench.activeTab();
         const editor_busy = if (tab != null and tab.?.search_editor_input != null) tab.?.search_editor_input.?.search_editor.isSearchPending() else false;
         if (!sidebar_busy and !editor_busy) return;
-        const now = clock.milliTimestamp();
+        const now = clock.milliTimestamp(std.testing.io);
         if (now >= end) return error.SearchCompletionTimeout;
         const timeout = workbench.window_events.nextTimeout(now, @intCast(end - now));
         if (timeout > 0) {
@@ -1908,7 +1908,7 @@ fn waitForSearch(workbench: *Workbench) !void {
                 if (try std.posix.poll(&fds, timeout) > 0) signal.drain();
             }
         }
-        const ready_at = clock.milliTimestamp();
+        const ready_at = clock.milliTimestamp(std.testing.io);
         if (ready_at >= end) return error.SearchCompletionTimeout;
         _ = workbench.window_events.dispatch(ready_at);
     }
@@ -1916,7 +1916,7 @@ fn waitForSearch(workbench: *Workbench) !void {
 
 test "Workbench: workspace search streams results and opens a match" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1968,7 +1968,7 @@ test "Workbench: workspace search streams results and opens a match" {
 
 test "Workbench: opening a search match selects its range" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -2015,7 +2015,7 @@ test "Workbench: opening a search match selects its range" {
 
 test "Workbench: opening a search result from another file does not restart the query" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -2059,14 +2059,14 @@ test "Workbench: opening a search result from another file does not restart the 
     try std.testing.expectEqual(@as(@TypeOf(view.handleKey(&enter)), .handled), view.handleKey(&enter));
 
     // Navigating to the match leaves the current search intact.
-    _ = workbench.window_events.dispatch(@import("../vs/base/common/timeCompat.zig").milliTimestamp() + 600);
+    _ = workbench.window_events.dispatch(@import("../vs/base/common/timeCompat.zig").milliTimestamp(std.testing.io) + 600);
     try std.testing.expect(!view.model.isSearching());
     try std.testing.expectEqual(@as(usize, 2), view.model.result.count());
 }
 
 test "Workbench: an inactive result model updates only its file and can regain matches" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const a = try seedFile(allocator, io, &tmp, "one.txt", "alpha");
@@ -2110,7 +2110,7 @@ test "Workbench: an inactive result model updates only its file and can regain m
 
 test "Workbench: search chevron and replace all confirmation update an open editor" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -2168,9 +2168,9 @@ test "Workbench: search chevron and replace all confirmation update an open edit
     var enter = ui.KeyEvent{ .key = .enter };
     try std.testing.expect(terminal_workbench.handleDialogKey(workbench, &enter));
     try std.testing.expect(view.controller.pending_replace != null);
-    const deadline = @import("../vs/base/common/timeCompat.zig").milliTimestamp() + 5000;
-    while (view.controller.pending_replace != null and @import("../vs/base/common/timeCompat.zig").milliTimestamp() < deadline) {
-        _ = workbench.window_events.dispatch(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+    const deadline = @import("../vs/base/common/timeCompat.zig").milliTimestamp(std.testing.io) + 5000;
+    while (view.controller.pending_replace != null and @import("../vs/base/common/timeCompat.zig").milliTimestamp(std.testing.io) < deadline) {
+        _ = workbench.window_events.dispatch(@import("../vs/base/common/timeCompat.zig").milliTimestamp(std.testing.io));
         std.testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(view.controller.pending_replace == null);
@@ -2187,7 +2187,7 @@ test "Workbench: search chevron and replace all confirmation update an open edit
 
 test "Workbench: activity bar switches view containers" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -2258,7 +2258,7 @@ test "Workbench: activity bar switches view containers" {
 
 test "Workbench: zen mode restores a status bar that was hidden before" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -2280,7 +2280,7 @@ test "Workbench: zen mode restores a status bar that was hidden before" {
 
 test "Workbench: zen tab actions are only available in zen mode" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -2313,11 +2313,13 @@ test "Workbench: zen tab actions are only available in zen mode" {
     try std.testing.expect(keys.contextMatchesRules(single.command.precondition.?));
 
     try workbench.commands.execute(zen_mode_contribution.zen_hide_editor_tabs_id);
+    try finishConfigurationUpdates(workbench);
     try std.testing.expect(!keys.contextMatchesRules(hide.command.precondition.?));
     try std.testing.expect(keys.contextMatchesRules(multiple.command.precondition.?));
     try std.testing.expect(keys.contextMatchesRules(single.command.precondition.?));
 
     try workbench.commands.execute(zen_mode_contribution.zen_show_single_editor_tab_id);
+    try finishConfigurationUpdates(workbench);
     try std.testing.expect(keys.contextMatchesRules(hide.command.precondition.?));
     try std.testing.expect(keys.contextMatchesRules(multiple.command.precondition.?));
     try std.testing.expect(!keys.contextMatchesRules(single.command.precondition.?));
@@ -2325,7 +2327,7 @@ test "Workbench: zen tab actions are only available in zen mode" {
 
 test "Workbench: zen mode keybindings toggle and exit" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 14);
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
@@ -2344,7 +2346,7 @@ test "Workbench: zen mode keybindings toggle and exit" {
 
 test "Workbench: Problems panel, status count and range highlight" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -2406,7 +2408,7 @@ test "Workbench: Problems panel, status count and range highlight" {
 test "Workbench: panel composite bar hosts Problems beside the Terminal" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -2509,7 +2511,7 @@ test "Workbench: panel composite bar hosts Problems beside the Terminal" {
 
 test "Workbench: opens a folder workspace with no initial tabs" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -2547,7 +2549,7 @@ test "Workbench: opens a folder workspace with no initial tabs" {
 
 test "Workbench: Ctrl-P opens a file and Alt-P runs a command" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -2572,8 +2574,8 @@ test "Workbench: Ctrl-P opens a file and Alt-P runs a command" {
     try picker.setValue("alp");
     var guard: usize = 0;
     while (picker.activeItem() == null and guard < 2000) : (guard += 1) {
-        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-        if (picker.activeItem() == null) time_compat.sleepMillis(1);
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+        if (picker.activeItem() == null) time_compat.sleepMillis(std.testing.io, 1);
     }
     try std.testing.expectEqualStrings("alpha.txt", picker.activeItem().?.label);
 
@@ -2582,7 +2584,7 @@ test "Workbench: Ctrl-P opens a file and Alt-P runs a command" {
     try std.testing.expect(!workbench.isQuickAccessOpen());
     var open_guard: usize = 0;
     while (workbench.tabCount() == 0 and open_guard < 2000) : (open_guard += 1) {
-        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         std.Io.sleep(io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
@@ -2601,7 +2603,7 @@ test "Workbench: Ctrl-P opens a file and Alt-P runs a command" {
 
 test "Workbench: opening a file reveals it in the Explorer" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -2630,7 +2632,7 @@ test "Workbench: opening a file reveals it in the Explorer" {
 
 test "Workbench: explorer.autoReveal false disables selection" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -2662,7 +2664,7 @@ test "Workbench: explorer.autoReveal false disables selection" {
 
 test "Workbench: switching tabs reveals the active file" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -2739,7 +2741,7 @@ test "Workbench: moveActiveEditor honors counts, center and selected tabs across
 
 test "Workbench: quick access row buttons open to the side, configure shortcuts and remove history" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const file = try seedFile(allocator, io, &tmp, "CPU.hs", "");
@@ -2800,7 +2802,7 @@ test "Workbench: quick access row buttons open to the side, configure shortcuts 
 
 test "Workbench: quick open renders and an outside click only closes it" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -2832,7 +2834,7 @@ test "Workbench: quick open renders and an outside click only closes it" {
 
 test "Workbench: list keybindings route to the focused sidebar" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -2878,7 +2880,7 @@ test "Workbench: list keybindings route to the focused sidebar" {
     try workbench.file_watcher_service.?.on_did_change.fire(&.{.{ .type = .UPDATED, .resource = keybindings_path }});
     var guard: usize = 0;
     while (old == workbench.user_keybindings.current and guard < 1000) : (guard += 1) {
-        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(old != workbench.user_keybindings.current);
@@ -2889,7 +2891,7 @@ test "Workbench: list keybindings route to the focused sidebar" {
 
 test "Workbench: color theme settings load a registered theme palette" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -2961,7 +2963,7 @@ test "Workbench: color theme settings load a registered theme palette" {
 
 test "Workbench: opening a themed file initializes the editor controllers" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -3011,7 +3013,7 @@ test "Workbench: opening a themed file initializes the editor controllers" {
 
 test "Workbench: Preferences JSON commands create and open the TUI layer" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -3056,7 +3058,7 @@ test "Workbench: Preferences JSON commands create and open the TUI layer" {
 
 test "Workbench: user keybindings override defaults, honor when and removals" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -3119,7 +3121,7 @@ test "Workbench: user keybindings override defaults, honor when and removals" {
 
 test "Find reads language options before paint and observes settings changes immediately" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "file.json", "{}");
@@ -3150,7 +3152,7 @@ test "Find reads language options before paint and observes settings changes imm
 
 test "Workbench: editor settings apply to open editors and reload" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -3206,7 +3208,7 @@ test "Workbench: editor settings apply to open editors and reload" {
 
 test "Workbench: search shows no-results and honors showLineNumbers" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -3262,7 +3264,7 @@ test "Workbench: search shows no-results and honors showLineNumbers" {
 
 test "Workbench: search editor shows query controls and reruns with independent context" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const source = try seedFile(allocator, io, &tmp, "test.txt", "before\nalpha\nbetween\nbeta\nafter\n");
@@ -3393,7 +3395,7 @@ test "Workbench: search editor shows query controls and reruns with independent 
 
 test "Workbench: typing a search query restarts results without stale collapse keys" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -3446,7 +3448,7 @@ test "Workbench: typing a search query restarts results without stale collapse k
 
 test "Workbench: wheel scrolls search results without moving the selection" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -3497,7 +3499,7 @@ test "Workbench: wheel scrolls search results without moving the selection" {
 
 test "Workbench: search input focus follows presses, not hover" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -3557,7 +3559,7 @@ test "Workbench: search input focus follows presses, not hover" {
 
 test "Workbench: status bar context menu hides an entry" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -3587,7 +3589,7 @@ test "Workbench: status bar context menu hides an entry" {
 
 test "Workbench: duplicate tab labels show their directories" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -3613,7 +3615,7 @@ test "Workbench: duplicate tab labels show their directories" {
 
 test "Workbench: status bar spans the window and shows editor state" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -3672,7 +3674,7 @@ test "Workbench: status bar spans the window and shows editor state" {
 
 test "Workbench: Ctrl-Alt-S toggles status bar focus" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "focus.txt", "x");
@@ -3691,7 +3693,7 @@ test "Workbench: Ctrl-Alt-S toggles status bar focus" {
 
 test "Workbench: clicking a status entry focuses it and runs its command" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "click.txt", "x");
@@ -3744,7 +3746,7 @@ test "Workbench: clicking a status entry focuses it and runs its command" {
 
 test "Workbench: status values open the matching pickers" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "pick.txt", "alpha");
@@ -3786,7 +3788,7 @@ test "Workbench: status values open the matching pickers" {
 
 test "Workbench: EOL and language pickers update the editor" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "pick-actions.txt", "alpha\nbeta\ngamma");
@@ -3859,7 +3861,7 @@ test "Workbench: EOL and language pickers update the editor" {
 
 test "workbench: global shortcuts dispatch through the keybinding registry" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 14);
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
@@ -3874,7 +3876,7 @@ test "workbench: global shortcuts dispatch through the keybinding registry" {
 
 test "Workbench: files.associations change the opened editor language" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -3904,7 +3906,7 @@ test "Workbench: files.associations change the opened editor language" {
 
 test "Workbench: starts a workspace file watcher for absolute folders" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -3924,7 +3926,7 @@ test "Workbench: starts a workspace file watcher for absolute folders" {
 
 test "Workbench: workspace watcher honors watcherExclude and watcherInclude" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -3977,7 +3979,7 @@ test "Workbench: workspace watcher honors watcherExclude and watcherInclude" {
 
 test "Workbench: AfterRestored watcher reloads a clean editor" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -3996,19 +3998,19 @@ test "Workbench: AfterRestored watcher reloads a clean editor" {
     try workbench.lifecycle.setPhase(.Restored);
     const service = workbench.file_watcher_service.?;
 
-    const ready_deadline = time_compat.milliTimestamp() + 3000;
-    while (time_compat.milliTimestamp() < ready_deadline and !service.isReady()) {
-        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+    const ready_deadline = time_compat.milliTimestamp(std.testing.io) + 3000;
+    while (time_compat.milliTimestamp(std.testing.io) < ready_deadline and !service.isReady()) {
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         io.sleep(.fromMilliseconds(10), .awake) catch {};
     }
     try std.testing.expect(service.isReady());
 
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "after" });
 
-    const deadline = time_compat.milliTimestamp() + 3000;
+    const deadline = time_compat.milliTimestamp(std.testing.io) + 3000;
     var reloaded = false;
-    while (time_compat.milliTimestamp() < deadline and !reloaded) {
-        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+    while (time_compat.milliTimestamp(std.testing.io) < deadline and !reloaded) {
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         var value = tab.editor.model.getValue(.TextDefined, true) catch break;
         reloaded = std.mem.eql(u8, value.items, "after");
         value.deinit();
@@ -4019,7 +4021,7 @@ test "Workbench: AfterRestored watcher reloads a clean editor" {
 
 test "Workbench: revert command discards edits and clears conflicts" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -4045,7 +4047,7 @@ test "Workbench: revert command discards edits and clears conflicts" {
 
 test "Workbench: working copy service tracks dirty editors" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -4074,7 +4076,7 @@ test "Workbench: working copy service tracks dirty editors" {
 
 test "Workbench: decoded divider drag resizes the split" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -4126,7 +4128,7 @@ test "Workbench: decoded divider drag resizes the split" {
 
 test "Workbench: sash follows drag motion without button bits" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -4166,7 +4168,7 @@ test "Workbench: sash follows drag motion without button bits" {
 
 test "Workbench: decoded divider drag resizes a vertical split" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -4210,7 +4212,7 @@ test "Workbench: decoded divider drag resizes a vertical split" {
 
 test "Workbench: tab context menu closes the tab" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -4248,7 +4250,7 @@ test "Workbench: tab context menu closes the tab" {
 
 test "Workbench: breadcrumb row shows the workspace-relative path" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -4361,7 +4363,7 @@ test "Workbench: breadcrumb row shows the workspace-relative path" {
 
 test "Workbench: breadcrumb symbols come from a registered outline provider" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -4425,7 +4427,7 @@ test "Workbench: breadcrumb symbols come from a registered outline provider" {
 
 test "Workbench: closing a dirty tab asks, cancel keeps it and save closes it" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -4506,7 +4508,7 @@ test "Workbench: closing a dirty tab asks, cancel keeps it and save closes it" {
 
 test "Workbench: don't save closes a dirty tab without writing" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -4546,7 +4548,7 @@ test "Workbench: don't save closes a dirty tab without writing" {
 
 test "Workbench: Ctrl-W on a dirty tab opens the save confirmation" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -4572,7 +4574,7 @@ test "Workbench: Ctrl-W on a dirty tab opens the save confirmation" {
 
 test "Workbench: Ctrl-Q quits clean and confirms one dirty tab" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -4624,7 +4626,7 @@ test "Workbench: Ctrl-Q quits clean and confirms one dirty tab" {
 
 test "Workbench: Ctrl-Q lists every dirty tab and don't save closes all" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -4674,7 +4676,7 @@ test "Workbench: Ctrl-Q lists every dirty tab and don't save closes all" {
 
 test "Workbench: preview replacement and dirty pin" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -4704,7 +4706,7 @@ test "Workbench: preview replacement and dirty pin" {
 
 test "Workbench: disabling breadcrumbs removes the row and shifts content" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -4735,7 +4737,7 @@ test "Workbench: disabling breadcrumbs removes the row and shifts content" {
 
 test "Workbench: double click pins a preview tab and toggles a pinned group" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -4795,7 +4797,7 @@ test "Workbench: double click pins a preview tab and toggles a pinned group" {
 
 test "Workbench: double click still pins after a jittery drag starts" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -4832,7 +4834,7 @@ test "Workbench: double click still pins after a jittery drag starts" {
 
 test "Workbench: LSP navigation, references and symbol picker" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "lsp/sample.ts",
@@ -4948,7 +4950,7 @@ test "Workbench: LSP navigation, references and symbol picker" {
 
 test "Workbench: LSP no-result message keeps the word" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "lsp/empty.ts", "value");
@@ -4978,7 +4980,7 @@ test "Workbench: LSP no-result message keeps the word" {
 
 test "Workbench: F12 and Shift+F12 dispatch through keybindings" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "lsp/keys.ts",
@@ -5035,7 +5037,7 @@ test "Workbench: F12 and Shift+F12 dispatch through keybindings" {
 
 test "Workbench: same-file navigation reuses the current editor across path forms" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "lsp/relative.ts",
@@ -5086,7 +5088,7 @@ test "Workbench: same-file navigation reuses the current editor across path form
 test "Workbench: new terminal creates one tab and hover does not act" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 20);
     const workbench = workbench_window.workbench;
@@ -5166,7 +5168,7 @@ test "Workbench: new terminal creates one tab and hover does not act" {
 test "Workbench: wheel scrolls the terminal viewport without moving focus" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 20);
     const workbench = workbench_window.workbench;
@@ -5240,7 +5242,7 @@ test "Workbench: wheel scrolls the terminal viewport without moving focus" {
 
 test "Workbench: image files open in an image preview tab without touching the file" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedBinary(allocator, io, &tmp, "logo.png", &test_png_1x1);
@@ -5274,7 +5276,7 @@ test "Workbench: image files open in an image preview tab without touching the f
 
 test "Workbench: a capable terminal uploads and paints the image" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedBinary(allocator, io, &tmp, "logo.png", &test_png_1x1);
@@ -5335,7 +5337,7 @@ test "Workbench: a capable terminal uploads and paints the image" {
 
 test "Workbench: image files reload on change and open in a text editor" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedBinary(allocator, io, &tmp, "logo.png", &test_png_1x1);
@@ -5382,7 +5384,7 @@ test "Workbench: image files reload on change and open in a text editor" {
 
 test "Workbench: session serialization restores image tabs" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedBinary(allocator, io, &tmp, "logo.png", &test_png_1x1);
@@ -5431,7 +5433,7 @@ test "Workbench: session serialization restores image tabs" {
 
 test "Workbench: markdown preview shows displayable images" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const image_path = try seedBinary(allocator, io, &tmp, "shot.png", &test_png_1x1);
@@ -5469,7 +5471,7 @@ test "Workbench: markdown preview shows displayable images" {
     defer out.deinit();
     // The workbench loads preview images on its background I/O pool.
     for (0..2000) |_| {
-        while (workbench.window_events.nextTimeout(time_compat.milliTimestamp(), 1) == 0) _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+        while (workbench.window_events.nextTimeout(time_compat.milliTimestamp(std.testing.io), 1) == 0) _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         try renderFrame(workbench, &out.writer);
         if (std.mem.indexOf(u8, out.written(), "\u{10EEEE}") != null) break;
         io.sleep(.fromMilliseconds(1), .awake) catch {};
@@ -5483,7 +5485,7 @@ test "Workbench: markdown preview shows displayable images" {
 
 test "Workbench: closing an image tab releases the terminal image" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedBinary(allocator, io, &tmp, "logo.png", &test_png_1x1);
@@ -5524,11 +5526,11 @@ test "Workbench: interactive open reads on the async Io" {
     try std.testing.expectEqual(workbench.asyncIo().vtable, read.executor.vtable);
     try std.testing.expectEqual(workbench.asyncIo().userdata, read.executor.userdata);
     try std.testing.expect(workbench.asyncIo().vtable != workbench.worker_io.vtable);
-    try std.testing.expectEqual(@as(i32, 0), workbench.window_events.nextTimeout(time_compat.milliTimestamp(), 250));
+    try std.testing.expectEqual(@as(i32, 0), workbench.window_events.nextTimeout(time_compat.milliTimestamp(std.testing.io), 250));
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
 
     var waited: usize = 0;
-    while (!workbench.window_events.dispatch(time_compat.milliTimestamp()) and waited < 2000) : (waited += 1) {
+    while (!workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io)) and waited < 2000) : (waited += 1) {
         std.Io.sleep(io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
@@ -5549,7 +5551,7 @@ test "Workbench: cancelling an in-flight open leaves no tab and no pending job" 
     const workbench_window = try TestWindow.init(allocator, io, &.{}, 40, 10);
     const workbench = workbench_window.workbench;
     workbench.requestOpenPath(path);
-    _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+    _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
     try std.testing.expect(workbench.editor_opening.pending_open != null);
     workbench_window.deinit();
 }
@@ -5640,7 +5642,7 @@ test "Workbench: Explorer expands a directory symlink and opens a file inside" {
 
 test "Workbench: explorer sticky headers pin the folder ancestors" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -5715,7 +5717,7 @@ test "Workbench: explorer sticky headers pin the folder ancestors" {
 
 test "Workbench: right click on a tab neither closes nor activates it" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -5755,7 +5757,7 @@ test "Workbench: right click on a tab neither closes nor activates it" {
 
 test "Workbench: inactive breadcrumbs reuse a persistent control" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -5790,7 +5792,7 @@ test "Workbench: inactive breadcrumbs reuse a persistent control" {
 
 test "Workbench: content widgets show diagnostics in a rounded hover" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -5876,7 +5878,7 @@ test "Workbench: content widgets show diagnostics in a rounded hover" {
 
 test "Workbench: tab overflow lists clipped tabs" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -5922,7 +5924,7 @@ test "Workbench: tab overflow lists clipped tabs" {
 
 test "Workbench: tab context menu closes to the right" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -5957,7 +5959,7 @@ test "Workbench: tab context menu closes to the right" {
 
 test "Workbench: tab context menu splits the captured tab" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -5993,7 +5995,7 @@ test "Workbench: tab context menu splits the captured tab" {
 
 test "Workbench: tab context menu closes saved tabs" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -6026,7 +6028,7 @@ test "Workbench: tab context menu closes saved tabs" {
 
 test "Workbench: close saved keeps dirty tabs" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -6066,7 +6068,7 @@ test "Workbench: close saved keeps dirty tabs" {
 
 test "Workbench: hiding the tab row reclaims it for content" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -6093,7 +6095,7 @@ test "Workbench: hiding the tab row reclaims it for content" {
 
 test "Workbench: the find bar reserves a view-zone row" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -6183,7 +6185,7 @@ test "Diff editor commands: each find overlay owns a real view zone on its model
 
 test "startup opens files at the laid-out pane width with one wrapping pass" {
     const allocator = std.testing.allocator;
-    const wb_window = try TestWindow.init(allocator, time_compat.io, &.{}, 140, 44);
+    const wb_window = try TestWindow.init(allocator, std.testing.io, &.{}, 140, 44);
     const wb = wb_window.workbench;
     defer wb_window.deinit();
     try wb.initSidebarFromWorkspace();
@@ -6197,7 +6199,7 @@ test "startup opens files at the laid-out pane width with one wrapping pass" {
 
 test "Workbench: markdown preview to the side uses an ordinary editor group and sash" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "source.md", "# First");
@@ -6239,7 +6241,7 @@ test "Workbench: markdown preview to the side uses an ordinary editor group and 
         try wb.commands.execute("markdown.showSource");
         try std.testing.expectEqual(source_group, wb.activePane().?);
         try source.editor.insertText("LiveEdit");
-        while (wb.window_events.nextTimeout(time_compat.milliTimestamp() + 350, 1) == 0) _ = wb.window_events.dispatch(time_compat.milliTimestamp() + 350);
+        while (wb.window_events.nextTimeout(time_compat.milliTimestamp(std.testing.io) + 350, 1) == 0) _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io) + 350);
         try renderFrame(wb, &out.writer);
         const rendered = try preview.markdown_preview.?.surface.?.grid().rowText(allocator, 0);
         defer allocator.free(rendered);
@@ -6268,7 +6270,7 @@ test "Workbench: markdown preview to the side uses an ordinary editor group and 
 
 test "Workbench: markdown side preview reuses a group below and survives closing its only source" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "persist.md", "# Heading");
@@ -6304,7 +6306,7 @@ test "Workbench: markdown side preview reuses a group below and survives closing
 
 test "Workbench: breadcrumb symbol filtering survives editor group focus changes" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -6414,7 +6416,7 @@ test "command palette preserves registration order, metadata and editor precondi
 
 test "Workbench: clicking a pane body focuses its group" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -6482,7 +6484,7 @@ test "Workbench: clicking a pane body focuses its group" {
 
 test "Workbench: cell borders remove the split gutter" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -6523,7 +6525,7 @@ test "Workbench: cell borders remove the split gutter" {
 
 test "Workbench: mixed editor splits join inside a single rounded frame" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "round.txt", "text");
@@ -6592,7 +6594,7 @@ test "Workbench: mixed editor splits join inside a single rounded frame" {
 
 test "Workbench: stacked editor dividers use the editor background and sash color with and without cell borders" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "sash.txt", "text");
@@ -6679,7 +6681,7 @@ test "Workbench: stacked editor dividers use the editor background and sash colo
 
 test "Workbench: dropping a tab on a pane edge tiles a new pane" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -6728,7 +6730,7 @@ test "Workbench: dropping a tab on a pane edge tiles a new pane" {
 
 test "Workbench: editor drag paints all four destinations and uses the release coordinates" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const a = try seedFile(allocator, io, &tmp, "preview_a.txt", "alpha");
@@ -6802,7 +6804,7 @@ test "Workbench: editor drag paints all four destinations and uses the release c
 
 test "Workbench: editor drag keeps range selection and cancels on source removal" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const a = try seedFile(allocator, io, &tmp, "a.txt", "alpha");
@@ -6854,7 +6856,7 @@ test "Workbench: editor drag keeps range selection and cancels on source removal
 
 test "Workbench: bottom panel has a rounded outline with and without cell borders" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const workbench_window = try TestWindow.init(allocator, io, &.{}, 90, 24);
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
@@ -6908,7 +6910,7 @@ test "Workbench: bottom panel has a rounded outline with and without cell border
 
 test "Workbench: zen mode applies configuration changes while active" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -6977,7 +6979,7 @@ test "Workbench: zen mode applies configuration changes while active" {
 
 test "Workbench: centered layout narrows and centers the editor part" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -7019,7 +7021,7 @@ test "Workbench: centered layout narrows and centers the editor part" {
 
 test "Workbench: activity bar top moves the composite bar into the side bar" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -7228,7 +7230,7 @@ test "Workbench: maximize panel hides editor and restores remembered height and 
 
 test "Workbench: closing the side bar keeps the activity bar" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -7284,7 +7286,7 @@ test "Workbench: closing the side bar keeps the activity bar" {
 
 test "Workbench: status bar escape clears the hover tooltip" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -7306,7 +7308,7 @@ test "Workbench: status bar escape clears the hover tooltip" {
 
 test "Workbench: external file changes reload clean editors only" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -7323,7 +7325,7 @@ test "Workbench: external file changes reload clean editors only" {
     workbench.handleFileChanges(&.{.{ .type = .UPDATED, .resource = path }});
     var reload_guard: usize = 0;
     while (workbench.editor_opening.reload_jobs.items.len != 0 and reload_guard < 2000) : (reload_guard += 1) {
-        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         std.Io.sleep(io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(reload_guard < 2000);
@@ -7348,7 +7350,7 @@ test "Workbench: external file changes reload clean editors only" {
 test "Workbench: terminal splits share one group and preserve panel geometry on resize" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const workbench_window = try TestWindow.init(allocator, io, &.{}, 96, 24);
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
@@ -7441,8 +7443,8 @@ test "terminal host flushes final output and fires one exit before removing pane
     try panel.onExit.event(&panel_exit, Observer.onExit);
     editor.writeInput("\n");
     panel.writeInput("\n");
-    const deadline = time_compat.milliTimestamp() + 5000;
-    while (workbench.terminalCount() != 0 and time_compat.milliTimestamp() < deadline) _ = try host.wait(1000);
+    const deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+    while (workbench.terminalCount() != 0 and time_compat.milliTimestamp(std.testing.io) < deadline) _ = try host.wait(1000);
     try std.testing.expectEqual(@as(usize, 0), workbench.terminalCount());
     try std.testing.expectEqual(@as(?i32, 17), editor_exit.code);
     try std.testing.expectEqual(@as(?i32, 0), panel_exit.code);
@@ -7485,7 +7487,7 @@ test "duplicate tab names with identical parent names show their distinguishing 
 test "Workbench: terminal editor moves the live instance between hosts and closes it once" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const workbench_window = try TestWindow.init(allocator, io, &.{}, 96, 24);
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
@@ -7525,7 +7527,7 @@ test "Workbench: terminal editor moves the live instance between hosts and close
 
 test "Workbench: sidebar and single editor have outlines with and without cell borders" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "framed.txt", "hello");
@@ -7627,7 +7629,7 @@ test "Workbench: sidebar and single editor have outlines with and without cell b
 }
 
 test "Workbench: dragging the sash above the bottom panel resizes it" {
-    const workbench_window = try TestWindow.init(std.testing.allocator, std.Io.Threaded.global_single_threaded.io(), &.{}, 90, 36);
+    const workbench_window = try TestWindow.init(std.testing.allocator, std.testing.io, &.{}, 90, 36);
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
     try workbench.showProblems();
@@ -7755,7 +7757,7 @@ test "Workbench: right sidebar moves its rail, hit targets and snapping sash tog
 
 test "Workbench: dragging the sidebar divider resizes the side bar" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -7878,9 +7880,19 @@ test "Workbench: dragging the sidebar divider resizes the side bar" {
     try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(workbench.part.base.bounds.?.w));
 }
 
+fn finishConfigurationUpdates(workbench: *Workbench) !void {
+    const service = workbench.configuration orelse return;
+    for (0..5000) |_| {
+        if (service.update_group.token.load(.acquire) == null) return;
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+        std.testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
+    }
+    return error.ConfigurationUpdateTimedOut;
+}
+
 test "Workbench: zen mode hides chrome, line numbers and tabs and restores them" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -7944,11 +7956,14 @@ test "Workbench: zen mode hides chrome, line numbers and tabs and restores them"
     // The zen tab actions write `zenMode.showTabs` and take effect while zen
     // mode is active, without touching `workbench.editor.showTabs`.
     try workbench.commands.execute(zen_mode_contribution.zen_hide_editor_tabs_id);
+    try finishConfigurationUpdates(workbench);
     try std.testing.expectEqual(layout_service_mod.EditorTabsMode.none, workbench.part.part_options.show_tabs);
     try std.testing.expect(!pane.tabs_visible);
     try workbench.commands.execute(zen_mode_contribution.zen_show_single_editor_tab_id);
+    try finishConfigurationUpdates(workbench);
     try std.testing.expectEqual(layout_service_mod.EditorTabsMode.single, workbench.part.part_options.show_tabs);
     try workbench.commands.execute(zen_mode_contribution.zen_show_multiple_editor_tabs_id);
+    try finishConfigurationUpdates(workbench);
     try std.testing.expectEqual(layout_service_mod.EditorTabsMode.multiple, workbench.part.part_options.show_tabs);
 
     try workbench.commands.execute(zen_mode_contribution.exit_zen_mode_id);
@@ -7966,7 +7981,7 @@ test "Workbench: zen mode hides chrome, line numbers and tabs and restores them"
 
 test "Workbench: side bar part paints the title and runs its actions" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -8054,7 +8069,7 @@ test "Workbench: side bar part paints the title and runs its actions" {
 
 test "Workbench: search guides, preview ellipses and the Open in editor link" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const source = "prefix words before a significant amount of extra context alpha and more trailing words after the match alpha";
@@ -8137,7 +8152,7 @@ test "Workbench: search guides, preview ellipses and the Open in editor link" {
 
 test "Workbench: search aligns nested guides and keeps the link inline at the result limit" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "nested/results.txt", "alpha one\nalpha two\nalpha three\n");
@@ -8194,7 +8209,7 @@ test "Workbench: search aligns nested guides and keeps the link inline at the re
 
 test "Workbench: outline side panel shows provider symbols" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -8363,7 +8378,7 @@ test "Workbench: outline side panel shows provider symbols" {
 
 test "Workbench: closing the active tab detaches the outline editor handler" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -8514,8 +8529,8 @@ test "Workbench: git scm integration stages selected inner changes through the d
     try widget.modified_editor.undo();
     for (0..5000) |_| {
         if (widget.view_model.is_diff_up_to_date) break;
-        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-        time_compat.sleepMillis(1);
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+        time_compat.sleepMillis(std.testing.io, 1);
     }
     try std.testing.expect(widget.view_model.is_diff_up_to_date);
     try std.testing.expectEqualStrings("abc new def fresh", try widget.modifiedModel().borrowLineContent(2));
@@ -8604,7 +8619,7 @@ test "Workbench: git scm integration, shared working files and read-only revisio
         const entry = quick_diff.entries.items[0];
         var spins: usize = 0;
         while (entry.model.changes.items.len < 2 and spins < 5000) : (spins += 1) {
-            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
             std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
         }
         try std.testing.expectEqual(@as(usize, 2), entry.model.changes.items.len);
@@ -8677,7 +8692,7 @@ test "Workbench: git scm integration, shared working files and read-only revisio
         defer registration.dispose();
         spins = 0;
         while (entry.model.quick_diffs.len < 2 and spins < 5000) : (spins += 1) {
-            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
             std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
         }
         try std.testing.expectEqual(@as(usize, 2), entry.model.quick_diffs.len);
@@ -9352,7 +9367,7 @@ fn launchTestTerminal(service: *TerminalService, allocator: Allocator) anyerror!
 
 test "workbench context keys observe part visibility and dirty working copies between input events" {
     const allocator = std.testing.allocator;
-    const io = time_compat.io;
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "context.txt", "one");
@@ -9376,7 +9391,7 @@ test "workbench context keys observe part visibility and dirty working copies be
 
 test "Simple Browser command and API apply the same URL restrictions before terminal launch" {
     const allocator = std.testing.allocator;
-    const io = time_compat.io;
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "browser.txt", "");
@@ -9659,7 +9674,7 @@ test "workbench mounts and disposes only its subtree in the terminal window" {
     _ = try parent.appendChild(sibling);
     {
         const models = @import("../vs/editor/contrib/documentSymbols/browser/outlineModel.zig");
-        var supplied_models = models.OutlineModelService.init(std.testing.allocator);
+        var supplied_models = models.OutlineModelService.init(std.testing.allocator, std.testing.io);
         defer supplied_models.deinit();
         var services = try @import("../vs/workbench/workbench.common.main.zig").createServices(std.testing.allocator);
         defer services.deinit();
@@ -9803,7 +9818,7 @@ test "resetLayout ignores saved workspace visibility and profile sizes while res
 
 test "line actions resolve the active code editor when focus leaves it and honor read-only state" {
     const allocator = std.testing.allocator;
-    const io = time_compat.io;
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "line-actions.txt", "one");
@@ -9935,7 +9950,7 @@ test "editor and quick input focus events precede the next terminal frame" {
 
 test "HistoryService records active editor changes before a frame and detaches old pane listeners" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path_a = try seedFile(allocator, io, &tmp, "history-event-a.txt", "a");
@@ -10109,7 +10124,7 @@ test "Editor: actions resolve the same mounted contribution through getContribut
     try std.testing.expect(tab.editor.getInstantiatedContribution(Suggest) == null);
     var key: ui.KeyEvent = .{ .key = .right };
     var pasting = false;
-    _ = try tab.handleEditorKey(&key, &pasting, time_compat.milliTimestamp(), null);
+    _ = try tab.handleEditorKey(&key, &pasting, time_compat.milliTimestamp(std.testing.io), null);
     try std.testing.expectEqual(tab.controllers.?.suggest.?, tab.editor.getInstantiatedContribution(Suggest).?);
     try wb.commands.execute("actions.find");
     try std.testing.expect(tab.controllers.?.find.state.is_revealed);
@@ -10117,7 +10132,7 @@ test "Editor: actions resolve the same mounted contribution through getContribut
 
 test "Workbench: configuration events update a mounted markdown preview" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "preview.md", "# Preview");
@@ -10369,6 +10384,7 @@ test "Zen tab actions derive palette preconditions from configuration context ev
     try std.testing.expect(keys.contextMatchesRules(hide.command.precondition));
     try std.testing.expect(!keys.contextMatchesRules(multiple.command.precondition));
     try wb.commands.execute(zen.zen_hide_editor_tabs_id);
+    try finishConfigurationUpdates(wb);
     try std.testing.expectEqualStrings("none", keys.getValue(config_key).string);
     try std.testing.expect(!keys.contextMatchesRules(hide.command.precondition));
     try std.testing.expect(keys.contextMatchesRules(multiple.command.precondition));
@@ -10438,10 +10454,13 @@ test "Diff editor commands resolve the active snapshot pane through their servic
     try std.testing.expect(tab.handleDiffKey(&find_key));
     try std.testing.expect(tab.controllers.?.find.isOpen());
     try wb.commands.execute("diffEditor.setViewMode.inline");
+    try finishConfigurationUpdates(wb);
     try std.testing.expect(tab.diff.?.widget.inline_mode);
     try wb.commands.execute("diffEditor.setViewMode.sideBySide");
+    try finishConfigurationUpdates(wb);
     try std.testing.expect(tab.diff.?.widget.sideBySide());
     try wb.commands.execute("toggle.diff.ignoreTrimWhitespace");
+    try finishConfigurationUpdates(wb);
     try std.testing.expect(!tab.diff.?.widget.options.ignore_trim_whitespace);
     const current = tab.diff.?.widget;
     const diff_commands = @import("../vs/editor/browser/widget/diffEditor/commands.zig");
@@ -10692,14 +10711,14 @@ test "Diff editor commands: refactor preview shows real multi-diff models and ap
     const pane = &wb.bulk_edit_preview.?;
     try std.testing.expect(pane.hasInput());
     try std.testing.expectEqualStrings(Pane.ID, wb.geometry().activePanelId());
-    for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp() + 1000);
+    for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io) + 1000);
     const session = pane.session.?;
     try std.testing.expect(session.provider.ready and session.tree_view != null);
     try std.testing.expectEqualStrings("old", try original.borrowLineContent(1));
     try std.testing.expectEqual(@as(usize, 1), session.operations.checked.checked_count);
     // The pane's tree opens the registered transient multi-diff input.
     try std.testing.expect(try terminal_workbench.handlePanelKey(wb, &.{ .key = .enter }));
-    for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp() + 1000);
+    for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io) + 1000);
     const tab = wb.activeTab().?;
     try std.testing.expect(tab.multi_diff != null);
     try std.testing.expect(tab.multi_diff.?.input.is_transient);
@@ -10709,11 +10728,11 @@ test "Diff editor commands: refactor preview shows real multi-diff models and ap
     try std.testing.expectEqualStrings("oad", try preview_model.borrowLineContent(1));
     session.operations.checked.updateChecked(0, true);
     session.operations.checked.updateChecked(1, false);
-    for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp() + 1000);
+    for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io) + 1000);
     try std.testing.expectEqualStrings("bld", try preview_model.borrowLineContent(1));
     try std.testing.expectEqualStrings("old", try original.borrowLineContent(1));
     try wb.commands.execute("refactorPreview.apply");
-    for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp() + 1000);
+    for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io) + 1000);
     try std.testing.expect(probe.failure == null and probe.result.?.is_applied);
     try std.testing.expectEqual(@as(usize, 1), probe.result.?.edit_count);
     try std.testing.expectEqualStrings("bld", try original.borrowLineContent(1));
@@ -10777,8 +10796,8 @@ test "Diff editor commands: refactor preview restores per-grouping tree state an
     const pane = &wb.bulk_edit_preview.?;
     for (0..5000) |_| {
         if (pane.session.?.tree_view != null) break;
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
-        time_compat.sleepMillis(1);
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+        time_compat.sleepMillis(std.testing.io, 1);
     }
     const tree = pane.session.?.tree_view orelse return error.ExpectedPreviewTree;
     try std.testing.expect(pane.group_by_file);
@@ -10884,8 +10903,8 @@ test "Diff editor commands: workspace text and file edit groups share real model
     _ = try wb.bulk_edit_api.apply(.{ .edits = &edits }, .{}, .{ .context = &probe, .complete = Probe.complete });
     for (0..5000) |_| {
         if (probe.result != null or probe.failure != null) break;
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
-        time_compat.sleepMillis(1);
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+        time_compat.sleepMillis(std.testing.io, 1);
     }
     if (probe.failure) |err| return err;
     try std.testing.expect(probe.result.?.is_applied);
@@ -10944,8 +10963,8 @@ test "Diff editor commands: multi-resource text edit installs one labeled worksp
     _ = try wb.bulk_edit_api.apply(.{ .edits = &edits }, .{ .label = "Refactor Both", .code = "test.refactor" }, .{ .context = &probe, .complete = Probe.complete });
     for (0..5000) |_| {
         if (probe.result != null or probe.failure != null) break;
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
-        time_compat.sleepMillis(1);
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+        time_compat.sleepMillis(std.testing.io, 1);
     }
     if (probe.failure) |err| return err;
     try std.testing.expect(probe.result.?.is_applied);
@@ -11005,8 +11024,8 @@ test "Diff editor commands: workspace undo and redo asynchronously reopen a clos
     _ = try wb.bulk_edit_api.apply(.{ .edits = &edits }, .{ .editor = first, .label = "Edit Both" }, .{ .context = &probe, .complete = Probe.complete });
     for (0..5000) |_| {
         if (probe.result != null or probe.failure != null) break;
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
-        time_compat.sleepMillis(1);
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+        time_compat.sleepMillis(std.testing.io, 1);
     }
     if (probe.failure) |err| return err;
     try std.testing.expect(probe.result.?.is_applied);
@@ -11015,8 +11034,8 @@ test "Diff editor commands: workspace undo and redo asynchronously reopen a clos
     try wb.commands.execute("workbench.action.closeActiveEditor");
     for (0..5000) |_| {
         if (wb.model_service_api.getModel(second_uri) == null) break;
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
-        time_compat.sleepMillis(1);
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+        time_compat.sleepMillis(std.testing.io, 1);
     }
     try std.testing.expect(wb.model_service_api.getModel(second_uri) == null);
     try pane.activateTab(first_tab);
@@ -11040,8 +11059,8 @@ test "Diff editor commands: workspace undo and redo asynchronously reopen a clos
     try undo_service.pushElement(unrelated_element, null, null);
     for (0..5000) |_| {
         if (undo_service.pending_workspace_preparations.count() == 0) break;
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
-        time_compat.sleepMillis(1);
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+        time_compat.sleepMillis(std.testing.io, 1);
     }
     try std.testing.expectEqual(@as(usize, 0), undo_service.pending_workspace_preparations.count());
     try std.testing.expectEqualStrings("first", try first.model.borrowLineContent(1));
@@ -11056,16 +11075,16 @@ test "Diff editor commands: workspace undo and redo asynchronously reopen a clos
     }
     for (0..5000) |_| {
         if (wb.model_service_api.getModel(second_uri) == null) break;
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
-        time_compat.sleepMillis(1);
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+        time_compat.sleepMillis(std.testing.io, 1);
     }
     try std.testing.expect(wb.model_service_api.getModel(second_uri) == null);
     try first.redo();
     try std.testing.expectEqual(@as(usize, 1), undo_service.pending_workspace_preparations.count());
     for (0..5000) |_| {
         if (undo_service.pending_workspace_preparations.count() == 0) break;
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
-        time_compat.sleepMillis(1);
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+        time_compat.sleepMillis(std.testing.io, 1);
     }
     try std.testing.expectEqualStrings("new first", try first.model.borrowLineContent(1));
     {
@@ -11076,8 +11095,8 @@ test "Diff editor commands: workspace undo and redo asynchronously reopen a clos
     }
     for (0..5000) |_| {
         if (wb.model_service_api.getModel(second_uri) == null) break;
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
-        time_compat.sleepMillis(1);
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+        time_compat.sleepMillis(std.testing.io, 1);
     }
     try std.testing.expect(wb.model_service_api.getModel(second_uri) == null);
 
@@ -11088,8 +11107,8 @@ test "Diff editor commands: workspace undo and redo asynchronously reopen a clos
     undo_service.cancelPendingPreparations();
     try std.testing.expectEqual(@as(usize, 0), undo_service.pending_workspace_preparations.count());
     for (0..20) |_| {
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
-        time_compat.sleepMillis(1);
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+        time_compat.sleepMillis(std.testing.io, 1);
     }
     try std.testing.expectEqualStrings("new first", try first.model.borrowLineContent(1));
     try std.testing.expect(wb.model_service_api.getModel(second_uri) == null);
@@ -11100,8 +11119,8 @@ test "Diff editor commands: workspace undo and redo asynchronously reopen a clos
     try first.undo();
     for (0..5000) |_| {
         if (undo_service.pending_workspace_preparations.count() == 0) break;
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
-        time_compat.sleepMillis(1);
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+        time_compat.sleepMillis(std.testing.io, 1);
     }
     try std.testing.expectEqual(@as(usize, 0), undo_service.pending_workspace_preparations.count());
     try std.testing.expectEqualStrings("first", try first.model.borrowLineContent(1));
@@ -11162,8 +11181,8 @@ test "Diff editor commands: active workspace snippet edits preserve tabstops and
     _ = try wb.bulk_edit_api.apply(.{ .edits = &edits }, .{ .editor = editor, .label = "Snippet refactor" }, .{ .context = &probe, .complete = Probe.complete });
     for (0..5000) |_| {
         if (probe.result != null or probe.failure != null) break;
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
-        time_compat.sleepMillis(1);
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+        time_compat.sleepMillis(std.testing.io, 1);
     }
     if (probe.failure) |err| return err;
     try std.testing.expect(probe.result.?.is_applied);
@@ -11212,8 +11231,8 @@ test "Diff editor commands: refactor auto-save saves only affected mounted and u
             _ = try wb.bulk_edit_api.apply(.{ .edits = edits }, .{ .respect_auto_save_config = true }, .{ .context = self, .complete = complete });
             for (0..5000) |_| {
                 if (self.result != null or self.failure != null) break;
-                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(1);
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 1);
             }
             if (self.failure) |err| return err;
             try std.testing.expect(self.result.?.is_applied);
@@ -11307,11 +11326,14 @@ test "Diff editor commands: renaming a dirty file preserves contents and view st
     const edits = [_]languages.WorkspaceResourceEdit{.{ .file = .{ .old_resource = original.model.uri(), .new_resource = target } }};
     var probe: Probe = .{};
     _ = try wb.bulk_edit_api.apply(.{ .edits = &edits }, .{}, .{ .context = &probe, .complete = Probe.complete });
+    // Applying file operations must yield to the native dispatcher.
+    try std.testing.expect(probe.result == null);
+    try std.testing.expectError(error.FileNotFound, wb.file_service_api.stat(target));
     for (0..5000) |_| {
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         if (probe.result != null and std.mem.eql(u8, wb.activeTab().?.editor.path, target_path)) break;
         if (probe.failure != null) break;
-        time_compat.sleepMillis(1);
+        time_compat.sleepMillis(std.testing.io, 1);
     }
     if (probe.failure) |err| return err;
     try std.testing.expect(probe.result.?.is_applied);
@@ -11328,9 +11350,9 @@ test "Diff editor commands: renaming a dirty file preserves contents and view st
     // its replacement must not be destroyed until the dispatch turn.
     try moved.undo();
     for (0..5000) |_| {
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         if (std.mem.eql(u8, wb.activeTab().?.editor.path, absolute)) break;
-        time_compat.sleepMillis(1);
+        time_compat.sleepMillis(std.testing.io, 1);
     }
     const restored = wb.activeTab().?.editor;
     try std.testing.expectEqualStrings(absolute, restored.path);
@@ -11371,13 +11393,14 @@ test "Diff editor commands: whitespace hint and timeout prompt use effective con
     } else return error.WhitespaceHintMissing;
     var click: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = widget.paneWidths().modifiedLeft() + hint.left + 1, .y = hint.top };
     _ = try tab.handleDiffMouse(&click);
+    try finishConfigurationUpdates(wb);
     try std.testing.expect(!widget.options.ignore_trim_whitespace);
     try std.testing.expect(!wb.configuration.?.getBool("diffEditor.ignoreTrimWhitespace", true));
     for (0..5000) |_| {
         if (widget.view_model.is_diff_up_to_date) break;
         const time = @import("../vs/base/common/timeCompat.zig");
-        _ = wb.window_events.dispatch(time.milliTimestamp());
-        time.sleepMillis(1);
+        _ = wb.window_events.dispatch(time.milliTimestamp(std.testing.io));
+        time.sleepMillis(std.testing.io, 1);
     }
     try std.testing.expect(widget.view_model.is_diff_up_to_date);
     try std.testing.expect(widget.changeCount() > 0);
@@ -11394,6 +11417,7 @@ test "Diff editor commands: whitespace hint and timeout prompt use effective con
     try std.testing.expectEqual(@import("../vs/base/common/severity.zig").Severity.Warning, notification_item.severity);
     const action = notification_item.actions.primary[0];
     try action.run(action.context, null);
+    try finishConfigurationUpdates(wb);
     try std.testing.expectEqual(@as(i64, 0), widget.options.max_computation_time_ms);
     try std.testing.expectEqual(@as(i64, 0), wb.configuration.?.getValue("diffEditor.maxComputationTime", .{}).?.integer);
 }
@@ -11429,6 +11453,7 @@ test "Diff editor commands: retained title menu exposes navigation, toggles and 
     try std.testing.expectEqualStrings("toggle.diff.ignoreTrimWhitespace", pane.toolbar_hits.items[3].id);
     click.x = pane.toolbar_hits.items[3].start + 1;
     try std.testing.expect(terminal_workbench.handleTabMouse(wb, &click));
+    try finishConfigurationUpdates(wb);
     try std.testing.expect(!widget.options.ignore_trim_whitespace);
     try renderFrame(wb, &frame.writer);
     const overflow = pane.toolbar_hits.items[pane.toolbar_hits.items.len - 1];
@@ -11446,6 +11471,7 @@ test "Diff editor commands: retained title menu exposes navigation, toggles and 
     try std.testing.expect(wb.context_menu_service.handleKey(&.{ .key = .home }));
     try std.testing.expect(wb.context_menu_service.handleKey(&.{ .key = .right }));
     try std.testing.expect(wb.context_menu_service.handleKey(&.{ .key = .enter }));
+    try finishConfigurationUpdates(wb);
     try std.testing.expect(widget.inline_mode);
 
     // Both upstream secondary title actions are registered and use the
@@ -11767,7 +11793,7 @@ test "Workbench: git scm integration peek actions stage and revert only the sele
     const Harness = struct {
         fn wait(wb: *Workbench, item: *@import("../vs/workbench/contrib/scm/browser/quickDiffDecorator.zig").Entry, id: []const u8, count: usize) !void {
             for (0..5000) |_| {
-                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 if (item.model.quick_diff_changes.get(id)) |indices| {
                     if (indices.items.len == count) return;
                 }
@@ -11911,6 +11937,7 @@ test "Diff editor commands: registered accessibility help presents read-only nav
     try std.testing.expect(try service.handleKey(&copy));
     try std.testing.expectEqualStrings(content.items, wb.clipboard_service.text.?);
     try std.testing.expect(try terminal_workbench.handleGlobalKey(wb, &.{ .key = .f6, .mods = .{ .alt = true } }));
+    try finishConfigurationUpdates(wb);
     try std.testing.expect(!wb.configuration.?.getBool("accessibility.verbosity.diffEditor", true));
     try std.testing.expect(!widget.options.accessibility_verbose);
     try renderFrame(wb, &frame.writer);
@@ -11982,7 +12009,7 @@ test "Workbench: git scm integration opens Graph Open Changes as a real virtuali
         if (wb.activeTab()) |tab| if (tab.multi_diff) |multi| {
             if (!multi.widget.getViewModel().?.isLoading) break;
         };
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
     }
     const tab = wb.activeTab() orelse return error.TestExpectedMultiDiffTab;
@@ -12114,7 +12141,7 @@ test "Workbench: git scm integration opens live Changes group and retains surviv
         if (wb.activeTab()) |tab| if (tab.multi_diff) |multi| {
             if (!multi.widget.getViewModel().?.isLoading and multi.input.entries.len == 2) break;
         };
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
     }
     const tab = wb.activeTab() orelse return error.TestExpectedMultiDiffTab;
@@ -12297,7 +12324,7 @@ test "Workbench: git scm integration opens live Changes group and retains surviv
     wb.refreshGitStatus();
     for (0..6000) |_| {
         if (multi.input.entries.len == 1 and !multi.widget.getViewModel().?.isLoading) break;
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expectEqual(tab, wb.activeTab().?);
@@ -12311,7 +12338,7 @@ test "Workbench: git scm integration opens live Changes group and retains surviv
         if (wb.activeTab()) |active| if (active != tab and active.multi_diff != null) {
             if (!active.multi_diff.?.widget.getViewModel().?.isLoading) break;
         };
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
     }
     const staged = (wb.activeTab() orelse return error.TestExpectedMultiDiffTab).multi_diff orelse return error.TestExpectedMultiDiffTab;
@@ -12365,7 +12392,7 @@ test "Workbench: serialize and restore multiple diff resources after the SCM pro
             if (wb.activeTab()) |tab| if (tab.multi_diff) |multi| {
                 if (!multi.widget.getViewModel().?.isLoading) break;
             };
-            _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
             std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
         }
         const multi = wb.activeTab().?.multi_diff orelse return error.TestExpectedMultiDiffTab;
@@ -12403,7 +12430,7 @@ test "Workbench: serialize and restore multiple diff resources after the SCM pro
     try wb.initGit();
     for (0..6000) |_| {
         if (!multi.widget.getViewModel().?.isLoading) break;
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
     }
     const vm = multi.widget.getViewModel().?;
@@ -12467,7 +12494,7 @@ test "Workbench: serialize and restore multiple explicit file resources without 
         if (wb.activeTab()) |tab| if (tab.multi_diff) |multi| {
             if (!multi.widget.getViewModel().?.isLoading) break;
         };
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
     }
     const tab = wb.activeTab() orelse return error.TestExpectedMultiDiffTab;
@@ -12541,7 +12568,7 @@ test "Workbench: serialize and restore multiple diff file list actions share foc
         if (wb.activeTab()) |tab| if (tab.multi_diff) |multi| {
             if (!multi.widget.getViewModel().?.isLoading) break;
         };
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
     }
     const first = wb.activeTab().?.multi_diff orelse return error.TestExpectedMultiDiffTab;
@@ -12583,6 +12610,7 @@ test "Workbench: serialize and restore multiple diff file list actions share foc
     try std.testing.expect(std.mem.indexOf(u8, help.items, "You are in the changed files list of a multi diff editor.") != null);
     try std.testing.expect(std.mem.indexOf(u8, help.items, "Press Enter to reveal the selected file") != null);
     try std.testing.expect(try terminal_workbench.handleGlobalKey(wb, &.{ .key = .f6, .mods = .{ .alt = true } }));
+    try finishConfigurationUpdates(wb);
     try std.testing.expect(!wb.configuration.?.getBool("accessibility.verbosity.multiDiffEditorFileList", true));
     var escape: ui.KeyEvent = .{ .key = .escape };
     try std.testing.expect(try accessibility.handleKey(&escape));
@@ -12601,7 +12629,7 @@ test "Workbench: serialize and restore multiple diff file list actions share foc
         if (wb.activeTab()) |tab| if (tab.multi_diff) |multi| {
             if (multi != first and !multi.widget.getViewModel().?.isLoading) break;
         };
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
     }
     const second = wb.activeTab().?.multi_diff orelse return error.TestExpectedMultiDiffTab;
@@ -12696,7 +12724,7 @@ test "Workbench: serialize and restore multiple diff layout debug log follows th
     const multi = wb.activeTab().?.multi_diff orelse return error.TestExpectedMultiDiffTab;
     for (0..6000) |_| {
         if (!multi.widget.getViewModel().?.isLoading) break;
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
     }
     const vm = multi.widget.getViewModel().?;
@@ -12763,7 +12791,7 @@ test "Workbench: git scm integration shares canonical virtual diff models across
         if (wb.activeTab()) |tab| if (tab.multi_diff) |multi| {
             if (!multi.widget.getViewModel().?.isLoading) break;
         };
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
     }
     const multi = wb.activeTab().?.multi_diff.?;
@@ -12777,11 +12805,11 @@ test "Workbench: git scm integration shares canonical virtual diff models across
     try std.testing.expectEqual(first, wb.activeTab().?.diff.?);
     _ = try wb.closeActive();
     try std.testing.expect(wb.activeTab().?.diff == null);
-    for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+    for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
     try std.testing.expectEqual(@as(usize, 0), count);
     try std.testing.expectEqualStrings("old", try model.borrowLineContent(1));
     reference.dispose();
-    for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+    for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
     try std.testing.expectEqual(@as(usize, 1), count);
 }
 
@@ -12826,7 +12854,7 @@ test "Workbench: git scm integration resolves a Git revision and an outside work
         if (wb.activeTab()) |tab| if (tab.multi_diff) |multi| {
             if (!multi.widget.getViewModel().?.isLoading) break;
         };
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
     }
     const multi = wb.activeTab().?.multi_diff.?;
@@ -12855,7 +12883,7 @@ test "Workbench: git scm integration resolves a Git revision and an outside work
     try std.testing.expectEqualStrings("revision", try original.model.borrowLineContent(1));
     try wb.host_service.setFocus(true);
     for (0..6000) |_| {
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         if (std.mem.eql(u8, "new revision", try original.model.borrowLineContent(1))) break;
         std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
     }
@@ -12909,7 +12937,7 @@ test "Workbench: git scm integration URI models distinguish missing and binary r
             const request = try workbench.text_model_api.createModelReference(resource, .{ .context = &self, .complete = complete });
             defer request.cancel();
             for (0..5000) |_| {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 if (self.result) |value| return value;
                 std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
             }
@@ -12989,7 +13017,7 @@ test "Workbench: git scm integration URI models distinguish missing and binary r
     try std.testing.expect(wb.editor_opening.pending_resource_open != null);
     try module.iface.open(false);
     for (0..5000) |_| {
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         if (wb.editor_opening.pending_resource_open == null) break;
         std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
     }
@@ -13147,7 +13175,7 @@ test "Workbench: git scm integration discovers Git URI repositories in empty win
             try std.testing.expectEqual(@as(usize, 1), wb.git_file_provider.pending_discoveries.items.len);
             canceled.cancel();
             for (0..5000) |_| {
-                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 if (wb.git_file_provider.pending_discoveries.items.len == 0) break;
                 std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
             }
@@ -13166,7 +13194,7 @@ test "Workbench: git scm integration discovers Git URI repositories in empty win
             try std.testing.expectEqual(@as(usize, 1), wb.git_file_provider.pending_discoveries.items.len);
         }
         for (0..5000) |_| {
-            _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
             if (wb.editor_opening.pending_resource_open == null) break;
             std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
         }
@@ -13193,7 +13221,7 @@ test "Workbench: git scm integration discovers Git URI repositories in empty win
         const resource_group = @import("../vs/workbench/contrib/scm/common/scm.zig").ISCMResourceGroup;
         try std.testing.expect(try wb.commands.platform.executeWithArgument("git.viewChanges", command_argument.from(resource_group, group)));
         for (0..5000) |_| {
-            _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
             if (wb.activeTab()) |active| if (active.multi_diff) |multi| {
                 if (!multi.input.isResolvingDocuments and !multi.widget.getViewModel().?.isLoading) break;
             };
@@ -13266,14 +13294,14 @@ test "Workbench: git scm integration discovers Git URI repositories in empty win
             try std.testing.expectEqual(@as(usize, 0), wb.git_model.pending_repository_openings.items.len);
             // Canceling joins the discovery future and removes its posted
             // completion; no detached reply remains to drain.
-            _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
             try std.testing.expect(wb.git_model.repositoryForRoot(roots[0]) == null);
 
             try wb.setWorkspaceFolders(&.{roots[0]});
             try std.testing.expectEqual(@as(usize, 1), wb.git_model.repositories().len);
             try std.testing.expectEqual(@as(usize, 1), wb.git_model.pending_repository_openings.items.len);
             for (0..5000) |_| {
-                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 if (wb.git_model.pending_repository_openings.items.len == 0) break;
                 std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
             }
@@ -13358,7 +13386,7 @@ test "Workbench: git scm integration excludes unchanged submodule trees and disc
             try std.testing.expectEqual(@as(usize, 1), wb.git_model.repositories().len);
             try std.testing.expectEqual(@as(usize, 1), wb.git_model.pending_repository_openings.items.len);
             for (0..5000) |_| {
-                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 if (wb.git_model.pending_repository_openings.items.len == 0) break;
                 std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
             }
@@ -13375,7 +13403,7 @@ test "Workbench: git scm integration excludes unchanged submodule trees and disc
             const uri = try @import("../extensions/git/src/uri.zig").toGitUri(scratch, child_path, "HEAD");
             try wb.editor_api.requestOpenResourceUri(uri, "Child revision");
             for (0..5000) |_| {
-                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 if (wb.editor_opening.pending_resource_open == null) break;
                 std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
             }
@@ -13443,7 +13471,7 @@ test "Workbench: git scm integration discovers linked worktrees from status acco
             try std.testing.expectEqual(@as(usize, 1), wb.git_model.repositories().len);
             try std.testing.expectEqual(case.count - 1, wb.git_model.pending_repository_openings.items.len);
             for (0..5000) |_| {
-                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 if (wb.git_model.pending_repository_openings.items.len == 0) break;
                 std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
             }
@@ -13486,7 +13514,7 @@ test "Workbench: git scm integration discovers linked worktrees from status acco
             try std.testing.expectEqual(@as(usize, 2), wb.git_model.repositories().len);
             try std.testing.expectEqual(@as(usize, 1), wb.git_model.pending_repository_openings.items.len);
             for (0..5000) |_| {
-                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 if (wb.git_model.pending_repository_openings.items.len == 0) break;
                 std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
             }
@@ -13635,9 +13663,9 @@ test "Diff editor commands: marker hover opens related locations from both real 
         // The link schedules editor activation after this event returns.
         try std.testing.expect(wb.activeTab().? == tab);
         for (0..5000) |_| {
-            _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
             if (wb.activeTab().? != tab) break;
-            time_compat.sleepMillis(1);
+            time_compat.sleepMillis(std.testing.io, 1);
         }
         const related = wb.activeTab().?;
         try std.testing.expect(related != tab and related.file_input != null);
@@ -13746,7 +13774,7 @@ test "Diff editor commands: marker hover queries the full diagnostic and transfe
     try std.testing.expect(provider.only_quickfix);
     const status = modified.widget().widget.rendered.?.status_bar;
     try std.testing.expectEqualStrings(" ", status.message.?);
-    const checking = time_compat.milliTimestamp() + 250;
+    const checking = time_compat.milliTimestamp(std.testing.io) + 250;
     for (0..64) |_| {
         if (std.mem.eql(u8, status.message orelse "", "Checking for quick fixes...")) break;
         _ = wb.window_events.dispatch(checking);
@@ -13876,9 +13904,9 @@ test "Diff editor commands: View Problem mounts marker navigation and follows li
         if (list.selected() == null and list.next_idx != null) try wb.commands.execute("editor.action.marker.nextInFiles");
     }
     for (0..5000) |_| {
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         if (wb.activeTab().? != tab) break;
-        time_compat.sleepMillis(1);
+        time_compat.sleepMillis(std.testing.io, 1);
     }
     const opened = wb.activeTab().?;
     try std.testing.expect(opened != tab and opened.file_input != null);
@@ -14089,7 +14117,7 @@ test "Word highlights drive the active editor context and upstream F7 action bef
 
 test "Workbench: extensions panel lists, filters, opens and disables" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -14221,13 +14249,13 @@ test "Workbench: window Io yields through the native dispatcher and resumes on t
     var probe: Probe = .{ .owner = std.Thread.getCurrentId() };
     var request = try io.concurrent(Probe.request, .{ &probe, io });
     defer request.cancel(io) catch {};
-    _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+    _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
     try std.testing.expectEqual(@as(u8, 1), probe.phase);
     var response = try io.concurrent(Probe.respond, .{ &probe, io });
     defer response.cancel(io) catch {};
-    const deadline = time_compat.milliTimestamp() + 3000;
-    while (!probe.complete and time_compat.milliTimestamp() < deadline) {
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+    const deadline = time_compat.milliTimestamp(std.testing.io) + 3000;
+    while (!probe.complete and time_compat.milliTimestamp(std.testing.io) < deadline) {
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         if (!probe.complete) try wb.worker_io.sleep(.fromMilliseconds(1), .awake);
     }
     try std.testing.expect(probe.complete);
@@ -14237,7 +14265,7 @@ test "Workbench: window Io yields through the native dispatcher and resumes on t
 
 test "Workbench: JSON completion and formatting use the window dispatcher" {
     const a = std.testing.allocator;
-    const io = time_compat.io;
+    const io = std.testing.io;
     std.Io.Dir.cwd().access(io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
     const JsonClient = @import("../vs/workbench/services/language/common/jsonLanguageClient.zig").Client;
     const client = try JsonClient.start(a, "node", "host/dist/jsonServer.mjs");
@@ -14255,10 +14283,10 @@ test "Workbench: JSON completion and formatting use the window dispatcher" {
     try editor.formatDocument();
     try std.testing.expect(editor.pending_format != null);
     try std.testing.expectEqualStrings("{\"a\":1}", try editor.model.borrowLineContent(1));
-    const deadline = time_compat.milliTimestamp() + 5000;
-    while (editor.pending_format != null and time_compat.milliTimestamp() < deadline) {
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
-        time_compat.sleepMillis(1);
+    const deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+    while (editor.pending_format != null and time_compat.milliTimestamp(std.testing.io) < deadline) {
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+        time_compat.sleepMillis(std.testing.io, 1);
     }
     try std.testing.expect(editor.pending_format == null);
     var formatted = try editor.model.getValue(.TextDefined, false);
@@ -14286,17 +14314,17 @@ test "Workbench: JSON completion and formatting use the window dispatcher" {
     defer request.cancel(request.context);
     request.on_complete(request.context, &probe, Probe.ready);
     try std.testing.expect(!probe.done);
-    const completion_deadline = time_compat.milliTimestamp() + 5000;
-    while (!probe.done and time_compat.milliTimestamp() < completion_deadline) {
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
-        time_compat.sleepMillis(1);
+    const completion_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+    while (!probe.done and time_compat.milliTimestamp(std.testing.io) < completion_deadline) {
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+        time_compat.sleepMillis(std.testing.io, 1);
     }
     try std.testing.expect(probe.done);
 }
 
 test "Workbench: semantic token foreground and font style reach terminal cells" {
     const a = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "semantic.txt", .data = "semanticX" });
@@ -14340,7 +14368,7 @@ test "Workbench: semantic token foreground and font style reach terminal cells" 
 
 test "Workbench: inlay decorations paint and hit-test injected text without changing the document" {
     const a = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "inlay.txt", .data = "abc" });
@@ -14386,7 +14414,7 @@ test "Workbench: inlay decorations paint and hit-test injected text without chan
 
 test "Workbench: wrapping inlay hints retire inserted and deleted view line DOM and boxes before layout" {
     const a = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     // More model lines than the viewport so a new wrapped view line ejects

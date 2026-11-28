@@ -390,6 +390,13 @@ by hand instead of copying the styling decisions into the widget:
   genuinely impossible enum/state branches.
 - Do not add hidden global state. Services are passed through interfaces or
   owned by the editor/test.
+- Never use `std.Io.Threaded.global_single_threaded`, directly or indirectly
+  through a helper, including in tests and standalone packages. Do not
+  introduce a global or singleton `WindowIo` or any other global I/O handle.
+  Pass `std.Io` explicitly through owner constructors or function parameters.
+  Window-owned services and their clock APIs use the window's `WindowIo`;
+  native background workers use explicitly supplied or owned worker I/O,
+  and tests use `std.testing.io`.
 - Keep lazy-analysis-friendly code: avoid unnecessarily forcing large
   tokenization or decoration work.
 - Run `zig fmt` on changed Zig files.

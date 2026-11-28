@@ -756,10 +756,10 @@ pub const SearchResult = struct {
         queue: *@import("../../../../../base/common/windowDispatch.zig").Queue,
     };
 
-    pub fn create(allocator: Allocator) !*SearchResult {
+    pub fn create(allocator: Allocator, io: std.Io) !*SearchResult {
         const self = try allocator.create(SearchResult);
         errdefer allocator.destroy(self);
-        const id = try std.fmt.allocPrint(allocator, "{s}{d}", .{ SEARCH_RESULT_PREFIX, time_compat.milliTimestamp() });
+        const id = try std.fmt.allocPrint(allocator, "{s}{d}", .{ SEARCH_RESULT_PREFIX, time_compat.milliTimestamp(io) });
         errdefer allocator.free(id);
         self.* = .{
             .allocator = allocator,
@@ -924,7 +924,7 @@ test "SearchResult: adds files, matches and folder hierarchy" {
     const allocator = std.testing.allocator;
     var query = try TextQuery.init(allocator, "foo", &.{"/root"}, "", "", &.{});
     defer query.deinit();
-    const result = try SearchResult.create(allocator);
+    const result = try SearchResult.create(allocator, std.testing.io);
     defer result.deinit();
     result.setQuery(&query);
 
@@ -947,7 +947,7 @@ test "SearchResult: nested folders and events" {
     const allocator = std.testing.allocator;
     var query = try TextQuery.init(allocator, "foo", &.{"/root"}, "", "", &.{});
     defer query.deinit();
-    const result = try SearchResult.create(allocator);
+    const result = try SearchResult.create(allocator, std.testing.io);
     defer result.deinit();
     result.setQuery(&query);
 

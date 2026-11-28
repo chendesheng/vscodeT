@@ -120,7 +120,7 @@ pub const DefaultLinesDiffComputer = struct {
         const timeout: ITimeout = if (options.maxComputationTimeMs == 0)
             InfiniteTimeout.getInstance()
         else blk: {
-            date_timeout = try DateTimeout.init(options.maxComputationTimeMs);
+            date_timeout = try DateTimeout.init(options.io, options.maxComputationTimeMs);
             break :blk date_timeout.interface();
         };
         const consider_whitespace_changes = !options.ignoreTrimWhitespace;
@@ -577,6 +577,7 @@ test "DefaultLinesDiffComputer: simple change" {
     var computer = DefaultLinesDiffComputer.init();
     const options = ILinesDiffComputerOptions{
         .ignoreTrimWhitespace = false,
+        .io = std.testing.io,
         .maxComputationTimeMs = 0,
         .computeMoves = false,
         .extendToSubwords = false,
@@ -601,6 +602,7 @@ test "DefaultLinesDiffComputer: empty line diff" {
     var computer = DefaultLinesDiffComputer.init();
     const options = ILinesDiffComputerOptions{
         .ignoreTrimWhitespace = false,
+        .io = std.testing.io,
         .maxComputationTimeMs = 0,
         .computeMoves = false,
         .extendToSubwords = false,
@@ -623,6 +625,7 @@ test "DefaultLinesDiffComputer: whitespace only change" {
 
     const ignore_options = ILinesDiffComputerOptions{
         .ignoreTrimWhitespace = true,
+        .io = std.testing.io,
         .maxComputationTimeMs = 0,
         .computeMoves = false,
         .extendToSubwords = false,
@@ -633,6 +636,7 @@ test "DefaultLinesDiffComputer: whitespace only change" {
 
     const consider_options = ILinesDiffComputerOptions{
         .ignoreTrimWhitespace = false,
+        .io = std.testing.io,
         .maxComputationTimeMs = 0,
         .computeMoves = false,
         .extendToSubwords = false,
@@ -651,6 +655,7 @@ test "DefaultLinesDiffComputer: computes moves and raw changes" {
     var computer = DefaultLinesDiffComputer.init();
     const options = ILinesDiffComputerOptions{
         .ignoreTrimWhitespace = false,
+        .io = std.testing.io,
         .maxComputationTimeMs = 0,
         .computeMoves = true,
         .extendToSubwords = false,
@@ -675,6 +680,7 @@ test "DefaultLinesDiffComputer: interface adapter" {
     const computer_interface = computer.asLinesDiffComputer();
     const options = ILinesDiffComputerOptions{
         .ignoreTrimWhitespace = false,
+        .io = std.testing.io,
         .maxComputationTimeMs = 0,
         .computeMoves = false,
         .extendToSubwords = false,

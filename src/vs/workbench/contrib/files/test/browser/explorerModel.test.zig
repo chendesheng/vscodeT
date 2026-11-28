@@ -71,7 +71,7 @@ test "ExplorerItem: move and rename update paths" {
 
 test "ExplorerModel: finds and resolves children with directories first" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -101,7 +101,7 @@ test "ExplorerModel: finds and resolves children with directories first" {
 test "ExplorerItem: fetchChildren resolves symbolic link targets" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 

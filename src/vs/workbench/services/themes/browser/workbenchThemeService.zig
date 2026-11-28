@@ -100,6 +100,7 @@ fn runThemeLoadJob(job: *ThemeLoadJob) ThemeLoadOutcome {
 
 pub const ThemeService = struct {
     allocator: Allocator,
+    io: Io,
     colors: *color_utils.ColorRegistry,
     owns_colors: bool = false,
     storage: ?*InMemoryStorageService,
@@ -129,7 +130,7 @@ pub const ThemeService = struct {
 
     /// Native workbench registry owns the default colors. Standalone users
     /// that already have a registry continue to use init with a borrowed one.
-    pub fn createDefault(allocator: Allocator, storage: ?*InMemoryStorageService) !*ThemeService {
+    pub fn createDefault(allocator: Allocator, io: Io, storage: ?*InMemoryStorageService) !*ThemeService {
         const registry = try allocator.create(color_utils.ColorRegistry);
         registry.* = color_utils.ColorRegistry.init(allocator);
         errdefer {
@@ -156,17 +157,18 @@ pub const ThemeService = struct {
             .hc_dark = .{ .string = "#FFFFFF" },
             .hc_light = .{ .string = "foreground" },
         }, null, "Editor foreground color", false);
-        const service = try init(allocator, registry, storage);
+        const service = try init(allocator, io, registry, storage);
         service.owns_colors = true;
         return service;
     }
 
-    pub fn init(allocator: Allocator, colors: *color_utils.ColorRegistry, storage: ?*InMemoryStorageService) !*ThemeService {
+    pub fn init(allocator: Allocator, io: Io, colors: *color_utils.ColorRegistry, storage: ?*InMemoryStorageService) !*ThemeService {
         const self = try allocator.create(ThemeService);
         errdefer allocator.destroy(self);
         const active = try ColorThemeData.createUnloadedTheme(allocator, colors, "vs-dark", &.{});
         self.* = .{
             .allocator = allocator,
+            .io = io,
             .colors = colors,
             .storage = storage,
             .themes = std.StringHashMap(ThemeEntry).init(allocator),
@@ -373,7 +375,7 @@ pub const ThemeService = struct {
             const root = entry.root orelse return error.MissingThemeRoot;
             var reader = FileResourceReader{
                 .root = root,
-                .io = time_compat.io,
+                .io = if (self.theme_runtime) |runtime| dispatch.backingIo(runtime.io) else self.io,
                 .arena = std.heap.ArenaAllocator.init(self.allocator),
             };
             defer reader.arena.deinit();
@@ -493,7 +495,7 @@ pub const ThemeService = struct {
             const id = self.findThemeSettingsId(value) orelse continue;
             var request = PrepareRequest.init(self, id, self.allocator) catch continue;
             defer request.deinit();
-            const theme = prepareTheme(self.allocator, self.colors, &request, time_compat.io) catch continue;
+            const theme = prepareTheme(self.allocator, self.colors, &request, if (self.theme_runtime) |runtime| dispatch.backingIo(runtime.io) else self.io) catch continue;
             self.installPreparedTheme(id, theme) catch {
                 theme.deinit();
                 continue;
@@ -733,7 +735,7 @@ test "theme service applies and restores the active theme" {
     var storage = InMemoryStorageService.init(allocator);
     defer storage.deinit();
 
-    const service = try ThemeService.init(allocator, &registry, &storage);
+    const service = try ThemeService.init(allocator, std.testing.io, &registry, &storage);
     defer service.deinit();
     try std.testing.expectEqualStrings("vs-dark", service.getActiveThemeId());
 
@@ -744,7 +746,7 @@ test "theme service applies and restores the active theme" {
     try std.testing.expectEqual(ColorScheme.LIGHT, service.interface().colorTheme().theme_type);
     try std.testing.expectEqualStrings("vs-light", storage.get(STORAGE_KEY, .profile, null).?);
 
-    const restored = try ThemeService.init(allocator, &registry, &storage);
+    const restored = try ThemeService.init(allocator, std.testing.io, &registry, &storage);
     defer restored.deinit();
     try restored.registerTheme("vs-light", "Light (Visual Studio)", .LIGHT);
     try restored.restore();
@@ -856,7 +858,7 @@ test "restores only for preferred color scheme changes" {
 
 test "theme service loads a file-backed theme and applies customizations" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -876,7 +878,7 @@ test "theme service loads a file-backed theme and applies customizations" {
 
     var registry = color_utils.ColorRegistry.init(allocator);
     defer registry.deinit();
-    const service = try ThemeService.init(allocator, &registry, null);
+    const service = try ThemeService.init(allocator, std.testing.io, &registry, null);
     defer service.deinit();
 
     try service.registerThemeFile("Custom Theme", "Custom Theme", .DARK, root, "custom.json");

@@ -52,13 +52,14 @@ pub const IReducedTokenizationSupport = struct {
 
     pub fn tokenizeEncoded(
         self: IReducedTokenizationSupport,
+        io: std.Io,
         allocator: Allocator,
         line: []const u8,
         has_eol: bool,
         state: IState,
     ) !EncodedTokenizationResult {
         if (self.support) |support| {
-            return support.tokenizeEncoded(allocator, line, has_eol, state);
+            return support.tokenizeEncoded(io, allocator, line, has_eol, state);
         }
         return nullTokenizeEncoded(allocator, .Null, state);
     }
@@ -70,27 +71,29 @@ pub const fallback = IReducedTokenizationSupport{ .support = null };
 /// Tokenizes `text` and returns the HTML rendering of the tokens.
 pub fn tokenizeToStringSync(
     allocator: Allocator,
+    io: std.Io,
     codec: *LanguageIdCodec,
     text: []const u8,
     language_id: []const u8,
 ) ![]u8 {
     const support = TokenizationRegistry.instance.get(language_id);
-    return _tokenizeToString(allocator, text, codec, .{ .support = support });
+    return _tokenizeToString(allocator, io, text, codec, .{ .support = support });
 }
 
 /// Tokenizes `text` and returns the HTML rendering of the tokens, falling back
 /// to the null tokenizer when `language_id` is null or unknown.
 pub fn tokenizeToString(
     allocator: Allocator,
+    io: std.Io,
     codec: *LanguageIdCodec,
     text: []const u8,
     language_id: ?[]const u8,
 ) ![]u8 {
     if (language_id == null) {
-        return _tokenizeToString(allocator, text, codec, fallback);
+        return _tokenizeToString(allocator, io, text, codec, fallback);
     }
     const support = try TokenizationRegistry.instance.getOrCreate(language_id.?);
-    return _tokenizeToString(allocator, text, codec, .{ .support = support });
+    return _tokenizeToString(allocator, io, text, codec, .{ .support = support });
 }
 
 /// Renders a single line of already tokenized text as HTML.
@@ -226,6 +229,7 @@ pub fn tokenizeLineToHTML(
 /// Tokenizes every line of `text` and renders the tokens as HTML.
 pub fn _tokenizeToString(
     allocator: Allocator,
+    io: std.Io,
     text: []const u8,
     language_id_codec: *LanguageIdCodec,
     tokenization_support: IReducedTokenizationSupport,
@@ -244,7 +248,7 @@ pub fn _tokenizeToString(
             try result.appendSlice("<br/>");
         }
 
-        const tokenization_result = try tokenization_support.tokenizeEncoded(allocator, line, true, current_state);
+        const tokenization_result = try tokenization_support.tokenizeEncoded(io, allocator, line, true, current_state);
         defer allocator.free(tokenization_result.tokens);
 
         LineTokens.convertToEndOffset(tokenization_result.tokens, line.len);
@@ -295,7 +299,7 @@ test "IReducedTokenizationSupport: falls back to the null tokenizer" {
     const initial_state = try fallback.getInitialState(allocator);
     try std.testing.expect(initial_state.equals(NullState));
 
-    const encoded = try fallback.tokenizeEncoded(allocator, "line", true, initial_state);
+    const encoded = try fallback.tokenizeEncoded(std.testing.io, allocator, "line", true, initial_state);
     defer allocator.free(encoded.tokens);
     try std.testing.expectEqual(@as(usize, 1), encoded.tokens.len);
     try std.testing.expectEqual(@as(u32, 0), encoded.tokens[0].endOffset);
@@ -307,7 +311,7 @@ test "_tokenizeToString: renders one span per line" {
     var codec = try LanguageIdCodec.init(allocator);
     defer codec.deinit();
 
-    const html = try _tokenizeToString(allocator, "hello\nworld", &codec, fallback);
+    const html = try _tokenizeToString(allocator, std.testing.io, "hello\nworld", &codec, fallback);
     defer allocator.free(html);
 
     try std.testing.expect(std.mem.startsWith(u8, html, "<div class=\"monaco-tokenized-source\">"));
@@ -323,7 +327,7 @@ test "escape is applied to the rendered source" {
     var codec = try LanguageIdCodec.init(allocator);
     defer codec.deinit();
 
-    const html = try _tokenizeToString(allocator, "a < b & c", &codec, fallback);
+    const html = try _tokenizeToString(allocator, std.testing.io, "a < b & c", &codec, fallback);
     defer allocator.free(html);
     try std.testing.expect(std.mem.indexOf(u8, html, "a &lt; b &amp; c") != null);
 }

@@ -181,7 +181,7 @@ pub const DiskFileService = struct {
 
 test "DiskFileService reads, writes, stats and removes files" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -231,7 +231,7 @@ test "DiskFileService reads, writes, stats and removes files" {
 
 test "DiskFileService lists directories" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -260,14 +260,14 @@ test "DiskFileService lists directories" {
 
 test "DiskFileService reports missing files" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var service = DiskFileService.init(allocator, io);
     try std.testing.expectError(error.FileNotFound, service.stat("/definitely/not/here"));
 }
 
 test "DiskFileService copies directory trees" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -299,7 +299,7 @@ test "DiskFileService copies directory trees" {
 
 test "DiskFileService creates parent directories when writing" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -521,6 +521,25 @@ pub const ProviderFileService = struct {
         return result;
     }
 
+    fn readOwnedDirectory(self: *ProviderFileService, provider: files.IFileSystemProvider, path: []const u8) ![]files.DirectoryEntry {
+        const borrowed = try provider.getDirectoryEntries(path);
+        defer self.allocator.free(borrowed);
+        const result = try self.allocator.alloc(files.DirectoryEntry, borrowed.len);
+        errdefer self.allocator.free(result);
+        var count: usize = 0;
+        errdefer for (result[0..count]) |entry| self.allocator.free(entry.name);
+        for (borrowed, result) |entry, *target| {
+            target.* = .{ .name = try self.allocator.dupe(u8, entry.name), .type = entry.type };
+            count += 1;
+        }
+        return result;
+    }
+
+    fn freeOwnedDirectory(self: *ProviderFileService, entries: []files.DirectoryEntry) void {
+        for (entries) |entry| self.allocator.free(entry.name);
+        self.allocator.free(entries);
+    }
+
     fn mkdirp(provider: files.IFileSystemProvider, path: []const u8) !void {
         if (provider.getStat(path)) |stat_info| {
             if (!files.FileType.isDirectory(stat_info.type)) return error.FileNotADirectory;
@@ -530,7 +549,15 @@ pub const ProviderFileService = struct {
             else => return err,
         }
         if (std.fs.path.dirname(path)) |parent| if (parent.len > 0 and !std.mem.eql(u8, parent, path)) try mkdirp(provider, parent);
-        try provider.makeDirectory(path);
+        provider.makeDirectory(path) catch |err| switch (err) {
+            // Another asynchronous operation may have created this directory
+            // after our initial stat. Match mkdirp's existing-directory rule.
+            error.FileExists => {
+                const info = try provider.getStat(path);
+                if (!files.FileType.isDirectory(info.type)) return error.FileNotADirectory;
+            },
+            else => return err,
+        };
     }
 
     pub fn writeFileUri(self: *ProviderFileService, resource: std.Uri, content: []const u8, options: files.IFileWriteOptions) !void {
@@ -733,8 +760,8 @@ pub const ProviderFileService = struct {
             return result;
         }
 
-        const entries = try provider.getDirectoryEntries(path);
-        defer self.allocator.free(entries);
+        const entries = try self.readOwnedDirectory(provider, path);
+        defer self.freeOwnedDirectory(entries);
         var children = std.array_list.Managed(files.FileStat).init(allocator);
         for (entries) |entry| {
             const child_resource = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ resource, entry.name });
@@ -821,8 +848,8 @@ pub const ProviderFileService = struct {
     fn deleteRecursive(self: *ProviderFileService, provider: files.IFileSystemProvider, path: []const u8) !void {
         const stat_info = provider.getStat(path) catch return;
         if (files.FileType.isDirectory(stat_info.type)) {
-            const entries = try provider.getDirectoryEntries(path);
-            defer self.allocator.free(entries);
+            const entries = try self.readOwnedDirectory(provider, path);
+            defer self.freeOwnedDirectory(entries);
             for (entries) |entry| {
                 const child = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ path, entry.name });
                 defer self.allocator.free(child);
@@ -862,8 +889,8 @@ pub const ProviderFileService = struct {
                 error.FileExists => {},
                 else => return err,
             };
-            const entries = try source.getDirectoryEntries(from);
-            defer self.allocator.free(entries);
+            const entries = try self.readOwnedDirectory(source, from);
+            defer self.freeOwnedDirectory(entries);
             for (entries) |entry| {
                 const child_from = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ from, entry.name });
                 defer self.allocator.free(child_from);
@@ -972,7 +999,7 @@ test "ProviderFileService: capture full URI and retain independent read after un
             self.received = true;
         }
     };
-    var provider = try MemoryProvider.init(a);
+    var provider = try MemoryProvider.init(a, std.testing.io);
     defer provider.deinit();
     var service = ProviderFileService.init(a);
     defer service.deinit();

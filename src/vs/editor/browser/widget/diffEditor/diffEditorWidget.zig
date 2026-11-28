@@ -101,14 +101,14 @@ const SmoothResize = struct {
         switch (event) {
             .resize => {
                 self.window_resize_count +|= 1;
-                self.schedule(milliTimestamp());
+                self.schedule(milliTimestamp(self.scheduler.queue.?.io));
             },
             .pointer_down => self.pointer_down = true,
             .pointer_up => {
                 if (!self.pointer_down) return;
                 self.pointer_down = false;
                 self.scheduler.schedule(null);
-                self.finish(milliTimestamp());
+                self.finish(milliTimestamp(self.scheduler.queue.?.io));
             },
         }
     }
@@ -133,7 +133,7 @@ const SmoothResize = struct {
         if (self.scheduler.queue == null or previous == 0 or previous == width) return null;
         if (self.start_width == null) self.start_width = previous;
         self.was_pointer_driven = self.was_pointer_driven or self.pointer_down;
-        self.schedule(milliTimestamp());
+        self.schedule(milliTimestamp(self.scheduler.queue.?.io));
         return if (self.was_pointer_driven or self.window_resize_count > 1) self.start_width else null;
     }
 };
@@ -859,6 +859,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 var provider = @import("../../../common/diff/documentDiffProvider.zig").LineDiffProvider.init(next_base.diff_algorithm);
                 result = try provider.interface().computeDiff(self.allocator, self.originalModel(), self.modifiedModel(), .{
                     .ignoreTrimWhitespace = next_base.ignore_trim_whitespace,
+                    .io = self.modified_editor.clockIo(),
                     .maxComputationTimeMs = next_base.max_computation_time_ms,
                     .computeMoves = next_base.show_moves,
                 }, .None);
@@ -1628,7 +1629,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
             }
             if (event.kind == .up) self.gutter_toolbar.pressed = null;
             if (self.sideBySide() or self.sash.drag != null) {
-                switch (self.sash.dispatchMouse(&self.sash_layout, event, widths.original, self.width -| widths.overview -| widths.gutter -| widths.moves -| widths.toolbar, self.sideBySide() and self.options.enable_split_view_resizing, @import("../../../../base/common/timeCompat.zig").milliTimestamp())) {
+                switch (self.sash.dispatchMouse(&self.sash_layout, event, widths.original, self.width -| widths.overview -| widths.gutter -| widths.moves -| widths.toolbar, self.sideBySide() and self.options.enable_split_view_resizing, @import("../../../../base/common/timeCompat.zig").milliTimestamp(self.modified_editor.clockIo()))) {
                     .changed => {
                         self.layout(self.width, self.height);
                         return true;

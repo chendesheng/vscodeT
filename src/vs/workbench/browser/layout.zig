@@ -518,7 +518,14 @@ pub const Layout = struct {
 
     pub fn setStatusBarConfiguration(self: *Layout, visible: bool) !void {
         self.configured_statusbar_visible = visible;
-        if (!self.isZenModeActive()) try self.setPartHidden(!visible, .statusbar);
+        if (!self.isZenModeActive()) {
+            const had_focus = hasFocusContext(self, .statusbar);
+            try self.setPartHidden(!visible, .statusbar);
+            // A configuration change may arrive after the originating
+            // context menu has closed. Restore native focus here once the
+            // status bar really becomes hidden.
+            if (had_focus and !visible) focusPartContext(self, .editor);
+        }
     }
 
     pub fn setPartHidden(self: *Layout, hidden: bool, part: Parts) !void {

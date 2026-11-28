@@ -115,6 +115,7 @@ pub const WorkerBasedDocumentDiffProvider = struct {
     };
 
     pub const Request = struct {
+        io: std.Io,
         arena: std.heap.ArenaAllocator,
         message: worker.Request = .{ .compute = compute, .reply = reply },
         original: []const u8,
@@ -166,6 +167,7 @@ pub const WorkerBasedDocumentDiffProvider = struct {
             var provider = document.LineDiffProvider.init(self.options.diff_algorithm);
             self.result = provider.computeDiffFromLines(allocator, original, modified, .{
                 .ignoreTrimWhitespace = self.options.ignore_trim_whitespace,
+                .io = self.io,
                 .maxComputationTimeMs = self.options.max_computation_time_ms,
                 .computeMoves = self.options.show_moves,
             }) catch null;
@@ -200,6 +202,7 @@ pub const WorkerBasedDocumentDiffProvider = struct {
             .original = "",
             .modified = "",
             .options = options.normalize(),
+            .io = service.io_state.io(),
             .listener = listener,
             .source = source,
             .cache = cache,
@@ -229,6 +232,7 @@ pub const WorkerBasedDocumentDiffProvider = struct {
             .original = original_copy,
             .modified = modified_copy,
             .options = options.normalize(),
+            .io = service.io_state.io(),
             .listener = listener,
             .cache = cache,
         };

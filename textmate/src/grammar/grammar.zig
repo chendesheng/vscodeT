@@ -358,11 +358,12 @@ pub const Grammar = struct {
 
     pub fn tokenizeLine(
         self: *Grammar,
+        io: std.Io,
         line_text: []const u8,
         prev_state: ?*StateStackImpl,
         time_limit: i64,
     ) !ITokenizeLineResult {
-        return self.tokenizeLineWithStateAllocator(line_text, prev_state, time_limit, self.arena.allocator());
+        return self.tokenizeLineWithStateAllocator(io, line_text, prev_state, time_limit, self.arena.allocator());
     }
 
     /// Syntax state belongs to the consumer that retains it (e.g. a document
@@ -371,12 +372,13 @@ pub const Grammar = struct {
     /// released, since immutable parent frames may be shared.
     pub fn tokenizeLineWithStateAllocator(
         self: *Grammar,
+        io: std.Io,
         line_text: []const u8,
         prev_state: ?*StateStackImpl,
         time_limit: i64,
         state_allocator: Allocator,
     ) !ITokenizeLineResult {
-        const result = try self.tokenizeInternal(line_text, prev_state, false, time_limit, state_allocator);
+        const result = try self.tokenizeInternal(io, line_text, prev_state, false, time_limit, state_allocator);
         return .{
             .tokens = result.token_handler.getTokenResult(result.rule_stack, result.line_length),
             .fonts = result.token_handler.getFontResult(),
@@ -387,11 +389,12 @@ pub const Grammar = struct {
 
     pub fn tokenizeLine2(
         self: *Grammar,
+        io: std.Io,
         line_text: []const u8,
         prev_state: ?*StateStackImpl,
         time_limit: i64,
     ) !ITokenizeLineResult2 {
-        const result = try self.tokenizeInternal(line_text, prev_state, true, time_limit, self.arena.allocator());
+        const result = try self.tokenizeInternal(io, line_text, prev_state, true, time_limit, self.arena.allocator());
         return .{
             .tokens = result.token_handler.getBinaryTokenResult(result.rule_stack, result.line_length),
             .fonts = result.token_handler.getFontResult(),
@@ -409,6 +412,7 @@ pub const Grammar = struct {
 
     fn tokenizeInternal(
         self: *Grammar,
+        io: std.Io,
         line_text: []const u8,
         prev_state: ?*StateStackImpl,
         emit_binary: bool,
@@ -473,6 +477,7 @@ pub const Grammar = struct {
 
         const outcome = try tokenizeString.tokenizeString(
             self,
+            io,
             onig_line_text,
             is_first_line,
             0,
@@ -1447,7 +1452,7 @@ test "grammar tokenizes a simple match rule" {
     });
     defer grammar.deinit();
 
-    const result = try grammar.tokenizeLine("foo", null, 0);
+    const result = try grammar.tokenizeLine(std.testing.io, "foo", null, 0);
     try std.testing.expectEqual(@as(usize, 1), result.tokens.len);
     try std.testing.expectEqualStrings("foo", "foo");
     try std.testing.expectEqual(@as(usize, 0), result.tokens[0].start_index);
@@ -1460,11 +1465,11 @@ test "grammar tokenizes a simple match rule" {
         var document_state = std.heap.ArenaAllocator.init(allocator);
         defer document_state.deinit();
         for (0..200) |_| {
-            _ = try grammar.tokenizeLineWithStateAllocator("foo", null, 0, document_state.allocator());
+            _ = try grammar.tokenizeLineWithStateAllocator(std.testing.io, "foo", null, 0, document_state.allocator());
         }
         try std.testing.expect(document_state.queryCapacity() > 0);
         try std.testing.expectEqual(grammar_capacity, grammar.arena.queryCapacity());
     }
-    const reopened = try grammar.tokenizeLine("foo", null, 0);
+    const reopened = try grammar.tokenizeLine(std.testing.io, "foo", null, 0);
     try std.testing.expectEqual(@as(usize, 1), reopened.tokens.len);
 }

@@ -147,13 +147,13 @@ const CodeLensCommandRequest = struct {
             const value = self.serialize(scratch.allocator(), result) catch |err| {
                 channel.sendReply(self.request_id, .{ .err = .{ .name = @errorName(err), .message = @errorName(err) } });
                 self.channel = null;
-                self.cleanup.schedule(@import("../../../base/common/timeCompat.zig").milliTimestamp() + 100);
+                self.cleanup.schedule(@import("../../../base/common/timeCompat.zig").milliTimestamp(self.cleanup.queue.?.io) + 100);
                 return;
             };
             channel.sendReply(self.request_id, .{ .json = value });
             self.channel = null;
         }
-        self.cleanup.schedule(@import("../../../base/common/timeCompat.zig").milliTimestamp() + 100);
+        self.cleanup.schedule(@import("../../../base/common/timeCompat.zig").milliTimestamp(self.cleanup.queue.?.io) + 100);
     }
 
     fn serialize(self: *CodeLensCommandRequest, a: Allocator, result: anyerror![]const languages.CodeLens) !std.json.Value {
@@ -559,7 +559,7 @@ const CodeActionCommandRequest = struct {
         self.finished = true;
         if (self.channel) |channel| channel.sendReply(self.request_id, response);
         self.channel = null;
-        self.cleanup.schedule(@import("../../../base/common/timeCompat.zig").milliTimestamp() + 100);
+        self.cleanup.schedule(@import("../../../base/common/timeCompat.zig").milliTimestamp(self.cleanup.queue.?.io) + 100);
     }
     fn onCleanup(context: *anyopaque, _: i64, _: bool) bool {
         const self: *CodeActionCommandRequest = @ptrCast(@alignCast(context));

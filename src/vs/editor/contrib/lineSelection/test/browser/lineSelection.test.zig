@@ -75,7 +75,7 @@ test "expand line selection" {
 
 test "ExpandLineSelectionAction: matches upstream action behavior" {
     const allocator = std.testing.allocator;
-    const io = Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     const LINE1 = "    \tMy First Line\t ";
     const LINE2 = "\tMy Second Line";

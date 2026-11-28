@@ -134,7 +134,7 @@ test "token primitives: lazy tokenization factory" {
                         }
                     }.f,
                     .tokenizeEncoded = struct {
-                        fn f(_: *anyopaque, alloc: std.mem.Allocator, _: []const u8, _: bool, state: IState) anyerror!EncodedTokenizationResult {
+                        fn f(_: *anyopaque, _: std.Io, alloc: std.mem.Allocator, _: []const u8, _: bool, state: IState) anyerror!EncodedTokenizationResult {
                             return .{ .tokens = try alloc.alloc(TokenPacked, 0), .endState = state };
                         }
                     }.f,

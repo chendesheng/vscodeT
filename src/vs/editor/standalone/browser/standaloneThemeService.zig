@@ -33,8 +33,10 @@ const time_compat = @import("../../../base/common/timeCompat.zig");
 
 pub const SyntaxTheme = struct {
     theme: TokenTheme = undefined,
+    io: std.Io = undefined,
 
-    pub fn init(self: *SyntaxTheme, allocator: Allocator) !void {
+    pub fn init(self: *SyntaxTheme, allocator: Allocator, io: std.Io) !void {
+        self.io = io;
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const scratch = arena.allocator();
@@ -53,7 +55,8 @@ pub const SyntaxTheme = struct {
     /// Builds the token theme from the ported color-theme data instead of the
     /// local JSONC walker. `TokenColor` scopes become one token rule each; the
     /// theme's `editor.foreground`/`editor.background` become the default rule.
-    pub fn initFromColorThemeData(self: *SyntaxTheme, allocator: Allocator, theme_data: *color_theme_mod.ColorThemeData) !void {
+    pub fn initFromColorThemeData(self: *SyntaxTheme, allocator: Allocator, io: std.Io, theme_data: *color_theme_mod.ColorThemeData) !void {
+        self.io = io;
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const scratch = arena.allocator();
@@ -106,22 +109,22 @@ pub const SyntaxTheme = struct {
                 else => return err,
             };
         }
-        tokenization.setActiveTokenTheme(&self.theme);
+        tokenization.setActiveTokenTheme(self.io, &self.theme);
         TokenizationRegistry.instance.setColorMap(self.theme.getColorMap());
     }
 
     /// Loads the built-in Dark+ theme through the ported workbench theme
     /// service (including the `dark_vs.json` include).
-    pub fn initFromThemeService(self: *SyntaxTheme, allocator: Allocator) !void {
+    pub fn initFromThemeService(self: *SyntaxTheme, allocator: Allocator, io: std.Io) !void {
         var registry = color_utils.ColorRegistry.init(allocator);
         defer registry.deinit();
-        const service = try theme_service_mod.ThemeService.init(allocator, &registry, null);
+        const service = try theme_service_mod.ThemeService.init(allocator, io, &registry, null);
         defer service.deinit();
         try service.registerTheme("vs-dark", "Dark (Visual Studio)", .DARK);
 
         var reader = ThemeAssetReader{};
         try service.setTheme("vs-dark", ThemeAssetReader.interface(&reader), "dark_plus.json");
-        try self.initFromColorThemeData(allocator, service.getActiveTheme());
+        try self.initFromColorThemeData(allocator, io, service.getActiveTheme());
     }
 
     /// Loads a theme contributed by a declarative extension from its real
@@ -129,16 +132,17 @@ pub const SyntaxTheme = struct {
     pub fn initFromThemeFiles(
         self: *SyntaxTheme,
         allocator: Allocator,
+        io: std.Io,
         root: []const u8,
         path: []const u8,
         ui_theme: []const u8,
     ) !void {
-        var reader = FileThemeReader{ .root = root, .arena = std.heap.ArenaAllocator.init(allocator) };
+        var reader = FileThemeReader{ .root = root, .io = io, .arena = std.heap.ArenaAllocator.init(allocator) };
         defer reader.arena.deinit();
 
         var registry = color_utils.ColorRegistry.init(allocator);
         defer registry.deinit();
-        const service = try theme_service_mod.ThemeService.init(allocator, &registry, null);
+        const service = try theme_service_mod.ThemeService.init(allocator, io, &registry, null);
         defer service.deinit();
         const scheme: theme_mod.ColorScheme = if (std.mem.eql(u8, ui_theme, "vs"))
             .LIGHT
@@ -150,17 +154,17 @@ pub const SyntaxTheme = struct {
             .DARK;
         try service.registerTheme("extension-theme", "Extension Theme", scheme);
         try service.setTheme("extension-theme", FileThemeReader.interface(&reader), path);
-        try self.initFromColorThemeData(allocator, service.getActiveTheme());
+        try self.initFromColorThemeData(allocator, io, service.getActiveTheme());
     }
 
     fn installTheme(self: *SyntaxTheme, allocator: Allocator, rules: []const ITokenThemeRule) !void {
         self.theme = try TokenTheme.createFromRawTokenTheme(allocator, rules, &.{});
-        tokenization.setActiveTokenTheme(&self.theme);
+        tokenization.setActiveTokenTheme(self.io, &self.theme);
         TokenizationRegistry.instance.setColorMap(self.theme.getColorMap());
     }
 
     pub fn deinit(self: *SyntaxTheme) void {
-        tokenization.deinitActiveTokenTheme(&self.theme);
+        tokenization.deinitActiveTokenTheme(self.io, &self.theme);
         TokenizationRegistry.instance.clearColorMap();
         self.theme = undefined;
     }
@@ -181,13 +185,14 @@ pub const ThemeAssetReader = struct {
 /// Reads theme files and `include` targets relative to an extension root.
 const FileThemeReader = struct {
     root: []const u8,
+    io: std.Io,
     arena: std.heap.ArenaAllocator,
 
     fn read(context: *anyopaque, path: []const u8) anyerror![]const u8 {
         const self: *FileThemeReader = @ptrCast(@alignCast(context));
         const arena = self.arena.allocator();
         const full_path = try std.fs.path.join(arena, &.{ self.root, path });
-        return std.Io.Dir.cwd().readFileAlloc(time_compat.io, full_path, arena, .unlimited);
+        return std.Io.Dir.cwd().readFileAlloc(self.io, full_path, arena, .unlimited);
     }
 
     fn interface(self: *FileThemeReader) color_theme_mod.ResourceReader {
@@ -324,7 +329,7 @@ fn appendScopes(
 
 test "syntax theme: dark+ token colors resolve" {
     var theme: SyntaxTheme = undefined;
-    try theme.init(std.testing.allocator);
+    try theme.init(std.testing.allocator, std.testing.io);
     defer theme.deinit();
 
     const colors = theme.theme.getColorMap();
@@ -341,7 +346,7 @@ test "syntax theme: dark+ token colors resolve" {
 
 test "syntax theme: tokenization uses the dark+ rules" {
     var theme: SyntaxTheme = undefined;
-    try theme.init(std.testing.allocator);
+    try theme.init(std.testing.allocator, std.testing.io);
     defer theme.deinit();
 
     const TestModel = @import("../../test/common/port/testSupport.zig").TestModel;
@@ -374,7 +379,7 @@ test "syntax theme: tokenization uses the dark+ rules" {
 
 test "syntax theme: markdown inline code and bold use dark+ styles" {
     var theme: SyntaxTheme = undefined;
-    try theme.init(std.testing.allocator);
+    try theme.init(std.testing.allocator, std.testing.io);
     defer theme.deinit();
 
     const TestModel = @import("../../test/common/port/testSupport.zig").TestModel;
@@ -435,7 +440,7 @@ test "syntax theme: every supported language highlights inside a fence" {
     // submodule only the vendored fallback grammars are embedded.
     if (assets.dataForScope("source.json") == null) return error.SkipZigTest;
     var theme: SyntaxTheme = undefined;
-    try theme.init(std.testing.allocator);
+    try theme.init(std.testing.allocator, std.testing.io);
     defer theme.deinit();
 
     const TestModel = @import("../../test/common/port/testSupport.zig").TestModel;
@@ -482,7 +487,7 @@ test "syntax theme: every supported language highlights inside a fence" {
 
 test "syntax theme: markdown list continuation keeps inline code" {
     var theme: SyntaxTheme = undefined;
-    try theme.init(std.testing.allocator);
+    try theme.init(std.testing.allocator, std.testing.io);
     defer theme.deinit();
 
     const TestModel = @import("../../test/common/port/testSupport.zig").TestModel;
@@ -517,11 +522,11 @@ test "syntax theme loads through the workbench theme service" {
     const allocator = std.testing.allocator;
 
     var themed: SyntaxTheme = undefined;
-    try themed.initFromThemeService(allocator);
+    try themed.initFromThemeService(allocator, std.testing.io);
     defer themed.deinit();
 
     var legacy: SyntaxTheme = undefined;
-    try legacy.init(allocator);
+    try legacy.init(allocator, std.testing.io);
     defer legacy.deinit();
 
     const themed_map = themed.theme.getColorMap();
@@ -533,12 +538,12 @@ test "syntax theme loads through the workbench theme service" {
 test "declarative theme-defaults loads a token theme" {
     const registry_mod = @import("../../../workbench/services/extensions/common/extensionsRegistry.zig");
     const allocator = std.testing.allocator;
-    var registry = registry_mod.scan(allocator, &.{"vscode/extensions/theme-defaults"}) catch return error.SkipZigTest;
+    var registry = registry_mod.scan(allocator, std.testing.io, &.{"vscode/extensions/theme-defaults"}) catch return error.SkipZigTest;
     defer registry.deinit();
     const theme = registry.theme("Dark+") orelse return error.SkipZigTest;
 
     var syntax: SyntaxTheme = undefined;
-    try syntax.initFromThemeFiles(allocator, theme.root, theme.path, theme.ui_theme);
+    try syntax.initFromThemeFiles(allocator, std.testing.io, theme.root, theme.path, theme.ui_theme);
     defer syntax.deinit();
     try std.testing.expect(TokenizationRegistry.instance.getColorMap() != null);
 }

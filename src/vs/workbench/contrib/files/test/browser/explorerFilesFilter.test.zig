@@ -45,7 +45,7 @@ fn createChild(
 
 test "FilesFilter: shows exclude exceptions and the folders leading to them" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -106,7 +106,7 @@ test "FilesFilter: shows exclude exceptions and the folders leading to them" {
 
 test "FilesFilter: gitignored folders that lead to an exception are not ignored" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -153,7 +153,7 @@ test "FilesFilter: gitignored folders that lead to an exception are not ignored"
 
 test "FilesFilter: an open editor keeps excluded files and parents visible" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -201,7 +201,7 @@ test "FilesFilter: an open editor keeps excluded files and parents visible" {
 
 test "FilesFilter: configuration changes invalidate cached root filters" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -241,7 +241,7 @@ test "FilesFilter: configuration changes invalidate cached root filters" {
 
 test "FilesFilter: files.exclude sibling clauses use the resolved siblings" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 

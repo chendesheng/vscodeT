@@ -139,7 +139,7 @@ pub const TextFileEditorModel = struct {
 
 test "TextFileEditorModel tracks content, version and dirty state" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -188,7 +188,7 @@ test "TextFileEditorModel tracks content, version and dirty state" {
 
 test "TextFileEditorModel reports missing files" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var files = @import("../../../../platform/files/common/fileService.zig").DiskFileService.init(allocator, io);
     defer files.deinit();
     var text_files = TextFileService.init(allocator, &files);
@@ -200,7 +200,7 @@ test "TextFileEditorModel reports missing files" {
 
 test "TextFileEditorModel creates missing parents when saving" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -222,7 +222,7 @@ test "TextFileEditorModel creates missing parents when saving" {
 
 test "TextFileEditorModel preserves BOM encodings across load and save" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -262,7 +262,7 @@ test "TextFileEditorModel preserves BOM encodings across load and save" {
 
 test "TextFileEditorModel runs save participants and honors skip/error" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -319,7 +319,7 @@ test "TextFileEditorModel runs save participants and honors skip/error" {
 
 test "TextFileEditorModel supports soft and hard revert" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;

@@ -277,7 +277,7 @@ pub const TextModelResolverService = struct {
         update.dispose_listener = try document.on_will_dispose.listen(update, VirtualUpdate.onDocumentDisposed);
         errdefer document.on_will_dispose.unlisten(update.dispose_listener.?);
         try self.virtual_updates.put(self.allocator, document, update);
-        const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp();
+        const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp(self.window.io);
         update.deadline.schedule(now + 1000);
         worker.computeDiff(&update.message, now);
         return IDisposable.from(VirtualUpdate, update, VirtualUpdate.cancel);
@@ -577,7 +577,7 @@ pub const TextModelResolverService = struct {
                     return;
                 };
                 self.worker_submitted = true;
-                worker.computeDiff(&self.message, @import("../../../../base/common/timeCompat.zig").milliTimestamp());
+                worker.computeDiff(&self.message, @import("../../../../base/common/timeCompat.zig").milliTimestamp(service.window.io));
             } else self.delivery.post();
         }
 

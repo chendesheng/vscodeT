@@ -54,13 +54,13 @@ const styles = [_]ui.Style{
 
 const sheet = ui.css.Sheet{ .base = 0, .styles = &styles };
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
     const example = try cssExample(allocator);
     defer if (example.deinit) |deinit| deinit(example.context);
-    try common.runStatic(allocator, example);
+    try common.runStatic(allocator, init.io, example);
 }
 
 pub fn cssExample(allocator: std.mem.Allocator) !common.Example {

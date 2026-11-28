@@ -167,7 +167,7 @@ test "tokenization registry owns language id keys" {
         fn getInitialState(_: *anyopaque, _: Allocator) anyerror!languages.IState {
             return error.NotImplemented;
         }
-        fn tokenizeEncoded(_: *anyopaque, _: Allocator, _: []const u8, _: bool, _: languages.IState) anyerror!languages.EncodedTokenizationResult {
+        fn tokenizeEncoded(_: *anyopaque, _: std.Io, _: Allocator, _: []const u8, _: bool, _: languages.IState) anyerror!languages.EncodedTokenizationResult {
             return error.NotImplemented;
         }
         fn dispose(_: *anyopaque) void {}

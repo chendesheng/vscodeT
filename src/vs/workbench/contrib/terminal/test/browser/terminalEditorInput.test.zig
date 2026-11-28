@@ -7,7 +7,7 @@ const TerminalEditorService = @import("../../browser/terminalEditorService.zig")
 test "terminal editor input follows the terminal label and can detach its live instance" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const instance = TerminalInstance.create(allocator, io, 42, .{
         .shell = "/bin/true",
         .profile_name = "sh",

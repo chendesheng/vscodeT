@@ -245,7 +245,7 @@ pub const UserKeybindingsLoader = struct {
         defer event.deinit();
         for (self.paths) |path| {
             if (event.contains(path, &.{})) {
-                self.reload_timer.schedule(time_compat.milliTimestamp() + 50);
+                self.reload_timer.schedule(time_compat.milliTimestamp(self.window.io) + 50);
                 return;
             }
         }
@@ -392,7 +392,7 @@ pub const UserKeybindingsLoader = struct {
 
 test "UserKeybindings: reads later-layer overrides and removals" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 

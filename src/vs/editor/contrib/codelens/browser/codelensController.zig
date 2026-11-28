@@ -277,7 +277,7 @@ pub const CodeLensContribution = struct {
             try self.renderSymbols(cached.model);
             if (!has_provider) {
                 self.cached_identity = cached.identity;
-                self.cache_expiry.schedule(now() + 30_000);
+                self.cache_expiry.schedule(now(self.editor.clockIo()) + 30_000);
                 return;
             }
             cached.identity.release();
@@ -314,11 +314,11 @@ pub const CodeLensContribution = struct {
     }
 
     fn scheduleFetch(self: *CodeLensContribution) void {
-        if (self.enabled) self.fetch_task.schedule(now() + @as(i64, @intFromFloat(self.provide_info.get(self.debounceRef()))));
+        if (self.enabled) self.fetch_task.schedule(now(self.editor.clockIo()) + @as(i64, @intFromFloat(self.provide_info.get(self.debounceRef()))));
     }
 
     fn scheduleResolve(self: *CodeLensContribution) void {
-        if (self.enabled and self.widgets.items.len > 0) self.resolve_task.schedule(now() + @as(i64, @intFromFloat(self.resolve_info.get(self.debounceRef()))));
+        if (self.enabled and self.widgets.items.len > 0) self.resolve_task.schedule(now(self.editor.clockIo()) + @as(i64, @intFromFloat(self.resolve_info.get(self.debounceRef()))));
     }
 
     fn cancelFetch(self: *CodeLensContribution) void {
@@ -399,7 +399,7 @@ pub const CodeLensContribution = struct {
         if (!self.enabled) return false;
         self.cancelFetch();
         self.fetch_version = self.editor.model.getVersionId();
-        self.fetch_start = now();
+        self.fetch_start = now(self.editor.clockIo());
         self.pending_fetch = model_mod.Request.start(self.allocator, self.editor.model, self.providers, self, onFetched) catch null;
         return true;
     }
@@ -418,7 +418,7 @@ pub const CodeLensContribution = struct {
         };
         self.model = model;
         self.cache.put(self.editor.model, model) catch {};
-        _ = self.provide_info.update(self.debounceRef(), @floatFromInt(@max(0, now() - self.fetch_start))) catch 250;
+        _ = self.provide_info.update(self.debounceRef(), @floatFromInt(@max(0, now(self.editor.clockIo()) - self.fetch_start))) catch 250;
         self.renderSymbols(model) catch {
             self.localDispose();
             return;
@@ -475,7 +475,7 @@ pub const CodeLensContribution = struct {
         self.cancelResolves();
         const visible = try self.editor.viewLayout().getWhitespaceViewportData(self.allocator);
         defer self.allocator.free(visible);
-        self.resolve_start = now();
+        self.resolve_start = now(self.editor.clockIo());
         self.resolving = true;
         defer {
             self.resolving = false;
@@ -530,7 +530,7 @@ pub const CodeLensContribution = struct {
         if (!self.resolving and self.pending_resolves.items.len == 0) self.didResolve();
     }
     fn didResolve(self: *CodeLensContribution) void {
-        _ = self.resolve_info.update(self.debounceRef(), @floatFromInt(@max(0, now() - self.resolve_start))) catch 250;
+        _ = self.resolve_info.update(self.debounceRef(), @floatFromInt(@max(0, now(self.editor.clockIo()) - self.resolve_start))) catch 250;
         if (self.model) |model| self.cache.put(self.editor.model, model) catch {};
         self.clearOldModels();
         self.finishPendingPicker();

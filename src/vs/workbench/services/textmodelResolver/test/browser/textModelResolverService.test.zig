@@ -13,7 +13,7 @@ fn disposed(_: void, count: *usize) !void {
 }
 fn flush(queue: *dispatch.Queue) void {
     while (true) {
-        const now = @import("../../../../../base/common/timeCompat.zig").milliTimestamp();
+        const now = @import("../../../../../base/common/timeCompat.zig").milliTimestamp(std.testing.io);
         if (queue.nextTimeout(now, 1) != 0) break;
         _ = queue.dispatch(now);
     }
@@ -485,7 +485,7 @@ test "TextModelResolverService: registered filesystem bytes and URI changes use 
             }
         };
     };
-    var provider: Provider = .{ .memory = try MemoryProvider.init(a), .bytes = "\xff\xfeA\x00" };
+    var provider: Provider = .{ .memory = try MemoryProvider.init(a, std.testing.io), .bytes = "\xff\xfeA\x00" };
     defer provider.memory.deinit();
     var file_service = FileService.init(a);
     defer file_service.deinit();

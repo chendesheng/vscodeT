@@ -123,7 +123,7 @@ test "BulkFileEdits: delete skips undo contents exceeding the size limit" {
 test "BulkFileEdits: create, copy and rename mutate real provider resources and reverse through the undo service" {
     var registry = FileService.init(a);
     defer registry.deinit();
-    var memory = try Memory.init(a);
+    var memory = try Memory.init(a, std.testing.io);
     defer memory.deinit();
     var registration = try registry.interface().registerProvider("inmemory", memory.interface());
     defer registration.dispose();

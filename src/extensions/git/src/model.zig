@@ -308,7 +308,8 @@ pub const Model = struct {
                 return;
             }
             try self.model.pending_repository_scans.put(self.model.allocator, self, {});
-            self.model.repository_scan_task.schedule(time.milliTimestamp() + 500);
+            const queue = self.model.repository_scan_task.queue orelse return;
+            self.model.repository_scan_task.schedule(time.milliTimestamp(queue.io) + 500);
         }
 
         fn scan(self: *RepositoryScan) !bool {
@@ -944,15 +945,15 @@ test "Model disposal cancels in-flight repository discovery before publishing" {
         errdefer _ = model.pending_repository_openings.pop();
         pending.future = try window.io.concurrent(Probe.run, .{ &probe, pending });
     }
-    const deadline = time.milliTimestamp() + 2000;
-    while (!probe.started.load(.acquire) and time.milliTimestamp() < deadline) {
-        _ = window.dispatch(time.milliTimestamp());
+    const deadline = time.milliTimestamp(std.testing.io) + 2000;
+    while (!probe.started.load(.acquire) and time.milliTimestamp(std.testing.io) < deadline) {
+        _ = window.dispatch(time.milliTimestamp(std.testing.io));
         try io.sleep(.fromMilliseconds(1), .awake);
     }
     try testing.expect(probe.started.load(.acquire));
     model.deinit();
     try testing.expect(probe.canceled.load(.acquire));
     try testing.expect(!probe.published);
-    try testing.expect(!window.dispatch(time.milliTimestamp()));
+    try testing.expect(!window.dispatch(time.milliTimestamp(std.testing.io)));
     try testing.expectEqual(@as(usize, 0), model.pending_repository_openings.items.len);
 }

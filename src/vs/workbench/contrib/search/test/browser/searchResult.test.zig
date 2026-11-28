@@ -10,7 +10,7 @@ test "SearchResult: adds and removes file matches" {
     const allocator = std.testing.allocator;
     var query = try search.TextQuery.init(allocator, "foo", &.{"/root"}, "", "", &.{});
     defer query.deinit();
-    const result = try tree.SearchResult.create(allocator);
+    const result = try tree.SearchResult.create(allocator, std.testing.io);
     defer result.deinit();
     result.setQuery(&query);
 
@@ -38,7 +38,7 @@ test "SearchResult: surrounding contexts are attached to the file match" {
     const allocator = std.testing.allocator;
     var query = try search.TextQuery.init(allocator, "foo", &.{"/root"}, "", "", &.{});
     defer query.deinit();
-    const result = try tree.SearchResult.create(allocator);
+    const result = try tree.SearchResult.create(allocator, std.testing.io);
     defer result.deinit();
     result.setQuery(&query);
 
@@ -80,7 +80,7 @@ test "SearchResult: initial file match uses the live model rather than stale dis
     var queue = dispatch.Queue{ .io = std.testing.io };
     var query = try search.TextQuery.init(allocator, "foo", &.{"/root"}, "", "", &.{});
     defer query.deinit();
-    const result = try tree.SearchResult.create(allocator);
+    const result = try tree.SearchResult.create(allocator, std.testing.io);
     defer result.deinit();
     result.model_host = .{
         .context = model.model,

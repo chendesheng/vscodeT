@@ -25,7 +25,7 @@ test "MainThreadLogger: unformatted output preserves byte offsets and metadata" 
     defer files.deinit();
     const registration = try files.registerProvider("file", disk.interface());
     defer registration.dispose();
-    var loggers = FileLoggerService.init(allocator, files.interface());
+    var loggers = FileLoggerService.init(allocator, std.testing.io, files.interface());
     defer loggers.deinit();
     var actor = actor_mod.MainThreadLoggerService{ .service = &loggers };
     const opts = rpc.Arg{ .json = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"id\":\"zig-log\",\"name\":\"Zig\",\"donotUseFormatters\":true,\"donotRotate\":true,\"logLevel\":\"always\"}", .{}) };

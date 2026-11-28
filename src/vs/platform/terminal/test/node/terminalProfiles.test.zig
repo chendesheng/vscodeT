@@ -8,7 +8,7 @@ const common = @import("../../common/terminalProfiles.zig");
 
 test "terminalProfiles: reads /etc/shells style content and de-duplicates names" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var detected = try profiles.detectUnixProfiles(allocator, io, .{
         .shells_contents =
         \\# comment
@@ -35,7 +35,7 @@ test "terminalProfiles: reads /etc/shells style content and de-duplicates names"
 
 test "terminalProfiles: configured default name wins over SHELL" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var detected = try profiles.detectUnixProfiles(allocator, io, .{
         .shells_contents = "/bin/bash\n/bin/zsh\n",
         .default_profile_name = "zsh",

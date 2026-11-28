@@ -150,7 +150,7 @@ pub const FileWalker = struct {
     }
 
     pub fn walk(self: *FileWalker) !WalkOutcome {
-        const started = time_compat.milliTimestamp();
+        const started = time_compat.milliTimestamp(self.io);
         errdefer self.discardMatches();
 
         try self.walkExtraFiles();
@@ -163,7 +163,7 @@ pub const FileWalker = struct {
             try self.walkFolder(folder_query, folder_arena.allocator());
         }
 
-        self.file_walk_time_ms = time_compat.milliTimestamp() - started;
+        self.file_walk_time_ms = time_compat.milliTimestamp(self.io) - started;
         const matches = try self.matches.toOwnedSlice();
         errdefer {
             for (matches) |*match| match.deinit(self.allocator);
@@ -241,12 +241,12 @@ pub const FileWalker = struct {
             if (self.cancelled.load(.acquire)) return error.Canceled;
             if (!self.is_limit_hit) {
                 self.exclude_exception_runs += 1;
-                const started = time_compat.milliTimestamp();
+                const started = time_compat.milliTimestamp(self.io);
                 try self.traverse(folder_query, &excludes, include, .{
                     .exclude_exceptions = excludes.exceptions,
                     .seen_paths = &seen_paths,
                 });
-                self.exclude_exception_time_ms += time_compat.milliTimestamp() - started;
+                self.exclude_exception_time_ms += time_compat.milliTimestamp(self.io) - started;
             }
         } else {
             try self.traverse(folder_query, &excludes, include, .{
@@ -324,8 +324,8 @@ pub const FileWalker = struct {
         paths_to_skip: ?*const std.StringHashMap(void),
         reported: *std.array_list.Managed([]u8),
     ) !bool {
-        const cmd_started = time_compat.milliTimestamp();
-        defer self.cmd_time_ms += time_compat.milliTimestamp() - cmd_started;
+        const cmd_started = time_compat.milliTimestamp(self.io);
+        defer self.cmd_time_ms += time_compat.milliTimestamp(self.io) - cmd_started;
 
         const query_folder = search.FolderQuery{
             .folder = folder_query.folder,

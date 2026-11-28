@@ -33,7 +33,7 @@ const SerializedGrid = @import("../../../../base/browser/ui/grid/grid.zig").Seri
 
 test "session: loadPart returns null for a missing file" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     try std.testing.expectEqual(
         @as(?editor_groups.SerializedEditorPart, null),
         try loadPart(allocator, io, ".zig-cache/tmp/does-not-exist-session-part.json"),
@@ -248,7 +248,7 @@ fn readAll(allocator: Allocator, io: Io, path: []const u8) !?[]u8 {
 
 test "session: save and load multiple groups" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -294,7 +294,7 @@ test "session: save and load multiple groups" {
 
 test "session: savePart and loadPart round-trip through the memento" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -332,7 +332,7 @@ test "session: savePart and loadPart round-trip through the memento" {
 
 test "session: legacy bare part files still load" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 

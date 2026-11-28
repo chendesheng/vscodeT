@@ -35,7 +35,7 @@ pub const RegistryOptions = struct {
     theme: ?*const theme.RawTheme = null,
     color_map: ?[]const []const u8 = null,
     context: *anyopaque = undefined,
-    load_grammar: *const fn (context: *anyopaque, scope_name: []const u8) anyerror!?*rawGrammar.RawGrammar,
+    load_grammar: *const fn (context: *anyopaque, io: std.Io, scope_name: []const u8) anyerror!?*rawGrammar.RawGrammar,
     get_injections: ?*const fn (context: *anyopaque, scope_name: []const u8) ?[]const []const u8 = null,
 };
 
@@ -83,22 +83,25 @@ pub const Registry = struct {
 
     pub fn loadGrammarWithEmbeddedLanguages(
         self: *Registry,
+        io: std.Io,
         initial_scope_name: []const u8,
         initial_language: u32,
         embedded_languages: grammar.EmbeddedLanguagesMap,
     ) !?*grammar.Grammar {
-        return self.loadGrammarWithConfiguration(initial_scope_name, initial_language, .{
+        return self.loadGrammarWithConfiguration(io, initial_scope_name, initial_language, .{
             .embedded_languages = embedded_languages,
         });
     }
 
     pub fn loadGrammarWithConfiguration(
         self: *Registry,
+        io: std.Io,
         initial_scope_name: []const u8,
         initial_language: u32,
         configuration: IGrammarConfiguration,
     ) !?*grammar.Grammar {
         return self.loadGrammarInternal(
+            io,
             initial_scope_name,
             initial_language,
             configuration.embedded_languages,
@@ -108,12 +111,13 @@ pub const Registry = struct {
         );
     }
 
-    pub fn loadGrammar(self: *Registry, initial_scope_name: []const u8) !?*grammar.Grammar {
-        return self.loadGrammarInternal(initial_scope_name, 0, &.{}, &.{}, &.{}, &.{});
+    pub fn loadGrammar(self: *Registry, io: std.Io, initial_scope_name: []const u8) !?*grammar.Grammar {
+        return self.loadGrammarInternal(io, initial_scope_name, 0, &.{}, &.{}, &.{}, &.{});
     }
 
     fn loadGrammarInternal(
         self: *Registry,
+        io: std.Io,
         initial_scope_name: []const u8,
         initial_language: u32,
         embedded_languages: grammar.EmbeddedLanguagesMap,
@@ -137,7 +141,7 @@ pub const Registry = struct {
                 if (self.loaded_scopes.contains(scope_name)) continue;
                 try self.loaded_scopes.put(scope_name, {});
 
-                const loaded = try self.options.load_grammar(self.options.context, scope_name);
+                const loaded = try self.options.load_grammar(self.options.context, io, scope_name);
                 if (loaded) |raw_grammar| {
                     const injections = if (self.options.get_injections) |callback|
                         callback(self.options.context, scope_name)

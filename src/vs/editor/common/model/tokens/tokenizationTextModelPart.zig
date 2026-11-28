@@ -268,7 +268,7 @@ pub const TokenizationTextModelPart = struct {
         const wordDefinition = self.getWordDefinition(lineTokens.getLanguageId(tokenIndex));
 
         const rightBoundaries = findLanguageBoundaries(&lineTokens, tokenIndex);
-        if (wordHelper.getWordAtText(position.column, wordDefinition, lineContent.items[rightBoundaries[0]..rightBoundaries[1]], rightBoundaries[0])) |match| {
+        if (wordHelper.getWordAtText(self.textModel().clockIo(), position.column, wordDefinition, lineContent.items[rightBoundaries[0]..rightBoundaries[1]], rightBoundaries[0])) |match| {
             if (match.startColumn <= _position.column and _position.column <= match.endColumn) {
                 return makeOwnedWord(self.textModel().getAllocator(), match);
             }
@@ -277,7 +277,7 @@ pub const TokenizationTextModelPart = struct {
         if (tokenIndex > 0 and rightBoundaries[0] == position.column - 1) {
             const leftBoundaries = findLanguageBoundaries(&lineTokens, tokenIndex - 1);
             const leftWordDefinition = self.getWordDefinition(lineTokens.getLanguageId(tokenIndex - 1));
-            if (wordHelper.getWordAtText(position.column, leftWordDefinition, lineContent.items[leftBoundaries[0]..leftBoundaries[1]], leftBoundaries[0])) |match| {
+            if (wordHelper.getWordAtText(self.textModel().clockIo(), position.column, leftWordDefinition, lineContent.items[leftBoundaries[0]..leftBoundaries[1]], leftBoundaries[0])) |match| {
                 if (match.startColumn <= _position.column and _position.column <= match.endColumn) {
                     return makeOwnedWord(self.textModel().getAllocator(), match);
                 }

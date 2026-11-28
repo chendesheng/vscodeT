@@ -715,7 +715,7 @@ test "SingleModelEditStackElement" {
     var languageConfigurationService = try LanguageConfigurationService.init(allocator, &languageService);
     defer languageConfigurationService.deinit();
 
-    var textModel = try TextModel.init(allocator, &reader, "test", TextModelCreationOptions{
+    var textModel = try TextModel.init(allocator, std.testing.io, &reader, "test", TextModelCreationOptions{
         .tabSize = 4,
         .indentSize = .{ .number = 4 },
         .insertSpaces = true,

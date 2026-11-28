@@ -315,7 +315,7 @@ fn testWrite(context: *anyopaque, data: []const u8) void {
 test "terminalEmulator: feeds text and updates the render state" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var state = TestSink{ .written = std.array_list.Managed(u8).init(allocator) };
     defer state.written.deinit();
 

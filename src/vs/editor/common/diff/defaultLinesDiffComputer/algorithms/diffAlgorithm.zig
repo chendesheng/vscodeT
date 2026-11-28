@@ -294,22 +294,24 @@ pub const InfiniteTimeout = struct {
 pub const DateTimeout = struct {
     const Self = @This();
 
+    io: std.Io,
     start_time: i64,
     timeout_ms: i64,
     valid: bool = true,
 
-    pub fn init(timeout_ms: i64) !Self {
+    pub fn init(io: std.Io, timeout_ms: i64) !Self {
         if (timeout_ms <= 0) {
             return error.InvalidTimeout;
         }
         return .{
-            .start_time = time.milliTimestamp(),
+            .io = io,
+            .start_time = time.milliTimestamp(io),
             .timeout_ms = timeout_ms,
         };
     }
 
     pub fn isValid(self: *Self) bool {
-        const valid = time.milliTimestamp() - self.start_time < self.timeout_ms;
+        const valid = time.milliTimestamp(self.io) - self.start_time < self.timeout_ms;
         if (!valid and self.valid) {
             self.valid = false; // timeout reached
         }

@@ -5,6 +5,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const ipc = @import("../../node/ipc.net.zig");
 const testing = std.testing;
+const Io = std.Io;
+const ProtocolWriter = @import("../../common/ipc.net.zig").ProtocolWriter;
 
 test "IPC: randomized local endpoint accepts a duplex stream" {
     const io = testing.io;
@@ -79,4 +81,47 @@ fn readAll(connection: ipc.Connection, io: std.Io, bytes: []u8) !void {
         if (n == 0) return error.EndOfStream;
         remaining = remaining[n..];
     }
+}
+
+test "ProtocolWriter: a stalled transport does not block the producer and frames remain ordered" {
+    const Probe = struct {
+        io: Io,
+        entered: Io.Event = .unset,
+        release: Io.Event = .unset,
+        finished: Io.Event = .unset,
+        bytes: [6]u8 = undefined,
+        len: usize = 0,
+        failed: bool = false,
+
+        fn write(context: *anyopaque, bytes: []const u8) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.entered.set(self.io);
+            self.release.waitUncancelable(self.io);
+            @memcpy(self.bytes[self.len..][0..bytes.len], bytes);
+            self.len += bytes.len;
+            if (self.len == self.bytes.len) self.finished.set(self.io);
+        }
+
+        fn failure(context: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.failed = true;
+        }
+    };
+    const io = std.testing.io;
+    var probe: Probe = .{ .io = io };
+    var writer: ProtocolWriter = .{ .allocator = std.testing.allocator, .io = io, .sink = .{ .context = &probe, .write = Probe.write, .failed = Probe.failure } };
+    try writer.start();
+    defer writer.deinit();
+    defer probe.release.set(io);
+    var first = [_]u8{ 'a', 'b' };
+    try writer.write("1", &first);
+    probe.entered.waitUncancelable(io);
+    first[0] = 'x';
+    try writer.write("2", "cd");
+    probe.release.set(io);
+    probe.finished.waitUncancelable(io);
+    writer.flush(.{ .duration = .{ .raw = .fromMilliseconds(1000), .clock = .awake } });
+    try std.testing.expect(writer.drained.isSet());
+    try std.testing.expectEqualStrings("1ab2cd", &probe.bytes);
+    try std.testing.expect(!probe.failed);
 }

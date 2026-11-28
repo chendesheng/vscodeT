@@ -77,7 +77,7 @@ fn openFile(io: Io, path: []const u8) !Io.File {
 fn writeLine(context: *anyopaque, level: log.LogLevel, message: []const u8) anyerror!void {
     const self: *FileLogger = @ptrCast(@alignCast(context));
     const writer = &self.writer.interface;
-    try writeTimestamp(writer, time_compat.milliTimestamp());
+    try writeTimestamp(writer, time_compat.milliTimestamp(self.io));
     try writer.print(" [{s}] {s}\n", .{ levelLabel(level), message });
     try writer.flush();
 }
@@ -139,6 +139,7 @@ test "log line format" {
 /// file service owns URI handling and writes; raw output channels must not
 /// add formatting bytes because ExtHostOutputChannel tracks byte offsets.
 pub const FileLoggerService = struct {
+    io: Io,
     allocator: Allocator,
     files: @import("../../files/common/files.zig").IFileService,
     loggers: std.StringHashMap(*ResourceLogger),
@@ -165,8 +166,8 @@ pub const FileLoggerService = struct {
 
     const uri_util = @import("../../../base/common/stdUri.zig");
 
-    pub fn init(allocator: Allocator, files: @import("../../files/common/files.zig").IFileService) FileLoggerService {
-        return .{ .allocator = allocator, .files = files, .loggers = .init(allocator), .on_did_change_loggers = .init(allocator) };
+    pub fn init(allocator: Allocator, io: Io, files: @import("../../files/common/files.zig").IFileService) FileLoggerService {
+        return .{ .allocator = allocator, .io = io, .files = files, .loggers = .init(allocator), .on_did_change_loggers = .init(allocator) };
     }
 
     pub fn clear(self: *FileLoggerService) void {
@@ -273,7 +274,7 @@ pub const FileLoggerService = struct {
             if (logger.options.raw) {
                 try writer.writer.writeAll(entry.message);
             } else {
-                try writeTimestamp(&writer.writer, time_compat.milliTimestamp());
+                try writeTimestamp(&writer.writer, time_compat.milliTimestamp(self.io));
                 try writer.writer.print(" [{s}] {s}\n", .{ levelLabel(entry.level), entry.message });
             }
         }

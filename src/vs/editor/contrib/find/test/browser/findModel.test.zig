@@ -30,7 +30,7 @@ const source =
 ;
 
 fn createEditor(allocator: Allocator) !*Editor {
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     return Editor.createFromText(allocator, io, source, "test.txt", 80, 24);
 }
 

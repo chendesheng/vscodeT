@@ -34,7 +34,7 @@ pub const TextResourceConfigurationService = struct {
         const self: *TextResourceConfigurationService = @ptrCast(@alignCast(context));
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
-        try self.configuration.updateResourceValue(key, value, try overridesForModel(scratch.allocator(), model), target);
+        _ = try self.configuration.requestUpdateResourceValue(key, value, try overridesForModel(scratch.allocator(), model), target, null);
     }
 };
 

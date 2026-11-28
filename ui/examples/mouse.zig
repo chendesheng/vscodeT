@@ -37,13 +37,13 @@ const accent = common.rgb(48, 66, 112);
 const hover_background = common.rgb(36, 36, 48);
 const selected_text = common.rgb(255, 255, 255);
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
     const example = try mouseExample(allocator);
     defer if (example.deinit) |destroy| destroy(example.context);
-    try common.runInteractive(allocator, example);
+    try common.runInteractive(allocator, init.io, example);
 }
 
 pub fn mouseExample(allocator: std.mem.Allocator) !common.Example {

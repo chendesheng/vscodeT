@@ -779,13 +779,14 @@ pub const NullLogService = struct {
 /// Upstream `createUnexpectedErrorHandler`. The handler owns the formatted
 /// previous message used for the 1000 ms duplicate suppression.
 pub const UnexpectedErrorHandler = struct {
+    io: std.Io,
     allocator: Allocator,
     logger: ILogger,
     previous_message: ?[]u8 = null,
     previous_time_ms: i64 = 0,
 
-    pub fn init(allocator: Allocator, logger: ILogger) UnexpectedErrorHandler {
-        return .{ .allocator = allocator, .logger = logger };
+    pub fn init(allocator: Allocator, io: std.Io, logger: ILogger) UnexpectedErrorHandler {
+        return .{ .allocator = allocator, .io = io, .logger = logger };
     }
 
     pub fn deinit(self: *UnexpectedErrorHandler) void {
@@ -796,7 +797,7 @@ pub const UnexpectedErrorHandler = struct {
     /// Uses the wall clock. `handleAt` is the testable seam for the duplicate
     /// window.
     pub fn handle(self: *UnexpectedErrorHandler, error_value: ErrorLike) !void {
-        const now_ms: i64 = time_compat.milliTimestamp();
+        const now_ms: i64 = time_compat.milliTimestamp(self.io);
         return self.handleAt(error_value, now_ms);
     }
 
@@ -829,8 +830,8 @@ pub const UnexpectedErrorHandler = struct {
     }
 };
 
-pub fn createUnexpectedErrorHandler(allocator: Allocator, logger: ILogger) UnexpectedErrorHandler {
-    return UnexpectedErrorHandler.init(allocator, logger);
+pub fn createUnexpectedErrorHandler(allocator: Allocator, io: std.Io, logger: ILogger) UnexpectedErrorHandler {
+    return UnexpectedErrorHandler.init(allocator, io, logger);
 }
 
 test "canLog and parseLogLevel" {

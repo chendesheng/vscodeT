@@ -15,7 +15,7 @@ const EditorMod = @import("../../../../../editor/browser/widget/codeEditor/codeE
 
 test "quickDiffController: attach, apply gutter width and detach" {
     const allocator = testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var service = QuickDiffService.init(allocator, null);
     defer service.deinit();
 
@@ -46,7 +46,7 @@ test "quickDiffController: attach, apply gutter width and detach" {
     try controller.attach(editor);
     try testing.expectEqual(@as(usize, 1), controller.count());
     try testing.expectEqual(@as(usize, 1), editor.lineDecorationsWidth());
-    const then = time.milliTimestamp() + 201;
+    const then = time.milliTimestamp(std.testing.io) + 201;
     try testing.expect(!window.dispatch(then));
     try resolveOriginals(&window, controller.entries.items[0].model, then);
     try testing.expect(controller.entries.items[0].model.pending != null);
@@ -65,7 +65,7 @@ test "quickDiffController: attach, apply gutter width and detach" {
 
 test "quickDiffController: a scheduled diff updates after an edit and config disables decorations" {
     const allocator = testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var service = QuickDiffService.init(allocator, null);
     defer service.deinit();
 
@@ -188,7 +188,7 @@ test "quickDiffController: visible split editors share one computation and indep
 fn resolveOriginals(queue: *Queue, model: *@import("../../browser/quickDiffModel.zig").QuickDiffModel, now: i64) !void {
     for (0..20) |_| {
         if (model.resolving == null) break;
-        _ = queue.dispatch(@max(now, time.milliTimestamp()));
+        _ = queue.dispatch(@max(now, time.milliTimestamp(std.testing.io)));
     }
     try testing.expect(model.resolving == null);
 }
@@ -196,7 +196,7 @@ fn resolveOriginals(queue: *Queue, model: *@import("../../browser/quickDiffModel
 fn finishDiff(queue: *Queue, model: *@import("../../browser/quickDiffModel.zig").QuickDiffModel, now: i64) !void {
     for (0..20) |_| {
         if (model.pending == null) break;
-        _ = queue.dispatch(@max(now, time.milliTimestamp()));
+        _ = queue.dispatch(@max(now, time.milliTimestamp(std.testing.io)));
     }
     try testing.expect(model.pending == null);
 }

@@ -15,14 +15,14 @@ const commits = [_]struct { hash: []const u8, subject: []const u8, lines: u32 }{
     .{ .hash = "758f160", .subject = "Mirror upstream contrib test paths", .lines = 431 },
 };
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     const example = try tableExample(allocator);
     defer if (example.deinit) |deinit| deinit(example.context);
-    try common.runStatic(allocator, example);
+    try common.runStatic(allocator, init.io, example);
 }
 
 pub fn tableExample(allocator: std.mem.Allocator) !common.Example {

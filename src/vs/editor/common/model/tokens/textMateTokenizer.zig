@@ -39,7 +39,9 @@ var onig_lib: tm_main.OnigLib = undefined;
 var registry: ?*tm_main.Registry = null;
 var fence_grammar: ?*tm_raw.RawGrammar = null;
 const scopes = @import("../../../../workbench/services/textMate/common/TMScopeRegistry.zig");
-const LoaderContext = struct { grammars: []const scopes.Grammar = &.{} };
+const LoaderContext = struct {
+    grammars: []const scopes.Grammar = &.{},
+};
 var loader_context: LoaderContext = .{};
 
 /// Bind the immutable installed catalog before creating any models or workers.
@@ -87,9 +89,9 @@ fn ensureInitialized() !void {
 
 /// Registers a grammar contributed by a declarative extension. The language
 /// and scope mappings take precedence over the bundled grammar table.
-pub fn registerGrammar(language: []const u8, scope: []const u8, data: []const u8) void {
-    dynamic_grammars_mutex.lockUncancelable(time_compat.io);
-    defer dynamic_grammars_mutex.unlock(time_compat.io);
+pub fn registerGrammar(io: std.Io, language: []const u8, scope: []const u8, data: []const u8) void {
+    dynamic_grammars_mutex.lockUncancelable(@import("../../../../base/common/windowDispatch.zig").backingIo(io));
+    defer dynamic_grammars_mutex.unlock(@import("../../../../base/common/windowDispatch.zig").backingIo(io));
     if (dynamic_grammars == null) dynamic_grammars = std.array_list.Managed(DynamicGrammar).init(registry_allocator);
     const list = &dynamic_grammars.?;
     for (list.items) |*entry| {
@@ -106,9 +108,9 @@ pub fn registerGrammar(language: []const u8, scope: []const u8, data: []const u8
     list.append(.{ .language = language_copy, .scope = scope_copy, .data = data_copy }) catch {};
 }
 
-fn dynamicGrammarForLanguage(language: []const u8) ?DynamicGrammar {
-    dynamic_grammars_mutex.lockUncancelable(time_compat.io);
-    defer dynamic_grammars_mutex.unlock(time_compat.io);
+fn dynamicGrammarForLanguage(io: std.Io, language: []const u8) ?DynamicGrammar {
+    dynamic_grammars_mutex.lockUncancelable(@import("../../../../base/common/windowDispatch.zig").backingIo(io));
+    defer dynamic_grammars_mutex.unlock(@import("../../../../base/common/windowDispatch.zig").backingIo(io));
     if (dynamic_grammars) |list| {
         for (list.items) |entry| {
             if (std.mem.eql(u8, entry.language, language)) return entry;
@@ -117,9 +119,9 @@ fn dynamicGrammarForLanguage(language: []const u8) ?DynamicGrammar {
     return null;
 }
 
-fn dynamicGrammarForScope(scope: []const u8) ?DynamicGrammar {
-    dynamic_grammars_mutex.lockUncancelable(time_compat.io);
-    defer dynamic_grammars_mutex.unlock(time_compat.io);
+fn dynamicGrammarForScope(io: std.Io, scope: []const u8) ?DynamicGrammar {
+    dynamic_grammars_mutex.lockUncancelable(@import("../../../../base/common/windowDispatch.zig").backingIo(io));
+    defer dynamic_grammars_mutex.unlock(@import("../../../../base/common/windowDispatch.zig").backingIo(io));
     if (dynamic_grammars) |list| {
         for (list.items) |entry| {
             if (std.mem.eql(u8, entry.scope, scope)) return entry;
@@ -128,16 +130,16 @@ fn dynamicGrammarForScope(scope: []const u8) ?DynamicGrammar {
     return null;
 }
 
-fn loadGrammar(_: *anyopaque, scope: []const u8) anyerror!?*tm_raw.RawGrammar {
-    grammar_load_mutex.lockUncancelable(time_compat.io);
-    defer grammar_load_mutex.unlock(time_compat.io);
-    const dynamic_data = if (dynamicGrammarForScope(scope)) |entry| entry.data else null;
+fn loadGrammar(_: *anyopaque, io: std.Io, scope: []const u8) anyerror!?*tm_raw.RawGrammar {
+    grammar_load_mutex.lockUncancelable(@import("../../../../base/common/windowDispatch.zig").backingIo(io));
+    defer grammar_load_mutex.unlock(@import("../../../../base/common/windowDispatch.zig").backingIo(io));
+    const dynamic_data = if (dynamicGrammarForScope(io, scope)) |entry| entry.data else null;
     const allocator = registry_allocator;
     const grammar = scopes.forScope(loader_context.grammars, scope);
     // The vendored YAML fallback covers the upstream parser limitation
     // documented alongside the bundled syntax assets.
     const file = if (grammar != null and dynamic_data == null and !std.mem.eql(u8, scope, "source.yaml"))
-        std.Io.Dir.cwd().readFileAlloc(time_compat.io, grammar.?.location, allocator, .unlimited) catch null
+        std.Io.Dir.cwd().readFileAlloc(@import("../../../../base/common/windowDispatch.zig").backingIo(io), grammar.?.location, allocator, .unlimited) catch null
     else
         null;
     defer if (file) |bytes| allocator.free(bytes);
@@ -169,8 +171,8 @@ fn installMarkdownCodeFences(markdown: *tm_raw.RawGrammar) !void {
     try markdown.root.put(allocator, "patterns", .{ .array = combined });
 }
 
-fn grammarScope(languageId: []const u8) ?[]const u8 {
-    if (dynamicGrammarForLanguage(languageId)) |entry| return entry.scope;
+fn grammarScope(io: std.Io, languageId: []const u8) ?[]const u8 {
+    if (dynamicGrammarForLanguage(io, languageId)) |entry| return entry.scope;
     for (loader_context.grammars) |grammar| {
         if (grammar.language.len != 0 and std.mem.eql(u8, grammar.language, languageId)) return grammar.scope;
     }
@@ -243,12 +245,12 @@ const TextMateSupport = struct {
         return .{ .context = state, .vtable = &TextMateState.vtable };
     }
 
-    fn tokenizeEncoded(ctx: *anyopaque, allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult {
+    fn tokenizeEncoded(ctx: *anyopaque, io: std.Io, allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult {
         const self: *TextMateSupport = @ptrCast(@alignCast(ctx));
-        return tokenizeEncodedWithStateAllocator(ctx, allocator, self.grammar.arena.allocator(), line, hasEOL, state);
+        return tokenizeEncodedWithStateAllocator(ctx, io, allocator, self.grammar.arena.allocator(), line, hasEOL, state);
     }
 
-    fn tokenizeEncodedWithStateAllocator(ctx: *anyopaque, allocator: Allocator, state_allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult {
+    fn tokenizeEncodedWithStateAllocator(ctx: *anyopaque, io: std.Io, allocator: Allocator, state_allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult {
         _ = hasEOL;
         const self: *TextMateSupport = @ptrCast(@alignCast(ctx));
         const input: ?*TextMateState = if (state.vtable == &TextMateState.vtable)
@@ -259,7 +261,7 @@ const TextMateSupport = struct {
         // Upstream limits a line to 500 ms. A partial tokenization keeps the
         // input state so following lines are not derived from truncated token
         // state.
-        const result = try self.grammar.tokenizeLineWithStateAllocator(line, previous, 500, state_allocator);
+        const result = try self.grammar.tokenizeLineWithStateAllocator(io, line, previous, 500, state_allocator);
 
         var end_state = state;
         if (!result.stopped_early) {
@@ -267,8 +269,8 @@ const TextMateSupport = struct {
             next.* = .{ .stack = result.rule_stack, .first_line = false };
             end_state = .{ .context = next, .vtable = &TextMateState.vtable };
         }
-        const active_theme = tokenization.lockActiveTokenTheme();
-        defer tokenization.unlockActiveTokenTheme();
+        const active_theme = tokenization.lockActiveTokenTheme(@import("../../../../base/common/windowDispatch.zig").backingIo(io));
+        defer tokenization.unlockActiveTokenTheme(@import("../../../../base/common/windowDispatch.zig").backingIo(io));
         return .{
             .tokens = try tokensFromScopes(
                 allocator,
@@ -304,10 +306,10 @@ pub fn isTextMate(support: ITokenizationSupport) bool {
     return support.vtable == &TextMateSupport.vtable;
 }
 
-pub fn create(allocator: Allocator, languageId: []const u8) !?ITokenizationSupport {
-    const scope = grammarScope(languageId) orelse return null;
+pub fn create(allocator: Allocator, io: std.Io, languageId: []const u8) !?ITokenizationSupport {
+    const scope = grammarScope(io, languageId) orelse return null;
     try ensureInitialized();
-    const grammar = (try registry.?.loadGrammarWithEmbeddedLanguages(scope, 0, &.{})) orelse return null;
+    const grammar = (try registry.?.loadGrammarWithEmbeddedLanguages(io, scope, 0, &.{})) orelse return null;
     return try createFromGrammar(allocator, languageId, grammar);
 }
 
@@ -352,9 +354,9 @@ pub const WorkerRegistry = struct {
         self.allocator.destroy(self.onig_lib);
     }
 
-    pub fn loadGrammarForLanguage(self: *WorkerRegistry, languageId: []const u8, encodedLanguageId: u32) !?*tm_main.IGrammar {
-        const scope = grammarScope(languageId) orelse return null;
-        return self.registry.loadGrammarWithEmbeddedLanguages(scope, encodedLanguageId, &.{});
+    pub fn loadGrammarForLanguage(self: *WorkerRegistry, io: std.Io, languageId: []const u8, encodedLanguageId: u32) !?*tm_main.IGrammar {
+        const scope = grammarScope(io, languageId) orelse return null;
+        return self.registry.loadGrammarWithEmbeddedLanguages(io, scope, encodedLanguageId, &.{});
     }
 };
 
@@ -375,8 +377,8 @@ pub fn stateFromStack(allocator: Allocator, stack: ?*tm_main.StateStack, first_l
 
 test "textmate tokenizer: VS Code grammars and fallbacks are available" {
     if (vscode_syntax.scopeForLanguage("jsonc") == null) return error.SkipZigTest;
-    try std.testing.expectEqualStrings("source.json.comments", grammarScope("jsonc").?);
-    try std.testing.expectEqualStrings("source.js.jsx", grammarScope("javascriptreact").?);
+    try std.testing.expectEqualStrings("source.json.comments", grammarScope(std.testing.io, "jsonc").?);
+    try std.testing.expectEqualStrings("source.js.jsx", grammarScope(std.testing.io, "javascriptreact").?);
     try std.testing.expect(vscode_syntax.dataForScope("source.json.comments") != null);
     try std.testing.expect(vscode_syntax.dataForScope("source.zig") != null);
     try ensureInitialized();
@@ -386,10 +388,10 @@ test "textmate tokenizer: zig grammar produces scopes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const support = (try create(allocator, "zig")) orelse return error.NoSupport;
+    const support = (try create(allocator, std.testing.io, "zig")) orelse return error.NoSupport;
     defer support.dispose();
     const state = try support.getInitialState(allocator);
-    const result = try support.tokenizeEncoded(allocator, "const x = 1; // hi", true, state);
+    const result = try support.tokenizeEncoded(std.testing.io, allocator, "const x = 1; // hi", true, state);
     try std.testing.expect(result.tokens.len >= 2);
     try std.testing.expectEqual(StandardTokenType.Comment, result.tokens[result.tokens.len - 1].metadata.tokenType);
 }
@@ -398,10 +400,10 @@ test "textmate tokenizer: markdown fallback grammar tokenizes headings" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const support = (try create(allocator, "markdown")) orelse return error.NoSupport;
+    const support = (try create(allocator, std.testing.io, "markdown")) orelse return error.NoSupport;
     defer support.dispose();
     const textmate: *TextMateSupport = @ptrCast(@alignCast(support.context));
-    const result = try textmate.grammar.tokenizeLine("# Heading", null, 0);
+    const result = try textmate.grammar.tokenizeLine(std.testing.io, "# Heading", null, 0);
 
     var saw_heading = false;
     for (result.tokens) |token| {
@@ -415,14 +417,14 @@ test "textmate tokenizer: markdown fallback grammar tokenizes headings" {
 /// Whether a TextMate grammar scope is known for this language. The async
 /// background tokenizer only takes over models with a grammar; all other
 /// languages keep the synchronous default background tokenizer.
-pub fn hasGrammar(languageId: []const u8) bool {
-    return grammarScope(languageId) != null;
+pub fn hasGrammar(io: std.Io, languageId: []const u8) bool {
+    return grammarScope(io, languageId) != null;
 }
 
-pub fn ensureTokenizer(languageId: []const u8) void {
+pub fn ensureTokenizer(io: std.Io, languageId: []const u8) void {
     const registry_instance = &@import("../../tokenizationRegistry.zig").TokenizationRegistry.instance;
     if (registry_instance.get(languageId) != null) return;
-    const support = create(std.heap.page_allocator, languageId) catch return orelse return;
+    const support = create(std.heap.page_allocator, io, languageId) catch return orelse return;
     registry_instance.register(languageId, support) catch support.dispose();
 }
 

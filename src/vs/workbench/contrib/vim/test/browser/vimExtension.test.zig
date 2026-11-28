@@ -15,7 +15,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
         const TestWindow = @import("../../../../test/browser/workbenchTestServices.zig").TestWindow(terminal_window_type, factory);
         test "Vim extension: registers a key handler and edits through the host" {
             const allocator = std.testing.allocator;
-            const io = time_compat.io;
+            const io = std.testing.io;
             var tmp = std.testing.tmpDir(.{});
             defer tmp.cleanup();
             try tmp.dir.writeFile(io, .{ .sub_path = "vim.txt", .data = "hello\n" });
@@ -52,7 +52,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
         test "Vim extension: deactivation removes its key handler" {
             const allocator = std.testing.allocator;
-            const io = time_compat.io;
+            const io = std.testing.io;
             var tmp = std.testing.tmpDir(.{});
             defer tmp.cleanup();
             try tmp.dir.writeFile(io, .{ .sub_path = "vim.txt", .data = "hello\n" });
@@ -76,7 +76,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
         test "Vim: insert mode uses editor typing and completion" {
             const allocator = std.testing.allocator;
-            const io = time_compat.io;
+            const io = std.testing.io;
             var tmp = std.testing.tmpDir(.{});
             defer tmp.cleanup();
             try tmp.dir.writeFile(io, .{ .sub_path = "insert.zig", .data = "" });
@@ -116,7 +116,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(host.dispatchKey(&.{ .key = .{ .char = 'a' } }));
             const suggest = tab.controllers.?.suggest.?;
             try std.testing.expect(suggest.model.hasPendingTrigger());
-            try std.testing.expect(try suggest.onTick(time_compat.milliTimestamp() + 1000));
+            try std.testing.expect(try suggest.onTick(time_compat.milliTimestamp(std.testing.io) + 1000));
             try std.testing.expect(suggest.isOpen());
             try std.testing.expect(host.dispatchKey(&.{ .key = .tab }));
             var inserted = try tab.editor.model.getLineContent(1);
@@ -144,7 +144,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
         test "Vim extension: vim.enabled is read from user settings" {
             const allocator = std.testing.allocator;
-            const io = time_compat.io;
+            const io = std.testing.io;
             var tmp = std.testing.tmpDir(.{});
             defer tmp.cleanup();
             try tmp.dir.writeFile(io, .{ .sub_path = "vim.txt", .data = "hello\n" });

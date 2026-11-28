@@ -215,7 +215,7 @@ fn LayoutDebugSession(comptime Widget: type) type {
             errdefer arena.deinit();
             const a = arena.allocator();
             const state = try readState(a, source);
-            const first = try std.json.Stringify.valueAlloc(a, .{ .timestamp = time.milliTimestamp(), .set = state }, .{});
+            const first = try std.json.Stringify.valueAlloc(a, .{ .timestamp = time.milliTimestamp(source.impl.queue.io), .set = state }, .{});
             const contents = try std.fmt.allocPrint(a, "{s}\n", .{first});
             var random: [16]u8 = undefined;
             io.random(&random);
@@ -273,7 +273,7 @@ fn LayoutDebugSession(comptime Widget: type) type {
             const a = scratch.allocator();
             const patch = try createJsonPatch(a, self.previous, next);
             if (patch.operations.len != 0) {
-                const line = try std.json.Stringify.valueAlloc(a, .{ .timestamp = time.milliTimestamp(), .patch = patch.operations }, .{ .emit_null_optional_fields = false });
+                const line = try std.json.Stringify.valueAlloc(a, .{ .timestamp = time.milliTimestamp(source.impl.queue.io), .patch = patch.operations }, .{ .emit_null_optional_fields = false });
                 try self.input.document.appendGeneratedContents(try std.fmt.allocPrint(a, "{s}\n", .{line}));
             }
             self.previous_arena.deinit();

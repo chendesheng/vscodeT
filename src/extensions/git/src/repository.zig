@@ -413,7 +413,8 @@ pub const Repository = struct {
             self.refresh_after_status = true;
             return;
         }
-        self.status_timer.schedule(@max(time.milliTimestamp() + 1000, self.next_status_at));
+        const queue = self.status_timer.queue orelse return;
+        self.status_timer.schedule(@max(time.milliTimestamp(queue.io) + 1000, self.next_status_at));
     }
 
     pub fn attachHostService(self: *Repository, host: @import("../../../vs/workbench/services/host/browser/host.zig").IHostService) !void {
@@ -431,7 +432,8 @@ pub const Repository = struct {
         self.focused = focused;
         if (focused and self.refresh_when_focused) {
             self.refresh_when_focused = false;
-            self.status_timer.schedule(@max(time.milliTimestamp(), self.next_status_at));
+            const queue = self.status_timer.queue orelse return;
+            self.status_timer.schedule(@max(time.milliTimestamp(queue.io), self.next_status_at));
         }
     }
 
@@ -1293,9 +1295,9 @@ test "repository: automatic status publishes detached reads on the window and co
     try testing.expect(window.dispatch(due));
     try testing.expect(ticked);
     try testing.expectEqual(@as(usize, 0), provider.count());
-    const deadline = time.milliTimestamp() + 20_000;
-    while (provider.status_job != null and time.milliTimestamp() < deadline) {
-        _ = window.dispatch(time.milliTimestamp());
+    const deadline = time.milliTimestamp(std.testing.io) + 20_000;
+    while (provider.status_job != null and time.milliTimestamp(std.testing.io) < deadline) {
+        _ = window.dispatch(time.milliTimestamp(std.testing.io));
         if (provider.status_job != null) try io.sleep(.fromMilliseconds(1), .awake);
     }
     try testing.expect(provider.status_job == null);
@@ -1309,5 +1311,5 @@ test "repository: automatic status publishes detached reads on the window and co
     try testing.expect(provider.status_job != null);
     provider.cancelStatusJob();
     try testing.expect(provider.status_job == null);
-    try testing.expect(!window.dispatch(time.milliTimestamp()));
+    try testing.expect(!window.dispatch(time.milliTimestamp(std.testing.io)));
 }

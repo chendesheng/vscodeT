@@ -218,6 +218,8 @@ fn adjustMultilineSelection(
 
 pub const ModelBasedVariableResolver = struct {
     model_path: []const u8,
+    resource: ?std.Uri = null,
+    label_service: ?@import("../../../../platform/label/common/label.zig").ILabelService = null,
 
     pub fn resolve(self: *const ModelBasedVariableResolver, allocator: Allocator, variable: *const parser.Marker) !?[]u8 {
         const name = variable.name;
@@ -240,11 +242,9 @@ pub const ModelBasedVariableResolver = struct {
         } else if (std.mem.eql(u8, name, "TM_FILEPATH")) {
             return try allocator.dupe(u8, fs_path);
         } else if (std.mem.eql(u8, name, "RELATIVE_FILEPATH")) {
-            const cwd = std.Io.Dir.cwd().realPathFileAlloc(time_compat.io, ".", allocator) catch return try allocator.dupe(u8, fs_path);
-            defer allocator.free(cwd);
-            if (std.mem.startsWith(u8, fs_path, cwd)) {
-                const rest = std.mem.trimStart(u8, fs_path[cwd.len..], std.fs.path.sep_str);
-                return try allocator.dupe(u8, rest);
+            if (self.label_service) |labels| {
+                const resource = self.resource orelse std.Uri{ .scheme = "file", .path = .{ .raw = fs_path } };
+                return try labels.getUriLabel(allocator, resource, .{ .relative = true, .noPrefix = true });
             }
             return try allocator.dupe(u8, fs_path);
         }
@@ -341,8 +341,8 @@ pub const TimeBasedVariableResolver = struct {
     now_seconds: i64,
     now_millis: i64,
 
-    pub fn init() TimeBasedVariableResolver {
-        const millis = time_compat.milliTimestamp();
+    pub fn init(io: std.Io) TimeBasedVariableResolver {
+        const millis = time_compat.milliTimestamp(io);
         return .{
             .now_seconds = @divTrunc(millis, 1000),
             .now_millis = millis,
@@ -431,20 +431,21 @@ pub const WorkspaceBasedVariableResolver = struct {
 };
 
 pub const RandomBasedVariableResolver = struct {
-    pub fn resolve(_: *const RandomBasedVariableResolver, allocator: Allocator, variable: *const parser.Marker) !?[]u8 {
+    io: std.Io,
+    pub fn resolve(self: *const RandomBasedVariableResolver, allocator: Allocator, variable: *const parser.Marker) !?[]u8 {
         if (std.mem.eql(u8, variable.name, "RANDOM")) {
             var bytes: [4]u8 = undefined;
-            std.Io.random(time_compat.io, &bytes);
+            std.Io.random(self.io, &bytes);
             const value = std.mem.readInt(u32, &bytes, .little) % 1_000_000;
             return try std.fmt.allocPrint(allocator, "{d:0>6}", .{value});
         } else if (std.mem.eql(u8, variable.name, "RANDOM_HEX")) {
             var bytes: [3]u8 = undefined;
-            std.Io.random(time_compat.io, &bytes);
+            std.Io.random(self.io, &bytes);
             const value = (@as(u32, bytes[0]) << 16) | (@as(u32, bytes[1]) << 8) | bytes[2];
             return try std.fmt.allocPrint(allocator, "{x:0>6}", .{value});
         } else if (std.mem.eql(u8, variable.name, "UUID")) {
             var bytes: [16]u8 = undefined;
-            std.Io.random(time_compat.io, &bytes);
+            std.Io.random(self.io, &bytes);
             bytes[6] = (bytes[6] & 0x0f) | 0x40;
             bytes[8] = (bytes[8] & 0x3f) | 0x80;
             return try std.fmt.allocPrint(

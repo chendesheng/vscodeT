@@ -670,7 +670,7 @@ const Harness = struct {
         self.quick_model = QuickDiffModel.init(self.allocator, self.model.model, self.service.interface(), self.resolver.interface(), .{});
         try self.provider.init(self.allocator, &self.resolver, "git.primary", .primary, original);
         self.disposable = try self.service.addQuickDiffProvider(&self.provider.base);
-        const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp();
+        const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp(std.testing.io);
         self.quick_model.triggerDiff(now);
         _ = self.quick_model.runScheduledDiff(&self.worker, now + 200);
         for (0..20) |_| {

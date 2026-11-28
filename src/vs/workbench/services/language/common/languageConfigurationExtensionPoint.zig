@@ -7,7 +7,6 @@
 // deferred in docs/extensions.md.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const time_compat = @import("../../../../base/common/timeCompat.zig");
 const configuration_models = @import("../../../../platform/configuration/common/configurationModels.zig");
 const language_configuration = @import("../../../../editor/common/languages/languageConfiguration.zig");
 const LanguageConfiguration = language_configuration.LanguageConfiguration;
@@ -22,9 +21,9 @@ const RegExp = @import("../../../../../support/regexp.zig").RegExp;
 
 /// Reads `root/relative_path` as JSONC and returns a configuration whose
 /// strings are owned by `arena`.
-pub fn load(arena: Allocator, root: []const u8, relative_path: []const u8) !LanguageConfiguration {
+pub fn load(arena: Allocator, io: std.Io, root: []const u8, relative_path: []const u8) !LanguageConfiguration {
     const path = try std.fs.path.join(arena, &.{ root, relative_path });
-    const text = try std.Io.Dir.cwd().readFileAlloc(time_compat.io, path, arena, .unlimited);
+    const text = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited);
     return loadText(arena, text);
 }
 
@@ -160,7 +159,7 @@ test "language configuration extension point reads markdown-basics" {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    const config = load(arena.allocator(), "vscode/extensions/markdown-basics", "language-configuration.json") catch return error.SkipZigTest;
+    const config = load(arena.allocator(), std.testing.io, "vscode/extensions/markdown-basics", "language-configuration.json") catch return error.SkipZigTest;
     try std.testing.expect(config.comments != null);
     try std.testing.expect(config.comments.?.blockComment != null);
     try std.testing.expectEqualStrings("<!--", config.comments.?.blockComment.?[0]);
@@ -176,7 +175,7 @@ test "language configuration extension point compiles json indentation rules" {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    var config = load(arena.allocator(), "vscode/extensions/json", "language-configuration.json") catch return error.SkipZigTest;
+    var config = load(arena.allocator(), std.testing.io, "vscode/extensions/json", "language-configuration.json") catch return error.SkipZigTest;
     defer config.deinit();
 
     const rules = config.indentationRules orelse return error.MissingIndentationRules;
@@ -191,7 +190,7 @@ test "language configuration extension point reads the vendored json fallback" {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    var config = load(arena.allocator(), "src/support/languageConfigurations", "json.json") catch return error.SkipZigTest;
+    var config = load(arena.allocator(), std.testing.io, "src/support/languageConfigurations", "json.json") catch return error.SkipZigTest;
     defer config.deinit();
 
     const rules = config.indentationRules orelse return error.MissingIndentationRules;

@@ -69,6 +69,7 @@ pub const QuickDiffChange = struct {
 // The terminal equivalent of editorWorkerService.computeDiff. Workers own
 // their input and never access the editor, provider registry or decorations.
 const DiffRequest = struct {
+    io: std.Io,
     allocator: Allocator,
     arena: std.heap.ArenaAllocator,
     originals: []QuickDiff,
@@ -112,6 +113,7 @@ const DiffRequest = struct {
             self.original_lines[i] = try splitLines(arena, original);
             self.diffs[i] = provider.computeDiffFromLines(self.allocator, self.original_lines[i], modified, .{
                 .ignoreTrimWhitespace = self.ignore_trim_whitespace,
+                .io = self.io,
                 .maxComputationTimeMs = self.options.max_computation_time_ms orelse std.math.maxInt(i64),
                 .computeMoves = false,
             }) catch null;
@@ -242,7 +244,7 @@ pub const QuickDiffModelService = struct {
         entry.model.setIgnoreTrimWhitespace(self.ignore_trim_whitespace);
         try entry.model.startListening(self.resources_changed);
         try self.references.put(a, key, entry);
-        entry.model.triggerDiff(time.milliTimestamp());
+        entry.model.triggerDiff(time.milliTimestamp(self.window.io));
         return .{ .object = &entry.model, .entry = entry };
     }
 
@@ -457,7 +459,7 @@ pub const QuickDiffModel = struct {
     }
 
     fn originalContentChanged(_: @import("../../../../editor/common/textModelEvents.zig").InternalModelContentChangeEvent, self: *QuickDiffModel) !void {
-        self.triggerDiff(time.milliTimestamp());
+        self.triggerDiff(time.milliTimestamp(self.model.clockIo()));
     }
 
     fn pruneOriginalModels(self: *QuickDiffModel) void {
@@ -507,7 +509,7 @@ pub const QuickDiffModel = struct {
     }
 
     fn onResourcesChanged(_: void, self: *QuickDiffModel) !void {
-        self.triggerDiff(time.milliTimestamp());
+        self.triggerDiff(time.milliTimestamp(self.model.clockIo()));
     }
 
     fn setRepositoryResources(self: *QuickDiffModel, source: ?*Emitter(void)) !void {
@@ -515,7 +517,7 @@ pub const QuickDiffModel = struct {
         self.repository_listener = null;
         self.repository_resources = source;
         if (source) |events| self.repository_listener = try events.listen(self, onResourcesChanged);
-        self.triggerDiff(time.milliTimestamp());
+        self.triggerDiff(time.milliTimestamp(self.model.clockIo()));
     }
 
     pub fn deinit(self: *QuickDiffModel) void {
@@ -546,7 +548,7 @@ pub const QuickDiffModel = struct {
     pub fn setIgnoreTrimWhitespace(self: *QuickDiffModel, ignore: bool) void {
         if (self.ignore_trim_whitespace == ignore) return;
         self.ignore_trim_whitespace = ignore;
-        self.triggerDiff(time.milliTimestamp());
+        self.triggerDiff(time.milliTimestamp(self.model.clockIo()));
     }
 
     /// Debounced recompute trigger (upstream `ThrottledDelayer(200)`).
@@ -725,6 +727,7 @@ pub const QuickDiffModel = struct {
             snapshot.* = try a.dupe(u8, content.items);
         }
         request.* = .{
+            .io = if (self.worker) |worker| worker.io_state.io() else self.model.clockIo(),
             .allocator = self.allocator,
             .owner = self,
             .arena = arena,

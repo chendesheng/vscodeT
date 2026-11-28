@@ -129,10 +129,10 @@ fn addSnippet(arena: Allocator, items: *std.ArrayList(completion.CompletionItem)
 }
 
 test "snippet completion: scoped upstream array prefixes and multiline bodies" {
-    const io = @import("../../../../base/common/timeCompat.zig").io;
+    const io = std.testing.io;
     const root = "vscode/extensions/markdown-basics";
     std.Io.Dir.cwd().access(io, root, .{}) catch return error.SkipZigTest;
-    var catalog = try registry.scan(std.testing.allocator, &.{root});
+    var catalog = try registry.scan(std.testing.allocator, std.testing.io, &.{root});
     defer catalog.deinit();
     var provider = SnippetCompletionProvider.init(std.testing.allocator, io);
     defer provider.deinit();

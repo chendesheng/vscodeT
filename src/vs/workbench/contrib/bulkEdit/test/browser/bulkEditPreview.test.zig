@@ -138,7 +138,7 @@ test "BulkEditPreview: file changes conflict only for resources without a live m
     const Resolver = @import("../../../../services/textmodelResolver/common/textModelResolverService.zig").TextModelResolverService;
     const Queue = @import("../../../../../base/common/windowDispatch.zig").Queue;
     const MemoryProvider = @import("../../../../../platform/files/common/inMemoryFilesystemProvider.zig").InMemoryFileSystemProvider;
-    var memory = try MemoryProvider.init(a);
+    var memory = try MemoryProvider.init(a, std.testing.io);
     defer memory.deinit();
     var files = FileService.init(a);
     defer files.deinit();

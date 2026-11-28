@@ -141,8 +141,8 @@ const Contributions = struct {
 /// one-off roots. Callers that already own scanned descriptions (the
 /// workbench extension service) use `scanDescriptions` so each manifest is
 /// parsed once.
-pub fn scan(allocator: Allocator, roots: []const []const u8) !Registry {
-    const extensions = try scanner.scanExtensionsFromRoots(allocator, time_compat.io, roots, .system);
+pub fn scan(allocator: Allocator, io: std.Io, roots: []const []const u8) !Registry {
+    const extensions = try scanner.scanExtensionsFromRoots(allocator, io, roots, .system);
     defer {
         for (extensions) |*extension| extension.deinit(allocator);
         allocator.free(extensions);
@@ -150,7 +150,7 @@ pub fn scan(allocator: Allocator, roots: []const []const u8) !Registry {
     const descriptions = try allocator.alloc(*const scanner.ScannedExtension, extensions.len);
     defer allocator.free(descriptions);
     for (extensions, 0..) |*extension, index| descriptions[index] = extension;
-    return scanDescriptions(allocator, descriptions);
+    return scanDescriptions(allocator, io, descriptions);
 }
 
 /// Extracts the declarative contributions of already-scanned extensions.
@@ -159,6 +159,7 @@ pub fn scan(allocator: Allocator, roots: []const []const u8) !Registry {
 /// already filtered by the scanner.
 pub fn scanDescriptions(
     allocator: Allocator,
+    io: std.Io,
     extensions: []const *const scanner.ScannedExtension,
 ) !Registry {
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -180,7 +181,7 @@ pub fn scanDescriptions(
         .snippets = &snippets,
     };
 
-    for (extensions) |extension| try collectContributions(allocator, scratch, extension, contributions);
+    for (extensions) |extension| try collectContributions(allocator, io, scratch, extension, contributions);
 
     try scopes.resolveInjections(scratch, grammars.items);
     return .{
@@ -197,6 +198,7 @@ pub fn scanDescriptions(
 
 fn collectContributions(
     allocator: Allocator,
+    io: std.Io,
     scratch: Allocator,
     extension_description: *const scanner.ScannedExtension,
     contributions: Contributions,
@@ -234,7 +236,7 @@ fn collectContributions(
     var nls: ?std.json.ObjectMap = null;
     const nls_path = try std.fs.path.join(allocator, &.{ absolute, "package.nls.json" });
     defer allocator.free(nls_path);
-    if (std.Io.Dir.cwd().readFileAlloc(time_compat.io, nls_path, temporary, .unlimited)) |nls_text| {
+    if (std.Io.Dir.cwd().readFileAlloc(io, nls_path, temporary, .unlimited)) |nls_text| {
         if (std.json.parseFromSliceLeaky(std.json.Value, temporary, nls_text, .{})) |nls_value| {
             if (nls_value == .object) nls = nls_value.object;
         } else |_| {}
@@ -308,7 +310,7 @@ fn collectContributions(
             const id = stringField(item.object, "id") orelse continue;
             const relative = stringField(item.object, "path") orelse continue;
             const path = try std.fs.path.join(temporary, &.{ root_copy, relative });
-            const raw = std.Io.Dir.cwd().readFileAlloc(time_compat.io, path, temporary, .limited(8 * 1024 * 1024)) catch continue;
+            const raw = std.Io.Dir.cwd().readFileAlloc(io, path, temporary, .limited(8 * 1024 * 1024)) catch continue;
             const json = configuration_models.stripJsonc(temporary, raw) catch continue;
             const data = std.json.parseFromSliceLeaky(std.json.Value, scratch, json, .{ .allocate = .alloc_always }) catch continue;
             if (data == .object) try contributions.icon_themes.append(.{ .id = try scratch.dupe(u8, id), .data = data });
@@ -362,7 +364,7 @@ fn stringArray(allocator: Allocator, object: std.json.ObjectMap, name: []const u
 
 test "declarative scanner reads markdown-basics and theme-defaults" {
     const allocator = std.testing.allocator;
-    var registry = try scan(allocator, &.{
+    var registry = try scan(allocator, std.testing.io, &.{
         "vscode/extensions/markdown-basics",
         "vscode/extensions/theme-defaults",
     });
@@ -384,7 +386,7 @@ test "declarative scanner reads markdown-basics and theme-defaults" {
 
 test "declarative scanner reads a directory of bundled extensions" {
     const allocator = std.testing.allocator;
-    var registry = try scan(allocator, &.{"vscode/extensions"});
+    var registry = try scan(allocator, std.testing.io, &.{"vscode/extensions"});
     defer registry.deinit();
     if (registry.extensions.len == 0) return error.SkipZigTest;
 
@@ -406,7 +408,7 @@ test "declarative scanner reads a directory of bundled extensions" {
 
 test "declarative scanner keeps duplicate language contributions and selects the configured one" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -463,7 +465,7 @@ test "declarative scanner keeps duplicate language contributions and selects the
 
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path_len = try tmp.dir.realPath(io, &path_buffer);
-    var registry = try scan(allocator, &.{path_buffer[0..path_len]});
+    var registry = try scan(allocator, std.testing.io, &.{path_buffer[0..path_len]});
     defer registry.deinit();
 
     try std.testing.expectEqual(@as(usize, 3), registry.extensions.len);
@@ -489,8 +491,8 @@ fn writeTestManifest(tmp: *std.testing.TmpDir, io: std.Io, directory: []const u8
 
 test "declarative scanner resolves include scopes and Markdown math injections" {
     const roots = &.{ "vscode/extensions/markdown-basics", "vscode/extensions/markdown-math", "vscode/extensions/yaml" };
-    std.Io.Dir.cwd().access(time_compat.io, roots[0], .{}) catch return error.SkipZigTest;
-    var registry = try scan(std.testing.allocator, roots);
+    std.Io.Dir.cwd().access(std.testing.io, roots[0], .{}) catch return error.SkipZigTest;
+    var registry = try scan(std.testing.allocator, std.testing.io, roots);
     defer registry.deinit();
     const included = scopes.forScope(registry.grammars, "source.yaml.1.2") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(usize, 0), included.language.len);
@@ -503,9 +505,9 @@ test "declarative scanner marks user descriptions and extracts their contributio
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.createDirPath(time_compat.io, "pub.user-extension-1.0.0");
+    try tmp.dir.createDirPath(std.testing.io, "pub.user-extension-1.0.0");
     var manifest_path: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const length = try tmp.dir.realPath(time_compat.io, &manifest_path);
+    const length = try tmp.dir.realPath(std.testing.io, &manifest_path);
     const root = manifest_path[0..length];
     const extension_root = try std.fs.path.join(allocator, &.{ root, "pub.user-extension-1.0.0" });
     defer allocator.free(extension_root);
@@ -523,7 +525,7 @@ test "declarative scanner marks user descriptions and extracts their contributio
         \\}
     );
 
-    const scanned = try scanner.scanExtensionsFromRoots(allocator, time_compat.io, &.{extension_root}, .user);
+    const scanned = try scanner.scanExtensionsFromRoots(allocator, std.testing.io, &.{extension_root}, .user);
     defer {
         for (scanned) |*extension| extension.deinit(allocator);
         allocator.free(scanned);
@@ -534,7 +536,7 @@ test "declarative scanner marks user descriptions and extracts their contributio
     defer allocator.free(descriptions);
     for (scanned, 0..) |*extension, index| descriptions[index] = extension;
 
-    var registry = try scanDescriptions(allocator, descriptions);
+    var registry = try scanDescriptions(allocator, std.testing.io, descriptions);
     defer registry.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), registry.extensions.len);
@@ -548,7 +550,7 @@ test "declarative scanner marks user descriptions and extracts their contributio
 fn writeTestManifestKind(tmp: *std.testing.TmpDir, directory: []const u8, text: []const u8) !void {
     const path = try std.fs.path.join(std.testing.allocator, &.{ directory, "package.json" });
     defer std.testing.allocator.free(path);
-    var file = try tmp.dir.createFile(time_compat.io, path, .{});
-    defer file.close(time_compat.io);
-    try file.writeStreamingAll(time_compat.io, text);
+    var file = try tmp.dir.createFile(std.testing.io, path, .{});
+    defer file.close(std.testing.io);
+    try file.writeStreamingAll(std.testing.io, text);
 }

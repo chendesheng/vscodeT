@@ -297,7 +297,7 @@ const MarkerStatus = struct {
             }
         }
         self.setMessage(if (recent_no_actions and self.menu_action_count == 0) "No quick fixes available" else " ");
-        if (!recent_no_actions) self.timer.schedule(@import("../../../../base/common/timeCompat.zig").milliTimestamp() + 200);
+        if (!recent_no_actions) self.timer.schedule(@import("../../../../base/common/timeCompat.zig").milliTimestamp(services.window.io) + 200);
         self.pending = codeAction.getCodeActions(a, services.registry, participant.model, r, markerCodeActionTrigger, .None, .{ .context = self, .complete = completed }) catch |err| blk: {
             completed(self, err);
             break :blk null;

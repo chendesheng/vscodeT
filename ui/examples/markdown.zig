@@ -30,14 +30,14 @@ const Scene = struct {
     initialized: bool = false,
 };
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     const example = try markdownExample(allocator);
     defer if (example.deinit) |deinit| deinit(example.context);
-    try common.runStatic(allocator, example);
+    try common.runStatic(allocator, init.io, example);
 }
 
 pub fn markdownExample(allocator: std.mem.Allocator) !common.Example {

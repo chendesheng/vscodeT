@@ -47,6 +47,7 @@ const DropDestination = @import("../views/viewPaneContainer.zig").DropDestinatio
 const Part = @import("../../part.zig").Part;
 
 pub const SidebarPart = struct {
+    io: std.Io,
     base: Part,
     allocator: Allocator,
     view_pane_containers: std.StringHashMapUnmanaged(ContainerRegistration) = .empty,
@@ -102,9 +103,10 @@ pub const SidebarPart = struct {
     /// One-row activity bar composite bar in the header/footer.
     pub const bar_height: usize = 1;
 
-    pub fn init(allocator: Allocator) SidebarPart {
+    pub fn init(allocator: Allocator, io: std.Io) SidebarPart {
         return .{
             .base = Part.init(allocator, .sidebar, SidebarPart),
+            .io = io,
             .allocator = allocator,
             .pane = pane.PaneCompositePart.init(
                 allocator,
@@ -141,7 +143,7 @@ pub const SidebarPart = struct {
     ) !*ViewPaneContainer {
         try descriptors.registerViewContainerModel(model);
         errdefer descriptors.unregisterViewContainerModel(model);
-        const container = try ViewPaneContainer.init(self.allocator, model, panes);
+        const container = try ViewPaneContainer.init(self.allocator, self.io, model, panes);
         errdefer {
             container.deinit();
             self.allocator.destroy(container);
@@ -853,7 +855,7 @@ pub fn setHovered(part: *SidebarPart, hit: ?SidebarPart.Hit) void {
 }
 
 test "sidebarPart: width clamps to the terminal minimum" {
-    var part = SidebarPart.init(std.testing.allocator);
+    var part = SidebarPart.init(std.testing.allocator, std.testing.io);
     defer part.deinit();
 
     try part.setWidth(4);
@@ -864,7 +866,7 @@ test "sidebarPart: width clamps to the terminal minimum" {
 }
 
 test "sidebarPart: visibility, position and active pane composite" {
-    var part = SidebarPart.init(std.testing.allocator);
+    var part = SidebarPart.init(std.testing.allocator, std.testing.io);
     defer part.deinit();
 
     try part.pane.addPaneComposite(.{ .id = "explorer", .name = "Explorer", .order = 1 });
@@ -887,7 +889,7 @@ test "sidebarPart: visibility, position and active pane composite" {
 }
 
 test "sidebarPart: activity bar position drives the composite bar" {
-    var part = SidebarPart.init(std.testing.allocator);
+    var part = SidebarPart.init(std.testing.allocator, std.testing.io);
     defer part.deinit();
     try part.pane.addPaneComposite(.{ .id = "explorer", .name = "Explorer", .order = 0 });
     try part.pane.addPaneComposite(.{ .id = "search", .name = "Search", .order = 1 });
@@ -930,7 +932,7 @@ test "sidebarPart: title label, actions and hit testing" {
     var grid = try ui.CellGrid.init(allocator, 30, 3);
     defer grid.deinit();
 
-    var part = SidebarPart.init(allocator);
+    var part = SidebarPart.init(allocator, std.testing.io);
     defer part.deinit();
     try part.pane.addPaneComposite(.{ .id = "explorer", .name = "Explorer", .order = 0 });
     try part.pane.addPaneComposite(.{ .id = "search", .name = "Search", .order = 1 });
@@ -972,7 +974,7 @@ test "sidebarPart: composite bar header and footer layout" {
     var grid = try ui.CellGrid.init(allocator, 30, 3);
     defer grid.deinit();
 
-    var part = SidebarPart.init(allocator);
+    var part = SidebarPart.init(allocator, std.testing.io);
     defer part.deinit();
     try part.pane.addPaneComposite(.{ .id = "explorer", .name = "Explorer", .order = 0, .glyph = 'E' });
     try part.pane.addPaneComposite(.{ .id = "search", .name = "Search", .order = 1, .glyph = 'F' });
@@ -1016,7 +1018,7 @@ test "sidebarPart: composite bar header and footer layout" {
 
 test "sidebarPart: switching views follows the visible bar order" {
     const allocator = std.testing.allocator;
-    var part = SidebarPart.init(allocator);
+    var part = SidebarPart.init(allocator, std.testing.io);
     defer part.deinit();
     try part.pane.addPaneComposite(.{ .id = "explorer", .name = "Explorer", .order = 0 });
     try part.pane.addPaneComposite(.{ .id = "search", .name = "Search", .order = 1 });

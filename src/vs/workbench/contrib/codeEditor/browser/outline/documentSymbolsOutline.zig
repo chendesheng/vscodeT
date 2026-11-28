@@ -520,7 +520,7 @@ fn hasTag(symbol: @import("../../../../../editor/common/languages.zig").Document
 test "DocumentSymbolsOutline: tree snapshot, active element and comparator" {
     const allocator = std.testing.allocator;
     const languages = @import("../../../../../editor/common/languages.zig");
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try @import("../../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor.createFromText(
         allocator,
         io,

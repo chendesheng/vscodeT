@@ -6,6 +6,7 @@
 // updated snapshots and change keys back to the extension host.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Disposable = @import("../../../base/common/lifecycle.zig").IDisposable;
 const rpc = @import("../../services/extensions/common/rpcProtocol.zig");
 const protocol = @import("../common/extHost.protocol.zig");
 const configuration = @import("../../../platform/configuration/common/configuration.zig");
@@ -32,6 +33,7 @@ pub const MainThreadConfiguration = struct {
     service: ?configuration.IConfigurationService = null,
     workspace: ?*WorkspaceContextService = null,
     listener: ?usize = null,
+    requests: std.ArrayList(*UpdateRequest) = .empty,
 
     pub fn init(allocator: Allocator, data_host: DataHost, notify_host: NotifyHost) MainThreadConfiguration {
         return .{
@@ -56,6 +58,8 @@ pub const MainThreadConfiguration = struct {
     }
 
     pub fn deinit(self: *MainThreadConfiguration) void {
+        while (self.requests.items.len != 0) self.requests.items[self.requests.items.len - 1].dispose();
+        self.requests.deinit(self.allocator);
         if (self.listener) |id| self.service.?.on_did_change_configuration.?.unlisten(id);
 
         var iterator = self.memory.iterator();
@@ -76,12 +80,12 @@ pub const MainThreadConfiguration = struct {
         if (std.mem.eql(u8, method, "$updateConfigurationOption")) {
             const key = stringArg(args, 1) orelse return error.InvalidArguments;
             const value = valueArg(args, 2) orelse return error.InvalidArguments;
-            try self.writeConfiguration(arena, args, key, value, 3, 4);
+            _ = try self.writeConfiguration(arena, args, key, value, 3, 4, null);
             return .empty;
         }
         if (std.mem.eql(u8, method, "$removeConfigurationOption")) {
             const key = stringArg(args, 1) orelse return error.InvalidArguments;
-            try self.writeConfiguration(arena, args, key, null, 2, 3);
+            _ = try self.writeConfiguration(arena, args, key, null, 2, 3, null);
             return .empty;
         }
         if (methodKind(method) == .request) {
@@ -90,7 +94,56 @@ pub const MainThreadConfiguration = struct {
         return .empty;
     }
 
-    fn writeConfiguration(self: *MainThreadConfiguration, arena: Allocator, args: []const rpc.Arg, key: []const u8, value: ?std.json.Value, overrides_index: usize, language_index: usize) !void {
+    pub fn invokeAsync(self: *MainThreadConfiguration, method: []const u8, args: []const rpc.Arg, arena: Allocator) !rpc.HandlerReply {
+        const update = std.mem.eql(u8, method, "$updateConfigurationOption");
+        if (!update and !std.mem.eql(u8, method, "$removeConfigurationOption")) return self.invoke(method, args, arena);
+        const key = stringArg(args, 1) orelse return error.InvalidArguments;
+        const value: ?std.json.Value = if (update) valueArg(args, 2) orelse return error.InvalidArguments else null;
+        const request = try self.allocator.create(UpdateRequest);
+        errdefer self.allocator.destroy(request);
+        request.* = .{ .owner = self };
+        try self.requests.append(self.allocator, request);
+        errdefer _ = self.requests.pop();
+        request.pending = try self.writeConfiguration(arena, args, key, value, if (update) 3 else 2, if (update) 4 else 3, .{ .context = request, .complete = UpdateRequest.ready });
+        return .{ .deferred = .{ .context = request, .start = UpdateRequest.start } };
+    }
+
+    const UpdateRequest = struct {
+        owner: *MainThreadConfiguration,
+        pending: ?Disposable = null,
+        channel: ?*rpc.RpcProtocol = null,
+        id: u32 = 0,
+        result: ?anyerror!void = null,
+
+        fn start(context: *anyopaque, channel: *rpc.RpcProtocol, id: u32) void {
+            const self: *UpdateRequest = @ptrCast(@alignCast(context));
+            self.channel = channel;
+            self.id = id;
+            if (self.result != null) self.reply();
+        }
+
+        fn ready(context: *anyopaque, result: anyerror!void) void {
+            const self: *UpdateRequest = @ptrCast(@alignCast(context));
+            self.pending = null;
+            self.result = result;
+            if (self.channel != null) self.reply();
+        }
+
+        fn reply(self: *UpdateRequest) void {
+            const result = self.result.?;
+            self.channel.?.sendReply(self.id, if (result) |_| .empty else |err| .{ .err = .{ .name = @errorName(err), .message = @errorName(err) } });
+            self.dispose();
+        }
+
+        fn dispose(self: *UpdateRequest) void {
+            if (self.pending) |pending| pending.dispose();
+            const owner = self.owner;
+            if (std.mem.indexOfScalar(*UpdateRequest, owner.requests.items, self)) |index| _ = owner.requests.swapRemove(index);
+            owner.allocator.destroy(self);
+        }
+    };
+
+    fn writeConfiguration(self: *MainThreadConfiguration, arena: Allocator, args: []const rpc.Arg, key: []const u8, value: ?std.json.Value, overrides_index: usize, language_index: usize, listener: ?configuration.UpdateListener) !?Disposable {
         var overrides: configuration.Overrides = .{};
         if (valueArg(args, overrides_index)) |candidate| if (candidate == .object) {
             if (candidate.object.get("overrideIdentifier")) |identifier| if (identifier == .string) {
@@ -113,10 +166,14 @@ pub const MainThreadConfiguration = struct {
                 self.allocator.free(entry.key);
                 self.allocator.free(entry.value);
             }
-            return self.push(arena, .{ .source = .MEMORY, .keys = &.{key} });
+            const result = self.push(arena, .{ .source = .MEMORY, .keys = &.{key} });
+            if (listener) |done| done.complete(done.context, result) else try result;
+            return null;
         }
         const service = self.service orelse return error.ConfigurationReadOnly;
+        if (listener) |done| return service.requestUpdateResourceValue(key, value, overrides, target, done);
         try service.updateResourceValue(key, value, overrides, target);
+        return null;
     }
 
     fn deriveTarget(self: *MainThreadConfiguration, key: []const u8, overrides: configuration.Overrides) configuration.ConfigurationTarget {

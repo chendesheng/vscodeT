@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build wasm demo
+    name: Build full workbench demo
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -45,21 +45,18 @@ jobs:
           key: iosevka-term-nerd-font-3.5.1
       - name: Fetch IosevkaTerm Nerd Font
         run: scripts/fetch-iosevka-nerd-font.sh "$PWD/.cache-nerd-font"
-      - name: Build
-        run: zig build wasm -Doptimize=ReleaseSmall -Dwasm-only=true
-      - name: Smoke test
-        run: node web/smoke.mjs zig-out/web/editor.wasm
       - name: Build aarch64 binary
         run: |
           zig build -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSmall -Donig-static=true
       - name: Prepare unkernel demo
         run: |
           set -euo pipefail
-          demo=zig-out/web/unkernel
-          mkdir -p "$demo/vendor"
-          cp web/unkernel/index.html web/unkernel/main.js web/unkernel/style.css "$demo/"
+          demo=zig-out/pages
+          mkdir -p "$demo/vendor" "$demo/unkernel"
+          cp web/index.html web/main.js web/style.css web/favicon.svg web/.nojekyll "$demo/"
+          cp web/unkernel/index.html "$demo/unkernel/"
           cp zig-out/bin/minecode "$demo/minecode"
-          cp -R zig-out/web/vendor/ghostty-web "$demo/vendor/"
+          node web/fetch-ghostty-web.mjs "$demo/vendor/ghostty-web"
           cp -R "$PWD/.cache-nerd-font" "$demo/fonts"
           npm install --prefix /tmp/unkernel-sdk --no-save --ignore-scripts unkernel@0.2.0-261123-8f039c5
           mkdir -p "$demo/vendor/unkernel"
@@ -73,7 +70,7 @@ jobs:
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: zig-out/web
+          path: zig-out/pages
 
   deploy:
     name: Deploy

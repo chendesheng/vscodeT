@@ -28,7 +28,7 @@ const Harness = struct {
     fn init() !*Harness {
         const self = try a.create(Harness);
         errdefer a.destroy(self);
-        self.* = .{ .registry = FileService.init(a), .memory = try Memory.init(a), .registration = undefined, .working_service = undefined, .model_manager = undefined, .queue = .{ .io = std.testing.io }, .resolver = undefined };
+        self.* = .{ .registry = FileService.init(a), .memory = try Memory.init(a, std.testing.io), .registration = undefined, .working_service = undefined, .model_manager = undefined, .queue = .{ .io = std.testing.io }, .resolver = undefined };
         errdefer self.registry.deinit();
         errdefer self.memory.deinit();
         const file = self.registry.interface();

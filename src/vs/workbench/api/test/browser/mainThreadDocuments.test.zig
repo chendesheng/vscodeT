@@ -27,7 +27,7 @@ test "BoundModelReferenceCollection: max age" {
     var release: Release = .{ .disposed = &disposed, .id = 0 };
     defer collection.deinit();
     try collection.add(try std.Uri.parse("test://farboo"), release.reference(), 0);
-    _ = window.dispatch(time.milliTimestamp() + 30);
+    _ = window.dispatch(time.milliTimestamp(std.testing.io) + 30);
     try std.testing.expectEqualSlices(usize, &.{0}, disposed.items);
 }
 

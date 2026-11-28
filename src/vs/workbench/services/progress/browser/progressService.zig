@@ -56,7 +56,7 @@ pub const ProgressService = struct {
             .location = options.location,
             .cancel = if (options.cancellable) cancel else null,
             .urgent = options.urgent,
-            .started = time.milliTimestamp(),
+            .started = time.milliTimestamp(self.window.io),
         };
         errdefer task.arena.deinit();
         const a = task.arena.allocator();
@@ -197,7 +197,7 @@ pub const ProgressService = struct {
                     handle.progress.total(100);
                     handle.progress.worked(value);
                 } else handle.progress.infinite();
-            } else if (self.location == .Notification or time.milliTimestamp() >= self.started + 150) self.showNotification();
+            } else if (self.location == .Notification or time.milliTimestamp(self.service.window.io) >= self.started + 150) self.showNotification();
         }
 
         pub fn end(self: *Task) void {
@@ -206,7 +206,7 @@ pub const ProgressService = struct {
             self.timer.schedule(null);
             // Delayed window progress must not flash for a short operation.
             // Notification progress without a delay remains shown for 800ms.
-            if (self.location == .Notification and self.notification != null and time.milliTimestamp() < self.started + 800) {
+            if (self.location == .Notification and self.notification != null and time.milliTimestamp(self.service.window.io) < self.started + 800) {
                 self.timer.schedule(self.started + 800);
                 return;
             }

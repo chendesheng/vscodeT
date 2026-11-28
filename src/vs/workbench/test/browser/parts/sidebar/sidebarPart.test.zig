@@ -11,7 +11,7 @@ const SidebarPart = sidebar_mod.SidebarPart;
 const Position = sidebar_mod.Position;
 
 test "SidebarPart: width clamps to the terminal minimum" {
-    var part = SidebarPart.init(std.testing.allocator);
+    var part = SidebarPart.init(std.testing.allocator, std.testing.io);
     defer part.deinit();
 
     try part.setWidth(4);
@@ -21,7 +21,7 @@ test "SidebarPart: width clamps to the terminal minimum" {
 }
 
 test "SidebarPart: visibility, position and active pane composite" {
-    var part = SidebarPart.init(std.testing.allocator);
+    var part = SidebarPart.init(std.testing.allocator, std.testing.io);
     defer part.deinit();
 
     try part.pane.addPaneComposite(.{ .id = "explorer", .name = "Explorer", .order = 1 });
@@ -43,7 +43,7 @@ test "SidebarPart: visibility, position and active pane composite" {
 }
 
 test "PaneCompositePart: visible ids follow descriptor order" {
-    var part = sidebar_mod.SidebarPart.init(std.testing.allocator);
+    var part = sidebar_mod.SidebarPart.init(std.testing.allocator, std.testing.io);
     defer part.deinit();
 
     try part.pane.addPaneComposite(.{ .id = "search", .name = "Search", .order = 2 });

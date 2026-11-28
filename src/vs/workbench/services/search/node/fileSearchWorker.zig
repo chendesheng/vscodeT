@@ -306,9 +306,9 @@ pub const FileSearchWorker = struct {
         defer self.mutex.unlock(self.io);
         if (self.result != null) return true;
         if (timeout_ms <= 0) return false;
-        const deadline = time_compat.milliTimestamp() + timeout_ms;
+        const deadline = time_compat.milliTimestamp(self.io) + timeout_ms;
         while (self.result == null) {
-            const now = time_compat.milliTimestamp();
+            const now = time_compat.milliTimestamp(self.io);
             if (now >= deadline) break;
             const remaining = @max(deadline - now, 1);
             self.condition.waitTimeout(self.io, &self.mutex, .{

@@ -1,6 +1,6 @@
 {
-  "name": "minecode-wasm-demo",
+  "name": "minecode-unkernel-demo",
   "private": true,
   "type": "module",
-  "description": "Static browser demo for the minecode editor (wasm + ghostty-web)"
+  "description": "Native minecode workbench running in unkernel with ghostty-web"
 }

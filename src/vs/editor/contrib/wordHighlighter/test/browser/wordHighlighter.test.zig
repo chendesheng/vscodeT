@@ -364,7 +364,7 @@ const Harness = struct {
         const self = try allocator.create(Harness);
         errdefer allocator.destroy(self);
 
-        const io = std.Io.Threaded.global_single_threaded.io();
+        const io = std.testing.io;
         const editor = try Editor.createFromText(allocator, io, text, "test.txt", 80, 6);
         errdefer {
             editor.deinit();
@@ -592,7 +592,7 @@ fn countModelHighlights(model: *TextModel) !usize {
 test "WordHighlighterContribution: retains model decorations only while another instantiated highlighter shares the resource" {
     const a = std.testing.allocator;
     defer wordCharacterClassifier.freeWordClassifierCache();
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     for ([_]bool{ false, true }) |second_has_highlighter| {
         var registry: EditorRegistry = .{};
         defer registry.deinit();
@@ -631,7 +631,7 @@ test "WordHighlighterContribution: retains model decorations only while another 
 
 test "WordHighlighterContribution: single and multiple model providers run against registered editors and live mode changes" {
     const a = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     defer wordCharacterClassifier.freeWordClassifierCache();
     var registry: EditorRegistry = .{};
     defer registry.deinit();
@@ -687,7 +687,7 @@ test "WordHighlighterContribution: single and multiple model providers run again
 
 test "WordHighlighterContribution: cancels in-flight merged results on setting and model changes" {
     const a = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     defer wordCharacterClassifier.freeWordClassifierCache();
     var registry: EditorRegistry = .{};
     defer registry.deinit();

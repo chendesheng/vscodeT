@@ -279,7 +279,7 @@ const Support = struct {
     fn getInitialState(_: *anyopaque, _: Allocator) anyerror!IState {
         return NullState;
     }
-    fn tokenizeEncoded(_: *anyopaque, allocator: Allocator, line: []const u8, _: bool, state: IState) anyerror!EncodedTokenizationResult {
+    fn tokenizeEncoded(_: *anyopaque, _: std.Io, allocator: Allocator, line: []const u8, _: bool, state: IState) anyerror!EncodedTokenizationResult {
         const tokens = try allocator.alloc(TokenPacked, 1);
         var metadata = TokenMetadata.default;
         metadata.balancedBrackets = true;

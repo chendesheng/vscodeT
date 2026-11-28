@@ -869,7 +869,7 @@ test "margin: primary marker wins over secondary on the same line" {
 
 test "margin: theme colors the line numbers and the active line" {
     const allocator = testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 20, 4);
     defer {
         editor.deinit();
@@ -916,7 +916,7 @@ test "margin: theme colors the line numbers and the active line" {
 
 test "margin: mouseover fold icons hide expanded and keep collapsed visible" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(
         allocator,
         io,
@@ -1021,7 +1021,7 @@ test "margin: mouseover fold icons hide expanded and keep collapsed visible" {
 
 test "margin: paints the line-number map, blank filler and the quick-diff cell" {
     const allocator = testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "a\nb\nc", "test.txt", 40, 5);
     defer {
         editor.deinit();
@@ -1089,7 +1089,7 @@ test "margin: paints the line-number map, blank filler and the quick-diff cell" 
 
 test "margin: without a map the model line number is painted" {
     const allocator = testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "a", "test.txt", 20, 3);
     defer {
         editor.deinit();

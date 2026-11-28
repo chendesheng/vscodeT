@@ -39,7 +39,7 @@ fn countChange(changes: []const files.FileChange, counter: *ChangeCounter) !void
 
 test "UniversalWatcher: recursive and non-recursive inotify events" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -87,7 +87,7 @@ test "UniversalWatcher: recursive and non-recursive inotify events" {
 }
 
 fn common_now() i64 {
-    return std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).toMilliseconds();
+    return std.Io.Timestamp.now(std.testing.io, .real).toMilliseconds();
 }
 comptime {
     _ = @import("./vs/platform/files/node/watcher/watcherStats.zig");

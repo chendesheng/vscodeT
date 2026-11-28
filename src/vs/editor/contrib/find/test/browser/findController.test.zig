@@ -23,7 +23,7 @@ pub fn Tests(comptime ViewType: type) type {
         const FindWidgetTheme = @import("../../browser/findWidget.zig").Theme;
 
         fn createEditor(allocator: Allocator) !*Editor {
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             return Editor.createFromText(allocator, io, "alpha\nbeta alpha\ngamma", "test.txt", 60, 8);
         }
 
@@ -164,7 +164,7 @@ pub fn Tests(comptime ViewType: type) type {
             const allocator = std.testing.allocator;
             const editor = try Editor.createFromText(
                 allocator,
-                std.Io.Threaded.global_single_threaded.io(),
+                std.testing.io,
                 "alpha\nbeta alpha\ngamma",
                 "test.txt",
                 100,

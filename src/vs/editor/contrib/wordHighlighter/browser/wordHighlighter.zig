@@ -525,7 +525,7 @@ pub const WordHighlighter = struct {
             .onFocusChanged = onFocusChanged,
         });
         editor.addViewEventHandler(&self.handler);
-        if (self.text_focused) self.run(timeNow());
+        if (self.text_focused) self.run(self.timeNow());
         return self;
     }
 
@@ -569,7 +569,7 @@ pub const WordHighlighter = struct {
             _ = self.stopAll();
             return;
         }
-        self.run(timeNow());
+        self.run(self.timeNow());
     }
 
     fn onFocusChanged(context: *anyopaque, event: *const view_events.ViewFocusChangedEvent) bool {
@@ -586,7 +586,7 @@ pub const WordHighlighter = struct {
             }
             return self.stopAll();
         }
-        if (self.pending_deadline_ms == null and self.pending_request == null) self.run(timeNow());
+        if (self.pending_deadline_ms == null and self.pending_request == null) self.run(self.timeNow());
         return false;
     }
 
@@ -641,7 +641,7 @@ pub const WordHighlighter = struct {
             _ = self.stopAll();
             return;
         };
-        const now = timeNow();
+        const now = self.timeNow();
         self.scheduleQuery(position, now, 0, 0, null);
         _ = self.onTick(now);
     }
@@ -649,7 +649,7 @@ pub const WordHighlighter = struct {
     pub fn restore(self: *WordHighlighter, delay_ms: u64) void {
         if (self.settings.occurrences_highlight == .off) return;
         const position = self.validPosition() orelse return;
-        self.scheduleQuery(position, timeNow(), delay_ms, self.settings.run_delay_ms, null);
+        self.scheduleQuery(position, self.timeNow(), delay_ms, self.settings.run_delay_ms, null);
     }
 
     pub fn stopHighlighting(self: *WordHighlighter) void {
@@ -678,8 +678,8 @@ pub const WordHighlighter = struct {
         }
     }
 
-    fn timeNow() i64 {
-        return @import("../../../../base/common/timeCompat.zig").milliTimestamp();
+    fn timeNow(self: *const WordHighlighter) i64 {
+        return @import("../../../../base/common/timeCompat.zig").milliTimestamp(self.editor.clockIo());
     }
 
     fn containsPosition(self: *const WordHighlighter, position: Position) bool {
@@ -741,7 +741,7 @@ pub const WordHighlighter = struct {
         const self: *WordHighlighter = @ptrCast(@alignCast(context));
         self.pending_request = null;
         self.releasePendingDocuments();
-        if ((self.computing_now orelse timeNow()) < self.minimum_render_time) {
+        if ((self.computing_now orelse self.timeNow()) < self.minimum_render_time) {
             self.pending_result = result;
             self.setDeadline(self.minimum_render_time);
         } else {
@@ -946,7 +946,7 @@ pub const WordHighlighterContribution = struct {
         self.host = host;
         if (self.word_highlighter) |highlighter| {
             highlighter.text_focused = host.has_text_focus(host.context);
-            if (highlighter.text_focused) highlighter.run(WordHighlighter.timeNow());
+            if (highlighter.text_focused) highlighter.run(highlighter.timeNow());
         }
     }
 
@@ -969,7 +969,7 @@ pub const WordHighlighterContribution = struct {
         if (highlighter.session == session) return;
         if (highlighter.session) |old| old.detach(highlighter);
         highlighter.session = session;
-        if (highlighter.text_focused) highlighter.run(WordHighlighter.timeNow());
+        if (highlighter.text_focused) highlighter.run(highlighter.timeNow());
     }
 
     pub fn applyConfiguration(self: *WordHighlighterContribution, settings: WordHighlighterSettings) void {
@@ -979,7 +979,7 @@ pub const WordHighlighterContribution = struct {
         highlighter.settings = settings;
         if (previous.merge_providers != settings.merge_providers) {
             _ = highlighter.stopAll();
-            if (settings.occurrences_highlight != .off) highlighter.run(WordHighlighter.timeNow());
+            if (settings.occurrences_highlight != .off) highlighter.run(highlighter.timeNow());
         } else if (previous.occurrences_highlight != settings.occurrences_highlight) {
             switch (settings.occurrences_highlight) {
                 .off => _ = highlighter.stopAll(),
@@ -991,9 +991,9 @@ pub const WordHighlighterContribution = struct {
                 },
                 .multi_file => if (highlighter.session) |session| {
                     if (session.query) |query| {
-                        if (query.source == highlighter) highlighter.scheduleQuery(query.position, WordHighlighter.timeNow(), settings.delay_ms, settings.run_delay_ms, highlighter.model);
+                        if (query.source == highlighter) highlighter.scheduleQuery(query.position, highlighter.timeNow(), settings.delay_ms, settings.run_delay_ms, highlighter.model);
                     }
-                } else highlighter.run(WordHighlighter.timeNow()),
+                } else highlighter.run(highlighter.timeNow()),
             }
         }
     }

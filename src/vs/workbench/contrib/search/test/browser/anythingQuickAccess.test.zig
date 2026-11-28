@@ -85,7 +85,7 @@ test "anythingQuickAccess: recent files on empty filter and file results while t
         if (provider.interface().dispose) |dispose| dispose(provider);
     }
 
-    var picker = QuickPick.init(std.testing.allocator);
+    var picker = QuickPick.init(std.testing.allocator, std.testing.io);
     defer picker.deinit();
     var source = try cancellation.CancellationTokenSource.init(std.testing.allocator);
     defer source.deinit();

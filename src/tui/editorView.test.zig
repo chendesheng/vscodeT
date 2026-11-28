@@ -10,7 +10,7 @@ const View = @import("editorView.zig").View;
 
 test "Editor: create, edit, undo, and render" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "hello world\nsecond line", "test.txt", 24, 6);
     defer {
@@ -48,7 +48,7 @@ test "Editor: create, edit, undo, and render" {
 
 test "Editor: tokenized Zig lines render through the wrapped view" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "// hi\nconst x = 1;\n", "test.zig", 40, 8);
     defer {
@@ -71,7 +71,7 @@ test "Editor: tokenized Zig lines render through the wrapped view" {
 
 test "Editor: syntax stays visible after inserting blank lines" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(
         allocator,
@@ -102,7 +102,7 @@ test "Editor: syntax stays visible after inserting blank lines" {
 
 test "Editor: typing a function keeps following comments highlighted" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(
         allocator,
@@ -134,7 +134,7 @@ test "Editor: typing a function keeps following comments highlighted" {
 
 test "Editor: reserving the scrollbar avoids a second wrapping pass" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromTextWithOptions(
         allocator,
         io,
@@ -161,11 +161,11 @@ test "Editor: reserving the scrollbar avoids a second wrapping pass" {
 
 test "syntax theme: editor paints the dark+ colors" {
     var theme: SyntaxTheme = undefined;
-    try theme.init(std.testing.allocator);
+    try theme.init(std.testing.allocator, std.testing.io);
     defer theme.deinit();
 
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "// hi\nconst x = 1;\n", "test.zig", 40, 8);
     defer {
         editor.deinit();

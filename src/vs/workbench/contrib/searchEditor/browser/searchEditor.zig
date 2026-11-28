@@ -26,6 +26,7 @@ pub const Config = struct {
 };
 
 pub const SearchEditor = struct {
+    io: std.Io,
     allocator: Allocator,
     form: *widget.SearchWidget,
     model: *SearchModel,
@@ -39,14 +40,14 @@ pub const SearchEditor = struct {
     files: []const serialization.FileLocation = &.{},
     last_result_click: ?struct { x: usize, y: usize, at: i64 } = null,
 
-    pub fn init(allocator: Allocator, service: search.ISearchService, config: Config, configuration: *ConfigurationService) !*SearchEditor {
+    pub fn init(allocator: Allocator, io: std.Io, service: search.ISearchService, config: Config, configuration: *ConfigurationService) !*SearchEditor {
         const self = try allocator.create(SearchEditor);
         errdefer allocator.destroy(self);
         const form = try widget.SearchWidget.init(allocator);
         errdefer form.deinit();
-        const model = try SearchModel.init(allocator, service);
+        const model = try SearchModel.init(allocator, io, service);
         errdefer model.deinit();
-        self.* = .{ .allocator = allocator, .form = form, .model = model, .on_did_change_query_focus = .init(allocator) };
+        self.* = .{ .allocator = allocator, .io = io, .form = form, .model = model, .on_did_change_query_focus = .init(allocator) };
         errdefer self.on_did_change_query_focus.deinit();
 
         form.editor_mode = true;
@@ -97,7 +98,7 @@ pub const SearchEditor = struct {
 
     pub fn triggerSearch(self: *SearchEditor, delay_ms: i64, reset_cursor: bool) void {
         _ = self.model.cancelSearch();
-        self.pending_at = time.milliTimestamp() + delay_ms;
+        self.pending_at = time.milliTimestamp(self.io) + delay_ms;
         self.model.delivery.timer.schedule(self.pending_at);
         self.reset_cursor = reset_cursor;
     }

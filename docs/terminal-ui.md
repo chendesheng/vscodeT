@@ -1977,11 +1977,13 @@ The optional JSON language server posts transport readiness to the same queue
 and uses deferred completion and a cancellable formatting fiber. The native
 extension-host executable no longer recursively pumps synchronous RPCs;
 standalone harnesses retain compatibility entry points. This migration covers
-window-owned asynchronous jobs and RPC response waits. Outbound transport
-frame writes and unrelated synchronous native commands, such as the Git CLI
-command adapters, are not converted into asynchronous producer queues by
-this change. The local extension-host transport now uses Windows named pipes
-or Unix domain sockets, independently of the window executor.
+window-owned asynchronous jobs and RPC response waits. The extension-host and
+JSON language-client transports now enqueue owned frames in an ordered
+ProtocolWriter; a detached writer thread drains the queue without blocking
+the window. Its error wakes the window's existing EOF delivery, and shutdown
+interrupts and joins pending transport I/O after a bounded best-effort flush.
+The local extension-host transport uses Windows named pipes or Unix domain
+sockets, independently of the window executor.
 
 `Workbench.async_io` is now `WindowIo`. Its existing service-owned jobs keep
 their completion/cancellation contracts, but execute the continuation on the
@@ -2036,10 +2038,23 @@ event loop. Clean-editor external changes use `TextFileService.resolve` on
 the worker and `applyReloadedContent` on window delivery. The tab is resolved by
 path again at completion, so closing it during the read is safe.
 
-Known boundaries: provider methods remain synchronous and are only called from
-the TUI thread today; save/close/quit keeps a synchronous write pipeline;
-startup workspace/theme/extension scans happen before the first frame. These
-are listed in the README as remaining async-port work.
+Native path-based disk-provider operations invoked by a dispatched
+`WindowIo` fiber await detached disk work. File-provider events remain
+window-owned, and recursive file operations take independent directory-name
+snapshots before awaiting child operations. The extension filesystem RPC actor
+owns requests until their deferred replies, and bulk file edits retain their
+request/undo group until the file-operation events complete. Settings edits
+use a service-owned serialized queue and commit the configuration model on
+the window after writing and rereading the settings. External URL requests
+delegate the opener subprocess to a worker and join pending work on disposal.
+
+Known remaining boundaries: synchronous provider calls from non-fiber
+callers (including legacy fd operations and file-operation undo/redo), initial
+workspace/theme/extension scans, extension-host startup/handshake and local
+file opens, and foreground lazy TextMate/language-configuration asset loading.
+Those are distinct from the deliberately threaded worker backends. The latter
+asset readers now receive explicit host I/O, but the upstream asynchronous
+language activation and grammar-loading lifecycle is not yet fully ported.
 
 ### 8.2 Source Control, quick diff and diff editor
 

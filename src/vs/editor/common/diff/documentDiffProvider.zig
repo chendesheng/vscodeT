@@ -160,6 +160,7 @@ pub const LineDiffProvider = struct {
         };
         const result = try computer.computeDiff(allocator, original, modified, .{
             .ignoreTrimWhitespace = options.ignoreTrimWhitespace,
+            .io = options.io,
             .maxComputationTimeMs = options.maxComputationTimeMs,
             .computeMoves = options.computeMoves,
             .extendToSubwords = options.extendToSubwords,
@@ -222,6 +223,7 @@ test "LineDiffProvider: identical, insert, delete and modify" {
     var provider = LineDiffProvider.init(.advanced);
     const options = IDocumentDiffProviderOptions{
         .ignoreTrimWhitespace = false,
+        .io = std.testing.io,
         .maxComputationTimeMs = 0,
         .computeMoves = false,
     };
@@ -251,6 +253,7 @@ test "LineDiffProvider: package algorithms fall back to advanced" {
     try std.testing.expect(provider.fell_back);
     var diff = try provider.computeDiffFromLines(allocator, &.{"a"}, &.{ "a", "b" }, .{
         .ignoreTrimWhitespace = false,
+        .io = std.testing.io,
         .maxComputationTimeMs = 0,
         .computeMoves = false,
     });
@@ -261,6 +264,7 @@ test "LineDiffProvider: package algorithms fall back to advanced" {
     try std.testing.expect(!legacy.fell_back);
     var legacy_diff = try legacy.computeDiffFromLines(allocator, &.{"a"}, &.{"b"}, .{
         .ignoreTrimWhitespace = false,
+        .io = std.testing.io,
         .maxComputationTimeMs = 0,
         .computeMoves = false,
     });

@@ -44,7 +44,7 @@ fn renderedSignature(allocator: std.mem.Allocator, host: *TerminalViewHost) ![]u
 
 test "TokenizationUndo: grammar tokens survive edit and undo" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const source = "const x = `${testWebLocation}`;";
     const editor = try Editor.createFromText(allocator, io, source, "token-undo.ts", 80, 8);
     defer {
@@ -66,7 +66,7 @@ test "TokenizationUndo: grammar tokens survive edit and undo" {
 
 test "TokenizationUndo: rendered token colors survive edit and undo" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const source = "const x = `${testWebLocation}`;";
     const editor = try Editor.createFromText(allocator, io, source, "token-undo-view.ts", 80, 8);
     defer {

@@ -12,7 +12,7 @@ const TestWindow = @import("../../../../test/browser/workbenchTestServices.zig")
 pub fn Tests(comptime Window: type, comptime factory: @import("../../../../browser/parts/editor/editorPane.zig").EditorViewFactory) type {
     return struct {
         test "ViewsService: open and close a view body independently of the container" {
-            const window = try TestWindow(Window, factory).init(std.testing.allocator, std.Io.Threaded.global_single_threaded.io(), &.{}, 60, 12);
+            const window = try TestWindow(Window, factory).init(std.testing.allocator, std.testing.io, &.{}, 60, 12);
             defer window.deinit();
             const service = window.workbench.views_api;
             try std.testing.expect(!service.isViewVisible(OutlinePane.ID));

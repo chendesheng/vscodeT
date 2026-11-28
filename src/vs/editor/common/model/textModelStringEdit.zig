@@ -185,12 +185,12 @@ test "offsetEditToEditOperations and offsetEditFromLineRangeMapping" {
     };
 
     var original_reader = std.Io.Reader.fixed("hello\nworld");
-    const original = try TextModel.init(allocator, &original_reader, "", creation_options, null, &undo_redo, &language_service, &language_configuration_service);
+    const original = try TextModel.init(allocator, std.testing.io, &original_reader, "", creation_options, null, &undo_redo, &language_service, &language_configuration_service);
     defer allocator.destroy(original);
     defer original.deinit();
 
     var modified_reader = std.Io.Reader.fixed("hello!\nworld");
-    const modified = try TextModel.init(allocator, &modified_reader, "", creation_options, null, &undo_redo, &language_service, &language_configuration_service);
+    const modified = try TextModel.init(allocator, std.testing.io, &modified_reader, "", creation_options, null, &undo_redo, &language_service, &language_configuration_service);
     defer allocator.destroy(modified);
     defer modified.deinit();
 

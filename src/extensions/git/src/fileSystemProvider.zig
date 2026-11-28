@@ -50,7 +50,8 @@ pub const GitFileSystemProvider = struct {
 
         fn changed(_: void, self: *RepositoryBinding) !void {
             try self.owner.changed_roots.put(self.owner.allocator, self.repository, {});
-            self.owner.change_deadline.schedule(time.milliTimestamp() + 1100);
+            const queue = self.owner.change_deadline.queue orelse return;
+            self.owner.change_deadline.schedule(time.milliTimestamp(queue.io) + 1100);
         }
     };
 
@@ -91,7 +92,7 @@ pub const GitFileSystemProvider = struct {
     const five_minutes = 5 * 60 * 1000;
 
     pub fn init(allocator: Allocator, model: *Model, io: std.Io) GitFileSystemProvider {
-        return .{ .allocator = allocator, .model = model, .io = io, .mtime = time.milliTimestamp() };
+        return .{ .allocator = allocator, .model = model, .io = io, .mtime = time.milliTimestamp(io) };
     }
 
     pub fn register(self: *GitFileSystemProvider, service: files.IFileService, open_documents: OpenDocuments) !void {
@@ -106,7 +107,7 @@ pub const GitFileSystemProvider = struct {
             self.cleanup_deadline = .{ .queue = window, .context = self, .run = cleanup };
             self.focused = host.hasFocus();
             self.focus_listener = try host.on_did_change_focus.listenDisposable(self, onFocusChanged);
-            self.cleanup_deadline.schedule(time.milliTimestamp() + five_minutes);
+            self.cleanup_deadline.schedule(time.milliTimestamp(window.io) + five_minutes);
         }
         const binding = try self.allocator.create(RepositoryBinding);
         binding.* = .{ .owner = self, .repository = repository };
@@ -165,13 +166,13 @@ pub const GitFileSystemProvider = struct {
         const key = try uri_util.encodedResource(a, resource);
         errdefer a.free(key);
         if (self.cache.getPtr(key)) |row| {
-            row.timestamp = time.milliTimestamp();
+            row.timestamp = time.milliTimestamp(self.io);
             a.free(key);
             return;
         }
         const owned = try a.dupe(u8, path);
         errdefer a.free(owned);
-        try self.cache.put(a, key, .{ .path = owned, .timestamp = time.milliTimestamp() });
+        try self.cache.put(a, key, .{ .path = owned, .timestamp = time.milliTimestamp(self.io) });
     }
 
     fn cleanup(context: *anyopaque, now: i64, _: bool) bool {
@@ -202,7 +203,7 @@ pub const GitFileSystemProvider = struct {
         const uri = @import("uri.zig");
         const ordinary = try uri.toGitUri(a, path, "~");
         const quick = try uri.toGitUriWithOptions(a, path, "", .{ .replace_file_extension = true });
-        self.mtime = time.milliTimestamp();
+        self.mtime = time.milliTimestamp(self.io);
         self.emit(&.{
             .{ .type = .UPDATED, .resource = try uri_util.encodedResource(a, ordinary) },
             .{ .type = .UPDATED, .resource = try uri_util.encodedResource(a, quick) },
@@ -234,7 +235,7 @@ pub const GitFileSystemProvider = struct {
             changes.append(self.allocator, .{ .type = .UPDATED, .resource = entry.key_ptr.* }) catch return false;
         }
         if (changes.items.len == 0) return false;
-        self.mtime = time.milliTimestamp();
+        self.mtime = time.milliTimestamp(self.io);
         self.emit(changes.items);
         return true;
     }

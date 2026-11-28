@@ -170,7 +170,7 @@ pub const ModelUndoRedoStore = struct {
         const key = try uri_util.resourceKey(arena.allocator(), uri);
         try self.disposed_models.ensureUnusedCapacity(self.allocator, 1);
         if (self.removeDisposedModel(key)) |old| old.deinit(self.allocator);
-        record.* = .{ .arena = arena, .key = key, .uri = owned_uri, .initial_snapshot = model.getInitialUndoRedoSnapshot(), .time = time.milliTimestamp(), .heap_size = heap_size, .sha1 = digest, .version_id = model.getVersionId(), .alternative_version_id = model.getAlternativeVersionId() };
+        record.* = .{ .arena = arena, .key = key, .uri = owned_uri, .initial_snapshot = model.getInitialUndoRedoSnapshot(), .time = time.milliTimestamp(model.clockIo()), .heap_size = heap_size, .sha1 = digest, .version_id = model.getVersionId(), .alternative_version_id = model.getAlternativeVersionId() };
         if (record.initial_snapshot) |*snapshot| snapshot.resource = owned_uri;
         model._initialUndoRedoSnapshot = null; // transfer ownership to the retained record
         for ([_][]const *const edit_stack.EditStackElement{ elements.past, elements.future }) |list| {

@@ -104,7 +104,7 @@ pub const Instance = struct {
         if (self.stopped or self.failed) return;
         self.failed = true;
         self.watcher.on_log.fire(.{ .type = .warn, .message = message }) catch {};
-        self.watcher.base.requestFailed(self.request, nowMs());
+        self.watcher.base.requestFailed(self.request, nowMs(self.watcher.io));
     }
 };
 
@@ -169,7 +169,7 @@ pub const NodeJSWatcher = struct {
     }
 
     pub fn watch(self: *NodeJSWatcher, requests: []const WatchRequest) !void {
-        try self.base.watch(requests, nowMs());
+        try self.base.watch(requests, nowMs(self.io));
     }
 
     pub fn stop(self: *NodeJSWatcher) void {
@@ -291,8 +291,8 @@ pub fn sameRequest(a: *const WatchRequest, b: *const WatchRequest) bool {
         std.mem.eql(u8, a.path, b.path);
 }
 
-pub fn nowMs() i64 {
-    return std.Io.Timestamp.now(Io.Threaded.global_single_threaded.io(), .real).toMilliseconds();
+pub fn nowMs(io: Io) i64 {
+    return std.Io.Timestamp.now(io, .real).toMilliseconds();
 }
 
 pub const FileContentsHandle = struct {

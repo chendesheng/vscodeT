@@ -48,7 +48,7 @@ pub const GlyphHoverWidget = struct {
 
     pub fn init(allocator: std.mem.Allocator, editor: *Editor) !*GlyphHoverWidget {
         const self = try allocator.create(GlyphHoverWidget);
-        self.* = .{ .allocator = allocator, .editor = editor, .operation = undefined, .computer_arena = .init(allocator), .render_arena = .init(allocator) };
+        self.* = .{ .allocator = allocator, .editor = editor, .timer = .{ .io = editor.clockIo() }, .operation = undefined, .computer_arena = .init(allocator), .render_arena = .init(allocator) };
         self.operation = .init(allocator, .{ .context = self, .compute_sync = computeSync }, self.timer.interface(), withResult, self);
         return self;
     }
@@ -159,7 +159,7 @@ pub const GlyphHoverWidget = struct {
         const a = self.render_arena.allocator();
         var parsed: std.ArrayList(markdown.Content) = .empty;
         for (result.value) |message| {
-            const content = markdown.parseWithOptions(a, message.value, .{
+            const content = markdown.parseWithOptions(a, self.editor.clockIo(), message.value, .{
                 .code_fence_fallback_language = if (self.editor.getModel()) |model| model.getLanguageId() else "plaintext",
                 .code_background = self.code_background,
             }) catch continue;

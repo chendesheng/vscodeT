@@ -52,13 +52,13 @@ pub const QuickInputService = struct {
     error_context: ?*anyopaque = null,
     on_error: ?*const fn (context: *anyopaque, message: []const u8) void = null,
 
-    pub fn init(allocator: Allocator, presenter: Presenter) !*QuickInputService {
+    pub fn init(allocator: Allocator, io: std.Io, presenter: Presenter) !*QuickInputService {
         const self = try allocator.create(QuickInputService);
         errdefer allocator.destroy(self);
         self.* = .{
             .allocator = allocator,
             .presenter = presenter,
-            .picker = QuickPick.init(allocator),
+            .picker = QuickPick.init(allocator, io),
             .master = std.array_list.Managed(QuickPickItem).init(allocator),
             .filtered = std.array_list.Managed(QuickPickItem).init(allocator),
         };
@@ -282,7 +282,7 @@ test "QuickInputService: one-shot picker filters, scrolls and accepts" {
     };
 
     var state = State{};
-    const service = try QuickInputService.init(std.testing.allocator, .{
+    const service = try QuickInputService.init(std.testing.allocator, std.testing.io, .{
         .context = &state,
         .show = State.show,
         .hide = State.hide,

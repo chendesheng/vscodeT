@@ -168,7 +168,8 @@ pub const Task = struct {
     at: ?i64 = null,
 
     pub fn post(self: *Task) void {
-        self.schedule(@import("timeCompat.zig").milliTimestamp());
+        const queue = self.queue orelse return;
+        self.schedule(@import("timeCompat.zig").milliTimestamp(queue.workerIo()));
     }
 
     pub fn schedule(self: *Task, at: ?i64) void {

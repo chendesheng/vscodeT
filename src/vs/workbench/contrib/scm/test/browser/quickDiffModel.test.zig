@@ -74,7 +74,7 @@ const Harness = struct {
     }
 
     fn recompute(self: *Harness) !void {
-        self.quick_model.triggerDiff(time.milliTimestamp());
+        self.quick_model.triggerDiff(time.milliTimestamp(std.testing.io));
         _ = self.quick_model.runScheduledDiff(&self.worker, self.quick_model.due_at.?);
         try self.resolveOriginals();
         if (self.quick_model.pending != null) {
@@ -89,7 +89,7 @@ const Harness = struct {
         // still delivers references asynchronously on the real window queue.
         for (0..20) |_| {
             if (self.quick_model.resolving == null) break;
-            _ = self.queue.dispatch(time.milliTimestamp() + 1);
+            _ = self.queue.dispatch(time.milliTimestamp(std.testing.io) + 1);
         }
         try std.testing.expect(self.quick_model.resolving == null);
     }
@@ -404,20 +404,20 @@ test "quickDiffModel: URI references are shared, updated by model events, and re
             const deadline = quick.due_at orelse return error.MissingQuickDiffDeadline;
             for (0..20) |_| {
                 if (quick.due_at == null and quick.resolving == null) break;
-                _ = q.dispatch(@max(deadline, time.milliTimestamp()));
+                _ = q.dispatch(@max(deadline, time.milliTimestamp(std.testing.io)));
             }
             try std.testing.expect(quick.resolving == null);
             if (quick.pending != null) {
                 w.waitForReply();
                 for (0..20) |_| {
                     if (quick.pending == null) break;
-                    _ = q.dispatch(@max(deadline, time.milliTimestamp()));
+                    _ = q.dispatch(@max(deadline, time.milliTimestamp(std.testing.io)));
                 }
                 try std.testing.expect(quick.pending == null);
             }
         }
     };
-    model.triggerDiff(time.milliTimestamp());
+    model.triggerDiff(time.milliTimestamp(std.testing.io));
     try Pump.settle(&queue, &model, &worker);
     try std.testing.expectEqual(@as(usize, 1), model.original_models.count());
     try std.testing.expectEqual(@as(usize, 2), model.quickDiffs().len);
@@ -435,7 +435,7 @@ test "quickDiffModel: URI references are shared, updated by model events, and re
     try std.testing.expectEqual(@as(usize, 0), model.all_changes.items.len);
     primary_registration.dispose();
     secondary_registration.dispose();
-    model.triggerDiff(time.milliTimestamp());
+    model.triggerDiff(time.milliTimestamp(std.testing.io));
     try Pump.settle(&queue, &model, &worker);
     try std.testing.expectEqual(@as(usize, 0), model.original_models.count());
     try std.testing.expectEqual(@as(usize, 0), model.quickDiffs().len);
@@ -446,14 +446,14 @@ test "quickDiffModel: URI references are shared, updated by model events, and re
     defer restored_registration.dispose();
     var abandoned = QuickDiffModel.init(a, modified.model, service.interface(), resolver.interface(), .{});
     abandoned.attachWindow(&queue, &worker);
-    abandoned.triggerDiff(time.milliTimestamp());
+    abandoned.triggerDiff(time.milliTimestamp(std.testing.io));
     const deadline = abandoned.due_at.?;
     _ = queue.dispatch(deadline);
     try std.testing.expect(abandoned.resolving != null);
     abandoned.deinit();
     for (0..20) |_| {
-        if (queue.nextTimeout(time.milliTimestamp(), 1) != 0) break;
-        _ = queue.dispatch(time.milliTimestamp());
+        if (queue.nextTimeout(time.milliTimestamp(std.testing.io), 1) != 0) break;
+        _ = queue.dispatch(time.milliTimestamp(std.testing.io));
     }
     try std.testing.expectEqualStrings("new", try original.model.borrowLineContent(1));
 }
@@ -496,7 +496,7 @@ test "QuickDiffModelService: canonical resource and options share model lifetime
     second.object.due_at = null;
     second.object.scheduler.schedule(null);
     _ = try doc.replaceGeneratedContents("new content");
-    try std.testing.expect(second.object.due_at.? >= time.milliTimestamp());
+    try std.testing.expect(second.object.due_at.? >= time.milliTimestamp(std.testing.io));
     second.dispose();
     try std.testing.expectEqual(@as(usize, 0), models.references.count());
     try std.testing.expectEqual(@as(usize, 0), resources.listenerCount());
@@ -510,7 +510,7 @@ test "quickDiffModel: asynchronous provider promises precede model resolution an
     provider.base.request_original_fn = ModelProvider.requestDeferred;
     provider.base.get_original_fn = null;
 
-    harness.quick_model.triggerDiff(time.milliTimestamp());
+    harness.quick_model.triggerDiff(time.milliTimestamp(std.testing.io));
     _ = harness.quick_model.runScheduledDiff(&harness.worker, harness.quick_model.due_at.?);
     try std.testing.expect(harness.quick_model.provider_query != null);
     try std.testing.expect(harness.quick_model.resolving == null);

@@ -31,7 +31,7 @@ pub const Resolver = struct {
     themes_dir: []const u8,
 
     pub fn init(allocator: Allocator, themes_dir: []const u8) !Resolver {
-        const io = std.Io.Threaded.global_single_threaded.io();
+        const io = std.testing.io;
         const grammars_path = try std.fs.path.join(allocator, &.{ themes_dir, "grammars.json" });
         defer allocator.free(grammars_path);
         const languages_path = try std.fs.path.join(allocator, &.{ themes_dir, "languages.json" });
@@ -174,13 +174,12 @@ pub const Resolver = struct {
         return null;
     }
 
-    pub fn loadGrammar(context: *anyopaque, scope_name: []const u8) anyerror!?*rawGrammar.RawGrammar {
+    pub fn loadGrammar(context: *anyopaque, io: std.Io, scope_name: []const u8) anyerror!?*rawGrammar.RawGrammar {
         const self: *Resolver = @ptrCast(@alignCast(context));
         if (self.raw_grammars.get(scope_name)) |cached| return cached;
 
         for (self.grammars) |grammar| {
             if (!std.mem.eql(u8, grammar.scope_name, scope_name)) continue;
-            const io = std.Io.Threaded.global_single_threaded.io();
             const content = try std.Io.Dir.cwd().readFileAlloc(io, grammar.path, self.allocator, .limited(64 * 1024 * 1024));
             defer self.allocator.free(content);
             const raw = try self.allocator.create(rawGrammar.RawGrammar);

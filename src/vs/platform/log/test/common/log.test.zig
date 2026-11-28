@@ -133,7 +133,7 @@ test "AdapterLogger retains unexpected error stacks when forwarding to another p
     defer logger.deinit();
 
     const error_object = nativeError("Unexpected error", "Error: Unexpected error\n    at generated.js:1:2");
-    var handler = log.createUnexpectedErrorHandler(allocator, logger.interface());
+    var handler = log.createUnexpectedErrorHandler(allocator, std.testing.io, logger.interface());
     defer handler.deinit();
 
     try handler.handle(.{ .object = &error_object });
@@ -173,7 +173,7 @@ test "createUnexpectedErrorHandler preserves native errors for debugger source m
     test_logger.init(std.testing.allocator);
     defer test_logger.deinit();
 
-    var handler = log.createUnexpectedErrorHandler(std.testing.allocator, test_logger.iface());
+    var handler = log.createUnexpectedErrorHandler(std.testing.allocator, std.testing.io, test_logger.iface());
     defer handler.deinit();
 
     const error_object = nativeError("Unexpected error", "Error: Unexpected error");
@@ -191,7 +191,7 @@ test "createUnexpectedErrorHandler retains the original stack in message loggers
     test_logger.init(std.testing.allocator);
     defer test_logger.deinit();
 
-    var handler = log.createUnexpectedErrorHandler(std.testing.allocator, test_logger.iface());
+    var handler = log.createUnexpectedErrorHandler(std.testing.allocator, std.testing.io, test_logger.iface());
     defer handler.deinit();
 
     const stack = "Error: Unexpected error\n    at generated.js:1:2";
@@ -210,7 +210,7 @@ test "createUnexpectedErrorHandler preserves formatting for stackless errors and
     test_logger.init(allocator);
     defer test_logger.deinit();
 
-    var handler = log.createUnexpectedErrorHandler(allocator, test_logger.iface());
+    var handler = log.createUnexpectedErrorHandler(allocator, std.testing.io, test_logger.iface());
     defer handler.deinit();
 
     const missing_stack = ErrorObject{ .message = "Missing stack", .is_native_error = true };
@@ -254,7 +254,7 @@ test "createUnexpectedErrorHandler suppresses duplicates through 1000ms without 
     test_logger.init(std.testing.allocator);
     defer test_logger.deinit();
 
-    var handler = log.createUnexpectedErrorHandler(std.testing.allocator, test_logger.iface());
+    var handler = log.createUnexpectedErrorHandler(std.testing.allocator, std.testing.io, test_logger.iface());
     defer handler.deinit();
 
     const error_object = nativeError("Repeated error", "Error: Repeated error");
@@ -270,7 +270,7 @@ test "createUnexpectedErrorHandler compares the complete formatted stack when su
     test_logger.init(std.testing.allocator);
     defer test_logger.deinit();
 
-    var handler = log.createUnexpectedErrorHandler(std.testing.allocator, test_logger.iface());
+    var handler = log.createUnexpectedErrorHandler(std.testing.allocator, std.testing.io, test_logger.iface());
     defer handler.deinit();
 
     const first = nativeError("Same message", "Error: Same message\n    at first.js:1:1");
@@ -286,9 +286,9 @@ test "createUnexpectedErrorHandler keeps duplicate suppression local to each han
     test_logger.init(std.testing.allocator);
     defer test_logger.deinit();
 
-    var first_handler = log.createUnexpectedErrorHandler(std.testing.allocator, test_logger.iface());
+    var first_handler = log.createUnexpectedErrorHandler(std.testing.allocator, std.testing.io, test_logger.iface());
     defer first_handler.deinit();
-    var second_handler = log.createUnexpectedErrorHandler(std.testing.allocator, test_logger.iface());
+    var second_handler = log.createUnexpectedErrorHandler(std.testing.allocator, std.testing.io, test_logger.iface());
     defer second_handler.deinit();
 
     const error_object = nativeError("Unexpected error", "Error: Unexpected error");
@@ -303,7 +303,7 @@ test "createUnexpectedErrorHandler retains log level filtering" {
     test_logger.init(std.testing.allocator);
     defer test_logger.deinit();
 
-    var handler = log.createUnexpectedErrorHandler(std.testing.allocator, test_logger.iface());
+    var handler = log.createUnexpectedErrorHandler(std.testing.allocator, std.testing.io, test_logger.iface());
     defer handler.deinit();
 
     test_logger.logger.setLevel(.off);
@@ -333,7 +333,7 @@ test "createUnexpectedErrorHandler does not swallow logging failures" {
     var logger = log.AdapterLogger.init(allocator, .{ .context = undefined, .log_fn = failing.call }, log.DEFAULT_LOG_LEVEL);
     defer logger.deinit();
 
-    var handler = log.createUnexpectedErrorHandler(allocator, logger.interface());
+    var handler = log.createUnexpectedErrorHandler(allocator, std.testing.io, logger.interface());
     defer handler.deinit();
 
     const error_object = nativeError("Unexpected error", "Error: Unexpected error");

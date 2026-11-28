@@ -2,22 +2,24 @@ const std = @import("std");
 const time = @import("./timeCompat.zig");
 
 pub const StopWatch = struct {
+    io: std.Io,
     _startTime: i64,
     _stopTime: i64,
 
-    pub fn init() StopWatch {
+    pub fn init(io: std.Io) StopWatch {
         return StopWatch{
-            ._startTime = time.milliTimestamp(),
+            .io = io,
+            ._startTime = std.Io.Timestamp.now(io, .awake).toMilliseconds(),
             ._stopTime = -1,
         };
     }
 
     pub fn stop(self: *StopWatch) void {
-        self._stopTime = time.milliTimestamp();
+        self._stopTime = std.Io.Timestamp.now(self.io, .awake).toMilliseconds();
     }
 
     pub fn reset(self: *StopWatch) void {
-        self._startTime = time.milliTimestamp();
+        self._startTime = std.Io.Timestamp.now(self.io, .awake).toMilliseconds();
         self._stopTime = -1;
     }
 
@@ -25,6 +27,6 @@ pub const StopWatch = struct {
         if (self._stopTime != -1) {
             return self._stopTime - self._startTime;
         }
-        return time.milliTimestamp() - self._startTime;
+        return std.Io.Timestamp.now(self.io, .awake).toMilliseconds() - self._startTime;
     }
 };

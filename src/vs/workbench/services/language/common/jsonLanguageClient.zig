@@ -10,6 +10,7 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const Window = @import("../../../../base/common/windowDispatch.zig");
+const ProtocolWriter = @import("../../../../base/parts/ipc/common/ipc.net.zig").ProtocolWriter;
 const Cancellation = @import("../../../../base/common/cancellation.zig");
 const time_compat = @import("../../../../base/common/timeCompat.zig");
 
@@ -123,6 +124,8 @@ pub const Client = struct {
     root_uri: []u8,
     initialized: bool = false,
     reader: ?std.Thread = null,
+    writer: ?ProtocolWriter = null,
+    writer_file: ?Io.File = null,
     queue: std.ArrayList(Message) = .empty,
     lock: std.Io.Mutex = .init,
     available: std.Io.Condition = .init,
@@ -155,6 +158,9 @@ pub const Client = struct {
         errdefer self.stopTransport();
         if (self.child.stdin == null or self.child.stdout == null) return Error.ServerUnavailable;
 
+        self.writer_file = self.child.stdin.?;
+        self.writer = .{ .allocator = allocator, .io = self.io, .sink = .{ .context = self, .write = writeDetached, .failed = writerFailed } };
+        try self.writer.?.start();
         self.reader = try std.Thread.spawn(.{}, readerLoop, .{ self, self.child.stdout.? });
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
@@ -242,6 +248,7 @@ pub const Client = struct {
             defer arena.deinit();
             self.notify(arena.allocator(), "shutdown", .null) catch {};
             self.notify(arena.allocator(), "exit", .null) catch {};
+            if (self.writer) |*writer| writer.flush(.{ .duration = .{ .raw = .fromMilliseconds(250), .clock = .awake } });
         }
         self.stopTransport();
         self.io_state.deinit();
@@ -505,7 +512,15 @@ pub const Client = struct {
     fn stopTransport(self: *Client) void {
         // Closing the server releases a blocked pipe read. The reader uses
         // its own file value and never accesses the mutable Child.
+        if (self.writer) |*writer| writer.stop();
+        // Keep the writer's descriptor open until the server has been
+        // killed and the detached syscall joined. The child no longer owns it.
+        if (self.writer_file != null) self.child.stdin = null;
         if (self.child.id != null) self.child.kill(self.io);
+        if (self.writer) |*writer| writer.deinit();
+        if (self.writer_file) |file| file.close(self.io);
+        self.writer_file = null;
+        self.writer = null;
         if (self.reader) |thread| thread.join();
         for (self.queue.items) |*message| message.arena.deinit();
         self.queue.deinit(self.allocator);
@@ -681,9 +696,22 @@ pub const Client = struct {
         const body = output.written();
         var header_buffer: [64]u8 = undefined;
         const header = try std.fmt.bufPrint(&header_buffer, "Content-Length: {d}\r\n\r\n", .{body.len});
-        const file = self.child.stdin orelse return Error.ServerUnavailable;
-        try file.writeStreamingAll(self.io, header);
-        try file.writeStreamingAll(self.io, body);
+        const writer = if (self.writer) |*writer| writer else return Error.ServerUnavailable;
+        try writer.write(header, body);
+    }
+
+    fn writeDetached(context: *anyopaque, bytes: []const u8) !void {
+        const self: *Client = @ptrCast(@alignCast(context));
+        try self.writer_file.?.writeStreamingAll(self.io, bytes);
+    }
+
+    fn writerFailed(context: *anyopaque) void {
+        const self: *Client = @ptrCast(@alignCast(context));
+        self.lock.lockUncancelable(self.io);
+        defer self.lock.unlock(self.io);
+        self.eof = true;
+        self.available.broadcast(self.io);
+        self.dispatch_task.post();
     }
 
     fn readMessage(self: *Client, arena: Allocator, file: std.Io.File) !std.json.Value {
@@ -852,7 +880,7 @@ fn hoverText(arena: Allocator, contents: std.json.Value) ![]u8 {
 }
 
 test "JSON language client reports syntax diagnostics" {
-    std.Io.Dir.cwd().access(time_compat.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(std.testing.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const client = try Client.start(allocator, "node", "host/dist/jsonServer.mjs");
     defer client.deinit();
@@ -876,14 +904,14 @@ test "JSON language client reports syntax diagnostics" {
 }
 
 test "JSON language client hover uses a local schema" {
-    std.Io.Dir.cwd().access(time_compat.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(std.testing.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const client = try Client.start(allocator, "node", "host/dist/jsonServer.mjs");
     defer client.deinit();
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(time_compat.io, .{ .sub_path = "schema.json", .data =
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "schema.json", .data =
         \\{
         \\  "type": "object",
         \\  "properties": {
@@ -892,7 +920,7 @@ test "JSON language client hover uses a local schema" {
         \\}
     });
     var schema_path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const schema_path_length = try tmp.dir.realPathFile(time_compat.io, "schema.json", &schema_path_buffer);
+    const schema_path_length = try tmp.dir.realPathFile(std.testing.io, "schema.json", &schema_path_buffer);
     const schema_uri = try std_uri.encodedResource(allocator, .{ .scheme = "file", .path = .{ .raw = schema_path_buffer[0..schema_path_length] } });
     defer allocator.free(schema_uri);
 
@@ -909,14 +937,14 @@ test "JSON language client hover uses a local schema" {
 }
 
 test "JSON language client applies json.schemas associations" {
-    std.Io.Dir.cwd().access(time_compat.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(std.testing.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const client = try Client.start(allocator, "node", "host/dist/jsonServer.mjs");
     defer client.deinit();
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(time_compat.io, .{ .sub_path = "schema.json", .data =
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "schema.json", .data =
         \\{
         \\  "type": "object",
         \\  "properties": { "name": { "type": "string" } },
@@ -924,7 +952,7 @@ test "JSON language client applies json.schemas associations" {
         \\}
     });
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_length = try tmp.dir.realPathFile(time_compat.io, "schema.json", &path_buffer);
+    const path_length = try tmp.dir.realPathFile(std.testing.io, "schema.json", &path_buffer);
     const schema_uri = try std_uri.encodedResource(allocator, .{ .scheme = "file", .path = .{ .raw = path_buffer[0..path_length] } });
     defer allocator.free(schema_uri);
 
@@ -990,7 +1018,7 @@ test "JSON document symbol parser handles hierarchical and flat shapes" {
 }
 
 test "JSON language client returns document symbols" {
-    std.Io.Dir.cwd().access(time_compat.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(std.testing.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const client = try Client.start(allocator, "node", "host/dist/jsonServer.mjs");
     defer client.deinit();

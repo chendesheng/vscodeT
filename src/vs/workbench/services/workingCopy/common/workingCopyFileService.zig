@@ -1,7 +1,7 @@
 // Port of `src/vs/workbench/services/workingCopy/common/workingCopyFileService.ts`.
 // File operations use the registered native IFileService providers. The
-// current provider mutation contract is synchronous; the before/after/failure
-// events run on the same owning dispatcher, not from a render pass.
+// provider mutation contract can suspend on WindowIo for native path work;
+// before/after/failure events remain on the owning window continuation.
 const std = @import("std");
 const files = @import("../../../../platform/files/common/files.zig");
 const cancellation = @import("../../../../base/common/cancellation.zig");

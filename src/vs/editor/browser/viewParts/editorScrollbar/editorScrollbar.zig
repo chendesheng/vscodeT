@@ -480,7 +480,7 @@ test "editorScrollbar: thumb edges use the exact fractional size" {
 test "editorScrollbar: wheel sensitivity, fast scroll and remainder" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var text: std.Io.Writer.Allocating = .init(allocator);
     defer text.deinit();
@@ -521,7 +521,7 @@ test "editorScrollbar: wheel sensitivity, fast scroll and remainder" {
 
 test "editorScrollbar: unchanged thumb rows keep their glyphs when the viewport grows" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const lines: [40]u8 = @splat('\n');
     const editor = try Editor.createFromText(allocator, io, &lines, "test.txt", 40, 12);
     defer {

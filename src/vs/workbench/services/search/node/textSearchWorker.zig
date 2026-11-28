@@ -174,9 +174,9 @@ pub const TextSearchWorker = struct {
         defer self.mutex.unlock(self.io);
         if (self.queue.items.len > 0 or self.finished or self.failure.load(.acquire)) return true;
         if (timeout_ms <= 0) return false;
-        const deadline = time_compat.milliTimestamp() + timeout_ms;
+        const deadline = time_compat.milliTimestamp(self.io) + timeout_ms;
         while (!self.finished and !self.failure.load(.acquire) and self.queue.items.len == 0) {
-            const now = time_compat.milliTimestamp();
+            const now = time_compat.milliTimestamp(self.io);
             if (now >= deadline) break;
             self.condition.waitTimeout(self.io, &self.mutex, .{
                 .duration = .{ .raw = std.Io.Duration.fromMilliseconds(@max(deadline - now, 1)), .clock = .awake },

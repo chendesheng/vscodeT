@@ -226,7 +226,7 @@ pub const CompressedVirtualizedScrollView = struct {
     }
 
     fn now(self: *const CompressedVirtualizedScrollView) i64 {
-        return if (self.clock) |clock| clock.now(clock.context) else time.milliTimestamp();
+        return if (self.clock) |clock| clock.now(clock.context) else time.milliTimestamp(self.clear_direction.queue.?.io);
     }
     fn clearScrollDirection(context: *anyopaque, _: i64, _: bool) bool {
         const self: *CompressedVirtualizedScrollView = @ptrCast(@alignCast(context));

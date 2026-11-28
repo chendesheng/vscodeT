@@ -310,6 +310,7 @@ fn createModels(
 
     var diff = try provider.computeDiffFromLines(allocator, original_views, modified_views, .{
         .ignoreTrimWhitespace = false,
+        .io = std.testing.io,
         .maxComputationTimeMs = 0,
         .computeMoves = false,
     });

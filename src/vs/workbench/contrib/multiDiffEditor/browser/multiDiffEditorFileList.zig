@@ -327,7 +327,7 @@ pub fn MultiDiffEditorFileList(comptime View: type) type {
             if (handled and input.kind == .down and input.button == .left) {
                 if (self.tree.selectionElement()) |element| switch (element.*) {
                     .file => |file| {
-                        const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp();
+                        const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp(self.widget.impl.queue.io);
                         const double_click = self.last_clicked_item == file.item and now - self.last_click_time <= 300;
                         self.last_clicked_item = if (double_click) null else file.item;
                         self.last_click_time = now;

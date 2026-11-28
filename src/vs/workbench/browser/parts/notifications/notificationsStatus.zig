@@ -128,7 +128,7 @@ pub const NotificationsStatus = struct {
         self.disposeStatusMessage();
         self.current_status = item;
         const options = item.options;
-        const now = time.milliTimestamp();
+        const now = time.milliTimestamp(self.show_task.queue.?.io);
         self.show_task.schedule(now + @max(0, if (options) |value| value.show_after orelse 0 else 0));
         if (options) |value| if (value.hide_after) |hide| if (hide > 0) {
             self.hide_task.schedule(now + hide);

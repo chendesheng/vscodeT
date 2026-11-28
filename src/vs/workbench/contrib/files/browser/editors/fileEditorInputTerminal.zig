@@ -228,7 +228,7 @@ pub const FileEditorSerializer = struct {
 
 test "FileEditorInput exposes path and dirty state" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     const editor_a = try Editor.createFromText(allocator, io, "alpha", "a.txt", 20, 5);
     const input_a = try FileEditorInput.init(allocator, editor_a);
@@ -254,7 +254,7 @@ test "FileEditorInput exposes path and dirty state" {
 
 test "FileEditorInput drives the editor group model" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const group_mod = @import("../../../../common/editor/editorGroupModel.zig");
 
     var group = try group_mod.EditorGroupModel.init(allocator, .{});
@@ -302,7 +302,7 @@ test "FileEditorInput drives the editor group model" {
 
 test "FileEditorSerializer round-trips a path" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var serializer = FileEditorSerializer.init(allocator, io, 20, 5);
     defer serializer.deinit();

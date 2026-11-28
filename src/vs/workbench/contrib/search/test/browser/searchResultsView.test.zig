@@ -38,7 +38,7 @@ test "searchResultsView: single root is transparent and ordered" {
     const allocator = std.testing.allocator;
     var query = try search.TextQuery.init(allocator, "abc", &.{"/root"}, "", "", &.{});
     defer query.deinit();
-    const result = try tree.SearchResult.create(allocator);
+    const result = try tree.SearchResult.create(allocator, std.testing.io);
     defer result.deinit();
     result.setQuery(&query);
     _ = try addFile(allocator, result, "/root/b.txt", 0);
@@ -57,7 +57,7 @@ test "searchResultsView: row labels, counts and line numbers" {
     const allocator = std.testing.allocator;
     var query = try search.TextQuery.init(allocator, "abc", &.{"/root"}, "", "", &.{});
     defer query.deinit();
-    const result = try tree.SearchResult.create(allocator);
+    const result = try tree.SearchResult.create(allocator, std.testing.io);
     defer result.deinit();
     result.setQuery(&query);
     const file = try addFile(allocator, result, "/root/src/sub/a.txt", 4);
@@ -81,11 +81,11 @@ test "searchResultsView: aria labels follow upstream text" {
     const allocator = std.testing.allocator;
     var query = try search.TextQuery.init(allocator, "abc", &.{"/root"}, "", "", &.{});
     defer query.deinit();
-    const result = try tree.SearchResult.create(allocator);
+    const result = try tree.SearchResult.create(allocator, std.testing.io);
     defer result.deinit();
     result.setQuery(&query);
     const file = try addFile(allocator, result, "/root/a.txt", 0);
-    const model = try @import("../../browser/searchTreeModel/searchModel.zig").SearchModel.init(allocator, undefined);
+    const model = try @import("../../browser/searchTreeModel/searchModel.zig").SearchModel.init(allocator, std.testing.io, undefined);
     defer model.deinit();
 
     const file_label = try results_view.ariaLabel(allocator, .{ .file = file }, model);
@@ -101,7 +101,7 @@ test "searchResultsView: visible rows carry tree depth and honor collapse" {
     const allocator = std.testing.allocator;
     var query = try search.TextQuery.init(allocator, "abc", &.{"/root"}, "", "", &.{});
     defer query.deinit();
-    const result = try tree.SearchResult.create(allocator);
+    const result = try tree.SearchResult.create(allocator, std.testing.io);
     defer result.deinit();
     result.setQuery(&query);
     const file = try addFile(allocator, result, "/root/a.txt", 0);

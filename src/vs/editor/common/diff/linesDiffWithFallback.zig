@@ -190,6 +190,7 @@ test "resolves the default computer" {
     const modified = [_][]const u8{ "a", "x", "c" };
     var result = try with_fallback.computeDiff(allocator, &original, &modified, .{
         .ignoreTrimWhitespace = false,
+        .io = std.testing.io,
         .maxComputationTimeMs = 0,
         .computeMoves = false,
     }, true);
@@ -214,6 +215,7 @@ test "falls back to the built-in computer when the package fails to load" {
     const modified = [_][]const u8{ "a", "b", "c" };
     var result = try with_fallback.computeDiff(allocator, &original, &modified, .{
         .ignoreTrimWhitespace = false,
+        .io = std.testing.io,
         .maxComputationTimeMs = 0,
         .computeMoves = false,
     }, false);

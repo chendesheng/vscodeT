@@ -13,6 +13,7 @@ pub const IChange = struct {
 };
 
 pub const ILinesDiffComputerOptions = struct {
+    io: std.Io,
     ignoreTrimWhitespace: bool,
     maxComputationTimeMs: i64,
     computeMoves: bool,

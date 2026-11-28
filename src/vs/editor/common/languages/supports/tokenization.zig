@@ -338,10 +338,10 @@ var active_token_theme: ?*TokenTheme = null;
 /// service swaps and frees themes while holding the exclusive lock.
 var active_token_theme_lock: std.Io.RwLock = .init;
 
-pub fn setActiveTokenTheme(theme: ?*TokenTheme) void {
-    active_token_theme_lock.lockUncancelable(time_compat.io);
+pub fn setActiveTokenTheme(io: std.Io, theme: ?*TokenTheme) void {
+    active_token_theme_lock.lockUncancelable(io);
     active_token_theme = theme;
-    active_token_theme_lock.unlock(time_compat.io);
+    active_token_theme_lock.unlock(io);
 }
 
 /// Legacy unlocked lookup, kept for synchronous callers that own the theme
@@ -352,22 +352,22 @@ pub fn getActiveTokenTheme() ?*TokenTheme {
 
 /// Acquires the shared theme lock and returns the active theme (or null).
 /// The caller must call `unlockActiveTokenTheme`.
-pub fn lockActiveTokenTheme() ?*TokenTheme {
-    active_token_theme_lock.lockSharedUncancelable(time_compat.io);
+pub fn lockActiveTokenTheme(io: std.Io) ?*TokenTheme {
+    active_token_theme_lock.lockSharedUncancelable(io);
     return active_token_theme;
 }
 
-pub fn unlockActiveTokenTheme() void {
-    active_token_theme_lock.unlockShared(time_compat.io);
+pub fn unlockActiveTokenTheme(io: std.Io) void {
+    active_token_theme_lock.unlockShared(io);
 }
 
 /// Clears the active pointer (when it still names `theme`) and frees the
 /// theme while no tokenizer can be reading it.
-pub fn deinitActiveTokenTheme(theme: *TokenTheme) void {
-    active_token_theme_lock.lockUncancelable(time_compat.io);
+pub fn deinitActiveTokenTheme(io: std.Io, theme: *TokenTheme) void {
+    active_token_theme_lock.lockUncancelable(io);
     if (active_token_theme == theme) active_token_theme = null;
     theme.deinit();
-    active_token_theme_lock.unlock(time_compat.io);
+    active_token_theme_lock.unlock(io);
 }
 
 pub fn toStandardTokenType(token_type: []const u8) StandardTokenType {

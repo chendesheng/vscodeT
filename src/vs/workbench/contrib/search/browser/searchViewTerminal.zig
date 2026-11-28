@@ -197,6 +197,7 @@ pub const SearchView = struct {
 
     pub fn init(
         allocator: Allocator,
+        io: std.Io,
         workspace: *WorkspaceContextService,
         configuration: *ConfigurationService,
         service: search.ISearchService,
@@ -226,6 +227,7 @@ pub const SearchView = struct {
         errdefer self.list_focus.deinit();
         const controller = try Controller.init(
             allocator,
+            io,
             workspace,
             configuration,
             service,
@@ -2156,6 +2158,7 @@ pub const SearchWindow = struct {
         });
         const view = try SearchView.init(
             self.allocator,
+            self.window.io,
             self.workspace,
             self.configuration.*.?,
             service.interface(),

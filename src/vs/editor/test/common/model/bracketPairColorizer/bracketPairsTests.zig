@@ -20,7 +20,7 @@ const BracketSupport = struct {
         return NullState;
     }
 
-    fn tokenizeEncoded(_: *anyopaque, allocator: std.mem.Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult {
+    fn tokenizeEncoded(_: *anyopaque, _: std.Io, allocator: std.mem.Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult {
         _ = hasEOL;
         var tokens = ArrayList(TokenPacked).init(allocator);
         errdefer tokens.deinit();

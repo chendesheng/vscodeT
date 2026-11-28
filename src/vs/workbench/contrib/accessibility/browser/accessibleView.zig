@@ -303,7 +303,7 @@ pub const AccessibleViewService = struct {
         const self: *AccessibleViewService = @ptrCast(@alignCast(context));
         const view = self.current orelse return;
         const configuration = self.configuration orelse return;
-        try configuration.updateValue(view.provider.verbosity_setting_key, .{ .bool = false }, .USER);
+        try configuration.requestUpdateValue(view.provider.verbosity_setting_key, .{ .bool = false }, .USER);
     }
 
     pub fn close(self: *AccessibleViewService, restore_focus: bool) void {

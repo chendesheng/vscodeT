@@ -59,7 +59,7 @@ const StatelessSupport = struct {
         return createState(allocator, "");
     }
 
-    fn tokenizeEncoded(ctx: *anyopaque, allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult {
+    fn tokenizeEncoded(ctx: *anyopaque, _: std.Io, allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult {
         _ = hasEOL;
         const self: *StatelessSupport = @ptrCast(@alignCast(ctx));
         try self.log.add(line);
@@ -87,7 +87,7 @@ const StatefulSupport = struct {
         return createState(allocator, "");
     }
 
-    fn tokenizeEncoded(ctx: *anyopaque, allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult {
+    fn tokenizeEncoded(ctx: *anyopaque, _: std.Io, allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult {
         _ = hasEOL;
         const self: *StatefulSupport = @ptrCast(@alignCast(ctx));
         try self.log.add(line);

@@ -9,7 +9,7 @@ const OvertypingCapturer = @import("../../browser/suggestOvertypingCapturer.zig"
 
 test "OvertypingCapturer: records selected text before typing" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "hello\nworld", "test.txt", 40, 8);
     defer {
         editor.deinit();
@@ -33,7 +33,7 @@ test "OvertypingCapturer: records selected text before typing" {
 
 test "OvertypingCapturer: reversed selection captures the normalized range" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "hello\nworld", "test.txt", 40, 8);
     defer {
         editor.deinit();
@@ -55,7 +55,7 @@ test "OvertypingCapturer: reversed selection captures the normalized range" {
 
 test "OvertypingCapturer: locked capture and empty selection clear" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "hello", "test.txt", 40, 8);
     defer {
         editor.deinit();

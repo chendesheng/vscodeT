@@ -151,24 +151,24 @@ pub fn drainResizeWatcher(fd: std.posix.fd_t) void {
 /// Creates a fullscreen surface, builds `example` under a full-size root and
 /// runs the static presenter (wait for `q`). The scene is rebuilt when the
 /// terminal resizes.
-pub fn runStatic(allocator: std.mem.Allocator, example: Example) !void {
+pub fn runStatic(allocator: std.mem.Allocator, io: std.Io, example: Example) !void {
     var runner = try Runner.init(allocator, example);
     defer runner.deinit();
     // Build after the runner reached its final address: nodes keep a
     // `*Document` back-pointer, so building inside `init` would leave them
     // pointing at the returned stack copy.
     try runner.rebuildScene();
-    try runner.runStatic();
+    try runner.runStatic(io);
 }
 
 /// Same setup, but runs the interactive loop (keys, mouse, hover). The scene is
 /// rebuilt when the terminal resizes, with the pointer gesture state reset.
-pub fn runInteractive(allocator: std.mem.Allocator, example: Example) !void {
+pub fn runInteractive(allocator: std.mem.Allocator, io: std.Io, example: Example) !void {
     var runner = try Runner.init(allocator, example);
     defer runner.deinit();
     // See `runStatic`: build only once the runner is at its final address.
     try runner.rebuildScene();
-    try runner.runInteractive();
+    try runner.runInteractive(io);
 }
 
 const Runner = struct {
@@ -242,8 +242,7 @@ const Runner = struct {
     /// Draws the example on the alternate screen and waits for `q` (or Ctrl-Q),
     /// then restores the terminal. When stdin is a pipe the bytes are decoded the
     /// same way, so a demo can be driven non-interactively; EOF exits.
-    fn runStatic(self: *Runner) !void {
-        const io = std.Io.Threaded.global_single_threaded.io();
+    fn runStatic(self: *Runner, io: std.Io) !void {
         var buffer: [8192]u8 = undefined;
         var stdout = std.Io.File.stdout().writer(io, &buffer);
         const out = &stdout.interface;
@@ -301,8 +300,7 @@ const Runner = struct {
     /// The example owns all behavior in listeners: press-to-focus, click/drag,
     /// wheel handling and status updates. This loop only wires terminal input to
     /// the same `ui` APIs an application uses.
-    fn runInteractive(self: *Runner) !void {
-        const io = std.Io.Threaded.global_single_threaded.io();
+    fn runInteractive(self: *Runner, io: std.Io) !void {
         var buffer: [8192]u8 = undefined;
         var stdout = std.Io.File.stdout().writer(io, &buffer);
         const out = &stdout.interface;

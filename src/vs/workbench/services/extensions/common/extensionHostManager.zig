@@ -93,10 +93,13 @@ pub const Options = struct {
     parent_pid: u32,
 };
 
+const ProtocolWriter = @import("../../../../base/parts/ipc/common/ipc.net.zig").ProtocolWriter;
+
 const SendContext = struct {
     stream: ipc.Connection,
     io: std.Io,
-    mutex: std.Io.Mutex = .init,
+    owner: *HostManager,
+    writer: ProtocolWriter,
 
     fn send(context: *anyopaque, payload: []const u8) void {
         const self: *SendContext = @ptrCast(@alignCast(context));
@@ -105,12 +108,19 @@ const SendContext = struct {
 
     fn write(self: *SendContext, payload: []const u8) !void {
         if (payload.len > max_frame_size) return ExtensionHostError.FrameTooLarge;
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
         var length: [4]u8 = undefined;
         std.mem.writeInt(u32, &length, @intCast(payload.len), .big);
-        try self.stream.writeAll(self.io, &length);
-        try self.stream.writeAll(self.io, payload);
+        try self.writer.write(&length, payload);
+    }
+
+    fn writeDetached(context: *anyopaque, bytes: []const u8) !void {
+        const self: *SendContext = @ptrCast(@alignCast(context));
+        try self.stream.writeAll(self.io, bytes);
+    }
+
+    fn failed(context: *anyopaque) void {
+        const self: *SendContext = @ptrCast(@alignCast(context));
+        self.owner.setEof();
     }
 
     fn transport(self: *SendContext) rpcProtocol.Transport {
@@ -224,8 +234,19 @@ pub const HostManager = struct {
 
         self.sender = try allocator.create(SendContext);
         errdefer allocator.destroy(self.sender);
-        self.sender.* = .{ .stream = self.stream, .io = self.io };
-        self.rpc = rpcProtocol.RpcProtocol.init(allocator, self.sender.transport());
+        self.sender.* = .{
+            .stream = self.stream,
+            .io = self.io,
+            .owner = self,
+            .writer = .{ .allocator = allocator, .io = self.io, .sink = .{ .context = self.sender, .write = SendContext.writeDetached, .failed = SendContext.failed } },
+        };
+        try self.sender.writer.start();
+        errdefer {
+            self.sender.writer.stop();
+            self.stream.shutdown(self.io);
+            self.sender.writer.deinit();
+        }
+        self.rpc = rpcProtocol.RpcProtocol.init(allocator, self.io, self.sender.transport());
         errdefer self.rpc.deinit();
         self.reader = try std.Thread.spawn(.{}, readerLoop, .{self});
         self.started = true;
@@ -251,9 +272,14 @@ pub const HostManager = struct {
             self.started = false;
             const terminate = [_]u8{3};
             self.sendRawFrame(&terminate) catch {};
+            self.sender.writer.flush(.{ .duration = .{ .raw = .fromMilliseconds(250), .clock = .awake } });
         }
+        self.sender.writer.stop();
+        // Interrupt any in-flight read or write before joining either
+        // transport thread; termination is best effort on a closing socket.
+        self.stream.shutdown(self.io);
+        self.sender.writer.deinit();
         if (self.reader) |thread| {
-            self.stream.shutdown(self.io);
             thread.join();
             self.stream.close(self.io);
             self.reader = null;
@@ -337,21 +363,21 @@ pub const HostManager = struct {
     /// Pumps until `done` is set or the deadline expires. Used during boot;
     /// the TUI loop uses `pump()` instead.
     pub fn waitUntil(self: *HostManager, context: *anyopaque, done: *const fn (*anyopaque) bool, timeout_ms: u32) !void {
-        const deadline = time_compat.milliTimestamp() + timeout_ms;
+        const deadline = time_compat.milliTimestamp(self.io) + timeout_ms;
         while (!done(context)) {
             _ = self.pump();
             if (self.hasEof()) return ExtensionHostError.HostExited;
-            if (time_compat.milliTimestamp() > deadline) return ExtensionHostError.HostTimeout;
+            if (time_compat.milliTimestamp(self.io) > deadline) return ExtensionHostError.HostTimeout;
             self.io.sleep(.fromMilliseconds(1), .awake) catch {};
         }
     }
 
     pub fn waitForRawFrame(self: *HostManager, timeout_ms: u32) ![]u8 {
-        const deadline = time_compat.milliTimestamp() + timeout_ms;
+        const deadline = time_compat.milliTimestamp(self.io) + timeout_ms;
         while (true) {
             if (self.popFrame()) |frame| return frame;
             if (self.hasEof()) return ExtensionHostError.HostExited;
-            if (time_compat.milliTimestamp() > deadline) return ExtensionHostError.HostTimeout;
+            if (time_compat.milliTimestamp(self.io) > deadline) return ExtensionHostError.HostTimeout;
             self.io.sleep(.fromMilliseconds(1), .awake) catch {};
         }
     }
@@ -361,7 +387,7 @@ pub const HostManager = struct {
     }
 
     pub fn expectControl(self: *HostManager, value: u8, timeout_ms: u32) !void {
-        const deadline = time_compat.milliTimestamp() + timeout_ms;
+        const deadline = time_compat.milliTimestamp(self.io) + timeout_ms;
         while (true) {
             const frame = try self.waitForRawFrame(timeout_ms);
             if (frame.len == 1) {
@@ -373,7 +399,7 @@ pub const HostManager = struct {
             // waiting for the control byte.
             self.rpc.receive(frame);
             self.allocator.free(frame);
-            if (time_compat.milliTimestamp() > deadline) return ExtensionHostError.HostTimeout;
+            if (time_compat.milliTimestamp(self.io) > deadline) return ExtensionHostError.HostTimeout;
         }
     }
 
@@ -476,14 +502,14 @@ pub const HostManager = struct {
             allocator.destroy(slot);
         }
         const id = try self.rpc.call(identifier, method, args, token, .{ .context = slot, .callback = SyncSlot.callback });
-        const deadline = time_compat.milliTimestamp() + timeout_ms;
+        const deadline = time_compat.milliTimestamp(self.io) + timeout_ms;
         while (!slot.done) {
             _ = self.pump();
             if (self.hasEof()) {
                 self.rpc.cancel(id);
                 return ExtensionHostError.HostExited;
             }
-            if (time_compat.milliTimestamp() > deadline) {
+            if (time_compat.milliTimestamp(self.io) > deadline) {
                 self.rpc.cancel(id);
                 return ExtensionHostError.HostTimeout;
             }
@@ -730,10 +756,10 @@ fn appendActivation(events: *std.array_list.Managed([]const u8), prefix: []const
     events.appendAssumeCapacity(try std.mem.concat(events.allocator, u8, &.{ prefix, value }));
 }
 
-pub fn readExtensionDescription(allocator: Allocator, extension_path: []const u8) !ExtensionDescription {
+pub fn readExtensionDescription(allocator: Allocator, io: std.Io, extension_path: []const u8) !ExtensionDescription {
     const manifest_path = try std.fs.path.join(allocator, &.{ extension_path, "package.json" });
     defer allocator.free(manifest_path);
-    const text = try std.Io.Dir.cwd().readFileAlloc(time_compat.io, manifest_path, allocator, .unlimited);
+    const text = try std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, .unlimited);
     defer allocator.free(text);
     const sanitized = try @import("../../../../platform/configuration/common/configurationModels.zig").stripJsonc(allocator, text);
     defer allocator.free(sanitized);
@@ -796,7 +822,7 @@ pub fn readExtensionDescription(allocator: Allocator, extension_path: []const u8
 
 test "activation events include implicit commands without eager activation" {
     const allocator = std.testing.allocator;
-    var description = try readExtensionDescription(allocator, "vscode/extensions/emmet");
+    var description = try readExtensionDescription(allocator, std.testing.io, "vscode/extensions/emmet");
     defer description.deinit(allocator);
     var language = false;
     var command = false;

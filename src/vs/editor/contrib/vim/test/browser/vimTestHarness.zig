@@ -26,7 +26,7 @@ pub const Harness = struct {
     }
 
     pub fn initWithWidth(allocator: std.mem.Allocator, text: []const u8, width: usize) !*Harness {
-        const io = std.Io.Threaded.global_single_threaded.io();
+        const io = std.testing.io;
         const self = try allocator.create(Harness);
         errdefer allocator.destroy(self);
         const editor = try Editor.createFromText(allocator, io, text, "test.txt", width, 12);

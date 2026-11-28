@@ -253,14 +253,14 @@ fn isActivationKey(event: *const ui.KeyEvent) bool {
     };
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     const example = try contextMenuExample(allocator);
     defer if (example.deinit) |deinit| deinit(example.context);
-    try common.runInteractive(allocator, example);
+    try common.runInteractive(allocator, init.io, example);
 }
 
 pub fn contextMenuExample(allocator: Allocator) !common.Example {

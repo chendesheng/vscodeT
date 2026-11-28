@@ -21,7 +21,7 @@ const SimpleSupport = struct {
         return NullState;
     }
 
-    fn tokenizeEncoded(ctx: *anyopaque, allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult {
+    fn tokenizeEncoded(ctx: *anyopaque, _: std.Io, allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult {
         _ = hasEOL;
         const self: *SimpleSupport = @ptrCast(@alignCast(ctx));
         const tokens = try allocator.alloc(TokenPacked, 1);

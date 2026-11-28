@@ -1,10 +1,5 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const Io = std.Io;
-// The resolver tests drive the promise from a worker thread. The global
-// single-threaded instance explicitly does not support concurrency; the test
-// runner installs a threaded Io for each test instead.
-const io = if (builtin.is_test) std.testing.io else Io.Threaded.global_single_threaded.io();
 const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 const pair = @import("./utils.zig").pair;
@@ -71,14 +66,16 @@ pub fn Promise(comptime T: type) type {
     return struct {
         const Self = @This();
 
+        _io: Io,
         _lock: Io.Mutex,
         _state: PromiseState(T),
         _events: Emitter(*Self),
         _allocator: Allocator,
 
-        pub fn init(allocator: Allocator, callback: fn (PromiseResolver(T)) anyerror!void) !*Self {
+        pub fn init(allocator: Allocator, io: Io, callback: fn (PromiseResolver(T)) anyerror!void) !*Self {
             const self = try allocator.create(Self);
             self.* = Self{
+                ._io = io,
                 ._lock = Io.Mutex.init,
                 ._state = .{ .pending = {} },
                 ._events = Emitter(*Self).init(allocator),
@@ -92,70 +89,70 @@ pub fn Promise(comptime T: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            self._lock.lockUncancelable(io);
+            self._lock.lockUncancelable(self._io);
 
             self._events.deinit();
             remove(@ptrCast(self));
 
             const allocator = self._allocator;
-            self._lock.unlock(io);
+            self._lock.unlock(self._io);
             allocator.destroy(self);
         }
 
         pub fn isPending(self: *Self) bool {
-            self._lock.lockUncancelable(io);
-            defer self._lock.unlock(io);
+            self._lock.lockUncancelable(self._io);
+            defer self._lock.unlock(self._io);
 
             return self._state == .pending;
         }
 
         pub fn isResolved(self: *Self) bool {
-            self._lock.lockUncancelable(io);
-            defer self._lock.unlock(io);
+            self._lock.lockUncancelable(self._io);
+            defer self._lock.unlock(self._io);
 
             return self._state != .pending;
         }
 
         fn callOnFulfilled(self: *Self, ctx: anytype, comptime onFulfilled: fn (value: T, ctx: @TypeOf(ctx)) anyerror!void) !void {
-            self._lock.lockUncancelable(io);
+            self._lock.lockUncancelable(self._io);
 
             switch (self._state) {
                 .fulfilled => {
                     const value = self._state.fulfilled;
-                    self._lock.unlock(io);
+                    self._lock.unlock(self._io);
                     try onFulfilled(value, ctx);
                 },
                 else => {
-                    self._lock.unlock(io);
+                    self._lock.unlock(self._io);
                 },
             }
         }
 
         fn callOnRejected(self: *Self, ctx: anytype, comptime onRejected: fn (reason: anyerror, ctx: @TypeOf(ctx)) anyerror!void) !void {
-            self._lock.lockUncancelable(io);
+            self._lock.lockUncancelable(self._io);
 
             switch (self._state) {
                 .rejected => {
                     const reason = self._state.rejected;
-                    self._lock.unlock(io);
+                    self._lock.unlock(self._io);
                     try onRejected(reason, ctx);
                 },
                 else => {
-                    self._lock.unlock(io);
+                    self._lock.unlock(self._io);
                 },
             }
         }
 
         fn callOnFinally(self: *Self, ctx: anytype, comptime onFinally: fn (promise: *Self, ctx: @TypeOf(ctx)) anyerror!void) !void {
-            self._lock.lockUncancelable(io);
+            self._lock.lockUncancelable(self._io);
 
             switch (self._state) {
                 .fulfilled, .rejected => {
-                    self._lock.unlock(io);
+                    self._lock.unlock(self._io);
                     try onFinally(self, ctx);
                 },
                 else => {
-                    self._lock.unlock(io);
+                    self._lock.unlock(self._io);
                 },
             }
         }
@@ -207,8 +204,8 @@ pub fn PromiseResolver(comptime T: type) type {
         promise: *Promise(T),
 
         pub fn resolve(self: *Self, value: T) void {
-            self.promise._lock.lockUncancelable(io);
-            defer self.promise._lock.unlock(io);
+            self.promise._lock.lockUncancelable(self.promise._io);
+            defer self.promise._lock.unlock(self.promise._io);
 
             if (self.promise._state == .pending) {
                 self.promise._state = .{ .fulfilled = value };
@@ -216,8 +213,8 @@ pub fn PromiseResolver(comptime T: type) type {
         }
 
         pub fn reject(self: *Self, reason: anyerror) void {
-            self.promise._lock.lockUncancelable(io);
-            defer self.promise._lock.unlock(io);
+            self.promise._lock.lockUncancelable(self.promise._io);
+            defer self.promise._lock.unlock(self.promise._io);
 
             if (self.promise._state == .pending) {
                 self.promise._state = .{ .rejected = reason };
@@ -227,7 +224,7 @@ pub fn PromiseResolver(comptime T: type) type {
 }
 
 pub fn promise(comptime T: type, callback: fn (resolver: PromiseResolver(T)) anyerror!void) !*Promise(T) {
-    return try Promise(T).init(std.testing.allocator, callback);
+    return try Promise(T).init(std.testing.allocator, std.testing.io, callback);
 }
 
 test "Promise/resolve" {

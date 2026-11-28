@@ -184,7 +184,7 @@ paint declarations in a paint delta; it has no box or hover target.
 const std = @import("std");
 const ui = @import("ui");
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -214,7 +214,7 @@ pub fn main() !void {
     _ = try label.appendChild(try doc.createText("hello"));
     _ = try root.appendChild(label);
 
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = init.io;
     var buffer: [4096]u8 = undefined;
     var stdout = std.Io.File.stdout().writer(io, &buffer);
     try surface.render(&stdout.interface, .{});

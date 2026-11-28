@@ -28,7 +28,7 @@ the pinned startup sequence and the remaining extractions.
 
 ## Live demo
 
-**[Open the full minecode workbench](https://chendesheng.github.io/minecode/unkernel/)** —
+**[Open the full minecode workbench](https://chendesheng.github.io/minecode/)** —
 the native TUI running on [unkernel](https://github.com/pithings/unkernel), a
 real Linux kernel compiled to WebAssembly. The page boots a minimal Alpine
 aarch64 userland, copies the native aarch64 `minecode` binary into it and spawns
@@ -36,11 +36,6 @@ it on a real pty; Ghostty (`ghostty-web`) is the terminal frontend. The sidebar,
 tabs, status bar, Ctrl+P quick open, file watcher, threads and integrated
 terminal are the same native app. The extension host and git are not included;
 the status bar reports that Source Control is disabled.
-
-The original **[editor-only wasm demo](https://chendesheng.github.io/minecode/)**
-is still available. It compiles only the editor to WebAssembly and is much
-lighter, but it has no workbench shell. See [`web/README.md`](web/README.md) for
-the scope of both pages.
 
 Requires Zig 0.17 or newer.
 
@@ -104,7 +99,7 @@ zig build bench-ui -Dbench-args="--runs 5 --markdown"   # UI library stress benc
 
 ## Full workbench in the browser
 
-The `web/unkernel` page uses unkernel's JavaScript SDK. unkernel provides a
+The `web/` page uses unkernel's JavaScript SDK. unkernel provides a
 real Linux kernel and an aarch64 user-space emulator, so the workbench runs as
 a native aarch64 binary rather than a wasm rebuild. The page:
 
@@ -122,7 +117,7 @@ zig build -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSmall -Donig-static=true
 ```
 
 The Pages workflow then downloads the pinned unkernel SDK and Alpine image,
-copies the binary into `zig-out/web/unkernel/`, and deploys both demos.
+copies the binary into `zig-out/pages/`, and deploys the full workbench at the Pages root.
 unkernel is MIT/GPL-2.0 and has no proprietary runtime; Ghostty is MIT.
 The page uses [IosevkaTerm Nerd Font](https://github.com/ryanoasis/nerd-fonts/releases/tag/v3.5.1)
 (from the Nerd Fonts release) so the workbench's icons render; the 14 MB
@@ -159,9 +154,17 @@ keeps its immutable text while edits invalidate the tree’s reference.
   The window thread installs each result. Explorer listings and watched
   settings files and Markdown image/diagram/math loads use the same wakeup. Startup and session restore use synchronous
   file opens. Settings changes initiate the asynchronous
-  configuration/theme/text-file reload flows. Startup scans and extension-host
-  `openPath` calls still use the synchronous path; Explorer single clicks use
-  the async preview open.
+  configuration/theme/text-file reload flows. Window-initiated settings edits
+  are serialized and complete after the updated configuration and change
+  event are installed. Bulk file edits and extension `workspace.fs` requests
+  suspend while native path operations run on the worker; provider listeners
+  and undo bookkeeping stay on the window. External HTTP(S) opens also
+  delegate the native opener subprocess to a worker. Startup scans and
+  extension-host local-file `openPath` calls still use the synchronous path;
+  Explorer single clicks use the async preview open. The foreground TextMate
+  grammar and language-configuration resource loaders still require a
+  synchronous resource at model construction/language change; their I/O is
+  supplied by the host rather than a hidden global backend.
 - Startup opens files after the sidebar and active editor pane have their
   dimensions. Wrapping uses that pane width on its first pass, and a later
   width-only resize reuses previous break positions. Wrapping reads the model’s cached
@@ -298,13 +301,11 @@ zig build test-oracle
 See [scripts/oracle/README.md](scripts/oracle/README.md). The Helix pin is
 coupled to its patch and the committed cassettes; bump them together.
 
-The wasm demo additionally uses the `third_party/oniguruma` git submodule,
+Static native builds use the `third_party/oniguruma` git submodule,
 pinned to Oniguruma **6.9.10** at commit
-`4ef89209a239c1aea328cf13c05a2807e5c146d1`. The submodule is left unmodified;
-the wasm-only `config.h` and provenance live in
-`third_party/oniguruma-config/`. Initialize it with
-`git submodule update --init --depth 1 third_party/oniguruma`; `zig build wasm`
-needs it, while the native `zig build` still uses the system libonig.
+`4ef89209a239c1aea328cf13c05a2807e5c146d1`. Initialize it with
+`git submodule update --init --depth 1 third_party/oniguruma` before
+using `-Donig-static=true`; ordinary native builds use the system libonig.
 
 Without an initialized submodule, `zig build` still works with the vendored
 grammar and theme fallbacks in `src/support/` (Zig, TOML, YAML and Markdown,
@@ -811,40 +812,6 @@ contribution scanners, configuration writes, full `tabGroups`, the rest of the
 built-in command set, and the extension keybinding registry. See
 `docs/extensions.md` for the port status and the remaining work.
 
-## WebAssembly demo
-
-The browser demo is a separate additive build; the native TUI remains the
-primary product. It compiles the editor core and view to `wasm32-wasi` and uses
-Ghostty's VT engine (pinned [`ghostty-web`](https://github.com/coder/ghostty-web))
-as the terminal, not xterm.js. The Ghostty browser bundle is downloaded at
-build time from the pinned npm tarball (hash-checked); no browser binary is
-checked into this repository.
-
-```sh
-git submodule update --init --depth 1 third_party/oniguruma
-zig build wasm -Doptimize=ReleaseSmall
-python3 -m http.server -d zig-out/web 8000
-# open http://localhost:8000
-```
-
-The build fetches the pinned `ghostty-web` tarball with Node (network needed on
-the first run; the hash-checked files are then reused from `zig-out/web`).
-
-`zig build wasm-smoke` runs the headless end-to-end test: the editor's ANSI
-frames are parsed by Ghostty's actual VT engine and the resulting cells are
-checked for text, syntax colors, typing, resize and save round-trip.
-
-The demo supports single-file editing with syntax highlighting, selection,
-multi-cursor keys, mouse, resize, open/save and clipboard. It does not include
-the workbench (explorer, tabs, command palette), the integrated terminal (it
-needs a PTY), file watching, the Node extension host, image previews or the diff
-editor. See [`web/README.md`](web/README.md) for details and known limits.
-
-`.github/workflows/pages.yml` builds the demo, runs the smoke test and deploys
-`zig-out/web` to GitHub Pages (`https://chendesheng.github.io/minecode/`) on
-pushes to `main`. The repository's Pages source must be **GitHub Actions**;
-this is a one-time repository setting.
-
 ## Continuous integration
 
 GitHub Actions (`.github/workflows/ci.yml`) runs the same native build,
@@ -902,7 +869,10 @@ Release packaging installs the runtime-only Node manifest in
 - `ui.WindowIo` is the workbench's thread-affine implementation of Zig 0.17's
   `std.Io` for window-owned async tasks. Its fibers yield on waits and resume
   on the window thread; detached reads, decodes and process work use its
-  concurrent backing pool. The native wake callback integrates with the
+  concurrent backing pool. Clock reads use the injected window I/O without
+  starting a worker or suspending a fiber; independent workers and standalone
+  packages receive their own I/O explicitly. Tests use the test runner's I/O.
+  The native wake callback integrates with the
   existing window dispatcher. The extension reader also wakes that dispatcher;
   completion and document symbols use deferred results, while navigation,
   references and formatting await RPCs in window fibers. File save commands,
@@ -914,6 +884,12 @@ Release packaging installs the runtime-only Node manifest in
   formatter on typing, with canceled stale results and detached minimal edits.
   The optional JSON language server also delivers readiness through the same
   dispatcher, including deferred completion and cancellable formatting.
+  Both transports queue owned outbound frames for an ordered native writer,
+  so pipe/socket backpressure does not block the window. Disposal interrupts
+  blocked transport operations and joins its readers and writers. Snippet
+  `RELATIVE_FILEPATH` obtains its label from the current workspace through
+  the local-file subset of `ILabelService`, without reading the current
+  directory. Custom/remote label formatters are not yet ported.
   Standalone test compatibility and remaining unported upstream contracts are tracked in the
   [Zig extension plan](docs/zig-extension-lsp-plan.md).
 - `ui/` is a standalone Zig package outside `src/`: a DOM-like tree with

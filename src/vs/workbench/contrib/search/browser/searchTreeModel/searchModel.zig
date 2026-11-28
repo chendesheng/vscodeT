@@ -29,13 +29,13 @@ pub const SearchModel = struct {
     pending_message: ?@import("../../../../services/search/common/search.zig").SearchMessage = null,
     on_replace_term_changed: Emitter(void),
 
-    pub fn init(allocator: Allocator, service: ISearchService) !*SearchModel {
+    pub fn init(allocator: Allocator, io: std.Io, service: ISearchService) !*SearchModel {
         const self = try allocator.create(SearchModel);
         errdefer allocator.destroy(self);
         self.* = .{
             .allocator = allocator,
             .service = service,
-            .result = try SearchResult.create(allocator),
+            .result = try SearchResult.create(allocator, io),
             .replace_string = try allocator.dupe(u8, ""),
             .on_replace_term_changed = Emitter(void).init(allocator),
         };

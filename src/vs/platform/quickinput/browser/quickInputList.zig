@@ -141,7 +141,7 @@ pub const QuickPickWidget = struct {
         picker: *QuickPick,
         grid: *ui.CellGrid,
     ) !Layout {
-        return self.renderAt(picker, grid, clock.milliTimestamp());
+        return self.renderAt(picker, grid, clock.milliTimestamp(picker.io));
     }
 
     fn renderAt(self: *QuickPickWidget, picker: *QuickPick, grid: *ui.CellGrid, now: i64) !Layout {
@@ -671,7 +671,7 @@ fn isMatched(matches: []const @import("../../../base/common/filters.zig").Match,
 }
 
 test "QuickPickWidget: a full results page leaves room for the input and frame" {
-    var picker = QuickPick.init(std.testing.allocator);
+    var picker = QuickPick.init(std.testing.allocator, std.testing.io);
     defer picker.deinit();
     const items: [16]model.QuickPickItem = @splat(.{ .item = .{ .label = "file" } });
     try picker.setItems(&items);
@@ -687,7 +687,7 @@ test "QuickPickWidget: a full results page leaves room for the input and frame" 
 
 test "QuickPickWidget: a busy picker keeps the input row clear around the placeholder and caret" {
     const allocator = std.testing.allocator;
-    var picker = QuickPick.init(allocator);
+    var picker = QuickPick.init(allocator, std.testing.io);
     defer picker.deinit();
     picker.setPlaceholder("Type a file");
     picker.setBusy(true);
@@ -715,7 +715,7 @@ test "QuickPickWidget: a busy picker keeps the input row clear around the placeh
 
 test "QuickPickWidget: renders input, items, separators and active row" {
     const allocator = std.testing.allocator;
-    var picker = QuickPick.init(allocator);
+    var picker = QuickPick.init(allocator, std.testing.io);
     defer picker.deinit();
 
     try picker.setItems(&.{
@@ -766,7 +766,7 @@ test "QuickPickWidget: progress starts at 800 ms, advances and clears on complet
     const allocator = std.testing.allocator;
     const widget = try QuickPickWidget.init(allocator);
     defer widget.deinit();
-    var picker = QuickPick.init(allocator);
+    var picker = QuickPick.init(allocator, std.testing.io);
     defer picker.deinit();
     var frame = try ui.Frame.init(allocator, 80, 20);
     defer frame.deinit();
@@ -795,7 +795,7 @@ test "QuickPickWidget: overflow scrollbar reveals on hover, pages by track and d
     const allocator = std.testing.allocator;
     const widget = try QuickPickWidget.init(allocator);
     defer widget.deinit();
-    var picker = QuickPick.init(allocator);
+    var picker = QuickPick.init(allocator, std.testing.io);
     defer picker.deinit();
     const items: [60]model.QuickPickItem = @splat(.{ .item = .{ .label = "file" } });
     try picker.setItems(&items);

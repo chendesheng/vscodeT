@@ -22,7 +22,7 @@ test "Output: file-backed channel append, clear, replace and selected-channel li
     defer files.deinit();
     const registration = try files.registerProvider("file", provider.interface());
     defer registration.dispose();
-    var loggers = FileLoggerService.init(a, files.interface());
+    var loggers = FileLoggerService.init(a, std.testing.io, files.interface());
     defer loggers.deinit();
     var output = OutputService.init(a, files.interface(), &loggers);
     defer output.deinit();

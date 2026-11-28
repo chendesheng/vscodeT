@@ -143,6 +143,7 @@ const CancelHandler = struct {
 };
 
 pub const RpcProtocol = struct {
+    io: std.Io,
     allocator: Allocator,
     transport: Transport,
     actors: [172]?ActorHandler = @splat(null),
@@ -154,10 +155,11 @@ pub const RpcProtocol = struct {
     unresponsive_deadline: i64 = 0,
     responsive_state: ResponsiveState = .responsive,
 
-    pub fn init(allocator: Allocator, transport: Transport) RpcProtocol {
+    pub fn init(allocator: Allocator, io: std.Io, transport: Transport) RpcProtocol {
         return .{
             .allocator = allocator,
             .transport = transport,
+            .io = io,
             .pending = std.AutoHashMap(u32, PendingReply).init(allocator),
             .cancel_handlers = std.AutoHashMap(u32, *CancelHandler).init(allocator),
         };
@@ -556,13 +558,13 @@ pub const RpcProtocol = struct {
 
     fn onWillSendRequest(self: *RpcProtocol) void {
         if (self.unacknowledged_count == 0) {
-            self.unresponsive_deadline = time_compat.milliTimestamp() + unresponsive_time_ms;
+            self.unresponsive_deadline = time_compat.milliTimestamp(self.io) + unresponsive_time_ms;
         }
         self.unacknowledged_count += 1;
     }
 
     fn onDidReceiveAcknowledge(self: *RpcProtocol) void {
-        self.unresponsive_deadline = time_compat.milliTimestamp() + unresponsive_time_ms;
+        self.unresponsive_deadline = time_compat.milliTimestamp(self.io) + unresponsive_time_ms;
         if (self.unacknowledged_count > 0) self.unacknowledged_count -= 1;
         self.responsive_state = .responsive;
     }

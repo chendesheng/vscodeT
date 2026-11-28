@@ -294,7 +294,7 @@ test "an interactive read may create a missing buffer while a reload preserves t
 
 test "TextFileService reads and writes text files" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;

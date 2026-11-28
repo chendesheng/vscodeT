@@ -41,7 +41,7 @@ pub fn scrollEditorToLine(line: f64, editor: *Editor) void {
 
 test "scrolling: fractional lines map to the containing view line" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var text: std.Io.Writer.Allocating = .init(allocator);
     defer text.deinit();
     var line: usize = 0;

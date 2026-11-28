@@ -28,8 +28,8 @@ pub const MatchResult = struct {
     }
 };
 
-fn nowMillis() i64 {
-    return std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).toMilliseconds();
+fn nowMillis(io: std.Io) i64 {
+    return std.Io.Timestamp.now(io, .real).toMilliseconds();
 }
 
 fn anchorMatches(line_pos: usize, anchor_position: ?usize) bool {
@@ -38,6 +38,7 @@ fn anchorMatches(line_pos: usize, anchor_position: ?usize) bool {
 
 pub fn tokenizeString(
     g: *grammar.Grammar,
+    io: std.Io,
     line_text: *OnigString,
     is_first_line_arg: bool,
     line_pos_arg: usize,
@@ -55,16 +56,16 @@ pub fn tokenizeString(
     var anchor_position: ?usize = null;
 
     if (check_while_conditions) {
-        const while_result = try checkWhileConditions(g, line_text, is_first_line, line_pos, stack, token_handler);
+        const while_result = try checkWhileConditions(g, io, line_text, is_first_line, line_pos, stack, token_handler);
         stack = while_result.stack;
         line_pos = while_result.line_pos;
         is_first_line = while_result.is_first_line;
         anchor_position = while_result.anchor_position;
     }
 
-    const start_time = nowMillis();
+    const start_time = nowMillis(io);
     while (true) {
-        if (time_limit != 0 and nowMillis() - start_time > time_limit) {
+        if (time_limit != 0 and nowMillis(io) - start_time > time_limit) {
             return .{ .stack = stack, .stopped_early = true };
         }
 
@@ -93,7 +94,7 @@ pub fn tokenizeString(
             token_handler.handle(stack.content_name_scopes_list, capture_indices[0].start);
             const name_scopes = stack.name_scopes_list orelse stack.content_name_scopes_list.?;
             stack = try stack.withContentNameScopesList(allocator, name_scopes);
-            try handleCaptures(g, line_text, is_first_line, stack, token_handler, end_captures, capture_indices);
+            try handleCaptures(g, io, line_text, is_first_line, stack, token_handler, end_captures, capture_indices);
             token_handler.handle(stack.content_name_scopes_list, capture_indices[0].end);
 
             const popped = stack;
@@ -126,7 +127,7 @@ pub fn tokenizeString(
 
             switch (matched_rule.*) {
                 .begin_end => |*pushed_rule| {
-                    try handleCaptures(g, line_text, is_first_line, stack, token_handler, pushed_rule.begin_captures, capture_indices);
+                    try handleCaptures(g, io, line_text, is_first_line, stack, token_handler, pushed_rule.begin_captures, capture_indices);
                     token_handler.handle(stack.content_name_scopes_list, capture_indices[0].end);
                     anchor_position = capture_indices[0].end;
 
@@ -146,7 +147,7 @@ pub fn tokenizeString(
                     }
                 },
                 .begin_while => |*pushed_rule| {
-                    try handleCaptures(g, line_text, is_first_line, stack, token_handler, pushed_rule.begin_captures, capture_indices);
+                    try handleCaptures(g, io, line_text, is_first_line, stack, token_handler, pushed_rule.begin_captures, capture_indices);
                     token_handler.handle(stack.content_name_scopes_list, capture_indices[0].end);
                     anchor_position = capture_indices[0].end;
 
@@ -166,7 +167,7 @@ pub fn tokenizeString(
                     }
                 },
                 .match => |*matching_rule| {
-                    try handleCaptures(g, line_text, is_first_line, stack, token_handler, matching_rule.captures, capture_indices);
+                    try handleCaptures(g, io, line_text, is_first_line, stack, token_handler, matching_rule.captures, capture_indices);
                     token_handler.handle(stack.content_name_scopes_list, capture_indices[0].end);
                     stack = stack.parent orelse stack;
 
@@ -196,6 +197,7 @@ const WhileCheckResult = struct {
 
 fn checkWhileConditions(
     g: *grammar.Grammar,
+    io: std.Io,
     line_text: *OnigString,
     is_first_line_arg: bool,
     line_pos_arg: usize,
@@ -241,7 +243,7 @@ fn checkWhileConditions(
             if (matched.capture_indices.len > 0) {
                 const captures = matched.capture_indices;
                 token_handler.handle(while_rule.stack.content_name_scopes_list, captures[0].start);
-                try handleCaptures(g, line_text, is_first_line, while_rule.stack, token_handler, while_rule.rule_value.while_captures, captures);
+                try handleCaptures(g, io, line_text, is_first_line, while_rule.stack, token_handler, while_rule.rule_value.while_captures, captures);
                 token_handler.handle(while_rule.stack.content_name_scopes_list, captures[0].end);
                 anchor_position = captures[0].end;
                 if (captures[0].end > line_pos) {
@@ -363,6 +365,7 @@ const LocalStackElement = struct {
 
 fn handleCaptures(
     g: *grammar.Grammar,
+    io: std.Io,
     line_text: *OnigString,
     is_first_line: bool,
     stack: *grammar.StateStackImpl,
@@ -416,6 +419,7 @@ fn handleCaptures(
             defer sub_string.deinit();
             _ = try tokenizeString(
                 g,
+                io,
                 sub_string,
                 is_first_line and capture_index.start == 0,
                 capture_index.start,

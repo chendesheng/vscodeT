@@ -42,7 +42,7 @@ const FileResult = struct {
 };
 
 fn readFile(allocator: Allocator, path: []const u8) ![]u8 {
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(64 * 1024 * 1024));
 }
 
@@ -152,7 +152,7 @@ fn serializeFile(allocator: Allocator, file: *const FileResult) ![]u8 {
 }
 
 fn collectTestFiles(allocator: Allocator, tests_dir: []const u8) ![][]const u8 {
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var dir = try std.Io.Dir.cwd().openDir(io, tests_dir, .{ .iterate = true });
     defer dir.close(io);
 
@@ -247,6 +247,7 @@ test "themes: upstream fixtures" {
                 return error.TestUnexpectedResult;
             };
             const grammar = (try registry.loadGrammarWithEmbeddedLanguages(
+                std.testing.io,
                 registration.scope_name,
                 language_id,
                 registration.embedded_languages,
@@ -302,7 +303,7 @@ fn tokenizeFixtureWithDarkVs(allocator: Allocator, test_cases: []const u8, file:
     });
     defer registry.dispose();
 
-    const grammar = (try registry.loadGrammar("source.ts")) orelse return error.TestUnexpectedResult;
+    const grammar = (try registry.loadGrammar(std.testing.io, "source.ts")) orelse return error.TestUnexpectedResult;
     const fixture_path = try std.fs.path.join(allocator, &.{ themes_dir, "fixtures", file });
     defer allocator.free(fixture_path);
     const content = try readFile(allocator, fixture_path);
@@ -326,7 +327,7 @@ fn tokenizeFixtureWithDarkVs(allocator: Allocator, test_cases: []const u8, file:
 
     var stack: ?*main.StateStack = null;
     for (lines.items) |line| {
-        const result = try grammar.tokenizeLine2(line, stack, 0);
+        const result = try grammar.tokenizeLine2(std.testing.io, line, stack, 0);
         stack = result.rule_stack;
     }
 }

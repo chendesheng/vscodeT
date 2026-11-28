@@ -39,6 +39,7 @@ const TokenSupport = struct {
 
     fn tokenizeEncoded(
         context: *anyopaque,
+        _: std.Io,
         allocator: Allocator,
         line: []const u8,
         has_eol: bool,
@@ -206,7 +207,7 @@ test "InPlaceReplaceCommand: keeps the cursor for an empty selection" {
 
 test "in-place replace: editor integration and decoration expiry" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "true", "test.zig", 40, 8);
     defer {
         editor.deinit();

@@ -2930,7 +2930,7 @@ fn numberedLines(allocator: std.mem.Allocator, count: usize) ![]u8 {
 
 test "View: text, gutter and status" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 80, 5);
     defer {
         editor.deinit();
@@ -2966,7 +2966,7 @@ test "View: text, gutter and status" {
 
 test "View: content requests text, chrome requests default" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "abc", "test.txt", 20, 5);
     defer {
         editor.deinit();
@@ -2996,7 +2996,7 @@ test "View: content requests text, chrome requests default" {
 
 test "View: CJK and tab runs keep the caret on the right cell" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "中\tq", "test.txt", 20, 3);
     defer {
         editor.deinit();
@@ -3026,7 +3026,7 @@ test "View: CJK and tab runs keep the caret on the right cell" {
 
 test "View: wordWrap off scrolls long lines through the UI scroll view" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(
         allocator,
         io,
@@ -3101,7 +3101,7 @@ test "View: wordWrap off scrolls long lines through the UI scroll view" {
 
 test "View: wrapped continuation gets a gutter arrow" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(
         allocator,
         io,
@@ -3137,7 +3137,7 @@ test "View: wrapped continuation gets a gutter arrow" {
 
 test "View: primary caret follows clicks and movement across wrapped rows" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     // Five text cells per view line: abcde / fghij / klmno.
     const editor = try Editor.createFromText(allocator, io, "abcdefghijklmno", "test.txt", 13, 6);
     defer {
@@ -3166,7 +3166,7 @@ test "View: primary caret follows clicks and movement across wrapped rows" {
 
 test "View: secondary caret uses its wrapped view column" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 13, 5);
     defer {
         editor.deinit();
@@ -3188,7 +3188,7 @@ test "View: secondary caret uses its wrapped view column" {
 
 test "View: wrapped caret follows painted indentation tabs and wide characters" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const text = "    abcdefghijklmnop 中\tQ";
     const editor = try Editor.createFromText(allocator, io, text, "test.txt", 20, 8);
     defer {
@@ -3217,7 +3217,7 @@ test "View: wrapped caret follows painted indentation tabs and wide characters" 
 
 test "View: selection paints the theme background and dims covered text" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "hello", "test.txt", 20, 3);
     defer {
         editor.deinit();
@@ -3260,7 +3260,7 @@ test "View: selection paints the theme background and dims covered text" {
 
 test "View: selection spans wrapped continuation rows" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     // Six gutter columns and the two-column overview ruler leave five text
     // columns, so this wraps as abcde / fghij.
     const editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 13, 5);
@@ -3295,7 +3295,7 @@ test "View: selection spans wrapped continuation rows" {
 
 test "View: selection uses the installed theme colors" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "hello", "test.txt", 20, 3);
     defer {
         editor.deinit();
@@ -3341,7 +3341,7 @@ test "View: selection uses the installed theme colors" {
 
 test "View: high contrast selection uses the selection foreground" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "hello", "test.txt", 20, 3);
     defer {
         editor.deinit();
@@ -3389,7 +3389,7 @@ test "View: high contrast selection uses the selection foreground" {
 
 test "View: selection shows whitespace markers by default" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "a b\tc d", "test.txt", 30, 3);
     defer {
         editor.deinit();
@@ -3425,7 +3425,7 @@ test "View: selection shows whitespace markers by default" {
 
 test "View: editor.renderWhitespace setting overrides the selection default" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "a b c", "test.txt", 20, 3);
     defer {
         editor.deinit();
@@ -3461,7 +3461,7 @@ test "View: editor.renderWhitespace setting overrides the selection default" {
 
 test "View: refresh keeps the frame diff and the cursor visible" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 20, 4);
     defer {
         editor.deinit();
@@ -3568,7 +3568,7 @@ const TestOverlay = struct {
 
 test "View: overlay widget is placed top-right and takes focused keys" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "abc", "test.txt", 20, 4);
     defer {
         editor.deinit();
@@ -3668,7 +3668,7 @@ const TestContentWidget = struct {
 
 test "View: content widget anchors to a model position" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "abcdef", "test.txt", 20, 5);
     defer {
         editor.deinit();
@@ -3705,7 +3705,7 @@ test "View: content widget anchors to a model position" {
 
 test "View: content widget anchors on a wrapped line" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "aaaa bbbb cccc dddd", "test.txt", 23, 6);
     defer {
         editor.deinit();
@@ -3737,7 +3737,7 @@ test "View: content widget anchors on a wrapped line" {
 
 test "View: content widget flips above and clamps to the text area" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "a\nb\nc", "test.txt", 12, 4);
     defer {
         editor.deinit();
@@ -3771,7 +3771,7 @@ test "View: content widget flips above and clamps to the text area" {
 
 test "View: bracket colorization paints nesting levels" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "{ [ ] }\nplain", "test.zig", 30, 6);
     defer {
         editor.deinit();
@@ -3805,7 +3805,7 @@ test "View: bracket colorization paints nesting levels" {
 
 test "View: unexpected closing bracket paints red" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "}\nplain", "test.zig", 30, 6);
     defer {
         editor.deinit();
@@ -3829,7 +3829,7 @@ test "View: unexpected closing bracket paints red" {
 
 test "View: bracket match keeps the colorized foreground" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "{ x }", "test.zig", 30, 6);
     defer {
         editor.deinit();
@@ -3856,7 +3856,7 @@ test "View: bracket match keeps the colorized foreground" {
 
 test "View: bracket colorization respects theme colors" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "{ x }\nplain", "test.zig", 30, 6);
     defer {
         editor.deinit();
@@ -3892,7 +3892,7 @@ test "View: bracket colorization respects theme colors" {
 
 test "View: disabling bracket colorization leaves token colors" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "{ x }\nplain", "test.zig", 30, 6);
     defer {
         editor.deinit();
@@ -3921,7 +3921,7 @@ test "View: disabling bracket colorization leaves token colors" {
 
 test "View: strings are not bracket-colorized after eager tokenization" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "\"{\"\n{\n}\nplain", "test.zig", 30, 6);
     defer {
         editor.deinit();
@@ -3947,7 +3947,7 @@ test "View: strings are not bracket-colorized after eager tokenization" {
 
 test "View: word highlight decorations paint text and strong colors" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "word word", "test.txt", 20, 4);
     defer {
         editor.deinit();
@@ -3979,7 +3979,7 @@ test "View: word highlight decorations paint text and strong colors" {
 
 test "View: hover highlight paints the anchor range" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "abcdef", "test.txt", 20, 4);
     defer {
         editor.deinit();
@@ -4005,7 +4005,7 @@ test "View: hover highlight paints the anchor range" {
 
 test "View: guides from folded hidden lines do not overwrite text" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(
         allocator,
         io,
@@ -4037,7 +4037,7 @@ test "View: guides from folded hidden lines do not overwrite text" {
 
 test "View: gutter fold control collapses and expands a region" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(
         allocator,
         io,
@@ -4108,7 +4108,7 @@ test "View: gutter fold control collapses and expands a region" {
 
 test "View: folding keeps a scrolled viewport at the same model line" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(
         allocator,
         io,
@@ -4218,7 +4218,7 @@ test "View: model-anchored view zones render retained content and recompute on h
 
 test "View: mouse target distinguishes text, empty area, gutter and status" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "abc", "test.txt", 23, 5);
     defer {
         editor.deinit();
@@ -4254,7 +4254,7 @@ test "View: mouse target distinguishes text, empty area, gutter and status" {
 
 test "View: the gutter keeps a blank cell before the text" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 20, 4);
     defer {
         editor.deinit();
@@ -4279,7 +4279,7 @@ test "View: the gutter keeps a blank cell before the text" {
 
 test "View: scrolling reuses the visible line DOM nodes" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var text: std.ArrayList(u8) = .empty;
     defer text.deinit(allocator);
     for (0..50) |line| {
@@ -4351,7 +4351,7 @@ fn testMouse(kind: ui.MouseKind, x: usize, y: usize) ui.MouseEvent {
 
 test "View: a left click places the caret and ignores gutter and status" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "abc\ndef", "test.txt", 40, 6);
     defer {
         editor.deinit();
@@ -4386,7 +4386,7 @@ test "View: a left click places the caret and ignores gutter and status" {
 
 test "View: clicks account for tabs, wide characters and wrapped lines" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "ab\tcd\na何b", "test.txt", 40, 6);
     defer {
         editor.deinit();
@@ -4409,7 +4409,7 @@ test "View: clicks account for tabs, wide characters and wrapped lines" {
 
 test "View: a click on a wrapped continuation maps to its model line" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 8, 4);
     defer {
         editor.deinit();
@@ -4428,7 +4428,7 @@ test "View: a click on a wrapped continuation maps to its model line" {
 
 test "View: shift-click extends and a drag selects without clicking" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "hello world", "test.txt", 40, 5);
     defer {
         editor.deinit();
@@ -4482,7 +4482,7 @@ test "View: shift-click extends and a drag selects without clicking" {
 
 test "View: the wheel scrolls without moving the caret and clamps" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(
         allocator,
         io,
@@ -4535,7 +4535,7 @@ test "View: the wheel scrolls without moving the caret and clamps" {
 
 test "View: matching brackets are highlighted while the cursor is on one" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "(a)\n(\n)\nx", "test.zig", 20, 6);
     defer {
         editor.deinit();
@@ -4576,7 +4576,7 @@ test "View: matching brackets are highlighted while the cursor is on one" {
 
 test "View: a focused widget hides bracket highlights" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "(a)", "test.zig", 20, 4);
     defer {
         editor.deinit();
@@ -4602,7 +4602,7 @@ test "View: a focused widget hides bracket highlights" {
 
 test "View: typing an auto-closed bracket highlights the pair" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "", "test.zig", 20, 4);
     defer {
         editor.deinit();
@@ -4627,7 +4627,7 @@ test "View: typing an auto-closed bracket highlights the pair" {
 
 test "View: bracket highlights stay on their wrapped segment" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "(abcdefghij)", "test.zig", 13, 4);
     defer {
         editor.deinit();
@@ -4657,7 +4657,7 @@ test "View: bracket highlights stay on their wrapped segment" {
 
 test "View: find decorations stay on their wrapped segment" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 14, 4);
     defer {
         editor.deinit();
@@ -4692,7 +4692,7 @@ test "View: find decorations stay on their wrapped segment" {
 
 test "View: bracket highlights include the synthetic wrap indentation" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "    (abcdefghij)", "test.zig", 14, 8);
     defer {
         editor.deinit();
@@ -4742,7 +4742,7 @@ test "View: bracket highlights include the synthetic wrap indentation" {
 
 test "View: right column paints markers and the overlapping thumb" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const text = try numberedLines(allocator, 20);
     defer allocator.free(text);
     const editor = try Editor.createFromText(allocator, io, text, "test.txt", 40, 8);
@@ -4808,7 +4808,7 @@ test "View: right column paints markers and the overlapping thumb" {
 
 test "View: short document has no scrollbar thumb" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 20, 5);
     defer {
         editor.deinit();
@@ -4847,7 +4847,7 @@ test "View: short document has no scrollbar thumb" {
 
 test "View: mouse target distinguishes overview ruler and scrollbar" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const text = try numberedLines(allocator, 20);
     defer allocator.free(text);
     const editor = try Editor.createFromText(allocator, io, text, "test.txt", 40, 6);
@@ -4890,7 +4890,7 @@ test "View: mouse target distinguishes overview ruler and scrollbar" {
 
 test "View: narrow terminal hides the scrollbar columns" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "abc", "test.txt", 4, 5);
     defer {
         editor.deinit();
@@ -4921,7 +4921,7 @@ test "View: narrow terminal hides the scrollbar columns" {
 
 test "View: overview markers honor the per-decoration flag" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "a\nb\nc", "test.txt", 40, 5);
     defer {
         editor.deinit();
@@ -4946,7 +4946,7 @@ test "View: overview markers honor the per-decoration flag" {
 
 test "View: overview markers follow wrapped view lines" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 13, 5);
     defer {
         editor.deinit();
@@ -4972,7 +4972,7 @@ test "View: overview markers follow wrapped view lines" {
 
 test "View: three overview lanes use half-cell glyphs" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "a\nb\nc\nd", "test.txt", 40, 6);
     defer {
         editor.deinit();
@@ -5014,7 +5014,7 @@ test "View: three overview lanes use half-cell glyphs" {
 
 test "View: half-cell thumb uses quadrant edges" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const text = try numberedLines(allocator, 13);
     defer allocator.free(text);
     const editor = try Editor.createFromText(allocator, io, text, "test.txt", 40, 6);
@@ -5051,7 +5051,7 @@ test "View: half-cell thumb uses quadrant edges" {
 
 test "View: half-cell markers use quadrant glyphs" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const text = try numberedLines(allocator, 13);
     defer allocator.free(text);
     const editor = try Editor.createFromText(allocator, io, text, "test.txt", 40, 6);
@@ -5090,7 +5090,7 @@ test "View: half-cell markers use quadrant glyphs" {
 
 test "View: single-line center marker uses one half-cell" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const text = try numberedLines(allocator, 13);
     defer allocator.free(text);
     const editor = try Editor.createFromText(allocator, io, text, "test.txt", 40, 6);
@@ -5123,7 +5123,7 @@ test "View: single-line center marker uses one half-cell" {
 
 test "View: indent guides mark leading whitespace and blank lines" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const text =
         "if x:\n" ++
         "    if y:\n" ++
@@ -5176,7 +5176,7 @@ test "View: indent guides mark leading whitespace and blank lines" {
 
 test "View: rendered whitespace uses one theme color and guides paint over it" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const text =
         "fn  a  b\n" ++
         "    child\n" ++
@@ -5247,7 +5247,7 @@ test "View: rendered whitespace uses one theme color and guides paint over it" {
 
 test "View: space dot and tab arrow share the whitespace color" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "\tfoo bar\n", "test.txt", 30, 3);
     defer {
         editor.deinit();
@@ -5302,7 +5302,7 @@ test "View: space dot and tab arrow share the whitespace color" {
 
 test "View: rendered whitespace falls back to a dimmed foreground" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "a b", "test.txt", 20, 4);
     defer {
         editor.deinit();
@@ -5343,7 +5343,7 @@ test "View: rendered whitespace falls back to a dimmed foreground" {
 
 test "View: selected whitespace guide keeps the selection background" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "    x", "test.txt", 20, 3);
     defer {
         editor.deinit();
@@ -5378,7 +5378,7 @@ test "View: selected whitespace guide keeps the selection background" {
 
 test "View: selected tab renders its marker after the indent guide" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "\tfoo", "test.txt", 20, 3);
     defer {
         editor.deinit();
@@ -5427,7 +5427,7 @@ test "View: selected tab renders its marker after the indent guide" {
 
 test "View: each selected tab renders after its own indent guide" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "\t\tfoo", "test.txt", 20, 3);
     defer {
         editor.deinit();
@@ -5457,7 +5457,7 @@ test "View: each selected tab renders after its own indent guide" {
 
 test "View: one-cell tab keeps its indent guide" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "\tfoo", "test.txt", 20, 3);
     defer {
         editor.deinit();
@@ -5506,7 +5506,7 @@ test "View: one-cell tab keeps its indent guide" {
 
 test "View: indent guides honor per-level theme colors" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const text =
         "root\n" ++
         "    child\n" ++
@@ -5551,7 +5551,7 @@ test "View: indent guides honor per-level theme colors" {
 
 test "View: bracket guides follow pairs and highlight the active pair" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const text =
         "fn main() {\n" ++
         "    if (x) {\n" ++
@@ -5603,7 +5603,7 @@ test "View: bracket guides follow pairs and highlight the active pair" {
 
 test "View: last visible line keeps bracket guides closing below the viewport" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const text =
         "fn main() {\n" ++
         "    if (x) {\n" ++
@@ -5666,7 +5666,7 @@ test "View: last visible line keeps bracket guides closing below the viewport" {
 
 test "View: resizing the viewport recomputes guides for the new rows" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const text =
         "if x:\n" ++
         "    if y:\n" ++
@@ -5703,7 +5703,7 @@ test "View: resizing the viewport recomputes guides for the new rows" {
 
 test "View: active indentation guide follows the cursor scope" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const text =
         "root\n" ++
         "    child\n" ++
@@ -5746,7 +5746,7 @@ test "View: active indentation guide follows the cursor scope" {
 
 test "View: contribution highlights are stored as model decorations" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "alpha beta alpha", "test.txt", 40, 5);
     defer {
         editor.deinit();
@@ -5870,7 +5870,7 @@ test "view: selection paint replaces reverse video and stays below decorations" 
 
 test "view: marker error ranges paint a curly underline" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var marker_service = MarkerService.init(allocator);
     defer marker_service.deinit();
@@ -5916,7 +5916,7 @@ test "view: marker error ranges paint a curly underline" {
 
 test "View: block decorations paint a bordered range under the text" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree\nfour", "test.txt", 40, 8);
     defer {
         editor.deinit();
@@ -5959,7 +5959,7 @@ test "View: block decorations paint a bordered range under the text" {
 
 test "View: glyph margin paints a themed glyph and reports the gutter target" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree", "test.txt", 30, 6);
     defer {
         editor.deinit();
@@ -5992,7 +5992,7 @@ test "View: glyph margin paints a themed glyph and reports the gutter target" {
 
 test "View: glyph margin compacts multiple lanes" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree", "test.txt", 30, 6);
     defer {
         editor.deinit();
@@ -6110,7 +6110,7 @@ test "View: glyph margin widgets win equal-z decorations and route mouse in mode
 
 test "View: collapsed end-of-line markers paint an underline cell" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "abc\n", "broken.js", 20, 4);
     defer {
         editor.deinit();
@@ -6147,7 +6147,7 @@ test "View: collapsed end-of-line markers paint an underline cell" {
 
 test "View: init, paint and invalidate batch renders" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 20, 5);
     defer {
         editor.deinit();
@@ -6177,7 +6177,7 @@ test "View: has no terminal-only rebuild or resize method" {
 
 test "View: viewport change resizes in place and retains chrome roots" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "alpha\nbeta", "test.txt", 20, 6);
     defer {
         editor.deinit();
@@ -6212,7 +6212,7 @@ test "View: viewport change resizes in place and retains chrome roots" {
 
 test "View: diff line backgrounds and filler rows composite over the dark theme" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree", "test.txt", 40, 6);
     defer {
         editor.deinit();
@@ -6270,7 +6270,7 @@ test "View: diff line backgrounds and filler rows composite over the dark theme"
 
 test "View: char-insert and char-delete inline classes paint cell backgrounds" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "abcd\nsecond", "test.txt", 20, 4);
     defer {
         editor.deinit();
@@ -6305,7 +6305,7 @@ test "View: char-insert and char-delete inline classes paint cell backgrounds" {
 
 test "View: char-insert fills the rest of a continuing row but not the final row" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "abcd\nsecond", "test.txt", 20, 4);
     defer {
         editor.deinit();
@@ -6331,7 +6331,7 @@ test "View: char-insert fills the rest of a continuing row but not the final row
 
 test "View: quick-diff gutter marker" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "one\ntwo", "test.txt", 40, 5);
     defer {
         editor.deinit();
@@ -6370,7 +6370,7 @@ test "View: quick-diff gutter marker" {
 
 test "View: fold control sits before the quick-diff cell" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(
         allocator,
         io,
@@ -6410,7 +6410,7 @@ test "View: fold control sits before the quick-diff cell" {
 
 test "View: gutter-only line highlight paints the margin" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "one\ntwo", "test.txt", 30, 4);
     defer {
         editor.deinit();
@@ -6440,7 +6440,7 @@ test "View: gutter-only line highlight paints the margin" {
 
 test "View: margin decorations paint the gutter row" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree", "test.txt", 30, 6);
     defer {
         editor.deinit();
@@ -6470,7 +6470,7 @@ test "View: margin decorations paint the gutter row" {
 
 test "View: line decoration classes paint the marker cell" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree", "test.txt", 30, 6);
     defer {
         editor.deinit();
@@ -6505,7 +6505,7 @@ test "View: line decoration classes paint the marker cell" {
 
 test "View: focus-only line highlight follows forwarded focus" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "one\ntwo", "test.txt", 30, 4);
     defer {
         editor.deinit();
@@ -6546,7 +6546,7 @@ test "View: focus-only line highlight follows forwarded focus" {
 
 test "View: rulers paint a guide column" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "one\ntwo", "test.txt", 40, 4);
     defer {
         editor.deinit();
@@ -6570,7 +6570,7 @@ test "View: rulers paint a guide column" {
 
 test "View: scroll decoration shadows the first row" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11", "test.txt", 30, 4);
     defer {
         editor.deinit();
@@ -6593,7 +6593,7 @@ test "View: scroll decoration shadows the first row" {
 
 test "View: glyph hover contribution renders all lane messages and line number messages after the shared deadline" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree\nfour\nfive\nsix\nseven", "test.txt", 40, 6);
     defer {
         editor.deinit();
@@ -6676,7 +6676,7 @@ test "View: glyph hover contribution renders all lane messages and line number m
 
 test "View: top inset reserves rows above the text" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "one\ntwo", "test.txt", 30, 4);
     defer {
         editor.deinit();
@@ -6701,7 +6701,7 @@ test "View: top inset reserves rows above the text" {
 
 test "View: bracket colorization follows a line insertion above the pair" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "plain\n[ ]\nplain", "test.zig", 30, 6);
     defer {
         editor.deinit();
@@ -6737,7 +6737,7 @@ test "View: bracket colorization follows a line insertion above the pair" {
 
 test "View: ghost text starts at the caret, clips at the edge and leaves the buffer intact" {
     const allocator = std.testing.allocator;
-    const editor = try Editor.createFromText(allocator, @import("../vs/base/common/timeCompat.zig").io, "éx", "test.txt", 30, 7);
+    const editor = try Editor.createFromText(allocator, std.testing.io, "éx", "test.txt", 30, 7);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -6760,7 +6760,7 @@ test "View: ghost text starts at the caret, clips at the edge and leaves the buf
 
 test "View: inline completion displays the projected suffix and accepts the provider range" {
     const allocator = std.testing.allocator;
-    const editor = try Editor.createFromText(allocator, @import("../vs/base/common/timeCompat.zig").io, "f() + 1", "test.py", 42, 8);
+    const editor = try Editor.createFromText(allocator, std.testing.io, "f() + 1", "test.py", 42, 8);
     defer {
         editor.deinit();
         allocator.destroy(editor);

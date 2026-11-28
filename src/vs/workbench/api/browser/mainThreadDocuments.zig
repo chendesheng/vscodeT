@@ -194,7 +194,7 @@ pub const BoundModelReferenceCollection = struct {
         };
         try self.data.append(self.allocator, entry);
         self.length += length;
-        entry.timer.schedule(time.milliTimestamp() + self.max_age);
+        entry.timer.schedule(time.milliTimestamp(self.window.io) + self.max_age);
         while (self.length > self.max_length) self.data.items[0].dispose();
         const extra_size = (self.max_size * 12 + 9) / 10;
         if (self.data.items.len >= extra_size) {

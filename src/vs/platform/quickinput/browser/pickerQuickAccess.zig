@@ -161,7 +161,7 @@ const PickerTestState = struct {
 
 test "PickerQuickAccessProvider: no results, filtering and accept ordering" {
     var state = PickerTestState{};
-    var picker = QuickPick.init(std.testing.allocator);
+    var picker = QuickPick.init(std.testing.allocator, std.testing.io);
     defer picker.deinit();
     state.picker = &picker;
 

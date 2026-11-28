@@ -376,12 +376,12 @@ pub fn main(init: std.process.Init) !void {
     }
 
     var declarative: ?extensions_registry.Registry = if (extension_service) |service|
-        extensions_registry.scanDescriptions(allocator, service.enabledDescriptions()) catch |err| blk: {
+        extensions_registry.scanDescriptions(allocator, io, service.enabledDescriptions()) catch |err| blk: {
             report(log_service, "extension contribution scan failed: {s}", .{@errorName(err)});
             break :blk null;
         }
     else
-        extensions_registry.scan(allocator, &.{installed_extensions}) catch |err| blk: {
+        extensions_registry.scan(allocator, io, &.{installed_extensions}) catch |err| blk: {
             report(log_service, "built-in extension scan failed: {s}", .{@errorName(err)});
             break :blk null;
         };
@@ -395,7 +395,7 @@ pub fn main(init: std.process.Init) !void {
     const json_server = try std.fs.path.join(allocator, &.{ runtime_dir, "jsonServer.mjs" });
     defer allocator.free(json_server);
     var json_client: ?*json_language.Client = null;
-    if (std.Io.Dir.cwd().access(time_compat.io, json_server, .{})) |_| {
+    if (std.Io.Dir.cwd().access(io, json_server, .{})) |_| {
         json_client = json_language.Client.start(allocator, "node", json_server) catch |err| blk: {
             infoLog(log_service, "JSON language server unavailable: {s}", .{@errorName(err)});
             break :blk null;
@@ -757,9 +757,9 @@ pub fn main(init: std.process.Init) !void {
     const outline_models = try workbench.instantiation.invokeFunction(@import("../vs/editor/contrib/documentSymbols/browser/outlineModel.zig").getOutlineModelService, .{});
     outline_models.attachWindow(&workbench.window_events);
     while (true) {
-        const now_ms = time_compat.milliTimestamp();
+        const now_ms = time_compat.milliTimestamp(workbench.async_io);
         if (workbench.window_events.dispatch(now_ms)) needs_render = true;
-        var timeout = workbench.window_events.nextTimeout(time_compat.milliTimestamp(), 250);
+        var timeout = workbench.window_events.nextTimeout(time_compat.milliTimestamp(workbench.async_io), 250);
 
         timeout = restore_timer.nextTimeout(timeout);
         const polled = try terminal_host.wait(if (needs_render) 0 else timeout);
@@ -1304,7 +1304,7 @@ fn disableVimForHelix(context: *anyopaque) void {
 
 test "app: q inserts text" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "hello", "test.txt", 40, 8);
     defer {
         editor.deinit();
@@ -1322,7 +1322,7 @@ test "app: q inserts text" {
 
 test "app: move lines and line comment shortcuts" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "a\nb", "test.zig", 40, 8);
     defer {
         editor.deinit();
@@ -1349,7 +1349,7 @@ test "app: move lines and line comment shortcuts" {
 
 test "app: folding shortcuts fold and unfold the current region" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(
         allocator,
         io,
@@ -1377,7 +1377,7 @@ test "app: folding shortcuts fold and unfold the current region" {
 
 test "app: jump to bracket shortcut" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "(a)", "test.zig", 40, 8);
     defer {
         editor.deinit();
@@ -1392,7 +1392,7 @@ test "app: jump to bracket shortcut" {
 
 test "app: indent lines shortcut" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "a", "test.txt", 40, 8);
     defer {
         editor.deinit();
@@ -1409,7 +1409,7 @@ test "app: indent lines shortcut" {
 
 test "app: typing an open bracket auto-closes it" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "", "test.zig", 40, 8);
     defer {
         editor.deinit();
@@ -1429,7 +1429,7 @@ test "app: typing an open bracket auto-closes it" {
 // Regression: the decoder used to drop 0x06, so Ctrl-F never reached the app.
 test "app: Ctrl-F opens the find bar through the byte decoder" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(
         allocator,
         io,
@@ -1519,7 +1519,7 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
 test "app: the word under the caret highlights its occurrences" {
     const allocator = std.testing.allocator;
     defer word_character_classifier.freeWordClassifierCache();
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "word word word other", "test.txt", 60, 5);
     defer {
         editor.deinit();
@@ -1572,7 +1572,7 @@ test "app: the word under the caret highlights its occurrences" {
 
 test "app: hover coordinate host uses the wrapped segment start" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "aaaa bbbb cccc dddd", "test.zig", 20, 6);
     defer {
         editor.deinit();
@@ -1595,7 +1595,7 @@ test "app: hover coordinate host uses the wrapped segment start" {
 
 test "app: hovering a word shows the rendered markdown hover" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "const value = 42;\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore\nmore", "test.zig", 60, 8);
     defer {
         editor.deinit();
@@ -1641,7 +1641,7 @@ test "app: hovering a word shows the rendered markdown hover" {
     hover.onMouseMove(event);
     try std.testing.expect(!hover.isVisible());
 
-    const now = time_compat.milliTimestamp();
+    const now = time_compat.milliTimestamp(std.testing.io);
     _ = hover.onTick(now + 1000); // async half of the hover delay
     _ = hover.onTick(now + 2000); // sync half
     try std.testing.expect(hover.isVisible());
@@ -1687,8 +1687,8 @@ test "app: hovering a word shows the rendered markdown hover" {
     // Show it again, click inside the box and close it with Escape. The click
     // focuses the hover, Escape gives the keyboard back to the editor.
     hover.onMouseMove(event);
-    _ = hover.onTick(time_compat.milliTimestamp() + 3000);
-    _ = hover.onTick(time_compat.milliTimestamp() + 4000);
+    _ = hover.onTick(time_compat.milliTimestamp(std.testing.io) + 3000);
+    _ = hover.onTick(time_compat.milliTimestamp(std.testing.io) + 4000);
     try std.testing.expect(hover.isVisible());
     try view.refresh();
     try view.renderAnsi(&out.writer);
@@ -1715,8 +1715,8 @@ test "app: hovering a word shows the rendered markdown hover" {
     // Programmatic scroll delivers the same editor event without a native
     // mouse-wheel sample, and the hover disappears before another frame.
     hover.onMouseMove(event);
-    _ = hover.onTick(time_compat.milliTimestamp() + 3000);
-    _ = hover.onTick(time_compat.milliTimestamp() + 4000);
+    _ = hover.onTick(time_compat.milliTimestamp(std.testing.io) + 3000);
+    _ = hover.onTick(time_compat.milliTimestamp(std.testing.io) + 4000);
     try std.testing.expect(hover.isVisible());
     _ = editor.setTopViewLine(3);
     try std.testing.expect(!hover.isVisible());
@@ -1724,7 +1724,7 @@ test "app: hovering a word shows the rendered markdown hover" {
 
 test "app: vim motions reach the hover before the extension key handler" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "hover-vim.txt", .data = "const value = 1;\n" });
@@ -1773,7 +1773,7 @@ test "app: vim motions reach the hover before the extension key handler" {
 
 test "app: hover renders a GFM table and task list" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "value here", "test.zig", 72, 80);
     defer {
         editor.deinit();
@@ -1848,7 +1848,7 @@ test "app: hover renders a GFM table and task list" {
         .mouse_column = 3,
     };
     hover.onMouseMove(.{ .target = target, .x = 2, .y = 0 });
-    const now = time_compat.milliTimestamp();
+    const now = time_compat.milliTimestamp(std.testing.io);
     _ = hover.onTick(now + 1000);
     _ = hover.onTick(now + 2000);
     try std.testing.expect(hover.isVisible());
@@ -1896,7 +1896,7 @@ test "app: hover renders a GFM table and task list" {
 
 test "app: long hover content scrolls without moving the editor" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(
         allocator,
         io,
@@ -1953,8 +1953,8 @@ test "app: long hover content scrolls without moving the editor" {
         .mouse_column = 1,
     };
     hover.onMouseMove(.{ .target = target, .x = 3, .y = 0 });
-    _ = hover.onTick(time_compat.milliTimestamp() + 1000);
-    _ = hover.onTick(time_compat.milliTimestamp() + 2000);
+    _ = hover.onTick(time_compat.milliTimestamp(std.testing.io) + 1000);
+    _ = hover.onTick(time_compat.milliTimestamp(std.testing.io) + 2000);
     try std.testing.expect(hover.isVisible());
 
     try view.refresh();
@@ -1982,7 +1982,7 @@ test "app: long hover content scrolls without moving the editor" {
 
 test "app: decoded clicks, drags and wheel reach the editor" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const text =
         "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9";
     const editor = try Editor.createFromText(allocator, io, text, "test.txt", 40, 6);
@@ -2070,7 +2070,7 @@ test "app: decoded clicks, drags and wheel reach the editor" {
 
 test "app: smart select shortcuts expand and shrink the selection" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "fooBar", "test.txt", 40, 8);
     defer {
         editor.deinit();
@@ -2096,7 +2096,7 @@ test "app: smart select shortcuts expand and shrink the selection" {
 
 test "app: in-place replace shortcut cycles the value" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "true", "test.zig", 40, 8);
     defer {
         editor.deinit();
@@ -2116,7 +2116,7 @@ test "app: in-place replace shortcut cycles the value" {
 
 test "app: navigation keys resolve through the keybinding registry" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "abc", "test.zig", 40, 8);
     defer {
         editor.deinit();
@@ -2144,7 +2144,7 @@ test "app: navigation keys resolve through the keybinding registry" {
 
 test "app: editing keys resolve through the keybinding registry" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "abc", "test.zig", 40, 8);
     defer {
         editor.deinit();
@@ -2186,7 +2186,7 @@ test "app: std.log routes engine diagnostics to the log file" {
 
 test "app: Helix and Vim modal runtimes disable each other" {
     const allocator = std.testing.allocator;
-    const io = time_compat.io;
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "modal.txt", .data = "hello\n" });
@@ -2210,6 +2210,17 @@ test "app: Helix and Vim modal runtimes disable each other" {
     vim.setOnEnable(.{ .context = helix, .on_enable = disableHelixForVim });
     helix.setOnEnable(.{ .context = vim, .on_enable = disableVimForHelix });
 
+    const Persistence = struct {
+        fn wait(wb: *Workbench) !void {
+            const service = wb.configuration orelse return error.ConfigurationUnavailable;
+            for (0..5000) |_| {
+                if (service.update_group.token.load(.acquire) == null) return;
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                std.testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
+            }
+            return error.ConfigurationUpdateTimedOut;
+        }
+    };
     try workbench.commands.execute("vim.enable");
     try std.testing.expect(vim.isEnabled());
     try std.testing.expect(!helix.isEnabled());
@@ -2217,17 +2228,19 @@ test "app: Helix and Vim modal runtimes disable each other" {
     try workbench.commands.execute("helix.enable");
     try std.testing.expect(helix.isEnabled());
     try std.testing.expect(!vim.isEnabled());
+    try Persistence.wait(workbench);
     try std.testing.expect(!workbench.configuration.?.getBool("vim.enabled", true));
 
     try workbench.commands.execute("vim.enable");
     try std.testing.expect(vim.isEnabled());
     try std.testing.expect(!helix.isEnabled());
+    try Persistence.wait(workbench);
     try std.testing.expect(!workbench.configuration.?.getBool("helix.enabled", true));
 }
 
 test "app: shutdown writes the current editor groups before didShutdown" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "one.txt", .data = "one" });

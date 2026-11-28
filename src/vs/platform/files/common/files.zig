@@ -550,11 +550,12 @@ pub const IFileService = struct {
 };
 
 /// The terminal provider contract. Resources are canonical path strings (the
-/// repository-wide terminal substitution for `URI`). Mutations and reads are
-/// synchronous and, like the disk provider's shared state, are currently only
-/// called from the TUI thread. URI-aware providers can capture an immutable
-/// async read and supply stat/change events with the entire resource URI.
-/// The older path-only mutation/fd operations retain their native boundary.
+/// repository-wide terminal substitution for `URI`). The interface uses
+/// Zig's direct-call syntax, but a disk provider can suspend in a window fiber
+/// while detached native work completes. Provider state and listeners remain
+/// window-owned. URI-aware providers can also capture an immutable async read
+/// and supply stat/change events with the entire resource URI.
+/// The older path-only fd operations retain their synchronous boundary.
 pub const IFileSystemProvider = struct {
     context: *anyopaque,
     capabilities: *const fn (context: *anyopaque) u32,

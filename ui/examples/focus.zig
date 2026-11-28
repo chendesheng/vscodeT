@@ -12,13 +12,13 @@ const Allocator = std.mem.Allocator;
 
 const labels = [_][]const u8{ "Open file", "Search", "Settings" };
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
     const example = try focusExample(allocator);
     defer if (example.deinit) |destroy| destroy(example.context);
-    try common.runInteractive(allocator, example);
+    try common.runInteractive(allocator, init.io, example);
 }
 
 pub fn focusExample(allocator: std.mem.Allocator) !common.Example {

@@ -44,7 +44,7 @@ test "ViewPaneContainer: splits rows by weight and collapses to a header" {
         .{ .id = "changes", .title = "Changes", .context = &first, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions },
         .{ .id = "graph", .title = "Graph", .context = &second, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions, .show_actions = .when_expanded },
     };
-    const container = try container_mod.ViewPaneContainer.init(allocator, &model, &panes);
+    const container = try container_mod.ViewPaneContainer.init(allocator, std.testing.io, &model, &panes);
     defer {
         container.deinit();
         allocator.destroy(container);
@@ -90,7 +90,7 @@ test "ViewPaneContainer: pointer motion over a header never toggles the section"
         .{ .id = "changes", .title = "Changes", .context = &first, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions },
         .{ .id = "graph", .title = "Graph", .context = &second, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions, .show_actions = .when_expanded },
     };
-    const container = try container_mod.ViewPaneContainer.init(allocator, &model, &panes);
+    const container = try container_mod.ViewPaneContainer.init(allocator, std.testing.io, &model, &panes);
     defer {
         container.deinit();
         allocator.destroy(container);
@@ -181,7 +181,7 @@ test "ViewPaneContainer: a single visible view merges into the container" {
         .{ .id = "changes", .title = "Changes", .context = &first, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions },
         .{ .id = "graph", .title = "Graph", .context = &second, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions, .show_actions = .when_expanded },
     };
-    const container = try container_mod.ViewPaneContainer.init(allocator, &model, &panes);
+    const container = try container_mod.ViewPaneContainer.init(allocator, std.testing.io, &model, &panes);
     defer {
         container.deinit();
         allocator.destroy(container);
@@ -207,7 +207,7 @@ test "ViewPaneContainer: CSS action visibility and keyboard focus follow pane st
         .{ .id = "changes", .title = "Changes", .context = &first, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions, .run_title_action = TestPane.runAction },
         .{ .id = "graph", .title = "Graph", .context = &second, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions, .show_actions = .when_expanded },
     };
-    const container = try container_mod.ViewPaneContainer.init(allocator, &model, &panes);
+    const container = try container_mod.ViewPaneContainer.init(allocator, std.testing.io, &model, &panes);
     defer {
         container.deinit();
         allocator.destroy(container);
@@ -269,7 +269,7 @@ test "ViewPaneContainer: a sash resizes the nearest expanded panes and dragging 
         .{ .id = "b", .title = "B", .context = &second, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions },
         .{ .id = "c", .title = "C", .context = &third, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions },
     };
-    const container = try container_mod.ViewPaneContainer.init(allocator, &model, &panes);
+    const container = try container_mod.ViewPaneContainer.init(allocator, std.testing.io, &model, &panes);
     defer {
         container.deinit();
         allocator.destroy(container);
@@ -373,7 +373,7 @@ test "ViewPaneContainer: body visibility follows collapse, descriptor and compos
         .{ .id = "first", .title = "First", .context = &first, .render_body = Probe.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = Probe.actions, .set_visible = Probe.visibleChanged, .set_body_visible = Probe.bodyChanged },
         .{ .id = "second", .title = "Second", .context = &second, .render_body = Probe.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = Probe.actions, .set_visible = Probe.visibleChanged, .set_body_visible = Probe.bodyChanged },
     };
-    const container = try container_mod.ViewPaneContainer.init(allocator, &model, &panes);
+    const container = try container_mod.ViewPaneContainer.init(allocator, std.testing.io, &model, &panes);
     defer {
         container.deinit();
         allocator.destroy(container);
@@ -401,7 +401,7 @@ test "ViewPaneContainer: body visibility follows collapse, descriptor and compos
 test "ViewPaneContainer: merged title actions follow descriptor and title area events" {
     const allocator = testing.allocator;
     const SidebarPart = @import("../../../../browser/parts/sidebar/sidebarPart.zig").SidebarPart;
-    var sidebar = SidebarPart.init(allocator);
+    var sidebar = SidebarPart.init(allocator, std.testing.io);
     defer sidebar.deinit();
     try sidebar.pane.addPaneComposite(.{ .id = "test", .name = "Views", .order = 1 });
     var model = model_mod.ViewContainerModel.init(allocator, .{ .id = "test", .title = "Views", .icon = "" });
@@ -417,7 +417,7 @@ test "ViewPaneContainer: merged title actions follow descriptor and title area e
         .{ .id = "first", .title = "First", .context = &first, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions, .overflow_action_id = "first.overflow" },
         .{ .id = "second", .title = "Second", .context = &second, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions },
     };
-    const container = try container_mod.ViewPaneContainer.init(allocator, &model, &panes);
+    const container = try container_mod.ViewPaneContainer.init(allocator, std.testing.io, &model, &panes);
     defer {
         container.deinit();
         allocator.destroy(container);

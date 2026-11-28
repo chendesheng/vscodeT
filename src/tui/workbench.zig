@@ -97,7 +97,7 @@ pub const TerminalHostLoop = struct {
         if (builtin.os.tag == .windows) {
             const polled = try tui.pollInputWithHandles(null, self.worker_wake.handles, timeout);
             result.input = polled.input;
-            if (polled.worker) result.redraw = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            if (polled.worker) result.redraw = workbench.window_events.dispatch(time_compat.milliTimestamp(workbench.async_io));
         } else {
             try self.waitPosix(timeout, &result);
         }
@@ -128,7 +128,7 @@ pub const TerminalHostLoop = struct {
                 .input => result.input = true,
                 .worker_completion => {
                     self.worker_wake.drain();
-                    if (workbench.window_events.dispatch(time_compat.milliTimestamp())) result.redraw = true;
+                    if (workbench.window_events.dispatch(time_compat.milliTimestamp(workbench.async_io))) result.redraw = true;
                 },
                 .terminal_output => |id| {
                     const service = workbench.terminal_service orelse continue;
@@ -238,7 +238,7 @@ pub fn renderFrame(workbench: *Workbench, writer: *std.Io.Writer) !void {
         try paintEditorGroups(workbench, editor_surface);
         renderEditorFrame(workbench);
         if (workbench.part.maximized_group == null) renderDividers(workbench, workbench.part.root);
-        if (workbench.editor_drop_target.drag_target) |target| target.paint(&workbench.frame.next, workbench.theme_palette, workbench.part.cell_borders, @import("../vs/workbench/browser/parts/editor/editorDropTarget.zig").animationsEnabled(if (workbench.configuration) |config| config.interface() else null), time_compat.milliTimestamp());
+        if (workbench.editor_drop_target.drag_target) |target| target.paint(&workbench.frame.next, workbench.theme_palette, workbench.part.cell_borders, @import("../vs/workbench/browser/parts/editor/editorDropTarget.zig").animationsEnabled(if (workbench.configuration) |config| config.interface() else null), time_compat.milliTimestamp(workbench.async_io));
     }
     if (workbench.geometry().panelShown()) {
         try renderPanel(workbench);
@@ -1124,7 +1124,7 @@ pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         // A double click is matched against the rectangle the first click
         // recorded. Activating a partially visible tab can scroll the
         // strip, so the second cell may now belong to a different tab.
-        const now = time_compat.milliTimestamp();
+        const now = time_compat.milliTimestamp(self.async_io);
         if (event.button == .left and !event.mods.shift and !event.mods.ctrl) {
             if (self.editor_drop_target.last_tab_click) |previous| {
                 if (previous.pane == pane and event.y == previous.y and
@@ -1229,7 +1229,7 @@ pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
                     self.editor_drop_target.last_tab_click = .{
                         .pane = pane,
                         .tab = value,
-                        .at_ms = time_compat.milliTimestamp(),
+                        .at_ms = time_compat.milliTimestamp(self.async_io),
                         .x = event.x,
                         .y = event.y,
                         .start = entry.start,
@@ -1428,7 +1428,7 @@ pub fn handleTerminalMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
     const left_press = event.kind == .down and event.button == .left;
     if (self.terminalPanelActive()) {
         const rect = self.geometry().panelRect();
-        if (self.terminal_tabbed_view.handleMouse(service, rect, panel_part_mod.titleContentEnd(&self.panel_part, rect), panel_part_mod.titleActionsStart(&self.panel_part, rect), event, time_compat.milliTimestamp(), .{
+        if (self.terminal_tabbed_view.handleMouse(service, rect, panel_part_mod.titleContentEnd(&self.panel_part, rect), panel_part_mod.titleActionsStart(&self.panel_part, rect), event, time_compat.milliTimestamp(self.async_io), .{
             .context = self,
             .pointer = &self.pointer,
             .focus_panel = focusTerminalTabbedView,
@@ -1653,7 +1653,7 @@ pub fn handleWorkbenchSashMouse(self: *Workbench, event: *const ui.MouseEvent) b
             const last = grid.last_sidebar_click;
             grid.last_sidebar_click = null;
             if (click) {
-                const now = time_compat.milliTimestamp();
+                const now = time_compat.milliTimestamp(self.async_io);
                 if (last != null and last.?.x == event.x and last.?.y == event.y and now - last.?.time <= 400) {
                     resetSidebarSash(
                         self,
@@ -2218,7 +2218,7 @@ pub fn handleSearchEditorMouse(self: *Workbench, event: *const ui.MouseEvent) bo
                 query.last_result_click = null;
                 return false;
             }
-            const now = time_compat.milliTimestamp();
+            const now = time_compat.milliTimestamp(self.async_io);
             const previous = query.last_result_click;
             query.last_result_click = .{ .x = event.x, .y = event.y, .at = now };
             const behavior = if (self.configuration) |configuration|

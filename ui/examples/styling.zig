@@ -27,14 +27,14 @@ const palette = [_]ui.Color{
     common.rgb(240, 240, 240),
 };
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     const example = try stylingExample(allocator);
     defer if (example.deinit) |deinit| deinit(example.context);
-    try common.runStatic(allocator, example);
+    try common.runStatic(allocator, init.io, example);
 }
 
 pub fn stylingExample(allocator: std.mem.Allocator) !common.Example {

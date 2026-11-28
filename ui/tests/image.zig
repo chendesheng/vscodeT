@@ -103,7 +103,7 @@ fn fakeProbe(reply: []const u8, hint: bool) !ProbeResult {
     var host = FakeProbeHost{ .reply = reply };
     var output: std.Io.Writer.Allocating = .init(allocator);
     defer output.deinit();
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     return probe(allocator, io, &output.writer, host.host(), hint);
 }
 

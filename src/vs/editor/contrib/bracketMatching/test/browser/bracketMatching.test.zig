@@ -31,6 +31,7 @@ const BracketSupport = struct {
 
     fn tokenizeEncoded(
         _: *anyopaque,
+        _: std.Io,
         allocator: std.mem.Allocator,
         line: []const u8,
         hasEOL: bool,

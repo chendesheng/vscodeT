@@ -96,7 +96,7 @@ pub const Instance = struct {
         if (self.stopped or self.failed) return;
         self.failed = true;
         self.watcher.on_error.fire(.{ .@"error" = message, .request = self.request }) catch {};
-        self.watcher.base.requestFailed(self.request, nowMs());
+        self.watcher.base.requestFailed(self.request, nowMs(self.watcher.io));
     }
 };
 
@@ -160,13 +160,13 @@ pub const ParcelWatcher = struct {
 
     /// Port of upstream `removeDuplicateRequests`.
     pub fn deduplicateRequests(self: *ParcelWatcher, allocator: Allocator, requests: []const WatchRequest) !*DedupedRequests {
-        return deduplicateRequestList(allocator, requests, self.ignore_case);
+        return deduplicateRequestList(allocator, self.io, requests, self.ignore_case);
     }
 
     pub fn watch(self: *ParcelWatcher, requests: []const WatchRequest) !void {
         var deduped = try self.deduplicateRequests(self.allocator, requests);
         defer deduped.deinit();
-        try self.base.watch(deduped.requests, nowMs());
+        try self.base.watch(deduped.requests, nowMs(self.io));
     }
 
     pub fn stop(self: *ParcelWatcher) void {
@@ -278,7 +278,7 @@ pub const DedupedRequests = struct {
         self.allocator.destroy(self);
     }
 };
-pub fn deduplicateRequestList(allocator: Allocator, requests: []const WatchRequest, ignore_case: bool) !*DedupedRequests {
+pub fn deduplicateRequestList(allocator: Allocator, io: Io, requests: []const WatchRequest, ignore_case: bool) !*DedupedRequests {
     const result = try allocator.create(DedupedRequests);
     errdefer allocator.destroy(result);
     result.* = .{
@@ -328,7 +328,7 @@ pub fn deduplicateRequestList(allocator: Allocator, requests: []const WatchReque
         for (selected.items) |existing| {
             if (existing.correlationId != request.correlationId) continue;
             if (!files.isParent(request.path, existing.path, ignore_case)) continue;
-            if (!isSymlink(request.path)) {
+            if (!isSymlink(io, request.path)) {
                 child_of_parent = true;
                 break;
             }
@@ -355,8 +355,7 @@ fn containsString(values: []const []const u8, needle: []const u8) bool {
     return false;
 }
 
-fn isSymlink(path: []const u8) bool {
-    const io = Io.Threaded.global_single_threaded.io();
+fn isSymlink(io: Io, path: []const u8) bool {
     const stat = Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false }) catch return false;
     return stat.kind == .sym_link;
 }
@@ -369,6 +368,6 @@ pub fn sameRequest(a: *const WatchRequest, b: *const WatchRequest) bool {
     return true;
 }
 
-pub fn nowMs() i64 {
-    return std.Io.Timestamp.now(Io.Threaded.global_single_threaded.io(), .real).toMilliseconds();
+pub fn nowMs(io: Io) i64 {
+    return std.Io.Timestamp.now(io, .real).toMilliseconds();
 }

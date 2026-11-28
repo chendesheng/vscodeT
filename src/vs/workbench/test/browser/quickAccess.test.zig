@@ -102,6 +102,7 @@ test "quickAccess: controller switches providers on the typed prefix" {
     var presenter = TestPresenter{};
     const controller = try controller_mod.QuickAccessController.init(
         std.testing.allocator,
+        std.testing.io,
         &registry,
         presenter.presenter(),
     );
@@ -142,7 +143,7 @@ test "quickAccess: picker provider adds the no-results pick and preserves the ac
         }
     };
     var state = State{};
-    var picker = QuickPick.init(std.testing.allocator);
+    var picker = QuickPick.init(std.testing.allocator, std.testing.io);
     defer picker.deinit();
 
     var source = try cancellation.CancellationTokenSource.init(std.testing.allocator);

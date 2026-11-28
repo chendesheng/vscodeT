@@ -21,7 +21,7 @@ test "parcel dedup: uncorrelated same-root keeps broad watcher" {
         .includes = &.{.{ .string = "mcp/*.mjs" }},
     };
     inline for (.{ &[_]common.WatchRequest{ broad, narrow }, &[_]common.WatchRequest{ narrow, broad } }) |input| {
-        var deduped = try parcel.deduplicateRequestList(allocator, input, false);
+        var deduped = try parcel.deduplicateRequestList(allocator, std.testing.io, input, false);
         defer deduped.deinit();
         try std.testing.expectEqual(@as(usize, 1), deduped.requests.len);
         try std.testing.expectEqualStrings("/workspace", deduped.requests[0].path);
@@ -43,7 +43,7 @@ test "parcel dedup: same-root combines narrow includes and intersects excludes" 
         .excludes = &.{"**/node_modules/**"},
         .includes = &.{.{ .string = ".custom/agents/*.md" }},
     };
-    var deduped = try parcel.deduplicateRequestList(allocator, &.{ first, second }, false);
+    var deduped = try parcel.deduplicateRequestList(allocator, std.testing.io, &.{ first, second }, false);
     defer deduped.deinit();
     try std.testing.expectEqual(@as(usize, 1), deduped.requests.len);
     try std.testing.expectEqual(@as(usize, 2), deduped.requests[0].includes.len);
@@ -54,7 +54,7 @@ test "parcel dedup: different correlation ids stay separate" {
     const allocator = std.testing.allocator;
     const first = common.WatchRequest{ .path = "/workspace", .recursive = true, .correlationId = 1 };
     const second = common.WatchRequest{ .path = "/workspace", .recursive = true, .correlationId = 2 };
-    var deduped = try parcel.deduplicateRequestList(allocator, &.{ first, second }, false);
+    var deduped = try parcel.deduplicateRequestList(allocator, std.testing.io, &.{ first, second }, false);
     defer deduped.deinit();
     try std.testing.expectEqual(@as(usize, 2), deduped.requests.len);
 }
@@ -63,7 +63,7 @@ test "parcel dedup: child request of a watched parent is dropped" {
     const allocator = std.testing.allocator;
     const parent = request("/workspace");
     const child = request("/workspace/src");
-    var deduped = try parcel.deduplicateRequestList(allocator, &.{ parent, child }, false);
+    var deduped = try parcel.deduplicateRequestList(allocator, std.testing.io, &.{ parent, child }, false);
     defer deduped.deinit();
     try std.testing.expectEqual(@as(usize, 1), deduped.requests.len);
     try std.testing.expectEqualStrings("/workspace", deduped.requests[0].path);
@@ -71,7 +71,7 @@ test "parcel dedup: child request of a watched parent is dropped" {
 
 test "universal watcher: recursive create/update/delete" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -107,5 +107,5 @@ test "universal watcher: recursive create/update/delete" {
 }
 
 fn nowMs() i64 {
-    return std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).toMilliseconds();
+    return std.Io.Timestamp.now(std.testing.io, .real).toMilliseconds();
 }

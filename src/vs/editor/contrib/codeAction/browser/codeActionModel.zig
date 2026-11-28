@@ -191,7 +191,7 @@ pub const CodeActionModel = struct {
     }
 
     pub fn scheduleAuto(self: *CodeActionModel) void {
-        if (self.can_trigger) self.oracle.task.schedule(time.milliTimestamp() + 250);
+        if (self.can_trigger) self.oracle.task.schedule(time.milliTimestamp(self.editor.clockIo()) + 250);
     }
     fn onAutoTrigger(context: *anyopaque, _: i64, _: bool) bool {
         const self: *CodeActionModel = @ptrCast(@alignCast(context));
@@ -246,7 +246,7 @@ pub const CodeActionModel = struct {
         var trigger_copy = codeAction.copyTrigger(self.trigger_arena.allocator(), trigger_value) catch return;
         trigger_copy.selection = selection;
         self.state = .{ .Triggered = .{ .trigger = trigger_copy, .position = selection.getStartPosition() } };
-        if (manual_to_auto) self.publication_task.schedule(time.milliTimestamp() + 500) else self.on_change(self.context, self.state);
+        if (manual_to_auto) self.publication_task.schedule(time.milliTimestamp(self.editor.clockIo()) + 500) else self.on_change(self.context, self.state);
         const range = Range.init(selection.startLineNumber, selection.startColumn, selection.endLineNumber, selection.endColumn);
         const nearby = self.settingEnabledNearbyQuickfixes(model) and trigger_copy.type == .Invoke and
             (trigger_copy.trigger_action == .QuickFix or (if (trigger_copy.filter.include) |kind| kind.contains(types.CodeActionKind.QuickFix) else false));
@@ -284,7 +284,7 @@ pub const CodeActionModel = struct {
         self.owned_actions = set;
         // Provider completion may be synchronous, but the upstream promise
         // continuation runs after the trigger has installed its state.
-        self.completion_task.schedule(self.publication_task.at orelse time.milliTimestamp());
+        self.completion_task.schedule(self.publication_task.at orelse time.milliTimestamp(self.editor.clockIo()));
     }
 
     fn onPublish(context: *anyopaque, _: i64, _: bool) bool {

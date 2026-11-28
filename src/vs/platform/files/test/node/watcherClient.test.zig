@@ -17,12 +17,12 @@ const Counter = struct {
 };
 
 fn nowMs() i64 {
-    return std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).toMilliseconds();
+    return std.Io.Timestamp.now(std.testing.io, .real).toMilliseconds();
 }
 
 test "watcher client: deep changes arrive from the worker" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -64,7 +64,7 @@ test "watcher client: deep changes arrive from the worker" {
 
 test "file watcher service: identical requests share one watch" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -91,7 +91,7 @@ test "file watcher service: identical requests share one watch" {
 
 test "file watcher service: changes reach the main-thread poll" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 

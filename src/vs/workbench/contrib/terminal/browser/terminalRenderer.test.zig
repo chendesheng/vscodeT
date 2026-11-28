@@ -7,7 +7,7 @@ const view = @import("./terminalRenderer.zig");
 test "terminalView: paints text and reports the cursor" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var emulator: emulator_mod.TerminalEmulator = undefined;
     try emulator.init(allocator, io, .{
         .cols = 20,

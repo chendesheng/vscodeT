@@ -58,7 +58,7 @@ test "diffEditorBreadcrumbs: nested crossing symbols are sorted by span and refr
     defer features.deinit();
     var queue: queue_mod.Queue = .{ .io = testing.io };
     defer queue.deinitWindowEvents();
-    var models = OutlineService.init(a);
+    var models = OutlineService.init(a, std.testing.io);
     defer models.deinit();
     models.attachWindow(&queue);
     const editor = try Editor.createFromText(a, testing.io, "a\nb\nc\nd\ne\nf\ng\nh\ni", "source.txt", 60, 10);
@@ -101,7 +101,7 @@ test "diffEditorBreadcrumbs: provider requests cancel on refresh and disposal" {
     defer features.deinit();
     var queue: queue_mod.Queue = .{ .io = testing.io };
     defer queue.deinitWindowEvents();
-    var models = OutlineService.init(a);
+    var models = OutlineService.init(a, std.testing.io);
     defer models.deinit();
     models.attachWindow(&queue);
     const editor = try Editor.createFromText(a, testing.io, "a\nb", "source.txt", 60, 10);

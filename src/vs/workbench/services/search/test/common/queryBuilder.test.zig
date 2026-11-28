@@ -17,7 +17,7 @@ fn fixture(allocator: std.mem.Allocator) !struct {
     workspace: *workspace_context.WorkspaceContextService,
     configuration: *configuration.ConfigurationService,
 } {
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const workspace = try workspace_context.WorkspaceContextService.initWithFolders(allocator, "test", &.{"/root"});
     errdefer workspace.deinit();
     const config = try configuration.ConfigurationService.init(allocator, io, workspace, .{

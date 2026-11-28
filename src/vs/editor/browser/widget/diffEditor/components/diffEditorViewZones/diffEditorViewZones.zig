@@ -864,7 +864,7 @@ fn compute(allocator: Allocator, original_lines: []const []const u8, modified_li
     var original_model = try test_support.TestModel.init(allocator, text, "plaintext");
     defer original_model.deinit();
     var provider = doc_diff.LineDiffProvider.init(.advanced);
-    var diff = try provider.computeDiffFromLines(allocator, original_lines, modified_lines, .{ .ignoreTrimWhitespace = false, .maxComputationTimeMs = 0, .computeMoves = false });
+    var diff = try provider.computeDiffFromLines(allocator, original_lines, modified_lines, .{ .ignoreTrimWhitespace = false, .io = std.testing.io, .maxComputationTimeMs = 0, .computeMoves = false });
     defer doc_diff.deinitDiff(allocator, &diff);
     const mappings = try allocator.alloc(diff_model.DiffMapping, diff.changes.len);
     defer allocator.free(mappings);

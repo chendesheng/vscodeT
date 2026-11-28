@@ -535,7 +535,7 @@ fn mtimeNs(timestamp: Io.Timestamp) i64 {
 
 test "Lib: brute force snapshots" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.createDirPath(io, "sub");

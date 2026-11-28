@@ -115,7 +115,7 @@ pub const Session = struct {
         self.dismiss();
         // The command runner updates the cursor after the model emits content
         // changes. Observe the final selection in the next window turn.
-        self.edit_task.schedule(time.milliTimestamp());
+        self.edit_task.schedule(time.milliTimestamp(self.window.io));
     }
 
     fn onCursorChange(context: *anyopaque, event: *const view_events.ViewCursorStateChangedEvent) bool {
@@ -242,7 +242,7 @@ pub const Session = struct {
         const self: *Session = @ptrCast(@alignCast(context));
         self.pending = null;
         self.request_task.schedule(null);
-        defer if (self.remaining.len > 0 and !self.stale) self.request_task.schedule(time.milliTimestamp());
+        defer if (self.remaining.len > 0 and !self.stale) self.request_task.schedule(time.milliTimestamp(self.window.io));
         if (reply != .json or reply.json != .object) return;
         const list = reply.json.object;
         const id = list.get("pid") orelse return;

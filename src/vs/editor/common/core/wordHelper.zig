@@ -52,11 +52,11 @@ pub fn setDefaultGetWordAtTextConfig(value: GetWordAtTextConfig) void {
 
 /// Returns a word borrowed from `text`. The caller must keep `text` alive for
 /// as long as the result is used, or copy `word`.
-pub fn getWordAtText(column: usize, wordDefinition: ?RegExp, text: []const u8, textOffset: usize) ?IWordAtPosition {
-    return getWordAtTextWithConfig(column, wordDefinition, text, textOffset, default_config);
+pub fn getWordAtText(io: std.Io, column: usize, wordDefinition: ?RegExp, text: []const u8, textOffset: usize) ?IWordAtPosition {
+    return getWordAtTextWithConfig(io, column, wordDefinition, text, textOffset, default_config);
 }
 
-pub fn getWordAtTextWithConfig(column: usize, wordDefinition: ?RegExp, text: []const u8, textOffset: usize, config: GetWordAtTextConfig) ?IWordAtPosition {
+pub fn getWordAtTextWithConfig(io: std.Io, column: usize, wordDefinition: ?RegExp, text: []const u8, textOffset: usize, config: GetWordAtTextConfig) ?IWordAtPosition {
     const regex = ensureValidWordDefinition(wordDefinition);
 
     if (text.len > config.maxLen) {
@@ -74,19 +74,19 @@ pub fn getWordAtTextWithConfig(column: usize, wordDefinition: ?RegExp, text: []c
         if (start >= text.len) return null;
         const end = @min(text.len, column +| half);
         if (start > end) return null;
-        return getWordAtTextWithConfig(column, regex, text[start..end], offset, config);
+        return getWordAtTextWithConfig(io, column, regex, text[start..end], offset, config);
     }
 
     if (column <= textOffset) return null;
     const pos = column - 1 - textOffset;
     if (pos > text.len) return null;
 
-    const t1 = timeCompat.milliTimestamp();
+    const t1 = timeCompat.milliTimestamp(io);
     var prev_regex_index: isize = -1;
     var match: ?Match = null;
     var i: usize = 1;
     while (true) : (i += 1) {
-        if (timeCompat.milliTimestamp() - t1 >= config.timeBudget) break;
+        if (timeCompat.milliTimestamp(io) - t1 >= config.timeBudget) break;
 
         const window_offset = @min(config.windowSize *| i, @as(usize, @intCast(std.math.maxInt(isize))));
         const regex_index = @as(isize, @intCast(pos)) - @as(isize, @intCast(window_offset));
@@ -136,18 +136,18 @@ fn findRegexMatchEnclosingPosition(regex: RegExp, text: []const u8, pos: isize, 
 
 test "wordHelper: english word at position" {
     const text = "This text has some  words. ";
-    try std.testing.expectEqualStrings("This", getWordAtText(1, null, text, 0).?.word);
-    try std.testing.expectEqualStrings("This", getWordAtText(4, null, text, 0).?.word);
-    try std.testing.expectEqualStrings("text", getWordAtText(6, null, text, 0).?.word);
-    try std.testing.expectEqualStrings("some", getWordAtText(19, null, text, 0).?.word);
-    try std.testing.expect(getWordAtText(20, null, text, 0) == null);
-    try std.testing.expectEqualStrings("words", getWordAtText(21, null, text, 0).?.word);
+    try std.testing.expectEqualStrings("This", getWordAtText(std.testing.io, 1, null, text, 0).?.word);
+    try std.testing.expectEqualStrings("This", getWordAtText(std.testing.io, 4, null, text, 0).?.word);
+    try std.testing.expectEqualStrings("text", getWordAtText(std.testing.io, 6, null, text, 0).?.word);
+    try std.testing.expectEqualStrings("some", getWordAtText(std.testing.io, 19, null, text, 0).?.word);
+    try std.testing.expect(getWordAtText(std.testing.io, 20, null, text, 0) == null);
+    try std.testing.expectEqualStrings("words", getWordAtText(std.testing.io, 21, null, text, 0).?.word);
 }
 
 test "wordHelper: end-of-line position finds the last word" {
     const text = "abc";
-    try std.testing.expectEqualStrings("abc", getWordAtText(4, null, text, 0).?.word);
-    try std.testing.expect(getWordAtText(5, null, text, 0) == null);
+    try std.testing.expectEqualStrings("abc", getWordAtText(std.testing.io, 4, null, text, 0).?.word);
+    try std.testing.expect(getWordAtText(std.testing.io, 5, null, text, 0) == null);
 }
 
 test "wordHelper: windowed search finds words in long lines" {
@@ -158,17 +158,17 @@ test "wordHelper: windowed search finds words in long lines" {
     try text.appendSlice("word");
     const line = text.items;
 
-    const at_end = getWordAtText(2004, null, line, 0).?;
+    const at_end = getWordAtText(std.testing.io, 2004, null, line, 0).?;
     try std.testing.expectEqualStrings("word", at_end.word);
     try std.testing.expectEqual(@as(usize, 2001), at_end.startColumn);
     try std.testing.expectEqual(@as(usize, 2005), at_end.endColumn);
 
-    try std.testing.expect(getWordAtText(2000, null, line, 0) == null);
+    try std.testing.expect(getWordAtText(std.testing.io, 2000, null, line, 0) == null);
 }
 
 test "wordHelper: numbers and punctuation" {
     const text = "foo.bar 12.5 -x";
-    try std.testing.expectEqualStrings("foo", getWordAtText(1, null, text, 0).?.word);
-    try std.testing.expectEqualStrings("12.5", getWordAtText(9, null, text, 0).?.word);
-    try std.testing.expectEqualStrings("x", getWordAtText(15, null, text, 0).?.word);
+    try std.testing.expectEqualStrings("foo", getWordAtText(std.testing.io, 1, null, text, 0).?.word);
+    try std.testing.expectEqualStrings("12.5", getWordAtText(std.testing.io, 9, null, text, 0).?.word);
+    try std.testing.expectEqualStrings("x", getWordAtText(std.testing.io, 15, null, text, 0).?.word);
 }

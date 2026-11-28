@@ -123,12 +123,12 @@ fn writeScript(tmp: *std.testing.TmpDir, io: Io, allocator: Allocator, path: []c
 /// Waits until `path` exists. Cancellation tests use this to cancel a child
 /// that has actually started, instead of racing process startup.
 fn waitForPath(io: Io, path: []const u8, timeout_ms: i64) !void {
-    const deadline = time_compat.milliTimestamp() + timeout_ms;
+    const deadline = time_compat.milliTimestamp(std.testing.io) + timeout_ms;
     while (true) {
         std.Io.Dir.accessAbsolute(io, path, .{}) catch |err| switch (err) {
             error.FileNotFound => {
-                if (time_compat.milliTimestamp() >= deadline) return error.Timeout;
-                time_compat.sleepMillis(5);
+                if (time_compat.milliTimestamp(std.testing.io) >= deadline) return error.Timeout;
+                time_compat.sleepMillis(std.testing.io, 5);
                 continue;
             },
             else => return err,
@@ -553,10 +553,10 @@ test "FileSearch: cancellation kills a sleeping rg and returns quickly" {
     // Wait for the wrapper's sleep child: it holds the stdout pipe open, so
     // cancellation must kill the whole process group to return promptly.
     try waitForPath(io, ready, 3000);
-    const started = time_compat.milliTimestamp();
+    const started = time_compat.milliTimestamp(std.testing.io);
     walker.cancel();
     thread.join();
-    const elapsed = time_compat.milliTimestamp() - started;
+    const elapsed = time_compat.milliTimestamp(std.testing.io) - started;
 
     try std.testing.expect(elapsed < 1000);
     try std.testing.expect(context.result != null);

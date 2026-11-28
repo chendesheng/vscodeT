@@ -21,7 +21,7 @@ const Fixture = struct {
             var mutable = query;
             mutable.deinit();
         }
-        const result = try tree.SearchResult.create(allocator);
+        const result = try tree.SearchResult.create(allocator, std.testing.io);
         result.setQuery(&query);
         return .{ .allocator = allocator, .query = query, .result = result };
     }

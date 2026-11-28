@@ -200,7 +200,7 @@ pub const QuickAccessService = struct {
             return err;
         };
 
-        self.controller = try QuickAccessController.init(allocator, &self.registry, .{
+        self.controller = try QuickAccessController.init(allocator, if (host.window) |window| window.io else io, &self.registry, .{
             .context = self,
             .show = presenterShow,
             .hide = presenterHide,
@@ -209,7 +209,7 @@ pub const QuickAccessService = struct {
         self.controller.error_context = self;
         self.controller.on_error = reportError;
 
-        self.input = try QuickInputService.init(allocator, .{
+        self.input = try QuickInputService.init(allocator, if (host.window) |window| window.io else io, .{
             .context = self,
             .show = presenterInputShow,
             .hide = presenterInputHide,
@@ -404,7 +404,7 @@ pub const QuickAccessService = struct {
             return;
         };
         _ = try self.widget.render(picker, grid);
-        const now = time_compat.milliTimestamp();
+        const now = time_compat.milliTimestamp(if (self.animation.queue) |queue| queue.io else self.io);
         const limit = std.math.maxInt(i32);
         const delay = self.widget.animationTimeout(picker, now, limit);
         self.animation.schedule(if (delay < limit) now + delay else null);
@@ -702,7 +702,7 @@ fn keyCharIs(key: ui.Key, wanted: u21) bool {
 
 test "QuickAccessService: file and command pickers share one controller" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const context = try WorkspaceContextService.initEmpty(allocator, "test");
     defer context.deinit();
     var history = HistoryService.init(allocator);
@@ -755,7 +755,7 @@ test "QuickAccessService: file and command pickers share one controller" {
 
 test "QuickAccessService: Ctrl-N/Ctrl-P select next/previous in every picker" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const context = try WorkspaceContextService.initEmpty(allocator, "test");
     defer context.deinit();
     var history = HistoryService.init(allocator);
@@ -926,9 +926,9 @@ test "QuickAccessService: Ctrl-P stays responsive while rg lists files" {
 
     var guard: usize = 0;
     while (guard < 1000) : (guard += 1) {
-        _ = window.dispatch(time_compat.milliTimestamp());
+        _ = window.dispatch(time_compat.milliTimestamp(std.testing.io));
         if (picker.items.items.len > 0) break;
-        time_compat.sleepMillis(2);
+        time_compat.sleepMillis(std.testing.io, 2);
     }
     try std.testing.expect(guard < 1000);
     try std.testing.expect(picker.items.items.len > 0);
@@ -1002,10 +1002,10 @@ test "QuickAccessService: hiding during a running search joins cleanly" {
     _ = try service.handleKey(&typed);
     try std.testing.expect(service.file_search.isBusy());
 
-    const started = time_compat.milliTimestamp();
+    const started = time_compat.milliTimestamp(std.testing.io);
     var escape = ui.KeyEvent{ .key = .escape };
     _ = try service.handleKey(&escape);
-    const elapsed = time_compat.milliTimestamp() - started;
+    const elapsed = time_compat.milliTimestamp(std.testing.io) - started;
     try std.testing.expect(elapsed < 2000);
     try std.testing.expect(!service.isOpen());
     try std.testing.expect(!service.file_search.isBusy());
@@ -1013,7 +1013,7 @@ test "QuickAccessService: hiding during a running search joins cleanly" {
 
 test "QuickAccessService: direct controller hide ends the file session" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const context = try WorkspaceContextService.initEmpty(allocator, "test");
     defer context.deinit();
     var history = HistoryService.init(allocator);
@@ -1045,7 +1045,7 @@ test "QuickAccessService: direct controller hide ends the file session" {
 test "QuickAccessService: missing rg reports a picker error instead of hanging" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -1095,10 +1095,10 @@ test "QuickAccessService: missing rg reports a picker error instead of hanging" 
 
     // The worker runs on its own thread; give a loaded CI host well past the
     // usual first-result latency instead of failing on a short fixed window.
-    const deadline = time_compat.milliTimestamp() + 10_000;
-    while (state.reported_len == 0 and time_compat.milliTimestamp() < deadline) {
-        _ = window.dispatch(time_compat.milliTimestamp());
-        time_compat.sleepMillis(2);
+    const deadline = time_compat.milliTimestamp(std.testing.io) + 10_000;
+    while (state.reported_len == 0 and time_compat.milliTimestamp(std.testing.io) < deadline) {
+        _ = window.dispatch(time_compat.milliTimestamp(std.testing.io));
+        time_compat.sleepMillis(std.testing.io, 2);
     }
     try std.testing.expect(state.reported_len > 0);
     try std.testing.expect(std.mem.indexOf(u8, state.reported[0..state.reported_len], "ripgrep") != null);

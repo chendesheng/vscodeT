@@ -75,7 +75,7 @@ const dim = common.rgb(140, 140, 160);
 const selected_background = common.rgb(62, 82, 132);
 const hover_background = common.rgb(38, 38, 50);
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -90,7 +90,7 @@ pub fn main() !void {
     defer app.deinit();
 
     try app.openSelected();
-    try app.present();
+    try app.present(init.io);
 }
 
 const Gallery = struct {
@@ -414,8 +414,7 @@ const Gallery = struct {
         try self.surface.renderWithOverlay(out, .{}, overlay);
     }
 
-    fn present(self: *Gallery) !void {
-        const io = std.Io.Threaded.global_single_threaded.io();
+    fn present(self: *Gallery, io: std.Io) !void {
         var buffer: [16384]u8 = undefined;
         var stdout = std.Io.File.stdout().writer(io, &buffer);
         const out = &stdout.interface;

@@ -27,7 +27,7 @@ const Harness = struct {
         self.model.deinit();
     }
     fn flush(self: *Harness) void {
-        _ = self.queue.dispatch(time.milliTimestamp() + 1);
+        _ = self.queue.dispatch(time.milliTimestamp(std.testing.io) + 1);
     }
 };
 

@@ -190,7 +190,7 @@ fn skipNewline(data: []const u8, cursor: *usize) !void {
 
 test "DirTree: snapshot roundtrip and changes" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;

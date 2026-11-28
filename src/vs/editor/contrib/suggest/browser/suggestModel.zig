@@ -174,7 +174,7 @@ pub const SuggestModel = struct {
                 var line = try self.editor.model.getLineContent(position.lineNumber);
                 defer line.deinit();
                 if (wordStartColumn(line.items, position.column) < position.column) {
-                    self.setDeadline(time_compat.milliTimestamp() + quick_suggest_delay_ms);
+                    self.setDeadline(time_compat.milliTimestamp(self.editor.clockIo()) + quick_suggest_delay_ms);
                 } else self.setDeadline(null);
             }
         }
@@ -207,7 +207,7 @@ pub const SuggestModel = struct {
         // Upstream's onDidType listener handles completion-provider trigger
         // characters; quick suggestions originate in the cursor listener.
         const ch = text[text.len - 1];
-        if (try self.triggerCharacter(ch, time_compat.milliTimestamp())) self.notifyChanged();
+        if (try self.triggerCharacter(ch, time_compat.milliTimestamp(self.editor.clockIo()))) self.notifyChanged();
     }
 
     fn onFocusChanged(context: *anyopaque, event: *const ViewFocusChangedEvent) bool {

@@ -428,7 +428,7 @@ fn collectLinks(
 }
 
 test "previewDocument: blocks map to rows and source lines" {
-    var content = try markdown.parseDocument(std.testing.allocator,
+    var content = try markdown.parseDocument(std.testing.allocator, std.testing.io,
         \\# Title
         \\
         \\paragraph
@@ -448,7 +448,7 @@ test "previewDocument: blocks map to rows and source lines" {
 }
 
 test "previewDocument: links survive wrapping and heading anchors are indexed" {
-    var content = try markdown.parseDocument(std.testing.allocator, "# Usage\n\nsee [the section](#usage) for details", .{});
+    var content = try markdown.parseDocument(std.testing.allocator, std.testing.io, "# Usage\n\nsee [the section](#usage) for details", .{});
     defer content.deinit();
     var document = try build(std.testing.allocator, &content, 14, .{});
     defer document.deinit();
@@ -463,7 +463,7 @@ test "previewDocument: links survive wrapping and heading anchors are indexed" {
 }
 
 test "previewDocument: long lines wrap and keep block geometry" {
-    var content = try markdown.parseDocument(std.testing.allocator, "one two three four five six seven eight nine ten", .{});
+    var content = try markdown.parseDocument(std.testing.allocator, std.testing.io, "one two three four five six seven eight nine ten", .{});
     defer content.deinit();
     var document = try build(std.testing.allocator, &content, 10, .{});
     defer document.deinit();
@@ -472,7 +472,7 @@ test "previewDocument: long lines wrap and keep block geometry" {
 }
 
 test "previewDocument: displayable images reserve block rows and placements" {
-    var content = try markdown.parseDocument(std.testing.allocator,
+    var content = try markdown.parseDocument(std.testing.allocator, std.testing.io,
         \\before ![shot](images/shot.png) after
         \\
         \\paragraph
@@ -516,7 +516,7 @@ test "previewDocument: displayable images reserve block rows and placements" {
 }
 
 test "previewDocument: images without a catalog spec keep their alt text" {
-    var content = try markdown.parseDocument(std.testing.allocator, "![alttext](missing.png)", .{});
+    var content = try markdown.parseDocument(std.testing.allocator, std.testing.io, "![alttext](missing.png)", .{});
     defer content.deinit();
     var document = try build(std.testing.allocator, &content, 40, .{});
     defer document.deinit();

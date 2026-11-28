@@ -27,7 +27,7 @@ pub fn tokenizeWithTheme(
 
     var rule_stack: ?*main.StateStack = null;
     for (lines.items) |line| {
-        const result = try grammar.tokenizeLine2(line, rule_stack, 0);
+        const result = try grammar.tokenizeLine2(std.testing.io, line, rule_stack, 0);
         const line_string = try onigLib.OnigString.init(std.testing.allocator, line);
         defer line_string.deinit();
 

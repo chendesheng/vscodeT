@@ -52,7 +52,7 @@ pub const Worker = struct {
             }
             if (closed) return;
 
-            const now = time_compat.milliTimestamp();
+            const now = time_compat.milliTimestamp(self.context.io);
             var next_deadline: ?i64 = null;
             var ids = self.tokenizers.keyIterator();
             while (ids.next()) |id| {
@@ -85,7 +85,7 @@ pub const Worker = struct {
             }
 
             self.context.working.store(true, .seq_cst);
-            const remaining = next_deadline.? - time_compat.milliTimestamp();
+            const remaining = next_deadline.? - time_compat.milliTimestamp(self.context.io);
             const wait_ms = @max(@min(remaining, 20), 0);
             if (wait_ms > 0) {
                 std.Io.sleep(self.context.io, .fromMilliseconds(wait_ms), .awake) catch {};
@@ -122,7 +122,7 @@ pub const Worker = struct {
         const registry = if (self.registry) |*value| value else return;
         self.removeModel(data.controller_id);
 
-        const tokenizer = Tokenizer.init(self.allocator, registry, data) catch return;
+        const tokenizer = Tokenizer.init(self.allocator, registry, self.context.io, data) catch return;
         self.tokenizers.put(data.controller_id, tokenizer) catch {
             tokenizer.deinit();
             return;

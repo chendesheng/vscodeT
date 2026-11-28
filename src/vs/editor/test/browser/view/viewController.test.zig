@@ -36,7 +36,7 @@ const BalancedBracketSupport = struct {
         return null_tokenize.NullState;
     }
 
-    fn tokenizeEncoded(_: *anyopaque, allocator: Allocator, line: []const u8, _: bool, state: languages.IState) anyerror!languages.EncodedTokenizationResult {
+    fn tokenizeEncoded(_: *anyopaque, _: std.Io, allocator: Allocator, line: []const u8, _: bool, state: languages.IState) anyerror!languages.EncodedTokenizationResult {
         var tokens = std.array_list.Managed(line_tokens.TokenPacked).init(allocator);
         errdefer tokens.deinit();
 
@@ -95,7 +95,7 @@ const SpanSupport = struct {
         return null_tokenize.NullState;
     }
 
-    fn tokenizeEncoded(context: *anyopaque, allocator: Allocator, line: []const u8, _: bool, state: languages.IState) anyerror!languages.EncodedTokenizationResult {
+    fn tokenizeEncoded(context: *anyopaque, _: std.Io, allocator: Allocator, line: []const u8, _: bool, state: languages.IState) anyerror!languages.EncodedTokenizationResult {
         const self: *SpanSupport = @ptrCast(@alignCast(context));
         var tokens = std.array_list.Managed(line_tokens.TokenPacked).init(allocator);
         errdefer tokens.deinit();

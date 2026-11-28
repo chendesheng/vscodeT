@@ -180,6 +180,7 @@ pub const TextRenderer = struct {
 };
 
 const Context = struct {
+    io: std.Io,
     mermaid: ?TextRenderer = null,
     math: ?TextRenderer = null,
     prefix: []const u8 = "",
@@ -229,18 +230,18 @@ pub const ParseOptions = struct {
     preview_breaks: bool = false,
 };
 
-pub fn parse(parent: Allocator, source: []const u8) !Content {
-    return parseWithOptions(parent, source, .{});
+pub fn parse(parent: Allocator, io: std.Io, source: []const u8) !Content {
+    return parseWithOptions(parent, io, source, .{});
 }
 
 /// Parses with the document metadata used by the Markdown preview.
-pub fn parseDocument(parent: Allocator, source: []const u8, options: ParseOptions) !Content {
+pub fn parseDocument(parent: Allocator, io: std.Io, source: []const u8, options: ParseOptions) !Content {
     var document_options = options;
     document_options.mode = .document;
-    return parseWithOptions(parent, source, document_options);
+    return parseWithOptions(parent, io, source, document_options);
 }
 
-pub fn parseWithOptions(parent: Allocator, source: []const u8, options: ParseOptions) !Content {
+pub fn parseWithOptions(parent: Allocator, io: std.Io, source: []const u8, options: ParseOptions) !Content {
     var arena = std.heap.ArenaAllocator.init(parent);
     errdefer arena.deinit();
     const allocator = arena.allocator();
@@ -265,6 +266,7 @@ pub fn parseWithOptions(parent: Allocator, source: []const u8, options: ParseOpt
         .math = options.math,
         .code_fence_fallback_language = options.code_fence_fallback_language,
         .code_background = options.code_background,
+        .io = io,
         .mode = options.mode,
         .preview_breaks = options.preview_breaks,
         .state = &state,
@@ -547,7 +549,7 @@ fn renderCode(
             }
         }
     }
-    const support_opt = textMateTokenizer.create(allocator, language) catch |err| switch (err) {
+    const support_opt = textMateTokenizer.create(allocator, ctx.io, language) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => null,
     };
@@ -568,7 +570,7 @@ fn renderCode(
         const expanded = try expandTabs(allocator, line);
         if (use_highlight) {
             const support = support_opt.?;
-            const result = support.tokenizeEncoded(allocator, expanded, false, state.?) catch {
+            const result = support.tokenizeEncoded(ctx.io, allocator, expanded, false, state.?) catch {
                 use_highlight = false;
                 try appendPlainCodeLine(allocator, out, block_ctx, expanded);
                 continue;
@@ -878,7 +880,7 @@ fn renderTable(
         while (cell_node) |cell| : (cell_node = cell.next) {
             if (cell.data != .table_cell) continue;
             var scratch = std.array_list.Managed(Line).init(allocator);
-            var builder = InlineBuilder.init(allocator, .{}, &scratch);
+            var builder = InlineBuilder.init(allocator, .{ .io = ctx.io }, &scratch);
             builder.replace_newline = true;
             try renderInlineChildren(allocator, &builder, cell, .{ .color = text_color }, definitions, depth);
             const spans = try builder.takeSpans();
@@ -1407,7 +1409,7 @@ fn findTextLine(allocator: Allocator, content: *const Content, needle: []const u
 
 test "markdown: headings, nested lists and code blocks" {
     const testing = std.testing;
-    var content = try parseWithOptions(testing.allocator,
+    var content = try parseWithOptions(testing.allocator, std.testing.io,
         \\# Title
         \\- one
         \\  - nested
@@ -1434,7 +1436,7 @@ test "markdown: headings, nested lists and code blocks" {
 
 test "markdown: GFM table renders a clipped box grid" {
     const testing = std.testing;
-    var content = try parse(testing.allocator,
+    var content = try parse(testing.allocator, std.testing.io,
         \\| name | value |
         \\|:-----|------:|
         \\| alpha | 1 |
@@ -1462,7 +1464,7 @@ test "markdown: GFM table renders a clipped box grid" {
 
 test "markdown: thematic breaks keep their block prefix" {
     const testing = std.testing;
-    var content = try parse(testing.allocator,
+    var content = try parse(testing.allocator, std.testing.io,
         \\---
         \\
         \\> ---
@@ -1482,7 +1484,7 @@ test "markdown: thematic breaks keep their block prefix" {
 
 test "markdown: setext headings and indented code" {
     const testing = std.testing;
-    var content = try parse(testing.allocator,
+    var content = try parse(testing.allocator, std.testing.io,
         \\Heading
         \\=======
         \\
@@ -1500,7 +1502,7 @@ test "markdown: setext headings and indented code" {
 
 test "markdown: links, autolinks and reference links" {
     const testing = std.testing;
-    var content = try parse(testing.allocator,
+    var content = try parse(testing.allocator, std.testing.io,
         \\see [docs](https://example.com) and <https://example.org>
         \\
         \\[ref][id]
@@ -1533,7 +1535,7 @@ test "markdown: links, autolinks and reference links" {
 
 test "markdown: images use alt text and raw HTML is dropped" {
     const testing = std.testing;
-    var content = try parse(testing.allocator,
+    var content = try parse(testing.allocator, std.testing.io,
         \\![alt text](https://example.com/x.png)
         \\
         \\<span>hidden?</span> visible
@@ -1550,7 +1552,7 @@ test "markdown: images use alt text and raw HTML is dropped" {
 
 test "markdown: soft breaks, tabs, entities and escapes" {
     const testing = std.testing;
-    var content = try parse(testing.allocator, "first\nsecond\n\nA\tB &amp; C \\*literal\\*");
+    var content = try parse(testing.allocator, std.testing.io, "first\nsecond\n\nA\tB &amp; C \\*literal\\*");
     defer content.deinit();
 
     try testing.expect(findLine(&content, "first") != null);
@@ -1561,14 +1563,14 @@ test "markdown: soft breaks, tabs, entities and escapes" {
 
 test "markdown: invalid UTF-8 falls back to text" {
     const testing = std.testing;
-    var content = try parse(testing.allocator, "ok \xff bad");
+    var content = try parse(testing.allocator, std.testing.io, "ok \xff bad");
     defer content.deinit();
     try testing.expect(content.lines.len > 0);
 }
 
 test "markdown: fenced code uses TextMate token colors" {
     const testing = std.testing;
-    var content = try parse(testing.allocator,
+    var content = try parse(testing.allocator, std.testing.io,
         \\```zig
         \\const answer = 42; // comment
         \\```
@@ -1591,7 +1593,7 @@ test "markdown: fenced code uses TextMate token colors" {
 
 test "markdown: unknown fenced language stays plain" {
     const testing = std.testing;
-    var content = try parse(testing.allocator,
+    var content = try parse(testing.allocator, std.testing.io,
         \\```not-a-language
         \\const answer = 42;
         \\```
@@ -1608,7 +1610,7 @@ test "markdown: unknown fenced language stays plain" {
 
 test "markdown: fenced code fallback language highlights" {
     const testing = std.testing;
-    var content = try parseWithOptions(testing.allocator,
+    var content = try parseWithOptions(testing.allocator, std.testing.io,
         \\```
         \\const answer = 42;
         \\```
@@ -1627,7 +1629,7 @@ test "markdown: fenced code fallback language highlights" {
 
 test "markdown: many blank-separated paragraphs" {
     const testing = std.testing;
-    var content = try parse(testing.allocator, "one\n\ntwo\n\nthree\n\nfour\n\nfive\n\nsix\n\nseven\n\neight\n\nnine\n\nten");
+    var content = try parse(testing.allocator, std.testing.io, "one\n\ntwo\n\nthree\n\nfour\n\nfive\n\nsix\n\nseven\n\neight\n\nnine\n\nten");
     defer content.deinit();
     try testing.expect(content.lines.len >= 10);
 }
@@ -1635,18 +1637,18 @@ test "markdown: many blank-separated paragraphs" {
 test "markdown: empty and definition-only input render nothing" {
     const testing = std.testing;
 
-    var empty = try parse(testing.allocator, "");
+    var empty = try parse(testing.allocator, std.testing.io, "");
     defer empty.deinit();
     try testing.expectEqual(@as(usize, 0), empty.lines.len);
 
-    var definitions = try parse(testing.allocator, "[id]: https://example.com");
+    var definitions = try parse(testing.allocator, std.testing.io, "[id]: https://example.com");
     defer definitions.deinit();
     try testing.expectEqual(@as(usize, 0), definitions.lines.len);
 }
 
 test "markdown: quote and list continuations keep their prefix" {
     const testing = std.testing;
-    var content = try parse(testing.allocator,
+    var content = try parse(testing.allocator, std.testing.io,
         \\> quoted text
         \\
         \\- listed text
@@ -1670,7 +1672,7 @@ test "markdown: quote and list continuations keep their prefix" {
 
 test "markdown: blockquote after a list is not dropped" {
     const testing = std.testing;
-    var content = try parse(testing.allocator, "- item\n\n> quote");
+    var content = try parse(testing.allocator, std.testing.io, "- item\n\n> quote");
     defer content.deinit();
     try testing.expect(findLine(&content, "quote") != null);
 }
@@ -1685,7 +1687,7 @@ test "markdown: splitAtWidth keeps UTF-8 intact" {
 
 test "markdown: document mode keeps image URLs for the preview layout" {
     const allocator = std.testing.allocator;
-    var content = try parseDocument(allocator, "before ![shot](images/a.png) after\n\n![ref][id]\n\n[id]: b.jpg", .{});
+    var content = try parseDocument(allocator, std.testing.io, "before ![shot](images/a.png) after\n\n![ref][id]\n\n[id]: b.jpg", .{});
     defer content.deinit();
     var saw_direct = false;
     var saw_reference = false;
@@ -1709,7 +1711,7 @@ test "document preview replaces only Mermaid fences and retains their source blo
             return if (std.mem.eql(u8, text, "A --> B")) "A → B" else null;
         }
     };
-    var document = try parseDocument(std.testing.allocator, "```mermaid\nA --> B\n```\n\n```text\nA --> B\n```", .{
+    var document = try parseDocument(std.testing.allocator, std.testing.io, "```mermaid\nA --> B\n```\n\n```text\nA --> B\n```", .{
         .mermaid = .{ .context = undefined, .lookup = renderer.lookup },
     });
     defer document.deinit();
@@ -1728,12 +1730,12 @@ test "document math renderer respects inline, block, code and disabled contexts"
     };
     const source = "Result $x^2$\n\n$$\ny^2\n$$\n\n`$x^2$`";
     const a = std.testing.allocator;
-    var enabled = try parseDocument(a, source, .{ .math = .{ .context = undefined, .lookup = renderer.lookup } });
+    var enabled = try parseDocument(a, std.testing.io, source, .{ .math = .{ .context = undefined, .lookup = renderer.lookup } });
     defer enabled.deinit();
     try std.testing.expect(findTextLine(a, &enabled, "Result x²") != null);
     try std.testing.expect(findTextLine(a, &enabled, "y²") != null);
     try std.testing.expect(findTextLine(a, &enabled, "$x^2$") != null);
-    var disabled = try parseDocument(a, source, .{});
+    var disabled = try parseDocument(a, std.testing.io, source, .{});
     defer disabled.deinit();
     try std.testing.expect(findTextLine(a, &disabled, "Result $x^2$") != null);
 }

@@ -63,7 +63,7 @@ fn emptyJsonArray(allocator: std.mem.Allocator) std.json.Value {
 test "golden request frame for MainThreadCommands.$executeCommand" {
     var capture = Capture.init(std.testing.allocator);
     defer capture.deinit();
-    var protocol = rpc.RpcProtocol.init(std.testing.allocator, capture.transport());
+    var protocol = rpc.RpcProtocol.init(std.testing.allocator, std.testing.io, capture.transport());
     defer protocol.deinit();
 
     var empty = emptyJsonArray(std.testing.allocator);
@@ -88,7 +88,7 @@ test "golden request frame for MainThreadCommands.$executeCommand" {
 test "receiver invokes the actor, then acknowledges, then replies" {
     var capture = Capture.init(std.testing.allocator);
     defer capture.deinit();
-    var protocol = rpc.RpcProtocol.init(std.testing.allocator, capture.transport());
+    var protocol = rpc.RpcProtocol.init(std.testing.allocator, std.testing.io, capture.transport());
     defer protocol.deinit();
 
     var actor = CommandActor{ .allocator = std.testing.allocator };
@@ -123,7 +123,7 @@ test "receiver invokes the actor, then acknowledges, then replies" {
 test "unknown actor produces an error reply" {
     var capture = Capture.init(std.testing.allocator);
     defer capture.deinit();
-    var protocol = rpc.RpcProtocol.init(std.testing.allocator, capture.transport());
+    var protocol = rpc.RpcProtocol.init(std.testing.allocator, std.testing.io, capture.transport());
     defer protocol.deinit();
 
     var request = std.array_list.Managed(u8).init(std.testing.allocator);
@@ -145,7 +145,7 @@ test "unknown actor produces an error reply" {
 test "dispose rejects pending replies as canceled" {
     var capture = Capture.init(std.testing.allocator);
     defer capture.deinit();
-    var protocol = rpc.RpcProtocol.init(std.testing.allocator, capture.transport());
+    var protocol = rpc.RpcProtocol.init(std.testing.allocator, std.testing.io, capture.transport());
     defer protocol.deinit();
 
     var called: usize = 0;
@@ -210,7 +210,7 @@ const cancel_request = "\x06\x00\x00\x00\x07";
 test "RPC receiver releases the cancellation source of an immediate reply" {
     var capture = Capture.init(std.testing.allocator);
     defer capture.deinit();
-    var protocol = rpc.RpcProtocol.init(std.testing.allocator, capture.transport());
+    var protocol = rpc.RpcProtocol.init(std.testing.allocator, std.testing.io, capture.transport());
     defer protocol.deinit();
     var actor = CancelableActor{};
     protocol.set(.{ .nid = 10, .sid = "MainThreadCommands" }, .{ .context = &actor, .invoke = CancelableActor.invoke });
@@ -223,7 +223,7 @@ test "RPC receiver releases the cancellation source of an immediate reply" {
 test "RPC receiver retains deferred cancellation state until reply" {
     var capture = Capture.init(std.testing.allocator);
     defer capture.deinit();
-    var protocol = rpc.RpcProtocol.init(std.testing.allocator, capture.transport());
+    var protocol = rpc.RpcProtocol.init(std.testing.allocator, std.testing.io, capture.transport());
     defer protocol.deinit();
     var actor = CancelableActor{ .deferred = true };
     protocol.set(.{ .nid = 10, .sid = "MainThreadCommands" }, .{ .context = &actor, .invoke = CancelableActor.invoke });
@@ -244,7 +244,7 @@ test "RPC receiver retains deferred cancellation state until reply" {
 test "RPC cancellation callback can complete the deferred reply synchronously" {
     var capture = Capture.init(std.testing.allocator);
     defer capture.deinit();
-    var protocol = rpc.RpcProtocol.init(std.testing.allocator, capture.transport());
+    var protocol = rpc.RpcProtocol.init(std.testing.allocator, std.testing.io, capture.transport());
     defer protocol.deinit();
     var actor = CancelableActor{ .deferred = true, .reply_on_cancel = true };
     protocol.set(.{ .nid = 10, .sid = "MainThreadCommands" }, .{ .context = &actor, .invoke = CancelableActor.invoke });
@@ -258,7 +258,7 @@ test "RPC cancellation callback can complete the deferred reply synchronously" {
 test "RPC disposal releases a deferred invocation that never replied" {
     var capture = Capture.init(std.testing.allocator);
     defer capture.deinit();
-    var protocol = rpc.RpcProtocol.init(std.testing.allocator, capture.transport());
+    var protocol = rpc.RpcProtocol.init(std.testing.allocator, std.testing.io, capture.transport());
     defer protocol.deinit();
     var actor = CancelableActor{ .deferred = true };
     protocol.set(.{ .nid = 10, .sid = "MainThreadCommands" }, .{ .context = &actor, .invoke = CancelableActor.invoke });

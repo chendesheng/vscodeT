@@ -298,7 +298,7 @@ pub const DiffEditorViewModel = struct {
         self.is_diff_up_to_date = false;
         self.last_compute_error = null;
         if (self.worker != null) {
-            self.compute_task.schedule(time.milliTimestamp() + delay_ms);
+            self.compute_task.schedule(time.milliTimestamp(self.model.modified.clockIo()) + delay_ms);
         } else {
             self.compute() catch |err| {
                 self.last_compute_error = err;
@@ -363,6 +363,7 @@ pub const DiffEditorViewModel = struct {
             self.model.modified,
             .{
                 .ignoreTrimWhitespace = self.options.ignore_trim_whitespace,
+                .io = self.model.modified.clockIo(),
                 .maxComputationTimeMs = self.options.max_computation_time_ms,
                 .computeMoves = self.options.show_moves,
             },

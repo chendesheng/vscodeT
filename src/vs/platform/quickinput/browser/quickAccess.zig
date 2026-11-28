@@ -47,6 +47,7 @@ pub const QuickAccessController = struct {
 
     pub fn init(
         allocator: Allocator,
+        io: std.Io,
         registry: *Registry,
         presenter: Presenter,
     ) !*QuickAccessController {
@@ -56,7 +57,7 @@ pub const QuickAccessController = struct {
             .allocator = allocator,
             .registry = registry,
             .presenter = presenter,
-            .picker = QuickPick.init(allocator),
+            .picker = QuickPick.init(allocator, io),
         };
         self.picker.on_change_context = self;
         self.picker.on_change = onPickerChanged;
@@ -241,7 +242,7 @@ test "QuickAccessController: provider switching and hide" {
         .accept = State.accept,
     });
 
-    const controller = try QuickAccessController.init(std.testing.allocator, &registry, .{
+    const controller = try QuickAccessController.init(std.testing.allocator, std.testing.io, &registry, .{
         .context = &presenter_state,
         .show = State.show,
         .hide = State.hide,

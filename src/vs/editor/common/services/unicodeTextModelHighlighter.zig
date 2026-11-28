@@ -217,6 +217,7 @@ pub fn buildRegExpCharClassExpr(allocator: Allocator, code_points: []const u32) 
 pub const UnicodeTextModelHighlighter = struct {
     pub fn computeUnicodeHighlights(
         allocator: Allocator,
+        io: std.Io,
         model: IUnicodeCharacterSearcherTarget,
         options: UnicodeHighlighterOptions,
         range: ?Range,
@@ -269,7 +270,7 @@ pub const UnicodeTextModelHighlighter = struct {
                 }
 
                 const str = line_content[start_index..end_index];
-                var word: ?wordHelper.IWordAtPosition = wordHelper.getWordAtText(start_index + 1, word_definition, line_content, 0);
+                var word: ?wordHelper.IWordAtPosition = wordHelper.getWordAtText(io, start_index + 1, word_definition, line_content, 0);
                 if (word != null and word.?.endColumn <= start_index + 1) {
                     // The word does not include the problematic character.
                     word = null;
@@ -398,7 +399,7 @@ test "computeUnicodeHighlights finds ambiguous characters" {
     // Cyrillic "а" (U+0430) looks like ASCII "a".
     var model = TestModel{ .lines = &.{"let \u{0430} = 1;"} };
 
-    var result = try UnicodeTextModelHighlighter.computeUnicodeHighlights(allocator, model.target(), ambiguousOptions(), null);
+    var result = try UnicodeTextModelHighlighter.computeUnicodeHighlights(allocator, std.testing.io, model.target(), ambiguousOptions(), null);
     defer result.deinit();
 
     try testing.expectEqual(@as(usize, 1), result.ranges.len);
@@ -415,7 +416,7 @@ test "computeUnicodeHighlights ignores plain ASCII" {
     const allocator = testing.allocator;
     var model = TestModel{ .lines = &.{ "let a = 1;", "const b = 2;" } };
 
-    var result = try UnicodeTextModelHighlighter.computeUnicodeHighlights(allocator, model.target(), ambiguousOptions(), null);
+    var result = try UnicodeTextModelHighlighter.computeUnicodeHighlights(allocator, std.testing.io, model.target(), ambiguousOptions(), null);
     defer result.deinit();
 
     try testing.expectEqual(@as(usize, 0), result.ranges.len);
@@ -430,7 +431,7 @@ test "computeUnicodeHighlights finds invisible characters" {
     options.ambiguousCharacters = false;
     options.invisibleCharacters = true;
 
-    var result = try UnicodeTextModelHighlighter.computeUnicodeHighlights(allocator, model.target(), options, null);
+    var result = try UnicodeTextModelHighlighter.computeUnicodeHighlights(allocator, std.testing.io, model.target(), options, null);
     defer result.deinit();
 
     try testing.expectEqual(@as(usize, 1), result.ranges.len);
@@ -447,7 +448,7 @@ test "computeUnicodeHighlights honours allowed code points" {
     const allowed = [_]u32{0x0430};
     options.allowedCodePoints = &allowed;
 
-    var result = try UnicodeTextModelHighlighter.computeUnicodeHighlights(allocator, model.target(), options, null);
+    var result = try UnicodeTextModelHighlighter.computeUnicodeHighlights(allocator, std.testing.io, model.target(), options, null);
     defer result.deinit();
 
     try testing.expectEqual(@as(usize, 0), result.ranges.len);
@@ -460,7 +461,7 @@ test "computeUnicodeHighlights respects the range" {
         "let \u{0430} = 2;",
     } };
 
-    var result = try UnicodeTextModelHighlighter.computeUnicodeHighlights(allocator, model.target(), ambiguousOptions(), Range.init(2, 1, 2, 13));
+    var result = try UnicodeTextModelHighlighter.computeUnicodeHighlights(allocator, std.testing.io, model.target(), ambiguousOptions(), Range.init(2, 1, 2, 13));
     defer result.deinit();
 
     try testing.expectEqual(@as(usize, 1), result.ranges.len);
@@ -474,7 +475,7 @@ test "computeUnicodeHighlights treats mixing with ASCII as suspicious" {
     var options = ambiguousOptions();
     options.nonBasicASCII = true;
 
-    var result = try UnicodeTextModelHighlighter.computeUnicodeHighlights(allocator, model.target(), options, null);
+    var result = try UnicodeTextModelHighlighter.computeUnicodeHighlights(allocator, std.testing.io, model.target(), options, null);
     defer result.deinit();
 
     // Every non basic ASCII code point is a candidate.

@@ -74,7 +74,7 @@ const AllocationCounter = struct {
             .frees = self.frees.load(.monotonic),
             .requested = self.requested.load(.monotonic),
             .live = self.live.load(.monotonic),
-            .us = nowUs(time_compat.io),
+            .us = nowUs(std.testing.io),
         };
     }
 
@@ -135,7 +135,7 @@ const AllocationCounter = struct {
 
 test "benchmark: allocation profile" {
     if (!enabled()) return error.SkipZigTest;
-    const io = time_compat.io;
+    const io = std.testing.io;
     const path = benchFile();
     try std.Io.Dir.cwd().access(io, path, .{});
     var backing: std.heap.DebugAllocator(.{ .stack_trace_frames = 0 }) = .{};
@@ -236,7 +236,7 @@ fn openOnce(allocator: Allocator, io: Io, path: []const u8, stages: *[6]Stage) !
 test "benchmark: open file" {
     if (!enabled()) return error.SkipZigTest;
     const allocator = std.heap.page_allocator;
-    const io = time_compat.io;
+    const io = std.testing.io;
     const path = benchFile();
     std.Io.Dir.cwd().access(io, path, .{}) catch return error.SkipZigTest;
 
@@ -280,7 +280,7 @@ test "benchmark: open file" {
 test "benchmark: edit frame" {
     if (!enabled()) return error.SkipZigTest;
     const allocator = std.heap.page_allocator;
-    const io = time_compat.io;
+    const io = std.testing.io;
     const path = benchFile();
     std.Io.Dir.cwd().access(io, path, .{}) catch return error.SkipZigTest;
 
@@ -342,7 +342,7 @@ test "benchmark: edit frame" {
 test "benchmark: scroll frame" {
     if (!enabled()) return error.SkipZigTest;
     const allocator = std.heap.page_allocator;
-    const io = time_compat.io;
+    const io = std.testing.io;
     const path = benchFile();
     std.Io.Dir.cwd().access(io, path, .{}) catch return error.SkipZigTest;
 
@@ -415,7 +415,7 @@ test "benchmark: scroll frame" {
 test "benchmark: word highlight" {
     if (!enabled()) return error.SkipZigTest;
     const allocator = std.heap.page_allocator;
-    const io = time_compat.io;
+    const io = std.testing.io;
     const path = benchFile();
     std.Io.Dir.cwd().access(io, path, .{}) catch return error.SkipZigTest;
 
@@ -438,7 +438,7 @@ test "benchmark: word highlight" {
 
 test "Tokenization: visible range is synchronous, background is chunked" {
     const allocator = std.heap.page_allocator;
-    const io = time_compat.io;
+    const io = std.testing.io;
 
     var text: Io.Writer.Allocating = .init(allocator);
     defer text.deinit();
@@ -494,7 +494,7 @@ test "Tokenization: visible range is synchronous, background is chunked" {
 test "benchmark: deferred maintenance" {
     if (!enabled()) return error.SkipZigTest;
     const allocator = std.heap.page_allocator;
-    const io = time_compat.io;
+    const io = std.testing.io;
     const path = benchFile();
     std.Io.Dir.cwd().access(io, path, .{}) catch return error.SkipZigTest;
 
@@ -526,7 +526,7 @@ test "benchmark: deferred maintenance" {
 test "benchmark: workbench scroll frame" {
     if (!enabled()) return error.SkipZigTest;
     const allocator = std.heap.page_allocator;
-    const io = time_compat.io;
+    const io = std.testing.io;
     const path = benchFile();
     std.Io.Dir.cwd().access(io, path, .{}) catch return error.SkipZigTest;
 
@@ -588,7 +588,7 @@ test "benchmark: workbench scroll frame" {
 test "benchmark: explorer sidebar scroll" {
     if (!enabled()) return error.SkipZigTest;
     const allocator = std.heap.page_allocator;
-    const io = time_compat.io;
+    const io = std.testing.io;
     var surface: @import("ui").Surface = undefined;
     try terminal_workbench.initWindowSurface(&surface, allocator, 140, 44);
     defer surface.deinit();
@@ -599,7 +599,7 @@ test "benchmark: explorer sidebar scroll" {
 
     var load_guard: usize = 0;
     while (sidebar.hasPendingLoad() and load_guard < 5000) : (load_guard += 1) {
-        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         if (sidebar.hasPendingLoad()) std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
     }
 
@@ -762,7 +762,7 @@ fn benchNativeDiffOpen(wb: *terminal_workbench.TerminalWorkbench, io: Io, path: 
     timings.worker_us = ready - start - timings.submit_us;
     if (wb.editor_opening.pending_diff) |pending| timings.cache_hit = pending.request.cache_hit;
     while (wb.editor_opening.pending_diff != null) {
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         if (wb.editor_opening.pending_diff != null) std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
     }
     timings.mount_us = nowUs(io) - ready;
@@ -921,7 +921,7 @@ fn benchmarkGitDiffAllocationProfile(code: bool) !void {
         try wb.setUserSettingsPaths(&.{settings});
         try wb.initSidebar(root);
         while (wb.sidebar.?.hasPendingLoad()) {
-            _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
             if (wb.sidebar.?.hasPendingLoad()) std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
         }
         try wb.initGit();
@@ -995,7 +995,7 @@ test "benchmark: native Git diff editor open, scroll, input and refresh" {
     try wb.setUserSettingsPaths(&.{settings});
     try wb.initSidebar(root);
     while (wb.sidebar.?.hasPendingLoad()) {
-        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
         if (wb.sidebar.?.hasPendingLoad()) std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
     }
     try wb.initGit();
@@ -1049,7 +1049,7 @@ test "benchmark: native Git diff editor open, scroll, input and refresh" {
                 }
                 _ = try wb.closeActive();
                 try std.testing.expectEqual(baseline_tabs, wb.tabCount());
-                while (wb.window_events.nextTimeout(time_compat.milliTimestamp(), 1) == 0) _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                while (wb.window_events.nextTimeout(time_compat.milliTimestamp(std.testing.io), 1) == 0) _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
             }
         }
     }

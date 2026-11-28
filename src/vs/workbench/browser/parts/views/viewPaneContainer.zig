@@ -97,6 +97,7 @@ pub const ViewPaneContainer = struct {
     const PaneVisibility = struct { view: bool = false, body: bool = false };
 
     allocator: Allocator,
+    io: std.Io,
     model: *model_mod.ViewContainerModel,
     panes: []const Pane,
     headers: std.array_list.Managed(view_pane.Header),
@@ -127,6 +128,7 @@ pub const ViewPaneContainer = struct {
 
     pub fn init(
         allocator: Allocator,
+        io: std.Io,
         model: *model_mod.ViewContainerModel,
         panes: []const Pane,
     ) !*ViewPaneContainer {
@@ -137,6 +139,7 @@ pub const ViewPaneContainer = struct {
         @memset(visibility, .{});
         self.* = .{
             .allocator = allocator,
+            .io = io,
             .model = model,
             .panes = panes,
             .visibility = visibility,
@@ -379,7 +382,7 @@ pub const ViewPaneContainer = struct {
         const first = self.body_rows.items[sash.first];
         const second = self.body_rows.items[sash.second];
         const total = first + second;
-        const now = time_compat.milliTimestamp();
+        const now = time_compat.milliTimestamp(self.io);
         if (self.last_sash_click) |last| {
             if (last.index == index and now - last.time < 300) {
                 self.storeSizes(sash, .{ (total + 1) / 2, total / 2 });

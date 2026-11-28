@@ -573,7 +573,7 @@ pub const ImagePreviewPane = struct {
 
 test "imagePreview: unsupported terminal shows the message and button" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "image.png", .data = &png_1x1 });
@@ -604,7 +604,7 @@ test "imagePreview: unsupported terminal shows the message and button" {
 
 test "imagePreview: capable terminal paints placeholders and zooms" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "image.png", .data = &png_1x1 });
@@ -645,7 +645,7 @@ test "imagePreview: capable terminal paints placeholders and zooms" {
 
 test "imagePreview: async load reads and decodes off the caller thread" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "image.png", .data = &png_1x1 });
@@ -653,7 +653,7 @@ test "imagePreview: async load reads and decodes off the caller thread" {
     const length = try tmp.dir.realPathFile(io, "image.png", &path_buffer);
     const path = path_buffer[0..length];
 
-    var io_state = Io.Threaded.init(allocator, .{});
+    var io_state = try ui.WindowIo.init(allocator, std.testing.io);
     defer io_state.deinit();
     const async_io = io_state.io();
 
@@ -662,14 +662,14 @@ test "imagePreview: async load reads and decodes off the caller thread" {
     runtime.setProtocol(.unicode_placeholders);
     runtime.setCellSize(8, 16);
 
-    var window = dispatch.Queue{ .io = async_io };
+    var window = dispatch.Queue{ .io = async_io, .scheduler = &io_state };
     const pane = try ImagePreviewPane.initAsync(allocator, io, &window, &runtime, path);
     defer pane.deinit();
     try std.testing.expect(pane.hasPendingLoad());
 
     var waited: usize = 0;
-    while (!window.dispatch(@import("../../../../base/common/timeCompat.zig").milliTimestamp()) and waited < 2000) : (waited += 1) {
-        async_io.sleep(.fromMilliseconds(1), .awake) catch {};
+    while (!window.dispatch(@import("../../../../base/common/timeCompat.zig").milliTimestamp(std.testing.io)) and waited < 2000) : (waited += 1) {
+        std.testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(pane.editor.hasImage());
     try std.testing.expect(!pane.hasPendingLoad());

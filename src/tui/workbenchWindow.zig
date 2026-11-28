@@ -303,6 +303,7 @@ pub const TerminalWorkbench = struct {
     worker_io: Io,
     async_io_state: ui.WindowIo,
     async_io: Io,
+    external_opener: @import("../vs/platform/opener/common/opener.zig").ExternalOpener,
     disk_files: @import("../vs/platform/files/common/fileService.zig").DiskFileService,
     text_file_service: text_files.TextFileService,
     resource_file_service: @import("../vs/platform/files/common/fileService.zig").ProviderFileService,
@@ -390,6 +391,8 @@ pub const TerminalWorkbench = struct {
     marker_listener: ?Emitter(MarkerChangeEvent).ListenerId = null,
     range_highlights: ?*RangeHighlightDecorations = null,
     workspace: *WorkspaceContextService,
+    label_service: @import("../vs/workbench/services/label/common/labelService.zig").LabelService,
+    label_api: @import("../vs/platform/label/common/label.zig").ILabelService,
     configuration: ?*ConfigurationService,
     configuration_migrations: @import("../vs/workbench/common/configuration.zig").ConfigurationMigrationWorkbenchContribution,
     configuration_binding: configuration_mod.ConfigurationServiceBinding,
@@ -573,13 +576,15 @@ pub const TerminalWorkbench = struct {
         self.extensions_view = null;
         self.extensions_list = null;
         self.window_events = .{ .io = self.async_io, .scheduler = &self.async_io_state, .window_events = .init(allocator) };
+        self.external_opener = .{ .allocator = allocator, .window = &self.window_events, .io = self.worker_io };
         errdefer self.window_events.deinitWindowEvents();
         self.resource_file_service = .init(allocator);
         errdefer self.resource_file_service.deinit();
         self.file_service_api = self.resource_file_service.interface();
-        self.extension_logger_service = .init(allocator, self.file_service_api);
+        self.extension_logger_service = .init(allocator, self.async_io, self.file_service_api);
         errdefer self.extension_logger_service.deinit();
         self.disk_resource_provider = .init(allocator, self.worker_io);
+        self.disk_resource_provider.attachWindow(&self.window_events);
         errdefer self.disk_resource_provider.deinit();
         self.disk_resource_registration = try self.file_service_api.registerProvider("file", self.disk_resource_provider.interface());
         errdefer self.disk_resource_registration.dispose();
@@ -600,7 +605,7 @@ pub const TerminalWorkbench = struct {
         self.text_file_model_manager = .init(allocator, self.file_service_api, (FileModelAccessAdapter{ .service = &self.text_model_resolver }).interface());
         errdefer self.text_file_model_manager.deinit();
         try self.text_file_model_manager.bind(self.working_copy_file_api);
-        self.bulk_edit_service = .{ .allocator = allocator, .resolver_service = self.text_model_api, .working_copy_service = &self.working_copy_service, .undo_redo_service = &self.text_model_resolver.undo_store.?.service, .file_services = .{ .files = self.file_service_api, .working_copies = self.working_copy_file_api, .undo_redo = &self.text_model_resolver.undo_store.?.service } };
+        self.bulk_edit_service = .{ .allocator = allocator, .window = &self.window_events, .resolver_service = self.text_model_api, .working_copy_service = &self.working_copy_service, .undo_redo_service = &self.text_model_resolver.undo_store.?.service, .file_services = .{ .files = self.file_service_api, .working_copies = self.working_copy_file_api, .undo_redo = &self.text_model_resolver.undo_store.?.service } };
         self.bulk_edit_api = self.bulk_edit_service.interface();
         self.model_service_api = self.text_model_resolver.modelService();
         self.git_file_provider = .init(allocator, &self.git_model, self.worker_io);
@@ -659,6 +664,8 @@ pub const TerminalWorkbench = struct {
         self.outline_view = null;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         errdefer self.workspace.deinit();
+        self.label_service = .{ .workspace = self.workspace };
+        self.label_api = self.label_service.interface();
         self.configuration = null;
         self.configuration_migrations = .init(allocator);
         errdefer self.configuration_migrations.deinit();
@@ -934,6 +941,7 @@ pub const TerminalWorkbench = struct {
             },
         };
         self.editor_opening = .{
+            .external_opener = &self.external_opener,
             .allocator = allocator,
             .part = self.part,
             .group_actions = &self.group_actions,
@@ -965,6 +973,7 @@ pub const TerminalWorkbench = struct {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
                         host.ensureConfiguration() catch {};
                         editor.document.text_file_service = &host.text_file_service;
+                        editor.document.label_service = host.label_api;
                         editor.attachCodeEditorService(host.code_editor_api, &host.word_highlight_session) catch {};
                         host.configured_languages.applyToEditor(editor);
                         if (host.language_features) |features| editor.attachLanguageServices(features, host.marker_service, host.marker_decorations);
@@ -1232,8 +1241,8 @@ pub const TerminalWorkbench = struct {
         if (std.mem.startsWith(u8, href, "command:")) {
             try self.commands.execute(href["command:".len..]);
         } else if (std.mem.startsWith(u8, href, "file://")) {
-            try self.openPath(href["file://".len..]);
-        } else _ = try @import("../vs/platform/opener/common/opener.zig").openExternal(self.allocator, self.io, href);
+            self.requestOpenPath(href["file://".len..]);
+        } else try self.external_opener.requestOpen(href);
     }
 
     fn registerNativeListeners(self: *TerminalWorkbench) !void {
@@ -1391,6 +1400,7 @@ pub const TerminalWorkbench = struct {
         self.storage_api = self.notification_storage.interface();
         _ = try self.services.set(@import("../vs/workbench/services/host/browser/host.zig").host_service_id, &self.host_api);
         _ = try self.services.set(storage_mod.storage_service_id, &self.storage_api);
+        _ = try self.services.set(@import("../vs/platform/label/common/label.zig").label_service_id, &self.label_api);
         self.bulk_edit_preview_contribution = .{ .allocator = self.allocator, .views_service = self.views_api, .panes = self.pane_composite_api, .layout = self.layout_api, .editors = self.editor_api, .dialogs = self.dialog_api };
         self.bulk_edit_preview = BulkEditPane.init(self.allocator, .{ .files = self.file_service_api, .models = self.model_service_api, .text = self.text_model_api, .editors = self.editor_api, .window = &self.window_events, .dialogs = self.dialog_api, .storage = self.storage_api, .menus = &self.menu_service, .context_menu = self.context_menu_api }, .{ .context = self, .changed = requestWorkbenchFrame, .finished = struct {
             fn finish(context: *anyopaque) void {
@@ -1483,7 +1493,7 @@ pub const TerminalWorkbench = struct {
         errdefer self.core.deinit();
         self.activity_bar_part = ActivityBarPart.init(self.allocator);
         errdefer self.activity_bar_part.deinit();
-        self.sidebar_part = SidebarPart.init(self.allocator);
+        self.sidebar_part = SidebarPart.init(self.allocator, self.async_io);
         errdefer self.sidebar_part.deinit();
         self.sidebar_part.attachActivityBar(&self.activity_bar_part);
         self.panel_part = PanelPart.init(self.allocator);
@@ -1883,8 +1893,10 @@ pub const TerminalWorkbench = struct {
         if (self.language_status_contribution) |contribution| contribution.deinit();
         self.language_status_contribution = null;
         if (self.json_client) |client| client.attachWindow(null);
+        if (self.configuration) |configuration| configuration.cancelUpdates();
         self.text_model_resolver.cancelPendingSaves();
         self.deinitBulkEditPreview();
+        self.bulk_edit_service.cancelFileJobs();
         self.editor_opening.unbindWorkingCopyFileService();
         self.text_file_model_manager.deinit();
         self.accessible_view.deinit();
@@ -2158,6 +2170,7 @@ pub const TerminalWorkbench = struct {
         }
         self.breadcrumbs.detachServices();
         if (self.configuration) |configuration| {
+            configuration.cancelUpdates();
             if (self.terminal_service) |service| service.options.configuration = null;
             self.markdown_previews.detachConfiguration();
             if (self.search_window.view) |view| view.detachConfiguration();
@@ -2213,6 +2226,7 @@ pub const TerminalWorkbench = struct {
         freeOwnedPaths(self.allocator, self.user_settings_paths);
         self.user_settings_paths = try dupeOwnedPaths(self.allocator, paths);
         if (self.configuration) |configuration| {
+            configuration.cancelUpdates();
             self.breadcrumbs.detachServices();
             if (self.workspace_watcher) |watcher| {
                 watcher.deinit();
@@ -2270,6 +2284,7 @@ pub const TerminalWorkbench = struct {
                 },
             },
         );
+        self.configuration.?.attachWindow(&self.window_events);
         try self.configuration_binding.bind(self.configuration);
         const themes = try self.ensureThemeService();
         try themes.setConfiguration(self.configuration.?);
@@ -3582,6 +3597,7 @@ pub const TerminalWorkbench = struct {
     }
 
     fn cancelAsyncJobs(self: *TerminalWorkbench) void {
+        self.external_opener.cancel();
         self.editor_opening.cancel();
         if (self.theme_service) |service| service.cancelColorThemeLoad();
         self.user_keybindings.cancelReload();
@@ -4159,7 +4175,7 @@ pub const TerminalWorkbench = struct {
 
     fn ensureThemeService(self: *TerminalWorkbench) !*theme_service_mod.ThemeService {
         if (self.theme_service) |service| return service;
-        const service = try theme_service_mod.ThemeService.createDefault(self.allocator, null);
+        const service = try theme_service_mod.ThemeService.createDefault(self.allocator, self.worker_io, null);
         errdefer service.deinit();
         service.attachWindow(.{ .io = self.async_io, .window = &self.window_events, .scheme = self.theme_scheme_host.interface() });
         service.setFileIconThemeRegistry(self.declarative);
@@ -4231,12 +4247,12 @@ pub const TerminalWorkbench = struct {
             self.syntax_theme_ready = false;
         }
         if (loaded and service.getActiveTheme().is_loaded) {
-            if (self.syntax_theme.initFromColorThemeData(self.allocator, service.getActiveTheme())) |_| {
+            if (self.syntax_theme.initFromColorThemeData(self.allocator, self.worker_io, service.getActiveTheme())) |_| {
                 self.syntax_theme_ready = true;
             } else |_| {}
         }
         if (!self.syntax_theme_ready) {
-            self.syntax_theme.init(self.allocator) catch return;
+            self.syntax_theme.init(self.allocator, self.worker_io) catch return;
             self.syntax_theme_ready = true;
         }
     }

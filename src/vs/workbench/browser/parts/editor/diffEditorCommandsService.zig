@@ -122,11 +122,11 @@ pub const DiffEditorCommandsService = struct {
         }
         const diff = tab.diff orelse return;
         switch (mode) {
-            .toggle => try configuration.updateValue("diffEditor.renderSideBySide", .{ .bool = !diff.widget.options.render_side_by_side }, .USER),
-            .inline_view => try configuration.updateValue("diffEditor.renderSideBySide", .{ .bool = false }, .USER),
+            .toggle => try configuration.requestUpdateValue("diffEditor.renderSideBySide", .{ .bool = !diff.widget.options.render_side_by_side }, .USER),
+            .inline_view => try configuration.requestUpdateValue("diffEditor.renderSideBySide", .{ .bool = false }, .USER),
             .side_by_side, .automatic => {
-                try configuration.updateValue("diffEditor.renderSideBySide", .{ .bool = true }, .USER);
-                try configuration.updateValue("diffEditor.useInlineViewWhenSpaceIsLimited", .{ .bool = mode == .automatic }, .USER);
+                try configuration.requestUpdateValue("diffEditor.renderSideBySide", .{ .bool = true }, .USER);
+                try configuration.requestUpdateValue("diffEditor.useInlineViewWhenSpaceIsLimited", .{ .bool = mode == .automatic }, .USER);
                 if (mode == .automatic) {
                     diff.widget.width_based_layout.resetWidthBasedLayout();
                     diff.widget.layout(diff.widget.width, diff.widget.height);
@@ -139,7 +139,7 @@ pub const DiffEditorCommandsService = struct {
         const self: *DiffEditorCommandsService = @ptrCast(@alignCast(context));
         const tab = self.editor_service.activeEditorPane() orelse return;
         const diff = tab.diff orelse return;
-        try configuration.updateValue("diffEditor.ignoreTrimWhitespace", .{ .bool = !diff.widget.options.ignore_trim_whitespace }, .USER);
+        try configuration.requestUpdateValue("diffEditor.ignoreTrimWhitespace", .{ .bool = !diff.widget.options.ignore_trim_whitespace }, .USER);
     }
 
     fn refreshDiff(context: *anyopaque) !void {

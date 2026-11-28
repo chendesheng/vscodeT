@@ -21,14 +21,14 @@ const modes = [_]struct {
 const box_width = 16;
 const box_height = 8;
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     const example = try overflowExample(allocator);
     defer if (example.deinit) |deinit| deinit(example.context);
-    try common.runStatic(allocator, example);
+    try common.runStatic(allocator, init.io, example);
 }
 
 pub fn overflowExample(allocator: std.mem.Allocator) !common.Example {

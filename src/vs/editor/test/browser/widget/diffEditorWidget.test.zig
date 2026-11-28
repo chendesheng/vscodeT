@@ -264,7 +264,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: accessible viewer groups, navigates and reveals the source line" {
             const allocator = testing.allocator;
-            const io = Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const widget = try DiffEditorWidget.create(View.init, allocator, io, "a.txt", "b.txt", "before\nold\n0\n1\n2\n3\n4\n5\n6\n7\n8\nlast-old\nend", "before\nnew\n0\n1\n2\n3\n4\n5\n6\n7\n8\nlast-new\nend", "Original", "Modified", 80, 10, .{});
             defer widget.destroy();
             try widget.accessibleDiffViewerNext();
@@ -414,7 +414,7 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(try widget.updateOptions(options));
             try testing.expect(!widget.view_model.is_diff_up_to_date);
             try testing.expectEqual(@as(usize, 0), widget.changeCount());
-            _ = queue.dispatch(time.milliTimestamp() + 1000);
+            _ = queue.dispatch(time.milliTimestamp(std.testing.io) + 1000);
             try testing.expect(widget.view_model.pending_request != null);
             options.ignore_trim_whitespace = true;
             try testing.expect(try widget.updateOptions(options));
@@ -424,8 +424,8 @@ pub fn Tests(comptime View: type) type {
             _ = worker.dispatchReplies();
             try testing.expect(!widget.view_model.is_diff_up_to_date);
             try testing.expectEqual(@as(usize, 0), widget.changeCount());
-            _ = queue.dispatch(time.milliTimestamp() + 1000);
-            if (widget.view_model.pending_request == null) _ = queue.dispatch(time.milliTimestamp() + 1000);
+            _ = queue.dispatch(time.milliTimestamp(std.testing.io) + 1000);
+            if (widget.view_model.pending_request == null) _ = queue.dispatch(time.milliTimestamp(std.testing.io) + 1000);
             try testing.expect(widget.view_model.pending_request != null);
             worker.waitForReply();
             _ = worker.dispatchReplies();
@@ -437,8 +437,8 @@ pub fn Tests(comptime View: type) type {
             try testing.expect(!widget.view_model.is_diff_up_to_date);
             try testing.expect(widget.view_model.compute_task.at != null);
             try testing.expect(widget.view_model.pending_request == null);
-            _ = queue.dispatch(time.milliTimestamp() + 1000);
-            if (widget.view_model.pending_request == null) _ = queue.dispatch(time.milliTimestamp() + 1000);
+            _ = queue.dispatch(time.milliTimestamp(std.testing.io) + 1000);
+            if (widget.view_model.pending_request == null) _ = queue.dispatch(time.milliTimestamp(std.testing.io) + 1000);
             try testing.expect(widget.view_model.pending_request != null);
             worker.waitForReply();
             _ = worker.dispatchReplies();
@@ -447,8 +447,8 @@ pub fn Tests(comptime View: type) type {
             try testing.expectEqual(modified, widget.modifiedModel());
             options.ignore_trim_whitespace = false;
             _ = try widget.updateOptions(options);
-            _ = queue.dispatch(time.milliTimestamp() + 1000);
-            if (widget.view_model.pending_request == null) _ = queue.dispatch(time.milliTimestamp() + 1000);
+            _ = queue.dispatch(time.milliTimestamp(std.testing.io) + 1000);
+            if (widget.view_model.pending_request == null) _ = queue.dispatch(time.milliTimestamp(std.testing.io) + 1000);
             try testing.expect(widget.view_model.pending_request != null);
             widget.destroy();
             alive = false;
@@ -458,7 +458,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: real snapshot models align through view zones" {
             const allocator = testing.allocator;
-            const io = Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const widget = try DiffEditorWidget.create(
                 View.init,
                 allocator,
@@ -494,7 +494,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: middle insertion has no model line in the filler zone" {
             const allocator = testing.allocator;
-            const widget = try DiffEditorWidget.create(View.init, allocator, Io.Threaded.global_single_threaded.io(), "a.txt", "b.txt", "a\nc", "a\nb\nc", "Original", "Modified", 80, 6, .{});
+            const widget = try DiffEditorWidget.create(View.init, allocator, std.testing.io, "a.txt", "b.txt", "a\nc", "a\nb\nc", "Original", "Modified", 80, 6, .{});
             defer widget.destroy();
             try testing.expectEqual(@as(usize, 2), widget.originalModel().getLineCount());
             try testing.expectEqual(@as(usize, 3), widget.modifiedModel().getLineCount());
@@ -509,7 +509,7 @@ pub fn Tests(comptime View: type) type {
             const widget = try DiffEditorWidget.create(
                 View.init,
                 testing.allocator,
-                Io.Threaded.global_single_threaded.io(),
+                std.testing.io,
                 "a.txt",
                 "b.txt",
                 "end",
@@ -551,7 +551,7 @@ pub fn Tests(comptime View: type) type {
             const allocator = testing.allocator;
             const prefix = "01234567890123456789012345678901\n";
             const suffix = "\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten";
-            const widget = try DiffEditorWidget.create(View.init, allocator, Io.Threaded.global_single_threaded.io(), "a.txt", "b.txt", prefix ++ "old" ++ suffix, prefix ++ "new" ++ suffix, "Original", "Modified", 100, 5, .{ .diff_word_wrap = .on });
+            const widget = try DiffEditorWidget.create(View.init, allocator, std.testing.io, "a.txt", "b.txt", prefix ++ "old" ++ suffix, prefix ++ "new" ++ suffix, "Original", "Modified", 100, 5, .{ .diff_word_wrap = .on });
             defer widget.destroy();
             const original = widget.original_editor;
             const modified = widget.modified_editor;
@@ -602,7 +602,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: navigation wraps and swap keeps both panes" {
             const allocator = testing.allocator;
-            const io = Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const widget = try DiffEditorWidget.create(
                 View.init,
                 allocator,
@@ -635,7 +635,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: next change wraps from the last modified line before an EOF deletion" {
             const allocator = testing.allocator;
-            const io = Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const widget = try DiffEditorWidget.create(View.init, allocator, io, "a.txt", "b.txt", "old\nkeep1\nkeep2\nremoved", "new\nkeep1\nkeep2", "Original", "Modified", 80, 8, .{});
             defer widget.destroy();
             try testing.expectEqual(@as(usize, 2), widget.changeCount());
@@ -650,7 +650,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: narrow panes keep deleted text in inline layout" {
             const allocator = testing.allocator;
-            const io = Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const widget = try DiffEditorWidget.create(
                 View.init,
                 allocator,
@@ -702,7 +702,7 @@ pub fn Tests(comptime View: type) type {
             const widget = try DiffEditorWidget.create(
                 View.init,
                 testing.allocator,
-                Io.Threaded.global_single_threaded.io(),
+                std.testing.io,
                 "a.txt",
                 "b.txt",
                 "zero\ndeleted\ncommon\nold\nend",
@@ -729,7 +729,7 @@ pub fn Tests(comptime View: type) type {
             const widget = try DiffEditorWidget.create(
                 View.init,
                 allocator,
-                Io.Threaded.global_single_threaded.io(),
+                std.testing.io,
                 "a.txt",
                 "b.txt",
                 "old\n" ++ common,
@@ -759,7 +759,7 @@ pub fn Tests(comptime View: type) type {
             const no_overview = try DiffEditorWidget.create(
                 View.init,
                 allocator,
-                Io.Threaded.global_single_threaded.io(),
+                std.testing.io,
                 "a.txt",
                 "b.txt",
                 "old",
@@ -778,7 +778,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: read-only snapshot editors reject edits" {
             const allocator = testing.allocator;
-            const io = Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const widget = try DiffEditorWidget.create(
                 View.init,
                 allocator,
@@ -896,7 +896,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: mouse drag resizes the split ratio" {
             const allocator = testing.allocator;
-            const io = Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const widget = try DiffEditorWidget.create(
                 View.init,
                 allocator,
@@ -929,7 +929,7 @@ pub fn Tests(comptime View: type) type {
             const widget = try DiffEditorWidget.create(
                 View.init,
                 testing.allocator,
-                Io.Threaded.global_single_threaded.io(),
+                std.testing.io,
                 "/tmp/original.txt",
                 "/tmp/modified.txt",
                 "old\n" ++ common,
@@ -960,7 +960,7 @@ pub fn Tests(comptime View: type) type {
             const widget = try DiffEditorWidget.create(
                 View.init,
                 testing.allocator,
-                Io.Threaded.global_single_threaded.io(),
+                std.testing.io,
                 "a.txt",
                 "b.txt",
                 "old\n" ++ common,
@@ -985,7 +985,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: moved blocks create model decorations" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const widget = try DiffEditorWidget.create(
                 View.init,
                 allocator,
@@ -1058,7 +1058,7 @@ pub fn Tests(comptime View: type) type {
         }
 
         test "diffEditorWidget: diff word wrap overrides both sides except hidden original" {
-            const widget = try DiffEditorWidget.create(View.init, testing.allocator, Io.Threaded.global_single_threaded.io(), "a.txt", "b.txt", "a\nb", "a\nB", "Original", "Modified", 80, 8, .{ .diff_word_wrap = .off });
+            const widget = try DiffEditorWidget.create(View.init, testing.allocator, std.testing.io, "a.txt", "b.txt", "a\nb", "a\nB", "Original", "Modified", 80, 8, .{ .diff_word_wrap = .off });
             defer widget.destroy();
             try testing.expect(widget.original_editor.wrap_mode == .off);
             try testing.expect(widget.modified_editor.wrap_mode == .off);
@@ -1099,7 +1099,7 @@ pub fn Tests(comptime View: type) type {
         }
 
         test "diffEditorWidget: whitespace transaction delivers layout before zone notification" {
-            const widget = try DiffEditorWidget.create(View.init, testing.allocator, Io.Threaded.global_single_threaded.io(), "a.txt", "b.txt", "a\nb\nc", "a\nB\nc", "Original", "Modified", 80, 3, .{});
+            const widget = try DiffEditorWidget.create(View.init, testing.allocator, std.testing.io, "a.txt", "b.txt", "a\nb\nc", "a\nB\nc", "Original", "Modified", 80, 3, .{});
             defer widget.destroy();
             const editor = widget.modified_editor;
             const Accessor = @import("../../../common/viewModel.zig").IWhitespaceChangeAccessor;
@@ -1140,7 +1140,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: whitespace rows affect paint hit tests and scrolling without changing model lines" {
             const allocator = testing.allocator;
-            const widget = try DiffEditorWidget.create(View.init, allocator, Io.Threaded.global_single_threaded.io(), "a.txt", "b.txt", "first\nsecond\nthird\nfourth", "first\nsecond\nthird\nfourth", "Original", "Modified", 80, 4, .{});
+            const widget = try DiffEditorWidget.create(View.init, allocator, std.testing.io, "a.txt", "b.txt", "first\nsecond\nthird\nfourth", "first\nsecond\nthird\nfourth", "Original", "Modified", 80, 4, .{});
             defer widget.destroy();
             const editor = widget.modified_editor;
             const view = widget.modified_view;
@@ -1244,7 +1244,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: hide unchanged regions folds the middle" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const original = "a\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\nz";
             const modified = "A\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\nZ";
             const widget = try DiffEditorWidget.create(
@@ -1276,7 +1276,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: unchanged disclosure owns direct hidden areas and its fold glyph" {
             const allocator = testing.allocator;
-            const io = Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const original = "a\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\nz";
             const modified = "A\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\nZ";
             const widget = try DiffEditorWidget.create(View.init, allocator, io, "a.txt", "b.txt", original, modified, "Original", "Modified", 80, 30, .{ .hide_unchanged_regions = true });
@@ -1304,7 +1304,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: true inline single-line diff retains model and renders removed text struck through" {
             const allocator = testing.allocator;
-            const io = Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const widget = try DiffEditorWidget.create(View.init, allocator, io, "a.txt", "b.txt", "a old value\nend", "a new value\nend", "Original", "Modified", 80, 8, .{
                 .render_side_by_side = false,
                 .use_true_inline_view = true,
@@ -1337,7 +1337,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: computation result exposes real detailed and legacy changes" {
             const allocator = testing.allocator;
-            const io = Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const widget = try DiffEditorWidget.create(View.init, allocator, io, "a.txt", "b.txt", "abc old def\nkeep\nlast", "abc new def\nkeep\ninserted\nlast", "Original", "Modified", 80, 8, .{});
             defer widget.destroy();
             const interface = widget.interface();
@@ -1360,7 +1360,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: pure insertions and deletions paint character tint across the entire real row" {
             const allocator = testing.allocator;
-            const io = Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const colors = @import("../../../browser/widget/diffEditor/components/diffEditorDecorations.zig");
             for ([_]bool{ true, false }) |insert| {
                 const widget = try DiffEditorWidget.create(View.init, allocator, io, "a.txt", "b.txt", if (insert) "a\nc" else "a\nb\nc", if (insert) "a\nb\nc" else "a\nc", "Original", "Modified", 80, 8, .{});
@@ -1379,7 +1379,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: empty character ranges paint one marker cell when enabled" {
             const allocator = testing.allocator;
-            const io = Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             for ([_]bool{ true, false }) |enabled| {
                 const widget = try DiffEditorWidget.create(View.init, allocator, io, "a.txt", "b.txt", "a old value\nend", "a value\nend", "Original", "Modified", 80, 8, .{
                     .show_empty_decorations = enabled,
@@ -1399,7 +1399,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: inline mode interleaves deleted and inserted lines" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const widget = try DiffEditorWidget.create(
                 View.init,
                 allocator,
@@ -1501,7 +1501,7 @@ pub fn Tests(comptime View: type) type {
                 try original.appendSlice(allocator, line);
             }
             try original.appendSlice(allocator, "end");
-            const widget = try DiffEditorWidget.create(View.init, allocator, Io.Threaded.global_single_threaded.io(), "a.txt", "b.txt", original.items, "end", "Original", "Modified", 80, 5, .{ .render_side_by_side = false });
+            const widget = try DiffEditorWidget.create(View.init, allocator, std.testing.io, "a.txt", "b.txt", original.items, "end", "Original", "Modified", 80, 5, .{ .render_side_by_side = false });
             defer widget.destroy();
             try testing.expectEqual(@as(usize, 1), widget.modifiedModel().getLineCount());
             const zones = try widget.modified_editor.viewLayout().getWhitespaces(allocator);
@@ -1563,7 +1563,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: inline mode hides unchanged regions" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const original = "a\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\nz";
             const modified = "A\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\nZ";
             const widget = try DiffEditorWidget.create(
@@ -1777,7 +1777,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: compact disclosures expand and collapse with a persistent keyboard target" {
             const allocator = testing.allocator;
-            const io = Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             var original: std.ArrayList(u8) = .empty;
             defer original.deinit(allocator);
             var modified: std.ArrayList(u8) = .empty;
@@ -2052,7 +2052,7 @@ pub fn Tests(comptime View: type) type {
             };
             var features = Features.init(allocator);
             defer features.deinit();
-            var models = Models.init(allocator);
+            var models = Models.init(allocator, std.testing.io);
             defer models.deinit();
             var context: u8 = 0;
             const registration = try features.document_symbol_provider.register(.{ .language = "*" }, .{ .context = &context, .provide_document_symbols = Provider.provide });
@@ -2242,7 +2242,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: inline mode disables moved block decorations" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const widget = try DiffEditorWidget.create(
                 View.init,
                 allocator,
@@ -2275,7 +2275,7 @@ pub fn Tests(comptime View: type) type {
 
         test "diffEditorWidget: inline mode adds character decorations" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const widget = try DiffEditorWidget.create(
                 View.init,
                 allocator,

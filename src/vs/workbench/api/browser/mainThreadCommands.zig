@@ -216,7 +216,7 @@ test "MainThreadCommands: tracks registrations and dispatches" {
     };
     var registry = CommandRegistry.init(allocator);
     defer registry.deinit();
-    var description = try manager.readExtensionDescription(allocator, "host/test-fixtures/language-features");
+    var description = try manager.readExtensionDescription(allocator, std.testing.io, "host/test-fixtures/language-features");
     defer description.deinit(allocator);
     var actor = try MainThreadCommands.init(allocator, undefined, .{ .context = undefined, .execute = Fake.execute }, &registry, &.{description}, null);
     defer actor.deinit();

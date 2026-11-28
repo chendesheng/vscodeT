@@ -101,7 +101,7 @@ pub const FileMatch = struct {
     }
 
     fn contentChanged(_: ContentChange, self: *FileMatch) !void {
-        self.scheduler.schedule(time.milliTimestamp() + 250);
+        self.scheduler.schedule(time.milliTimestamp((self.model orelse return).clockIo()) + 250);
     }
 
     fn modelWillDispose(_: void, self: *FileMatch) !void {

@@ -30,16 +30,16 @@ pub const TokenizationSupportWithLineLimit = struct {
         return self.actual.getInitialState(allocator);
     }
 
-    fn tokenizeEncoded(context: *anyopaque, allocator: std.mem.Allocator, line: []const u8, has_eol: bool, state: languages.IState) !languages.EncodedTokenizationResult {
+    fn tokenizeEncoded(context: *anyopaque, io: std.Io, allocator: std.mem.Allocator, line: []const u8, has_eol: bool, state: languages.IState) !languages.EncodedTokenizationResult {
         const self: *TokenizationSupportWithLineLimit = @ptrCast(@alignCast(context));
         if (atLimit(line, self.limit)) return nullTokenizeEncoded(allocator, self.encoded_language_id, state);
-        return self.actual.tokenizeEncoded(allocator, line, has_eol, state);
+        return self.actual.tokenizeEncoded(io, allocator, line, has_eol, state);
     }
 
-    fn tokenizeEncodedWithStateAllocator(context: *anyopaque, scratch: std.mem.Allocator, state_allocator: std.mem.Allocator, line: []const u8, has_eol: bool, state: languages.IState) !languages.EncodedTokenizationResult {
+    fn tokenizeEncodedWithStateAllocator(context: *anyopaque, io: std.Io, scratch: std.mem.Allocator, state_allocator: std.mem.Allocator, line: []const u8, has_eol: bool, state: languages.IState) !languages.EncodedTokenizationResult {
         const self: *TokenizationSupportWithLineLimit = @ptrCast(@alignCast(context));
         if (atLimit(line, self.limit)) return nullTokenizeEncoded(scratch, self.encoded_language_id, state);
-        return self.actual.tokenizeEncodedWithStateAllocator(scratch, state_allocator, line, has_eol, state);
+        return self.actual.tokenizeEncodedWithStateAllocator(io, scratch, state_allocator, line, has_eol, state);
     }
 };
 

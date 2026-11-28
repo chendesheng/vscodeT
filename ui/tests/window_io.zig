@@ -2,6 +2,28 @@ const std = @import("std");
 const Io = std.Io;
 const WindowIo = @import("ui").WindowIo;
 
+test "WindowIo clocks use the injected backend without scheduling work" {
+    const Backend = struct {
+        fn now(_: ?*anyopaque, clock: Io.Clock) Io.Timestamp {
+            return .fromNanoseconds(switch (clock) {
+                .real => 12_000_000,
+                .awake => 34_000_000,
+                else => 0,
+            });
+        }
+    };
+    var vtable = std.testing.io.vtable.*;
+    vtable.now = Backend.now;
+    const backend: Io = .{ .userdata = std.testing.io.userdata, .vtable = &vtable };
+    var runtime = try WindowIo.init(std.testing.allocator, backend);
+    defer runtime.deinit();
+
+    const io = runtime.io();
+    try std.testing.expectEqual(@as(i64, 12), Io.Timestamp.now(io, .real).toMilliseconds());
+    try std.testing.expectEqual(@as(i64, 34), Io.Timestamp.now(io, .awake).toMilliseconds());
+    try std.testing.expect(!runtime.hasReady());
+}
+
 test "WindowIo nested save RPC and timer keep the same window thread" {
     var runtime = try WindowIo.init(std.testing.allocator, std.testing.io);
     defer runtime.deinit();

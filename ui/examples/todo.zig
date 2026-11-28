@@ -61,7 +61,7 @@ const Todo = struct {
     completed: bool = false,
 };
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -78,7 +78,7 @@ pub fn main() !void {
     defer surface.deinit();
 
     try app.rebuild(&surface);
-    try app.run(&surface);
+    try app.run(&surface, init.io);
 }
 pub fn todoGalleryExample(allocator: Allocator) !common.Example {
     const app = try allocator.create(App);
@@ -225,8 +225,7 @@ const App = struct {
         return true;
     }
 
-    fn run(self: *App, surface: *ui.Surface) !void {
-        const io = std.Io.Threaded.global_single_threaded.io();
+    fn run(self: *App, surface: *ui.Surface, io: std.Io) !void {
         var buffer: [8192]u8 = undefined;
         var stdout = std.Io.File.stdout().writer(io, &buffer);
         const out = &stdout.interface;

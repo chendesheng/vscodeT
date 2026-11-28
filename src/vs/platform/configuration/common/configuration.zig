@@ -93,6 +93,13 @@ pub const ConfigurationValue = struct {
 /// editing and notification operations.
 pub const configuration_service_id = @import("../../instantiation/common/instantiation.zig").ServiceIdentifier(IConfigurationService, "configurationService");
 
+pub const UpdateListener = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, anyerror!void) void,
+};
+
+const UpdateDisposable = @import("../../../base/common/lifecycle.zig").IDisposable;
+
 pub const IConfigurationService = struct {
     context: *anyopaque,
     get_value: *const fn (context: *anyopaque, key: []const u8) ?*const Value,
@@ -100,6 +107,7 @@ pub const IConfigurationService = struct {
     get_value_with_overrides: ?*const fn (*anyopaque, []const u8, Overrides) ?*const Value = null,
     update_value: ?*const fn (*anyopaque, []const u8, ?Value, ConfigurationTarget) anyerror!void = null,
     update_resource_value: ?*const fn (*anyopaque, []const u8, ?Value, Overrides, ?ConfigurationTarget) anyerror!void = null,
+    request_update: ?*const fn (*anyopaque, []const u8, ?Value, Overrides, ?ConfigurationTarget, ?UpdateListener) anyerror!?UpdateDisposable = null,
     on_did_change_configuration: ?*@import("../../../base/common/event.zig").Emitter(Change) = null,
 
     pub fn updateValue(self: IConfigurationService, key: []const u8, value: ?Value, target: ConfigurationTarget) !void {
@@ -112,6 +120,20 @@ pub const IConfigurationService = struct {
     pub fn updateResourceValue(self: IConfigurationService, key: []const u8, value: ?Value, overrides: Overrides, target: ?ConfigurationTarget) !void {
         if (self.update_resource_value) |update| return update(self.context, key, value, overrides, target);
         return self.updateValue(key, value, target orelse .USER);
+    }
+
+    /// The window implementation serializes configuration editing and
+    /// completes after the updated model and change event are installed.
+    /// Disposing the returned handle detaches the completion listener.
+    pub fn requestUpdateValue(self: IConfigurationService, key: []const u8, value: ?Value, target: ConfigurationTarget) !void {
+        _ = try self.requestUpdateResourceValue(key, value, .{}, target, null);
+    }
+
+    pub fn requestUpdateResourceValue(self: IConfigurationService, key: []const u8, value: ?Value, overrides: Overrides, target: ?ConfigurationTarget, listener: ?UpdateListener) !?UpdateDisposable {
+        if (self.request_update) |request| return request(self.context, key, value, overrides, target, listener);
+        const result = self.updateResourceValue(key, value, overrides, target);
+        if (listener) |done| done.complete(done.context, result) else try result;
+        return null;
     }
 
     pub fn getScope(self: IConfigurationService, key: []const u8) ?ConfigurationScope {

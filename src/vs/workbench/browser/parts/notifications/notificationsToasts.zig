@@ -93,7 +93,7 @@ pub const NotificationsToasts = struct {
     fn addToast(self: *NotificationsToasts, item: *Item) !void {
         if (self.center_visible or item.priority == .SILENT) return;
         if (self.pending.tryReplace(item)) return;
-        const now = time.milliTimestamp();
+        const now = time.milliTimestamp(self.queue.io);
         if (now - self.added_since >= interval) {
             self.added_since = now;
             self.added_count = 0;
@@ -141,7 +141,7 @@ pub const NotificationsToasts = struct {
     pub fn onWindowFocus(self: *NotificationsToasts, focused: bool) void {
         self.window_focused = focused;
         if (!focused) return;
-        const now = time.milliTimestamp();
+        const now = time.milliTimestamp(self.queue.io);
         for (self.toasts.items) |toast| if (toast.waiting_for_focus) {
             toast.waiting_for_focus = false;
             toast.timer.schedule(now + timeout(toast.item));

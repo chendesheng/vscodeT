@@ -18,7 +18,7 @@ const OutlineModel = outline_model.OutlineModel;
 
 test "OutlineModel: create compacts one provider and computes enclosing position" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor.createFromText(
         allocator,
         io,
@@ -79,7 +79,7 @@ test "OutlineModel: create compacts one provider and computes enclosing position
 
 test "OutlineModel: duplicate symbol ids fall back to the range" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor.createFromText(
         allocator,
         io,
@@ -233,9 +233,9 @@ const ServiceProvider = struct {
 
 test "OutlineModel#create, cached" {
     const allocator = std.testing.allocator;
-    var service = outline_model.OutlineModelService.init(allocator);
+    var service = outline_model.OutlineModelService.init(allocator, std.testing.io);
     defer service.deinit();
-    const editor = try @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor.createFromText(allocator, std.Io.Threaded.global_single_threaded.io(), "foo", "path.foo", 60, 10);
+    const editor = try @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor.createFromText(allocator, std.testing.io, "foo", "path.foo", 60, 10);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -255,9 +255,9 @@ test "OutlineModel#create, cached" {
 
 test "OutlineModel#create, cached/cancel" {
     const allocator = std.testing.allocator;
-    var service = outline_model.OutlineModelService.init(allocator);
+    var service = outline_model.OutlineModelService.init(allocator, std.testing.io);
     defer service.deinit();
-    const editor = try @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor.createFromText(allocator, std.Io.Threaded.global_single_threaded.io(), "foo", "path.foo", 60, 10);
+    const editor = try @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor.createFromText(allocator, std.testing.io, "foo", "path.foo", 60, 10);
     defer {
         editor.deinit();
         allocator.destroy(editor);

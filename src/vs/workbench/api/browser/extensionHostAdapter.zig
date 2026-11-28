@@ -156,6 +156,7 @@ pub const Extensions = struct {
     language_features_actor: ?MainThreadLanguageFeatures = null,
     progress_actor: ?@import("mainThreadProgress.zig").MainThreadProgress = null,
     file_events_actor: ?@import("mainThreadFileSystemEventService.zig").MainThreadFileSystemEventService = null,
+    file_system_actor: @import("mainThreadFileSystem.zig").MainThreadFileSystem,
     output_actor: ?@import("mainThreadOutputService.zig").MainThreadOutputService = null,
     languages_actor: ?@import("mainThreadLanguages.zig").MainThreadLanguages = null,
     quick_diff_actor: ?MainThreadQuickDiff = null,
@@ -254,6 +255,7 @@ pub const Extensions = struct {
             .allocator = allocator,
             .io = io,
             .services = services,
+            .file_system_actor = .{ .service = services.file_service, .allocator = allocator, .window = services.window },
             .editor_service = services.common.editors,
             .host = undefined,
             .descriptions = owned_descriptions,
@@ -339,7 +341,7 @@ pub const Extensions = struct {
             .move_tab = editorTabsMoveHost,
             .close = editorTabsCloseHost,
         });
-        self.window_actor = .{ .host = .{ .context = self, .open_uri = windowOpenUriHost } };
+        self.window_actor = .{ .allocator = allocator, .window = services.window, .host = .{ .context = self, .open_uri = windowOpenUriHost } };
         self.extension_service_actor = .{ .host = .{
             .context = self,
             .on_did_activate = extensionServiceActivatedHost,
@@ -414,6 +416,8 @@ pub const Extensions = struct {
         self.pending_document_saves.deinit(self.allocator);
         self.host.attachReadyTask(null);
         self.rpc_task.schedule(null);
+        self.file_system_actor.deinit();
+        if (self.window_actor) |*actor| actor.deinit();
         if (self.services.quick_access.isOpen()) self.services.quick_access.inputService().hide();
         self.message_service.deinit();
         if (self.terminal_completions) |*session| session.deinit();
@@ -716,8 +720,7 @@ pub const Extensions = struct {
 
     fn invokeFileSystem(context: *anyopaque, method: []const u8, args: []const rpc.Arg, _: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         const self: *Extensions = @ptrCast(@alignCast(context));
-        const actor = @import("mainThreadFileSystem.zig").MainThreadFileSystem{ .service = self.services.file_service };
-        return actor.invoke(method, args, arena);
+        return self.file_system_actor.invokeAsync(method, args, arena);
     }
 
     fn invokeStorage(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
@@ -799,7 +802,7 @@ pub const Extensions = struct {
     fn invokeConfiguration(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         _ = token;
         const self: *Extensions = @ptrCast(@alignCast(context));
-        if (self.configuration_actor) |*actor| return actor.invoke(method, args, arena);
+        if (self.configuration_actor) |*actor| return actor.invokeAsync(method, args, arena);
         return .empty;
     }
 
@@ -832,7 +835,7 @@ pub const Extensions = struct {
     fn invokeWindow(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         _ = token;
         const self: *Extensions = @ptrCast(@alignCast(context));
-        if (self.window_actor) |*actor| return actor.invoke(method, args, arena);
+        if (self.window_actor) |*actor| return actor.invokeAsync(method, args, arena);
         return .empty;
     }
 
@@ -856,7 +859,7 @@ pub const Extensions = struct {
             if (components.authority.len == 0) return false;
             const url = try std_uri.resourceKeyFromComponents(a, components);
             for (url) |byte| if (byte < 32 or byte == 127) return false;
-            return @import("../../../platform/opener/common/opener.zig").openExternal(self.allocator, self.io, url) catch false;
+            return @import("../../../base/common/windowDispatch.zig").workerCall(self.services.window.io, @import("../../../platform/opener/common/opener.zig").openExternal, .{ self.allocator, self.io, url }) catch false;
         }
         if (!std.mem.eql(u8, scheme.string, "file")) return false;
         const path = uriPath(uri) orelse return false;
@@ -1310,7 +1313,7 @@ pub const Extensions = struct {
         var wait = WaitFlag{};
         const request = try self.host.call(identifier, method, args, null, .{ .context = &wait, .callback = WaitFlag.callback });
         errdefer if (!wait.done) self.host.rpc.cancel(request);
-        const deadline = time_compat.milliTimestamp() + timeout_ms;
+        const deadline = time_compat.milliTimestamp(self.services.window.io) + timeout_ms;
         // During bootstrap the native event loop has not started yet. Pump a
         // host frame batch, then dispatch one window completion. An activation
         // may asynchronously resolve a document before acknowledging start;
@@ -1318,7 +1321,7 @@ pub const Extensions = struct {
         // Never recursively pump inside a frame callback.
         while (!wait.done) {
             _ = self.host.pump();
-            const now = time_compat.milliTimestamp();
+            const now = time_compat.milliTimestamp(self.services.window.io);
             _ = self.services.window.dispatch(now);
             if (self.host.hasEof()) return error.HostExited;
             if (now > deadline) return error.HostTimeout;
@@ -2451,7 +2454,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
         const TestWindow = @import("../../test/browser/workbenchTestServices.zig").TestWindow(terminal_window_type, factory);
         test "Extensions: editor-pane disposal detaches listeners before the editor is destroyed" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             var tmp = std.testing.tmpDir(.{});
             defer tmp.cleanup();
             try tmp.dir.writeFile(io, .{ .sub_path = "owned.txt", .data = "alpha" });
@@ -2522,7 +2525,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
         test "Extensions: insert-mode Backspace and Delete run the core editor commands" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             var editor = try Editor.createFromText(allocator, io, "abc", "test.zig", 40, 8);
             defer {
                 editor.deinit();
@@ -2569,19 +2572,19 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
         }
 
         fn waitNavigation(workbench: *terminal_window_type) !void {
-            const deadline = time_compat.milliTimestamp() + 5_000;
-            while (workbench.symbol_navigation.pending_navigation != null and time_compat.milliTimestamp() < deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(1);
+            const deadline = time_compat.milliTimestamp(std.testing.io) + 5_000;
+            while (workbench.symbol_navigation.pending_navigation != null and time_compat.milliTimestamp(std.testing.io) < deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 1);
             }
             try std.testing.expect(workbench.symbol_navigation.pending_navigation == null);
         }
 
         fn waitReferences(workbench: *terminal_window_type) !void {
-            const deadline = time_compat.milliTimestamp() + 5_000;
-            while (workbench.references_view.pending_search != null and time_compat.milliTimestamp() < deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(1);
+            const deadline = time_compat.milliTimestamp(std.testing.io) + 5_000;
+            while (workbench.references_view.pending_search != null and time_compat.milliTimestamp(std.testing.io) < deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 1);
             }
             try std.testing.expect(workbench.references_view.pending_search == null);
         }
@@ -2590,11 +2593,11 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             // The fixture registers definition/declaration/implementation/type
             // definition/reference providers so the bridge actions run without tsserver.
             if (!build_options.e2e) return error.SkipZigTest;
-            std.Io.Dir.cwd().access(time_compat.io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
-            std.Io.Dir.cwd().access(time_compat.io, "host/test-fixtures/language-features/package.json", .{}) catch return error.SkipZigTest;
+            std.Io.Dir.cwd().access(std.testing.io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+            std.Io.Dir.cwd().access(std.testing.io, "host/test-fixtures/language-features/package.json", .{}) catch return error.SkipZigTest;
 
             const allocator = std.testing.allocator;
-            const io = time_compat.io;
+            const io = std.testing.io;
             var tmp = std.testing.tmpDir(.{});
             defer tmp.cleanup();
             try tmp.dir.writeFile(io, .{ .sub_path = "fixture.json", .data = "{\n  \"a\": 1\n}\n" });
@@ -2610,14 +2613,14 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             var extension_host = try Extensions.init(allocator, io, workbench.extensionHostServices(), &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }}, ".cache-ext/data-language-fixture", "host/dist");
             defer extension_host.deinit();
 
-            const deadline = time_compat.milliTimestamp() + 10_000;
+            const deadline = time_compat.milliTimestamp(std.testing.io) + 10_000;
             const features = workbench.language_features.?;
             const model = workbench.activeTab().?.editor.model;
             // A mirrored active editor is not an activation barrier. These
             // fixture assertions require *all* eager provider registrations.
-            while (extension_host.eager_start_request != null and time_compat.milliTimestamp() < deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            while (extension_host.eager_start_request != null and time_compat.milliTimestamp(std.testing.io) < deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(extension_host.eager_start_request == null);
             const hover_providers = try features.hover_provider.ordered(allocator, model, false);
@@ -2643,19 +2646,19 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const workspace_picker = workbench.quick_access.controller.pickerRef();
             try workspace_picker.setValue("#unused");
             try workspace_picker.setValue("#WorkspaceFixture");
-            const symbols_deadline = time_compat.milliTimestamp() + 5000;
-            while (time_compat.milliTimestamp() < symbols_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            const symbols_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (time_compat.milliTimestamp(std.testing.io) < symbols_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 if (workspace_picker.items.items.len == 1 and std.mem.eql(u8, workspace_picker.items.items[0].item.label, "WorkspaceFixture")) break;
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expectEqual(1, workspace_picker.items.items.len);
             try std.testing.expectEqualStrings("WorkspaceFixture", workspace_picker.items.items[0].item.label);
             workspace_picker.accept();
-            const workspace_resolve_deadline = time_compat.milliTimestamp() + 5000;
-            while (workbench.quick_access.isOpen() and time_compat.milliTimestamp() < workspace_resolve_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const workspace_resolve_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (workbench.quick_access.isOpen() and time_compat.milliTimestamp(std.testing.io) < workspace_resolve_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(!workbench.quick_access.isOpen());
             try std.testing.expectEqual(Position.init(2, 3), workbench.activeTab().?.editor.modelCursorPosition());
@@ -2672,10 +2675,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             var expanded_line = false;
             for (0..4) |_| {
                 try selection_editor.growSelection(true);
-                const selection_deadline = time_compat.milliTimestamp() + 5000;
-                while (selection_editor.smart_select.pending != null and time_compat.milliTimestamp() < selection_deadline) {
-                    _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                    time_compat.sleepMillis(5);
+                const selection_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+                while (selection_editor.smart_select.pending != null and time_compat.milliTimestamp(std.testing.io) < selection_deadline) {
+                    _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                    time_compat.sleepMillis(std.testing.io, 5);
                 }
                 try std.testing.expect(selection_editor.smart_select.pending == null);
                 const selections = try selection_editor.getModelSelections();
@@ -2693,10 +2696,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
             // Syntax ranges replace the indent fallback, drive the gutter and
             // refresh when the provider's change event arrives.
-            const folding_deadline = time_compat.milliTimestamp() + 5000;
-            while (selection_editor.folding.regionStartingAt(2) == null and time_compat.milliTimestamp() < folding_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const folding_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (selection_editor.folding.regionStartingAt(2) == null and time_compat.milliTimestamp(std.testing.io) < folding_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(selection_editor.folding.regionStartingAt(2) != null);
             try selection_editor.setCursorPosition(Position.init(2, 1));
@@ -2705,10 +2708,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try selection_editor.unfoldAtCursor();
             try std.testing.expect(selection_editor.isModelLineVisible(3));
             try extension_host.host.executeContributedCommand("fixture.changeFoldingRanges", &.{});
-            const refresh_deadline = time_compat.milliTimestamp() + 5000;
-            while (selection_editor.folding.regionStartingAt(2) != null and time_compat.milliTimestamp() < refresh_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const refresh_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (selection_editor.folding.regionStartingAt(2) != null and time_compat.milliTimestamp(std.testing.io) < refresh_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(selection_editor.folding.regionStartingAt(2) == null);
             try std.testing.expect(selection_editor.folding.regionStartingAt(1) != null);
@@ -2717,10 +2720,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(selection_editor.parameter_hints_available);
             try workbench.commands.execute("editor.action.triggerParameterHints");
             const hints = selection_editor.getInstantiatedContribution(ParameterHintsController).?;
-            const hints_deadline = time_compat.milliTimestamp() + 5000;
-            while (hints.model.hints() == null and time_compat.milliTimestamp() < hints_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const hints_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (hints.model.hints() == null and time_compat.milliTimestamp(std.testing.io) < hints_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             const help = hints.model.hints() orelse return error.SignatureHelpUnavailable;
             try std.testing.expectEqual(@as(usize, 2), help.signatures.len);
@@ -2752,17 +2755,17 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             defer rename.deinit();
             try std.testing.expect(rename.hasProvider());
             rename.resolveRenameLocation(.{ .context = &rename_probe, .complete = RenameProbe.prepared });
-            const rename_deadline = time_compat.milliTimestamp() + 5000;
-            while (rename_probe.location == null and rename_probe.failure == null and time_compat.milliTimestamp() < rename_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const rename_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (rename_probe.location == null and rename_probe.failure == null and time_compat.milliTimestamp(std.testing.io) < rename_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expectEqualStrings("fixture", (rename_probe.location orelse return error.RenamePrepareUnavailable).text);
             rename.provideRenameEdits("newName", .{ .context = &rename_probe, .complete = RenameProbe.edited });
-            const edits_deadline = time_compat.milliTimestamp() + 5000;
-            while (rename_probe.edit == null and rename_probe.failure == null and time_compat.milliTimestamp() < edits_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const edits_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (rename_probe.edit == null and rename_probe.failure == null and time_compat.milliTimestamp(std.testing.io) < edits_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             const rename_edit = (rename_probe.edit orelse return error.RenameEditsUnavailable).edit;
             try std.testing.expectEqual(@as(usize, 1), rename_edit.edits.len);
@@ -2774,19 +2777,19 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(selection_editor.rename_available);
             try workbench.commands.execute("editor.action.rename");
             const rename_controller = selection_editor.getInstantiatedContribution(RenameController).?;
-            const input_deadline = time_compat.milliTimestamp() + 5000;
-            while (!rename_controller.widget.visible and time_compat.milliTimestamp() < input_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const input_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (!rename_controller.widget.visible and time_compat.milliTimestamp(std.testing.io) < input_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(rename_controller.widget.visible and selection_editor.rename_input_visible);
             try std.testing.expectEqualStrings("fixture", rename_controller.widget.input.getValue());
             try rename_controller.widget.input.setValue("previewed");
             try workbench.commands.execute("acceptRenameInputWithPreview");
-            const preview_deadline = time_compat.milliTimestamp() + 5000;
-            while (!workbench.bulk_edit_preview.?.hasInput() and time_compat.milliTimestamp() < preview_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const preview_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (!workbench.bulk_edit_preview.?.hasInput() and time_compat.milliTimestamp(std.testing.io) < preview_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(workbench.bulk_edit_preview.?.hasInput());
             try workbench.commands.execute("refactorPreview.discard");
@@ -2817,19 +2820,19 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const semantic_listener = try semantic_provider.on_did_change.?.listen(&semantic_probe, SemanticProbe.change);
             defer semantic_provider.on_did_change.?.unlisten(semantic_listener);
             _ = try semantic_provider.request_document_semantic_tokens(semantic_provider.context, semantic_a, model, null, .{ .context = &semantic_probe, .complete = SemanticProbe.ready });
-            const semantic_deadline = time_compat.milliTimestamp() + 5000;
-            while (semantic_probe.result == null and semantic_probe.failure == null and time_compat.milliTimestamp() < semantic_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const semantic_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (semantic_probe.result == null and semantic_probe.failure == null and time_compat.milliTimestamp(std.testing.io) < semantic_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             const full = semantic_probe.result orelse return error.SemanticTokensUnavailable;
             try std.testing.expectEqualSlices(u32, &.{ 1, 0, 1, 0, 1 }, full.payload.full);
             semantic_probe.result = null;
             _ = try semantic_provider.request_document_semantic_tokens(semantic_provider.context, semantic_a, model, full.id, .{ .context = &semantic_probe, .complete = SemanticProbe.ready });
-            const delta_deadline = time_compat.milliTimestamp() + 5000;
-            while (semantic_probe.result == null and semantic_probe.failure == null and time_compat.milliTimestamp() < delta_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const delta_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (semantic_probe.result == null and semantic_probe.failure == null and time_compat.milliTimestamp(std.testing.io) < delta_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             const delta = semantic_probe.result orelse return error.SemanticDeltaUnavailable;
             try std.testing.expectEqual(@as(u32, 2), delta.payload.delta[0].start);
@@ -2840,17 +2843,17 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const range_provider = range_providers[0];
             semantic_probe.result = null;
             _ = try range_provider.request_document_range_semantic_tokens(range_provider.context, semantic_a, model, Range.init(1, 1, 3, 1), .{ .context = &semantic_probe, .complete = SemanticProbe.ready });
-            const range_deadline = time_compat.milliTimestamp() + 5000;
-            while (semantic_probe.result == null and semantic_probe.failure == null and time_compat.milliTimestamp() < range_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const range_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (semantic_probe.result == null and semantic_probe.failure == null and time_compat.milliTimestamp(std.testing.io) < range_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expectEqualSlices(u32, &.{ 1, 0, 1, 0, 0 }, (semantic_probe.result orelse return error.SemanticRangeUnavailable).payload.full);
             try extension_host.host.executeContributedCommand("fixture.changeSemanticTokens", &.{});
-            const event_deadline = time_compat.milliTimestamp() + 5000;
-            while (!semantic_probe.changed and time_compat.milliTimestamp() < event_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const event_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (!semantic_probe.changed and time_compat.milliTimestamp(std.testing.io) < event_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(semantic_probe.changed);
 
@@ -2882,10 +2885,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const inlay_listener = try inlay_provider.on_did_change.?.listen(&inlay_probe, InlayProbe.change);
             defer inlay_provider.on_did_change.?.unlisten(inlay_listener);
             _ = try inlay_provider.request_inlay_hints(inlay_provider.context, inlay_a, model, model.getFullModelRange(), .{ .context = &inlay_probe, .complete = InlayProbe.ready });
-            const inlay_deadline = time_compat.milliTimestamp() + 5000;
-            while (inlay_probe.list == null and inlay_probe.failure == null and time_compat.milliTimestamp() < inlay_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const inlay_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (inlay_probe.list == null and inlay_probe.failure == null and time_compat.milliTimestamp(std.testing.io) < inlay_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             var inlay_list = inlay_probe.list orelse return error.InlayHintsUnavailable;
             defer inlay_list.dispose();
@@ -2894,27 +2897,27 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqualStrings("fixtureHint", inlay_hint.label[0].label);
             try std.testing.expect(inlay_hint.padding_left and inlay_hint.padding_right and inlay_hint.label[0].location != null and inlay_hint.label[0].command != null);
             _ = try inlay_provider.resolve_inlay_hint.?(inlay_provider.context, inlay_a, model, inlay_hint, .{ .context = &inlay_probe, .complete = InlayProbe.resolve });
-            const inlay_resolve_deadline = time_compat.milliTimestamp() + 5000;
-            while (inlay_probe.resolved == null and inlay_probe.failure == null and time_compat.milliTimestamp() < inlay_resolve_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const inlay_resolve_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (inlay_probe.resolved == null and inlay_probe.failure == null and time_compat.milliTimestamp(std.testing.io) < inlay_resolve_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             const resolved_hint = inlay_probe.resolved orelse return error.InlayResolveUnavailable;
             try std.testing.expectEqualStrings("Resolved inlay tooltip", resolved_hint.tooltip.?);
             try std.testing.expectEqualStrings("resolved", resolved_hint.text_edits[0].text);
             try extension_host.host.executeContributedCommand("fixture.changeInlayHints", &.{});
-            const inlay_event_deadline = time_compat.milliTimestamp() + 5000;
-            while (!inlay_probe.changed and time_compat.milliTimestamp() < inlay_event_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const inlay_event_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (!inlay_probe.changed and time_compat.milliTimestamp(std.testing.io) < inlay_event_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(inlay_probe.changed);
             const InlayHintsController = @import("../../../editor/contrib/inlayHints/browser/inlayHintsController.zig").InlayHintsController;
             const inlay_controller = selection_editor.getInstantiatedContribution(InlayHintsController).?;
-            const injected_deadline = time_compat.milliTimestamp() + 5000;
-            while (inlay_controller.parts.len == 0 and time_compat.milliTimestamp() < injected_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const injected_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (inlay_controller.parts.len == 0 and time_compat.milliTimestamp(std.testing.io) < injected_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(inlay_controller.parts.len > 0);
             const inlay_view_position = selection_editor.viewPositionOfModelPosition(Position.init(2, 1));
@@ -2930,10 +2933,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const hint_view = workbench.activeTab().?.view;
             const HoverController = @import("../../../editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
             const hint_hover = selection_editor.getContribution(HoverController) orelse return error.HoverControllerMissing;
-            const settled_deadline = time_compat.milliTimestamp() + 5000;
-            while ((inlay_controller.pending != null or inlay_controller.timer.at != null) and time_compat.milliTimestamp() < settled_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const settled_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while ((inlay_controller.pending != null or inlay_controller.timer.at != null) and time_compat.milliTimestamp(std.testing.io) < settled_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             var mouse: @import("ui").MouseEvent = .{ .kind = .move };
             var hint_cell: ?struct { x: usize, y: usize } = null;
@@ -2953,16 +2956,16 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             mouse.y = cell.y;
             const input_dispatch = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminalInput.zig");
             _ = try input_dispatch.handleMouseEvent(hint_view, hint_hover, null, selection_editor, &mouse);
-            const hint_hover_deadline = time_compat.milliTimestamp() + 5000;
+            const hint_hover_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
             var tooltip_found = false;
-            while (!tooltip_found and time_compat.milliTimestamp() < hint_hover_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            while (!tooltip_found and time_compat.milliTimestamp(std.testing.io) < hint_hover_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 for (0..12) |index| {
                     if (hint_hover.wrapper.getAccessibleWidgetContentAtIndex(@intCast(index))) |content| {
                         if (std.mem.indexOf(u8, content, "Resolved inlay tooltip") != null) tooltip_found = true;
                     }
                 }
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(tooltip_found);
             hint_hover.hideContentHover();
@@ -2971,10 +2974,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             _ = try input_dispatch.handleMouseEvent(hint_view, hint_hover, null, selection_editor, &click);
             click = .{ .kind = .up, .button = .left, .x = cell.x, .y = cell.y, .mods = .{ .ctrl = true } };
             _ = try input_dispatch.handleMouseEvent(hint_view, hint_hover, null, selection_editor, &click);
-            const link_deadline = time_compat.milliTimestamp() + 5000;
-            while (selection_editor.modelCursorPosition().lineNumber != 2 and time_compat.milliTimestamp() < link_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const link_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (selection_editor.modelCursorPosition().lineNumber != 2 and time_compat.milliTimestamp(std.testing.io) < link_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expectEqual(@as(usize, 2), selection_editor.modelCursorPosition().lineNumber);
 
@@ -3000,10 +3003,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             };
             var action_receiver: ActionReceiver = .{};
             const action_request = (try action_model.getCodeActions(allocator, &features.code_action_provider, model, Range.init(1, 1, 1, 2), .{ .type = .Invoke, .trigger_action = .QuickFix, .filter = .{ .include = action_types.CodeActionKind.QuickFix } }, .None, .{ .context = &action_receiver, .complete = ActionReceiver.ready })).?;
-            const action_deadline = time_compat.milliTimestamp() + 5_000;
-            while (action_receiver.result == null and action_receiver.failure == null and time_compat.milliTimestamp() < action_deadline) {
+            const action_deadline = time_compat.milliTimestamp(std.testing.io) + 5_000;
+            while (action_receiver.result == null and action_receiver.failure == null and time_compat.milliTimestamp(std.testing.io) < action_deadline) {
                 _ = extension_host.pump();
-                time_compat.sleepMillis(5);
+                time_compat.sleepMillis(std.testing.io, 5);
             }
             if (action_receiver.result == null and action_receiver.failure == null) action_request.dispose();
             const action_set = action_receiver.result orelse return error.ExpectedCodeAction;
@@ -3014,10 +3017,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(action_item.action.cache_id != null);
             const provider = action_item.provider.?;
             const resolve_request = (try provider.request_resolve_code_action.?(provider.context, action_set.arena.allocator(), action_item.action, .None, .{ .context = &action_receiver, .complete = ActionReceiver.resolvedAction })).?;
-            const resolve_deadline = time_compat.milliTimestamp() + 5_000;
-            while (action_receiver.resolved == null and action_receiver.failure == null and time_compat.milliTimestamp() < resolve_deadline) {
+            const resolve_deadline = time_compat.milliTimestamp(std.testing.io) + 5_000;
+            while (action_receiver.resolved == null and action_receiver.failure == null and time_compat.milliTimestamp(std.testing.io) < resolve_deadline) {
                 _ = extension_host.pump();
-                time_compat.sleepMillis(5);
+                time_compat.sleepMillis(std.testing.io, 5);
             }
             if (action_receiver.resolved == null and action_receiver.failure == null) resolve_request.dispose();
             try std.testing.expectEqualStrings("Fixture code action command", action_receiver.resolved.?.command.?.title);
@@ -3025,11 +3028,11 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             defer edit_scratch.deinit();
             const resource = try std_uri.encodedResource(edit_scratch.allocator(), model.uri());
             const workspace_request = try Extensions.requestActorAsync(extension_host, protocol.ExtHostContext.ExtHostCommands, "$executeContributedCommand", &.{ .{ .json = .{ .string = "fixture.applyWorkspaceEdit" } }, .{ .json = .{ .string = resource } } }, .{ .context = &action_receiver, .callback = ActionReceiver.workspaceReply });
-            const edit_deadline = time_compat.milliTimestamp() + 5_000;
-            while (action_receiver.workspace_applied == null and time_compat.milliTimestamp() < edit_deadline) {
+            const edit_deadline = time_compat.milliTimestamp(std.testing.io) + 5_000;
+            while (action_receiver.workspace_applied == null and time_compat.milliTimestamp(std.testing.io) < edit_deadline) {
                 _ = extension_host.pump();
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(5);
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 5);
             }
             if (action_receiver.workspace_applied == null) workspace_request.dispose();
             try std.testing.expect(action_receiver.workspace_applied orelse false);
@@ -3070,10 +3073,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const symbol_request = (try symbols.request_document_symbols.?(symbols.context, provider_arena.allocator(), model, .{ .context = &deferred_results, .complete = DeferredResults.documentSymbols })).?;
             defer if (deferred_results.symbols == null) symbol_request.dispose();
             try std.testing.expect(deferred_results.completion_items == null and deferred_results.symbols == null);
-            const deferred_deadline = time_compat.milliTimestamp() + 5_000;
-            while ((deferred_results.completion_items == null or deferred_results.symbols == null) and time_compat.milliTimestamp() < deferred_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(1);
+            const deferred_deadline = time_compat.milliTimestamp(std.testing.io) + 5_000;
+            while ((deferred_results.completion_items == null or deferred_results.symbols == null) and time_compat.milliTimestamp(std.testing.io) < deferred_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 1);
             }
             try std.testing.expectEqual(@as(?usize, 1), deferred_results.completion_items);
             try std.testing.expectEqual(@as(?usize, 1), deferred_results.symbols);
@@ -3096,10 +3099,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             defer {
                 if (!nested_done) _ = nested.cancel(serial) catch false;
             }
-            const nested_deadline = time_compat.milliTimestamp() + 7_000;
-            while (!nested_done and time_compat.milliTimestamp() < nested_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(1);
+            const nested_deadline = time_compat.milliTimestamp(std.testing.io) + 7_000;
+            while (!nested_done and time_compat.milliTimestamp(std.testing.io) < nested_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 1);
             }
             try std.testing.expect(nested_done);
             try std.testing.expect(try nested.await(serial));
@@ -3114,10 +3117,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const save_editor = workbench.activeTab().?.editor;
             try workbench.commands.execute("workbench.action.files.save");
             try std.testing.expect(save_editor.document.pending_save != null);
-            const save_deadline = time_compat.milliTimestamp() + 5_000;
-            while (save_editor.document.pending_save != null and time_compat.milliTimestamp() < save_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(1);
+            const save_deadline = time_compat.milliTimestamp(std.testing.io) + 5_000;
+            while (save_editor.document.pending_save != null and time_compat.milliTimestamp(std.testing.io) < save_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 1);
             }
             try std.testing.expect(save_editor.document.pending_save == null);
             try std.testing.expectEqualStrings(" {", try model.borrowLineContent(1));
@@ -3139,10 +3142,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                     result.* = reply == .json and reply.json == .bool and reply.json.bool;
                 }
             }.complete });
-            const extension_save_deadline = time_compat.milliTimestamp() + 5_000;
-            while (saved_by_extension == null and time_compat.milliTimestamp() < extension_save_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(1);
+            const extension_save_deadline = time_compat.milliTimestamp(std.testing.io) + 5_000;
+            while (saved_by_extension == null and time_compat.milliTimestamp(std.testing.io) < extension_save_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 1);
             }
             if (saved_by_extension == null) save_request.dispose();
             try std.testing.expect(saved_by_extension orelse false);
@@ -3201,11 +3204,11 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             workbench.focusEditor();
             try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.showHover"));
             const hover_controller = workbench.activeTab().?.controllers.?.hover.?;
-            const hover_deadline = time_compat.milliTimestamp() + 5_000;
-            while (!hover_controller.wrapper.operation.isIdle() and time_compat.milliTimestamp() < hover_deadline) {
+            const hover_deadline = time_compat.milliTimestamp(std.testing.io) + 5_000;
+            while (!hover_controller.wrapper.operation.isIdle() and time_compat.milliTimestamp(std.testing.io) < hover_deadline) {
                 _ = extension_host.pump();
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(hover_controller.wrapper.operation.isIdle());
             try std.testing.expect(hover_controller.isVisible());
@@ -3213,11 +3216,11 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try tab.editor.setCursorPosition(Position.init(1, model.getLineMaxColumn(1)));
             try tab.editor.insertText("é");
             _ = extension_host.pump();
-            const inline_deadline = time_compat.milliTimestamp() + 5_000;
-            while (!tab.view.ghost_text.isVisible() and time_compat.milliTimestamp() < inline_deadline) {
+            const inline_deadline = time_compat.milliTimestamp(std.testing.io) + 5_000;
+            while (!tab.view.ghost_text.isVisible() and time_compat.milliTimestamp(std.testing.io) < inline_deadline) {
                 _ = extension_host.pump();
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(tab.view.ghost_text.isVisible());
             try std.testing.expectEqualStrings(" inline result", tab.view.ghost_text.text.?);
@@ -3245,10 +3248,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try workbench.setUserSettingsPaths(&.{semantic_settings});
             workbench.applyThemeSettings();
             model.setLanguage("plaintext");
-            const viewport_deadline = time_compat.milliTimestamp() + 5000;
-            while (!model.hasSomeSemanticTokens() and time_compat.milliTimestamp() < viewport_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const viewport_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (!model.hasSomeSemanticTokens() and time_compat.milliTimestamp(std.testing.io) < viewport_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(model.hasSomeSemanticTokens());
             try std.testing.expect(!model.hasCompleteSemanticTokens());
@@ -3266,7 +3269,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
         fn verifySlowStartup(abort_start: bool) !void {
             const a = std.testing.allocator;
-            const io = time_compat.io;
+            const io = std.testing.io;
             try std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{});
             var tmp = std.testing.tmpDir(.{});
             defer tmp.cleanup();
@@ -3300,20 +3303,20 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(extension_host.eager_start_request != null);
             const Lens = @import("../../../editor/contrib/codelens/browser/codelensController.zig").CodeLensContribution;
             const lens = editor.getInstantiatedContribution(Lens) orelse return error.CodeLensContributionMissing;
-            const deadline = time_compat.milliTimestamp() + 5000;
-            while ((!registry.has(editor.model) or lens.pending_fetch == null) and time_compat.milliTimestamp() < deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while ((!registry.has(editor.model) or lens.pending_fetch == null) and time_compat.milliTimestamp(std.testing.io) < deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(registry.has(editor.model));
             try std.testing.expect(lens.pending_fetch != null);
             try std.testing.expect(extension_host.eager_start_request != null);
             if (!abort_start) {
                 try extension_host.host.notify(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands), "$executeContributedCommand", &.{.{ .json = .{ .string = "fixture.slowStartup.release" } }});
-                const finish_deadline = time_compat.milliTimestamp() + 5000;
-                while ((extension_host.eager_start_request != null or lens.pending_fetch != null) and time_compat.milliTimestamp() < finish_deadline) {
-                    _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                    time_compat.sleepMillis(10);
+                const finish_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+                while ((extension_host.eager_start_request != null or lens.pending_fetch != null) and time_compat.milliTimestamp(std.testing.io) < finish_deadline) {
+                    _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                    time_compat.sleepMillis(std.testing.io, 10);
                 }
                 try std.testing.expect(extension_host.eager_start_request == null);
                 try std.testing.expect(lens.pending_fetch == null);
@@ -3325,14 +3328,14 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqual(@as(usize, 0), lens.providers.len);
             // The real crash occurred after the workbench continued to
             // dispatch a stale CodeLens deadline against the freed host.
-            _ = workbench.window_events.dispatch(time_compat.milliTimestamp() + 1000);
+            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io) + 1000);
             try std.testing.expect(lens.pending_fetch == null);
         }
 
         test "Extensions: real vscode-languageclient negotiates mock LSP and applies nested save and workspace edits" {
             if (!build_options.e2e) return error.SkipZigTest;
             const allocator = std.testing.allocator;
-            const io = time_compat.io;
+            const io = std.testing.io;
             try std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{});
             try std.Io.Dir.cwd().access(io, "host/test-fixtures/lsp-language-features/package.json", .{});
             var tmp = std.testing.tmpDir(.{});
@@ -3359,12 +3362,12 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const model = workbench.activeTab().?.editor.model;
             const editor = workbench.activeTab().?.editor;
             const features = workbench.language_features.?;
-            const startup = time_compat.milliTimestamp() + 20000;
-            while (time_compat.milliTimestamp() < startup) {
+            const startup = time_compat.milliTimestamp(std.testing.io) + 20000;
+            while (time_compat.milliTimestamp(std.testing.io) < startup) {
                 _ = extension_host.pump();
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 if (extension_host.activated and features.signature_help_provider.has(model) and features.rename_provider.has(model) and features.inlay_hints_provider.has(model) and features.document_semantic_tokens_provider.has(model)) break;
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(extension_host.activated);
             try std.testing.expect(features.hover_provider.has(model));
@@ -3390,11 +3393,11 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                 fn call(a: Allocator, wb: *terminal_window_type, host: *Extensions, command: []const u8) !std.json.Value {
                     var receiver: @This() = .{ .arena = a };
                     const request = try Extensions.requestActorAsync(host, protocol.ExtHostContext.ExtHostCommands, "$executeContributedCommand", &.{.{ .json = .{ .string = command } }}, .{ .context = &receiver, .callback = ready });
-                    const deadline = time_compat.milliTimestamp() + 10000;
-                    while (receiver.reply == null and !receiver.failed and time_compat.milliTimestamp() < deadline) {
+                    const deadline = time_compat.milliTimestamp(std.testing.io) + 10000;
+                    while (receiver.reply == null and !receiver.failed and time_compat.milliTimestamp(std.testing.io) < deadline) {
                         _ = host.pump();
-                        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
-                        time_compat.sleepMillis(5);
+                        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                        time_compat.sleepMillis(std.testing.io, 5);
                     }
                     if (receiver.reply == null and !receiver.failed) request.dispose();
                     return receiver.reply orelse error.MockLspCommandFailed;
@@ -3417,16 +3420,16 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqualStrings("", implicit_string.string);
             var resource = try @import("../../../platform/markers/common/markers.zig").Resource.fromUri(allocator, model.uri());
             defer resource.deinit(allocator);
-            const diagnostic_deadline = time_compat.milliTimestamp() + 5000;
+            const diagnostic_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
             var diagnostic_found = false;
-            while (!diagnostic_found and time_compat.milliTimestamp() < diagnostic_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            while (!diagnostic_found and time_compat.milliTimestamp(std.testing.io) < diagnostic_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 const markers = try workbench.marker_service.?.read(a, .{ .resource = resource });
                 for (markers) |marker| if (std.mem.eql(u8, marker.message, "Mock diagnostic")) {
                     diagnostic_found = true;
                     break;
                 };
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(diagnostic_found);
 
@@ -3475,10 +3478,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             defer if (deferred_result.highlight_count == null) {
                 if (highlight_request) |request| request.dispose();
             };
-            const completion_deadline = time_compat.milliTimestamp() + 5000;
-            while ((deferred_result.completion_item == null or deferred_result.symbol_name == null or deferred_result.highlight_count == null) and time_compat.milliTimestamp() < completion_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const completion_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while ((deferred_result.completion_item == null or deferred_result.symbol_name == null or deferred_result.highlight_count == null) and time_compat.milliTimestamp(std.testing.io) < completion_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             const completion_item = deferred_result.completion_item orelse return error.MockCompletionMissing;
             try std.testing.expectEqualStrings("(value)", completion_item.label_detail.?);
@@ -3502,16 +3505,16 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try workbench.commands.execute("workbench.action.showAllSymbols");
             const picker = workbench.quick_access.controller.pickerRef();
             try picker.setValue("#MockWorkspaceSymbol");
-            const workspace_deadline = time_compat.milliTimestamp() + 5000;
+            const workspace_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
             var workspace_found = false;
-            while (!workspace_found and time_compat.milliTimestamp() < workspace_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            while (!workspace_found and time_compat.milliTimestamp(std.testing.io) < workspace_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 for (picker.items.items, 0..) |item, index| if (item == .item and std.mem.eql(u8, item.item.label, "MockWorkspaceSymbol")) {
                     workspace_found = true;
                     picker.setActiveIndex(index);
                     break;
                 };
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(workspace_found);
             picker.accept();
@@ -3521,14 +3524,14 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try workbench.commands.execute("editor.action.showHover");
             const HoverController = @import("../../../editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
             const hover = editor.getInstantiatedContribution(HoverController).?;
-            const hover_deadline = time_compat.milliTimestamp() + 5000;
+            const hover_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
             var mock_hover_found = false;
-            while (!mock_hover_found and time_compat.milliTimestamp() < hover_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            while (!mock_hover_found and time_compat.milliTimestamp(std.testing.io) < hover_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 for (0..12) |i| if (hover.wrapper.getAccessibleWidgetContentAtIndex(@intCast(i))) |content| {
                     if (std.mem.indexOf(u8, content, "Mock hover: alpha(1)") != null) mock_hover_found = true;
                 };
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(hover.isVisible() and mock_hover_found);
             hover.hideContentHover();
@@ -3536,19 +3539,19 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try workbench.commands.execute("editor.action.triggerParameterHints");
             const ParameterHintsController = @import("../../../editor/contrib/parameterHints/browser/parameterHints.zig").ParameterHintsController;
             const hints = editor.getInstantiatedContribution(ParameterHintsController).?;
-            const hints_deadline = time_compat.milliTimestamp() + 5000;
-            while (hints.model.hints() == null and time_compat.milliTimestamp() < hints_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const hints_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (hints.model.hints() == null and time_compat.milliTimestamp(std.testing.io) < hints_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expectEqualStrings("alpha(value: number)", (hints.model.hints() orelse return error.MockSignatureMissing).signatures[0].label);
             try workbench.commands.execute("closeParameterHints");
             const InlayController = @import("../../../editor/contrib/inlayHints/browser/inlayHintsController.zig").InlayHintsController;
             const inlay = editor.getInstantiatedContribution(InlayController).?;
-            const features_deadline = time_compat.milliTimestamp() + 5000;
-            while ((!model.hasCompleteSemanticTokens() or inlay.parts.len == 0 or editor.folding.regionStartingAt(1) == null) and time_compat.milliTimestamp() < features_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const features_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while ((!model.hasCompleteSemanticTokens() or inlay.parts.len == 0 or editor.folding.regionStartingAt(1) == null) and time_compat.milliTimestamp(std.testing.io) < features_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(model.hasCompleteSemanticTokens() and model.hasSomeSemanticTokens());
             try std.testing.expect(inlay.parts.len > 0 and editor.folding.regionStartingAt(1) != null);
@@ -3566,10 +3569,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                     if (result) |value| self.resolved = value else |_| self.failed = true;
                 }
                 fn wait(self: *@This(), wb: *terminal_window_type, req: @import("../../../base/common/lifecycle.zig").IDisposable, is_semantic: bool) !void {
-                    const deadline = time_compat.milliTimestamp() + 5000;
-                    while (!self.failed and (if (is_semantic) self.semantic == null else self.resolved == null) and time_compat.milliTimestamp() < deadline) {
-                        _ = wb.window_events.dispatch(time_compat.milliTimestamp());
-                        time_compat.sleepMillis(10);
+                    const deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+                    while (!self.failed and (if (is_semantic) self.semantic == null else self.resolved == null) and time_compat.milliTimestamp(std.testing.io) < deadline) {
+                        _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                        time_compat.sleepMillis(std.testing.io, 10);
                     }
                     if (self.failed or (if (is_semantic) self.semantic == null else self.resolved == null)) {
                         if (!self.failed) req.dispose();
@@ -3604,10 +3607,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
             try editor.setCursorPosition(Position.init(1, 2));
             try editor.growSelection(true);
-            const selection_deadline = time_compat.milliTimestamp() + 5000;
-            while (editor.smart_select.pending != null and time_compat.milliTimestamp() < selection_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const selection_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (editor.smart_select.pending != null and time_compat.milliTimestamp(std.testing.io) < selection_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             const selected = try editor.getModelSelections();
             defer allocator.free(selected);
@@ -3630,10 +3633,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             };
             var action_probe: ActionProbe = .{};
             const action_request = (try actions_mod.getCodeActions(allocator, &features.code_action_provider, model, Range.init(1, 1, 1, 6), .{ .type = .Invoke, .trigger_action = .QuickFix, .filter = .{ .include = action_kinds.CodeActionKind.QuickFix } }, .None, .{ .context = &action_probe, .complete = ActionProbe.ready })).?;
-            const action_deadline = time_compat.milliTimestamp() + 5000;
-            while (action_probe.result == null and action_probe.failure == null and time_compat.milliTimestamp() < action_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const action_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (action_probe.result == null and action_probe.failure == null and time_compat.milliTimestamp(std.testing.io) < action_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             if (action_probe.result == null and action_probe.failure == null) action_request.dispose();
             const action_set = action_probe.result orelse return error.MockCodeActionMissing;
@@ -3642,10 +3645,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const action = action_set.valid_actions[0].action;
             try std.testing.expectEqualStrings("Mock quick fix", action.title);
             const apply_request = try workbench.bulk_edit_api.apply(action.edit orelse return error.MockActionEditMissing, .{ .editor = editor }, .{ .context = &action_probe, .complete = ActionProbe.appliedEdit });
-            const apply_deadline = time_compat.milliTimestamp() + 5000;
-            while (action_probe.applied == null and action_probe.failure == null and time_compat.milliTimestamp() < apply_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const apply_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (action_probe.applied == null and action_probe.failure == null and time_compat.milliTimestamp(std.testing.io) < apply_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             if (action_probe.applied == null and action_probe.failure == null) if (apply_request) |request| request.dispose();
             try std.testing.expect(action_probe.applied orelse false);
@@ -3655,10 +3658,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
             try editor.setCursorPosition(Position.init(1, 2));
             try editor.formatDocument();
-            const format_deadline = time_compat.milliTimestamp() + 5000;
-            while (!std.mem.startsWith(u8, try model.borrowLineContent(2), "    beta") and time_compat.milliTimestamp() < format_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const format_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (!std.mem.startsWith(u8, try model.borrowLineContent(2), "    beta") and time_compat.milliTimestamp(std.testing.io) < format_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expectEqualStrings("    beta", try model.borrowLineContent(2));
             try editor.undo();
@@ -3667,18 +3670,18 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try workbench.commands.execute("editor.action.rename");
             const RenameController = @import("../../../editor/contrib/rename/browser/rename.zig").RenameController;
             const rename = editor.getInstantiatedContribution(RenameController).?;
-            const rename_deadline = time_compat.milliTimestamp() + 5000;
-            while (!rename.widget.visible and time_compat.milliTimestamp() < rename_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const rename_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (!rename.widget.visible and time_compat.milliTimestamp(std.testing.io) < rename_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expectEqualStrings("alpha", rename.widget.input.getValue());
             try rename.widget.input.setValue("renamed");
             try workbench.commands.execute("acceptRenameInput");
-            const rename_edits_deadline = time_compat.milliTimestamp() + 5000;
-            while (rename.state != .idle and time_compat.milliTimestamp() < rename_edits_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const rename_edits_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (rename.state != .idle and time_compat.milliTimestamp(std.testing.io) < rename_edits_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expectEqualStrings("renamed(1)", try model.borrowLineContent(1));
             try editor.undo();
@@ -3689,14 +3692,14 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try editor.setCursorPosition(Position.init(1, model.getLineMaxColumn(1)));
             try editor.insertText("é");
             try workbench.commands.execute("workbench.action.files.save");
-            const save_deadline = time_compat.milliTimestamp() + 10000;
+            const save_deadline = time_compat.milliTimestamp(std.testing.io) + 10000;
             var saved = false;
-            while (!saved and time_compat.milliTimestamp() < save_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            while (!saved and time_compat.milliTimestamp(std.testing.io) < save_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 const contents = try tmp.dir.readFileAlloc(io, "mock.txt", allocator, .limited(64 * 1024));
                 defer allocator.free(contents);
                 saved = std.mem.startsWith(u8, contents, "// mock save\n") and std.mem.indexOf(u8, contents, "é") != null;
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(saved);
             const applied = try MockCommand.call(a, workbench, extension_host, "fixture.lsp.applyEdit");
@@ -3709,37 +3712,37 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const persisted = try tmp.dir.readFileAlloc(io, "settings.json", allocator, .limited(64 * 1024));
             defer allocator.free(persisted);
             try std.testing.expect(std.mem.indexOf(u8, persisted, "updated by extension") != null);
-            const config_deadline = time_compat.milliTimestamp() + 5000;
+            const config_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
             var config_seen = false;
-            while (!config_seen and time_compat.milliTimestamp() < config_deadline) {
+            while (!config_seen and time_compat.milliTimestamp(std.testing.io) < config_deadline) {
                 const current = try MockCommand.call(a, workbench, extension_host, "fixture.lsp.status");
                 if (current.object.get("configuration")) |cfg| if (cfg == .object) if (cfg.object.get("value")) |value| {
                     config_seen = value == .string and std.mem.eql(u8, value.string, "updated by extension");
                 };
-                if (!config_seen) time_compat.sleepMillis(20);
+                if (!config_seen) time_compat.sleepMillis(std.testing.io, 20);
             }
             try std.testing.expect(config_seen);
             try tmp.dir.writeFile(io, .{ .sub_path = "watched.lspfixture", .data = "change" });
-            const watch_deadline = time_compat.milliTimestamp() + 5000;
+            const watch_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
             var watched_file = false;
-            while (!watched_file and time_compat.milliTimestamp() < watch_deadline) {
+            while (!watched_file and time_compat.milliTimestamp(std.testing.io) < watch_deadline) {
                 const current = try MockCommand.call(a, workbench, extension_host, "fixture.lsp.status");
                 for (current.object.get("watched").?.array.items) |change| {
                     if (change == .object and std.mem.endsWith(u8, change.object.get("uri").?.string, "watched.lspfixture")) watched_file = true;
                 }
-                if (!watched_file) time_compat.sleepMillis(20);
+                if (!watched_file) time_compat.sleepMillis(std.testing.io, 20);
             }
             try std.testing.expect(watched_file);
             try tmp.dir.createDir(io, "another", .default_dir);
             const other_root = try std.fs.path.join(allocator, &.{ root, "another" });
             defer allocator.free(other_root);
             try workbench.setWorkspaceFolders(&.{ root, other_root });
-            const folders_deadline = time_compat.milliTimestamp() + 5000;
+            const folders_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
             var folders_seen = false;
-            while (!folders_seen and time_compat.milliTimestamp() < folders_deadline) {
+            while (!folders_seen and time_compat.milliTimestamp(std.testing.io) < folders_deadline) {
                 const current = try MockCommand.call(a, workbench, extension_host, "fixture.lsp.status");
                 folders_seen = current.object.get("folders").?.array.items.len == 2;
-                if (!folders_seen) time_compat.sleepMillis(20);
+                if (!folders_seen) time_compat.sleepMillis(std.testing.io, 20);
             }
             try std.testing.expect(folders_seen);
             const final_status = try MockCommand.call(a, workbench, extension_host, "fixture.lsp.status");
@@ -3760,7 +3763,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             // absolute URI. The host never found the document, so `gd`/F12 and the
             // other navigation actions returned no result for relative paths.
             if (!build_options.e2e) return error.SkipZigTest;
-            const io = time_compat.io;
+            const io = std.testing.io;
             std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
             std.Io.Dir.cwd().access(io, "host/test-fixtures/language-features/package.json", .{}) catch return error.SkipZigTest;
 
@@ -3802,15 +3805,15 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const model_uri = try std_uri.resourceKey(allocator, tab.editor.model.uri());
             defer allocator.free(model_uri);
 
-            const deadline = time_compat.milliTimestamp() + 10_000;
+            const deadline = time_compat.milliTimestamp(std.testing.io) + 10_000;
             var mirrored: ?[]u8 = null;
-            while (time_compat.milliTimestamp() < deadline) {
+            while (time_compat.milliTimestamp(std.testing.io) < deadline) {
                 _ = extension_host.pump();
                 if (extension_host.active) |active| {
                     mirrored = try std_uri.resourceKeyFromComponents(allocator, .{ .scheme = "file", .path = active.uri });
                     break;
                 }
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             defer if (mirrored) |value| allocator.free(value);
             try std.testing.expect(mirrored != null);
@@ -3819,13 +3822,13 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             // The fixture provider sees the mirrored document and the action jumps to
             // its target range on line 1.
             try tab.editor.setCursorPosition(Position.init(3, 1));
-            const navigation_deadline = time_compat.milliTimestamp() + 10_000;
+            const navigation_deadline = time_compat.milliTimestamp(std.testing.io) + 10_000;
             var navigated = false;
-            while (!navigated and time_compat.milliTimestamp() < navigation_deadline) {
+            while (!navigated and time_compat.milliTimestamp(std.testing.io) < navigation_deadline) {
                 _ = extension_host.pump();
                 navigated = workbench.revealDefinition() catch false;
                 if (navigated) try waitNavigation(workbench);
-                if (!navigated) time_compat.sleepMillis(20);
+                if (!navigated) time_compat.sleepMillis(std.testing.io, 20);
             }
             try std.testing.expect(navigated);
             try std.testing.expectEqual(@as(usize, 1), tab.editor.modelCursorPosition().lineNumber);
@@ -3847,7 +3850,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqualStrings("plaintext", extension_host.active.?.language_id);
             for (0..256) |_| {
                 if (extension_host.tabs_task.at == null and extension_host.selection_task.at == null and extension_host.visible_ranges_task.at == null) break;
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
             }
             try std.testing.expect(extension_host.tabs_task.at == null and extension_host.selection_task.at == null and extension_host.visible_ranges_task.at == null);
             try std.testing.expectEqual(@as(usize, 2), extension_host.last_selections.items[0].endLineNumber);
@@ -3857,7 +3860,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
         test "Extensions: CodeLens providers receive both distinct diff side documents before focus" {
             if (!build_options.e2e) return error.SkipZigTest;
-            const io = time_compat.io;
+            const io = std.testing.io;
             std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
             const a = std.testing.allocator;
             var tmp = std.testing.tmpDir(.{});
@@ -3878,13 +3881,13 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqual(diff.modified_editor, extensions.active.?.editor);
             const features = wb.language_features.?;
             const token = @import("../../../base/common/cancellation.zig").CancellationToken.None;
-            const deadline = time_compat.milliTimestamp() + 10_000;
-            while (time_compat.milliTimestamp() < deadline) {
+            const deadline = time_compat.milliTimestamp(std.testing.io) + 10_000;
+            while (time_compat.milliTimestamp(std.testing.io) < deadline) {
                 _ = extensions.pump();
                 const providers = try features.code_lens_provider.ordered(a, diff.originalModel(), false);
                 defer a.free(providers);
                 if (providers.len != 0) break;
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             var arena = std.heap.ArenaAllocator.init(a);
             defer arena.deinit();
@@ -3919,7 +3922,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
         test "Extensions: semantic document and multi-document highlights render both registered diff editors" {
             if (!build_options.e2e) return error.SkipZigTest;
-            const io = time_compat.io;
+            const io = std.testing.io;
             std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
             const a = std.testing.allocator;
             var tmp = std.testing.tmpDir(.{});
@@ -3944,27 +3947,27 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const registered_editors = wb.code_editor_api.listCodeEditors();
             try std.testing.expect(std.mem.indexOfScalar(*Editor, registered_editors, diff.original_editor) != null);
             try std.testing.expect(std.mem.indexOfScalar(*Editor, registered_editors, diff.modified_editor) != null);
-            const deadline = time_compat.milliTimestamp() + 10_000;
-            while (time_compat.milliTimestamp() < deadline) {
+            const deadline = time_compat.milliTimestamp(std.testing.io) + 10_000;
+            while (time_compat.milliTimestamp(std.testing.io) < deadline) {
                 _ = extensions.pump();
                 const providers = try features.document_highlight_provider.ordered(a, diff.originalModel(), false);
                 defer a.free(providers);
                 const multi = try features.multi_document_highlight_provider.ordered(a, diff.originalModel(), false);
                 defer a.free(multi);
                 if (providers.len > 1 and multi.len > 1) break;
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             diff.setFocus(.original);
             try diff.original_editor.setCursorPosition(Position.init(1, 4));
             original.trigger();
             const Pump = struct {
                 fn settle(host: *Extensions, contribution: *WordHighlighterContribution) !void {
-                    const limit = time_compat.milliTimestamp() + 10_000;
-                    while (time_compat.milliTimestamp() < limit) {
+                    const limit = time_compat.milliTimestamp(std.testing.io) + 10_000;
+                    while (time_compat.milliTimestamp(std.testing.io) < limit) {
                         _ = host.pump();
                         const highlighter = contribution.word_highlighter.?;
                         if (highlighter.pending_request == null and highlighter.pending_deadline_ms == null) return;
-                        time_compat.sleepMillis(10);
+                        time_compat.sleepMillis(std.testing.io, 10);
                     }
                     return error.OccurrenceRequestDidNotSettle;
                 }
@@ -4047,8 +4050,8 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             }
             for (0..1000) |_| {
                 if (extensions.language_features_actor.?.code_action_commands.items.len == 0) break;
-                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(1);
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 1);
             }
             try std.testing.expectEqual(@as(usize, 0), extensions.language_features_actor.?.code_action_commands.items.len);
             original.applyConfiguration(.{ .occurrences_highlight = .off });
@@ -4057,7 +4060,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
         test "Extensions: async content hovers stream through real diff panes and cancel on pointer leave" {
             if (!build_options.e2e) return error.SkipZigTest;
-            const io = time_compat.io;
+            const io = std.testing.io;
             std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
             const a = std.testing.allocator;
             var tmp = std.testing.tmpDir(.{});
@@ -4081,13 +4084,13 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             original.updateSettings(.{ .delay = 60, .sticky = false });
             modified.updateSettings(.{ .delay = 60, .sticky = false });
             const features = wb.language_features.?;
-            const deadline = time_compat.milliTimestamp() + 10_000;
-            while (time_compat.milliTimestamp() < deadline) {
+            const deadline = time_compat.milliTimestamp(std.testing.io) + 10_000;
+            while (time_compat.milliTimestamp(std.testing.io) < deadline) {
                 _ = extensions.pump();
                 const providers = try features.hover_provider.ordered(a, diff.originalModel(), false);
                 defer a.free(providers);
                 if (providers.len > 2) break;
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             var scratch = std.heap.ArenaAllocator.init(a);
             defer scratch.deinit();
@@ -4106,8 +4109,8 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                     return host.host.requestSync(allocator, id, "$executeContributedCommand", args.items, null, 5000);
                 }
                 fn waitFor(host: *Extensions, allocator: Allocator, id: @TypeOf(command), name: []const u8, kind: []const u8, count: usize) !void {
-                    const limit = time_compat.milliTimestamp() + 10_000;
-                    while (time_compat.milliTimestamp() < limit) {
+                    const limit = time_compat.milliTimestamp(std.testing.io) + 10_000;
+                    while (time_compat.milliTimestamp(std.testing.io) < limit) {
                         _ = host.pump();
                         const events = try call(host, allocator, id, "fixture.hoverState", null);
                         var matching: usize = 0;
@@ -4115,7 +4118,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                             if (std.mem.eql(u8, event.object.get("name").?.string, name) and std.mem.eql(u8, event.object.get("kind").?.string, kind)) matching += 1;
                         }
                         if (matching >= count) return;
-                        time_compat.sleepMillis(5);
+                        time_compat.sleepMillis(std.testing.io, 5);
                     }
                     return error.HoverFixtureDidNotSettle;
                 }
@@ -4126,20 +4129,20 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                     return null;
                 }
                 fn waitForContent(host: *Extensions, controller: *HoverController, content: []const u8) !void {
-                    const limit = time_compat.milliTimestamp() + 10_000;
-                    while (time_compat.milliTimestamp() < limit) {
+                    const limit = time_compat.milliTimestamp(std.testing.io) + 10_000;
+                    while (time_compat.milliTimestamp(std.testing.io) < limit) {
                         _ = host.pump();
                         if (controller.widget().getWidgetContent()) |value| if (std.mem.indexOf(u8, value, content) != null) return;
-                        time_compat.sleepMillis(5);
+                        time_compat.sleepMillis(std.testing.io, 5);
                     }
                     return error.HoverVerbosityDidNotComplete;
                 }
                 fn settle(host: *Extensions, controller: *HoverController) !void {
-                    const limit = time_compat.milliTimestamp() + 10_000;
-                    while (time_compat.milliTimestamp() < limit) {
+                    const limit = time_compat.milliTimestamp(std.testing.io) + 10_000;
+                    while (time_compat.milliTimestamp(std.testing.io) < limit) {
                         _ = host.pump();
                         if (controller.wrapper.operation.isIdle()) return;
-                        time_compat.sleepMillis(5);
+                        time_compat.sleepMillis(std.testing.io, 5);
                     }
                     return error.HoverDidNotComplete;
                 }
@@ -4205,7 +4208,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
         test "Extensions: Quick Diff providers resolve virtual originals and publish source-control information asynchronously" {
             if (!build_options.e2e) return error.SkipZigTest;
-            const io = time_compat.io;
+            const io = std.testing.io;
             std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
             const a = std.testing.allocator;
             var tmp = std.testing.tmpDir(.{});
@@ -4232,12 +4235,12 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const extensions = try Extensions.init(a, io, wb.extensionHostServices(), &.{.{ .path = "host/test-fixtures/quick-diff", .is_under_development = true }}, ".cache-ext/data-quickdiff-fixture", "host/dist");
             defer extensions.deinit();
             const editor = wb.activeTab().?.editor;
-            const deadline = time_compat.milliTimestamp() + 10_000;
-            while (time_compat.milliTimestamp() < deadline) {
+            const deadline = time_compat.milliTimestamp(std.testing.io) + 10_000;
+            while (time_compat.milliTimestamp(std.testing.io) < deadline) {
                 _ = extensions.pump();
-                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 if (extensions.quick_diff_actor.?.providers.count() == 1 and extensions.document_content_actor.?.providers.count() == 1) break;
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expectEqual(@as(usize, 1), extensions.quick_diff_actor.?.providers.count());
             try std.testing.expectEqual(@as(usize, 1), extensions.document_content_actor.?.providers.count());
@@ -4246,12 +4249,12 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const model = reference.object;
             const Pump = struct {
                 fn settle(host: *Extensions, workbench: @TypeOf(wb), quick: *@import("../../contrib/scm/browser/quickDiffModel.zig").QuickDiffModel, expected: usize) !void {
-                    const limit = time_compat.milliTimestamp() + 10_000;
-                    while (time_compat.milliTimestamp() < limit) {
+                    const limit = time_compat.milliTimestamp(std.testing.io) + 10_000;
+                    while (time_compat.milliTimestamp(std.testing.io) < limit) {
                         _ = host.pump();
-                        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                        _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                         if (quick.quickDiffs().len == expected and quick.due_at == null and quick.provider_query == null and quick.resolving == null and quick.pending == null) return;
-                        time_compat.sleepMillis(10);
+                        time_compat.sleepMillis(std.testing.io, 10);
                     }
                     return error.QuickDiffDidNotSettle;
                 }
@@ -4290,12 +4293,12 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(!information.object.get("isStale").?.bool);
             try std.testing.expectEqual(@as(usize, 1), information.object.get("changes").?.array.items.len);
             _ = try commands.call(extensions, arena, command_id, "fixture.quickDiff.update", "after\nsecond\n");
-            const update_deadline = time_compat.milliTimestamp() + 10_000;
-            while (time_compat.milliTimestamp() < update_deadline) {
+            const update_deadline = time_compat.milliTimestamp(std.testing.io) + 10_000;
+            while (time_compat.milliTimestamp(std.testing.io) < update_deadline) {
                 _ = extensions.pump();
-                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 if (std.mem.eql(u8, "after", try original.model.borrowLineContent(1))) break;
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expectEqualStrings("after", try original.model.borrowLineContent(1));
             try Pump.settle(extensions, wb, model, 2);
@@ -4309,7 +4312,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
         test "Extensions: multi-diff tabs expose declared pairs and offscreen documents through virtualization" {
             if (!build_options.e2e) return error.SkipZigTest;
-            const io = time_compat.io;
+            const io = std.testing.io;
             std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
             const a = std.testing.allocator;
             var scratch = std.heap.ArenaAllocator.init(a);
@@ -4341,19 +4344,19 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const extensions = try Extensions.init(a, io, wb.extensionHostServices(), &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }}, ".cache-ext/data-multi-diff-fixture", "host/dist");
             defer extensions.deinit();
             const features = wb.language_features.?;
-            const deadline = time_compat.milliTimestamp() + 10_000;
-            while (time_compat.milliTimestamp() < deadline) {
+            const deadline = time_compat.milliTimestamp(std.testing.io) + 10_000;
+            while (time_compat.milliTimestamp(std.testing.io) < deadline) {
                 _ = extensions.pump();
                 const providers = try features.code_lens_provider.ordered(arena, wb.activeTab().?.editor.model, false);
                 if (providers.len != 0) break;
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try wb.editor_api.openMultiDiffResources(.{ .multiDiffSource = try std.Uri.parse("multi-diff-editor:ext-host-test"), .label = "Extension host comparison", .resources = &resources });
             for (0..6000) |_| {
                 if (wb.activeTab()) |tab| if (tab.multi_diff) |multi| {
                     if (!multi.widget.getViewModel().?.isLoading) break;
                 };
-                _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+                _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 _ = extensions.pump();
                 std.Io.sleep(wb.async_io, .fromMilliseconds(1), .awake) catch {};
             }
@@ -4363,7 +4366,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqual(@as(usize, 3), vm.items.len);
             const last = vm.items[2];
             try std.testing.expect(multi.widget.impl.bindingFor(last) == null);
-            for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
             const command_id = proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands);
             const command_args = &.{rpc.Arg{ .json = .{ .string = "fixture.tabState" } }};
             const state = try extensions.host.requestSync(arena, command_id, "$executeContributedCommand", command_args, null, 5000);
@@ -4464,7 +4467,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const ordered = try wb.part.orderedViews(arena);
             try std.testing.expectEqual(@as(usize, 2), ordered.len);
             try std.testing.expectEqual(tab, ordered[1].activeTab().?);
-            for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
             const moved_state = try extensions.host.requestSync(arena, command_id, "$executeContributedCommand", command_args, null, 5000);
             const moved_groups = moved_state.object.get("groups").?.array.items;
             try std.testing.expectEqual(@as(usize, 2), moved_groups.len);
@@ -4479,10 +4482,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             }, arena);
             try std.testing.expectEqual(tab, wb.activeTab().?);
             try std.testing.expectEqual(@as(usize, 0), wb.activePane().?.group.model.indexOf(.{ .input = tab.input }).?);
-            for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
             const close_result = try extensions.host.requestSync(arena, command_id, "$executeContributedCommand", &.{.{ .json = .{ .string = "fixture.closeComparison" } }}, null, 5000);
             try std.testing.expect(close_result.bool);
-            for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp());
+            for (0..32) |_| _ = wb.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
             const closed = try extensions.host.requestSync(arena, command_id, "$executeContributedCommand", command_args, null, 5000);
             try std.testing.expectEqual(@as(usize, 1), closed.object.get("documents").?.array.items.len);
             try std.testing.expect(for (closed.object.get("tabEvents").?.array.items) |event| {
@@ -4507,19 +4510,19 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                     .{ .json = .{ .string = "fixture.closeNamedTab" } },
                     .{ .json = .{ .string = "bootstrap.json" } },
                 }, null, .{ .context = &result, .callback = CloseResult.complete });
-                const confirm_deadline = time_compat.milliTimestamp() + 5000;
-                while (!wb.dialog_service.hasDialog() and !result.resolved and time_compat.milliTimestamp() < confirm_deadline) {
+                const confirm_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+                while (!wb.dialog_service.hasDialog() and !result.resolved and time_compat.milliTimestamp(std.testing.io) < confirm_deadline) {
                     _ = extensions.pump();
-                    time_compat.sleepMillis(5);
+                    time_compat.sleepMillis(std.testing.io, 5);
                 }
                 try std.testing.expect(wb.dialog_service.hasDialog());
                 try std.testing.expect(!result.resolved);
                 try std.testing.expectEqual(bootstrap_tab, wb.activeTab().?);
                 wb.dialog_service.model.close(choice);
-                const reply_deadline = time_compat.milliTimestamp() + 5000;
-                while (!result.resolved and time_compat.milliTimestamp() < reply_deadline) {
+                const reply_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+                while (!result.resolved and time_compat.milliTimestamp(std.testing.io) < reply_deadline) {
                     _ = extensions.pump();
-                    time_compat.sleepMillis(5);
+                    time_compat.sleepMillis(std.testing.io, 5);
                 }
                 try std.testing.expect(result.resolved);
                 try std.testing.expectEqual(choice == 1, result.closed);
@@ -4547,7 +4550,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const zig_path = std.mem.span(std.c.getenv("VSCODE_T_ZIG_PATH") orelse return error.SkipZigTest);
             const zls_path = std.mem.span(std.c.getenv("VSCODE_T_ZLS_PATH") orelse return error.SkipZigTest);
             const allocator = std.testing.allocator;
-            const io = time_compat.io;
+            const io = std.testing.io;
             var scratch = std.heap.ArenaAllocator.init(allocator);
             defer scratch.deinit();
             const a = scratch.allocator();
@@ -4602,10 +4605,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             defer extension_host.deinit();
             const features = workbench.language_features.?;
 
-            const deadline = time_compat.milliTimestamp() + 60_000;
-            while ((!model.hasCompleteSemanticTokens() or !features.hover_provider.has(model) or !features.completion_provider.has(model)) and time_compat.milliTimestamp() < deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(20);
+            const deadline = time_compat.milliTimestamp(std.testing.io) + 60_000;
+            while ((!model.hasCompleteSemanticTokens() or !features.hover_provider.has(model) or !features.completion_provider.has(model)) and time_compat.milliTimestamp(std.testing.io) < deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 20);
             }
             try std.testing.expect(extension_host.activated);
             try std.testing.expect(model.hasCompleteSemanticTokens() and model.hasSomeSemanticTokens());
@@ -4649,13 +4652,13 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try workbench.commands.execute("editor.action.showHover");
             const hover = editor.getInstantiatedContribution(HoverController).?;
             var hover_found = false;
-            const hover_deadline = time_compat.milliTimestamp() + 10000;
-            while (!hover_found and time_compat.milliTimestamp() < hover_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            const hover_deadline = time_compat.milliTimestamp(std.testing.io) + 10000;
+            while (!hover_found and time_compat.milliTimestamp(std.testing.io) < hover_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 for (0..12) |i| if (hover.wrapper.getAccessibleWidgetContentAtIndex(@intCast(i))) |content| {
                     hover_found = hover_found or (std.mem.indexOf(u8, content, "fn init") != null and std.mem.indexOf(u8, content, "Position") != null);
                 };
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(hover_found and hover.isVisible());
             hover.hideContentHover();
@@ -4696,20 +4699,20 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const symbol_provider = symbols[0];
             const symbol_request = (try symbol_provider.request_document_symbols.?(symbol_provider.context, a, model, .{ .context = &probe, .complete = Probe.symbols })).?;
             defer if (probe.symbol == null) symbol_request.dispose();
-            const probe_deadline = time_compat.milliTimestamp() + 10000;
-            while ((probe.completion == null or probe.symbol == null) and time_compat.milliTimestamp() < probe_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const probe_deadline = time_compat.milliTimestamp(std.testing.io) + 10000;
+            while ((probe.completion == null or probe.symbol == null) and time_compat.milliTimestamp(std.testing.io) < probe_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(probe.completion orelse false);
             try std.testing.expect(probe.symbol orelse false);
 
             try editor.setCursorPosition(method);
             try editor.growSelection(true);
-            const selection_deadline = time_compat.milliTimestamp() + 5000;
-            while (editor.smart_select.pending != null and time_compat.milliTimestamp() < selection_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const selection_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (editor.smart_select.pending != null and time_compat.milliTimestamp(std.testing.io) < selection_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             const selections = try editor.getModelSelections();
             defer allocator.free(selections);
@@ -4722,15 +4725,15 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const hints = editor.getInstantiatedContribution(ParameterHintsController).?;
             const InlayController = @import("../../../editor/contrib/inlayHints/browser/inlayHintsController.zig").InlayHintsController;
             const inlay = editor.getInstantiatedContribution(InlayController).?;
-            const hints_deadline = time_compat.milliTimestamp() + 10000;
+            const hints_deadline = time_compat.milliTimestamp(std.testing.io) + 10000;
             var literal_inlay = false;
-            while ((hints.model.hints() == null or !literal_inlay) and time_compat.milliTimestamp() < hints_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            while ((hints.model.hints() == null or !literal_inlay) and time_compat.milliTimestamp(std.testing.io) < hints_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 for (inlay.parts) |part| if (part.item.anchor.range.startLineNumber == literal_call.lineNumber) {
                     literal_inlay = true;
                     break;
                 };
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             const signature = hints.model.hints() orelse return error.RepositorySignatureMissing;
             try std.testing.expect(std.mem.indexOf(u8, signature.signatures[0].label, "startLineNumber") != null);
@@ -4742,16 +4745,16 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try workbench.commands.execute("workbench.action.showAllSymbols");
             const picker = workbench.quick_access.controller.pickerRef();
             try picker.setValue("#strictContainsRange");
-            const workspace_deadline = time_compat.milliTimestamp() + 60_000;
+            const workspace_deadline = time_compat.milliTimestamp(std.testing.io) + 60_000;
             var symbol_found = false;
-            while (!symbol_found and time_compat.milliTimestamp() < workspace_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            while (!symbol_found and time_compat.milliTimestamp(std.testing.io) < workspace_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 for (picker.items.items, 0..) |item, index| if (item == .item and std.mem.eql(u8, item.item.label, "strictContainsRange")) {
                     picker.setActiveIndex(index);
                     symbol_found = true;
                     break;
                 };
-                time_compat.sleepMillis(20);
+                time_compat.sleepMillis(std.testing.io, 20);
             }
             try std.testing.expect(symbol_found);
             picker.accept();
@@ -4768,10 +4771,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try workbench.commands.execute("editor.action.rename");
             const RenameController = @import("../../../editor/contrib/rename/browser/rename.zig").RenameController;
             const rename = editor.getInstantiatedContribution(RenameController).?;
-            const rename_deadline = time_compat.milliTimestamp() + 10000;
-            while (!rename.widget.visible and time_compat.milliTimestamp() < rename_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const rename_deadline = time_compat.milliTimestamp(std.testing.io) + 10000;
+            while (!rename.widget.visible and time_compat.milliTimestamp(std.testing.io) < rename_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(rename.widget.visible);
             try std.testing.expectEqualStrings("otherRange", rename.widget.input.getValue());
@@ -4802,16 +4805,16 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try wake_editor.setCursorPosition(Position.init(18, 1));
             try paintRepositoryEditor(workbench);
             const wake_inlay = wake_editor.getInstantiatedContribution(InlayController).?;
-            const wake_deadline = time_compat.milliTimestamp() + 15000;
-            while ((!wake_model.hasCompleteSemanticTokens() or wake_inlay.active == null) and time_compat.milliTimestamp() < wake_deadline) {
-                if (workbench.window_events.dispatch(time_compat.milliTimestamp())) try paintRepositoryEditor(workbench);
-                time_compat.sleepMillis(10);
+            const wake_deadline = time_compat.milliTimestamp(std.testing.io) + 15000;
+            while ((!wake_model.hasCompleteSemanticTokens() or wake_inlay.active == null) and time_compat.milliTimestamp(std.testing.io) < wake_deadline) {
+                if (workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io))) try paintRepositoryEditor(workbench);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(wake_model.hasCompleteSemanticTokens() and wake_model.hasSomeSemanticTokens());
             try std.testing.expect(wake_inlay.active != null);
             for (0..24) |step| {
                 _ = wake_editor.scrollViewLines(if (step % 8 < 4) 3 else -3);
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 try paintRepositoryEditor(workbench);
             }
             workbench.editor_surface.box_tree.markFullRebuild();
@@ -4841,7 +4844,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
         }
 
         fn verifyRealZig(extension_path: []const u8, zig_path: []const u8, zls_path: []const u8, workspace_activation: bool) !void {
-            const io = time_compat.io;
+            const io = std.testing.io;
             const allocator = std.testing.allocator;
             try std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{});
             try std.Io.Dir.cwd().access(io, zig_path, .{});
@@ -4897,10 +4900,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             if (workspace_activation) {
                 // No document is open: activation must come from the pinned
                 // host's workspaceContains:build.zig path, not onLanguage.
-                const activation_deadline = time_compat.milliTimestamp() + 30_000;
-                while (!extension_host.activated and time_compat.milliTimestamp() < activation_deadline) {
-                    _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                    time_compat.sleepMillis(20);
+                const activation_deadline = time_compat.milliTimestamp(std.testing.io) + 30_000;
+                while (!extension_host.activated and time_compat.milliTimestamp(std.testing.io) < activation_deadline) {
+                    _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                    time_compat.sleepMillis(std.testing.io, 20);
                 }
                 try std.testing.expect(extension_host.activated);
                 try workbench.openPath(document_path);
@@ -4909,11 +4912,11 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqualStrings("zig", model.getLanguageId());
             const features = workbench.language_features.?;
             const token = @import("../../../base/common/cancellation.zig").CancellationToken.None;
-            const deadline = time_compat.milliTimestamp() + 30_000;
+            const deadline = time_compat.milliTimestamp(std.testing.io) + 30_000;
             var hover_received = false;
             var edited_document = false;
-            while (time_compat.milliTimestamp() < deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            while (time_compat.milliTimestamp(std.testing.io) < deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 const statuses = try workbench.language_status.getLanguageStatus(allocator, model);
                 defer allocator.free(statuses);
                 var zig_status = false;
@@ -4937,15 +4940,15 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                         // workbench-only log viewer shortcut.
                         try workbench.commands.execute("zig.zls.openOutput");
                         const output_id = @import("../../services/output/common/output.zig").OUTPUT_VIEW_ID;
-                        const output_deadline = time_compat.milliTimestamp() + 5_000;
-                        while (time_compat.milliTimestamp() < output_deadline) {
-                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                        const output_deadline = time_compat.milliTimestamp(std.testing.io) + 5_000;
+                        while (time_compat.milliTimestamp(std.testing.io) < output_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                             if (workbench.output_service.active) |channel| {
                                 if (workbench.views_api.isViewVisible(output_id) and
                                     std.mem.endsWith(u8, channel.descriptor.id, ".ZLS language server.log") and
                                     std.mem.indexOf(u8, channel.model.content, "Received response 'initialize") != null) break;
                             }
-                            time_compat.sleepMillis(20);
+                            time_compat.sleepMillis(std.testing.io, 20);
                         }
                         try std.testing.expect(workbench.views_api.isViewVisible(output_id));
                         const output_channel = workbench.output_service.active orelse return error.ZlsOutputNotReceived;
@@ -4957,10 +4960,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                             try workbench.commands.execute("workbench.action.showAllSymbols");
                             const picker = workbench.quick_access.controller.pickerRef();
                             try picker.setValue("#answer");
-                            const symbols_deadline = time_compat.milliTimestamp() + 30_000;
+                            const symbols_deadline = time_compat.milliTimestamp(std.testing.io) + 30_000;
                             var found = false;
-                            while (time_compat.milliTimestamp() < symbols_deadline) {
-                                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                            while (time_compat.milliTimestamp(std.testing.io) < symbols_deadline) {
+                                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                                 for (picker.items.items, 0..) |item, index| {
                                     if (item == .item and std.mem.eql(u8, item.item.label, "answer")) {
                                         picker.setActiveIndex(index);
@@ -4969,7 +4972,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                                     }
                                 }
                                 if (found) break;
-                                time_compat.sleepMillis(20);
+                                time_compat.sleepMillis(std.testing.io, 20);
                             }
                             try std.testing.expect(found);
                             picker.accept();
@@ -5051,10 +5054,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                             if (highlight_request != null) break;
                         };
                         defer if (probe.highlight_count == null) if (highlight_request) |request| request.dispose();
-                        const probe_deadline = time_compat.milliTimestamp() + 5000;
-                        while ((probe.completion_found == null or probe.symbol_found == null or probe.highlight_count == null) and time_compat.milliTimestamp() < probe_deadline) {
-                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                            time_compat.sleepMillis(10);
+                        const probe_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+                        while ((probe.completion_found == null or probe.symbol_found == null or probe.highlight_count == null) and time_compat.milliTimestamp(std.testing.io) < probe_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                            time_compat.sleepMillis(std.testing.io, 10);
                         }
                         try std.testing.expect(probe.completion_found orelse false);
                         try std.testing.expect(probe.symbol_found orelse false);
@@ -5075,39 +5078,39 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                         try std.testing.expect(range_providers.len > 0);
                         const range_provider = range_providers[0];
                         const range_request = try range_provider.request_document_range_semantic_tokens(range_provider.context, probe_allocator, model, Range.init(2, 1, 3, model.getLineMaxColumn(3)), .{ .context = &range_semantic, .complete = RangeSemanticProbe.complete });
-                        const range_deadline = time_compat.milliTimestamp() + 5000;
-                        while (!range_semantic.ready and time_compat.milliTimestamp() < range_deadline) {
-                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                            time_compat.sleepMillis(10);
+                        const range_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+                        while (!range_semantic.ready and time_compat.milliTimestamp(std.testing.io) < range_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                            time_compat.sleepMillis(std.testing.io, 10);
                         }
                         if (!range_semantic.ready) range_request.dispose();
                         try std.testing.expect(range_semantic.ready and range_semantic.has_tokens);
                         try selection_editor.setCursorPosition(Position.init(3, 32));
                         try selection_editor.growSelection(true);
                         try std.testing.expect(selection_editor.smart_select.pending != null);
-                        const selection_deadline = time_compat.milliTimestamp() + 5000;
-                        while (selection_editor.smart_select.pending != null and time_compat.milliTimestamp() < selection_deadline) {
-                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                            time_compat.sleepMillis(10);
+                        const selection_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+                        while (selection_editor.smart_select.pending != null and time_compat.milliTimestamp(std.testing.io) < selection_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                            time_compat.sleepMillis(std.testing.io, 10);
                         }
                         try std.testing.expect(selection_editor.smart_select.pending == null);
                         const selection = try selection_editor.getModelSelections();
                         defer allocator.free(selection);
                         try std.testing.expect(!selection[0].isEmpty());
-                        const folding_deadline = time_compat.milliTimestamp() + 5000;
-                        while (selection_editor.folding.regionStartingAt(4) == null and time_compat.milliTimestamp() < folding_deadline) {
-                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                            time_compat.sleepMillis(10);
+                        const folding_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+                        while (selection_editor.folding.regionStartingAt(4) == null and time_compat.milliTimestamp(std.testing.io) < folding_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                            time_compat.sleepMillis(std.testing.io, 10);
                         }
                         try std.testing.expect(selection_editor.folding.regionStartingAt(4) != null);
                         const ParameterHintsController = @import("../../../editor/contrib/parameterHints/browser/parameterHints.zig").ParameterHintsController;
                         try selection_editor.setCursorPosition(Position.init(9, 35));
                         try workbench.commands.execute("editor.action.triggerParameterHints");
                         const hints = selection_editor.getInstantiatedContribution(ParameterHintsController).?;
-                        const hints_deadline = time_compat.milliTimestamp() + 5000;
-                        while (hints.model.hints() == null and time_compat.milliTimestamp() < hints_deadline) {
-                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                            time_compat.sleepMillis(10);
+                        const hints_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+                        while (hints.model.hints() == null and time_compat.milliTimestamp(std.testing.io) < hints_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                            time_compat.sleepMillis(std.testing.io, 10);
                         }
                         const signature_help = hints.model.hints() orelse return error.ZlsSignatureHelpUnavailable;
                         try std.testing.expect(std.mem.indexOf(u8, signature_help.signatures[0].label, "value") != null);
@@ -5115,16 +5118,16 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                         try workbench.commands.execute("closeParameterHints");
                         const InlayHintsController = @import("../../../editor/contrib/inlayHints/browser/inlayHintsController.zig").InlayHintsController;
                         const inlay_controller = selection_editor.getInstantiatedContribution(InlayHintsController).?;
-                        const zls_inlay_deadline = time_compat.milliTimestamp() + 5000;
-                        while (inlay_controller.parts.len == 0 and time_compat.milliTimestamp() < zls_inlay_deadline) {
-                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                            time_compat.sleepMillis(10);
+                        const zls_inlay_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+                        while (inlay_controller.parts.len == 0 and time_compat.milliTimestamp(std.testing.io) < zls_inlay_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                            time_compat.sleepMillis(std.testing.io, 10);
                         }
                         try std.testing.expect(inlay_controller.parts.len > 0);
-                        const semantic_deadline = time_compat.milliTimestamp() + 5000;
-                        while (!model.hasCompleteSemanticTokens() and time_compat.milliTimestamp() < semantic_deadline) {
-                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                            time_compat.sleepMillis(10);
+                        const semantic_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+                        while (!model.hasCompleteSemanticTokens() and time_compat.milliTimestamp(std.testing.io) < semantic_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                            time_compat.sleepMillis(std.testing.io, 10);
                         }
                         try std.testing.expect(model.hasCompleteSemanticTokens());
                         try std.testing.expect(model.hasSomeSemanticTokens());
@@ -5143,40 +5146,40 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                         try selection_editor.setCursorPosition(Position.init(8, 9));
                         try workbench.commands.execute("editor.action.rename");
                         const rename_controller = selection_editor.getInstantiatedContribution(RenameController).?;
-                        const rename_deadline = time_compat.milliTimestamp() + 5000;
-                        while (!rename_controller.widget.visible and time_compat.milliTimestamp() < rename_deadline) {
-                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                            time_compat.sleepMillis(10);
+                        const rename_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+                        while (!rename_controller.widget.visible and time_compat.milliTimestamp(std.testing.io) < rename_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                            time_compat.sleepMillis(std.testing.io, 10);
                         }
                         try std.testing.expect(rename_controller.widget.visible);
                         try std.testing.expectEqualStrings("add", rename_controller.widget.input.getValue());
                         try rename_controller.widget.input.setValue("sumValues");
                         try workbench.commands.execute("acceptRenameInput");
-                        const rename_edit_deadline = time_compat.milliTimestamp() + 5000;
-                        while (rename_controller.state != .idle and time_compat.milliTimestamp() < rename_edit_deadline) {
-                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                            time_compat.sleepMillis(10);
+                        const rename_edit_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+                        while (rename_controller.state != .idle and time_compat.milliTimestamp(std.testing.io) < rename_edit_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                            time_compat.sleepMillis(std.testing.io, 10);
                         }
                         try std.testing.expect(std.mem.indexOf(u8, try model.borrowLineContent(8), "fn sumValues(") != null);
                         try std.testing.expect(std.mem.indexOf(u8, try model.borrowLineContent(9), "return sumValues(") != null);
                         // The real server's formatting response must be applied
                         // before the save lifecycle writes the renamed document.
                         try selection_editor.formatDocument();
-                        const format_deadline = time_compat.milliTimestamp() + 5000;
-                        while (std.mem.indexOf(u8, try model.borrowLineContent(2), "return 42") != null and time_compat.milliTimestamp() < format_deadline) {
-                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                            time_compat.sleepMillis(10);
+                        const format_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+                        while (std.mem.indexOf(u8, try model.borrowLineContent(2), "return 42") != null and time_compat.milliTimestamp(std.testing.io) < format_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                            time_compat.sleepMillis(std.testing.io, 10);
                         }
                         try std.testing.expectEqualStrings("pub fn answer() u32 {", try model.borrowLineContent(2));
                         try workbench.commands.execute("workbench.action.files.save");
-                        const save_deadline = time_compat.milliTimestamp() + 10000;
+                        const save_deadline = time_compat.milliTimestamp(std.testing.io) + 10000;
                         var saved = false;
-                        while (!saved and time_compat.milliTimestamp() < save_deadline) {
-                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                        while (!saved and time_compat.milliTimestamp(std.testing.io) < save_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                             const contents = try directory.readFileAlloc(io, "sample.zig", allocator, .limited(64 * 1024));
                             defer allocator.free(contents);
                             saved = std.mem.indexOf(u8, contents, "fn sumValues(") != null and std.mem.indexOf(u8, contents, "return sumValues(") != null and std.mem.indexOf(u8, contents, "    return 42;") != null;
-                            time_compat.sleepMillis(10);
+                            time_compat.sleepMillis(std.testing.io, 10);
                         }
                         try std.testing.expect(saved);
                         // A real Zig diagnostic must reach the marker service and
@@ -5186,16 +5189,16 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                         try selection_editor.insertText("pub fn invalid() void {\n    const unused = 1;\n}\n");
                         var diagnostic_resource = try @import("../../../platform/markers/common/markers.zig").Resource.fromUri(allocator, model.uri());
                         defer diagnostic_resource.deinit(allocator);
-                        const diagnostic_deadline = time_compat.milliTimestamp() + 10000;
+                        const diagnostic_deadline = time_compat.milliTimestamp(std.testing.io) + 10000;
                         var diagnostic_range: ?Range = null;
-                        while (diagnostic_range == null and time_compat.milliTimestamp() < diagnostic_deadline) {
-                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                        while (diagnostic_range == null and time_compat.milliTimestamp(std.testing.io) < diagnostic_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                             const markers = try workbench.marker_service.?.read(probe_allocator, .{ .resource = diagnostic_resource });
                             for (markers) |marker| if (std.mem.indexOf(u8, marker.message, "unused local constant") != null) {
                                 diagnostic_range = Range.init(marker.start_line_number, marker.start_column, marker.end_line_number, marker.end_column);
                                 break;
                             };
-                            time_compat.sleepMillis(10);
+                            time_compat.sleepMillis(std.testing.io, 10);
                         }
                         const fix_range = diagnostic_range orelse return error.ZlsDiagnosticMissing;
                         const actions_mod = @import("../../../editor/contrib/codeAction/browser/codeAction.zig");
@@ -5216,10 +5219,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                         };
                         var action_probe: RealActionProbe = .{};
                         const action_request = (try actions_mod.getCodeActions(allocator, &features.code_action_provider, model, fix_range, .{ .type = .Invoke, .trigger_action = .QuickFix, .filter = .{ .include = action_kinds.CodeActionKind.QuickFix } }, .None, .{ .context = &action_probe, .complete = RealActionProbe.ready })).?;
-                        const action_deadline = time_compat.milliTimestamp() + 5000;
-                        while (action_probe.actions == null and action_probe.failure == null and time_compat.milliTimestamp() < action_deadline) {
-                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                            time_compat.sleepMillis(10);
+                        const action_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+                        while (action_probe.actions == null and action_probe.failure == null and time_compat.milliTimestamp(std.testing.io) < action_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                            time_compat.sleepMillis(std.testing.io, 10);
                         }
                         if (action_probe.actions == null and action_probe.failure == null) action_request.dispose();
                         const action_set = action_probe.actions orelse return error.ZlsQuickFixMissing;
@@ -5230,26 +5233,26 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                             break;
                         };
                         const apply_request = try workbench.bulk_edit_api.apply(edit orelse return error.ZlsQuickFixEditMissing, .{ .editor = selection_editor }, .{ .context = &action_probe, .complete = RealActionProbe.appliedEdit });
-                        const apply_deadline = time_compat.milliTimestamp() + 5000;
-                        while (action_probe.applied == null and action_probe.failure == null and time_compat.milliTimestamp() < apply_deadline) {
-                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                            time_compat.sleepMillis(10);
+                        const apply_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+                        while (action_probe.applied == null and action_probe.failure == null and time_compat.milliTimestamp(std.testing.io) < apply_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                            time_compat.sleepMillis(std.testing.io, 10);
                         }
                         if (action_probe.applied == null and action_probe.failure == null) if (apply_request) |request| request.dispose();
                         try std.testing.expect(action_probe.applied orelse false);
                         try std.testing.expectEqualStrings("    _ = unused; // autofix", try model.borrowLineContent(last_line + 2));
                         try std.testing.expectEqualStrings("}", try model.borrowLineContent(last_line + 3));
-                        const diagnostic_clear_deadline = time_compat.milliTimestamp() + 10000;
+                        const diagnostic_clear_deadline = time_compat.milliTimestamp(std.testing.io) + 10000;
                         var diagnostic_cleared = false;
-                        while (!diagnostic_cleared and time_compat.milliTimestamp() < diagnostic_clear_deadline) {
-                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                        while (!diagnostic_cleared and time_compat.milliTimestamp(std.testing.io) < diagnostic_clear_deadline) {
+                            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                             const markers = try workbench.marker_service.?.read(probe_allocator, .{ .resource = diagnostic_resource });
                             diagnostic_cleared = true;
                             for (markers) |marker| if (marker.severity == @import("../../../platform/markers/common/markers.zig").MarkerSeverity.Error or std.mem.indexOf(u8, marker.message, "unused local constant") != null) {
                                 diagnostic_cleared = false;
                                 break;
                             };
-                            time_compat.sleepMillis(10);
+                            time_compat.sleepMillis(std.testing.io, 10);
                         }
                         try std.testing.expect(diagnostic_cleared);
                         model.setLanguage("plaintext");
@@ -5265,14 +5268,14 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                         if (std.mem.indexOf(u8, contents.value, if (edited_document) "Updated by the editor." else "Returns the answer.") != null) hover_received = true;
                     };
                 }
-                time_compat.sleepMillis(20);
+                time_compat.sleepMillis(std.testing.io, 20);
             }
             return if (hover_received) error.ZigLanguageStatusNotReceived else error.ZlsHoverNotReceived;
         }
 
         test "Extensions: real TypeScript extension drives the language features" {
             if (!build_options.e2e) return error.SkipZigTest;
-            const io = time_compat.io;
+            const io = std.testing.io;
             std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
             std.Io.Dir.cwd().access(io, "host/dist/extensions/typescript-language-features/package.json", .{}) catch return error.SkipZigTest;
             std.Io.Dir.cwd().access(io, "host/dist/extensions/node_modules/typescript/lib/tsserver.js", .{}) catch return error.SkipZigTest;
@@ -5311,13 +5314,13 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             defer resource.deinit(allocator);
             const token = @import("../../../base/common/cancellation.zig").CancellationToken.None;
 
-            const deadline = time_compat.milliTimestamp() + 60_000;
+            const deadline = time_compat.milliTimestamp(std.testing.io) + 60_000;
 
             // Diagnostics: the extension's tsserver client publishes semantic errors
             // through its diagnostic collection.
             var found_diagnostic = false;
             var verified_utf16 = false;
-            while ((!found_diagnostic or !verified_utf16) and time_compat.milliTimestamp() < deadline) {
+            while ((!found_diagnostic or !verified_utf16) and time_compat.milliTimestamp(std.testing.io) < deadline) {
                 _ = extension_host.pump();
                 var arena = std.heap.ArenaAllocator.init(allocator);
                 defer arena.deinit();
@@ -5333,14 +5336,14 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                         }
                     }
                 }
-                if (!found_diagnostic or !verified_utf16) time_compat.sleepMillis(20);
+                if (!found_diagnostic or !verified_utf16) time_compat.sleepMillis(std.testing.io, 20);
             }
             try std.testing.expect(found_diagnostic);
             try std.testing.expect(verified_utf16);
 
             // Completion: tsserver suggests `toFixed` after `value.`.
             var found_completion = false;
-            while (!found_completion and time_compat.milliTimestamp() < deadline) {
+            while (!found_completion and time_compat.milliTimestamp(std.testing.io) < deadline) {
                 _ = extension_host.pump();
                 const providers = try features.completion_provider.ordered(allocator, model, false);
                 defer allocator.free(providers);
@@ -5363,13 +5366,13 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                     }
                     if (found_completion) break;
                 }
-                if (!found_completion) time_compat.sleepMillis(200);
+                if (!found_completion) time_compat.sleepMillis(std.testing.io, 200);
             }
             try std.testing.expect(found_completion);
 
             // Hover: quick info for `value` carries tsserver's display string.
             var found_hover = false;
-            while (!found_hover and time_compat.milliTimestamp() < deadline) {
+            while (!found_hover and time_compat.milliTimestamp(std.testing.io) < deadline) {
                 _ = extension_host.pump();
                 const providers = try features.hover_provider.ordered(allocator, model, false);
                 defer allocator.free(providers);
@@ -5385,7 +5388,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                     }
                     if (found_hover) break;
                 }
-                if (!found_hover) time_compat.sleepMillis(200);
+                if (!found_hover) time_compat.sleepMillis(std.testing.io, 200);
             }
             try std.testing.expect(found_hover);
 
@@ -5393,7 +5396,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const definition_tab = workbench.activeTab().?;
             try definition_tab.editor.setCursorPosition(Position.init(2, 13));
             var found_definition = false;
-            while (!found_definition and time_compat.milliTimestamp() < deadline) {
+            while (!found_definition and time_compat.milliTimestamp(std.testing.io) < deadline) {
                 _ = extension_host.pump();
                 if (try workbench.revealDefinition()) {
                     try waitNavigation(workbench);
@@ -5405,7 +5408,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                         }
                     }
                 }
-                time_compat.sleepMillis(200);
+                time_compat.sleepMillis(std.testing.io, 200);
             }
             try std.testing.expect(found_definition);
 
@@ -5426,7 +5429,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             // Document symbols: the extension's provider feeds the breadcrumb/outline
             // registries with UTF-16-converted ranges.
             var found_symbol = false;
-            while (!found_symbol and time_compat.milliTimestamp() < deadline) {
+            while (!found_symbol and time_compat.milliTimestamp(std.testing.io) < deadline) {
                 _ = extension_host.pump();
                 const providers = try features.document_symbol_provider.ordered(allocator, model, false);
                 defer allocator.free(providers);
@@ -5447,33 +5450,33 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                     }
                     if (found_symbol) break;
                 }
-                if (!found_symbol) time_compat.sleepMillis(200);
+                if (!found_symbol) time_compat.sleepMillis(std.testing.io, 200);
             }
             try std.testing.expect(found_symbol);
 
             // Formatting: the extension's document formatting provider replaces the
             // unformatted text through the regular editor command path.
             var formatted = false;
-            while (!formatted and time_compat.milliTimestamp() < deadline) {
+            while (!formatted and time_compat.milliTimestamp(std.testing.io) < deadline) {
                 _ = extension_host.pump();
                 tab.editor.formatDocument() catch {};
-                const format_deadline = time_compat.milliTimestamp() + 5_000;
-                while (tab.editor.pending_format != null and time_compat.milliTimestamp() < format_deadline) {
-                    _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                    time_compat.sleepMillis(1);
+                const format_deadline = time_compat.milliTimestamp(std.testing.io) + 5_000;
+                while (tab.editor.pending_format != null and time_compat.milliTimestamp(std.testing.io) < format_deadline) {
+                    _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                    time_compat.sleepMillis(std.testing.io, 1);
                 }
                 try std.testing.expect(tab.editor.pending_format == null);
                 var text = try model.getValue(.LF, false);
                 defer text.deinit();
                 formatted = std.mem.indexOf(u8, text.items, "const value: number") != null;
-                if (!formatted) time_compat.sleepMillis(200);
+                if (!formatted) time_compat.sleepMillis(std.testing.io, 200);
             }
             try std.testing.expect(formatted);
         }
 
         test "Extensions: real TypeScript extension reports JavaScript syntax errors" {
             if (!build_options.e2e) return error.SkipZigTest;
-            const io = time_compat.io;
+            const io = std.testing.io;
             std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
             std.Io.Dir.cwd().access(io, "host/dist/extensions/typescript-language-features/package.json", .{}) catch return error.SkipZigTest;
             std.Io.Dir.cwd().access(io, "host/dist/extensions/node_modules/typescript/lib/tsserver.js", .{}) catch return error.SkipZigTest;
@@ -5510,10 +5513,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             // Let the extension activate and open the mirror before simulating the
             // user edit; the workbench starts the host asynchronously after the first
             // document delta.
-            const ready_deadline = time_compat.milliTimestamp() + 5_000;
-            while (time_compat.milliTimestamp() < ready_deadline) {
+            const ready_deadline = time_compat.milliTimestamp(std.testing.io) + 5_000;
+            while (time_compat.milliTimestamp(std.testing.io) < ready_deadline) {
                 _ = extension_host.pump();
-                time_compat.sleepMillis(20);
+                time_compat.sleepMillis(std.testing.io, 20);
             }
             // Make the file invalid after the extension host has opened it, matching
             // the user path: delete the closing brace and wait for the diagnostics.
@@ -5527,11 +5530,11 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             var resource = try markers_mod.Resource.fromUri(allocator, model.uri());
             defer resource.deinit(allocator);
 
-            const deadline = time_compat.milliTimestamp() + 60_000;
+            const deadline = time_compat.milliTimestamp(std.testing.io) + 60_000;
             var found_error = false;
             var marker_line: u32 = 0;
             var marker_column: u32 = 0;
-            while (!found_error and time_compat.milliTimestamp() < deadline) {
+            while (!found_error and time_compat.milliTimestamp(std.testing.io) < deadline) {
                 _ = extension_host.pump();
                 var arena = std.heap.ArenaAllocator.init(allocator);
                 defer arena.deinit();
@@ -5544,7 +5547,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                         break;
                     }
                 }
-                if (!found_error) time_compat.sleepMillis(20);
+                if (!found_error) time_compat.sleepMillis(std.testing.io, 20);
             }
             try std.testing.expect(found_error);
 
@@ -5562,7 +5565,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
         test "Extensions: showDocument applies a line selection" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             var editor = try Editor.createFromText(allocator, io, "alpha\nbeta\n", "selection.txt", 40, 8);
             defer {
                 editor.deinit();
@@ -5578,7 +5581,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
         test "Extensions: editorScroll, revealLine and cursorMove command arguments" {
             const allocator = std.testing.allocator;
-            const io = std.Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             var editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight", "test.txt", 40, 6);
             defer {
                 editor.deinit();
@@ -5641,7 +5644,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
         /// suggestion cannot mask a client/server or activation failure.
         fn checkBuiltinCompletion(comptime name: []const u8, filename: []const u8, source: []const u8, expected: []const u8) !void {
             if (!build_options.e2e) return error.SkipZigTest;
-            const io = time_compat.io;
+            const io = std.testing.io;
             std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
             const allocator = std.testing.allocator;
             var catalog = try @import("../../services/extensions/common/extensionsRegistry.zig").scan(allocator, &.{ "vscode/extensions/configuration-editing", "vscode/extensions/lua" });
@@ -5662,8 +5665,8 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             }}, ".cache-ext/test-" ++ name, "host/dist");
             defer extensions.deinit();
             const model = workbench.activeTab().?.editor.model;
-            const deadline = time_compat.milliTimestamp() + 15_000;
-            while (time_compat.milliTimestamp() < deadline) {
+            const deadline = time_compat.milliTimestamp(std.testing.io) + 15_000;
+            while (time_compat.milliTimestamp(std.testing.io) < deadline) {
                 _ = extensions.pump();
                 var arena = std.heap.ArenaAllocator.init(allocator);
                 defer arena.deinit();
@@ -5675,7 +5678,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                         if (std.mem.indexOf(u8, item.insert_text, expected) != null) return;
                     }
                 }
-                time_compat.sleepMillis(100);
+                time_compat.sleepMillis(std.testing.io, 100);
             }
             return error.MissingBuiltinCompletion;
         }
@@ -5702,7 +5705,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
         test "Extensions: accept incoming merge conflict in the workbench" {
             if (!build_options.e2e) return error.SkipZigTest;
-            const io = time_compat.io;
+            const io = std.testing.io;
             std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
             const allocator = std.testing.allocator;
             var tmp = std.testing.tmpDir(.{});
@@ -5716,20 +5719,20 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             var host = try Extensions.init(allocator, io, workbench.extensionHostServices(), &.{.{ .path = "host/dist/extensions/merge-conflict", .is_builtin = true }}, ".cache-ext/test-merge", "host/dist");
             defer host.deinit();
             const command = "merge-conflict.accept.all-incoming";
-            const deadline = time_compat.milliTimestamp() + 10_000;
-            while (workbench.commands.get(command) == null and time_compat.milliTimestamp() < deadline) {
+            const deadline = time_compat.milliTimestamp(std.testing.io) + 10_000;
+            while (workbench.commands.get(command) == null and time_compat.milliTimestamp(std.testing.io) < deadline) {
                 _ = host.pump();
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             const action = workbench.commands.getRegistration(command) orelse return error.MissingMergeCommand;
             try std.testing.expect(action.isInPalette() and (try workbench.ensureContextKeys()).contextMatchesRules(action.descriptor.precondition.?));
             try workbench.commands.execute(command);
-            while (time_compat.milliTimestamp() < deadline) {
+            while (time_compat.milliTimestamp(std.testing.io) < deadline) {
                 _ = host.pump();
                 var value = try workbench.activeTab().?.editor.model.getValue(null, false);
                 defer value.deinit();
                 if (std.mem.eql(u8, value.items, "incoming\n")) return;
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             return error.MissingMergeEdit;
         }
@@ -5737,7 +5740,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
         test "Extensions: on-type formatting yields, minimizes edits, and cancels on newer typing" {
             if (!build_options.e2e) return error.SkipZigTest;
             const allocator = std.testing.allocator;
-            const io = time_compat.io;
+            const io = std.testing.io;
             std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
             var tmp = std.testing.tmpDir(.{});
             defer tmp.cleanup();
@@ -5758,20 +5761,20 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const editor = workbench.activeTab().?.editor;
             const FormatOnType = @import("../../../editor/contrib/format/browser/formatActions.zig").FormatOnType;
             const contribution = editor.getContribution(FormatOnType) orelse return error.MissingFormatContribution;
-            const activation_deadline = time_compat.milliTimestamp() + 5000;
-            while (contribution.typing_listener == null and time_compat.milliTimestamp() < activation_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(1);
+            const activation_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (contribution.typing_listener == null and time_compat.milliTimestamp(std.testing.io) < activation_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 1);
             }
             try std.testing.expect(contribution.typing_listener != null);
             try editor.setCursorPosition(Position.init(1, 2));
             try editor.typeCharacter(";");
             try std.testing.expect(contribution.pending != null);
             try std.testing.expectEqualStrings("{;}", try editor.model.borrowLineContent(1));
-            const first_deadline = time_compat.milliTimestamp() + 5000;
-            while (contribution.pending != null and time_compat.milliTimestamp() < first_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(1);
+            const first_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (contribution.pending != null and time_compat.milliTimestamp(std.testing.io) < first_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 1);
             }
             try std.testing.expect(contribution.pending == null);
             try std.testing.expectEqualStrings("{!}", try editor.model.borrowLineContent(1));
@@ -5781,12 +5784,12 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try editor.setCursorPosition(Position.init(1, 3));
             try editor.typeCharacter(";");
             try std.testing.expect(contribution.pending != null);
-            _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
             try editor.typeCharacter("x");
-            const second_deadline = time_compat.milliTimestamp() + 5000;
-            while (contribution.pending != null and time_compat.milliTimestamp() < second_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(1);
+            const second_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (contribution.pending != null and time_compat.milliTimestamp(std.testing.io) < second_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 1);
             }
             try std.testing.expect(contribution.pending == null);
             try std.testing.expectEqualStrings("{;;x}", try editor.model.borrowLineContent(1));
@@ -5795,7 +5798,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
         test "Extensions: transport activates an extension and exchanges a large RPC" {
             if (!build_options.e2e) return error.SkipZigTest;
             const allocator = std.testing.allocator;
-            const io = time_compat.io;
+            const io = std.testing.io;
             std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
             var tmp = std.testing.tmpDir(.{});
             defer tmp.cleanup();
@@ -5832,10 +5835,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             };
             var probe: Probe = .{ .host = ext.host, .queue = &workbench.window_events, .arena = a, .payload = payload };
             var future = try workbench.window_events.io.concurrent(Probe.run, .{&probe});
-            const deadline = time_compat.milliTimestamp() + 20_000;
-            while (!probe.done and time_compat.milliTimestamp() < deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(1);
+            const deadline = time_compat.milliTimestamp(std.testing.io) + 20_000;
+            while (!probe.done and time_compat.milliTimestamp(std.testing.io) < deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 1);
             }
             if (!probe.done) {
                 _ = future.cancel(workbench.window_events.io) catch {};
@@ -5867,17 +5870,17 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             };
             for (steps) |step| {
                 try ext.host.executeContributedCommand(step.command, &.{});
-                const output_deadline = time_compat.milliTimestamp() + 5000;
+                const output_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
                 var matched = false;
-                while (time_compat.milliTimestamp() < output_deadline) {
-                    _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                while (time_compat.milliTimestamp(std.testing.io) < output_deadline) {
+                    _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                     const channel = workbench.output_service.getChannel(channel_id);
                     const content_matches = if (step.content) |expected| channel != null and std.mem.eql(u8, expected, channel.?.model.content) else channel == null;
                     if (content_matches and workbench.views_api.isViewVisible(output_id) == step.visible) {
                         matched = true;
                         break;
                     }
-                    time_compat.sleepMillis(10);
+                    time_compat.sleepMillis(std.testing.io, 10);
                 }
                 if (!matched) std.debug.print("Output fixture step failed: {s}\n", .{step.command});
                 try std.testing.expect(matched);
@@ -5887,11 +5890,11 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const watcher_service = workbench.file_watcher_service.?;
             const watcher_actor = &ext.file_events_actor.?;
             const watch_channel = "extension-output-minecode.transport-fixture-#2-Watcher Events";
-            const watch_deadline = time_compat.milliTimestamp() + 5000;
-            while (time_compat.milliTimestamp() < watch_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            const watch_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (time_compat.milliTimestamp(std.testing.io) < watch_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 if (watcher_actor.watches.count() == 1 and watcher_service.isReady() and workbench.output_service.getChannel(watch_channel) != null) break;
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expectEqual(@as(usize, 1), watcher_actor.watches.count());
             try std.testing.expect(watcher_service.isReady());
@@ -5903,35 +5906,35 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                     2 => try tmp.dir.deleteFile(io, "example.watch"),
                     else => unreachable,
                 }
-                const until = time_compat.milliTimestamp() + 5000;
+                const until = time_compat.milliTimestamp(std.testing.io) + 5000;
                 var received = false;
-                while (time_compat.milliTimestamp() < until) {
-                    _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                while (time_compat.milliTimestamp(std.testing.io) < until) {
+                    _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                     if (workbench.output_service.getChannel(watch_channel)) |channel| {
                         if (std.mem.indexOf(u8, channel.model.content, expected) != null) {
                             received = true;
                             break;
                         }
                     }
-                    time_compat.sleepMillis(10);
+                    time_compat.sleepMillis(std.testing.io, 10);
                 }
                 if (!received) std.debug.print("Watcher fixture missing event: {s}\n", .{expected});
                 try std.testing.expect(received);
             }
             try ext.host.executeContributedCommand("fixture.watchStop", &.{});
-            const stop_deadline = time_compat.milliTimestamp() + 5000;
-            while (time_compat.milliTimestamp() < stop_deadline and watcher_actor.watches.count() != 0) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const stop_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (time_compat.milliTimestamp(std.testing.io) < stop_deadline and watcher_actor.watches.count() != 0) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expectEqual(@as(usize, 0), watcher_actor.watches.count());
             // withProgress's report, cancellation and completion travel over
             // the real Node actor, not a simulated status message.
             try ext.host.executeContributedCommand("fixture.progressStart", &.{});
-            const progress_deadline = time_compat.milliTimestamp() + 5000;
+            const progress_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
             var progress_item: ?*@import("../../common/notifications.zig").NotificationViewItem = null;
-            while (time_compat.milliTimestamp() < progress_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            while (time_compat.milliTimestamp(std.testing.io) < progress_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 for (workbench.notification_service.model.notifications.items) |item| {
                     if (item.actions.primary.len > 0 and std.mem.eql(u8, item.actions.primary[0].id(), "progress.cancel") and item.progress().state.worked == 25) {
                         progress_item = item;
@@ -5939,36 +5942,36 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                     }
                 }
                 if (progress_item != null) break;
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             const item = progress_item orelse return error.ProgressNotificationMissing;
             try std.testing.expectEqual(@as(?i64, 100), item.progress().state.total);
             try item.actions.primary[0].execute(null);
-            const cancel_deadline = time_compat.milliTimestamp() + 5000;
+            const cancel_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
             var cancelled = false;
-            while (time_compat.milliTimestamp() < cancel_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            while (time_compat.milliTimestamp(std.testing.io) < cancel_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
                 if (workbench.output_service.getChannel(watch_channel)) |channel| {
                     if (std.mem.indexOf(u8, channel.model.content, "progress cancelled") != null and ext.progress_actor.?.entries.count() == 0 and workbench.progress_service.tasks.items.len == 0) {
                         cancelled = true;
                         break;
                     }
                 }
-                time_compat.sleepMillis(10);
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(cancelled);
             try ext.host.executeContributedCommand("fixture.windowProgressStart", &.{});
-            const status_deadline = time_compat.milliTimestamp() + 5000;
-            while (time_compat.milliTimestamp() < status_deadline and workbench.statusbar.model().findEntry("status.progress") == null) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const status_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (time_compat.milliTimestamp(std.testing.io) < status_deadline and workbench.statusbar.model().findEntry("status.progress") == null) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(workbench.statusbar.model().findEntry("status.progress") != null);
             try ext.host.executeContributedCommand("fixture.windowProgressEnd", &.{});
-            const end_deadline = time_compat.milliTimestamp() + 5000;
-            while (time_compat.milliTimestamp() < end_deadline and workbench.statusbar.model().findEntry("status.progress") != null) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(10);
+            const end_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (time_compat.milliTimestamp(std.testing.io) < end_deadline and workbench.statusbar.model().findEntry("status.progress") != null) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(workbench.statusbar.model().findEntry("status.progress") == null);
         }
@@ -5976,7 +5979,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
         test "Extensions: task activation and provider results resume on the window" {
             if (!build_options.e2e) return error.SkipZigTest;
             const allocator = std.testing.allocator;
-            const io = time_compat.io;
+            const io = std.testing.io;
             std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
             const workbench_window = try TestWindow.init(allocator, io, &.{}, 100, 30);
             const workbench = workbench_window.workbench;
@@ -5990,10 +5993,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             picker.accept();
             try std.testing.expect(ext.task_service.pending != null);
             try std.testing.expect(!workbench.quick_access.isOpen());
-            const deadline = time_compat.milliTimestamp() + 5000;
-            while (ext.task_service.pending != null and time_compat.milliTimestamp() < deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(1);
+            const deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (ext.task_service.pending != null and time_compat.milliTimestamp(std.testing.io) < deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 1);
             }
             try std.testing.expect(ext.task_service.pending == null);
             try std.testing.expect(workbench.quick_access.isOpen());
@@ -6003,7 +6006,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
         test "Extensions: account sessions need a grant for the requesting extension and scopes" {
             if (!build_options.e2e) return error.SkipZigTest;
             const allocator = std.testing.allocator;
-            const io = time_compat.io;
+            const io = std.testing.io;
             std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
             const workbench_window = try TestWindow.init(allocator, io, &.{}, 100, 30);
             const workbench = workbench_window.workbench;
@@ -6027,11 +6030,11 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                     }, null, .{ .context = self, .callback = receive });
                 }
                 fn wait(self: *@This(), host: *Extensions, picker: bool) !void {
-                    const deadline = time_compat.milliTimestamp() + 5000;
-                    while (time_compat.milliTimestamp() < deadline) {
-                        _ = host.services.window.dispatch(time_compat.milliTimestamp());
+                    const deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+                    while (time_compat.milliTimestamp(std.testing.io) < deadline) {
+                        _ = host.services.window.dispatch(time_compat.milliTimestamp(std.testing.io));
                         if (if (picker) host.services.quick_access.isOpen() else self.success != null) return;
-                        time_compat.sleepMillis(10);
+                        time_compat.sleepMillis(std.testing.io, 10);
                     }
                     return error.Timeout;
                 }
@@ -6064,20 +6067,20 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(accounts.array.items[0].object.get("accessToken") == null);
             try workbench.commands.execute("workbench.action.accounts.manage");
             picker.accept();
-            const manage_deadline = time_compat.milliTimestamp() + 5000;
-            while (ext.accounts.action.pending != null and time_compat.milliTimestamp() < manage_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(1);
+            const manage_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (ext.accounts.action.pending != null and time_compat.milliTimestamp(std.testing.io) < manage_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 1);
             }
             try std.testing.expect(ext.accounts.action.pending == null);
             try std.testing.expectEqualStrings("Fixture user", picker.activeItem().?.label);
             picker.accept();
             picker.setActiveIndex(1);
             picker.accept();
-            const signout_deadline = time_compat.milliTimestamp() + 5000;
-            while (ext.accounts.action.pending != null and time_compat.milliTimestamp() < signout_deadline) {
-                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-                time_compat.sleepMillis(1);
+            const signout_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
+            while (ext.accounts.action.pending != null and time_compat.milliTimestamp(std.testing.io) < signout_deadline) {
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+                time_compat.sleepMillis(std.testing.io, 1);
             }
             try std.testing.expect(ext.accounts.action.pending == null);
             try std.testing.expectEqual(@as(usize, 0), (try ext.accounts.accounts(a, "fixture")).array.items.len);

@@ -977,7 +977,7 @@ pub const Tab = struct {
         if (diff.widget.handleDeletedSelectionKey(event)) return true;
         self.ensureControllers() catch return diff.handleKey(event);
         const controllers = (if (diff.widget.focused == .original) self.original_controllers else self.controllers) orelse return diff.handleKey(event);
-        _ = editor_input_dispatch.handleKeyEvent(controllers.view.interface(), controllers.hover, controllers.word_highlighter, controllers.suggest, controllers.editor, event, &diff.widget.is_pasting, time_compat.milliTimestamp(), null) catch return false;
+        _ = editor_input_dispatch.handleKeyEvent(controllers.view.interface(), controllers.hover, controllers.word_highlighter, controllers.suggest, controllers.editor, event, &diff.widget.is_pasting, time_compat.milliTimestamp(controllers.editor.clockIo()), null) catch return false;
         diff.widget.syncScrollAfterInput();
         return true;
     }
@@ -1950,7 +1950,7 @@ pub const MultiDiffBindingServices = struct {
     fn handleKey(context: *anyopaque, event: *ui.KeyEvent) !bool {
         const self: *MultiDiffBindingServices = @ptrCast(@alignCast(context));
         const controllers = if (self.widget.focused == .original) self.original else self.modified;
-        _ = try editor_input_dispatch.handleKeyEvent(controllers.view.interface(), controllers.hover, controllers.word_highlighter, controllers.suggest, controllers.editor, event, &self.widget.is_pasting, time_compat.milliTimestamp(), null);
+        _ = try editor_input_dispatch.handleKeyEvent(controllers.view.interface(), controllers.hover, controllers.word_highlighter, controllers.suggest, controllers.editor, event, &self.widget.is_pasting, time_compat.milliTimestamp(controllers.editor.clockIo()), null);
         return true;
     }
     fn handleMouse(context: *anyopaque, side: @import("../../../../editor/browser/widget/diffEditor/diffEditorWidget.zig").Side, view: *View, event: *ui.MouseEvent) !bool {

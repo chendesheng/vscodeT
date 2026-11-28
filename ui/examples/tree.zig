@@ -19,14 +19,14 @@ const lines = [_]struct { text: []const u8, dir: bool }{
     .{ .text = "         └─ model.zig", .dir = false },
 };
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     const example = try treeExample(allocator);
     defer if (example.deinit) |deinit| deinit(example.context);
-    try common.runStatic(allocator, example);
+    try common.runStatic(allocator, init.io, example);
 }
 
 pub fn treeExample(allocator: std.mem.Allocator) !common.Example {

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Fetches the pinned ghostty-web npm tarball into the build output.
 //
-// The browser bundle and wasm are not checked in. CI and local wasm builds run
+// The browser bundle and wasm are not checked in. Pages and local demo builds run
 // this step before the page is served; the lock file pins the package version,
 // tarball hash and the hash of every extracted file.
 
@@ -14,7 +14,7 @@ import { createHash } from 'node:crypto';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const lock = JSON.parse(fs.readFileSync(path.join(here, 'ghostty-web.lock.json'), 'utf8'));
-const outDir = path.resolve(process.argv[2] ?? 'zig-out/web/vendor/ghostty-web');
+const outDir = path.resolve(process.argv[2] ?? 'zig-out/pages/vendor/ghostty-web');
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');

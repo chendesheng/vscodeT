@@ -54,6 +54,7 @@ const Fd = struct {
 };
 
 pub const InMemoryFileSystemProvider = struct {
+    io: std.Io,
     allocator: Allocator,
     root: *Directory,
     capabilities: u32 = FileSystemProviderCapabilities.FileReadWrite |
@@ -64,10 +65,10 @@ pub const InMemoryFileSystemProvider = struct {
     next_fd: u32 = 0,
     listeners: std.array_list.Managed(IFileChangeListener),
 
-    pub fn init(allocator: Allocator) !InMemoryFileSystemProvider {
+    pub fn init(allocator: Allocator, io: std.Io) !InMemoryFileSystemProvider {
         const root = try allocator.create(Directory);
         errdefer allocator.destroy(root);
-        const now = time_compat.milliTimestamp();
+        const now = time_compat.milliTimestamp(io);
         root.* = .{
             .name = try allocator.dupe(u8, ""),
             .ctime = now,
@@ -77,6 +78,7 @@ pub const InMemoryFileSystemProvider = struct {
         return .{
             .allocator = allocator,
             .root = root,
+            .io = io,
             .fds = std.AutoHashMap(u32, Fd).init(allocator),
             .listeners = std.array_list.Managed(IFileChangeListener).init(allocator),
         };
@@ -196,12 +198,12 @@ pub const InMemoryFileSystemProvider = struct {
         } else {
             file = try self.createFile(basename);
             try parent.entries.put(file.name, .{ .file = file });
-            parent.mtime = time_compat.milliTimestamp();
+            parent.mtime = time_compat.milliTimestamp(self.io);
             parent.size += 1;
             self.fire(&.{.{ .type = .ADDED, .resource = resource }});
         }
 
-        file.mtime = time_compat.milliTimestamp();
+        file.mtime = time_compat.milliTimestamp(self.io);
         if (options.append) {
             const old_len = if (file.data) |data| data.len else 0;
             const combined = try self.allocator.alloc(u8, old_len + content.len);
@@ -240,7 +242,7 @@ pub const InMemoryFileSystemProvider = struct {
             const parent = try self.lookupParentDirectory(resource);
             file = try self.createFile(basename);
             parent.entries.put(file.name, .{ .file = file }) catch return error.Unknown;
-            parent.mtime = time_compat.milliTimestamp();
+            parent.mtime = time_compat.milliTimestamp(self.io);
             parent.size += 1;
             self.fire(&.{.{ .type = .ADDED, .resource = resource }});
         }
@@ -259,7 +261,7 @@ pub const InMemoryFileSystemProvider = struct {
     pub fn close(self: *InMemoryFileSystemProvider, fd: u32) FileSystemProviderError!void {
         const fd_data = self.fds.get(fd) orelse return error.Unavailable;
         if (fd_data.write) {
-            fd_data.file.mtime = time_compat.milliTimestamp();
+            fd_data.file.mtime = time_compat.milliTimestamp(self.io);
             fd_data.file.size = if (fd_data.file.data) |data| data.len else 0;
             self.fire(&.{.{ .type = .UPDATED, .resource = fd_data.resource }});
         }
@@ -302,7 +304,7 @@ pub const InMemoryFileSystemProvider = struct {
         const parent = try self.lookupParentDirectory(resource);
         const directory = try self.createDirectory(basename);
         parent.entries.put(directory.name, .{ .directory = directory }) catch return error.Unknown;
-        parent.mtime = time_compat.milliTimestamp();
+        parent.mtime = time_compat.milliTimestamp(self.io);
         parent.size += 1;
         self.fire(&.{
             .{ .type = .UPDATED, .resource = pathDirname(resource) },
@@ -315,7 +317,7 @@ pub const InMemoryFileSystemProvider = struct {
         const parent = try self.lookupAsDirectory(pathDirname(resource), false);
         if (parent.entries.fetchRemove(basename)) |removed| {
             self.freeEntry(removed.value);
-            parent.mtime = time_compat.milliTimestamp();
+            parent.mtime = time_compat.milliTimestamp(self.io);
             parent.size -|= 1;
             self.fire(&.{
                 .{ .type = .UPDATED, .resource = pathDirname(resource) },
@@ -397,7 +399,7 @@ pub const InMemoryFileSystemProvider = struct {
 
     fn createFile(self: *InMemoryFileSystemProvider, name: []const u8) FileSystemProviderError!*File {
         const file = self.allocator.create(File) catch return error.Unknown;
-        const now = time_compat.milliTimestamp();
+        const now = time_compat.milliTimestamp(self.io);
         file.* = .{
             .name = self.allocator.dupe(u8, name) catch return error.Unknown,
             .ctime = now,
@@ -409,7 +411,7 @@ pub const InMemoryFileSystemProvider = struct {
 
     fn createDirectory(self: *InMemoryFileSystemProvider, name: []const u8) FileSystemProviderError!*Directory {
         const directory = self.allocator.create(Directory) catch return error.Unknown;
-        const now = time_compat.milliTimestamp();
+        const now = time_compat.milliTimestamp(self.io);
         directory.* = .{
             .name = self.allocator.dupe(u8, name) catch return error.Unknown,
             .ctime = now,
@@ -552,7 +554,7 @@ const testing = std.testing;
 
 test "in-memory provider: creates folders and lists entries" {
     const allocator = testing.allocator;
-    var provider = try InMemoryFileSystemProvider.init(allocator);
+    var provider = try InMemoryFileSystemProvider.init(allocator, std.testing.io);
     defer provider.deinit();
 
     try provider.mkdir("/folder");
@@ -574,7 +576,7 @@ test "in-memory provider: creates folders and lists entries" {
 
 test "in-memory provider: writes, appends and reads file contents" {
     const allocator = testing.allocator;
-    var provider = try InMemoryFileSystemProvider.init(allocator);
+    var provider = try InMemoryFileSystemProvider.init(allocator, std.testing.io);
     defer provider.deinit();
 
     try provider.writeFile("/file.txt", "hello", .{ .create = true, .overwrite = false });
@@ -598,7 +600,7 @@ test "in-memory provider: writes, appends and reads file contents" {
 
 test "in-memory provider: renames and moves entries" {
     const allocator = testing.allocator;
-    var provider = try InMemoryFileSystemProvider.init(allocator);
+    var provider = try InMemoryFileSystemProvider.init(allocator, std.testing.io);
     defer provider.deinit();
 
     try provider.mkdir("/from");
@@ -615,7 +617,7 @@ test "in-memory provider: renames and moves entries" {
 
 test "in-memory provider: open/read/write/close" {
     const allocator = testing.allocator;
-    var provider = try InMemoryFileSystemProvider.init(allocator);
+    var provider = try InMemoryFileSystemProvider.init(allocator, std.testing.io);
     defer provider.deinit();
 
     const fd = try provider.open("/fd.txt", .{ .create = true, .overwrite = false });
@@ -636,7 +638,7 @@ test "in-memory provider: open/read/write/close" {
 
 test "in-memory provider: notifies listeners synchronously" {
     const allocator = testing.allocator;
-    var provider = try InMemoryFileSystemProvider.init(allocator);
+    var provider = try InMemoryFileSystemProvider.init(allocator, std.testing.io);
     defer provider.deinit();
 
     const Listener = struct {

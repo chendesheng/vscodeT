@@ -167,7 +167,7 @@ pub const Controller = struct {
         if (providers.len == 0) return false;
         const request = try SyntaxRangeProvider.init(self.allocator, self.model, self.maximum_regions, .{ .context = self, .complete = syntaxReady });
         self.syntax_request = request;
-        self.syntax_started = time.milliTimestamp();
+        self.syntax_started = time.milliTimestamp(self.model.clockIo());
         errdefer self.cancelPending();
         try request.compute(providers);
         return true;
@@ -178,7 +178,7 @@ pub const Controller = struct {
         const request = self.syntax_request orelse return;
         self.syntax_request = null;
         defer request.deinit();
-        if (self.host) |host| host.complete(host.context, result, time.milliTimestamp() - self.syntax_started) else if (result) |maybe| {
+        if (self.host) |host| host.complete(host.context, result, time.milliTimestamp(self.model.clockIo()) - self.syntax_started) else if (result) |maybe| {
             if (maybe) |regions| {
                 var owned = regions;
                 owned.deinit();

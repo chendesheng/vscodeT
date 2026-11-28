@@ -364,7 +364,7 @@ pub const MarkdownPreview = struct {
             return;
         }
         if (!self.refresh_timer.isScheduled()) {
-            self.refresh_timer.schedule(300, refreshDue, self);
+            self.refresh_timer.schedule(self.editor.clockIo(), 300, refreshDue, self);
         }
         self.first_update = false;
     }
@@ -503,7 +503,7 @@ pub const MarkdownPreview = struct {
 
         self.mermaid.reset(self.editor.model.getVersionId());
         self.math.reset(self.editor.model.getVersionId());
-        var content = try markdown.parseDocument(self.allocator, value.items, .{
+        var content = try markdown.parseDocument(self.allocator, self.editor.clockIo(), value.items, .{
             .mermaid = .{ .context = &self.mermaid, .lookup = @import("markdownRenderWorker.zig").Renderer.lookup },
             .math = if (self.options.math_enabled) .{ .context = &self.math, .lookup = @import("markdownRenderWorker.zig").Renderer.lookup } else null,
             .preview_breaks = self.options.preview_breaks,
@@ -556,13 +556,13 @@ pub const MarkdownPreview = struct {
         switch (source) {
             .editor => {
                 self.scroll_disabled = true;
-                self.scroll_disabled_timer.schedule(50, clearScrollDisabled, self);
+                self.scroll_disabled_timer.schedule(self.editor.clockIo(), 50, clearScrollDisabled, self);
             },
             .preview => {
                 if (!self.scroll_disabled and self.options.scroll_editor_with_preview) {
                     if (!self.reveal_timer.isScheduled()) {
-                        self.applyReveal(time_compat.milliTimestamp());
-                        self.reveal_timer.schedule(50, flushReveal, self);
+                        self.applyReveal(time_compat.milliTimestamp(self.editor.clockIo()));
+                        self.reveal_timer.schedule(self.editor.clockIo(), 50, flushReveal, self);
                     } else {
                         self.pending_reveal = true;
                     }
@@ -584,7 +584,7 @@ pub const MarkdownPreview = struct {
         self.monitor.setPreviousLine(line);
         scrolling.scrollEditorToLine(line, self.editor);
         self.is_scrolling = true;
-        self.scrolling_timer.schedule(200, clearScrolling, self);
+        self.scrolling_timer.schedule(self.editor.clockIo(), 200, clearScrolling, self);
     }
 
     fn sourceLineAt(self: *MarkdownPreview, row: usize) ?usize {
@@ -818,7 +818,7 @@ pub const MarkdownPreview = struct {
             .future = undefined,
             .key = key_copy,
             .source = source_copy,
-            .deadline_ms = if (local) null else time_compat.milliTimestamp() + 30_000,
+            .deadline_ms = if (local) null else time_compat.milliTimestamp(self.editor.clockIo()) + 30_000,
         };
         job.future = async_io.async(runMarkdownImageJob, .{job});
         self.image_jobs.appendAssumeCapacity(job);
@@ -1219,7 +1219,7 @@ pub const MarkdownPreview = struct {
         const self: *MarkdownPreview = @ptrCast(@alignCast(context));
         if (!event.scrollTopChanged or !self.visible) return false;
         if (topmost.getVisibleLine(self.editor)) |line| {
-            self.monitor.updateLine(line, time_compat.milliTimestamp());
+            self.monitor.updateLine(line, time_compat.milliTimestamp(self.editor.clockIo()));
             self.monitor_task.schedule(self.monitor.due_ms);
         }
         return false;
@@ -1256,7 +1256,7 @@ pub const MarkdownPreview = struct {
         const self: *MarkdownPreview = @ptrCast(@alignCast(context));
         if (self.pending_reveal) {
             self.pending_reveal = false;
-            self.applyReveal(time_compat.milliTimestamp());
+            self.applyReveal(time_compat.milliTimestamp(self.editor.clockIo()));
         }
     }
 };
@@ -1294,7 +1294,7 @@ fn repeat(allocator: Allocator, text: []const u8, count: usize) ![]u8 {
 
 test "markdownPreview: resolves local image URLs and skips remote ones" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "# title", "/tmp/docs/readme.md", 40, 10);
     defer {
         editor.deinit();
@@ -1328,9 +1328,9 @@ test "markdownPreview: resolves local image URLs and skips remote ones" {
     try std.testing.expect((try preview.resolveImagePath(allocator, "data:image/png;base64,AAAA")) == null);
 }
 
-test "markdownPreview: async local image load lands on the poll tick" {
+test "markdownPreview: async local image load lands via window dispatch" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "image.png", .data = &async_png_1x1 });
@@ -1338,9 +1338,10 @@ test "markdownPreview: async local image load lands on the poll tick" {
     const length = try tmp.dir.realPathFile(io, "image.png", &path_buffer);
     const path = path_buffer[0..length];
 
-    var io_state = Io.Threaded.init(allocator, .{});
+    var io_state = try ui.WindowIo.init(allocator, std.testing.io);
     defer io_state.deinit();
     const async_io = io_state.io();
+    var window = dispatch.Queue{ .io = async_io, .scheduler = &io_state };
 
     var runtime = ui.image.Runtime.init(allocator);
     defer runtime.deinit();
@@ -1352,7 +1353,7 @@ test "markdownPreview: async local image load lands on the poll tick" {
         editor.deinit();
         allocator.destroy(editor);
     }
-    const preview = try MarkdownPreview.init(allocator, editor, null);
+    const preview = try MarkdownPreview.init(allocator, editor, &window);
     defer preview.deinit();
     preview.setImageRuntime(&runtime);
     preview.setAsyncIo(async_io);
@@ -1361,8 +1362,9 @@ test "markdownPreview: async local image load lands on the poll tick" {
     try std.testing.expect(preview.image_loading.contains(path));
 
     var waited: usize = 0;
-    while (!preview.applyImageJobs(time_compat.milliTimestamp()) and waited < 2000) : (waited += 1) {
-        async_io.sleep(.fromMilliseconds(1), .awake) catch {};
+    while (preview.image_loading.contains(path) and waited < 2000) : (waited += 1) {
+        _ = window.dispatch(time_compat.milliTimestamp(std.testing.io));
+        std.testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(preview.usesImagePath(path));
     try std.testing.expect(!preview.image_loading.contains(path));
@@ -1370,7 +1372,7 @@ test "markdownPreview: async local image load lands on the poll tick" {
 
 test "markdownPreview: links request the pointer shape" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(
         allocator,
         io,

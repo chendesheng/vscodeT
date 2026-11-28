@@ -1148,7 +1148,7 @@ const ResolverContexts = struct {
         options: InsertOptions,
     ) ResolverContexts {
         const self: ResolverContexts = .{
-            .model = .{ .model_path = editor.path },
+            .model = .{ .model_path = editor.path, .resource = editor.model.uri(), .label_service = editor.document.label_service },
             .clipboard = .{
                 .clipboard_text = options.clipboard_text,
                 .selection_idx = selection_index,
@@ -1166,9 +1166,9 @@ const ResolverContexts = struct {
                 .selection = selection,
                 .language_service = editor.language_service,
             },
-            .time = variables.TimeBasedVariableResolver.init(),
+            .time = variables.TimeBasedVariableResolver.init(editor.clockIo()),
             .workspace = .{ .workspace_folder = std.fs.path.dirname(editor.path) },
-            .random = .{},
+            .random = .{ .io = editor.clockIo() },
         };
         return self;
     }

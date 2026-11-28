@@ -11,7 +11,7 @@ const SnippetEdit = @import("../../browser/snippetSession.zig").SnippetEdit;
 
 fn createEditor(text: []const u8) !*Editor {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     return Editor.createFromText(allocator, io, text, "test.txt", 60, 12);
 }
 

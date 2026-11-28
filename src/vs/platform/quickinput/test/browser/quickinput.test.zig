@@ -15,7 +15,7 @@ fn items() [4]quick_input.QuickPickItem {
 }
 
 test "quickinput: first and second activation are one-shot" {
-    var picker = QuickPick.init(std.testing.allocator);
+    var picker = QuickPick.init(std.testing.allocator, std.testing.io);
     defer picker.deinit();
 
     const values = items();
@@ -30,7 +30,7 @@ test "quickinput: first and second activation are one-shot" {
 }
 
 test "quickinput: navigation skips separators and wraps" {
-    var picker = QuickPick.init(std.testing.allocator);
+    var picker = QuickPick.init(std.testing.allocator, std.testing.io);
     defer picker.deinit();
     const values = items();
     try picker.setItems(&values);
@@ -46,7 +46,7 @@ test "quickinput: navigation skips separators and wraps" {
 }
 
 test "quickinput: page navigation clamps to items" {
-    var picker = QuickPick.init(std.testing.allocator);
+    var picker = QuickPick.init(std.testing.allocator, std.testing.io);
     defer picker.deinit();
     const values = items();
     try picker.setItems(&values);
@@ -68,7 +68,7 @@ test "quickinput: accept selects the active item and hides" {
         }
     };
     var state = State{};
-    var picker = QuickPick.init(std.testing.allocator);
+    var picker = QuickPick.init(std.testing.allocator, std.testing.io);
     defer picker.deinit();
     picker.on_accept_context = &state;
     picker.on_accept = State.accept;
@@ -98,7 +98,7 @@ test "QuickInputService pick resolves acceptance, cancellation and disposal exac
         }
     };
     var state = State{};
-    const service = try QuickInputService.init(std.testing.allocator, .{ .context = &state, .show = State.show, .hide = State.hide });
+    const service = try QuickInputService.init(std.testing.allocator, std.testing.io, .{ .context = &state, .show = State.show, .hide = State.hide });
     var disposed = false;
     defer if (!disposed) service.deinit();
     const values = items();

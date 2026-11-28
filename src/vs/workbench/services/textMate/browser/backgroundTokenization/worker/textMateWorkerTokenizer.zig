@@ -37,6 +37,7 @@ const max_lines_per_chunk: usize = 200;
 pub const Tokenizer = struct {
     allocator: Allocator,
     registry: *textMateTokenizer.WorkerRegistry,
+    io: std.Io,
     mirror: MirrorTextModel,
     language_id: []u8,
     encoded_language_id: u8,
@@ -52,6 +53,7 @@ pub const Tokenizer = struct {
     pub fn init(
         allocator: Allocator,
         registry: *textMateTokenizer.WorkerRegistry,
+        io: std.Io,
         data: protocol.RawModelData,
     ) !*Tokenizer {
         var line_list = try strings.splitLines(allocator, data.text);
@@ -66,6 +68,7 @@ pub const Tokenizer = struct {
         self.* = .{
             .allocator = allocator,
             .registry = registry,
+            .io = io,
             .mirror = try MirrorTextModel.init(allocator, "", line_list.items, data.eol, data.version_id),
             .language_id = try allocator.dupe(u8, data.language_id),
             .encoded_language_id = data.encoded_language_id,
@@ -165,7 +168,7 @@ pub const Tokenizer = struct {
     }
 
     fn scheduleTokenization(self: *Tokenizer) void {
-        self.next_tokenize_at_ms = time_compat.milliTimestamp() + tokenize_debounce_ms;
+        self.next_tokenize_at_ms = time_compat.milliTimestamp(self.io) + tokenize_debounce_ms;
     }
 
     fn resetTokenization(self: *Tokenizer) !void {
@@ -174,7 +177,7 @@ pub const Tokenizer = struct {
         if (self.support) |support| support.dispose();
         self.support = null;
 
-        const grammar = (try self.registry.loadGrammarForLanguage(self.language_id, @as(u32, self.encoded_language_id))) orelse return;
+        const grammar = (try self.registry.loadGrammarForLanguage(self.io, self.language_id, @as(u32, self.encoded_language_id))) orelse return;
         const support = try textMateTokenizer.createFromGrammar(self.allocator, self.language_id, grammar);
         self.support = support;
         self.tokenizer = try TokenizerWithStateStore.init(self.allocator, self.mirror.getLineCount(), support);
@@ -190,10 +193,10 @@ pub const Tokenizer = struct {
         var delta_builder = StateDeltaBuilder.init(self.allocator);
         errdefer delta_builder.deinit();
 
-        const start_ms = time_compat.milliTimestamp();
+        const start_ms = time_compat.milliTimestamp(self.io);
         var tokenized_lines: usize = 0;
         while (tokenized_lines < max_lines_per_chunk) {
-            if (time_compat.milliTimestamp() - start_ms > tokenize_chunk_deadline_ms) break;
+            if (time_compat.milliTimestamp(self.io) - start_ms > tokenize_chunk_deadline_ms) break;
 
             const line_to_tokenize = tokenizer.getFirstInvalidLine() catch break orelse break;
             tokenized_lines += 1;
@@ -269,7 +272,7 @@ pub const Tokenizer = struct {
         if (@import("../../tokenizationSupport/tokenizationSupportWithLineLimit.zig").atLimit(line, self.max_tokenization_line_length)) {
             result = nullTokenizeEncoded(scratch, @fromBackingInt(@intCast(self.encoded_language_id)), state) catch null;
         } else if (self.tokenizer != null) {
-            result = support.tokenizeEncodedWithStateAllocator(scratch, state_allocator, line, true, state) catch null;
+            result = support.tokenizeEncodedWithStateAllocator(self.io, scratch, state_allocator, line, true, state) catch null;
         }
         if (result == null) {
             result = nullTokenizeEncoded(scratch, @fromBackingInt(@intCast(self.encoded_language_id)), state) catch null;

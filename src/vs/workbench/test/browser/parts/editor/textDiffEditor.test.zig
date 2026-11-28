@@ -55,7 +55,7 @@ pub fn Tests(comptime View: type) type {
 
         test "DiffView: opens a diff tab input with distinct snapshot keys" {
             const allocator = testing.allocator;
-            const io = Io.Threaded.global_single_threaded.io();
+            const io = std.testing.io;
             const view = try DiffView.create(
                 View.init,
                 allocator,

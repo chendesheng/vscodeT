@@ -16,7 +16,7 @@ const debug = vscode_textmate.debug;
 const grammar_module = vscode_textmate.grammar;
 const Allocator = std.mem.Allocator;
 
-fn noLoad(_: *anyopaque, _: []const u8) anyerror!?*rawGrammar.RawGrammar {
+fn noLoad(_: *anyopaque, _: std.Io, _: []const u8) anyerror!?*rawGrammar.RawGrammar {
     return null;
 }
 
@@ -130,7 +130,7 @@ pub fn main(init: std.process.Init) !void {
         try out.print("\n\n===========================================\n", .{});
         try out.print("TOKENIZING LINE {d}: |{s}|\n\n", .{ line_index + 1, line });
 
-        const result = try grammar.tokenizeLine(line, rule_stack, 0);
+        const result = try grammar.tokenizeLine(io, line, rule_stack, 0);
         rule_stack = result.rule_stack;
 
         var depth: usize = 0;

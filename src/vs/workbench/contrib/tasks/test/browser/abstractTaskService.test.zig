@@ -58,7 +58,7 @@ test "Run Task activates its type, requests contributed tasks and runs the selec
         var host: Host = .{ .serial = if (deferred) window.io else null, .owner_thread = std.Thread.getCurrentId() };
         var commands = CommandRegistry.init(allocator);
         defer commands.deinit();
-        const input = try QuickInputService.init(allocator, .{ .context = &host, .show = Host.show, .hide = Host.hide });
+        const input = try QuickInputService.init(allocator, std.testing.io, .{ .context = &host, .show = Host.show, .hide = Host.hide });
         defer input.deinit();
         const manifest = try std.json.parseFromSlice(std.json.Value, allocator,
             \\{"contributes":{"taskDefinitions":[{"type":"build"}]}}
@@ -81,13 +81,13 @@ test "Run Task activates its type, requests contributed tasks and runs the selec
                 const clock = @import("../../../../../base/common/timeCompat.zig");
                 try std.testing.expect(service.pending != null);
                 try std.testing.expect(!input.isVisible());
-                _ = window.dispatch(clock.milliTimestamp());
+                _ = window.dispatch(clock.milliTimestamp(std.testing.io));
                 try std.testing.expectEqual(@as(usize, 1), host.activations);
                 try std.testing.expect(!input.isVisible());
                 host.activation_ready.set(window.io);
-                const deadline = clock.milliTimestamp() + 5000;
-                while (service.pending != null and clock.milliTimestamp() < deadline) {
-                    _ = window.dispatch(clock.milliTimestamp());
+                const deadline = clock.milliTimestamp(std.testing.io) + 5000;
+                while (service.pending != null and clock.milliTimestamp(std.testing.io) < deadline) {
+                    _ = window.dispatch(clock.milliTimestamp(std.testing.io));
                     std.testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
                 }
                 try std.testing.expect(service.pending == null);

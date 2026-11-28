@@ -25,7 +25,7 @@ fn absoluteRoot(tmp: *std.testing.TmpDir, io: Io, buffer: *[std.Io.Dir.max_path_
 
 test "ConfigurationService: terminal defaults" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -45,7 +45,7 @@ test "ConfigurationService: terminal defaults" {
 
 test "ConfigurationService: workspace settings override user settings" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -97,7 +97,7 @@ test "ConfigurationService: workspace settings override user settings" {
 
 test "ConfigurationService: later user layers override earlier ones" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -142,7 +142,7 @@ test "ConfigurationService: later user layers override earlier ones" {
 
 test "ConfigurationService: workspace file settings and folder override" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -193,7 +193,7 @@ test "ConfigurationService: workspace file settings and folder override" {
 
 test "ConfigurationService: reload emits a change event" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.createDirPath(io, ".vscode");
@@ -228,7 +228,7 @@ test "ConfigurationService: reload emits a change event" {
 
 test "ConfigurationService: reload reports added removed updated and override keys only" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.createDirPath(io, ".vscode");
@@ -272,7 +272,7 @@ test "ConfigurationService: reload reports added removed updated and override ke
 
 test "ConfigurationService: settings files accept comments and trailing commas" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.createDirPath(io, ".vscode");
@@ -300,7 +300,7 @@ test "ConfigurationService: settings files accept comments and trailing commas" 
 
 test "ConfigurationService: language overrides from workspace settings" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -340,7 +340,7 @@ test "ConfigurationService: language overrides from workspace settings" {
 
 test "ConfigurationService: untrusted workspaces ignore restricted workspace values" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.createDirPath(io, ".vscode");
@@ -369,7 +369,7 @@ test "ConfigurationService: untrusted workspaces ignore restricted workspace val
 
 test "ConfigurationService: application and machine settings ignore workspace values" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(&tmp, io, "user-settings.json", "{\"application.setting\": 2, \"machine.setting\": 2}");
@@ -418,7 +418,7 @@ test "ConfigurationService: application and machine settings ignore workspace va
 
 test "ConfigurationService: untrusted workspaces ignore unregistered workspace values" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(&tmp, io, "user-settings.json", "{\"unregistered.setting\": \"userValue\"}");
@@ -456,4 +456,65 @@ test "ConfigurationService: untrusted workspaces ignore unregistered workspace v
 
     try service.registry.registerConfiguration("test", &.{.{ .key = "unregistered.setting", .value_type = "string", .default = std.json.Value{ .string = "default" } }});
     try std.testing.expectEqualStrings("workspaceValue", service.getValue("unregistered.setting", .{ .resource = resource }).?.string);
+}
+
+test "ConfigurationService: queued window updates preserve order and publish after disk completion" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const Window = @import("../../../../../base/common/windowDispatch.zig");
+    const configuration = @import("../../../../../platform/configuration/common/configuration.zig");
+    var scheduler = try @import("ui").WindowIo.init(a, io);
+    defer scheduler.deinit();
+    var window = Window.Queue{ .io = scheduler.io(), .scheduler = &scheduler };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(&tmp, io, "settings.json", "{}");
+    const path = try tmp.dir.realPathFileAlloc(io, "settings.json", a);
+    defer a.free(path);
+    const workspace = try WorkspaceContextService.initEmpty(a, "test");
+    defer workspace.deinit();
+    const service = try ConfigurationService.init(a, io, workspace, .{ .user_settings_paths = &.{path} });
+    defer service.deinit();
+    service.attachWindow(&window);
+
+    const Probe = struct {
+        service: *ConfigurationService,
+        owner: std.Thread.Id,
+        calls: usize = 0,
+        failure: ?anyerror = null,
+        observed: [2]i64 = .{ 0, 0 },
+
+        fn complete(context: *anyopaque, result: anyerror!void) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            result catch |err| {
+                self.failure = err;
+                return;
+            };
+            if (self.owner != std.Thread.getCurrentId()) {
+                self.failure = error.WrongThread;
+                return;
+            }
+            self.observed[self.calls] = self.service.getValue("editor.tabSize", .{}).?.integer;
+            self.calls += 1;
+        }
+    };
+    var probe = Probe{ .service = service, .owner = std.Thread.getCurrentId() };
+    const listener = configuration.UpdateListener{ .context = &probe, .complete = Probe.complete };
+    const api = service.interface();
+    _ = try api.requestUpdateResourceValue("editor.tabSize", .{ .integer = 7 }, .{}, .USER, listener);
+    _ = try api.requestUpdateResourceValue("editor.tabSize", .{ .integer = 9 }, .{}, .USER, listener);
+    try std.testing.expectEqual(@as(usize, 0), probe.calls);
+    _ = window.dispatch(0);
+    try std.testing.expectEqual(@as(usize, 0), probe.calls);
+    for (0..3000) |_| {
+        _ = window.dispatch(0);
+        if (probe.calls == 2 or probe.failure != null) break;
+        io.sleep(.fromMilliseconds(1), .awake) catch {};
+    }
+    if (probe.failure) |err| return err;
+    try std.testing.expectEqual(@as(usize, 2), probe.calls);
+    try std.testing.expectEqualSlices(i64, &.{ 7, 9 }, &probe.observed);
+    const text = try tmp.dir.readFileAlloc(io, "settings.json", a, .unlimited);
+    defer a.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\"editor.tabSize\":9") != null);
 }

@@ -460,7 +460,7 @@ pub fn registerSingleton(collection: *@import("../../../../platform/instantiatio
 
 fn createService(allocator: Allocator, _: instantiation.ServicesAccessor) !*OutlineModelService {
     const service = try allocator.create(OutlineModelService);
-    service.* = .init(allocator);
+    service.* = .init(allocator, null);
     return service;
 }
 
@@ -477,14 +477,15 @@ pub const OutlineModelService = struct {
     const Callback = *const fn (*anyopaque, *OutlineModel) void;
 
     allocator: Allocator,
+    standalone_io: ?std.Io,
     entries: std.ArrayList(*Entry) = .empty,
     debounce: debounce_mod.LanguageFeatureDebounceService,
     timers: std.ArrayList(Timer) = .empty,
     timer_task: @import("../../../../base/common/windowDispatch.zig").Task = .{},
     const Timer = struct { context: *anyopaque, deadline: i64, run: *const fn (*anyopaque) void };
 
-    pub fn init(allocator: Allocator) OutlineModelService {
-        return .{ .allocator = allocator, .debounce = .init(allocator, false) };
+    pub fn init(allocator: Allocator, io: ?std.Io) OutlineModelService {
+        return .{ .allocator = allocator, .standalone_io = io, .debounce = .init(allocator, false) };
     }
     pub fn deinit(self: *OutlineModelService) void {
         while (self.entries.items.len != 0) self.remove(self.entries.items[0]);
@@ -500,6 +501,10 @@ pub const OutlineModelService = struct {
         self.timer_task = .{ .queue = queue, .context = self, .run = onDeadline };
         self.rearmTimer();
     }
+    fn clockIo(self: *const OutlineModelService) std.Io {
+        return if (self.timer_task.queue) |queue| queue.io else self.standalone_io.?;
+    }
+
     fn rearmTimer(self: *OutlineModelService) void {
         self.timer_task.schedule(if (self.timers.items.len == 0) null else self.timers.items[0].deadline);
     }
@@ -513,7 +518,7 @@ pub const OutlineModelService = struct {
     }
     pub fn schedule(self: *OutlineModelService, context: *anyopaque, delay: i64, run: *const fn (*anyopaque) void) !void {
         self.cancelTimer(context);
-        const deadline = now() + delay;
+        const deadline = now(self.clockIo()) + delay;
         var i: usize = 0;
         while (i < self.timers.items.len and self.timers.items[i].deadline <= deadline) i += 1;
         try self.timers.insert(self.allocator, i, .{ .context = context, .deadline = deadline, .run = run });
@@ -565,7 +570,7 @@ pub const OutlineModelService = struct {
             self.request = null;
             self.result = result;
             const info = self.service.debounce.for_(1, "DocumentSymbols", .{ .min = 350 }) catch null;
-            if (info) |d| _ = d.update(.{ .id = @intFromPtr(self.model), .feature_hashes = self.hashes }, @floatFromInt(now() - self.start)) catch {};
+            if (info) |d| _ = d.update(.{ .id = @intFromPtr(self.model), .feature_hashes = self.hashes }, @floatFromInt(now(self.service.clockIo()) - self.start)) catch {};
             while (self.subscribers.pop()) |sub| {
                 result.retain();
                 sub.complete(sub.context, result);
@@ -647,7 +652,7 @@ pub const OutlineModelService = struct {
         const hashes = try a.alloc(u32, providers.len);
         errdefer a.free(hashes);
         for (providers, hashes) |provider, *hash| hash.* = @truncate(@intFromPtr(provider.context));
-        e.* = .{ .service = self, .model = model, .version = model.getVersionId(), .providers = copy, .hashes = hashes, .start = now() };
+        e.* = .{ .service = self, .model = model, .version = model.getVersionId(), .providers = copy, .hashes = hashes, .start = now(self.clockIo()) };
         try self.entries.ensureUnusedCapacity(a, 1);
         e.remove_listener = try model._onWillDispose.listen(e, Entry.removed);
         self.entries.appendAssumeCapacity(e);

@@ -143,9 +143,7 @@ pub const ToggleStatusbarVisibilityAction = struct {
 
     pub fn run(self: *@This()) !void {
         const visible = self.layout_service.isVisible(.statusbar);
-        const had_focus = self.layout_service.hasFocus(.statusbar);
-        try self.configuration_service.updateValue(layout.LayoutSettings.status_bar_visible, .{ .bool = !visible }, .USER);
-        if (had_focus and !self.layout_service.isVisible(.statusbar)) self.layout_service.focusPart(.editor);
+        try self.configuration_service.requestUpdateValue(layout.LayoutSettings.status_bar_visible, .{ .bool = !visible }, .USER);
     }
 };
 

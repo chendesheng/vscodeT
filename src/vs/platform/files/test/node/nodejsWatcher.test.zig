@@ -15,7 +15,7 @@ const Recorder = struct {
 };
 
 fn nowMs() i64 {
-    return std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).toMilliseconds();
+    return std.Io.Timestamp.now(std.testing.io, .real).toMilliseconds();
 }
 
 fn waitFor(allocator: std.mem.Allocator, io: std.Io, watcher: *nodejs_mod.NodeJSWatcher, recorder: *Recorder, count: usize) !void {
@@ -29,7 +29,7 @@ fn waitFor(allocator: std.mem.Allocator, io: std.Io, watcher: *nodejs_mod.NodeJS
 
 test "nodejs watcher: file update and atomic save" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -67,7 +67,7 @@ test "nodejs watcher: file update and atomic save" {
 
 test "nodejs watcher: folder events, correlation and filter" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -99,7 +99,7 @@ test "nodejs watcher: folder events, correlation and filter" {
 
 test "nodejs watcher: missing file is suspended and resumes" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -145,7 +145,7 @@ const ContentsRecorder = struct {
 
 test "watchFileContents: delivers appended data" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var file = try tmp.dir.createFile(io, "log.txt", .{});

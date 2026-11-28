@@ -16,12 +16,22 @@ fn disableVim(context: *anyopaque) void {
     if (vim.isEnabled()) vim.setEnabledPersistent(false) catch {};
 }
 
+fn finishSettings(workbench: anytype) !void {
+    const service = workbench.configuration orelse return error.ConfigurationUnavailable;
+    for (0..5000) |_| {
+        if (service.update_group.token.load(.acquire) == null) return;
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp(std.testing.io));
+        std.testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
+    }
+    return error.ConfigurationUpdateTimedOut;
+}
+
 pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) type {
     return struct {
         const TestWindow = @import("../../../../test/browser/workbenchTestServices.zig").TestWindow(terminal_window_type, factory);
         test "Helix runtime: enable/disable persist and control the key handler" {
             const allocator = std.testing.allocator;
-            const io = time_compat.io;
+            const io = std.testing.io;
             var tmp = std.testing.tmpDir(.{});
             defer tmp.cleanup();
             try tmp.dir.writeFile(io, .{ .sub_path = "helix.txt", .data = "hello\n" });
@@ -47,12 +57,14 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
             try workbench.commands.execute("helix.enable");
             try std.testing.expect(runtime.isEnabled());
+            try finishSettings(workbench);
             try std.testing.expect(workbench.configuration.?.getBool("helix.enabled", false));
             const insert = ui.KeyEvent{ .key = .{ .char = 'i' } };
             try std.testing.expect(runtime.host.?.dispatchKey(&insert));
 
             try workbench.commands.execute("helix.disable");
             try std.testing.expect(!runtime.isEnabled());
+            try finishSettings(workbench);
             try std.testing.expect(!workbench.configuration.?.getBool("helix.enabled", true));
             try std.testing.expect(runtime.host == null);
 
@@ -62,7 +74,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
         test "Helix runtime: enabling Helix disables and persists Vim off" {
             const allocator = std.testing.allocator;
-            const io = time_compat.io;
+            const io = std.testing.io;
             var tmp = std.testing.tmpDir(.{});
             defer tmp.cleanup();
             try tmp.dir.writeFile(io, .{ .sub_path = "helix.txt", .data = "hello\n" });
@@ -93,11 +105,13 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try workbench.commands.execute("helix.enable");
             try std.testing.expect(helix.isEnabled());
             try std.testing.expect(!vim.isEnabled());
+            try finishSettings(workbench);
             try std.testing.expect(!workbench.configuration.?.getBool("vim.enabled", true));
 
             try workbench.commands.execute("vim.enable");
             try std.testing.expect(vim.isEnabled());
             try std.testing.expect(!helix.isEnabled());
+            try finishSettings(workbench);
             try std.testing.expect(!workbench.configuration.?.getBool("helix.enabled", true));
         }
     };

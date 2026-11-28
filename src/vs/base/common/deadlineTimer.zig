@@ -28,8 +28,8 @@ pub const DeadlineTimer = struct {
         context: *anyopaque,
     };
 
-    pub fn schedule(self: *DeadlineTimer, delay_ms: u64, callback: Callback, context: *anyopaque) void {
-        self.scheduleAt(time_compat.milliTimestamp() + @as(i64, @intCast(delay_ms)), callback, context);
+    pub fn schedule(self: *DeadlineTimer, io: std.Io, delay_ms: u64, callback: Callback, context: *anyopaque) void {
+        self.scheduleAt(time_compat.milliTimestamp(io) + @as(i64, @intCast(delay_ms)), callback, context);
     }
 
     /// Test/host helper: schedule against an explicit clock.

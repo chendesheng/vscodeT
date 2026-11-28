@@ -19,8 +19,8 @@ pub const RateLimiter = struct {
         };
     }
 
-    pub fn runIfNotLimited(self: *RateLimiter, context: anytype, callback: fn (@TypeOf(context)) void) void {
-        const now = time.milliTimestamp();
+    pub fn runIfNotLimited(self: *RateLimiter, io: std.Io, context: anytype, callback: fn (@TypeOf(context)) void) void {
+        const now = time.milliTimestamp(io);
         if (@as(f64, @floatFromInt(now - self._lastRun)) >= self._minimumTimeBetweenRuns) {
             self._lastRun = now;
             callback(context);
@@ -32,12 +32,12 @@ test "RateLimiter" {
     var limiter = RateLimiter.init(100); // once per 10ms
     var count: usize = 0;
     for (0..20) |_| { // 20ms total
-        limiter.runIfNotLimited(&count, struct {
+        limiter.runIfNotLimited(std.testing.io, &count, struct {
             fn run(n: *usize) void {
                 n.* += 1;
             }
         }.run);
-        time.sleepMillis(1);
+        time.sleepMillis(std.testing.io, 1);
     }
     try std.testing.expect(count >= 2 and count < 20);
 }

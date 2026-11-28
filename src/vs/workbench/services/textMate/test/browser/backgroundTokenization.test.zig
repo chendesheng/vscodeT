@@ -13,11 +13,11 @@ const Factory = @import("../../browser/backgroundTokenization/threadedBackground
 fn waitForWorker(factory: *Factory, window: *@import("../../../../../base/common/windowDispatch.zig").Queue) !void {
     var spins: usize = 0;
     while (factory.hasPendingWork() and spins < 20_000) : (spins += 1) {
-        _ = window.dispatch(time_compat.milliTimestamp());
-        time_compat.sleepMillis(1);
+        _ = window.dispatch(time_compat.milliTimestamp(std.testing.io));
+        time_compat.sleepMillis(std.testing.io, 1);
     }
     try std.testing.expect(spins < 20_000);
-    _ = window.dispatch(time_compat.milliTimestamp());
+    _ = window.dispatch(time_compat.milliTimestamp(std.testing.io));
 }
 
 fn hasCommentToken(model: *TextModel, line: usize) !bool {
@@ -31,7 +31,7 @@ fn hasCommentToken(model: *TextModel, line: usize) !bool {
 
 test "threaded textmate tokenizer: initial tokens and edits reach the renderer" {
     const allocator = std.testing.allocator;
-    textMateTokenizer.ensureTokenizer("zig");
+    textMateTokenizer.ensureTokenizer(std.testing.io, "zig");
 
     var factory = try Factory.init(allocator);
     defer factory.deinit();

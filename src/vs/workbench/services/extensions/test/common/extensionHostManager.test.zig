@@ -221,7 +221,7 @@ fn emptyConfig(arena: std.mem.Allocator) !std.json.Value {
 test "Extensions: transport connects a legacy socket-argument launcher" {
     if (!build_options.e2e) return error.SkipZigTest;
     const a = std.testing.allocator;
-    const io = time_compat.io;
+    const io = std.testing.io;
     var temp = std.testing.tmpDir(.{});
     defer temp.cleanup();
     const root = try temp.dir.realPathFileAlloc(io, ".", a);
@@ -252,7 +252,7 @@ test "Extensions: transport connects a legacy socket-argument launcher" {
 test "Extensions: transport connects the pinned Node host and initializes" {
     if (!build_options.e2e) return error.SkipZigTest;
     const a = std.testing.allocator;
-    const io = time_compat.io;
+    const io = std.testing.io;
     std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
     var temp = std.testing.tmpDir(.{});
     defer temp.cleanup();

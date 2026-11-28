@@ -186,7 +186,7 @@ pub const FileEditorSerializer = struct {
 
 test "FileEditorInput loads, edits, saves and reverts" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -246,7 +246,7 @@ test "FileEditorInput loads, edits, saves and reverts" {
 
 test "FileEditorSerializer round-trips the resource" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -284,7 +284,7 @@ test "FileEditorSerializer round-trips the resource" {
 
 test "Side-by-side serializer round-trips file inputs" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -343,7 +343,7 @@ test "Side-by-side serializer round-trips file inputs" {
 
 test "Diff editor serializer round-trips file inputs" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;

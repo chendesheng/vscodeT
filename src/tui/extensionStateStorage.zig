@@ -44,7 +44,7 @@ pub const ExtensionStateStorage = struct {
 };
 
 test "extension state storage round-trips and treats a missing file as empty" {
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

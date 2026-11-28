@@ -26,7 +26,7 @@ test "MainThreadMessageService: nonmodal messages preserve level, source, action
     var messages: MessageService = .{ .allocator = a, .notification_service = notification.interface(), .dialog_service = undefined };
     defer messages.deinit();
     var packet: Packet = .{};
-    var channel = rpc.RpcProtocol.init(a, .{ .context = &packet, .send_fn = Packet.send });
+    var channel = rpc.RpcProtocol.init(a, std.testing.io, .{ .context = &packet, .send_fn = Packet.send });
     defer channel.deinit();
     const parsed = try std.json.parseFromSlice(std.json.Value, a, "[2,\"[Help](https://example.com)\",{\"source\":{\"label\":\"Extension X\",\"identifier\":{\"value\":\"publisher.extension\"}}},[{\"title\":\"Continue\",\"handle\":7}]]", .{});
     defer parsed.deinit();
@@ -58,7 +58,7 @@ test "MainThreadMessageService: message without actions resolves when dismissed"
     var messages: MessageService = .{ .allocator = a, .notification_service = notification.interface(), .dialog_service = undefined };
     defer messages.deinit();
     var packet: Packet = .{};
-    var channel = rpc.RpcProtocol.init(a, .{ .context = &packet, .send_fn = Packet.send });
+    var channel = rpc.RpcProtocol.init(a, std.testing.io, .{ .context = &packet, .send_fn = Packet.send });
     defer channel.deinit();
     var choices: std.json.Array = .init(a);
     defer choices.deinit();
@@ -80,7 +80,7 @@ test "MainThreadMessageService: modal prompts use dialog service and preserve ca
     const handler = try Contribution.create(a, &dialogs.model);
     defer handler.destroy();
     var packet: Packet = .{};
-    var channel = rpc.RpcProtocol.init(a, .{ .context = &packet, .send_fn = Packet.send });
+    var channel = rpc.RpcProtocol.init(a, std.testing.io, .{ .context = &packet, .send_fn = Packet.send });
     defer channel.deinit();
     var messages: MessageService = .{ .allocator = a, .notification_service = undefined, .dialog_service = dialogs.interface() };
     defer messages.deinit();

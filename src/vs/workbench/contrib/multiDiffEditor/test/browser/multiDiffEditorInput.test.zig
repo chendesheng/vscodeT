@@ -350,7 +350,7 @@ const ResolutionHarness = struct {
 
 fn flushResolution(queue: *dispatch.Queue) void {
     while (true) {
-        const now = @import("../../../../../base/common/timeCompat.zig").milliTimestamp();
+        const now = @import("../../../../../base/common/timeCompat.zig").milliTimestamp(std.testing.io);
         if (queue.nextTimeout(now, 1) != 0) break;
         _ = queue.dispatch(now);
     }

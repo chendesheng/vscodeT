@@ -117,6 +117,7 @@ pub const Context = struct {
 };
 
 pub const SearchView = struct {
+    io: std.Io,
     allocator: Allocator,
     workspace: *WorkspaceContextService,
     configuration: *ConfigurationService,
@@ -150,6 +151,7 @@ pub const SearchView = struct {
 
     pub fn init(
         allocator: Allocator,
+        io: std.Io,
         workspace: *WorkspaceContextService,
         configuration: *ConfigurationService,
         service: ISearchService,
@@ -159,11 +161,12 @@ pub const SearchView = struct {
     ) !*SearchView {
         const self = try allocator.create(SearchView);
         errdefer allocator.destroy(self);
-        const model = try SearchModel.init(allocator, service);
+        const model = try SearchModel.init(allocator, io, service);
         errdefer model.deinit();
         const view_mode = readViewMode(configuration);
         self.* = .{
             .allocator = allocator,
+            .io = io,
             .workspace = workspace,
             .configuration = configuration,
             .service = service,
@@ -293,7 +296,7 @@ pub const SearchView = struct {
             .integer => |inner| @intCast(inner),
             else => 300,
         } else 300;
-        self.debounce_at = time_compat.milliTimestamp() + @max(delay, 0);
+        self.debounce_at = time_compat.milliTimestamp(self.io) + @max(delay, 0);
     }
 
     pub fn submitQuery(self: *SearchView) !void {
@@ -361,7 +364,7 @@ pub const SearchView = struct {
         }
 
         self.state = .searching;
-        self.search_started_at = time_compat.milliTimestamp();
+        self.search_started_at = time_compat.milliTimestamp(self.io);
         self.clearMessages();
         self.pending_replace_all = null;
         self.viewer.refreshView();
@@ -773,7 +776,7 @@ pub const SearchView = struct {
     pub fn onConfigurationChanged(self: *SearchView) void {
         defer self.scheduleDeadline();
         if (self.model.query != null) {
-            self.refresh_at = time_compat.milliTimestamp();
+            self.refresh_at = time_compat.milliTimestamp(self.io);
         }
         self.viewer.refreshView();
     }

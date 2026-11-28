@@ -1,16 +1,16 @@
 // Terminal port of the disk provider in
 // `src/vs/platform/files/node/diskFileSystemProvider.ts`.
 //
-// Terminal adaptation: resources are absolute path strings, operations are
-// synchronous, and the node channel/atomic-rename plumbing is not applicable.
-// The provider delegates the portable disk behavior to `DiskFileService` and
-// implements the `IFileSystemProvider` contract (including fd read/write and
-// append) on top of `std.Io`.
+// Terminal adaptation: resources are absolute path strings. Path operations
+// invoked from a window fiber await detached DiskFileService work; provider
+// state and events stay on the window. Standalone and legacy fd callers retain
+// their synchronous contract.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
 const files = @import("../common/files.zig");
+const dispatch = @import("../../../base/common/windowDispatch.zig");
 const disk_service_mod = @import("../common/fileService.zig");
 const DiskFileService = disk_service_mod.DiskFileService;
 const FileType = files.FileType;
@@ -30,6 +30,7 @@ const IFileSystemProvider = files.IFileSystemProvider;
 pub const DiskFileSystemProvider = struct {
     allocator: Allocator,
     io: Io,
+    window: ?*dispatch.Queue = null,
     files: DiskFileService,
     fds: std.AutoHashMap(u32, Fd),
     next_fd: u32 = 0,
@@ -78,6 +79,28 @@ pub const DiskFileSystemProvider = struct {
         self.files.deinit();
     }
 
+    pub fn attachWindow(self: *DiskFileSystemProvider, window: *dispatch.Queue) void {
+        self.window = window;
+    }
+
+    /// Only the copied allocator, backing Io and operation arguments enter the
+    /// worker. In particular its temporary service has no window listeners.
+    fn diskCall(self: *DiskFileSystemProvider, comptime operation: anytype, args: anytype) @typeInfo(@TypeOf(operation)).@"fn".return_type.? {
+        const Result = @typeInfo(@TypeOf(operation)).@"fn".return_type.?;
+        const Runner = struct {
+            fn run(a: Allocator, io: Io, captured: @TypeOf(args)) Result {
+                var disk = DiskFileService.init(a, io);
+                defer disk.deinit();
+                return @call(.auto, operation, .{&disk} ++ captured);
+            }
+        };
+        if (self.window) |window| {
+            if (@import("ui").WindowIo.inFiber(window.io))
+                return dispatch.workerCall(window.io, Runner.run, .{ self.allocator, self.io, args });
+        }
+        return Runner.run(self.allocator, self.io, args);
+    }
+
     pub fn interface(self: *DiskFileSystemProvider) IFileSystemProvider {
         return .{
             .context = self,
@@ -108,7 +131,7 @@ pub const DiskFileSystemProvider = struct {
     }
 
     pub fn stat(self: *DiskFileSystemProvider, resource: []const u8) FileSystemProviderError!IStat {
-        const info = self.files.stat(resource) catch |err| return mapError(err);
+        const info = self.diskCall(DiskFileService.stat, .{resource}) catch |err| return mapError(err);
         return .{
             .type = info.type,
             .size = info.size,
@@ -118,15 +141,17 @@ pub const DiskFileSystemProvider = struct {
     }
 
     pub fn mkdir(self: *DiskFileSystemProvider, resource: []const u8) FileSystemProviderError!void {
-        self.files.createDirectory(resource) catch |err| return mapError(err);
+        self.diskCall(DiskFileService.createDirectory, .{resource}) catch |err| return mapError(err);
         self.fire(&.{.{ .type = .ADDED, .resource = resource }});
     }
 
     pub fn readdir(self: *DiskFileSystemProvider, resource: []const u8) FileSystemProviderError![]DirectoryEntry {
+        const service_entries = self.diskCall(DiskFileService.readDirectory, .{ resource, self.allocator }) catch |err| return mapError(err);
+        defer DiskFileService.freeDirectory(self.allocator, service_entries);
+        // Only replace the borrowed-name arena after the detached read has
+        // returned. Its immediate consumer copies the names before yielding.
         _ = self.names_arena.reset(.retain_capacity);
         const names_allocator = self.names_arena.allocator();
-        const service_entries = self.files.readDirectory(resource, self.allocator) catch |err| return mapError(err);
-        defer DiskFileService.freeDirectory(self.allocator, service_entries);
 
         const result = try self.allocator.alloc(DirectoryEntry, service_entries.len);
         errdefer self.allocator.free(result);
@@ -140,40 +165,41 @@ pub const DiskFileSystemProvider = struct {
     }
 
     pub fn readFile(self: *DiskFileSystemProvider, resource: []const u8) FileSystemProviderError![]u8 {
-        const data = self.files.readFile(resource) catch |err| return mapError(err);
+        const data = self.diskCall(DiskFileService.readFile, .{resource}) catch |err| return mapError(err);
         return data.bytes;
     }
 
     pub fn writeFile(self: *DiskFileSystemProvider, resource: []const u8, content: []const u8, options: IFileWriteOptions) FileSystemProviderError!void {
-        const exists = self.files.exists(resource);
+        const existed = self.diskCall(writeFileDetached, .{ resource, content, options }) catch |err| return mapError(err);
+        self.fire(&.{.{ .type = if (existed) .UPDATED else .ADDED, .resource = resource }});
+    }
+
+    fn writeFileDetached(disk: *DiskFileService, resource: []const u8, content: []const u8, options: IFileWriteOptions) !bool {
+        const exists = disk.exists(resource);
         if (!exists and !options.create) return error.FileNotFound;
         if (exists and options.create and !options.overwrite) return error.FileExists;
-        defer self.fire(&.{.{ .type = if (exists) .UPDATED else .ADDED, .resource = resource }});
         if (options.append) {
-            // Upstream opens the file in append mode and writes only the new
-            // bytes. std.Io currently has no append-open flag; as in our fd
-            // write path, use the file's end position on the owning thread.
+            // std.Io does not yet expose append-open; write at the end.
             const file = if (options.create)
-                Io.Dir.cwd().createFile(self.io, resource, .{ .truncate = false, .exclusive = !options.overwrite }) catch |err| return mapError(err)
+                try Io.Dir.cwd().createFile(disk.io, resource, .{ .truncate = false, .exclusive = !options.overwrite })
             else
-                Io.Dir.cwd().openFile(self.io, resource, .{ .mode = .write_only }) catch |err| return mapError(err);
-            defer file.close(self.io);
-            const file_stat = file.stat(self.io) catch |err| return mapError(err);
-            file.writePositionalAll(self.io, content, file_stat.size) catch |err| return mapError(err);
+                try Io.Dir.cwd().openFile(disk.io, resource, .{ .mode = .write_only });
+            defer file.close(disk.io);
+            const file_stat = try file.stat(disk.io);
+            try file.writePositionalAll(disk.io, content, file_stat.size);
         } else {
-            const data = @import("../../../base/common/buffer.zig").VSBuffer{ .bytes = @constCast(content) };
-            self.files.writeFile(resource, data) catch |err| return mapError(err);
+            try disk.writeFile(resource, .{ .bytes = @constCast(content) });
         }
+        return exists;
     }
 
     pub fn delete(self: *DiskFileSystemProvider, resource: []const u8, options: IFileDeleteOptions) FileSystemProviderError!void {
-        self.files.delete(resource, options.recursive) catch |err| return mapError(err);
+        self.diskCall(DiskFileService.delete, .{ resource, options.recursive }) catch |err| return mapError(err);
         self.fire(&.{.{ .type = .DELETED, .resource = resource }});
     }
 
     pub fn rename(self: *DiskFileSystemProvider, from: []const u8, to: []const u8, options: IFileOverwriteOptions) FileSystemProviderError!void {
-        if (!options.overwrite and self.files.exists(to)) return error.FileExists;
-        self.files.rename(from, to) catch |err| return mapError(err);
+        self.diskCall(renameDetached, .{ from, to, options }) catch |err| return mapError(err);
         self.fire(&.{
             .{ .type = .DELETED, .resource = from },
             .{ .type = .ADDED, .resource = to },
@@ -181,9 +207,18 @@ pub const DiskFileSystemProvider = struct {
     }
 
     pub fn copy(self: *DiskFileSystemProvider, from: []const u8, to: []const u8, options: IFileOverwriteOptions) FileSystemProviderError!void {
-        if (!options.overwrite and self.files.exists(to)) return error.FileExists;
-        self.files.copy(from, to) catch |err| return mapError(err);
+        self.diskCall(copyDetached, .{ from, to, options }) catch |err| return mapError(err);
         self.fire(&.{.{ .type = .ADDED, .resource = to }});
+    }
+
+    fn renameDetached(disk: *DiskFileService, from: []const u8, to: []const u8, options: IFileOverwriteOptions) !void {
+        if (!options.overwrite and disk.exists(to)) return error.FileExists;
+        try disk.rename(from, to);
+    }
+
+    fn copyDetached(disk: *DiskFileService, from: []const u8, to: []const u8, options: IFileOverwriteOptions) !void {
+        if (!options.overwrite and disk.exists(to)) return error.FileExists;
+        try disk.copy(from, to);
     }
 
     pub fn open(self: *DiskFileSystemProvider, resource: []const u8, options: IFileOpenOptions) FileSystemProviderError!u32 {
@@ -297,7 +332,7 @@ pub const DiskFileSystemProvider = struct {
     fn mapError(err: anyerror) FileSystemProviderError {
         return switch (err) {
             error.FileNotFound => error.FileNotFound,
-            error.PathAlreadyExists => error.FileExists,
+            error.PathAlreadyExists, error.FileExists => error.FileExists,
             error.IsDir => error.FileIsADirectory,
             error.NotDir => error.FileNotADirectory,
             error.AccessDenied => error.NoPermissions,
@@ -378,7 +413,7 @@ const testing = std.testing;
 
 test "disk provider: reads, writes, lists, renames, copies and deletes" {
     const allocator = testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -432,7 +467,7 @@ test "disk provider: reads, writes, lists, renames, copies and deletes" {
 
 test "disk provider: fd read/write" {
     const allocator = testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -458,7 +493,7 @@ test "disk provider: fd read/write" {
 
 test "disk provider: backs the provider file service" {
     const allocator = testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -487,7 +522,7 @@ test "disk provider: backs the provider file service" {
 
 test "disk provider: filters delivered watcher changes by watch requests" {
     const allocator = testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 

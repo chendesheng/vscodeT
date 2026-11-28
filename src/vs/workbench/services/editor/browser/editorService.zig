@@ -504,6 +504,7 @@ pub const EditorOpening = struct {
     part: *EditorPart,
     group_actions: *GroupActions,
     io: std.Io,
+    external_opener: ?*@import("../../../../platform/opener/common/opener.zig").ExternalOpener = null,
     view_factory: editor_pane.EditorViewFactory,
     images: *ui.image.Runtime,
     window_events: *@import("../../../../base/common/windowDispatch.zig").Queue,
@@ -967,7 +968,7 @@ pub const EditorOpening = struct {
             self.next_multi_diff_source += 1;
             // Unique within this window, including inputs restored from an
             // earlier native session.
-            const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp();
+            const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp(self.window_events.io);
             break :blk try std.fmt.allocPrint(self.allocator, "multi-diff-editor:{d}-{d}", .{ now, self.next_multi_diff_source });
         };
         defer self.allocator.free(uri);
@@ -1143,7 +1144,7 @@ pub const EditorOpening = struct {
         errdefer self.allocator.free(left_copy);
         const right_copy = try self.allocator.dupe(u8, right);
         errdefer self.allocator.free(right_copy);
-        const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp();
+        const now = @import("../../../../base/common/timeCompat.zig").milliTimestamp(self.window_events.io);
         source_owned = false;
         const request = try DiffProvider.computeResolvedDiff(worker, &self.diff_cache, source, options, .{
             .context = self,
@@ -1554,7 +1555,9 @@ pub const EditorOpening = struct {
             defer self.allocator.free(pending.encoded_uri);
             const resource = std.Uri.parse(pending.encoded_uri) catch return false;
             if (std.mem.eql(u8, resource.scheme, "http") or std.mem.eql(u8, resource.scheme, "https")) {
-                _ = @import("../../../../platform/opener/common/opener.zig").openExternal(self.allocator, self.io, pending.encoded_uri) catch false;
+                if (self.external_opener) |opener| {
+                    opener.requestOpen(pending.encoded_uri) catch {};
+                } else _ = @import("../../../../platform/opener/common/opener.zig").openExternal(self.allocator, self.io, pending.encoded_uri) catch false;
             } else if (!std.mem.eql(u8, resource.scheme, "command")) {
                 var scratch = std.heap.ArenaAllocator.init(self.allocator);
                 defer scratch.deinit();

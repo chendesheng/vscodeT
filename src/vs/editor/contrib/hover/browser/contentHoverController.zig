@@ -50,6 +50,7 @@ pub const HoverSettings = struct {
 /// A single pending deadline. The terminal attaches the window queue; tests
 /// without a window may advance the deadline explicitly.
 pub const DeadlineTimer = struct {
+    io: std.Io = undefined,
     pending: ?Pending = null,
     task: @import("../../../../base/common/windowDispatch.zig").Task = .{},
 
@@ -79,7 +80,7 @@ pub const DeadlineTimer = struct {
     }
     pub fn schedule(self: *DeadlineTimer, delay_ms: u64, callback: *const fn (context: *anyopaque) void, context: *anyopaque) void {
         self.pending = .{
-            .deadline_ms = time_compat.milliTimestamp() + @as(i64, @intCast(delay_ms)),
+            .deadline_ms = time_compat.milliTimestamp(if (self.task.queue) |queue| queue.io else self.io) + @as(i64, @intCast(delay_ms)),
             .callback = callback,
             .context = context,
         };
@@ -169,6 +170,9 @@ pub const ContentHoverController = struct {
         self.* = .{
             .allocator = allocator,
             .model = model,
+            .operation_timer = .{ .io = model.clockIo() },
+            .loading_timer = .{ .io = model.clockIo() },
+            .react_timer = .{ .io = model.clockIo() },
             .settings = settings,
             .host = host,
             .wrapper = undefined,

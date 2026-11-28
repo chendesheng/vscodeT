@@ -167,6 +167,8 @@ pub const TextModel = struct {
     const LARGE_FILE_LINE_COUNT_THRESHOLD = 300 * 1000; // 300K lines
     const LARGE_FILE_HEAP_OPERATION_THRESHOLD = 256 * 1024 * 1024; // 256M characters, usually ~> 512MB memory usage
 
+    io: Io,
+    window_io: ?Io = null,
     max_tokenization_line_length: usize = @import("../../../workbench/services/textMate/browser/tokenizationSupport/tokenizationSupportWithLineLimit.zig").default_limit,
     id: []const u8,
     isForSimpleWidget: bool,
@@ -421,7 +423,11 @@ pub const TextModel = struct {
         self._eventEmitter.unlistenSlow(id);
     }
 
-    pub fn init(allocator: Allocator, source: *Io.Reader, languageId: []const u8, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService, languageService: *LanguageService, languageConfigurationService: *LanguageConfigurationService) !*TextModel {
+    pub fn clockIo(self: *const TextModel) Io {
+        return self.window_io orelse self.io;
+    }
+
+    pub fn init(allocator: Allocator, io: Io, source: *Io.Reader, languageId: []const u8, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService, languageService: *LanguageService, languageConfigurationService: *LanguageConfigurationService) !*TextModel {
         MODEL_ID += 1;
         var buffer = try createTextBuffer(allocator, source, creationOptions.defaultEOL);
         // Resolve the options (which may scan the buffer for indentation and
@@ -445,7 +451,7 @@ pub const TextModel = struct {
         }
 
         languageService.requestRichLanguageFeatures(languageId);
-        @import("./tokens/textMateTokenizer.zig").ensureTokenizer(languageId);
+        @import("./tokens/textMateTokenizer.zig").ensureTokenizer(io, languageId);
         const attachedViews = AttachedViews.init(allocator);
 
         const model = try allocator.create(TextModel);
@@ -453,6 +459,7 @@ pub const TextModel = struct {
         // struct literal field evaluation order is not source order.
         model._buffer = buffer;
         model.* = TextModel{
+            .io = io,
             .id = try fmt.allocPrint(allocator, "$model{d}", .{MODEL_ID}),
             .isForSimpleWidget = creationOptions.isForSimpleWidget,
             ._associatedResource = if (associatedResource) |url| url else .{
@@ -2280,7 +2287,7 @@ pub const TextModel = struct {
     fn _setLanguage(self: *TextModel, languageId: []const u8) void {
         // A contributed filename association can first resolve after the
         // model opens. Install its tokenizer before resetting the token store.
-        @import("./tokens/textMateTokenizer.zig").ensureTokenizer(languageId);
+        @import("./tokens/textMateTokenizer.zig").ensureTokenizer(self.clockIo(), languageId);
         self._tokenizationTextModelPart.setLanguageId(languageId, "TextModel.setLanguage");
         self._bracketPairs.handleDidChangeLanguage();
         self._languageService.requestRichLanguageFeatures(languageId);
@@ -2341,6 +2348,7 @@ fn createTestTextModel(allocator: Allocator, text: []const u8, undoRedoService: 
 
     return try TextModel.init(
         allocator,
+        std.testing.io,
         &reader,
         "",
         .{

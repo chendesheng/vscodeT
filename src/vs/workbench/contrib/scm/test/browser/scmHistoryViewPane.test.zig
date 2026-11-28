@@ -309,15 +309,15 @@ test "SCM history view pane: WindowIo pagination publishes on completion and can
     try view.loadMore(); // a second scroll must not start another request
     try testing.expectEqual(@as(usize, 2), provider.fetch_count);
     try testing.expectEqual(@as(usize, 3), view.rows.items.len);
-    const deadline = time.milliTimestamp() + 5000;
-    while (view.rows.items.len == 3 and time.milliTimestamp() < deadline) {
-        _ = window.dispatch(time.milliTimestamp());
+    const deadline = time.milliTimestamp(std.testing.io) + 5000;
+    while (view.rows.items.len == 3 and time.milliTimestamp(std.testing.io) < deadline) {
+        _ = window.dispatch(time.milliTimestamp(std.testing.io));
         if (view.rows.items.len == 3) try io.sleep(.fromMilliseconds(1), .awake);
     }
     try testing.expectEqual(@as(usize, 5), view.rows.items.len);
     try view.loadMore();
     view.setProvider(null);
-    _ = window.dispatch(time.milliTimestamp());
+    _ = window.dispatch(time.milliTimestamp(std.testing.io));
     try testing.expectEqual(@as(usize, 1), view.rows.items.len);
 
     // Mounting a live provider is also asynchronous. It must not run the
@@ -327,9 +327,9 @@ test "SCM history view pane: WindowIo pagination publishes on completion and can
     try testing.expectEqual(before + 1, provider.fetch_count);
     try testing.expectEqual(@as(?usize, 0), provider.last_skip);
     try testing.expectEqual(@as(usize, 1), view.rows.items.len);
-    const initial_deadline = time.milliTimestamp() + 5000;
-    while (view.rows.items.len == 1 and time.milliTimestamp() < initial_deadline) {
-        _ = window.dispatch(time.milliTimestamp());
+    const initial_deadline = time.milliTimestamp(std.testing.io) + 5000;
+    while (view.rows.items.len == 1 and time.milliTimestamp(std.testing.io) < initial_deadline) {
+        _ = window.dispatch(time.milliTimestamp(std.testing.io));
         if (view.rows.items.len == 1) try io.sleep(.fromMilliseconds(1), .awake);
     }
     try testing.expectEqual(@as(usize, 3), view.rows.items.len);
@@ -427,7 +427,7 @@ test "SCM history reference picker owns provider values through acceptance and d
     defer provider.deinit();
     provider.base.provide_history_item_refs_fn = Presenter.refs;
 
-    const input = try QuickInputService.init(allocator, .{ .context = &host, .show = Presenter.show, .hide = Presenter.hide });
+    const input = try QuickInputService.init(allocator, std.testing.io, .{ .context = &host, .show = Presenter.show, .hide = Presenter.hide });
     defer input.deinit();
     {
         const view = try createView(allocator, &host, &provider);

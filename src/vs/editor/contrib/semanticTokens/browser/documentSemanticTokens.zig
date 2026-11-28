@@ -166,7 +166,7 @@ pub const ModelSemanticColoring = struct {
     }
     fn schedule(self: *ModelSemanticColoring) void {
         self.cancelRequest();
-        if (self.enabled() and self.owner.registry.has(self.model)) self.timer.schedule(time.milliTimestamp() + 300);
+        if (self.enabled() and self.owner.registry.has(self.model)) self.timer.schedule(time.milliTimestamp(self.owner.window.io) + 300);
     }
     fn onProviderChanged(_: void, self: *ModelSemanticColoring) !void {
         self.schedule();

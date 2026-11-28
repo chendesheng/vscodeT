@@ -1200,7 +1200,7 @@ pub const TerminalViewHost = struct {
 
 test "terminal view host renders lines through the ported ViewLines" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "a\tb\nsecond", "test.zig", 40, 8);
     defer {
         editor.deinit();
@@ -1238,7 +1238,7 @@ test "terminal view host renders lines through the ported ViewLines" {
 
 test "terminal view host selects wrapped continuation lines" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     // Gutter is six columns, so this wraps at five text columns:
     // abcde / fghij.
     const editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 11, 5);
@@ -1279,7 +1279,7 @@ test "terminal view host selects wrapped continuation lines" {
 
 test "terminal view host widens selection into a model line break" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "abc\ndef", "test.txt", 40, 5);
     defer {
         editor.deinit();
@@ -1308,7 +1308,7 @@ test "terminal view host widens selection into a model line break" {
 
 test "terminal view host updates the current-line overlay on cursor moves" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "a\nb", "test.zig", 20, 4);
     defer {
         editor.deinit();
@@ -1330,7 +1330,7 @@ test "terminal view host updates the current-line overlay on cursor moves" {
 
 test "terminal view host receives cursor and scroll events from the editor" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree", "test.zig", 40, 2);
     defer {
         editor.deinit();
@@ -1376,7 +1376,7 @@ test "terminal view host receives cursor and scroll events from the editor" {
 
 test "terminal view host dispatches ViewDecorationsChanged when the model generation changes" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "one\ntwo", "test.zig", 40, 5);
     defer {
         editor.deinit();
@@ -1436,7 +1436,7 @@ test "terminal view host dispatches ViewDecorationsChanged when the model genera
 
 test "terminal view host exposes marker range cell decorations" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "one\ntwo", "test.zig", 40, 5);
     defer {
         editor.deinit();
@@ -1468,7 +1468,7 @@ test "terminal view host exposes marker range cell decorations" {
 
 test "overview ruler ignores unrelated view events and updates on ruler decorations" {
     const allocator = std.testing.allocator;
-    const editor = try Editor.createFromTextWithOptions(allocator, std.Io.Threaded.global_single_threaded.io(), "one\ntwo\nthree\nfour\nfive\nsix", "ruler.txt", 40, 4, .{ .reserve_scrollbar = true });
+    const editor = try Editor.createFromTextWithOptions(allocator, std.testing.io, "one\ntwo\nthree\nfour\nfive\nsix", "ruler.txt", 40, 4, .{ .reserve_scrollbar = true });
     defer {
         editor.deinit();
         allocator.destroy(editor);

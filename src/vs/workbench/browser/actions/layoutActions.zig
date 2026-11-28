@@ -54,7 +54,7 @@ fn zenTabsAction(comptime id: []const u8, comptime title: []const u8, comptime d
         .run_fn = struct {
             fn run(_: *anyopaque, accessor: ServicesAccessor) !void {
                 const service = try accessor.get(configuration.configuration_service_id);
-                try service.updateValue(layout.ZenModeSettings.show_tabs, .{ .string = zen.showTabsValue(mode) }, .USER);
+                try service.requestUpdateValue(layout.ZenModeSettings.show_tabs, .{ .string = zen.showTabsValue(mode) }, .USER);
             }
         }.run,
     };

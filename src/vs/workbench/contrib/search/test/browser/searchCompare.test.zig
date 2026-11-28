@@ -33,7 +33,7 @@ test "searchCompare: path, file name, type and cross-type order" {
     const allocator = std.testing.allocator;
     var query = try search.TextQuery.init(allocator, "abc", &.{ "/root/voo", "/root/with" }, "", "", &.{});
     defer query.deinit();
-    const result = try tree.SearchResult.create(allocator);
+    const result = try tree.SearchResult.create(allocator, std.testing.io);
     defer result.deinit();
     result.setQuery(&query);
 

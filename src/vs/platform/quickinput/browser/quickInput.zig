@@ -19,6 +19,7 @@ const Item = quick_input.Item;
 const ItemActivation = quick_input.ItemActivation;
 
 pub const QuickPick = struct {
+    io: std.Io,
     allocator: Allocator,
     value: std.array_list.Managed(u8),
     placeholder: []const u8 = "",
@@ -42,9 +43,10 @@ pub const QuickPick = struct {
     on_hide_context: ?*anyopaque = null,
     on_hide: ?*const fn (context: *anyopaque) void = null,
 
-    pub fn init(allocator: Allocator) QuickPick {
+    pub fn init(allocator: Allocator, io: std.Io) QuickPick {
         return .{
             .allocator = allocator,
+            .io = io,
             .value = std.array_list.Managed(u8).init(allocator),
             .items = std.array_list.Managed(QuickPickItem).init(allocator),
             .rows = std.array_list.Managed(usize).init(allocator),
@@ -81,7 +83,7 @@ pub const QuickPick = struct {
     }
 
     pub fn setBusy(self: *QuickPick, busy: bool) void {
-        if (busy and !self.busy) self.busy_since_ms = @import("../../../base/common/timeCompat.zig").milliTimestamp();
+        if (busy and !self.busy) self.busy_since_ms = @import("../../../base/common/timeCompat.zig").milliTimestamp(self.io);
         self.busy = busy;
     }
 
@@ -248,7 +250,7 @@ pub const QuickPick = struct {
 };
 
 test "QuickPick: items, separator skipping and wrapping" {
-    var picker = QuickPick.init(std.testing.allocator);
+    var picker = QuickPick.init(std.testing.allocator, std.testing.io);
     defer picker.deinit();
 
     try picker.setItems(&.{
@@ -290,7 +292,7 @@ test "QuickPick: activation modes and accept" {
     };
 
     var state = State{};
-    var picker = QuickPick.init(std.testing.allocator);
+    var picker = QuickPick.init(std.testing.allocator, std.testing.io);
     defer picker.deinit();
     picker.on_change_context = &state;
     picker.on_change = State.onChange;

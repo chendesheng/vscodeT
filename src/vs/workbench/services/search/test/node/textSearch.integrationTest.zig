@@ -527,10 +527,10 @@ test "TextSearch: cancellation kills a sleeping rg" {
     var q = try makeQuery(allocator, "needle", &.{root}, .{});
     defer q.deinit();
     var job = try service.startTextSearch(&q);
-    const started = @import("../../../../../base/common/timeCompat.zig").milliTimestamp();
+    const started = @import("../../../../../base/common/timeCompat.zig").milliTimestamp(std.testing.io);
     job.cancel(job.context);
     job.deinit(job.context);
-    const elapsed = @import("../../../../../base/common/timeCompat.zig").milliTimestamp() - started;
+    const elapsed = @import("../../../../../base/common/timeCompat.zig").milliTimestamp(std.testing.io) - started;
     try std.testing.expect(elapsed < 2000);
 }
 

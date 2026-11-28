@@ -6,7 +6,7 @@ const std = @import("std");
 const scanner = @import("../../common/extensionsScannerService.zig");
 const util = @import("../../common/extensionManagementUtil.zig");
 
-const io = std.Io.Threaded.global_single_threaded.io();
+const io = std.testing.io;
 
 fn writeExtension(tmp: *std.testing.TmpDir, folder: []const u8, manifest: []const u8) !void {
     try tmp.dir.createDirPath(io, folder);

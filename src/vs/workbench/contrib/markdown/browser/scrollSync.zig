@@ -171,6 +171,7 @@ pub fn getLineElementForFragment(document: *Document, fragment: []const u8) ?*co
 test "scrollSync: source line mapping uses block boundaries" {
     var content = try @import("../../../../editor/common/markdown/markdownTerminalRenderer.zig").parseDocument(
         std.testing.allocator,
+        std.testing.io,
         "# one\n\ntwo\n\n### three",
         .{},
     );
@@ -188,6 +189,7 @@ test "scrollSync: source line mapping uses block boundaries" {
 test "scrollSync: anchors and multi-line code blocks map" {
     var content = try @import("../../../../editor/common/markdown/markdownTerminalRenderer.zig").parseDocument(
         std.testing.allocator,
+        std.testing.io,
         "# One\n\n```zig\nconst a = 1;\nconst b = 2;\n```\n\n## Two",
         .{},
     );
@@ -210,6 +212,7 @@ test "scrollSync: anchors and multi-line code blocks map" {
 test "scrollSync: page offset maps back to a fractional line" {
     var content = try @import("../../../../editor/common/markdown/markdownTerminalRenderer.zig").parseDocument(
         std.testing.allocator,
+        std.testing.io,
         "# one\n\nparagraph\n\n## two",
         .{},
     );

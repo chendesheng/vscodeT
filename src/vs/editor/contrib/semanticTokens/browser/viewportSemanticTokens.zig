@@ -155,7 +155,7 @@ pub const ViewportSemanticTokensContribution = struct {
     }
     fn schedule(self: *ViewportSemanticTokensContribution) void {
         self.cancel();
-        if (self.enabled()) self.timer.schedule(time.milliTimestamp() + 100);
+        if (self.enabled()) self.timer.schedule(time.milliTimestamp(self.editor.clockIo()) + 100);
     }
     fn onDeadline(context: *anyopaque, _: i64, _: bool) bool {
         const self: *ViewportSemanticTokensContribution = @ptrCast(@alignCast(context));

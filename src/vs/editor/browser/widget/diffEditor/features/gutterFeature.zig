@@ -664,7 +664,7 @@ test "gutterFeature: benchmark 1k and 10k real-layout hunks" {
             const range = LineRange.ofLength(index * 2 + 1, 1);
             mapping.* = .{ .line_range_mapping = .{ .original = range, .modified = range, .inner_changes = null } };
         }
-        const start = time.milliTimestamp();
+        const start = time.milliTimestamp(std.testing.io);
         var sum: usize = 0;
         for (0..1000) |frame| {
             const top = (frame * 31) % (count * 2);
@@ -675,9 +675,9 @@ test "gutterFeature: benchmark 1k and 10k real-layout hunks" {
                 sum += index orelse 0;
             }
         }
-        std.debug.print("[bench] diff real-layout gutter: {d} hunks, 40000 lookups, {d} ms, checksum {d}\n", .{ count, time.milliTimestamp() - start, sum });
+        std.debug.print("[bench] diff real-layout gutter: {d} hunks, 40000 lookups, {d} ms, checksum {d}\n", .{ count, time.milliTimestamp(std.testing.io) - start, sum });
         const provider: DiffEditorGutter = .{ .mappings = mappings, .original = original, .modified = modified };
-        const item_start = time.milliTimestamp();
+        const item_start = time.milliTimestamp(std.testing.io);
         var item_sum: usize = 0;
         for (0..1000) |frame| {
             const top = (frame * 31) % (count * 2);
@@ -693,6 +693,6 @@ test "gutterFeature: benchmark 1k and 10k real-layout hunks" {
             }
         }
         try std.testing.expectEqual(sum, item_sum);
-        std.debug.print("[bench] diff visible gutter items: {d} hunks, 1000 frames, {d} ms, checksum {d}\n", .{ count, time.milliTimestamp() - item_start, item_sum });
+        std.debug.print("[bench] diff visible gutter items: {d} hunks, 1000 frames, {d} ms, checksum {d}\n", .{ count, time.milliTimestamp(std.testing.io) - item_start, item_sum });
     }
 }

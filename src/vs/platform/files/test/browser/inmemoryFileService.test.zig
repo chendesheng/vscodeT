@@ -69,7 +69,7 @@ const Fixture = struct {
     fn init(self: *Fixture, allocator: Allocator) !void {
         self.allocator = allocator;
         self.root = "inmemory:/";
-        self.provider = try InMemoryFileSystemProvider.init(allocator);
+        self.provider = try InMemoryFileSystemProvider.init(allocator, std.testing.io);
         errdefer self.provider.deinit();
         self.service = ProviderFileService.init(allocator);
         errdefer self.service.deinit();

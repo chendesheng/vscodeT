@@ -528,7 +528,7 @@ pub fn DiffEditorItemTemplate(comptime View: type) type {
                 const ids = try text_model.deltaDecorations(&.{}, &.{.{ .range = range, .options = @constCast(&symbol_highlight_options) }}, @intFromPtr(self));
                 text_model.getAllocator().free(ids);
                 self.highlighted_model = text_model;
-                self.highlight_timeout.schedule(time.milliTimestamp() +| 350);
+                self.highlight_timeout.schedule(time.milliTimestamp(target.clockIo()) +| 350);
             }
             fn clearHighlight(self: *Binding) void {
                 self.highlight_timeout.schedule(null);

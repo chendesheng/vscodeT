@@ -86,7 +86,7 @@ pub const SearchEditorFactory = struct {
         try self.host.ensure_configuration(self.host.context);
         const configuration = self.configuration.*.?;
         const dims = pane.contentDimensions();
-        const query = try search_editor.SearchEditor.init(self.allocator, .{ .context = self, .start_text_search = startSearchEditorJob }, config, configuration);
+        const query = try search_editor.SearchEditor.init(self.allocator, self.window.io, .{ .context = self, .start_text_search = startSearchEditorJob }, config, configuration);
         _ = query.on_did_change_query_focus.listenSignal(self, onQueryFocusChanged) catch |err| {
             query.deinit();
             return err;

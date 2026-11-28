@@ -7,7 +7,7 @@ const std_uri = @import("../../../../base/common/stdUri.zig");
 
 test "documentsAndEditors: the document resource is the model URI" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     // The editor's path is a relative spelling; the model resource is the
     // canonical absolute URI language-feature requests carry.
     var editor = try Editor.createFromText(allocator, io, "{\n  \"a\": 1\n}\n", "relative.json", 40, 8);

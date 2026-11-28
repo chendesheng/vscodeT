@@ -53,7 +53,7 @@ test "terminal tab list reveals selection and snaps between narrow and text widt
 
 test "terminal tab list restores its width from the user profile" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const profile = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});

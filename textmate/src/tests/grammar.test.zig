@@ -7,7 +7,7 @@ const theme = @import("../theme.zig");
 const onigLib = @import("../onigLib.zig");
 const parseRawGrammar = @import("../parseRawGrammar.zig");
 
-fn noLoad(_: *anyopaque, _: []const u8) anyerror!?*@import("../rawGrammar.zig").RawGrammar {
+fn noLoad(_: *anyopaque, _: std.Io, _: []const u8) anyerror!?*@import("../rawGrammar.zig").RawGrammar {
     return null;
 }
 
@@ -89,7 +89,7 @@ test "Fonts are correctly set" {
     try registry.setTheme(&raw_theme, null);
     const grammar = try registry.addGrammar(&raw, null, 1, &.{});
 
-    const result = try grammar.tokenizeLine2("bar hello", null, 0);
+    const result = try grammar.tokenizeLine2(std.testing.io, "bar hello", null, 0);
     try std.testing.expectEqual(@as(usize, 1), result.fonts.len);
     try std.testing.expectEqual(@as(usize, 0), result.fonts[0].start_index);
     try std.testing.expectEqual(@as(usize, 3), result.fonts[0].end_index);
@@ -121,7 +121,7 @@ test "Fonts are correctly set 2" {
     try registry.setTheme(&raw_theme, null);
     const grammar = try registry.addGrammar(&raw, null, 1, &.{});
 
-    const result = try grammar.tokenizeLine2("function g() {}", null, 0);
+    const result = try grammar.tokenizeLine2(std.testing.io, "function g() {}", null, 0);
     try std.testing.expectEqual(@as(usize, 1), result.fonts.len);
     try std.testing.expectEqual(@as(usize, 9), result.fonts[0].start_index);
     try std.testing.expectEqual(@as(usize, 10), result.fonts[0].end_index);

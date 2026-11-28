@@ -260,7 +260,7 @@ pub fn MultiDiffEditorWithFileListWidget(comptime View: type) type {
             if (self.isFileListVisible) {
                 if (input.kind == .move and input.x == self.sashX()) self.widget.impl.leaveEditorHover();
                 if (input.x == self.sashX() and input.kind == .down and input.button == .left) {
-                    const now = time.milliTimestamp();
+                    const now = time.milliTimestamp(self.widget.impl.queue.io);
                     if (self.last_sash_click) |previous| if (now - previous <= 300) {
                         self.drag = null;
                         self.last_sash_click = null;

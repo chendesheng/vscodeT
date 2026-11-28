@@ -73,6 +73,10 @@ pub const ConfigurationService = struct {
     folder_consolidated: std.StringHashMap(*ConfigurationModel),
 
     change_emitter: Emitter(configuration.Change),
+    window: ?*dispatch.Queue = null,
+    updates: std.ArrayList(*UpdateRequest) = .empty,
+    update_group: Io.Group = .init,
+    stopping_updates: bool = false,
     /// When false, workspace/folder values for restricted settings are ignored.
     trusted: bool = true,
 
@@ -120,6 +124,8 @@ pub const ConfigurationService = struct {
     }
 
     pub fn deinit(self: *ConfigurationService) void {
+        self.cancelUpdates();
+        self.updates.deinit(self.allocator);
         self.scratch.deinit();
         self.change_emitter.deinit();
         deinitFolderModels(self.allocator, &self.folder_consolidated);
@@ -132,6 +138,90 @@ pub const ConfigurationService = struct {
         self.registry.deinit();
         freePaths(self.allocator, self.user_settings_paths);
         self.allocator.destroy(self);
+    }
+
+    pub fn attachWindow(self: *ConfigurationService, window: *dispatch.Queue) void {
+        self.window = window;
+    }
+
+    pub fn cancelUpdates(self: *ConfigurationService) void {
+        self.stopping_updates = true;
+        if (self.window) |window| self.update_group.cancel(window.io);
+    }
+
+    const UpdateRequest = struct {
+        owner: *ConfigurationService,
+        arena: std.heap.ArenaAllocator,
+        key: []const u8,
+        value: ?Value,
+        overrides: configuration.Overrides,
+        target: ?configuration.ConfigurationTarget,
+        listener: ?configuration.UpdateListener,
+
+        fn detach(self: *UpdateRequest) void {
+            self.listener = null;
+        }
+
+        fn finish(self: *UpdateRequest, result: anyerror!void) void {
+            const owner = self.owner;
+            const listener = self.listener;
+            self.arena.deinit();
+            owner.allocator.destroy(self);
+            if (listener) |done| done.complete(done.context, result) else result catch |err| {
+                if (err != error.Canceled) std.log.warn("Configuration update failed: {s}", .{@errorName(err)});
+            };
+        }
+    };
+
+    fn requestUpdate(context: *anyopaque, key: []const u8, value: ?Value, overrides: configuration.Overrides, target: ?configuration.ConfigurationTarget, listener: ?configuration.UpdateListener) !?@import("../../../../base/common/lifecycle.zig").IDisposable {
+        const self: *ConfigurationService = @ptrCast(@alignCast(context));
+        const window = self.window orelse {
+            const result = self.updateResourceValue(key, value, overrides, target);
+            if (listener) |done| done.complete(done.context, result) else try result;
+            return null;
+        };
+        if (self.stopping_updates) return error.Canceled;
+        if ((target == .USER or target == .USER_LOCAL) and self.user_settings_paths.len == 0) return error.NoWritableUserSettings;
+        const job = try self.allocator.create(UpdateRequest);
+        errdefer self.allocator.destroy(job);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        var saved = overrides;
+        if (overrides.resource) |resource| saved.resource = try a.dupe(u8, resource);
+        if (overrides.override_identifier) |identifier| saved.override_identifier = try a.dupe(u8, identifier);
+        const owned_value: ?Value = if (value) |entry| try cloneValue(a, entry) else null;
+        job.* = .{ .owner = self, .key = try a.dupe(u8, key), .value = owned_value, .overrides = saved, .target = target, .listener = listener, .arena = arena };
+        try self.updates.append(self.allocator, job);
+        errdefer _ = self.updates.pop();
+        if (self.update_group.token.load(.acquire) == null)
+            try self.update_group.concurrent(window.io, runUpdates, .{self});
+        return if (listener != null) @import("../../../../base/common/lifecycle.zig").IDisposable.from(UpdateRequest, job, UpdateRequest.detach) else null;
+    }
+
+    fn cloneValue(a: Allocator, value: Value) !Value {
+        // Serialize to the request arena so no borrowed setting tree survives
+        // the RPC decoder or command invocation.
+        var out: Io.Writer.Allocating = .init(a);
+        try std.json.Stringify.value(value, .{}, &out.writer);
+        return std.json.parseFromSliceLeaky(Value, a, out.written(), .{ .allocate = .alloc_always });
+    }
+
+    fn runUpdates(self: *ConfigurationService) void {
+        const io = self.window.?.io;
+        while (self.updates.items.len != 0) {
+            const job = self.updates.orderedRemove(0);
+            if (self.stopping_updates) {
+                job.finish(error.Canceled);
+                continue;
+            }
+            // As in ConfigurationEditing's queue, a started write is allowed
+            // to finish with its model change before shutdown joins the job.
+            const previous = io.swapCancelProtection(.blocked);
+            const result = self.updateResourceValue(job.key, job.value, job.overrides, job.target);
+            _ = io.swapCancelProtection(previous);
+            job.finish(result);
+        }
     }
 
     /// Reloads every settings file and emits `onDidChangeConfiguration`.
@@ -431,7 +521,7 @@ pub const ConfigurationService = struct {
     }
 
     pub fn interface(self: *ConfigurationService) configuration.IConfigurationService {
-        return .{ .context = self, .get_value = getValueForInterface, .get_value_with_overrides = getValueWithOverridesForInterface, .get_scope = getScopeForInterface, .update_value = updateValueForInterface, .update_resource_value = updateResourceValueForInterface, .on_did_change_configuration = &self.change_emitter };
+        return .{ .context = self, .get_value = getValueForInterface, .get_value_with_overrides = getValueWithOverridesForInterface, .get_scope = getScopeForInterface, .update_value = updateValueForInterface, .update_resource_value = updateResourceValueForInterface, .request_update = requestUpdate, .on_did_change_configuration = &self.change_emitter };
     }
 
     fn getScopeForInterface(context: *anyopaque, key: []const u8) ?configuration.ConfigurationScope {
@@ -611,12 +701,24 @@ pub const ConfigurationService = struct {
     }
 
     fn writeSettings(self: *ConfigurationService, path: []const u8, is_workspace_file: bool, key: []const u8, value: ?Value, language: ?[]const u8) !void {
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        if (self.window) |window| if (@import("ui").WindowIo.inFiber(window.io)) {
+            try dispatch.workerCall(window.io, writeSettingsFile, .{ self.allocator, self.io, path, is_workspace_file, key, value, language });
+            var sources = try dispatch.workerCall(window.io, readSources, .{ self, self.allocator, self.io });
+            defer sources.deinit();
+            try self.applySources(&sources);
+            return;
+        };
+        try writeSettingsFile(self.allocator, self.io, path, is_workspace_file, key, value, language);
+        try self.reload();
+    }
+
+    fn writeSettingsFile(allocator: Allocator, io: Io, path: []const u8, is_workspace_file: bool, key: []const u8, value: ?Value, language: ?[]const u8) !void {
+        var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const a = arena.allocator();
         var root: Value = .{ .object = .{} };
-        if (Io.Dir.cwd().readFileAlloc(self.io, path, self.allocator, .limited(max_settings_file_size))) |bytes| {
-            defer self.allocator.free(bytes);
+        if (Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(max_settings_file_size))) |bytes| {
+            defer allocator.free(bytes);
             const sanitized = try configurationModels.stripJsonc(a, bytes);
             if (std.json.parseFromSliceLeaky(Value, a, sanitized, .{ .duplicate_field_behavior = .use_last })) |parsed| {
                 if (parsed == .object) root = parsed;
@@ -640,13 +742,12 @@ pub const ConfigurationService = struct {
         if (value == null or value.? == .null) {
             _ = settings.object.orderedRemove(key);
         } else try settings.object.put(a, key, value.?);
-        if (std.fs.path.dirname(path)) |dir| try Io.Dir.cwd().createDirPath(self.io, dir);
-        var out: Io.Writer.Allocating = .init(self.allocator);
+        if (std.fs.path.dirname(path)) |dir| try Io.Dir.cwd().createDirPath(io, dir);
+        var out: Io.Writer.Allocating = .init(allocator);
         defer out.deinit();
         try std.json.Stringify.value(root, .{}, &out.writer);
         try out.writer.writeByte('\n');
-        try Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = out.written() });
-        try self.reload();
+        try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = out.written() });
     }
 
     /// The configuration editing boundary for workbench migrations. Each
@@ -872,7 +973,7 @@ pub const ConfigurationServiceBinding = struct {
     }
 
     pub fn interface(self: *ConfigurationServiceBinding) configuration.IConfigurationService {
-        return .{ .context = self, .get_value = getValue, .get_value_with_overrides = getValueWithOverrides, .get_scope = getScope, .update_value = updateValue, .update_resource_value = updateResourceValue, .on_did_change_configuration = &self.on_did_change_configuration };
+        return .{ .context = self, .get_value = getValue, .get_value_with_overrides = getValueWithOverrides, .get_scope = getScope, .update_value = updateValue, .update_resource_value = updateResourceValue, .request_update = requestUpdate, .on_did_change_configuration = &self.on_did_change_configuration };
     }
 
     fn getValue(context: *anyopaque, key: []const u8) ?*const Value {
@@ -903,6 +1004,12 @@ pub const ConfigurationServiceBinding = struct {
         const self: *ConfigurationServiceBinding = @ptrCast(@alignCast(context));
         const service = self.service orelse return error.ConfigurationUnavailable;
         try service.updateResourceValue(key, value, overrides, target);
+    }
+
+    fn requestUpdate(context: *anyopaque, key: []const u8, value: ?Value, overrides: configuration.Overrides, target: ?configuration.ConfigurationTarget, listener: ?configuration.UpdateListener) !?@import("../../../../base/common/lifecycle.zig").IDisposable {
+        const self: *ConfigurationServiceBinding = @ptrCast(@alignCast(context));
+        const service = self.service orelse return error.ConfigurationUnavailable;
+        return service.interface().requestUpdateResourceValue(key, value, overrides, target, listener);
     }
 
     fn forwardChange(change: configuration.Change, self: *ConfigurationServiceBinding) !void {
@@ -1158,7 +1265,7 @@ pub const SettingsWatcher = struct {
         defer file_changes.deinit();
         for (self.subscriptions.items) |handle| {
             if (file_changes.contains(handle.path, &.{})) {
-                self.reload_timer.schedule(@import("../../../../base/common/timeCompat.zig").milliTimestamp() + 100);
+                self.reload_timer.schedule(@import("../../../../base/common/timeCompat.zig").milliTimestamp(self.reload_timer.queue.?.io) + 100);
                 return;
             }
         }
@@ -1183,7 +1290,7 @@ pub const SettingsWatcher = struct {
 
 test "SettingsWatcher: reloads when a settings file changes" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.createDirPath(io, ".vscode");

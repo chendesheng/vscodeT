@@ -15,7 +15,7 @@ const Support = struct {
     fn getInitialState(_: *anyopaque, _: std.mem.Allocator) anyerror!IState {
         return NullState;
     }
-    fn tokenizeEncoded(_: *anyopaque, allocator: std.mem.Allocator, line: []const u8, _: bool, state: IState) anyerror!EncodedTokenizationResult {
+    fn tokenizeEncoded(_: *anyopaque, _: std.Io, allocator: std.mem.Allocator, line: []const u8, _: bool, state: IState) anyerror!EncodedTokenizationResult {
         const tokens = try allocator.alloc(TokenPacked, 1);
         var metadata = TokenMetadata.default;
         metadata.balancedBrackets = true;

@@ -419,9 +419,9 @@ fn associationIn(value: std.json.Value, group: []const u8, key: ?[]const u8) ?[]
 
 test "fileIcon: shipped names override language mappings and color variants" {
     const allocator = std.testing.allocator;
-    const io = @import("../../../../base/common/timeCompat.zig").io;
+    const io = std.testing.io;
     std.Io.Dir.cwd().access(io, "vscode/extensions/theme-modern-icons/package.json", .{}) catch return error.SkipZigTest;
-    var catalog = try registry.scan(allocator, &.{
+    var catalog = try registry.scan(allocator, std.testing.io, &.{
         "vscode/extensions/theme-seti", "vscode/extensions/theme-modern-icons", "vscode/extensions/javascript",
     });
     defer catalog.deinit();

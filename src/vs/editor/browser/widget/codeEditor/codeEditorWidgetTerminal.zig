@@ -353,6 +353,7 @@ pub const EditorDocument = struct {
     /// view so both split panes flip clean together.
     saved_version: u32,
     text_file_service: ?*text_files.TextFileService = null,
+    label_service: ?@import("../../../../platform/label/common/label.zig").ILabelService = null,
     save_window: ?*window_dispatch.Queue = null,
     save_managed: bool = false,
     pending_save: ?*SaveRequest = null,
@@ -1463,8 +1464,11 @@ pub const Editor = struct {
         };
         try document.addEditor(self);
         self.model_attached = true;
-        if (self.folding_task.queue) |window| model.tokenization().tokens.attachWindow(window);
-        self.triggerFoldingUpdate(time_compat.milliTimestamp());
+        if (self.folding_task.queue) |window| {
+            model.window_io = window.io;
+            model.tokenization().tokens.attachWindow(window);
+        }
+        self.triggerFoldingUpdate(time_compat.milliTimestamp(self.clockIo()));
         self.attachLanguageServices(self.language_features, self.marker_service, self.marker_decorations);
         self.attachJsonLanguage() catch {};
         // Establish the initial selection for the new view-model.
@@ -2652,7 +2656,7 @@ pub const Editor = struct {
         }
         self.folding.hidden_model.notifyChangeModelContent(has_line_changes);
         self.refreshDirtyState();
-        self.triggerFoldingUpdate(time_compat.milliTimestamp());
+        self.triggerFoldingUpdate(time_compat.milliTimestamp(self.clockIo()));
         self.emitModelContentChangedEvents();
         self.recoverCursorFromModel(event);
         for (self.working_copy_content_listeners.items) |listener| listener.callback(listener.context);
@@ -2873,7 +2877,7 @@ pub const Editor = struct {
         self.folding.use_syntax = use_syntax;
         self.folding.maximum_regions = maximum_regions;
         self.folding.fold_imports_by_default = fold_imports_by_default;
-        self.triggerFoldingUpdate(time_compat.milliTimestamp());
+        self.triggerFoldingUpdate(time_compat.milliTimestamp(self.clockIo()));
     }
 
     /// Diff sub-editors disable the ordinary folding contribution; their
@@ -3160,7 +3164,7 @@ pub const Editor = struct {
     fn refreshFolding(self: *Editor) !void {
         if (self.folding_override == false) return;
         self.folding_task.schedule(null);
-        const start_us = std.Io.Timestamp.now(time_compat.io, .awake).toMicroseconds();
+        const start_us = std.Io.Timestamp.now(self.clockIo(), .awake).toMicroseconds();
         // A line-count change may leave the wrapping model one change behind;
         // rebuild it before a hidden range can point past its projections.
         self.ensureTokensVisible();
@@ -3170,7 +3174,7 @@ pub const Editor = struct {
         defer self.allocator.free(selections);
         try self.folding.refresh(selections);
         try self.applyFoldingVisibility();
-        const elapsed_ms: i64 = @intCast(@divTrunc(std.Io.Timestamp.now(time_compat.io, .awake).toMicroseconds() - start_us, 1000));
+        const elapsed_ms: i64 = @intCast(@divTrunc(std.Io.Timestamp.now(self.clockIo(), .awake).toMicroseconds() - start_us, 1000));
         if (elapsed_ms > 0) {
             self.folding_delay_ms = @max(folding_debounce_min_ms, @min(elapsed_ms, folding_debounce_max_ms));
         }
@@ -3178,7 +3182,7 @@ pub const Editor = struct {
 
     fn foldingProvidersChanged(context: *anyopaque) void {
         const self: *Editor = @ptrCast(@alignCast(context));
-        self.triggerFoldingUpdate(time_compat.milliTimestamp());
+        self.triggerFoldingUpdate(time_compat.milliTimestamp(self.clockIo()));
     }
 
     fn foldingSyntaxCompleted(context: *anyopaque, result: anyerror!?@import("../../../contrib/folding/browser/foldingRanges.zig").FoldingRegions, elapsed_ms: i64) void {
@@ -3236,6 +3240,10 @@ pub const Editor = struct {
 
     const folding_debounce_min_ms: i64 = 200;
     const folding_debounce_max_ms: i64 = 40_000;
+    pub fn clockIo(self: *const Editor) Io {
+        return if (self.folding_task.queue) |window| window.io else self.io;
+    }
+
     pub fn attachWindow(self: *Editor, window: *window_dispatch.Queue) void {
         if (self.folding_task.queue == window) return;
         self.cancelFormat();
@@ -3244,8 +3252,11 @@ pub const Editor = struct {
         if (self.hasModel()) self.document.save_window = window;
         self.in_place_replace_task.schedule(null);
         self.in_place_replace_task = .{ .queue = window, .context = self, .run = onInPlaceReplaceDeadline };
-        if (self.folding_dirty) self.triggerFoldingUpdate(time_compat.milliTimestamp());
-        if (self.hasModel()) self.model.tokenization().tokens.attachWindow(window);
+        if (self.folding_dirty) self.triggerFoldingUpdate(time_compat.milliTimestamp(self.clockIo()));
+        if (self.hasModel()) {
+            self.model.window_io = window.io;
+            self.model.tokenization().tokens.attachWindow(window);
+        }
     }
 
     /// Content and language changes reset the folding model update deadline.
@@ -3527,7 +3538,7 @@ pub const Editor = struct {
         }
         try self.refreshFoldingRules();
         try self.folding.updateProviders();
-        self.triggerFoldingUpdate(time_compat.milliTimestamp());
+        self.triggerFoldingUpdate(time_compat.milliTimestamp(self.clockIo()));
     }
 
     pub fn getEncoding(self: *const Editor) encoding_mod.Encoding {
@@ -5864,7 +5875,7 @@ pub const Editor = struct {
         );
         try self.applyCommandResult(after);
         self.setInPlaceReplaceDecoration(result.highlight_range) catch {};
-        self.in_place_replace_task.schedule(time_compat.milliTimestamp() + 350);
+        self.in_place_replace_task.schedule(time_compat.milliTimestamp(self.clockIo()) + 350);
         return true;
     }
 
@@ -6207,7 +6218,7 @@ fn createModel(
         .query = null,
         .fragment = null,
     };
-    return try TextModel.init(allocator, &fixed, language_id, options, associated, undo_redo, language_service, language_configuration_service);
+    return try TextModel.init(allocator, io, &fixed, language_id, options, associated, undo_redo, language_service, language_configuration_service);
 }
 
 fn guessFromFirstLine(service: *LanguageService, model: *TextModel) !?[]const u8 {
@@ -6231,7 +6242,7 @@ fn configureDocumentLanguage(
             registerDeclarativeGrammar(io, allocator, grammar.root, grammar);
         }
         if (catalog.language(language_id)) |definition| {
-            if (definition.configuration) |path| config = language_config_point.load(arena, definition.root, path) catch null;
+            if (definition.configuration) |path| config = language_config_point.load(arena, io, definition.root, path) catch null;
         }
     }
     if (config == null) {
@@ -6256,12 +6267,12 @@ fn registerDeclarativeGrammar(io: Io, allocator: Allocator, root: []const u8, gr
     defer allocator.free(path);
     const data = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch return;
     defer allocator.free(data);
-    text_mate_tokenizer.registerGrammar(grammar.language, grammar.scope, data);
+    text_mate_tokenizer.registerGrammar(io, grammar.language, grammar.scope, data);
 }
 
 test "Editor: split copy shares the model and keeps view state independent" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const source = try Editor.createFromText(
         allocator,
         io,
@@ -6341,7 +6352,7 @@ test "Editor: model injected-text event changes projected lines without editing 
 
 test "Editor: viewport reflows wrapping" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 11, 5);
     defer {
         editor.deinit();
@@ -6354,7 +6365,7 @@ test "Editor: viewport reflows wrapping" {
 
 test "Editor: scrollbar width reserves wrapping and text columns" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "abcdefghijk", "test.txt", 17, 5);
     defer {
         editor.deinit();
@@ -6379,7 +6390,7 @@ test "Editor: scrollbar width reserves wrapping and text columns" {
 
 test "Editor: scroll height and absolute top line follow the viewport" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(
         allocator,
         io,
@@ -6405,7 +6416,7 @@ test "Editor: scroll height and absolute top line follow the viewport" {
 
 test "Editor: save writes the model value" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -6478,7 +6489,7 @@ test "Editor: cancellation of a suspended save participant does not write the sn
     try editor.insertText("X");
     try editor.requestSave(.{ .context = &probe, .complete = Probe.saved });
     try editor.requestSave(.{ .context = &probe, .complete = Probe.saved });
-    _ = queue.dispatch(time_compat.milliTimestamp());
+    _ = queue.dispatch(time_compat.milliTimestamp(std.testing.io));
     try std.testing.expect(probe.entered and !probe.finished);
     try std.testing.expect(probe.result == null);
     editor.document.cancelPendingSave();
@@ -6491,9 +6502,9 @@ test "Editor: cancellation of a suspended save participant does not write the sn
     probe.result = null;
     probe.ready.set(queue.io);
     try editor.requestSave(.{ .context = &probe, .complete = Probe.saved });
-    const deadline = time_compat.milliTimestamp() + 5_000;
-    while (probe.result == null and time_compat.milliTimestamp() < deadline) {
-        _ = queue.dispatch(time_compat.milliTimestamp());
+    const deadline = time_compat.milliTimestamp(std.testing.io) + 5_000;
+    while (probe.result == null and time_compat.milliTimestamp(std.testing.io) < deadline) {
+        _ = queue.dispatch(time_compat.milliTimestamp(std.testing.io));
         io.sleep(.fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(probe.result != null);
@@ -6504,7 +6515,7 @@ test "Editor: cancellation of a suspended save participant does not write the sn
 
 test "Editor: cursor and deletion across a wrap boundary" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 11, 5);
     defer {
         editor.deinit();
@@ -6526,7 +6537,7 @@ test "Editor: cursor and deletion across a wrap boundary" {
 
 test "Editor: save preserves CRLF" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -6548,7 +6559,7 @@ test "Editor: save preserves CRLF" {
 
 test "Editor: save preserves the BOM" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -6570,7 +6581,7 @@ test "Editor: save preserves the BOM" {
 
 test "Editor: selecting an encoding controls load and save" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -6603,7 +6614,7 @@ test "Editor: selecting an encoding controls load and save" {
 
 test "Editor: missing file opens empty and save creates it" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -6627,7 +6638,7 @@ test "Editor: missing file opens empty and save creates it" {
 
 test "Editor: discarding future and removed undo elements releases their memory" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "hello", "test.txt", 40, 8);
     defer {
@@ -6646,7 +6657,7 @@ test "Editor: discarding future and removed undo elements releases their memory"
 
 test "Editor: random edits release token storage" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const source = @embedFile("../../../../base/common/arrays.zig");
 
     var editor = try Editor.createFromText(allocator, io, source, "test.zig", 100, 30);
@@ -6674,7 +6685,7 @@ test "Editor: random edits release token storage" {
 
 test "Editor: a closing brace stays on the newly inserted line" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "a\n\n/// comment\n", "test.zig", 80, 20);
     defer {
@@ -6705,7 +6716,7 @@ test "Editor: a closing brace stays on the newly inserted line" {
 
 test "Editor: multi-cursor edit across shifted lines is undoable" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "a\nb\nc\nd", "test.txt", 40, 8);
     defer {
@@ -6738,7 +6749,7 @@ test "Editor: multi-cursor edit across shifted lines is undoable" {
 
 test "Editor: undo restores cursor state for following edits" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "hello", "test.txt", 40, 5);
     defer {
@@ -6766,7 +6777,7 @@ test "Editor: undo restores cursor state for following edits" {
 
 test "Editor: undo of grouped typing restores the original text" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "var", "test.txt", 40, 5);
     defer {
@@ -6789,7 +6800,7 @@ test "Editor: undo of grouped typing restores the original text" {
 
 test "Editor: grouped undo restores consecutive edits" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "var queue = ArrayQueue(i32).init();\n", "test.zig", 80, 20);
     defer {
         editor.deinit();
@@ -6850,7 +6861,7 @@ test "Editor: grouped undo restores consecutive edits" {
 
 test "Editor: move and copy lines" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "a\nb\nc", "test.txt", 40, 8);
     defer {
@@ -6880,7 +6891,7 @@ test "Editor: move and copy lines" {
 
 test "Editor: line comments toggle back to the original text" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "let x = 1;", "test.zig", 40, 8);
     defer {
@@ -6901,7 +6912,7 @@ test "Editor: line comments toggle back to the original text" {
 
 test "Editor: block comment shortcut is language aware" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "abc", "test.zig", 40, 8);
     defer {
@@ -6915,7 +6926,7 @@ test "Editor: block comment shortcut is language aware" {
 
 test "Editor: expand line selection and insert final newline" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 40, 8);
     defer {
@@ -6937,7 +6948,7 @@ test "Editor: expand line selection and insert final newline" {
 
 test "Editor: jump to, select to, and remove matching brackets" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     {
         var editor = try Editor.createFromText(allocator, io, "(a)", "test.zig", 40, 8);
@@ -6976,7 +6987,7 @@ test "Editor: jump to, select to, and remove matching brackets" {
 
 test "Editor: indent and outdent a selected line block" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 40, 8);
     defer {
@@ -7002,7 +7013,7 @@ test "Editor: indent and outdent a selected line block" {
 
 test "Editor: conversion between tab and space indentation" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "\ta", "test.txt", 40, 8);
     defer {
@@ -7023,7 +7034,7 @@ test "Editor: conversion between tab and space indentation" {
 
 test "Editor: folding survives an edit on the folded start line" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(
         allocator,
@@ -7054,7 +7065,7 @@ test "Editor: folding survives an edit on the folded start line" {
 
 test "Editor: folding hides a region and unfolds it again" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(
         allocator,
@@ -7093,7 +7104,7 @@ test "Editor: folding hides a region and unfolds it again" {
 
 test "Editor: reindent lines uses language indentation rules" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const RegExp = @import("../../../../../support/regexp.zig").RegExp;
 
     const increase = try RegExp.init("\\{$", .{});
@@ -7123,7 +7134,7 @@ test "Editor: reindent lines uses language indentation rules" {
 
 test "Editor: Enter honors increaseIndentPattern" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const RegExp = @import("../../../../../support/regexp.zig").RegExp;
 
     const increase = try RegExp.init("^\\s*for\\b", .{});
@@ -7155,7 +7166,7 @@ test "Editor: Enter honors increaseIndentPattern" {
 
 test "Editor: JSON Enter indents inside braces" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "{\n}", "test.json", 40, 8);
     defer {
@@ -7180,7 +7191,7 @@ test "Editor: JSON Enter indents inside braces" {
 
 test "Editor: JSON Enter ignores braces inside strings" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "\"a {\"", "test.json", 40, 8);
     defer {
@@ -7199,7 +7210,7 @@ test "Editor: JSON Enter ignores braces inside strings" {
 
 test "Editor: JSON Enter between braces indents and leaves the closing brace" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "{}", "test.json", 40, 8);
     defer {
@@ -7224,7 +7235,7 @@ test "Editor: JSON Enter between braces indents and leaves the closing brace" {
 
 test "Editor: extension-host newline typing honors JSON indentation" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "{\n}", "test.json", 40, 8);
     defer {
@@ -7244,7 +7255,7 @@ test "Editor: extension-host newline typing honors JSON indentation" {
 
 test "Editor: insertLineAfter honors JSON indentation" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "{\n}", "test.json", 40, 8);
     defer {
@@ -7263,7 +7274,7 @@ test "Editor: insertLineAfter honors JSON indentation" {
 
 test "Editor: typing a JSON closing brace outdents the line" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "{\n    \n}", "test.json", 40, 8);
     defer {
@@ -7282,7 +7293,7 @@ test "Editor: typing a JSON closing brace outdents the line" {
 
 test "Editor: add cursor below and edit both lines" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 40, 8);
     defer {
@@ -7304,7 +7315,7 @@ test "Editor: add cursor below and edit both lines" {
 
 test "Editor: select next occurrence and replace all selections" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "foo foo", "test.txt", 40, 8);
     defer {
@@ -7324,7 +7335,7 @@ test "Editor: select next occurrence and replace all selections" {
 
 test "Editor: auto-closes brackets and deletes the pair" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "", "test.zig", 40, 8);
     defer {
@@ -7347,7 +7358,7 @@ test "Editor: auto-closes brackets and deletes the pair" {
 
 test "Editor: overtypes an existing closing bracket" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "", "test.zig", 40, 8);
     defer {
@@ -7365,7 +7376,7 @@ test "Editor: overtypes an existing closing bracket" {
 
 test "Editor: movement applies to every cursor" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 40, 8);
     defer {
@@ -7387,7 +7398,7 @@ test "Editor: movement applies to every cursor" {
 
 test "Editor: word movement applies to every cursor" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "foo bar\nbaz qux", "test.txt", 40, 8);
     defer {
@@ -7896,7 +7907,7 @@ test "Editor: virtual model resource owns its URI through a shared view" {
 
 test "Editor: bundled languages are registered on the language service" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "const x = 1;", "test.zig", 40, 8);
     defer {
         editor.deinit();
@@ -7913,7 +7924,7 @@ test "Editor: bundled languages are registered on the language service" {
 
 test "editor applies configured files.associations" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
 
     var editor = try Editor.createFromText(allocator, io, "body", "sample.custom", 20, 5);
     defer {
@@ -7936,11 +7947,11 @@ test "editor applies configured files.associations" {
 
 test "declarative markdown-basics configuration reaches the editor" {
     const allocator = std.testing.allocator;
-    var registry = extensions_registry.scan(allocator, &.{"vscode/extensions/markdown-basics"}) catch return error.SkipZigTest;
+    var registry = extensions_registry.scan(allocator, std.testing.io, &.{"vscode/extensions/markdown-basics"}) catch return error.SkipZigTest;
     defer registry.deinit();
     if (registry.language("markdown") == null) return error.SkipZigTest;
 
-    const editor = try Editor.createWithDeclarative(allocator, time_compat.io, "README.md", 40, 8, &registry);
+    const editor = try Editor.createWithDeclarative(allocator, std.testing.io, "README.md", 40, 8, &registry);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -7958,10 +7969,10 @@ test "declarative markdown-basics configuration reaches the editor" {
 
 test "Editor: a late language contribution configures file detection and manual language changes" {
     const allocator = std.testing.allocator;
-    std.Io.Dir.cwd().access(time_compat.io, "vscode/extensions/lua/package.json", .{}) catch return error.SkipZigTest;
-    var catalog = try extensions_registry.scan(allocator, &.{"vscode/extensions/lua"});
+    std.Io.Dir.cwd().access(std.testing.io, "vscode/extensions/lua/package.json", .{}) catch return error.SkipZigTest;
+    var catalog = try extensions_registry.scan(allocator, std.testing.io, &.{"vscode/extensions/lua"});
     defer catalog.deinit();
-    const editor = try Editor.createFromText(allocator, time_compat.io, "-- hello", "script.lua", 32, 6);
+    const editor = try Editor.createFromText(allocator, std.testing.io, "-- hello", "script.lua", 32, 6);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -7976,10 +7987,10 @@ test "Editor: a late language contribution configures file detection and manual 
 
 test "Editor: manifest first-line and MIME associations survive configuration reload" {
     const allocator = std.testing.allocator;
-    std.Io.Dir.cwd().access(time_compat.io, "vscode/extensions/python/package.json", .{}) catch return error.SkipZigTest;
-    var registry = try extensions_registry.scan(allocator, &.{ "vscode/extensions/python", "vscode/extensions/javascript" });
+    std.Io.Dir.cwd().access(std.testing.io, "vscode/extensions/python/package.json", .{}) catch return error.SkipZigTest;
+    var registry = try extensions_registry.scan(allocator, std.testing.io, &.{ "vscode/extensions/python", "vscode/extensions/javascript" });
     defer registry.deinit();
-    const editor = try Editor.createFromText(allocator, time_compat.io, "#!/usr/bin/env python3.12\npass", "executable", 40, 6);
+    const editor = try Editor.createFromText(allocator, std.testing.io, "#!/usr/bin/env python3.12\npass", "executable", 40, 6);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -7993,20 +8004,20 @@ test "Editor: manifest first-line and MIME associations survive configuration re
 }
 
 test "Editor: JSON language features populate diagnostics and completion" {
-    std.Io.Dir.cwd().access(time_compat.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(std.testing.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const client = try json_language.Client.start(allocator, "node", "host/dist/jsonServer.mjs");
     defer client.deinit();
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(time_compat.io, .{ .sub_path = "broken.json", .data = "{\n  \"a\": 1\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "broken.json", .data = "{\n  \"a\": 1\n" });
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const length = try tmp.dir.realPathFile(time_compat.io, "broken.json", &buffer);
+    const length = try tmp.dir.realPathFile(std.testing.io, "broken.json", &buffer);
 
     var marker_service = MarkerService.init(allocator);
     defer marker_service.deinit();
-    const editor = try Editor.createWithExtensions(allocator, time_compat.io, buffer[0..length], 40, 8, null, client);
+    const editor = try Editor.createWithExtensions(allocator, std.testing.io, buffer[0..length], 40, 8, null, client);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -8020,18 +8031,18 @@ test "Editor: JSON language features populate diagnostics and completion" {
 }
 
 test "Editor: formats JSON through the language server" {
-    std.Io.Dir.cwd().access(time_compat.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(std.testing.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const client = try json_language.Client.start(allocator, "node", "host/dist/jsonServer.mjs");
     defer client.deinit();
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(time_compat.io, .{ .sub_path = "format.json", .data = "{\"a\":1}" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "format.json", .data = "{\"a\":1}" });
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const length = try tmp.dir.realPathFile(time_compat.io, "format.json", &buffer);
+    const length = try tmp.dir.realPathFile(std.testing.io, "format.json", &buffer);
 
-    const editor = try Editor.createWithExtensions(allocator, time_compat.io, buffer[0..length], 40, 8, null, client);
+    const editor = try Editor.createWithExtensions(allocator, std.testing.io, buffer[0..length], 40, 8, null, client);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -8045,7 +8056,7 @@ test "Editor: formats JSON through the language server" {
 
 test "Editor: Alt+F dispatches formatDocument" {
     const allocator = std.testing.allocator;
-    const io = @import("../../../../base/common/timeCompat.zig").io;
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "{}", "test.json", 40, 8);
     defer {
         editor.deinit();
@@ -8058,7 +8069,7 @@ test "Editor: Alt+F dispatches formatDocument" {
 
 test "Editor: incremental edits do not rebuild the whole wrapping model" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var text: Io.Writer.Allocating = .init(allocator);
     defer text.deinit();
     for (0..100) |i| try text.writer.print("const line_{d} = {d};\n", .{ i, i });
@@ -8081,7 +8092,7 @@ test "Editor: incremental edits do not rebuild the whole wrapping model" {
 
 test "Editor: folding is scheduled with the upstream debounce" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(
         allocator,
         io,
@@ -8096,7 +8107,7 @@ test "Editor: folding is scheduled with the upstream debounce" {
     }
     var window = window_dispatch.Queue{ .io = std.testing.io };
     editor.attachWindow(&window);
-    const now = time_compat.milliTimestamp();
+    const now = time_compat.milliTimestamp(std.testing.io);
     // Re-arm with a known "now" so a slow create cannot already have passed
     // the initial 200 ms deadline.
     editor.triggerFoldingUpdate(now);
@@ -8112,7 +8123,7 @@ test "Editor: folding is scheduled with the upstream debounce" {
 
 test "Editor: inline edits do not request a full visible refresh" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "const x = 1;\nconst y = 2;\n", "test.zig", 40, 8);
     defer {
         editor.deinit();
@@ -8129,7 +8140,7 @@ test "Editor: inline edits do not request a full visible refresh" {
 
 test "Editor: forcing accurate tokens does not dirty bracket pairs" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "if (a) {\n  b();\n}\n", "test.zig", 40, 8);
     defer {
         editor.deinit();
@@ -8158,7 +8169,7 @@ fn disableBracketColorization(model: *TextModel) void {
 
 test "Editor: bracket colorization is enabled by default" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "{\n  x\n}", "test.zig", 40, 8);
     defer {
         editor.deinit();
@@ -8175,7 +8186,7 @@ test "Editor: bracket colorization is enabled by default" {
 
 test "Editor: large document builds bracket AST on request" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var text: std.Io.Writer.Allocating = .init(allocator);
     defer text.deinit();
     for (0..600) |i| {
@@ -8198,7 +8209,7 @@ test "Editor: large document builds bracket AST on request" {
 
 test "Editor: AST bracket matching (colorization disabled)" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "(a)", "test.zig", 40, 8);
     defer {
         editor.deinit();
@@ -8251,7 +8262,7 @@ test "Editor: AST bracket matching (colorization disabled)" {
 
 test "Editor: plaintext resolves the built-in bracket configuration" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "(a)", "test.txt", 40, 8);
     defer {
         editor.deinit();
@@ -8266,7 +8277,7 @@ test "Editor: plaintext resolves the built-in bracket configuration" {
 
 test "Editor: read-only guards, line-number map and gutter width" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "one\ntwo", "test.txt", 40, 6);
     defer {
         editor.deinit();
@@ -8322,7 +8333,7 @@ test "Editor: read-only guards, line-number map and gutter width" {
 
 test "Editor: gutter follows line-number and folding options" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const editor = try Editor.createFromText(allocator, io, "a\nb\nc", "test.txt", 40, 5);
     defer {
         editor.deinit();
@@ -8357,7 +8368,7 @@ test "Editor: gutter follows line-number and folding options" {
 
 test "Editor: reveal centers, tops and bottoms a line" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const text =
         "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\n" ++
         "line10\nline11\nline12\nline13\nline14\nline15\nline16\nline17\nline18\nline19";
@@ -8393,7 +8404,7 @@ test "Editor: reveal centers, tops and bottoms a line" {
 
 test "Editor: cursorMove by wrapped line and viewport center" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const text = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten";
     var editor = try Editor.createFromText(allocator, io, text, "test.txt", 40, 7);
     defer {
@@ -8420,7 +8431,7 @@ test "Editor: cursorMove by wrapped line and viewport center" {
 
 test "Editor: manual fold ranges are created and removed" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(
         allocator,
         io,
@@ -8449,7 +8460,7 @@ test "Editor: manual fold ranges are created and removed" {
 
 test "Editor: one undo group covers an insert session with newlines" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "a", "test.txt", 40, 8);
     defer {
         editor.deinit();
@@ -8481,7 +8492,7 @@ test "Editor: one undo group covers an insert session with newlines" {
 
 test "Editor: logical-line movement preserves the visible column" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "abcdef\nab\nabcdef", "test.txt", 40, 8);
     defer {
         editor.deinit();
@@ -8503,7 +8514,7 @@ test "Editor: logical-line movement preserves the visible column" {
 
 test "Editor: logical-line selection carries the desired column" {
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     var editor = try Editor.createFromText(allocator, io, "abcdef\nab\nabcdef", "test.txt", 40, 8);
     defer {
         editor.deinit();
@@ -8518,11 +8529,11 @@ test "Editor: logical-line selection carries the desired column" {
 }
 
 test "JSON synchronizes once per shared document and follows its language" {
-    std.Io.Dir.cwd().access(time_compat.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(std.testing.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const client = try json_language.Client.start(allocator, "node", "host/dist/jsonServer.mjs");
     defer client.deinit();
-    const editor = try Editor.createFromText(allocator, time_compat.io, "{}", "events.zig", 40, 8);
+    const editor = try Editor.createFromText(allocator, std.testing.io, "{}", "events.zig", 40, 8);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -8557,11 +8568,11 @@ test "JSON synchronizes once per shared document and follows its language" {
 }
 
 test "JSON incremental edits use pre-edit UTF-16 ranges and discard cancelled outline replies" {
-    std.Io.Dir.cwd().access(time_compat.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(std.testing.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
     const a = std.testing.allocator;
     const client = try json_language.Client.start(a, "node", "host/dist/jsonServer.mjs");
     defer client.deinit();
-    const editor = try Editor.createFromText(a, time_compat.io, "{\"😀key\":1,\"é\":2}", "ranges.json", 80, 12);
+    const editor = try Editor.createFromText(a, std.testing.io, "{\"😀key\":1,\"é\":2}", "ranges.json", 80, 12);
     defer {
         editor.deinit();
         a.destroy(editor);
@@ -8597,7 +8608,7 @@ test "JSON incremental edits use pre-edit UTF-16 ranges and discard cancelled ou
 
 test "wrapped view lines retain immutable text through edits and undo" {
     const a = std.testing.allocator;
-    const editor = try Editor.createFromText(a, time_compat.io, "abcdef0123456789\nsecond", "cached.txt", 10, 10);
+    const editor = try Editor.createFromText(a, std.testing.io, "abcdef0123456789\nsecond", "cached.txt", 10, 10);
     defer {
         editor.deinit();
         a.destroy(editor);

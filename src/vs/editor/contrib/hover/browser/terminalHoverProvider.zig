@@ -182,7 +182,7 @@ test "tui hover provider: reports the word under the cursor" {
 }
 
 test "tui hover provider: forwards JSON hover from a local schema" {
-    std.Io.Dir.cwd().access(@import("../../../../base/common/timeCompat.zig").io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(std.testing.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
     const testing = std.testing;
     const allocator = testing.allocator;
     const client = try json_language.Client.start(allocator, "node", "host/dist/jsonServer.mjs");
@@ -190,7 +190,7 @@ test "tui hover provider: forwards JSON hover from a local schema" {
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(@import("../../../../base/common/timeCompat.zig").io, .{ .sub_path = "schema.json", .data =
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "schema.json", .data =
         \\{
         \\  "type": "object",
         \\  "properties": {
@@ -199,7 +199,7 @@ test "tui hover provider: forwards JSON hover from a local schema" {
         \\}
     });
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_length = try tmp.dir.realPathFile(@import("../../../../base/common/timeCompat.zig").io, "schema.json", &path_buffer);
+    const path_length = try tmp.dir.realPathFile(std.testing.io, "schema.json", &path_buffer);
     const schema_uri = try std_uri.encodedResource(allocator, .{ .scheme = "file", .path = .{ .raw = path_buffer[0..path_length] } });
     defer allocator.free(schema_uri);
     const text = try std.fmt.allocPrint(allocator, "{{\n  \"$schema\": \"{s}\",\n  \"name\": \"demo\"\n}}\n", .{schema_uri});

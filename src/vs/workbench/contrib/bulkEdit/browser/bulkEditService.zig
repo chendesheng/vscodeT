@@ -11,6 +11,8 @@ const BulkTextEdits = @import("bulkTextEdits.zig").BulkTextEdits;
 const EditorEditTarget = @import("bulkTextEdits.zig").EditorEditTarget;
 const file_edits = @import("bulkFileEdits.zig");
 const group_mod = @import("../../../../platform/undoRedo/common/undoRedo.zig");
+const window_dispatch = @import("../../../../base/common/windowDispatch.zig");
+const cancellation = @import("../../../../base/common/cancellation.zig");
 const uri_util = @import("../../../../base/common/stdUri.zig");
 
 pub const auto_save_setting = "files.refactoring.autoSave";
@@ -25,7 +27,18 @@ pub const BulkEditService = struct {
     file_services: ?file_edits.Services = null,
     working_copy_service: ?*@import("../../../services/workingCopy/common/workingCopyService.zig").WorkingCopyService = null,
     active_groups: std.ArrayList(*ActiveGroup) = .empty,
+    window: ?*window_dispatch.Queue = null,
+    file_jobs: std.Io.Group = .init,
+    stopping: bool = false,
     preview_handler: ?*PreviewRegistration = null,
+
+    /// Join outstanding file groups before disposing providers, listeners
+    /// and the undo store. An already-started operation publishes its result
+    /// before the request's owned data is released.
+    pub fn cancelFileJobs(self: *BulkEditService) void {
+        self.stopping = true;
+        if (self.window) |window| self.file_jobs.cancel(window.io);
+    }
 
     const ActiveGroup = struct { value: group_mod.UndoRedoGroup, references: usize = 1 };
 
@@ -130,6 +143,7 @@ const BulkApplyRequest = struct {
     advancing: bool = false,
     depth: usize = 1,
     detached: bool = false,
+    file_cancellation: cancellation.MutableToken,
 
     fn cloneMetadata(a: std.mem.Allocator, metadata: ?languages.WorkspaceEditMetadata) !?languages.WorkspaceEditMetadata {
         var value = metadata orelse return null;
@@ -173,7 +187,8 @@ const BulkApplyRequest = struct {
         saved_options.editor = null;
         const group = try service.acquireGroup(options.undo_redo_group_id);
         errdefer service.releaseGroup(group);
-        self.* = .{ .service = service, .arena = arena, .edits = owned, .options = saved_options, .listener = listener, .group = group };
+        self.* = .{ .service = service, .arena = arena, .edits = owned, .options = saved_options, .listener = listener, .group = group, .file_cancellation = cancellation.MutableToken.init(service.allocator) };
+        errdefer self.file_cancellation.deinit();
         try self.editor_target.attach(options.editor);
         errdefer self.editor_target.deinit();
         self.cancellation_listener = try options.token.onCancellationRequested(.{ .context = self, .callbackFn = onCanceled });
@@ -264,7 +279,7 @@ const BulkApplyRequest = struct {
         self.advancing = true;
         defer self.advancing = false;
         while (self.completion == null and !self.waiting) {
-            if (self.options.token.isCancellationRequested()) {
+            if (self.service.stopping or self.options.token.isCancellationRequested()) {
                 self.finish(error.CancellationError);
                 return;
             }
@@ -281,6 +296,19 @@ const BulkApplyRequest = struct {
                 .file => {
                     const services = self.service.file_services orelse {
                         self.finish(error.UnsupportedResourceEdit);
+                        return;
+                    };
+                    if (self.service.window) |window| if (window.scheduler != null) {
+                        // One in-flight reference protects the request's DTOs
+                        // and undo group across native awaits, even if the
+                        // originating editor/rpc disposes its callback.
+                        self.waiting = true;
+                        self.depth += 1;
+                        self.service.file_jobs.concurrent(window.io, runFileGroup, .{ self, services, edits }) catch |err| {
+                            self.depth -= 1;
+                            self.waiting = false;
+                            self.finish(err);
+                        };
                         return;
                     };
                     const result = file_edits.BulkFileEdits.applyWithReporting(self.service.allocator, services, edits, self.options, &self.group.value, .{ .context = self, .report = reportResources }) catch |err| {
@@ -301,6 +329,31 @@ const BulkApplyRequest = struct {
             }
         }
     }
+    fn runFileGroup(self: *BulkApplyRequest, services: file_edits.Services, edits: []const bulk.ResourceEdit) void {
+        defer self.leave();
+        if (self.completion != null) return;
+        if (self.service.stopping) {
+            self.finish(error.CancellationError);
+            return;
+        }
+        // VS Code only forwards the token to file-operation participants;
+        // once the operation starts, finish its events and undo bookkeeping.
+        // The request observes cancellation at the next group boundary.
+        const io = self.service.window.?.io;
+        const previous = io.swapCancelProtection(.blocked);
+        defer _ = io.swapCancelProtection(previous);
+        var options = self.options;
+        options.token = self.file_cancellation.token();
+        const result = file_edits.BulkFileEdits.applyWithReporting(self.service.allocator, services, edits, options, &self.group.value, .{ .context = self, .report = reportResources });
+        self.waiting = false;
+        if (self.completion != null) return;
+        self.accumulate(result catch |err| {
+            self.finish(err);
+            return;
+        });
+        self.advance();
+    }
+
     fn completedTextGroup(context: *anyopaque, reply: anyerror!bulk.IBulkEditResult) void {
         const self: *BulkApplyRequest = @ptrCast(@alignCast(context));
         if (self.completion != null or !self.waiting) return;
@@ -328,6 +381,11 @@ const BulkApplyRequest = struct {
         defer self.leave();
         self.detached = detached;
         self.completion = error.CancellationError;
+        self.file_cancellation.cancel();
+        // The caller may dispose its token before the detached file group
+        // finishes; release that subscription now.
+        if (self.cancellation_listener) |listener| listener.dispose();
+        self.cancellation_listener = null;
         if (self.pending) |handle| handle.dispose();
         self.pending = null;
     }
@@ -344,6 +402,7 @@ const BulkApplyRequest = struct {
         const notify = !self.detached;
         self.service.releaseGroup(self.group);
         self.editor_target.deinit();
+        self.file_cancellation.deinit();
         self.arena.deinit();
         self.service.allocator.destroy(self);
         if (notify) listener.complete(listener.context, reply);

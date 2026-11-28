@@ -121,7 +121,7 @@ pub const DocumentDiffItemViewModel = struct {
         if (owner.worker) |services| {
             self.diffEditorViewModel.initializeEmptyState();
             self.diffEditorViewModel.attachWorker(services.worker, services.cache, owner.queue);
-            self.ready_task.schedule(time.milliTimestamp() +| 1000);
+            self.ready_task.schedule(time.milliTimestamp(owner.queue.io) +| 1000);
         } else {
             try self.diffEditorViewModel.compute();
             self.isReady = true;
@@ -194,7 +194,7 @@ pub const DocumentDiffItemViewModel = struct {
         // Complete on the window dispatcher, after the model emitter returns.
         // Publishing now could mount a new view and subscribe to that emitter
         // while it is delivering the worker completion.
-        if (!self.isReady) self.ready_task.schedule(time.milliTimestamp());
+        if (!self.isReady) self.ready_task.schedule(time.milliTimestamp(self.ready_task.queue.?.io));
         self.notify_task.post();
     }
     fn onReadyDeadline(context: *anyopaque, _: i64, _: bool) bool {

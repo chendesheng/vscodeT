@@ -118,7 +118,7 @@ pub const FindModel = struct {
         if (!self.state.is_revealed or self.ignore_model_content_changed) return;
         if (event.contentChangedEvent.isFlush) self.decorations.reset();
         self.decorations.setStartPosition(self.editor.modelCursorPosition());
-        self.update_decorations_scheduler.schedule(async_mod.nowMs(), null);
+        self.update_decorations_scheduler.schedule(async_mod.nowMs(self.editor.clockIo()), null);
     }
 
     fn onUpdateDecorations(self: *FindModel) void {

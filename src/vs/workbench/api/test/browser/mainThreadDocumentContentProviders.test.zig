@@ -70,7 +70,7 @@ test "MainThreadDocumentContentProviders: model disposed during async operation"
     // reference or publish a new model when its reply arrives.
     owner.dispose();
     _ = (try service.updateVirtualContent(uri, "should not apply", second.listener())).?;
-    _ = queue.dispatch(time.milliTimestamp());
+    _ = queue.dispatch(time.milliTimestamp(std.testing.io));
     try std.testing.expect(!service.hasResolvedModel(uri));
     try std.testing.expectEqual(@as(usize, 1), second.calls);
     service.worker.?.stopWorker();

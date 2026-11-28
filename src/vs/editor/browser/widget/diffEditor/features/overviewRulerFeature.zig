@@ -230,6 +230,7 @@ test "overviewRulerFeature: per-side markers for each change kind" {
     var provider = diff_provider.LineDiffProvider.init(.advanced);
     var diff = try provider.computeDiffFromLines(allocator, &lines_original, &lines_modified, .{
         .ignoreTrimWhitespace = false,
+        .io = std.testing.io,
         .maxComputationTimeMs = 0,
         .computeMoves = false,
     });

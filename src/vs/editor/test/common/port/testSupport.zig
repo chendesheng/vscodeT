@@ -46,7 +46,7 @@ pub const TestModel = struct {
         errdefer undoRedoService.deinit();
 
         var reader = Io.Reader.fixed(text);
-        const model = try TextModel.init(allocator, &reader, languageId, .{
+        const model = try TextModel.init(allocator, std.testing.io, &reader, languageId, .{
             .tabSize = 4,
             .indentSize = .{ .number = 4 },
             .insertSpaces = true,

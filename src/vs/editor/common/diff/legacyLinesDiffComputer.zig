@@ -114,18 +114,19 @@ fn getLastNonBlankColumn(text: []const u8, default_value: usize) usize {
 
 /// Predicate that stops the diff when the configured maximum runtime elapsed.
 const ContinueProcessingPredicate = struct {
+    io: std.Io,
     maximum_runtime: i64,
     start_time: i64,
 
-    fn init(maximum_runtime: i64) ContinueProcessingPredicate {
-        return .{ .maximum_runtime = maximum_runtime, .start_time = time_compat.milliTimestamp() };
+    fn init(io: std.Io, maximum_runtime: i64) ContinueProcessingPredicate {
+        return .{ .io = io, .maximum_runtime = maximum_runtime, .start_time = time_compat.milliTimestamp(io) };
     }
 
     fn shouldContinue(self: *const ContinueProcessingPredicate) bool {
         if (self.maximum_runtime == 0) {
             return true;
         }
-        return time_compat.milliTimestamp() - self.start_time < self.maximum_runtime;
+        return time_compat.milliTimestamp(self.io) - self.start_time < self.maximum_runtime;
     }
 
     fn interface(self: *ContinueProcessingPredicate) diff.IContinueProcessingPredicate {
@@ -391,6 +392,7 @@ pub const DiffComputer = struct {
         original_lines: []const []const u8,
         modified_lines: []const []const u8,
         opts: IDiffComputerOpts,
+        io: std.Io,
     ) !DiffComputer {
         var original = try LineSequence.init(allocator, original_lines);
         errdefer original.deinit();
@@ -407,9 +409,9 @@ pub const DiffComputer = struct {
             .modifiedLines = modified_lines,
             .original = original,
             .modified = modified,
-            .continueLineDiff = ContinueProcessingPredicate.init(opts.maxComputationTime),
+            .continueLineDiff = ContinueProcessingPredicate.init(io, opts.maxComputationTime),
             // never run after 5s for character changes...
-            .continueCharDiff = ContinueProcessingPredicate.init(if (opts.maxComputationTime == 0) 0 else @min(opts.maxComputationTime, 5000)),
+            .continueCharDiff = ContinueProcessingPredicate.init(io, if (opts.maxComputationTime == 0) 0 else @min(opts.maxComputationTime, 5000)),
         };
     }
 
@@ -787,7 +789,7 @@ pub const LegacyLinesDiffComputer = struct {
             .shouldComputeCharChanges = true,
             .shouldMakePrettyDiff = true,
             .shouldPostProcessCharChanges = true,
-        });
+        }, options.io);
         defer diff_computer.deinit();
         var result = try diff_computer.computeDiff();
         defer result.deinit();
@@ -903,7 +905,7 @@ fn runDiffComputer(
     modified: []const []const u8,
     opts: IDiffComputerOpts,
 ) !IDiffComputerResult {
-    var computer = try DiffComputer.init(allocator, original, modified, opts);
+    var computer = try DiffComputer.init(allocator, original, modified, opts, std.testing.io);
     defer computer.deinit();
     return computer.computeDiff();
 }
@@ -1009,6 +1011,7 @@ test "LegacyLinesDiffComputer produces line range mappings" {
     const interface = computer.asLinesDiffComputer();
     var result = try interface.computeDiff(allocator, &original, &modified, .{
         .ignoreTrimWhitespace = false,
+        .io = std.testing.io,
         .maxComputationTimeMs = 0,
         .computeMoves = false,
     });
@@ -1034,6 +1037,7 @@ test "LegacyLinesDiffComputer computes inner changes for modified lines" {
     const interface = computer.asLinesDiffComputer();
     var result = try interface.computeDiff(allocator, &original, &modified, .{
         .ignoreTrimWhitespace = false,
+        .io = std.testing.io,
         .maxComputationTimeMs = 0,
         .computeMoves = false,
     });
@@ -1061,6 +1065,7 @@ test "LegacyLinesDiffComputer joins touching diffs" {
     const interface = computer.asLinesDiffComputer();
     var result = try interface.computeDiff(allocator, &original, &modified, .{
         .ignoreTrimWhitespace = false,
+        .io = std.testing.io,
         .maxComputationTimeMs = 0,
         .computeMoves = false,
     });
