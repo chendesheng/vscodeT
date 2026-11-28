@@ -126,7 +126,8 @@ with the documented omissions listed at the end of this document.
   editable diff sides or diff-tab session restore; one repository per
   workspace folder; the original pane is not keyboard-focusable; gutter
   width/pattern/minimap and the combined two-lane overview ruler reduce to
-  terminal cells. See `README.md` and `docs/terminal-ui.md` §8.2.
+  terminal cells. See `docs/design.md` (Diff editor) and `docs/terminal-ui.md`
+  §8.2.
 
 **P5f (log service):**
 - `src/vs/platform/log/common/log.zig` ports `LogLevel`, `canLog`, `log`,

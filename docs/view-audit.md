@@ -14,7 +14,7 @@ fix (or the documented terminal exception), and the tests that cover it.
 | Verdict | Meaning |
 |---------|---------|
 | **F** | Faithful port/adaptation: upstream structure, options, theme and behavior are preserved; only the terminal paint/input boundary differs. |
-| **T** | Terminal adaptation: the view intentionally differs because a cell grid cannot express the browser behavior; the exact limitation is documented in the file header, `README.md` and `docs/terminal-ui.md`. |
+| **T** | Terminal adaptation: the view intentionally differs because a cell grid cannot express the browser behavior; the exact limitation is documented in the file header, `docs/design.md` and `docs/terminal-ui.md`. |
 | **P** | Partial: the upstream model/controller exists, but parts of the view logic, controls, options, theme, or tests are missing. |
 | **A** | Ad-hoc: the view is a terminal-only painter without the upstream control/view-part structure. Fix required. |
 | **M** | Missing: upstream has the view, this repository has no implementation. Decide implement-or-document. |
@@ -32,7 +32,7 @@ For each row:
 4. Fix if needed; keep upstream names/structure and put terminal substitutions
    only at the paint/input boundary.
 5. Add or port tests.
-6. Update the file header, `README.md` and `docs/terminal-ui.md` for any
+6. Update the file header, `docs/design.md` and `docs/terminal-ui.md` for any
    remaining terminal exception.
 7. Run `zig build`, the focused tests, `zig fmt` and `git diff --check`.
 
@@ -73,7 +73,7 @@ For each row:
 | Rulers | `vs/editor/browser/viewParts/rulers/rulers.zig` | `editor/browser/viewParts/rulers/rulers.ts` | **T** | Configured `editor.rulers` columns are mapped to visible cell columns and painted as one-cell vertical guides through the view-line guide layer; the guide is skipped where a text glyph occupies the cell because a cell cannot show both. Per-ruler CSS color overrides are not parsed; `editorRuler.foreground` is used. |
 | Scroll decoration | `vs/editor/browser/viewParts/scrollDecoration/scrollDecoration.zig` + `src/tui/editorView.zig` | `editor/browser/viewParts/scrollDecoration/` | **T** | The shadow appears after the first view line scrolls away and tints the first text row with `scrollbar.shadow`; the terminal has no alpha/blur, so it is a solid one-row background instead of a CSS box shadow. Covered by a View test. |
 | View zones | absent | `editor/browser/viewParts/viewZones/` | **T** | Confirmed absent. Sticky scroll paints as a top-left overlay and find uses the inline bar; arbitrary-height browser view zones (peek/diff spacers) are not represented as cell rows. The terminal keeps those features as overlays/inline UI; this substitution is documented. |
-| Minimap | absent | `editor/browser/viewParts/minimap/` | **T** | Confirmed absent and documented as a terminal limitation (`README.md`: no minimap/pixel lanes); a cell-grid thumbnail is not the upstream minimap and is intentionally omitted. |
+| Minimap | absent | `editor/browser/viewParts/minimap/` | **T** | Confirmed absent and documented as a terminal limitation (`docs/design.md`: no minimap/pixel lanes); a cell-grid thumbnail is not the upstream minimap and is intentionally omitted. |
 
 ## Group 3 — workbench chrome
 

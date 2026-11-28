@@ -1587,7 +1587,7 @@ The current docs overstate the port and/or contradict each other:
 
 * `docs/terminal-ui.md:2050-2052` still says "no inline diff/hidden-unchanged/
   moved blocks/peek/multi-diff/accessible viewer", while the code has inline,
-  hide-unchanged and moved-block *models* and the README describes them.
+  hide-unchanged and moved-block *models* and the design notes describe them.
 * `docs/view-audit.md:71` marks the diff editor **T** and says gutter/
   overview-ruler features are ported with "20 tests". The actual test count is
   29, and the view-level gutter/overview/accessible/contributions gaps in this
@@ -1596,7 +1596,8 @@ The current docs overstate the port and/or contradict each other:
   diff as follow-ups; its test plan at `:531-534` calls the upstream-path test
   file "adapted upstream assertions", although it only contains the earlier
   terminal tests.
-* `README.md:1239-1265` describes aligned snapshots, moved block decorations,
+* `docs/design.md` (Diff editor) describes aligned snapshots, moved block
+  decorations,
   hide-unchanged folding and the 50-cell fallback, but does not call out the
   missing indicators, gutter controls, theme/settings behavior, keyboard
   routing, combined overview ruler, accessible viewer, moved-block connectors,
@@ -1605,7 +1606,7 @@ The current docs overstate the port and/or contradict each other:
   missing piece is the editor key dispatch itself.
 
 Recommendation: treat this audit as the current gap ledger, and update
-`README.md`, `docs/terminal-ui.md`, `docs/view-audit.md` and
+`docs/design.md`, `docs/terminal-ui.md`, `docs/view-audit.md` and
 `docs/git-diff-plan.md` as fixes land. Do not close the view-audit row as **T**
 until the documented terminal substitutions are separated from the unfinished
 port items listed in §3.13.

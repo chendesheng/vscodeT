@@ -1,9 +1,32 @@
 # ui
 
 A small, standalone Zig 0.17 terminal UI library. It is the rendering layer used
-by the `minecode` preview; it has no dependency on the editor.
+by the `minecode` workbench and its `--preview` mode; it has no dependency on
+the editor.
 
 The public module starts at [src/ui.zig](src/ui.zig). [tests/](tests/) holds the unit and stress suites and their fixtures. Runnable scenes live in [examples/](examples/) and benchmarks in [bench/](bench/).
+
+## Used by minecode
+
+The workbench builds its window, editor chrome, side bar, panel, status bar,
+dialogs, menus and quick input as `ui` nodes. The editor view
+(`src/tui/editorView.zig`) uses the library's retained tree for the visible line
+window and chrome, while the ported VS Code view parts produce the structured
+line/decoration data it paints. `src/tui/workbench.zig` composites the parts
+into one frame and writes the ANSI diff.
+
+- Terminal integration and the browser-to-cell substitutions are documented in
+  [the terminal UI notes](../docs/terminal-ui.md).
+- Upstream editor `.css` files are ported by hand to typed class sheets; see
+  [the CSS porting rules](../docs/css.md).
+- The cell-border probe lives in `src/tui/cellBorders.zig`; kitty images and
+  Markdown preview placeholders are consumed through the library's
+  `ui/src/terminal/image.zig`.
+- `zig build test` from the repository root runs [tests/tests.zig](tests/tests.zig)
+  with the editor suite. The `UI stress + report` CI job runs the stress
+  scenarios and publishes the benchmark report.
+
+See also: [root README](../README.md), [design notes](../docs/design.md).
 
 - A DOM-like retained tree (`Node` is an element or text) with authored
   `Style` declarations. No CSS parser, no HTML parser and no selector engine:

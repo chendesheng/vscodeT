@@ -176,16 +176,94 @@ the live stack depth rather than by the number of lines.
 
 ## Editor integration
 
-- `src/vs/editor/common/model/tokens/textMateTokenizer.zig` owns the adapter.
-  It uses the editor's existing Dark+ `TokenTheme`/`TokenMetadata` pipeline and
-  converts the port's UTF-16 token starts to UTF-8 byte offsets.
+The engine is the editor's TextMate tokenizer. It is wired through
+`ITokenizationSupport` in
+`src/vs/editor/common/model/tokens/textMateTokenizer.zig`; the old
+`textmate.zig` dependency has been removed.
+
+- The adapter uses the editor's existing Dark+ `TokenTheme`/`TokenMetadata`
+  pipeline and converts the port's UTF-16 token starts to UTF-8 byte offsets.
+  Editor text, positions and columns stay UTF-8; this adapter is one of the two
+  places where UTF-16 is visible (the other is the extension-host RPC boundary).
 - One process-wide `Registry` loads grammars from `vscode-syntax` assets plus
-  the vendored Zig/TOML/YAML fallbacks. Markdown fences are prepended to the
-  raw markdown grammar before compilation.
+  the vendored fallbacks. Markdown fences are prepended to the raw markdown
+  grammar before compilation.
 - `TokenizeLine*` results are scratch-owned until the next call; the adapter
   consumes them immediately.
 - The editor's existing `TokenTheme`/`ColorMap` remains authoritative for the
   terminal palette; the port's own `Theme` is not used by the editor yet.
+
+### Supported languages and grammar assets
+
+Supported language IDs include `zig`, `json`, `javascript`, `typescript`,
+`python`, `rust`, `go`, `c`, `cpp`, `java`, `html`, `css`, `scss`, `markdown`,
+`yaml`, `toml` and `shellscript`/`bash`.
+
+- Languages that ship a grammar in the upstream checkout use VS Code's
+  originals, embedded from `vscode/extensions/*/syntaxes/*.tmLanguage.json` at
+  build time by `vscode-syntax`.
+- `zig`, `toml` and `yaml` use vendored fallback grammars in
+  `src/support/grammars`. The current VS Code YAML grammar does not tokenize
+  with this parser.
+- `markdown` falls back to a vendored copy of its pinned VS Code grammar.
+- The vendored Dark+ theme is the fallback when the `vscode/` submodule is not
+  initialized.
+- Language configurations for the same languages are read from each
+  extension's upstream `language-configuration.json` and embedded by
+  `vscode-syntax` too. JSON/JSONC have a vendored fallback in
+  `src/support/languageConfigurations`.
+- `src/vs/workbench/services/language/common/bundledLanguages.zig` holds only
+  the terminal's built-in language-ID/extension table and the portable fallback
+  used when no upstream configuration asset exists (for example Zig, or any
+  language when the `vscode/` submodule is not initialized).
+
+### Token colors and themes
+
+Token colors come from VS Code's Dark+ theme
+(`theme-defaults/themes/dark_plus.json` and its `dark_vs.json` include).
+`TokenTheme` resolves the `tokenColors` rules (foreground and
+bold/italic/underline/strikethrough), and the TUI paints through the theme's
+color map. Markdown inline code and its backticks therefore use Dark+'s string
+color without a separate scope table. Token backgrounds are kept in the token
+metadata, but the terminal view uses the workspace background.
+
+TextMate scopes still provide the standard token types (`comment`, `string`,
+`regexp`) used by bracket and language features. Theme selectors that combine a
+parent scope with a target (`a b`) or exclude a scope (`a - b`) are reduced to
+the target scope; the terminal theme trie matches one scope at a time.
+
+### Markdown fences and the null tokenizer
+
+Markdown fenced blocks for every supported language are enabled by a small
+fence grammar (`src/support/markdownCodeFences.tmLanguage.json`), including
+aliases such as `js`, `ts`, `py`, `rs`, `yml`, `md`, `sh` and `c++`. VS Code's
+built-in fence list does not cover Zig or TOML.
+
+Languages without a TextMate mapping continue to use the null tokenizer.
+
+### Background tokenization
+
+The upstream workbench path is ported, not just the synchronous fallback:
+`ThreadedBackgroundTokenizerFactory` owns one dedicated worker thread,
+`TextMateWorkerTokenizerController` keeps the renderer state store and pending
+edits, and the worker streams serialized token blocks and state-stack deltas back
+with `std.Io.Queue` (the terminal stand-in for `postMessage`). The renderer
+applies deltas on its main loop and shares the compiled token theme with the
+worker through a read/write lock instead of upstream's serialized `$acceptTheme`
+copy.
+
+TUI startup enables it with `Workbench.enableAsyncTokenization`; tests keep the
+synchronous `DefaultBackgroundTokenizer` unless they opt in. The default
+tokenizer remains the fallback when async tokenization is disabled, the model is
+too large for syncing, or the tokenizer has no TextMate grammar.
+
+## See also
+
+- [Root README](../README.md) — project overview and quick start.
+- [Design notes](../docs/design.md) — workbench/editor architecture and the
+  tokenizer integration record.
+- [Terminal UI notes](../docs/terminal-ui.md) — the cell renderer that paints
+  the resulting tokens.
 
 ## License
 

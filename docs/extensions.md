@@ -1028,7 +1028,7 @@ on the host even if the TUI can display it.
   `valid` and `compare` are enough. Name this in S3, not as an afterthought.
 - Manifest localization (`package.nls.json`, `%key%` placeholders via
   `localizeManifest`) is skipped initially. Display names and descriptions
-  stay in their default language; document this in `README.md`.
+  stay in their default language; document this in `docs/design.md`.
 
 ### 8.2 Contribution points
 
@@ -1429,7 +1429,8 @@ upstream priority merging.
 ### 11.2 Grammars and themes
 
 Built-in languages already take their grammars from the upstream checkout's
-`extensions/*/syntaxes` files (see `README.md`), and built-in colors come from
+`extensions/*/syntaxes` files (see
+[`textmate/README.md`](../textmate/README.md)), and built-in colors come from
 Dark+ through `TokenTheme`. Contributed grammars still need a `TMGrammars`
 extension point from `contributes.grammars` (language, `scopeName`, `path`,
 `injectTo`, `embeddedLanguages`, `tokenTypes`) feeding
@@ -1662,7 +1663,8 @@ The manager state to mirror is small and should not be rebuilt ad hoc:
 
 Each stage lands green (`zig build`, `zig build test --summary all`,
 `zig fmt --check <changed>`, clean `git diff --check`) and updates this
-document and `README.md`.
+document and `docs/design.md`; update `README.md` when the supported scope
+changes.
 
 At HEAD `e98be57` the prerequisite services in §3.3 are present, but no
 extension module, protocol or scanner exists. S1 is partial (`buffer`,
@@ -2318,7 +2320,7 @@ Before a stage is reported done, check each item:
   names and folder structure; the test is registered in `src/tests.zig`.
 - The file header says `// Port of ...` (or states the deliberate
   adaptation), and any behavior that is not ported names the exact missing
-  capability in `README.md` and, for UI limitations, `docs/terminal-ui.md`.
+  capability in `docs/design.md` and, for UI limitations, `docs/terminal-ui.md`.
 - Every returned frame, buffer and JSON value has an owner with a
   `deinit`/`free` path; actor registrations are torn down in reverse order.
 - Interfaces use `.interface()`; editor `ICommand` adapters expose

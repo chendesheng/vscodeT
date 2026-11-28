@@ -240,13 +240,15 @@ part of it is present.
      (HTML/CSS parser, event loop, compositor, Web APIs), which this project
      deliberately does not have.
 
-   State the exact reason in the file header, in `README.md`, and in
-   `docs/terminal-ui.md` when the limitation is in the UI library. Do not use
-   these exceptions for work that is merely larger than expected.
+   State the exact reason in the file header, in `docs/design.md`, and in
+   `docs/terminal-ui.md` when the limitation is in the UI library. Update the
+   user-facing summary in `README.md` when the supported scope changes. Do not
+   use these exceptions for work that is merely larger than expected.
 8. Do not invent behavior that upstream does not have. If a shortcut or command
    is TUI-specific, say so.
-9. Update `README.md` when adding a contribution, changing supported behavior,
-   or leaving a notable feature unported.
+9. Update `docs/design.md` when adding a contribution, changing supported
+   behavior, or leaving a notable feature unported. Update `README.md` and
+   `docs/usage.md` when the user-facing scope or setup changes.
 10. **Port upstream event and state flows faithfully.** Do not invent a
     parallel mechanism (a revision counter, snapshot poll, dirty flag, or
     similar) when upstream already has an event or callback for the same
@@ -307,7 +309,7 @@ part of it is present.
   revisions, fast paths or special cases to ported editor/workbench code. An
   editor-side performance change is allowed only when it mirrors an upstream
   optimization; a verified upstream divergence must be documented in the file
-  header, `README.md` and `docs/terminal-ui.md` before it is relied on.
+  header, `docs/design.md` and `docs/terminal-ui.md` before it is relied on.
 - A collapsed terminal-only renderer is debt to remove, not a pattern to
   extend. When touching one, move the behavior into the upstream-shaped
   `View`/view-part pipeline and keep only the terminal boundary adapter.
@@ -339,7 +341,7 @@ part of it is present.
 - When a view part is genuinely browser-only (full HTML/CSS engine, browser
   event loop, compositor, native selection), isolate the missing piece, port
   the portable state/commands, wire what the TUI can support, and document the
-  exact gap in `README.md` and `docs/terminal-ui.md`.
+  exact gap in `docs/design.md` and `docs/terminal-ui.md`.
 - Port upstream `View`/`ViewPart` orchestration (`render`,
   `_flushAccumulatedAndRenderNow`, `shouldRender`/`prepareRender`/`render`).
   Do not add a terminal-only `rebuild`/`resize` method; rendering and size
@@ -523,7 +525,7 @@ Also verify:
       transitions before a render or input event when applicable.
 - [ ] View-side behavior is ported through the upstream-shaped layers, not only
       the model/controller; any terminal/browser-infrastructure exception is
-      documented in the file header and `README.md`.
+      documented in the file header and `docs/design.md`.
 - [ ] Ported view/render code keeps the upstream `View`/`ViewPart`/event
       structure; no terminal-only `rebuild`/`resize` method was added.
 - [ ] Performance work is in `ui/` or is a documented, verified upstream
@@ -531,7 +533,8 @@ Also verify:
 - [ ] New public command/interface adapters use `interface()`.
 - [ ] Allocations have cleanup paths.
 - [ ] TUI wiring and shortcuts are documented if applicable.
-- [ ] README notes the ported scope and any remaining limitations.
+- [ ] `docs/design.md` records the detailed ported scope and remaining
+      limitations; the README notes the user-facing scope and limitations.
 - [ ] Build caches were checked and cleaned as needed; the filesystem still has
       free space.
 - [ ] The working tree contains only intentional changes.

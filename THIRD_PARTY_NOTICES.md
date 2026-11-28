@@ -1,7 +1,8 @@
 # Third-party notices
 
 minecode is a Zig port of Visual Studio Code's editor, platform and workbench.
-Release archives include data and code from the projects below. The bundled
+minecode itself is MIT-licensed (see `LICENSE`). Release archives include data
+and code from the projects below. The bundled
 `licenses/` directory contains the upstream license texts where the source tree
 provides them.
 

@@ -951,7 +951,7 @@ and `imagePreviewEditor.zig` hold fit/zoom/scroll/load state, and
 `src/vs/workbench/contrib/mediaPreview/browser/imagePreviewPane.zig` paints the message chrome through a `Surface` and the
 image through placeholder cells. Browser-only behavior (clipboard image copy,
 context menus, pinch zoom, CSS scrollbars, pixelated rendering) is omitted as
-documented in `README.md`.
+documented in `docs/design.md`.
 
 ### 6.10 Mouse pointer shapes (OSC 22)
 
@@ -1521,7 +1521,7 @@ Library constraints:
   model and widget and forwards decoration ranges to the view. The app treats
   Ctrl-F/Ctrl-R as global find keys, and `View.dispatchKey` routes everything
   else to the focused widget first.
-- Key map for the terminal find bar (TUI-specific, documented in `README.md`):
+- Key map for the terminal find bar (TUI-specific):
   Enter/Shift-Enter next/previous, Tab switches inputs, Escape closes,
   Ctrl-R toggles the replace row (Ctrl-H is Backspace in a terminal),
   Alt-C/W/R options, Alt-P preserve case, Alt-L find in selection,
@@ -2202,7 +2202,7 @@ Terminal substitutions and their reasons:
 - The main loop drives the quick-diff delay and dispatches completed worker
   results. The native worker receives owned text snapshots.
 
-Limitations are documented in `README.md` and `docs/diff-view-audit.md`.
+Limitations are documented in `docs/design.md` and `docs/diff-view-audit.md`.
 Both panes retain their real text models. The retained ViewZones part aligns
 changed ranges, wrapped lines and other zone heights. Inline mode inserts
 deleted original code above the modified model, using the shared token and
