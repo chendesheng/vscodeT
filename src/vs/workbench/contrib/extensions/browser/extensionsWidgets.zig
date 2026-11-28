@@ -29,6 +29,18 @@ pub const RatingsWidget = struct {
     }
 };
 
+/// Port of PreReleaseBookmarkWidget: installed extensions show the bookmark
+/// only when they opt into pre-release versions, while Marketplace entries
+/// show it when a pre-release version is available.
+pub const PreReleaseBookmarkWidget = struct {
+    // Codicon.versions (extensions-pre-release).
+    pub const glyph: u21 = 0xEB78;
+
+    pub fn shouldShow(extension: model.IExtension) bool {
+        return if (extension.state == .Installed) extension.is_pre_release else extension.has_pre_release;
+    }
+};
+
 test "InstallCountWidget: truncates compact metrics like upstream" {
     var buffer: [32]u8 = undefined;
     var extension: model.IExtension = .{ .identifier = "pub.ext", .name = "ext", .display_name = "Ext", .description = "", .version = "1.0.0", .location = "", .publisher = "pub", .categories = &.{}, .is_builtin = false, .install_count = 1_299_999 };

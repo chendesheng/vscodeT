@@ -2,7 +2,8 @@
 // The terminal row uses three cells high for name/version, description and
 // publisher/status/action. Gallery install counts are shown when available.
 // The generic extension codicon substitutes for per-extension icon assets;
-// browser hovers, verified badges and full action bar styling are unported.
+// the pre-release bookmark occupies the cell below the icon rather than
+// overlaying it. Browser hovers and full action bar styling are unported.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
@@ -28,6 +29,7 @@ pub const Colors = struct {
     input_foreground: ui.Color,
     input_placeholder: ui.Color,
     icon_foreground: ui.Color,
+    pre_release_foreground: ui.Color,
 };
 
 pub const ThemeGetter = struct {
@@ -53,6 +55,7 @@ pub fn colors(theme: ?*const theme_colors_mod.ThemeColors) Colors {
         .input_foreground = .{ .r = 204, .g = 204, .b = 204 },
         .input_placeholder = .{ .r = 150, .g = 150, .b = 150 },
         .icon_foreground = .{ .r = 197, .g = 197, .b = 197 },
+        .pre_release_foreground = .{ .r = 0x1d, .g = 0x92, .b = 0x71 },
     };
     if (theme) |palette| {
         result.background = palette.colorOr("sideBar.background", result.background);
@@ -67,6 +70,7 @@ pub fn colors(theme: ?*const theme_colors_mod.ThemeColors) Colors {
         result.input_foreground = palette.colorOr("input.foreground", result.input_foreground);
         result.input_placeholder = palette.colorOr("input.placeholderForeground", result.input_placeholder);
         result.icon_foreground = palette.colorOr("icon.foreground", result.icon_foreground);
+        result.pre_release_foreground = palette.colorOr("extensionIcon.preReleaseForeground", result.pre_release_foreground);
     }
     return result;
 }
@@ -152,7 +156,13 @@ pub fn renderRow(grid: *ui.CellGrid, row: *const list.Row, extension: *const IEx
 
     // Upstream header: display name, restart indicator, install count and
     // rating. Small statistics are shown only for uninstalled extensions.
-    if (row.offset_y == 0) grid.putCodepoint(row.x, row.y, if (extension.is_pre_release or extension.has_pre_release) '⚗' else extension_glyph, 1, icon_style);
+    if (row.offset_y == 0) grid.putCodepoint(row.x, row.y, extension_glyph, 1, icon_style);
+    if (widgets.PreReleaseBookmarkWidget.shouldShow(extension.*) and row.offset_y <= 1 and row.offset_y + row.height > 1) {
+        grid.putCodepoint(row.x, row.y + 1 - row.offset_y, widgets.PreReleaseBookmarkWidget.glyph, 1, .{
+            .fg = ui.cell.packColor(colors_value.pre_release_foreground),
+            .bg = ui.cell.packColor(background),
+        });
+    }
     const name_width = row.width -| 2;
     var install_buffer: [32]u8 = undefined;
     var rating_buffer: [32]u8 = undefined;

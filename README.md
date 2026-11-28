@@ -471,7 +471,8 @@ view; exact IDs resolve installed extensions before querying Marketplace. Ctrl+S
 The gallery is Open VSX by default (`MINECODE_EXTENSION_GALLERY_URL` overrides
 the compatible gallery endpoint). Searches are delayed, cancellable and paged
 on scroll; publisher, install counts, ratings, channel and update metadata
-appear in list rows and the editor.
+appear in list rows and the editor. The extension icon remains unchanged when
+a pre-release bookmark is shown.
 
 Clicking a row or pressing Enter opens a read-only, singleton extension editor
 preview tab, not `package.json`. Its tabs display README, registered Features,

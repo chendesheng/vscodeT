@@ -168,3 +168,44 @@ test "Sort-only query selects installed extensions by update date" {
     try testing.expectEqualStrings("pub.second", filtered[0].identifier);
     try testing.expectEqualStrings("pub.first", filtered[1].identifier);
 }
+
+test "Extension list pre-release bookmark does not replace the extension icon" {
+    const ui = @import("ui");
+    const list_renderer = @import("../../browser/extensionsList.zig");
+    const widgets = @import("../../browser/extensionsWidgets.zig");
+    var grid = try ui.CellGrid.init(testing.allocator, 24, 3);
+    defer grid.deinit();
+    const row: @import("../../../../../base/browser/ui/list/list.zig").Row = .{
+        .grid = &grid,
+        .x = 0,
+        .y = 0,
+        .width = 24,
+        .height = 3,
+        .index = 0,
+        .selected = false,
+        .focused = false,
+        .focused_selection = false,
+    };
+    var entry = extension("redhat.vscode-yaml", "YAML", &no_categories, true, false);
+    entry.has_pre_release = true;
+    // An installed stable version with a pre-release available still uses
+    // the ordinary icon and has no bookmark.
+    list_renderer.renderRow(&grid, &row, &entry, list_renderer.colors(null), .{});
+    try testing.expectEqual(@as(u32, list_renderer.extension_glyph), grid.cluster[0]);
+    try testing.expect(grid.cluster[grid.cols] != widgets.PreReleaseBookmarkWidget.glyph);
+
+    // The bookmark is separate for an installed pre-release version.
+    grid.clear();
+    entry.is_pre_release = true;
+    list_renderer.renderRow(&grid, &row, &entry, list_renderer.colors(null), .{});
+    try testing.expectEqual(@as(u32, list_renderer.extension_glyph), grid.cluster[0]);
+    try testing.expectEqual(@as(u32, widgets.PreReleaseBookmarkWidget.glyph), grid.cluster[grid.cols]);
+
+    // Gallery extensions advertise available pre-release versions.
+    grid.clear();
+    entry.state = .Uninstalled;
+    entry.is_pre_release = false;
+    list_renderer.renderRow(&grid, &row, &entry, list_renderer.colors(null), .{});
+    try testing.expectEqual(@as(u32, list_renderer.extension_glyph), grid.cluster[0]);
+    try testing.expectEqual(@as(u32, widgets.PreReleaseBookmarkWidget.glyph), grid.cluster[grid.cols]);
+}
