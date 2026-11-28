@@ -2,7 +2,8 @@
   "case": "scroll_goto_end",
   "engine": "helix",
   "keys": [
-    "G"
+    "g",
+    "e"
   ],
   "reference": "helix",
   "reference_version": "helix 25.07.1",

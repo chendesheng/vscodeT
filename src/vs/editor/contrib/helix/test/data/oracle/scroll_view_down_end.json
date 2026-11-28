@@ -2,7 +2,8 @@
   "case": "scroll_view_down_end",
   "engine": "helix",
   "keys": [
-    "G",
+    "g",
+    "e",
     "z",
     "j"
   ],

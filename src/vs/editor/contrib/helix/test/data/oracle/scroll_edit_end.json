@@ -2,7 +2,8 @@
   "case": "scroll_edit_end",
   "engine": "helix",
   "keys": [
-    "G",
+    "g",
+    "e",
     "o",
     "X",
     "<Esc>"

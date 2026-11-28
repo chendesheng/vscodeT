@@ -1,3 +1,22 @@
+diff --git a/helix-term/src/application.rs b/helix-term/src/application.rs
+--- a/helix-term/src/application.rs
++++ b/helix-term/src/application.rs
+@@ -93,6 +93,15 @@
+ }
+ 
+ impl Application {
++    #[cfg(feature = "integration")]
++    pub fn set_test_terminal_size(&mut self, width: u16, height: u16) {
++        self.terminal
++            .resize(Rect::new(0, 0, width, height))
++            .expect("Unable to resize test terminal");
++        let area = self.terminal.size().expect("couldn't get terminal size");
++        self.compositor.resize(area);
++    }
++
+     pub fn new(args: Args, config: Config, lang_loader: syntax::Loader) -> Result<Self, Error> {
+         #[cfg(feature = "integration")]
+         setup_integration_logging();
 diff --git a/helix-term/tests/integration.rs b/helix-term/tests/integration.rs
 index 469242e..cb03f2c 100644
 --- a/helix-term/tests/integration.rs
@@ -14,7 +33,7 @@ new file mode 100644
 index 0000000..433289c
 --- /dev/null
 +++ b/helix-term/tests/test/record.rs
-@@ -0,0 +1,223 @@
+@@ -0,0 +1,226 @@
 +// CI-only cassette recorder for the minecode Helix oracle.
 +//
 +// This file is added by scripts/oracle/helix/record.patch and is never part of
@@ -222,8 +241,11 @@ index 0000000..433289c
 +        let out_path = output_dir.join(path.file_name().context("cassette has no filename")?);
 +        let mut app = AppBuilder::default().build()?;
 +        seed_editor(&mut app, text, &cursors)?;
-+        // Match the replay harness viewport: `height` is the visible text
-+        // rows, while the editor area also reserves one row for the statusline.
++        // Match the replay harness viewport. The terminal also reserves a
++        // command line and the editor a statusline, so the inner text height
++        // is `height`; resize both the terminal and the current editor area so
++        // the first key and every later render use the same viewport.
++        app.set_test_terminal_size(width, height.saturating_add(2));
 +        app.editor.resize(Rect::new(0, 0, width, height.saturating_add(1)));
 +        test_key_sequence(
 +            &mut app,
