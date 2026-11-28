@@ -2,7 +2,8 @@
 // `src/vs/workbench/api/browser/mainThreadExtensionService.ts`.
 //
 // Activation-start bookkeeping prevents removing an extension once its code
-// has started. Performance marks and browser-URI translation remain no-ops/identity.
+// has started; activation timing feeds runtime status. Performance marks and
+// browser-URI translation remain no-ops/identity.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const rpc = @import("../../services/extensions/common/rpcProtocol.zig");

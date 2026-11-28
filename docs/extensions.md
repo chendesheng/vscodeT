@@ -47,7 +47,9 @@ documentation, actions and responsive additional details.
 `extensionFeatures.zig` provides a window-owned feature registry with
 renderers registered by their command, configuration, language and theme
 contribution owners; the Features tab and `@contribute:` search use the
-same registry.
+same registry. The runtime status feature reports activation timing and reason
+from the actual Node host, and the shared management-action menu includes
+extension/publisher update preferences.
 
 `extensionGalleryService.zig` and `extensionManagementService.zig` own
 HTTP queries/assets, signature validation and staged VSIX publication. The
@@ -55,7 +57,7 @@ management transaction resolves dependencies/pack members before publishing
 active profile selections. Enablement accounts for dependency state and
 persists global/workspace overrides. `extensionsWorkbenchService.zig` delivers
 inventory, gallery, management and update changes to subscribers, schedules
-signed delayed automatic updates, and publishes the desired enabled extension
+signed delayed automatic updates with application-scope preferences, and publishes the desired enabled extension
 descriptions. The window-owned extension-host runtime reconciles these
 descriptions through the pinned host delta RPC; active removal requires a
 host restart. The startup registry remains the owner of static contribution
@@ -63,8 +65,8 @@ points and changes to those points require restarting the editor.
 
 The port does not yet have all upstream management services and renderers:
 additional recommendation providers, full profile switching and multiple
-extension servers, extension-specific automatic update settings, trust/policy
-integration, runtime-status and other feature renderers, and live replacement
+extension servers, trust/policy integration, runtime error/access telemetry and other feature
+renderers, and live replacement
 of startup declarative contributions remain portable gaps. Browser webview
 rendering, image artwork and native browser multi-file selection are terminal
 adaptations/limitations, not evidence that the portable functionality is

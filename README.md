@@ -462,7 +462,7 @@ The Extensions activity (`Ctrl-Shift-X`, `View: Show Extensions`) has a shared
 search header and registered query-specific views. Installed extensions are
 shown by default; a fresh user inventory also shows Popular results, while
 workspace recommendations come from `.vscode/extensions.json` or a workspace
-configuration file. `@builtin` separates Features, Themes and Programming
+configuration file, respecting unwanted recommendations. `@builtin` separates Features, Themes and Programming
 Languages. `@installed`, `@enabled`, `@disabled`, `@updates`, `@outdated`,
 `@recentlyUpdated`, `@restartRequired`, `@recommended`, `@popular`,
 `@contribute:<feature>`, category and ID filters select local or gallery
@@ -475,13 +475,16 @@ appear in list rows and the editor.
 Clicking a row or pressing Enter opens a read-only, singleton extension editor
 preview tab, not `package.json`. Its tabs display README, registered Features,
 changelog, dependencies and extension pack when available. Features include
-commands, settings/defaults, languages and themes. The responsive additional
+commands, settings/defaults, languages, themes and the actual local host
+activation status. The responsive additional
 details pane shows installation information, Marketplace dates, categories and
 resource links. The terminal uses shared Markdown layout rather than browser
 webviews, fetching gallery documentation asynchronously. Arrow keys switch tabs
 or scroll; Tab moves between content, actions and navigation. List and editor
 actions expose Enable/Disable (global and workspace), Install/Update,
-Uninstall, release/pre-release switching, and specific version selection.
+Uninstall, release/pre-release switching, and specific version selection. The
+shared management menu (the detail editor gear and row context menu) includes
+checked extension/publisher Auto Update preferences.
 Dependency and pack relationships are resolved for installation and checked for
 uninstall and enablement; confirmation is requested when other members change.
 
@@ -500,16 +503,17 @@ cannot be uninstalled. Global enablement is persisted in
 Update checks are independent of sidebar searches. The configuration controls
 `extensions.autoCheckUpdates`, `extensions.autoUpdate`,
 `extensions.autoUpdateDelay` and `extensions.verifySignature` govern checks
-and delayed unattended installation; unattended updates require verification,
-an enabled extension and an unpinned version. Host inventory changes use
+and delayed unattended installation; unattended updates require verification
+and the upstream automatic-update eligibility policy (enabled and unpinned by
+default, with explicit selection when global automatic updates are off). Host inventory changes use
 extension-host deltas where supported; activated extensions that cannot be
 removed live expose Restart Extensions. Changes to startup-owned declarative
 contributions (languages, grammars, themes, configuration and snippets) still
 require restarting the editor.
 
 Remaining portable parity gaps include full profile/server management,
-additional recommendation sources, per-extension auto-update controls, more
-registered feature renderers/runtime status, dynamic declarative contribution
+additional recommendation sources, more registered feature renderers and
+runtime error/access telemetry, dynamic declarative contribution
 registration, and the complete trust and extension-policy services. The
 terminal uses text/glyphs instead of gallery artwork and browser webviews;
 remote/web extension hosts and browser file-picker multi-selection are not

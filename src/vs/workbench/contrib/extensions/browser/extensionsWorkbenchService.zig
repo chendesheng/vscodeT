@@ -3,8 +3,8 @@
 // and onChange delivery. The terminal uses a single local server and the
 // effective user directory. Host-only changes can restart the local host;
 // mounted declarative points still require restarting the window. Automatic
-// checks are separate from Marketplace queries; unattended installation,
-// additional profiles, and dynamic registry deltas remain unported.
+// checks and signed unattended installations are separate from Marketplace
+// queries; additional profiles and dynamic static-point deltas remain unported.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Emitter = @import("../../../../base/common/event.zig").Emitter;

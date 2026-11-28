@@ -2,8 +2,8 @@
 // `src/vs/platform/extensionManagement/node/extensionManagementService.ts`.
 // The standalone terminal scanner reads the effective user directory directly;
 // installation is staged in a hidden directory before publishing the version.
-// A staged transaction owns dependency/pack collection and rollback. Profile
-// registration and signature services remain separate unported contracts.
+// A staged transaction owns dependency/pack collection and rollback; profile
+// registration and repository signature verification use their own services.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const gallery = @import("../common/extensionGalleryService.zig");
