@@ -214,6 +214,15 @@ pub fn scanAllExtensions(
                     try extension.manifest.value.object.put(scratch, "__metadata", try std.json.parseFromSliceLeaky(std.json.Value, scratch, raw, .{}));
                 }
             }
+            if (selection.uuid(extension.identifier, extension.version)) |uuid| {
+                if (extension.manifest.value == .object) {
+                    const scratch = extension.manifest.arena.allocator();
+                    var metadata = extension.manifest.value.object.get("__metadata") orelse std.json.Value{ .object = .empty };
+                    if (metadata != .object) metadata = .{ .object = .empty };
+                    try metadata.object.put(scratch, "id", .{ .string = try scratch.dupe(u8, uuid) });
+                    try extension.manifest.value.object.put(scratch, "__metadata", metadata);
+                }
+            }
         }
         var existing_index: ?usize = null;
         for (merged.items, 0..) |existing, index| {

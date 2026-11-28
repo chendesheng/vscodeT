@@ -11,6 +11,7 @@ const util = @import("../common/extensionManagementUtil.zig");
 const validator = @import("../../extensions/common/extensionValidator.zig");
 const product = @import("../../product/common/product.zig");
 const scanner = @import("../common/extensionsScannerService.zig");
+const signature_service = @import("extensionSignatureVerificationService.zig");
 const profiles = @import("../common/extensionsProfileScannerService.zig");
 
 const Manifest = struct {
@@ -20,6 +21,8 @@ const Manifest = struct {
     engines: struct { vscode: []const u8 },
     extensionDependencies: []const []const u8 = &.{},
     extensionPack: []const []const u8 = &.{},
+    main: ?[]const u8 = null,
+    browser: ?[]const u8 = null,
 };
 
 fn validName(value: []const u8) bool {
@@ -45,15 +48,20 @@ fn validArchivePath(path: []const u8) bool {
 pub const Package = struct {
     bytes: []u8,
     version: []u8,
+    target_platform: ?[]u8 = null,
+    uuid: ?[]u8 = null,
 
     pub fn deinit(self: Package, allocator: Allocator) void {
         allocator.free(self.bytes);
         allocator.free(self.version);
+        if (self.target_platform) |target| allocator.free(target);
+        if (self.uuid) |uuid| allocator.free(uuid);
     }
 };
 pub const PackageSource = struct {
     context: *anyopaque,
     resolve: *const fn (*anyopaque, Allocator, std.Io, []const u8, bool) anyerror!?Package,
+    verify: ?*const fn (*anyopaque, Allocator, std.Io, std.Io.Dir, []const u8, []const u8, ?[]const u8, []const u8) anyerror!void = null,
 };
 
 const Stage = struct { identifier: []const u8, version: []const u8, destination: []const u8, relative: []const u8, metadata: std.json.Value, reuse: bool = false };
@@ -69,6 +77,7 @@ const Transaction = struct {
     source: ?PackageSource,
     prefer_prerelease: bool,
     pin_root: bool,
+    unattended: bool,
     packages: std.ArrayList(Stage) = .empty,
 
     fn contains(self: *const Transaction, id: []const u8) bool {
@@ -84,10 +93,10 @@ const Transaction = struct {
             return; // an unavailable/incompatible pack member is optional
         };
         defer package.deinit(self.allocator);
-        try self.collect(package.bytes, id, package.version);
+        try self.collect(package.bytes, id, package.version, package.target_platform, package.uuid, true);
     }
 
-    fn collect(self: *Transaction, bytes: []const u8, identifier: ?[]const u8, version: ?[]const u8) anyerror!void {
+    fn collect(self: *Transaction, bytes: []const u8, identifier: ?[]const u8, version: ?[]const u8, target_platform: ?[]const u8, uuid: ?[]const u8, verify: bool) anyerror!void {
         const allocator = self.arena.allocator();
         const name = try std.fmt.allocPrint(allocator, "{d}", .{self.packages.items.len});
         try self.stage.createDir(self.io, name, .default_dir);
@@ -96,6 +105,11 @@ const Transaction = struct {
         const manifest = try extractPackage(self.allocator, self.io, dir, bytes, identifier, version);
         defer manifest.deinit();
         const id = try util.getGalleryExtensionId(allocator, manifest.value.publisher, manifest.value.name);
+        if (self.unattended and self.packages.items.len == 0) if (self.inventory.find(id)) |old| {
+            const previous = old.manifest.value;
+            if (previous == .object and !previous.object.contains("main") and !previous.object.contains("browser") and (manifest.value.main != null or manifest.value.browser != null)) return error.ExtensionUpdateConsentRequired;
+        };
+        if (verify) if (self.source) |source| if (source.verify) |verify_package| try verify_package(source.context, self.allocator, self.io, dir, id, manifest.value.version, target_platform, bytes);
         if (self.contains(id)) return error.DuplicateExtensionPackage;
         const version_copy = try allocator.dupe(u8, manifest.value.version);
         var destination = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ id, version_copy });
@@ -114,6 +128,7 @@ const Transaction = struct {
         try metadata.put(allocator, "installedTimestamp", .{ .integer = std.Io.Timestamp.now(self.io, .real).toMilliseconds() });
         try metadata.put(allocator, "updated", .{ .bool = self.inventory.find(id) != null });
         try metadata.put(allocator, "preRelease", .{ .bool = self.prefer_prerelease });
+        if (uuid) |value| try metadata.put(allocator, "id", .{ .string = try allocator.dupe(u8, value) });
         try metadata.put(allocator, "pinned", .{ .bool = self.pin_root and self.packages.items.len == 0 });
         // Register before descending so cycles and diamonds are deduplicated.
         try self.packages.append(allocator, .{ .identifier = id, .version = version_copy, .destination = destination, .relative = relative, .metadata = .{ .object = metadata }, .reuse = reuse });
@@ -175,10 +190,10 @@ pub fn installVSIX(allocator: Allocator, io: std.Io, location: []const u8, bytes
 /// publish them together. Failed publication moves only transaction-created
 /// versions back to staging; preexisting extension versions are untouched.
 pub fn installWithSource(allocator: Allocator, io: std.Io, location: []const u8, system_location: ?[]const u8, bytes: []const u8, expected_identifier: ?[]const u8, expected_version: ?[]const u8, source: ?PackageSource, prefer_prerelease: bool) !void {
-    return installWithOptions(allocator, io, location, system_location, bytes, expected_identifier, expected_version, source, prefer_prerelease, false);
+    return installWithOptions(allocator, io, location, system_location, bytes, expected_identifier, expected_version, source, prefer_prerelease, false, null, null, false, false);
 }
 
-fn installWithOptions(allocator: Allocator, io: std.Io, location: []const u8, system_location: ?[]const u8, bytes: []const u8, expected_identifier: ?[]const u8, expected_version: ?[]const u8, source: ?PackageSource, prefer_prerelease: bool, pin_root: bool) !void {
+fn installWithOptions(allocator: Allocator, io: std.Io, location: []const u8, system_location: ?[]const u8, bytes: []const u8, expected_identifier: ?[]const u8, expected_version: ?[]const u8, source: ?PackageSource, prefer_prerelease: bool, pin_root: bool, target_platform: ?[]const u8, uuid: ?[]const u8, verify_root: bool, unattended: bool) !void {
     const cwd = std.Io.Dir.cwd();
     try cwd.createDirPath(io, location);
     var root = try cwd.openDir(io, location, .{});
@@ -198,9 +213,9 @@ fn installWithOptions(allocator: Allocator, io: std.Io, location: []const u8, sy
     defer allocator.free(absolute);
     var profile = try profiles.Profile.load(allocator, io, location);
     defer profile.deinit();
-    var transaction: Transaction = .{ .allocator = allocator, .io = io, .root = root, .stage = stage, .location = absolute, .profile = &profile, .arena = .init(allocator), .inventory = inventory, .source = source, .prefer_prerelease = prefer_prerelease, .pin_root = pin_root };
+    var transaction: Transaction = .{ .allocator = allocator, .io = io, .root = root, .stage = stage, .location = absolute, .profile = &profile, .arena = .init(allocator), .inventory = inventory, .source = source, .prefer_prerelease = prefer_prerelease, .pin_root = pin_root, .unattended = unattended };
     defer transaction.arena.deinit();
-    try transaction.collect(bytes, expected_identifier, expected_version);
+    try transaction.collect(bytes, expected_identifier, expected_version, target_platform, uuid, verify_root);
     try transaction.publish();
 }
 
@@ -272,6 +287,8 @@ fn writeMetadata(allocator: Allocator, io: std.Io, stage: std.Io.Dir, updated: b
 
 const GallerySource = struct {
     service_url: []const u8,
+    require_verified: bool = false,
+    verify_signature: bool = true,
 
     fn resolve(context: *anyopaque, allocator: Allocator, io: std.Io, identifier: []const u8, prerelease: bool) !?Package {
         const self: *GallerySource = @ptrCast(@alignCast(context));
@@ -285,18 +302,30 @@ const GallerySource = struct {
             const selected = entry.selectVersion(null, prerelease) orelse return null;
             const version = try allocator.dupe(u8, selected.version);
             errdefer allocator.free(version);
+            const target = if (selected.targetPlatform) |platform| try allocator.dupe(u8, platform) else null;
+            errdefer if (target) |platform| allocator.free(platform);
+            const uuid = if (entry.extensionId) |value| try allocator.dupe(u8, value) else null;
+            errdefer if (uuid) |value| allocator.free(value);
             const bytes = try gallery.getAsset(allocator, io, selected.asset("Microsoft.VisualStudio.Services.VSIXPackage").?);
-            return .{ .bytes = bytes, .version = version };
+            return .{ .bytes = bytes, .version = version, .target_platform = target, .uuid = uuid };
         }
         return null;
     }
+
+    fn verify(context: *anyopaque, allocator: Allocator, io: std.Io, dir: std.Io.Dir, identifier: []const u8, version: []const u8, target: ?[]const u8, bytes: []const u8) !void {
+        const self: *GallerySource = @ptrCast(@alignCast(context));
+        if (!self.verify_signature and !self.require_verified) return;
+        const normalized_target = if (target) |platform| if (std.mem.eql(u8, platform, "universal") or std.mem.eql(u8, platform, "undefined")) null else platform else null;
+        const result = try signature_service.verify(allocator, io, dir, self.service_url, identifier, version, normalized_target, bytes);
+        if (self.require_verified and result != .verified) return error.ExtensionSignatureRequired;
+    }
 };
 
-pub fn installFromGallery(allocator: Allocator, io: std.Io, location: []const u8, system_location: ?[]const u8, service_url: []const u8, url: []const u8, identifier: []const u8, version: []const u8, prerelease: bool, pinned: bool) !void {
+pub fn installFromGallery(allocator: Allocator, io: std.Io, location: []const u8, system_location: ?[]const u8, service_url: []const u8, url: []const u8, identifier: []const u8, version: []const u8, prerelease: bool, pinned: bool, target_platform: ?[]const u8, uuid: ?[]const u8, verify_signature: bool, require_verified: bool) !void {
     const bytes = try gallery.getAsset(allocator, io, url);
     defer allocator.free(bytes);
-    var source: GallerySource = .{ .service_url = service_url };
-    try installWithOptions(allocator, io, location, system_location, bytes, identifier, version, .{ .context = &source, .resolve = GallerySource.resolve }, prerelease, pinned);
+    var source: GallerySource = .{ .service_url = service_url, .require_verified = require_verified, .verify_signature = verify_signature };
+    try installWithOptions(allocator, io, location, system_location, bytes, identifier, version, .{ .context = &source, .resolve = GallerySource.resolve, .verify = GallerySource.verify }, prerelease, pinned, target_platform, uuid, true, require_verified);
 }
 
 /// Local installation through the workbench file-selection command. The
@@ -306,7 +335,7 @@ pub fn installVSIXFile(allocator: Allocator, io: std.Io, location: []const u8, s
     const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024 * 1024 * 1024));
     defer allocator.free(bytes);
     var source: GallerySource = .{ .service_url = service_url };
-    try installWithOptions(allocator, io, location, system_location, bytes, null, null, if (service_url.len > 0) .{ .context = &source, .resolve = GallerySource.resolve } else null, false, true);
+    try installWithOptions(allocator, io, location, system_location, bytes, null, null, if (service_url.len > 0) .{ .context = &source, .resolve = GallerySource.resolve, .verify = GallerySource.verify } else null, false, true, null, null, false, false);
 }
 
 /// Remove the selected identifiers from the default profile together. The

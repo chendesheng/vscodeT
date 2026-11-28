@@ -64,6 +64,15 @@ pub const Profile = struct {
         return false;
     }
 
+    pub fn uuid(self: *const Profile, identifier: []const u8, version: []const u8) ?[]const u8 {
+        for (self.entries.items) |entry| {
+            if (!util.areSameExtensions(id(entry) orelse continue, identifier)) continue;
+            if (!std.mem.eql(u8, string(field(entry, "version")) orelse continue, version)) continue;
+            return string(field(field(entry, "identifier"), "uuid"));
+        }
+        return null;
+    }
+
     pub fn metadata(self: *const Profile, identifier: []const u8, version: []const u8) ?std.json.Value {
         for (self.entries.items) |entry| {
             if (!util.areSameExtensions(id(entry) orelse continue, identifier)) continue;
@@ -93,6 +102,9 @@ pub const Profile = struct {
         var identifier_object = field(.{ .object = entry }, "identifier");
         if (identifier_object != .object) identifier_object = .{ .object = .empty };
         try identifier_object.object.put(allocator, "id", .{ .string = try allocator.dupe(u8, identifier) });
+        if (metadata_value) |value| if (string(field(value, "id"))) |uuid_value| {
+            try identifier_object.object.put(allocator, "uuid", .{ .string = try allocator.dupe(u8, uuid_value) });
+        };
         try entry.put(allocator, "identifier", identifier_object);
         try entry.put(allocator, "version", .{ .string = try allocator.dupe(u8, version) });
         try entry.put(allocator, "relativeLocation", .{ .string = try allocator.dupe(u8, std.fs.path.basename(location)) });

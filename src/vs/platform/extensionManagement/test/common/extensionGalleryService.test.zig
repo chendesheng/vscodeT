@@ -40,3 +40,10 @@ test "ExtensionGalleryService: selects compatible release or explicitly requeste
     try std.testing.expectEqualStrings("2.0.0", entry.selectReleaseChannel(true).?.version);
     try std.testing.expectEqualStrings("1.0.0", entry.selectReleaseChannel(false).?.version);
 }
+
+test "ExtensionGalleryService: parses registry timestamps with fractions and offsets" {
+    try std.testing.expectEqual(@as(?i64, 0), gallery.parseGalleryTimestamp("1970-01-01T00:00:00Z"));
+    try std.testing.expectEqual(@as(?i64, 123), gallery.parseGalleryTimestamp("1970-01-01T02:00:00.123456+02:00"));
+    try std.testing.expectEqual(@as(?i64, 951782400000), gallery.parseGalleryTimestamp("2000-02-29T00:00:00Z"));
+    try std.testing.expect(gallery.parseGalleryTimestamp("2100-02-29T00:00:00Z") == null);
+}

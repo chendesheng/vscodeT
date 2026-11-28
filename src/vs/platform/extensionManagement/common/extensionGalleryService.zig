@@ -42,6 +42,7 @@ pub const Property = struct { key: []const u8, value: []const u8 };
 pub const Version = struct {
     version: []const u8,
     targetPlatform: ?[]const u8 = null,
+    lastUpdated: ?[]const u8 = null,
     files: ?[]const Asset = null,
     properties: ?[]const Property = null,
     assetUri: ?[]const u8 = null,
@@ -88,6 +89,8 @@ pub const Publisher = struct { publisherName: []const u8, displayName: ?[]const 
 pub const Statistic = struct { statisticName: []const u8, value: f64 };
 pub const GalleryExtension = struct {
     extensionName: []const u8,
+    extensionId: ?[]const u8 = null,
+    lastUpdated: ?[]const u8 = null,
     displayName: ?[]const u8 = null,
     shortDescription: ?[]const u8 = null,
     publisher: Publisher,
@@ -201,4 +204,53 @@ pub fn getAsset(allocator: Allocator, io: std.Io, url: []const u8) ![]u8 {
     defer response.deinit();
     if (response.status_code != 200) return error.GalleryRequestFailed;
     return allocator.dupe(u8, response.body.bytes);
+}
+
+/// Date.parse boundary for the gallery's ISO 8601 timestamps. Fractions beyond
+/// milliseconds are truncated, as in the JavaScript Date representation.
+pub fn parseGalleryTimestamp(value: []const u8) ?i64 {
+    if (value.len < 20 or value[4] != '-' or value[7] != '-' or value[10] != 'T' or value[13] != ':' or value[16] != ':') return null;
+    const year = parseDecimal(u16, value[0..4]) orelse return null;
+    const month = parseDecimal(u8, value[5..7]) orelse return null;
+    const day = parseDecimal(u8, value[8..10]) orelse return null;
+    const hour = parseDecimal(u8, value[11..13]) orelse return null;
+    const minute = parseDecimal(u8, value[14..16]) orelse return null;
+    const second = parseDecimal(u8, value[17..19]) orelse return null;
+    if (year < 1970 or month < 1 or month > 12 or day < 1 or hour > 23 or minute > 59 or second > 59) return null;
+    if (day > std.time.epoch.getDaysInMonth(year, @fromBackingInt(@intCast(@as(u4, @intCast(month)))))) return null;
+    var cursor: usize = 19;
+    var millis: i64 = 0;
+    if (value[cursor] == '.') {
+        cursor += 1;
+        const start = cursor;
+        while (cursor < value.len and std.ascii.isDigit(value[cursor])) : (cursor += 1) {
+            if (cursor - start < 3) millis = millis * 10 + value[cursor] - '0';
+        }
+        if (cursor == start) return null;
+        var digits = cursor - start;
+        while (digits < 3) : (digits += 1) millis *= 10;
+    }
+    if (cursor >= value.len) return null;
+    var offset_seconds: i64 = 0;
+    if (value[cursor] == 'Z') {
+        if (cursor + 1 != value.len) return null;
+    } else if (value[cursor] == '+' or value[cursor] == '-') {
+        if (cursor + 6 != value.len or value[cursor + 3] != ':') return null;
+        const offset_hour = parseDecimal(u8, value[cursor + 1 .. cursor + 3]) orelse return null;
+        const offset_minute = parseDecimal(u8, value[cursor + 4 .. cursor + 6]) orelse return null;
+        if (offset_hour > 23 or offset_minute > 59) return null;
+        offset_seconds = @as(i64, offset_hour) * 3600 + @as(i64, offset_minute) * 60;
+        if (value[cursor] == '-') offset_seconds = -offset_seconds;
+    } else return null;
+    var days: i64 = day - 1;
+    var y: u16 = 1970;
+    while (y < year) : (y += 1) days += std.time.epoch.getDaysInYear(y);
+    var m: u8 = 1;
+    while (m < month) : (m += 1) days += std.time.epoch.getDaysInMonth(year, @fromBackingInt(@intCast(@as(u4, @intCast(m)))));
+    return (days * 86400 + @as(i64, hour) * 3600 + @as(i64, minute) * 60 + second - offset_seconds) * 1000 + millis;
+}
+
+fn parseDecimal(comptime T: type, value: []const u8) ?T {
+    for (value) |ch| if (!std.ascii.isDigit(ch)) return null;
+    return std.fmt.parseInt(T, value, 10) catch null;
 }
