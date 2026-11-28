@@ -84,7 +84,7 @@ pub const Version = struct {
         return true;
     }
 };
-pub const Publisher = struct { publisherName: []const u8, displayName: ?[]const u8 = null };
+pub const Publisher = struct { publisherName: []const u8, displayName: ?[]const u8 = null, domain: ?[]const u8 = null, isDomainVerified: ?bool = null };
 pub const Statistic = struct { statisticName: []const u8, value: f64 };
 pub const GalleryExtension = struct {
     extensionName: []const u8,
@@ -105,6 +105,23 @@ pub const GalleryExtension = struct {
             if (exact) |value| {
                 if (!std.mem.eql(u8, value, version.version)) continue;
             } else if (!prefer_prerelease and version.isPreRelease()) continue;
+            if (best) |previous| {
+                const current = std.SemanticVersion.parse(version.version) catch continue;
+                const old = std.SemanticVersion.parse(previous.version) catch continue;
+                if (current.order(old) != .gt) continue;
+            }
+            best = version;
+        }
+        return best;
+    }
+
+    /// A command that explicitly switches channels requires a version from
+    /// that channel; unlike a preference it never falls back to the other.
+    pub fn selectReleaseChannel(self: GalleryExtension, prerelease: bool) ?Version {
+        var best: ?Version = null;
+        for (self.versions) |version| {
+            if (!version.isCompatible() or version.isPreRelease() != prerelease) continue;
+            if (version.asset("Microsoft.VisualStudio.Services.VSIXPackage") == null) continue;
             if (best) |previous| {
                 const current = std.SemanticVersion.parse(version.version) catch continue;
                 const old = std.SemanticVersion.parse(previous.version) catch continue;

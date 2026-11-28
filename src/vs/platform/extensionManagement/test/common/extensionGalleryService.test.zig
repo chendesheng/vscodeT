@@ -37,4 +37,6 @@ test "ExtensionGalleryService: selects compatible release or explicitly requeste
     try std.testing.expectEqualStrings("2.0.0", entry.selectVersion(null, true).?.version);
     try std.testing.expectEqualStrings("2.0.0", entry.selectVersion("2.0.0", false).?.version);
     try std.testing.expect(entry.selectVersion("3.0.0", true) == null);
+    try std.testing.expectEqualStrings("2.0.0", entry.selectReleaseChannel(true).?.version);
+    try std.testing.expectEqualStrings("1.0.0", entry.selectReleaseChannel(false).?.version);
 }

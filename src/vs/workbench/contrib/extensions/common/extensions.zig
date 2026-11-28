@@ -40,8 +40,12 @@ pub const IExtension = struct {
     updated: bool = false,
     pinned: bool = false,
     is_pre_release: bool = false,
+    has_pre_release: bool = false,
+    publisher_domain: ?[]const u8 = null,
+    publisher_verified: bool = false,
     install_count: ?f64 = null,
     rating: ?f64 = null,
+    rating_count: ?f64 = null,
     manifest_url: ?[]const u8 = null,
     readme_url: ?[]const u8 = null,
     changelog_url: ?[]const u8 = null,
@@ -55,7 +59,7 @@ pub const IExtension = struct {
         inline for (.{ "identifier", "name", "display_name", "description", "version", "publisher", "location" }) |key| {
             @field(result, key) = try allocator.dupe(u8, @field(self, key));
         }
-        inline for (.{ "manifest_url", "readme_url", "changelog_url", "vsix_url" }) |key| {
+        inline for (.{ "manifest_url", "readme_url", "changelog_url", "vsix_url", "publisher_domain" }) |key| {
             if (@field(self, key)) |value| @field(result, key) = try allocator.dupe(u8, value);
         }
         const categories = try allocator.alloc([]const u8, self.categories.len);
