@@ -1683,6 +1683,7 @@ pub const TerminalWorkbench = struct {
     }
 
     fn deinitShellModels(self: *TerminalWorkbench) void {
+        extensions_view_host.detach(self);
         self.deinitBulkEditPreview();
         self.lists.deinit();
         self.core.disposeListeners();
@@ -1713,7 +1714,6 @@ pub const TerminalWorkbench = struct {
             self.allocator.free(panes);
             self.explorer_panes = null;
         }
-        extensions_view_host.detach(self);
         self.scm_multi_diff_resolvers.dispose();
         self.multi_diff_sources.deinit();
         self.scm.deinit();
@@ -3516,6 +3516,7 @@ pub const TerminalWorkbench = struct {
         service.attachWindow(&self.window_events);
         service.attachWorkspace(self.workspace) catch {};
         service.quick_input = self.quick_input_api;
+        service.dialog_service = self.dialog_api;
         if (self.extensions_view) |contribution| contribution.setService(service) catch {};
     }
 

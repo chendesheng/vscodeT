@@ -714,11 +714,12 @@ pub const ExtensionsListView = struct {
     fn toggleEnablement(self: *ExtensionsListView, identifier: []const u8, enable: bool, workspace: bool) !void {
         const service = self.service orelse return;
         const state: EnablementState = if (workspace) (if (enable) .EnabledWorkspace else .DisabledWorkspace) else if (enable) .EnabledGlobally else .DisabledGlobally;
-        _ = service.setEnablement(identifier, state) catch {
+        const changed = service.requestEnablement(identifier, state) catch {
             if (self.host.notifications) |notifications| notifications.err(.{ .text = "Unable to change extension enablement." });
             self.host.status(self.host.context, "Unable to change extension enablement");
             return;
         };
+        if (!changed) return;
         self.rebuild() catch {};
         const name = if (service.find(identifier)) |extension| extension.display_name else identifier;
         const message = std.fmt.bufPrint(&self.message_buffer, "Extension '{s}' {s}.{s}", .{

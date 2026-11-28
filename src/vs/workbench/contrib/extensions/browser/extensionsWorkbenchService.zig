@@ -16,6 +16,7 @@ const IExtension = model.IExtension;
 const dispatch = @import("../../../../base/common/windowDispatch.zig");
 const management = @import("../../../../platform/extensionManagement/node/extensionManagementService.zig");
 const gallery = @import("../../../../platform/extensionManagement/common/extensionGalleryService.zig");
+const dialogs = @import("../../../../platform/dialogs/common/dialogs.zig");
 const quick = @import("../../../../platform/quickinput/common/quickInput.zig");
 const EnablementState = model.EnablementState;
 const configuration = @import("../../../../platform/configuration/common/configuration.zig");
@@ -137,6 +138,7 @@ const ManagementJob = struct {
     arena: std.heap.ArenaAllocator,
     location: []const u8,
     identifier: []const u8,
+    identifiers: []const []const u8,
     version: []const u8,
     url: []const u8,
     system_location: ?[]const u8,
@@ -159,7 +161,7 @@ fn runManagement(job: *ManagementJob) anyerror!void {
     switch (job.operation) {
         .install => try dispatch.workerCall(io, management.installFromGallery, .{ job.service.allocator, dispatch.backingIo(io), job.location, job.system_location, job.gallery_url, job.url, job.identifier, job.version, job.prerelease, job.pinned }),
         .install_vsix => try dispatch.workerCall(io, management.installVSIXFile, .{ job.service.allocator, dispatch.backingIo(io), job.location, job.system_location, job.gallery_url, job.url }),
-        .uninstall => try dispatch.workerCall(io, management.uninstall, .{ job.service.allocator, dispatch.backingIo(io), job.location, job.identifier }),
+        .uninstall => try dispatch.workerCall(io, management.uninstallMany, .{ job.service.allocator, dispatch.backingIo(io), job.location, job.identifiers }),
     }
 }
 
@@ -206,6 +208,36 @@ const VersionPicker = struct {
     }
 };
 
+const PendingDependencyChange = struct {
+    owner: *ExtensionsWorkbenchService,
+    arena: std.heap.ArenaAllocator,
+    identifiers: []const []const u8,
+    state: ?EnablementState,
+
+    fn complete(context: *anyopaque, result: dialogs.IConfirmationResult) void {
+        const self: *PendingDependencyChange = @ptrCast(@alignCast(context));
+        self.owner.pending_dialog = null;
+        if (!result.confirmed) return;
+        if (self.state) |state| {
+            _ = self.owner.applyDisablement(self.identifiers, state) catch |err| {
+                self.owner.management_error = err;
+                self.owner.on_change.fire({}) catch {};
+                return;
+            };
+        } else self.owner.startManagementMany(.uninstall, self.identifiers[0], "", "", false, false, self.identifiers) catch |err| {
+            self.owner.management_error = err;
+            self.owner.on_change.fire({}) catch {};
+        };
+    }
+
+    fn dispose(context: *anyopaque) void {
+        const self: *PendingDependencyChange = @ptrCast(@alignCast(context));
+        const allocator = self.owner.allocator;
+        self.arena.deinit();
+        allocator.destroy(self);
+    }
+};
+
 pub const ExtensionsWorkbenchService = struct {
     allocator: Allocator,
     io: std.Io,
@@ -229,6 +261,8 @@ pub const ExtensionsWorkbenchService = struct {
     version_job: ?*VersionJob = null,
     version_picker: ?*VersionPicker = null,
     quick_input: ?quick.IQuickInputService = null,
+    dialog_service: ?dialogs.IDialogService = null,
+    pending_dialog: ?dialogs.IDialogHandle = null,
     runtime: ?RuntimeInventory = null,
     restart_host: ?struct { context: *anyopaque, restart: *const fn (*anyopaque) anyerror!void } = null,
     enablement: *enablement_mod.ExtensionEnablementService,
@@ -525,6 +559,11 @@ pub const ExtensionsWorkbenchService = struct {
         if (self.version_picker) |picker| picker.owner = null;
         self.version_picker = null;
         self.quick_input = null;
+        if (self.pending_dialog) |handle| {
+            self.pending_dialog = null;
+            handle.cancel();
+        }
+        self.dialog_service = null;
         if (self.management_job) |job| {
             self.management_job = null;
             job.future.cancel(self.window.?.io) catch {};
@@ -654,7 +693,7 @@ pub const ExtensionsWorkbenchService = struct {
 
     pub fn operationState(self: *const ExtensionsWorkbenchService, identifier: []const u8) ?model.ExtensionState {
         const job = self.management_job orelse return null;
-        if (!util.areSameExtensions(job.identifier, identifier)) return null;
+        if (!util.areSameExtensions(job.identifier, identifier) and !containsIdentifier(job.identifiers, identifier)) return null;
         return switch (job.operation) {
             .install, .install_vsix => .Installing,
             .uninstall => .Uninstalling,
@@ -682,10 +721,18 @@ pub const ExtensionsWorkbenchService = struct {
     pub fn uninstall(self: *ExtensionsWorkbenchService, identifier: []const u8) !void {
         const local = self.findLocal(identifier) orelse return error.ExtensionNotFound;
         if (local.is_builtin) return error.CannotUninstallBuiltin;
-        return self.startManagement(.uninstall, identifier, "", "", false, false);
+        var plan = try self.dependencyChangePlan(identifier, false);
+        defer plan.deinit(self.allocator);
+        if (plan.has_dependents) {
+            try self.confirmDependencyChange(plan.ids.items, null);
+        } else try self.startManagementMany(.uninstall, identifier, "", "", false, false, plan.ids.items);
     }
 
     fn startManagement(self: *ExtensionsWorkbenchService, operation: Operation, identifier: []const u8, version: []const u8, url: []const u8, prerelease: bool, pinned: bool) !void {
+        return self.startManagementMany(operation, identifier, version, url, prerelease, pinned, &.{identifier});
+    }
+
+    fn startManagementMany(self: *ExtensionsWorkbenchService, operation: Operation, identifier: []const u8, version: []const u8, url: []const u8, prerelease: bool, pinned: bool, identifiers: []const []const u8) !void {
         if (self.management_job != null) return error.ExtensionOperationInProgress;
         const window = self.window orelse return error.ExtensionManagementUnavailable;
         const location = self.user_location orelse return error.ExtensionsDirectoryUnavailable;
@@ -696,11 +743,13 @@ pub const ExtensionsWorkbenchService = struct {
         const allocator = arena.allocator();
         const location_copy = try allocator.dupe(u8, location);
         const identifier_copy = try allocator.dupe(u8, identifier);
+        const ids = try allocator.alloc([]const u8, identifiers.len);
+        for (identifiers, ids) |id, *copy| copy.* = try allocator.dupe(u8, id);
         const version_copy = try allocator.dupe(u8, version);
         const url_copy = try allocator.dupe(u8, url);
         const system_location = if (self.system_location) |value| try allocator.dupe(u8, value) else null;
         const gallery_url = try allocator.dupe(u8, self.gallery_url orelse "");
-        job.* = .{ .service = self, .operation = operation, .arena = arena, .location = location_copy, .identifier = identifier_copy, .version = version_copy, .url = url_copy, .system_location = system_location, .gallery_url = gallery_url, .prerelease = prerelease, .pinned = pinned, .future = undefined, .completion = .{ .queue = window, .context = self, .run = applyManagement, .progress = true } };
+        job.* = .{ .service = self, .operation = operation, .arena = arena, .location = location_copy, .identifier = identifier_copy, .identifiers = ids, .version = version_copy, .url = url_copy, .system_location = system_location, .gallery_url = gallery_url, .prerelease = prerelease, .pinned = pinned, .future = undefined, .completion = .{ .queue = window, .context = self, .run = applyManagement, .progress = true } };
         self.management_error = null;
         self.management_job = job;
         job.future = window.io.async(runManagement, .{job});
@@ -814,6 +863,91 @@ pub const ExtensionsWorkbenchService = struct {
 
     pub fn isEnabled(self: *const ExtensionsWorkbenchService, identifier: []const u8) bool {
         return self.enablement.isEnabled(identifier);
+    }
+
+    const DependencyChangePlan = struct {
+        ids: std.ArrayList([]const u8) = .empty,
+        has_dependents: bool = false,
+        fn deinit(self: *DependencyChangePlan, allocator: Allocator) void {
+            self.ids.deinit(allocator);
+        }
+    };
+
+    fn containsIdentifier(ids: []const []const u8, id: []const u8) bool {
+        for (ids) |existing| if (util.areSameExtensions(existing, id)) return true;
+        return false;
+    }
+
+    fn collectPack(self: *ExtensionsWorkbenchService, id: []const u8, plan: *DependencyChangePlan) anyerror!void {
+        const extension = self.state.inventory.find(id) orelse return;
+        if (containsIdentifier(plan.ids.items, extension.identifier)) return;
+        try plan.ids.append(self.allocator, extension.identifier);
+        for (dependencies(extension, "extensionPack")) |member| {
+            if (member != .string) continue;
+            const packed_extension = self.state.inventory.find(member.string) orelse continue;
+            if (!packed_extension.isBuiltin()) try self.collectPack(packed_extension.identifier, plan);
+        }
+    }
+
+    fn dependencyChangePlan(self: *ExtensionsWorkbenchService, identifier: []const u8, disable: bool) !DependencyChangePlan {
+        var plan: DependencyChangePlan = .{};
+        errdefer plan.deinit(self.allocator);
+        try self.collectPack(identifier, &plan);
+        var changed = true;
+        while (changed) {
+            changed = false;
+            for (self.state.inventory.all, self.state.local) |extension, local| {
+                if (containsIdentifier(plan.ids.items, extension.identifier)) continue;
+                if (disable and !local.isEnabled()) continue;
+                for (dependencies(extension, "extensionDependencies")) |dependency| {
+                    if (dependency != .string or !containsIdentifier(plan.ids.items, dependency.string)) continue;
+                    if (!disable and extension.isBuiltin()) return error.BuiltinExtensionDependsOnExtension;
+                    plan.has_dependents = true;
+                    changed = true;
+                    try self.collectPack(extension.identifier, &plan);
+                    break;
+                }
+            }
+        }
+        return plan;
+    }
+
+    fn confirmDependencyChange(self: *ExtensionsWorkbenchService, identifiers: []const []const u8, state: ?EnablementState) !void {
+        if (self.pending_dialog != null) return error.ExtensionOperationInProgress;
+        const dialog = self.dialog_service orelse return error.ExtensionHasDependents;
+        const pending = try self.allocator.create(PendingDependencyChange);
+        errdefer self.allocator.destroy(pending);
+        pending.* = .{ .owner = self, .arena = .init(self.allocator), .identifiers = &.{}, .state = state };
+        errdefer pending.arena.deinit();
+        const allocator = pending.arena.allocator();
+        const ids = try allocator.alloc([]const u8, identifiers.len);
+        for (identifiers, ids) |id, *copy| copy.* = try allocator.dupe(u8, id);
+        pending.identifiers = ids;
+        const detail = try std.mem.join(allocator, ", ", ids);
+        self.pending_dialog = try dialog.confirm(.{ .message = if (state != null) "Other extensions depend on this extension. Disable all of them?" else "Other extensions depend on this extension. Uninstall all of them?", .detail = detail, .primary_button = if (state != null) "Disable All" else "Uninstall All", .initial_focus = 1 }, .{ .context = pending, .complete = PendingDependencyChange.complete, .dispose = PendingDependencyChange.dispose });
+    }
+
+    /// User-facing enablement actions follow the upstream dependency/pack
+    /// confirmation path. The model-only setter remains available to callers
+    /// that have already obtained consent or are testing the derived state.
+    pub fn requestEnablement(self: *ExtensionsWorkbenchService, identifier: []const u8, state: EnablementState) !bool {
+        if (state == .EnabledGlobally or state == .EnabledWorkspace) return self.setEnablement(identifier, state);
+        var plan = try self.dependencyChangePlan(identifier, true);
+        defer plan.deinit(self.allocator);
+        if (plan.has_dependents) {
+            try self.confirmDependencyChange(plan.ids.items, state);
+            return false;
+        }
+        return self.applyDisablement(plan.ids.items, state);
+    }
+
+    fn applyDisablement(self: *ExtensionsWorkbenchService, ids: []const []const u8, state: EnablementState) !bool {
+        var changed = false;
+        for (ids) |id| if (try self.enablement.setEnablement(id, state)) {
+            changed = true;
+        };
+        if (changed) try self.refreshEnablement();
+        return changed;
     }
 
     fn enableRecursively(self: *ExtensionsWorkbenchService, identifier: []const u8, state: EnablementState, visited: *std.StringHashMap(void)) anyerror!bool {
