@@ -1,0 +1,23 @@
+{
+  "case": "textobj_around_parens",
+  "engine": "helix",
+  "keys": [
+    "m",
+    "a",
+    "(",
+    "d"
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "text": "call(foo, bar)\n",
+    "cursor": [
+      1,
+      7
+    ]
+  },
+  "width": 60,
+  "height": 12,
+  "states": []
+}

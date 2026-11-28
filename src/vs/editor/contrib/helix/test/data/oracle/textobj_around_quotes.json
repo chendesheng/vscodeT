@@ -1,0 +1,23 @@
+{
+  "case": "textobj_around_quotes",
+  "engine": "helix",
+  "keys": [
+    "m",
+    "a",
+    "\"",
+    "d"
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "text": "say \"hello world\" now\n",
+    "cursor": [
+      1,
+      8
+    ]
+  },
+  "width": 60,
+  "height": 12,
+  "states": []
+}

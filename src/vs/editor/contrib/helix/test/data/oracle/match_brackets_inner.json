@@ -1,0 +1,21 @@
+{
+  "case": "match_brackets_inner",
+  "engine": "helix",
+  "keys": [
+    "m",
+    "m"
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "text": "f(g(h)i)\n",
+    "cursor": [
+      1,
+      4
+    ]
+  },
+  "width": 60,
+  "height": 12,
+  "states": []
+}

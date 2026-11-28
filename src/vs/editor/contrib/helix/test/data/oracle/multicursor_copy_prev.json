@@ -1,0 +1,20 @@
+{
+  "case": "multicursor_copy_prev",
+  "engine": "helix",
+  "keys": [
+    "<A-C>"
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "text": "abc\ndef\n",
+    "cursor": [
+      2,
+      1
+    ]
+  },
+  "width": 60,
+  "height": 12,
+  "states": []
+}

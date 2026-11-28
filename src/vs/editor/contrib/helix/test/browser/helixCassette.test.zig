@@ -29,6 +29,8 @@ const ActualState = struct {
     cursor: usize,
     cursors: []usize,
     ranges: []RangeOffsets,
+    scroll_top_line: usize,
+    scroll_left: usize,
 };
 
 test "Helix cassette: reference corpus" {
@@ -99,7 +101,7 @@ fn runCase(allocator: std.mem.Allocator, case: oracle.Case) !void {
     // from a default blank document ("\n") and replaces its contents with the
     // seed inside an undo group that the first command closes. This is part of
     // the observed history behavior (`d u` versus `x d u`).
-    const harness = try Harness.initWithWidth(allocator, "\n", case.width);
+    const harness = try Harness.initWithSize(allocator, "\n", case.width, case.height);
     defer harness.deinit();
     harness.editor.beginUndoGroup();
     try harness.editor.replaceRange(harness.editor.model.getFullModelRange(), case.seed.text);
@@ -129,10 +131,16 @@ fn runCase(allocator: std.mem.Allocator, case: oracle.Case) !void {
         allocator.free(actual.ranges);
     }
 
+    const expected_scroll = state.scroll orelse {
+        std.debug.print("cassette {s}: missing recorded scroll\n", .{case.case});
+        return error.MissingScroll;
+    };
     var mismatch = !std.mem.eql(u8, actual.text, state.text) or
         actual.mode != expected_mode or
         actual.count != (state.selection_count orelse 1) or
-        actual.cursor != (offsetAtText(state.text, state.cursor) catch return error.InvalidCassette);
+        actual.cursor != (offsetAtText(state.text, state.cursor) catch return error.InvalidCassette) or
+        actual.scroll_top_line != expected_scroll.top_line or
+        actual.scroll_left != expected_scroll.left;
     if (!mismatch) {
         if (state.cursors) |expected_cursors| {
             mismatch = !(sameCursorSet(allocator, actual.cursors, expected_cursors, state.text) catch return error.InvalidCassette);
@@ -157,6 +165,7 @@ fn runCase(allocator: std.mem.Allocator, case: oracle.Case) !void {
     });
     printExpectedCursors(state);
     printExpectedSelections(state);
+    std.debug.print("  expected scroll: top={d} left={d}\n", .{ expected_scroll.top_line, expected_scroll.left });
     std.debug.print("  actual:   text=\"", .{});
     printEscaped(actual.text);
     std.debug.print("\" mode={s} count={d} cursor=", .{ @tagName(actual.mode), actual.count });
@@ -168,6 +177,7 @@ fn runCase(allocator: std.mem.Allocator, case: oracle.Case) !void {
     std.debug.print("  actual selections:", .{});
     for (actual.ranges) |range| printRange(harness, range);
     std.debug.print("\n", .{});
+    std.debug.print("  actual scroll: top={d} left={d}\n", .{ actual.scroll_top_line, actual.scroll_left });
     return error.CassetteMismatch;
 }
 
@@ -190,6 +200,7 @@ fn collectActual(allocator: std.mem.Allocator, harness: *Harness) !ActualState {
     std.mem.sort(usize, cursors, {}, std.sort.asc(usize));
 
     const primary = normalizeSelection(harness, text, harness.primarySelection());
+    const scroll = harness.scroll();
     return .{
         .text = text,
         .mode = harness.mode(),
@@ -197,6 +208,8 @@ fn collectActual(allocator: std.mem.Allocator, harness: *Harness) !ActualState {
         .cursor = helixCursorOffset(text, primary),
         .cursors = cursors,
         .ranges = ranges,
+        .scroll_top_line = scroll.top_line,
+        .scroll_left = scroll.left,
     };
 }
 

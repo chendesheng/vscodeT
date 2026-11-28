@@ -1,0 +1,22 @@
+{
+  "case": "surround_delete_quotes",
+  "engine": "helix",
+  "keys": [
+    "m",
+    "d",
+    "\""
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "text": "\"word\"\n",
+    "cursor": [
+      1,
+      3
+    ]
+  },
+  "width": 60,
+  "height": 12,
+  "states": []
+}

@@ -1,0 +1,23 @@
+{
+  "case": "textobj_around_angles",
+  "engine": "helix",
+  "keys": [
+    "m",
+    "a",
+    ">",
+    "d"
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "text": "a <one> b\n",
+    "cursor": [
+      1,
+      4
+    ]
+  },
+  "width": 60,
+  "height": 12,
+  "states": []
+}

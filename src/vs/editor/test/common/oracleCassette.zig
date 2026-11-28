@@ -27,6 +27,13 @@ pub const RecordedSelection = struct {
     head: Cursor,
 };
 
+/// Reference viewport position. The corpus uses short lines, so the top line
+/// is the first visible model line and `left` is the horizontal cell offset.
+pub const RecordedScroll = struct {
+    top_line: usize,
+    left: usize = 0,
+};
+
 pub const State = struct {
     text: []const u8,
     cursor: Cursor,
@@ -36,6 +43,8 @@ pub const State = struct {
     cursors: ?[]Cursor = null,
     /// Raw anchor/head ranges, when the reference recorder emits them.
     selections: ?[]RecordedSelection = null,
+    /// Viewport top-left position, when the reference recorder emits it.
+    scroll: ?RecordedScroll = null,
 };
 
 pub const Case = struct {
@@ -45,6 +54,8 @@ pub const Case = struct {
     reference_version: []const u8,
     case: []const u8,
     width: usize = 60,
+    /// Visible text rows. The reference recorder maps this to its inner area.
+    height: usize = 12,
     seed: Seed,
     keys: []const []const u8,
     states: []const State,

@@ -27,10 +27,14 @@ pub const Harness = struct {
     }
 
     pub fn initWithWidth(allocator: std.mem.Allocator, text: []const u8, width: usize) !*Harness {
+        return initWithSize(allocator, text, width, 12);
+    }
+
+    pub fn initWithSize(allocator: std.mem.Allocator, text: []const u8, width: usize, height: usize) !*Harness {
         const io = std.Io.Threaded.global_single_threaded.io();
         const self = try allocator.create(Harness);
         errdefer allocator.destroy(self);
-        const editor = try Editor.createFromText(allocator, io, text, "test.txt", width, 12);
+        const editor = try Editor.createFromText(allocator, io, text, "test.txt", width, height);
         errdefer {
             editor.deinit();
             allocator.destroy(editor);
@@ -159,6 +163,18 @@ pub const Harness = struct {
 
     pub fn mode(self: *Harness) Mode {
         return self.engine.mode;
+    }
+
+    pub const Scroll = struct { top_line: usize, left: usize };
+
+    /// Viewport top-left position. Corpus scroll cases keep lines shorter than
+    /// the viewport, so the first visible view line is its model line and the
+    /// horizontal offset is in text cells.
+    pub fn scroll(self: *Harness) Scroll {
+        return .{
+            .top_line = self.editor.modelLineNumber(self.editor.topViewLine()),
+            .left = self.editor.scrollLeft(),
+        };
     }
 };
 

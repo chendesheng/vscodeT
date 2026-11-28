@@ -14,7 +14,7 @@ new file mode 100644
 index 0000000..433289c
 --- /dev/null
 +++ b/helix-term/tests/test/record.rs
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,220 @@
 +// CI-only cassette recorder for the minecode Helix oracle.
 +//
 +// This file is added by scripts/oracle/helix/record.patch and is never part of
@@ -26,9 +26,9 @@ index 0000000..433289c
 +use std::path::{Path, PathBuf};
 +
 +use anyhow::{bail, Context, Result};
-+use helix_core::{Range, Rope, Selection, Transaction};
++use helix_core::{char_idx_at_visual_offset, Range, Rope, Selection, Transaction};
 +use helix_term::application::Application;
-+use helix_view::{current, current_ref};
++use helix_view::{current, current_ref, graphics::Rect};
 +use serde_json::{json, Value};
 +
 +use super::helpers::{test_key_sequence, AppBuilder};
@@ -109,6 +109,27 @@ index 0000000..433289c
 +    json!([line + 1, column])
 +}
 +
++fn scroll_of(app: &Application) -> Value {
++    let (view, doc) = current_ref!(app.editor);
++    let text = doc.text().slice(..);
++    let view_offset = doc.view_offset(view.id);
++    let viewport = view.inner_area(doc);
++    let text_fmt = doc.text_format(viewport.width, None);
++    let annotations = view.text_annotations(&*doc, None);
++    let (top_char, _) = char_idx_at_visual_offset(
++        text,
++        view_offset.anchor,
++        view_offset.vertical_offset as isize,
++        view_offset.horizontal_offset,
++        &text_fmt,
++        &annotations,
++    );
++    json!({
++        "top_line": text.char_to_line(top_char) + 1,
++        "left": view_offset.horizontal_offset,
++    })
++}
++
 +fn state_of(app: &Application) -> Value {
 +    let (view, doc) = current_ref!(app.editor);
 +    let text = doc.text();
@@ -136,6 +157,7 @@ index 0000000..433289c
 +        "mode": app.editor.mode.to_string(),
 +        "selection_count": selection.ranges().len(),
 +        "selections": selections,
++        "scroll": scroll_of(app),
 +    })
 +}
 +
@@ -164,8 +186,11 @@ index 0000000..433289c
 +    paths.sort();
 +
 +    for path in paths {
-+        let case: Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
++        let mut case: Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
 +        let case_name = case["case"].as_str().context("cassette is missing 'case'")?;
++        let width = case["width"].as_u64().unwrap_or(60) as u16;
++        let height = case["height"].as_u64().unwrap_or(12) as u16;
++        case["height"] = json!(height);
 +        let text = case["seed"]["text"].as_str().context("cassette is missing seed.text")?;
 +        let cursor = case["seed"]["cursor"].as_array().context("cassette is missing seed.cursor")?;
 +        let line = cursor.first().and_then(Value::as_u64).context("invalid seed.cursor line")? as usize;
@@ -194,6 +219,9 @@ index 0000000..433289c
 +        let out_path = output_dir.join(path.file_name().context("cassette has no filename")?);
 +        let mut app = AppBuilder::default().build()?;
 +        seed_editor(&mut app, text, &cursors)?;
++        // Match the replay harness viewport: `height` is the visible text
++        // rows, while the editor area also reserves one row for the statusline.
++        app.editor.resize(Rect::new(0, 0, width, height.saturating_add(1)));
 +        test_key_sequence(
 +            &mut app,
 +            Some(&keys),

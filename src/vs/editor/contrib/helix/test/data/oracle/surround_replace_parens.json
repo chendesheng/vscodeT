@@ -1,0 +1,23 @@
+{
+  "case": "surround_replace_parens",
+  "engine": "helix",
+  "keys": [
+    "m",
+    "r",
+    "(",
+    "["
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "text": "(word)\n",
+    "cursor": [
+      1,
+      3
+    ]
+  },
+  "width": 60,
+  "height": 12,
+  "states": []
+}

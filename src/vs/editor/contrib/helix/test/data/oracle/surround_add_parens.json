@@ -1,0 +1,25 @@
+{
+  "case": "surround_add_parens",
+  "engine": "helix",
+  "keys": [
+    "m",
+    "i",
+    "w",
+    "m",
+    "s",
+    "("
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "text": "word\n",
+    "cursor": [
+      1,
+      1
+    ]
+  },
+  "width": 60,
+  "height": 12,
+  "states": []
+}

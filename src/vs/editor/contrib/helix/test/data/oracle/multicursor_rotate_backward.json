@@ -1,0 +1,34 @@
+{
+  "case": "multicursor_rotate_backward",
+  "engine": "helix",
+  "keys": [
+    "("
+  ],
+  "reference": "helix",
+  "reference_version": "helix 25.07.1",
+  "schema": 1,
+  "seed": {
+    "text": "one\ntwo\nthree\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "cursors": [
+      [
+        1,
+        1
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        3,
+        1
+      ]
+    ]
+  },
+  "width": 60,
+  "height": 12,
+  "states": []
+}

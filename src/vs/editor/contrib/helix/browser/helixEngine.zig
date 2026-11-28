@@ -27,6 +27,10 @@ const KeyInputEvent = extension_api.KeyInputEvent;
 /// unbounded decoration list.
 const SEARCH_HIGHLIGHT_LIMIT: usize = 999;
 
+/// Helix's default `scrolloff`. The reference keeps the cursor at least this
+/// many view lines away from the viewport edges, clipped for short viewports.
+const HELIX_SCROLLOFF: usize = 5;
+
 pub const Mode = enum {
     normal,
     select,
@@ -354,6 +358,7 @@ pub const HelixEngine = struct {
             }
         }
         const consumed = try self.dispatchKey(event);
+        self.ensureCursorInView();
         // The reference commits pending changes to history after each
         // non-insert key event; this is what makes `d u` undo the seeded edit
         // together with the delete while `x d u` undoes only the delete.
@@ -1464,22 +1469,83 @@ pub const HelixEngine = struct {
         try self.setNormalizedSelections(updated);
     }
 
-    fn halfPage(self: *HelixEngine, down: bool, extend: bool) !void {
-        const delta: usize = @max(self.editor.textHeight() / 2, 1);
+    /// Helix `scroll()`: move the viewport by `offset` view lines. With
+    /// `sync_cursor` the selection moves by the same amount; otherwise the
+    /// primary cursor is only pulled back inside the scrolloff window.
+    fn scrollView(self: *HelixEngine, offset: usize, down: bool, sync_cursor: bool, extend: bool) !void {
+        const height = self.editor.textHeight();
+        const scrolloff = @min(HELIX_SCROLLOFF, (height -| 1) / 2);
+        const view_count = self.editor.viewLineCount();
         const top = self.editor.topViewLine();
-        const max_top = @max(1, self.editor.viewLineCount() -| self.editor.textHeight() + 1);
-        _ = self.editor.setTopViewLine(if (down) @min(top + delta, max_top) else top -| delta);
-        try self.editor.moveWrappedLine(down, extend, delta);
-        self.editor.ensureCursorVisible();
+        const new_top = if (down) @min(top +| offset, view_count) else @max(top -| offset, 1);
+        _ = self.editor.setTopViewLine(new_top);
+        if (sync_cursor) {
+            try self.editor.moveWrappedLine(down, extend, offset);
+            return;
+        }
+        const cursor = self.editor.cursorViewLine();
+        if (down) {
+            const head = @min(new_top +| scrolloff, view_count);
+            if (cursor < head) try self.movePrimaryToViewLine(head, extend);
+        } else {
+            const head = @min(new_top +| (height -| scrolloff -| 1), view_count);
+            if (cursor > head) try self.movePrimaryToViewLine(head, extend);
+        }
+    }
+
+    fn movePrimaryToViewLine(self: *HelixEngine, view_line: usize, extend: bool) !void {
+        const model_line = self.editor.modelLineNumber(view_line);
+        const target = Position.init(model_line, 1);
+        const selections = try self.getSelections();
+        defer self.allocator.free(selections);
+        if (selections.len == 0) {
+            try self.editor.setCursor(target);
+            return;
+        }
+        const updated = try self.allocator.alloc(Selection, selections.len);
+        defer self.allocator.free(updated);
+        @memcpy(updated, selections);
+        const primary = selections[0];
+        updated[0] = if (extend)
+            Selection.init(
+                primary.getSelectionStart().lineNumber,
+                primary.getSelectionStart().column,
+                target.lineNumber,
+                target.column,
+            )
+        else
+            Selection.init(target.lineNumber, target.column, target.lineNumber, target.column);
+        try self.setSelections(updated);
+    }
+
+    fn halfPage(self: *HelixEngine, down: bool, extend: bool) !void {
+        try self.scrollView(@max(self.editor.textHeight() / 2, 1), down, true, extend);
     }
 
     fn page(self: *HelixEngine, down: bool, extend: bool) !void {
-        const delta: usize = @max(self.editor.textHeight() -| 1, 1);
+        // Helix `page_up`/`page_down` scroll a full inner viewport and only
+        // move the cursor when it leaves the viewport.
+        try self.scrollView(@max(self.editor.textHeight(), 1), down, false, extend);
+    }
+
+    /// Helix `ensure_cursor_in_view` with the configured scrolloff. Called
+    /// after every key so cursor motions, edits and jumps keep the same
+    /// margins as the reference.
+    fn ensureCursorInView(self: *HelixEngine) void {
+        const height = self.editor.textHeight();
+        if (height == 0) return;
+        const scrolloff = @min(HELIX_SCROLLOFF, (height -| 1) / 2);
+        const view_count = self.editor.viewLineCount();
+        const cursor = self.editor.cursorViewLine();
         const top = self.editor.topViewLine();
-        const max_top = @max(1, self.editor.viewLineCount() -| self.editor.textHeight() + 1);
-        _ = self.editor.setTopViewLine(if (down) @min(top + delta, max_top) else top -| delta);
-        try self.editor.moveWrappedLine(down, extend, delta);
-        self.editor.ensureCursorVisible();
+        var next = top;
+        if (cursor < top +| scrolloff) {
+            next = cursor -| scrolloff;
+        } else if (cursor +| scrolloff >= top +| height) {
+            next = cursor -| (height -| scrolloff -| 1);
+        }
+        next = std.math.clamp(next, 1, view_count);
+        if (next != top) _ = self.editor.setTopViewLine(next);
     }
 
     fn recordJump(self: *HelixEngine) void {
@@ -3407,8 +3473,8 @@ pub const HelixEngine = struct {
                         'z', 'c' => self.alignView(.center),
                         't' => self.alignView(.top),
                         'b' => self.alignView(.bottom),
-                        'j' => _ = self.editor.scrollViewLines(1),
-                        'k' => _ = self.editor.scrollViewLines(-1),
+                        'j' => try self.scrollView(1, true, false, self.extendMode()),
+                        'k' => try self.scrollView(1, false, false, self.extendMode()),
                         'm' => {},
                         else => {},
                     }
@@ -3500,13 +3566,14 @@ pub const HelixEngine = struct {
     fn alignView(self: *HelixEngine, where: enum { center, top, bottom }) void {
         const height = self.editor.textHeight();
         const cursor_view = self.editor.cursorViewLine();
-        const max_top = @max(1, self.editor.viewLineCount() -| height + 1);
+        // Helix `align_view` measures from the last visible line.
+        const last_line_height = height -| 1;
         const top = switch (where) {
-            .center => if (cursor_view > height / 2) cursor_view - height / 2 else 1,
+            .center => cursor_view -| (last_line_height / 2),
             .top => cursor_view,
-            .bottom => cursor_view -| (height -| 1),
+            .bottom => cursor_view -| last_line_height,
         };
-        _ = self.editor.setTopViewLine(@min(top, max_top));
+        _ = self.editor.setTopViewLine(@max(top, 1));
     }
 
     fn viewportTarget(self: *HelixEngine, where: enum { top, middle, bottom }) !Position {
