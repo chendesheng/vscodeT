@@ -127,6 +127,7 @@ const Transaction = struct {
         var metadata: std.json.ObjectMap = .empty;
         try metadata.put(allocator, "installedTimestamp", .{ .integer = std.Io.Timestamp.now(self.io, .real).toMilliseconds() });
         try metadata.put(allocator, "updated", .{ .bool = self.inventory.find(id) != null });
+        try metadata.put(allocator, "source", .{ .string = if (verify) "gallery" else "vsix" });
         try metadata.put(allocator, "preRelease", .{ .bool = self.prefer_prerelease });
         if (uuid) |value| try metadata.put(allocator, "id", .{ .string = try allocator.dupe(u8, value) });
         try metadata.put(allocator, "pinned", .{ .bool = self.pin_root and self.packages.items.len == 0 });

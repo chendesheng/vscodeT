@@ -90,6 +90,7 @@ pub const Statistic = struct { statisticName: []const u8, value: f64 };
 pub const GalleryExtension = struct {
     extensionName: []const u8,
     extensionId: ?[]const u8 = null,
+    releaseDate: ?[]const u8 = null,
     lastUpdated: ?[]const u8 = null,
     displayName: ?[]const u8 = null,
     shortDescription: ?[]const u8 = null,
