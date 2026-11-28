@@ -117,8 +117,21 @@ pub const GitHistoryProvider = struct {
     /// Re-reads refs and the current/remote/base history refs. Emits the
     /// upstream `historyItemRefChanges` delta; returns whether anything changed.
     pub fn refreshRefs(self: *GitHistoryProvider, silent: bool) !bool {
-        const state = self.repository.stateRef();
-        const head = state.head orelse {
+        if (self.repository.stateRef().head == null) return self.applyRefs(&.{}, .query, silent);
+        const fetched = try self.repository.getRefs(self.allocator, .{}, CancellationToken.None);
+        defer git_common.freeGitRefs(self.allocator, fetched);
+        return self.applyRefs(fetched, .query, silent);
+    }
+
+    pub const BranchBase = union(enum) {
+        query,
+        captured: ?git_common.GitBranch,
+    };
+
+    /// Install refs read by an automatic status operation without doing
+    /// process I/O on the window thread. The captured values are borrowed.
+    pub fn applyRefs(self: *GitHistoryProvider, fetched: []const git_common.GitRef, branch_base: BranchBase, silent: bool) !bool {
+        const head = self.repository.stateRef().head orelse {
             const had_refs = self.history_item_refs.items.len > 0 or self.current_ref != null;
             self.clearState();
             if (self.last_head_name) |value| {
@@ -127,13 +140,6 @@ pub const GitHistoryProvider = struct {
             }
             return had_refs;
         };
-
-        const fetched = try self.repository.getRefs(
-            self.allocator,
-            .{},
-            CancellationToken.None,
-        );
-        defer git_common.freeGitRefs(self.allocator, fetched);
 
         var new_refs = std.array_list.Managed(scm_history.ISCMHistoryItemRef).init(self.allocator);
         errdefer {
@@ -165,7 +171,7 @@ pub const GitHistoryProvider = struct {
                 ref.deinit(self.allocator);
             }
         };
-        const base = try self.buildBaseRef(head, &delta);
+        const base = try self.buildBaseRef(head, &delta, branch_base);
         var base_owned = true;
         errdefer if (base_owned) {
             if (base) |value| {
@@ -273,6 +279,7 @@ pub const GitHistoryProvider = struct {
         self: *GitHistoryProvider,
         head: git_common.GitBranch,
         delta: *const util.HistoryItemRefDelta,
+        branch_base: BranchBase,
     ) !?scm_history.ISCMHistoryItemRef {
         const branch_name = head.ref.name orelse return null;
         const branch_changed = if (self.last_head_name) |last|
@@ -284,8 +291,15 @@ pub const GitHistoryProvider = struct {
             if (self.last_head_name) |last| self.allocator.free(last);
             self.last_head_name = try self.allocator.dupe(u8, branch_name);
 
-            var base_branch = (try self.repository.getBranchBase(self.allocator, branch_name)) orelse return null;
-            defer base_branch.deinit(self.allocator);
+            var queried: ?git_common.GitBranch = null;
+            defer if (queried) |*branch| branch.deinit(self.allocator);
+            const base_branch = (switch (branch_base) {
+                .query => blk: {
+                    queried = try self.repository.getBranchBase(self.allocator, branch_name);
+                    break :blk queried;
+                },
+                .captured => |branch| branch,
+            }) orelse return null;
             const remote = base_branch.ref.remote orelse return null;
             const name = base_branch.ref.name orelse return null;
             const id = try std.fmt.allocPrint(self.allocator, "refs/remotes/{s}/{s}", .{ remote, name });

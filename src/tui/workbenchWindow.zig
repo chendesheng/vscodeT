@@ -3239,7 +3239,7 @@ pub const TerminalWorkbench = struct {
             .context_keys = if (self.context_keys) |keys| keys.interface() else null,
             .window = &self.window_events,
             .host_service = self.host_api,
-            .host = .{ .context = self, .open_change = providerOpenChange, .refresh = scmRefresh },
+            .host = .{ .context = self, .open_change = providerOpenChange, .history_refs_changed = scmHistoryRefsChanged },
             .on_disabled = gitDisabled,
             .on_disabled_context = self,
             .scan_repository = scanGitRepository,
@@ -3323,9 +3323,14 @@ pub const TerminalWorkbench = struct {
     pub fn refreshGitStatus(self: *TerminalWorkbench) void {
         for (self.git_model.repositories()) |provider| {
             provider.refresh() catch {};
-            if (provider.refreshHistoryRefs(true) and provider == self.git_model.repository) {
-                if (self.scm.history) |view| view.onHistoryItemRefsChanged(true);
-            }
+            if (provider.refreshHistoryRefs(true)) scmHistoryRefsChanged(self, provider);
+        }
+    }
+
+    fn scmHistoryRefsChanged(context: *anyopaque, provider: *repository_mod.Repository) void {
+        const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
+        if (provider == self.git_model.repository) {
+            if (self.scm.history) |view| view.onHistoryItemRefsChanged(true);
         }
     }
 

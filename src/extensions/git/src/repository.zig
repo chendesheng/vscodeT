@@ -40,9 +40,91 @@ const time = @import("../../../vs/base/common/timeCompat.zig");
 pub const Host = struct {
     auto_refresh: ?*const fn (*anyopaque) bool = null,
     refresh: ?*const fn (*anyopaque) void = null,
+    history_refs_changed: ?*const fn (*anyopaque, *Repository) void = null,
     context: *anyopaque,
     /// Opens the change represented by `resource` (usually a diff tab).
     open_change: *const fn (context: *anyopaque, provider: *Repository, resource: *GitScmResource) anyerror!void,
+};
+
+// The extension host normally awaits Git subprocesses. Here the window owns
+// the repository and its events; a detached reader owns the subprocess work
+// and passes the result back to the window, without sharing the live Git cache.
+const StatusJob = struct {
+    arena: std.heap.ArenaAllocator,
+    io: std.Io,
+    exe: []const u8,
+    root: []const u8,
+    timeout: std.Io.Timeout,
+    max_file_size: usize,
+    has_history: bool,
+    last_head_name: ?[]const u8,
+    completion: dispatch.Task,
+    future: std.Io.Future(void) = undefined,
+    state: ?GitRepositoryState = null,
+    refs: ?[]const git_common.GitRef = null,
+    base: ?git_common.GitBranch = null,
+    history_error: ?anyerror = null,
+    disabled_reason: ?[]const u8 = null,
+
+    fn create(owner: *Repository, git: *const Git, window: *dispatch.Queue) !*StatusJob {
+        const job = try std.heap.page_allocator.create(StatusJob);
+        errdefer std.heap.page_allocator.destroy(job);
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        job.* = .{
+            .arena = undefined,
+            .io = window.workerIo(),
+            .exe = try a.dupe(u8, git.exe),
+            .root = try a.dupe(u8, owner.root),
+            .timeout = git.timeout,
+            .max_file_size = git.max_file_size,
+            .has_history = owner.history != null,
+            .last_head_name = if (owner.history) |history| if (history.last_head_name) |name| try a.dupe(u8, name) else null else null,
+            .completion = .{ .queue = window, .context = owner, .run = Repository.applyStatusJob, .progress = true },
+        };
+        job.arena = arena;
+        return job;
+    }
+
+    fn read(job: *StatusJob) !void {
+        const a = job.arena.allocator();
+        const reader = try Git.init(a, .{ .git_path = job.exe, .io = job.io });
+        defer reader.deinit();
+        defer job.disabled_reason = reader.disabledReason();
+        reader.timeout = job.timeout;
+        reader.max_file_size = job.max_file_size;
+        job.state = try reader.status(job.root);
+        if (!job.has_history) return;
+        job.readHistory(reader) catch |err| {
+            job.history_error = err;
+        };
+    }
+
+    fn readHistory(job: *StatusJob, reader: *Git) !void {
+        const head = job.state.?.head orelse {
+            job.refs = &.{};
+            return;
+        };
+        const a = job.arena.allocator();
+        const refs = try reader.getRefs(a, job.root, .{}, git_common.CancellationToken.None);
+        if (head.ref.name) |name| {
+            if (job.last_head_name == null or !std.mem.eql(u8, job.last_head_name.?, name)) {
+                job.base = try reader.getBranchBase(a, job.root, name);
+            }
+        }
+        job.refs = refs;
+    }
+
+    fn run(job: *StatusJob) void {
+        defer job.completion.post();
+        dispatch.workerCall(job.completion.queue.?.io, read, .{job}) catch {};
+    }
+
+    fn destroy(job: *StatusJob) void {
+        job.arena.deinit();
+        std.heap.page_allocator.destroy(job);
+    }
 };
 
 pub const ResourceKind = enum { merge, index, working, untracked };
@@ -141,6 +223,8 @@ pub const Repository = struct {
     upstream_watcher: ?*watchers.WatchHandle = null,
     dot_git: ?Git.DotGit = null,
     status_timer: dispatch.Task = .{},
+    status_job: ?*StatusJob = null,
+    refresh_after_status: bool = false,
     next_status_at: i64 = 0,
     focused: bool = true,
     host_focus_listener: ?@import("../../../vs/base/common/event.zig").SignalSubscription = null,
@@ -324,6 +408,10 @@ pub const Repository = struct {
     }
 
     fn scheduleStatus(self: *Repository) void {
+        if (self.status_job != null) {
+            self.refresh_after_status = true;
+            return;
+        }
         self.status_timer.schedule(@max(time.milliTimestamp() + 1000, self.next_status_at));
     }
 
@@ -352,9 +440,68 @@ pub const Repository = struct {
             self.refresh_when_focused = true;
             return false;
         }
+        if (self.git) |git| {
+            if (git.isDisabled()) return false;
+            if (self.status_job != null) {
+                self.refresh_after_status = true;
+                return false;
+            }
+            const window = self.status_timer.queue orelse return false;
+            const job = StatusJob.create(self, git, window) catch return false;
+            job.future = window.io.concurrent(StatusJob.run, .{job}) catch {
+                job.destroy();
+                return false;
+            };
+            self.status_job = job;
+            return false;
+        }
+        // A delegate-only repository is used by focused status timing tests.
         if (self.host.refresh) |refresh_status| refresh_status(self.host.context);
         self.next_status_at = now + 5000;
         return true;
+    }
+
+    fn applyStatusJob(context: *anyopaque, now: i64, _: bool) bool {
+        const self: *Repository = @ptrCast(@alignCast(context));
+        const job = self.status_job.?;
+        job.future.await(job.completion.queue.?.io);
+        self.status_job = null;
+        defer job.destroy();
+        self.next_status_at = now + 5000;
+        if (self.refresh_after_status) {
+            self.refresh_after_status = false;
+            self.scheduleStatus();
+        }
+
+        const git = self.git.?;
+        if (job.disabled_reason) |reason| git.markUnavailable(reason);
+        if (git.isDisabled()) return false;
+        git.invalidate();
+        const status_succeeded = if (job.state) |state| blk: {
+            self.repository.updateState(state) catch break :blk false;
+            break :blk true;
+        } else false;
+        self.publishStatus(status_succeeded);
+        if (self.history) |history| {
+            if (job.history_error) |err| history.last_error = err;
+            if (status_succeeded) if (job.refs) |refs| {
+                const changed = history.applyRefs(refs, .{ .captured = job.base }, true) catch |err| blk: {
+                    history.last_error = err;
+                    break :blk false;
+                };
+                if (changed) if (self.host.history_refs_changed) |notify| notify(self.host.context, self);
+            };
+        }
+        return true;
+    }
+
+    fn cancelStatusJob(self: *Repository) void {
+        const job = self.status_job orelse return;
+        job.future.cancel(job.completion.queue.?.io);
+        job.completion.schedule(null);
+        self.status_job = null;
+        self.refresh_after_status = false;
+        job.destroy();
     }
 
     pub fn destroy(self: *Repository) void {
@@ -362,6 +509,7 @@ pub const Repository = struct {
         if (self.host_focus_listener) |listener| listener.dispose();
         self.detachConfiguration();
         self.status_timer.schedule(null);
+        self.cancelStatusJob();
         if (self.file_listener) |listener| self.file_service.?.on_did_change.unlisten(listener);
         if (self.upstream_watcher) |w| w.dispose();
         if (self.dot_git_watcher) |w| w.dispose();
@@ -531,12 +679,17 @@ pub const Repository = struct {
 
     /// Recomputes the status and rebuilds the group resource lists.
     pub fn refresh(self: *Repository) !void {
+        self.cancelStatusJob();
         var status_succeeded = false;
         if (self.git) |git| {
             if (git.refresh(self.repository)) |_| {
                 status_succeeded = true;
             } else |_| {}
         }
+        self.publishStatus(status_succeeded);
+    }
+
+    fn publishStatus(self: *Repository, status_succeeded: bool) void {
         self.rebuild();
         self.updateUpstreamWatcher();
         for (&self.groups) |*group| {
@@ -1064,4 +1217,96 @@ test "repository: file changes debounce status, wait for focus and respect autor
     try testing.expect(!window.dispatch(due + 4999));
     try testing.expect(window.dispatch(due + 5000));
     try testing.expectEqual(@as(usize, 2), host.refreshes);
+}
+
+test "repository: automatic status publishes detached reads on the window and coalesces changes" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = path_buf[0..try tmp.dir.realPath(io, &path_buf)];
+    const Setup = struct {
+        fn gitCommand(a: Allocator, path: []const u8, argv: []const []const u8) !void {
+            const result = std.process.run(a, testing.io, .{
+                .argv = argv,
+                .cwd = .{ .path = path },
+                .stdout_limit = .limited(1024 * 1024),
+                .stderr_limit = .limited(1024 * 1024),
+            }) catch return error.SkipZigTest;
+            defer a.free(result.stdout);
+            defer a.free(result.stderr);
+            try testing.expect(result.term.success());
+        }
+        fn tick(context: *anyopaque, _: i64, _: bool) bool {
+            const called: *bool = @ptrCast(@alignCast(context));
+            called.* = true;
+            return true;
+        }
+    };
+    try Setup.gitCommand(allocator, root, &.{ "git", "init" });
+    try Setup.gitCommand(allocator, root, &.{ "git", "-c", "user.name=Test User", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "initial" });
+    const git = try Git.init(allocator, .{ .io = io, .timeout_ms = 20_000 });
+    defer git.deinit();
+    _ = (try git.openRepository(root)) orelse return error.SkipZigTest;
+    const repository = git.repositoryForRoot(root).?;
+    var scheduler = try @import("ui").WindowIo.init(allocator, io);
+    defer scheduler.deinit();
+    var window = dispatch.Queue{ .io = scheduler.io(), .scheduler = &scheduler };
+    const HostState = struct {
+        refs_changed: bool = false,
+        owner: std.Thread.Id,
+        fn refsChanged(context: *anyopaque, _: *Repository) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            std.debug.assert(self.owner == std.Thread.getCurrentId());
+            self.refs_changed = true;
+        }
+    };
+    var host = HostState{ .owner = std.Thread.getCurrentId() };
+    const provider = try Repository.create(allocator, git, repository, root, .{
+        .context = &host,
+        .open_change = TestHost.openChange,
+        .history_refs_changed = HostState.refsChanged,
+    });
+    defer provider.destroy();
+    provider.attachWindow(&window);
+    try testing.expectEqual(@as(usize, 0), provider.count());
+    try tmp.dir.writeFile(io, .{ .sub_path = "new.txt", .data = "new\n" });
+    try Setup.gitCommand(allocator, root, &.{ "git", "branch", "new-ref" });
+    const changed = try std.fs.path.join(allocator, &.{ root, "new.txt" });
+    defer allocator.free(changed);
+    provider.onFileChange(changed);
+    const due = provider.status_timer.at.?;
+    try testing.expect(!window.dispatch(due));
+    try testing.expect(provider.status_job != null);
+    try testing.expectEqual(@as(usize, 0), provider.count());
+    provider.onFileChange(changed);
+    provider.onFileChange(changed);
+    try testing.expect(provider.refresh_after_status);
+    try testing.expect(provider.status_timer.at == null);
+
+    var ticked = false;
+    var input = dispatch.Task{ .queue = &window, .context = &ticked, .run = Setup.tick };
+    input.schedule(due);
+    defer input.schedule(null);
+    try testing.expect(window.dispatch(due));
+    try testing.expect(ticked);
+    try testing.expectEqual(@as(usize, 0), provider.count());
+    const deadline = time.milliTimestamp() + 20_000;
+    while (provider.status_job != null and time.milliTimestamp() < deadline) {
+        _ = window.dispatch(time.milliTimestamp());
+        if (provider.status_job != null) try io.sleep(.fromMilliseconds(1), .awake);
+    }
+    try testing.expect(provider.status_job == null);
+    try testing.expectEqual(@as(usize, 1), provider.count());
+    try testing.expect(host.refs_changed);
+    try testing.expect(!provider.refresh_after_status);
+    try testing.expectEqual(provider.next_status_at, provider.status_timer.at.?);
+
+    // A second refresh can be canceled before its detached work publishes.
+    _ = window.dispatch(provider.next_status_at);
+    try testing.expect(provider.status_job != null);
+    provider.cancelStatusJob();
+    try testing.expect(provider.status_job == null);
+    try testing.expect(!window.dispatch(time.milliTimestamp()));
 }
