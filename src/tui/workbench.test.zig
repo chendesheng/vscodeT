@@ -14487,3 +14487,54 @@ test "Workbench: wrapping inlay hints retire inserted and deleted view line DOM 
     try renderFrame(wb, &output.writer);
     try std.testing.expectEqualStrings("line 1", try model.borrowLineContent(2));
 }
+
+test "Workbench: Restart Extensions applies active removal without closing editors" {
+    if (!@import("build_options").e2e) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    try std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{});
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "extensions/fixture-active");
+    try tmp.dir.writeFile(io, .{ .sub_path = "extensions/fixture-active/package.json", .data = "{\"name\":\"active\",\"publisher\":\"fixture\",\"version\":\"1.0.0\",\"engines\":{\"vscode\":\"*\"},\"main\":\"./main.js\",\"activationEvents\":[\"*\"]}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "extensions/fixture-active/main.js", .data = "exports.activate = context => context.subscriptions.push(require('vscode').commands.registerCommand('fixture.active.command', () => {}));" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "editor.txt", .data = "retain this editor" });
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const extension_dir = try std.fs.path.join(allocator, &.{ root, "extensions" });
+    defer allocator.free(extension_dir);
+    const editor_path = try std.fs.path.join(allocator, &.{ root, "editor.txt" });
+    defer allocator.free(editor_path);
+    const enablement = try extensions_enablement.ExtensionEnablementService.init(allocator, null);
+    defer enablement.deinit();
+    const service = try extensions_service_mod.ExtensionsWorkbenchService.init(allocator, io, .{ .user_location = extension_dir, .enablement = enablement });
+    defer service.deinit();
+    const window = try TestWindow.init(allocator, io, &.{editor_path}, 80, 24);
+    defer window.deinit();
+    const workbench = window.workbench;
+    workbench.setExtensionsService(service);
+    const abstract = @import("../vs/workbench/services/extensions/common/abstractExtensionService.zig");
+    const paths = try abstract.resolveEnabledPaths(allocator, io, service.enabledDescriptions(), "host/dist");
+    defer abstract.freePaths(allocator, paths);
+    const Extensions = @import("../vs/workbench/api/browser/extensionHostAdapter.zig").Extensions;
+    var host: ?*Extensions = try Extensions.init(allocator, io, workbench.extensionHostServices(), paths, root, "host/dist");
+    defer if (host) |ext| ext.deinit();
+    var runtime: @import("extensionHostRuntime.zig").ExtensionHostRuntime = .{ .workbench = workbench, .service = service, .host = &host, .user_data_dir = root, .runtime_dir = "host/dist" };
+    try runtime.attach();
+    defer runtime.detach();
+    const deadline = time_compat.milliTimestamp(io) + 10_000;
+    while (workbench.commands.get("fixture.active.command") == null and time_compat.milliTimestamp(io) < deadline) {
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp(io));
+        time_compat.sleepMillis(io, 10);
+    }
+    try std.testing.expect(workbench.commands.get("fixture.active.command") != null);
+    const tab = workbench.activeTab().?;
+    try std.testing.expect(try service.setEnablement("fixture.active", .DisabledGlobally));
+    _ = workbench.window_events.dispatch(time_compat.milliTimestamp(io));
+    try std.testing.expectEqual(abstract.RuntimeInventory.Action.RestartExtensions, service.runtimeState("fixture.active").?);
+    try workbench.commands.execute("workbench.action.restartExtensionHost");
+    try std.testing.expect(host == null);
+    try std.testing.expect(workbench.commands.get("fixture.active.command") == null);
+    try std.testing.expect(workbench.activeTab().? == tab);
+    try std.testing.expect(service.runtimeState("fixture.active") == null);
+}

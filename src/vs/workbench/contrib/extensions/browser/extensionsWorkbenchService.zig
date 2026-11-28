@@ -293,6 +293,7 @@ pub const ExtensionsWorkbenchService = struct {
     enablement: *enablement_mod.ExtensionEnablementService,
     on_change: Emitter(void),
     on_recommendations_change: Emitter(void),
+    on_did_change_enabled_descriptions: Emitter(void),
 
     pub fn init(allocator: Allocator, io: std.Io, options: Options) !*ExtensionsWorkbenchService {
         const self = try allocator.create(ExtensionsWorkbenchService);
@@ -308,6 +309,7 @@ pub const ExtensionsWorkbenchService = struct {
             .enablement = options.enablement,
             .on_change = Emitter(void).init(allocator),
             .on_recommendations_change = Emitter(void).init(allocator),
+            .on_did_change_enabled_descriptions = Emitter(void).init(allocator),
         };
         errdefer self.deinitContents();
         if (options.gallery_url) |url| self.gallery_url = try allocator.dupe(u8, url);
@@ -335,6 +337,7 @@ pub const ExtensionsWorkbenchService = struct {
         if (self.gallery_url) |url| self.allocator.free(url);
         self.on_change.deinit();
         self.on_recommendations_change.deinit();
+        self.on_did_change_enabled_descriptions.deinit();
         if (self.system_location) |location| self.allocator.free(location);
         if (self.user_location) |location| self.allocator.free(location);
         self.system_location = null;
@@ -430,13 +433,19 @@ pub const ExtensionsWorkbenchService = struct {
 
     fn refreshEnablement(self: *ExtensionsWorkbenchService) !void {
         try self.computeEnablement(self.state.inventory, self.state.local, &self.state.enabled);
+        try self.on_did_change_enabled_descriptions.fire({});
         self.updateGalleryLocalState();
         try self.on_change.fire({});
     }
 
     /// Called by the local host owner only after accepting the new inventory.
     pub fn recordRuntime(self: *ExtensionsWorkbenchService) !void {
-        const next = try RuntimeInventory.init(self.allocator, self.enabledDescriptions());
+        return self.acceptRuntime(try RuntimeInventory.init(self.allocator, self.enabledDescriptions()));
+    }
+
+    /// Takes ownership of precisely the registry generation acknowledged by
+    /// the host, even if another inventory operation completed in the meantime.
+    pub fn acceptRuntime(self: *ExtensionsWorkbenchService, next: RuntimeInventory) !void {
         if (self.runtime) |*previous| previous.deinit();
         self.runtime = next;
         try self.on_change.fire({});
@@ -1117,6 +1126,9 @@ pub const ExtensionsWorkbenchService = struct {
     pub fn refresh(self: *ExtensionsWorkbenchService) !void {
         const state = try self.scan();
         const previous = self.replaceState(state);
+        // Preserve the previous generation until both registry and view
+        // listeners have consumed this event.
+        self.on_did_change_enabled_descriptions.fire({}) catch {};
         self.updateGalleryLocalState();
         self.on_change.fire({}) catch |err| {
             self.freeState(previous);
