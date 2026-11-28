@@ -1,9 +1,8 @@
 // Port of the global-enablement cases from
 // `src/vs/workbench/services/extensionManagement/test/browser/extensionEnablementService.test.ts`.
 //
-// Terminal adaptation: the TUI has no workspace enablement profiles, so the
-// workspace/trust/dependency cases are not portable. The persistence adapter is
-// an in-memory Store that records the raw profile value.
+// Global fixtures use an in-memory profile store; workspace fixtures exercise
+// the per-workspace storage adapter. Trust and environment cases remain unported.
 const std = @import("std");
 const service_mod = @import("../../browser/extensionEnablementService.zig");
 const management = @import("../../common/extensionManagement.zig");
@@ -157,4 +156,36 @@ test "test unsupported workspace enablement is rejected" {
     defer service.deinit();
     try std.testing.expectError(error.UnsupportedEnablementState, service.setEnablement("example.extension", .DisabledWorkspace));
     try std.testing.expectError(error.UnsupportedEnablementState, service.setEnablement("example.extension", .EnabledWorkspace));
+}
+
+test "ExtensionEnablementService: workspace overrides persist independently of global enablement" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const Workspace = @import("../../../../../platform/workspace/common/workspace.zig").Workspace;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPath(io, &path);
+    const profile = path[0..len];
+    var first = try Workspace.init(allocator, "one");
+    defer first.deinit();
+    _ = try first.addFolder("/first", "first");
+    var second = try Workspace.init(allocator, "two");
+    defer second.deinit();
+    _ = try second.addFolder("/second", "second");
+    const service = try service_type.init(allocator, null);
+    defer service.deinit();
+    try service.configureWorkspaceStorage(io, profile);
+    _ = try service.setWorkspace(&first);
+    try std.testing.expect(try service.setEnablement("example.extension", .DisabledGlobally));
+    try std.testing.expect(try service.setEnablement("example.extension", .EnabledWorkspace));
+    try std.testing.expectEqual(EnablementState.EnabledWorkspace, service.getEnablementState("EXAMPLE.Extension"));
+    _ = try service.setWorkspace(&second);
+    try std.testing.expectEqual(EnablementState.DisabledGlobally, service.getEnablementState("example.extension"));
+    _ = try service.setWorkspace(&first);
+    try std.testing.expectEqual(EnablementState.EnabledWorkspace, service.getEnablementState("example.extension"));
+    try std.testing.expect(try service.setEnablement("example.extension", .EnabledGlobally));
+    _ = try service.setWorkspace(&second);
+    _ = try service.setWorkspace(&first);
+    try std.testing.expectEqual(EnablementState.EnabledGlobally, service.getEnablementState("example.extension"));
 }

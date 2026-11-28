@@ -1,11 +1,9 @@
 // Port of the enablement portion of
 // `src/vs/workbench/services/extensionManagement/common/extensionManagement.ts`.
 //
-// Terminal adaptation: only the global (user) enablement states are produced
-// by the ported service. Workspace enablement, workspace trust, extension
-// kind, virtual workspaces, malicious-extension, allow-list and dependency
-// disablement are member values kept for upstream ordering/fidelity; nothing
-// in the TUI assigns them.
+// The terminal service supports global/workspace states and computed
+// disabled-dependency state. Other upstream restrictions are retained in
+// the enum for protocol fidelity but not yet computed.
 const std = @import("std");
 
 /// Upstream `EnablementState`; the numeric values match so persisted or
