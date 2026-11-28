@@ -477,8 +477,12 @@ Clicking a row or pressing Enter opens a read-only, singleton extension editor
 preview tab, not `package.json`. Its tabs display README, registered Features,
 changelog, dependencies and extension pack when available. Dependency and pack
 links open the corresponding extension detail editor. Features include
-commands, settings/defaults, languages, themes and the actual local host
-activation status. The responsive additional
+commands, settings/defaults, languages, themes, activation events, API
+proposals, JSON validation, debugger declarations, colors, views and view
+containers, custom editors, language packs, authentication providers,
+notebooks and notebook renderers, plus actual local host activation status.
+The contribution tables describe manifests; they do not imply that all of
+those contribution runtimes are implemented. The responsive additional
 details pane shows installation information, Marketplace dates, categories and
 resource links. The terminal uses shared Markdown layout rather than browser
 webviews, fetching gallery documentation asynchronously. Arrow keys switch tabs
@@ -514,7 +518,7 @@ contributions (languages, grammars, themes, configuration and snippets) still
 require restarting the editor.
 
 Remaining portable parity gaps include full profile/server management,
-additional recommendation sources, more registered feature renderers and
+additional recommendation sources, chat/MCP-specific feature renderers and
 runtime error/access telemetry, dynamic declarative contribution
 registration, and the complete trust and extension-policy services. The
 terminal uses text/glyphs instead of gallery artwork and browser webviews;

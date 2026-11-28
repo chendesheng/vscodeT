@@ -48,8 +48,10 @@ identifier lookup rather than replacing the sidebar query.
 `extensionEditor.zig` supplies the tab bar, Markdown
 documentation, actions and responsive additional details.
 `extensionFeatures.zig` provides a window-owned feature registry with
-renderers registered by their command, configuration, language and theme
-contribution owners; the Features tab and `@contribute:` search use the
+renderers registered by their upstream contribution owners, including command,
+configuration, language, theme/color, JSON validation, debugger, view/container,
+custom editor, localization, authentication, notebook, activation event and API
+proposal renderers; the Features tab and `@contribute:` search use the
 same registry. The runtime status feature reports activation timing and reason
 from the actual Node host, and the shared management-action menu includes
 extension/publisher update preferences.
@@ -68,8 +70,8 @@ points and changes to those points require restarting the editor.
 
 The port does not yet have all upstream management services and renderers:
 additional recommendation providers, full profile switching and multiple
-extension servers, trust/policy integration, runtime error/access telemetry and other feature
-renderers, and live replacement
+extension servers, trust/policy integration, runtime error/access telemetry and chat/MCP-specific
+feature renderers, and live replacement
 of startup declarative contributions remain portable gaps. Browser webview
 rendering, image artwork and native browser multi-file selection are terminal
 adaptations/limitations, not evidence that the portable functionality is
