@@ -1808,7 +1808,7 @@ Library constraints:
   `.vscode/settings.json`, with folder > workspace > terminal user > VS Code
   user > defaults precedence. `src/tui/vscodeProfile.zig` discovers the layers:
   the stable VS Code `Code/User` path has no override, and the TUI user data
-  dir follows upstream `userDataPath.ts` (`VSCODE_PORTABLE`, `VSCODE_APPDATA`,
+  dir follows upstream `userDataPath.ts` (`MINECODE_PORTABLE`, `VSCODE_APPDATA`,
   `--user-data-dir`, then the platform application-data directory). Settings
   JSON accepts comments and trailing commas. The service exposes `getValue`, `inspect`, `keys`, `reload` and a
   change emitter; `getValue` resolves `[language]` override identifiers.

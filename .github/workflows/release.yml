@@ -79,9 +79,9 @@ jobs:
       - name: Bundle the pinned Node extension host
         working-directory: host
         run: npm run build
-      - name: Bundle builtin extensions and the TypeScript SDK
+      - name: Bundle essential builtin extensions (optional language features from Open VSX)
         working-directory: host
-        run: node build-builtin-extensions.js
+        run: node build-builtin-extensions.js --gallery-extensions
       - name: Resolve release version
         id: version
         shell: bash
@@ -99,11 +99,11 @@ jobs:
       - name: Build minecode
         shell: bash
         run: |
-          zig build -Doptimize=ReleaseSmall -Donig-static=true ${{ matrix.target_arg }}
+          zig build -Dgallery-extensions=true -Doptimize=ReleaseSmall -Donig-static=true ${{ matrix.target_arg }}
       - name: Install the Node host runtime
         shell: bash
         run: |
-          zig build host json-server -Doptimize=ReleaseSmall -Donig-static=true ${{ matrix.target_arg }}
+          zig build host json-server -Dgallery-extensions=true -Doptimize=ReleaseSmall -Donig-static=true ${{ matrix.target_arg }}
       - name: Verify the binary and runtime assets
         shell: bash
         run: |
@@ -114,6 +114,11 @@ jobs:
           test -d zig-out/share/minecode/extensions
           test -f zig-out/lib/minecode/extensionHost.mjs
           test -f zig-out/lib/minecode/jsonServer.mjs
+          while IFS= read -r name; do
+            test ! -e "zig-out/share/minecode/extensions/$name"
+            test ! -e "zig-out/lib/minecode/extensions/$name"
+          done < src/vs/platform/product/common/galleryExtensions.txt
+          test ! -e zig-out/lib/minecode/extensions/node_modules/typescript
           if command -v ldd >/dev/null 2>&1; then
             if ldd "$bin" | grep -qi onig; then
               echo "release binary still depends on a system Oniguruma" >&2

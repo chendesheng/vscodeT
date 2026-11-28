@@ -17,8 +17,11 @@ bundle `host/dist` or `host/dist/extensions` are deliberately absent:
 - `@microsoft/*`, `@azure/*`, `@nevware21/*`, `@vscode/extension-telemetry` and
   `vscode-tas-client` are build inputs for bundled telemetry/authentication
   code. The native MSAL binaries are copied into the authentication extension.
-- `@vscode/emmet-helper`, `emmet` and `@emmetio/*` are bundled into the Emmet
-  extension.
+- `@vscode/emmet-helper`, `emmet` and `@emmetio/*` are bundled into the pinned
+  development Emmet fixture.
+- `typescript` is a development build input; the released TypeScript and
+  HTML language-feature packages are user downloads from Open VSX with their
+  own SDKs. The shared TypeScript SDK is not installed in the archive.
 
 Keep the runtime package versions in sync with the corresponding versions in
 `host/package.json`, then regenerate this directory's `package-lock.json` with

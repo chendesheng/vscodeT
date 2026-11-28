@@ -1,8 +1,10 @@
 // Port of the query/asset contracts in
 // `src/vs/platform/extensionManagement/common/extensionGalleryService.ts` and
 // the default capabilities in `extensionGalleryManifestService.ts`.
-// Open VSX exposes the compatible extensionquery API. The caller supplies
-// the request service/Io and owns each returned page; no UI or host state.
+// Minecode uses Open VSX's native search/query API. This provider adapter
+// normalizes registry metadata into upstream-shaped Pages; the compatible
+// extensionquery transport remains for configured Marketplace-compatible
+// providers and criteria not represented by Open VSX's native search API.
 const std = @import("std");
 const builtin = @import("builtin");
 const validator = @import("../../extensions/common/extensionValidator.zig");
@@ -169,6 +171,234 @@ pub const Page = struct {
     }
 };
 
+// Open VSX's native exact-ID response contains one record per version/target,
+// whereas the compatible API groups versions by extension. Normalize the
+// registry records at the same Page boundary used by the workbench.
+const OpenVsxFiles = struct {
+    download: ?[]const u8 = null,
+    manifest: ?[]const u8 = null,
+    readme: ?[]const u8 = null,
+    changelog: ?[]const u8 = null,
+    icon: ?[]const u8 = null,
+    license: ?[]const u8 = null,
+};
+const OpenVsxEngines = struct { vscode: ?[]const u8 = null };
+const OpenVsxVersion = struct {
+    namespace: []const u8,
+    name: []const u8,
+    version: []const u8,
+    namespaceDisplayName: ?[]const u8 = null,
+    displayName: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    timestamp: ?[]const u8 = null,
+    targetPlatform: ?[]const u8 = null,
+    downloadable: bool = true,
+    preRelease: bool = false,
+    engines: OpenVsxEngines = .{},
+    categories: ?[]const []const u8 = null,
+    downloadCount: ?f64 = null,
+    averageRating: ?f64 = null,
+    reviewCount: ?f64 = null,
+    files: OpenVsxFiles = .{},
+};
+const OpenVsxQueryPage = struct {
+    extensions: []const OpenVsxVersion = &.{},
+    offset: usize = 0,
+    totalSize: usize = 0,
+};
+
+fn matchesIdentifier(identifier: []const u8, namespace: []const u8, name: []const u8) bool {
+    const dot = std.mem.indexOfScalar(u8, identifier, '.') orelse return false;
+    return std.ascii.eqlIgnoreCase(identifier[0..dot], namespace) and std.ascii.eqlIgnoreCase(identifier[dot + 1 ..], name);
+}
+
+const OpenVsxExact = struct {
+    current: ?GalleryExtension = null,
+    versions: std.ArrayList(Version) = .empty,
+
+    fn append(self: *OpenVsxExact, allocator: Allocator, identifier: []const u8, bytes: []const u8) !OpenVsxQueryPage {
+        const page = try std.json.parseFromSliceLeaky(OpenVsxQueryPage, allocator, bytes, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+        for (page.extensions) |item| try self.appendItem(allocator, identifier, item);
+        return page;
+    }
+
+    fn appendItem(self: *OpenVsxExact, allocator: Allocator, identifier: []const u8, item: OpenVsxVersion) !void {
+        if (!matchesIdentifier(identifier, item.namespace, item.name) or !item.downloadable) return;
+        _ = std.SemanticVersion.parse(item.version) catch return;
+        const download = item.files.download orelse return;
+        const engine = item.engines.vscode orelse return;
+        if (!std.mem.startsWith(u8, download, "https://")) return;
+        var files: std.ArrayList(Asset) = .empty;
+        for ([_]struct { kind: []const u8, value: ?[]const u8 }{
+            .{ .kind = "Microsoft.VisualStudio.Services.VSIXPackage", .value = download },
+            .{ .kind = "Microsoft.VisualStudio.Code.Manifest", .value = item.files.manifest },
+            .{ .kind = "Microsoft.VisualStudio.Services.Content.Details", .value = item.files.readme },
+            .{ .kind = "Microsoft.VisualStudio.Services.Content.Changelog", .value = item.files.changelog },
+            .{ .kind = "Microsoft.VisualStudio.Services.Icons.Default", .value = item.files.icon },
+            .{ .kind = "Microsoft.VisualStudio.Services.Content.License", .value = item.files.license },
+        }) |asset| if (asset.value) |url| {
+            if (std.mem.startsWith(u8, url, "https://")) try files.append(allocator, .{ .assetType = asset.kind, .source = url });
+        };
+        var properties: std.ArrayList(Property) = .empty;
+        try properties.append(allocator, .{ .key = "Microsoft.VisualStudio.Code.Engine", .value = engine });
+        if (item.preRelease) try properties.append(allocator, .{ .key = "Microsoft.VisualStudio.Code.PreRelease", .value = "true" });
+        try self.versions.append(allocator, .{ .version = item.version, .targetPlatform = item.targetPlatform, .lastUpdated = item.timestamp, .files = files.items, .properties = properties.items });
+        if (self.current == null) {
+            var statistics: std.ArrayList(Statistic) = .empty;
+            if (item.downloadCount) |count| try statistics.append(allocator, .{ .statisticName = "install", .value = count });
+            if (item.averageRating) |rating| try statistics.append(allocator, .{ .statisticName = "averagerating", .value = rating });
+            if (item.reviewCount) |count| try statistics.append(allocator, .{ .statisticName = "ratingcount", .value = count });
+            self.current = .{
+                .extensionName = item.name,
+                .publisher = .{ .publisherName = item.namespace, .displayName = item.namespaceDisplayName },
+                .displayName = item.displayName,
+                .shortDescription = item.description,
+                .lastUpdated = item.timestamp,
+                .categories = item.categories,
+                .statistics = statistics.items,
+            };
+        }
+    }
+
+    fn result(self: *const OpenVsxExact) ?GalleryExtension {
+        var extension = self.current orelse return null;
+        extension.versions = self.versions.items;
+        return extension;
+    }
+};
+
+const OpenVsxSearchVersion = struct {
+    version: []const u8,
+    targetPlatform: ?[]const u8 = null,
+    preRelease: ?bool = null,
+    engines: OpenVsxEngines = .{},
+    files: OpenVsxFiles = .{},
+};
+const OpenVsxSearchEntry = struct {
+    namespace: []const u8,
+    name: []const u8,
+    displayName: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    timestamp: ?[]const u8 = null,
+    downloadCount: ?f64 = null,
+    averageRating: ?f64 = null,
+    reviewCount: ?f64 = null,
+    files: OpenVsxFiles = .{},
+    allVersions: []const OpenVsxSearchVersion = &.{},
+};
+const OpenVsxSearchPage = struct { extensions: []const OpenVsxSearchEntry = &.{}, totalSize: usize = 0 };
+
+/// Search supplies compact version summaries with engines and targets. Exact
+/// lookup supplies the full version metadata and channel before installation.
+pub fn parseOpenVsxSearchPage(allocator: Allocator, bytes: []const u8) !Page {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const native = try std.json.parseFromSliceLeaky(OpenVsxSearchPage, a, bytes, .{ .ignore_unknown_fields = true });
+    var entries: std.ArrayList(GalleryExtension) = .empty;
+    for (native.extensions) |entry| {
+        const identifier = try std.fmt.allocPrint(a, "{s}.{s}", .{ entry.namespace, entry.name });
+        var exact: OpenVsxExact = .{};
+        for (entry.allVersions) |version| {
+            var files = version.files;
+            // The compact search result has a current icon but no manifest
+            // or README for each version. Full details are fetched on open.
+            if (files.icon == null) files.icon = entry.files.icon;
+            const semantic = std.SemanticVersion.parse(version.version) catch continue;
+            try exact.appendItem(a, identifier, .{
+                .namespace = entry.namespace,
+                .name = entry.name,
+                .version = version.version,
+                .displayName = entry.displayName,
+                .description = entry.description,
+                .timestamp = entry.timestamp,
+                .downloadCount = entry.downloadCount,
+                .averageRating = entry.averageRating,
+                .reviewCount = entry.reviewCount,
+                .targetPlatform = version.targetPlatform,
+                .engines = version.engines,
+                .files = files,
+                .preRelease = version.preRelease orelse (semantic.pre != null),
+            });
+        }
+        if (exact.result()) |extension| try entries.append(a, extension);
+    }
+    return pageFromEntriesTotal(allocator, entries.items, native.totalSize);
+}
+
+fn pageFromEntries(allocator: Allocator, entries: []const GalleryExtension) !Page {
+    return pageFromEntriesTotal(allocator, entries, entries.len);
+}
+
+fn pageFromEntriesTotal(allocator: Allocator, entries: []const GalleryExtension, total: usize) !Page {
+    const metadata: Metadata = .{ .metadataType = "ResultCount", .metadataItems = &.{.{ .name = "TotalCount", .count = total }} };
+    const bytes = try std.json.Stringify.valueAlloc(allocator, .{ .results = .{.{ .extensions = entries, .resultMetadata = &.{metadata} }} }, .{});
+    defer allocator.free(bytes);
+    return Page.parse(allocator, bytes);
+}
+
+/// Pure normalization boundary used by the registry and its response tests.
+pub fn parseOpenVsxExactPage(allocator: Allocator, identifier: []const u8, bytes: []const u8) !Page {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var exact: OpenVsxExact = .{};
+    _ = try exact.append(arena.allocator(), identifier, bytes);
+    return if (exact.result()) |extension| pageFromEntries(allocator, &.{extension}) else pageFromEntries(allocator, &.{});
+}
+
+pub fn openVsxBase(service_url: []const u8) ?[]const u8 {
+    const url = std.mem.trimEnd(u8, service_url, "/");
+    const suffix = "/vscode/gallery";
+    if (!std.mem.startsWith(u8, url, "https://") or !std.mem.endsWith(u8, url, suffix)) return null;
+    return url[0 .. url.len - suffix.len];
+}
+
+fn validIdentifier(identifier: []const u8) bool {
+    const dot = std.mem.indexOfScalar(u8, identifier, '.') orelse return false;
+    if (dot == 0 or dot + 1 == identifier.len) return false;
+    for (identifier, 0..) |ch, i| {
+        if (i == dot) continue;
+        if (!std.ascii.isAlphanumeric(ch) and ch != '-' and ch != '_') return false;
+    }
+    return true;
+}
+
+fn nativeExactQuery(options: Query) bool {
+    if (options.criteria.len == 0) return false;
+    for (options.criteria) |criterion| if (criterion.filterType != @backingInt(FilterType.extension_name)) return false;
+    return true;
+}
+
+const NativeSearch = struct { text: []const u8 = "", category: []const u8 = "", sort: []const u8 };
+fn nativeSearchQuery(options: Query) ?NativeSearch {
+    var search: NativeSearch = .{ .sort = switch (options.sort_by) {
+        .relevance => "relevance",
+        .updated => "timestamp",
+        .installs => "downloadCount",
+        .rating => "rating",
+        else => return null,
+    } };
+    for (options.criteria) |criterion| switch (criterion.filterType) {
+        @backingInt(FilterType.search_text) => {
+            if (search.text.len != 0) return null;
+            search.text = criterion.value orelse "";
+        },
+        @backingInt(FilterType.category) => {
+            if (search.category.len != 0) return null;
+            search.category = criterion.value orelse "";
+        },
+        else => return null,
+    };
+    return search;
+}
+
+fn escapedQuery(allocator: Allocator, value: []const u8) ![]u8 {
+    var writer = std.Io.Writer.Allocating.init(allocator);
+    defer writer.deinit();
+    try (std.Uri.Component{ .raw = value }).formatEscaped(&writer.writer);
+    return writer.toOwnedSlice();
+}
+
 pub const ExtensionGalleryService = struct {
     allocator: Allocator,
     io: std.Io,
@@ -179,6 +409,48 @@ pub const ExtensionGalleryService = struct {
     }
 
     pub fn query(self: ExtensionGalleryService, options: Query) !Page {
+        if (openVsxBase(self.service_url)) |base| {
+            if (nativeExactQuery(options)) return self.queryOpenVsxNames(base, options);
+            if (nativeSearchQuery(options)) |search| return self.queryOpenVsxSearch(base, options, search);
+        }
+        // Native search does not have exact tag/multi-category or
+        // name/publisher/published-date sort parameters. Keep that portable
+        // query behavior through Open VSX's compatibility adapter only for
+        // these criteria, rather than approximate it with client-side scans.
+        return self.queryCompatible(options);
+    }
+
+    fn queryOpenVsxNames(self: ExtensionGalleryService, base: []const u8, options: Query) !Page {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var entries: std.ArrayList(GalleryExtension) = .empty;
+        const start = @min(options.criteria.len, (options.page -| 1) *| options.page_size);
+        const end = @min(options.criteria.len, start +| options.page_size);
+        for (options.criteria[start..end]) |criterion| {
+            const id = criterion.value orelse continue;
+            if (!validIdentifier(id)) continue;
+            // Exact requests choose from authoritative release/channel and
+            // engine metadata, including older compatible releases.
+            if (try self.queryOpenVsxExact(a, base, id, true)) |extension| try entries.append(a, extension);
+        }
+        return pageFromEntriesTotal(self.allocator, entries.items, if (options.criteria.len > end) options.criteria.len else start + entries.items.len);
+    }
+
+    fn queryOpenVsxSearch(self: ExtensionGalleryService, base: []const u8, options: Query, search: NativeSearch) !Page {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const text = try escapedQuery(a, search.text);
+        const category = if (search.category.len > 0) try std.fmt.allocPrint(a, "&category={s}", .{try escapedQuery(a, search.category)}) else "";
+        const order = if (options.sort_order == 1) "asc" else "desc";
+        const url = try std.fmt.allocPrint(a, "{s}/api/-/search?query={s}{s}&size={d}&offset={d}&sortBy={s}&sortOrder={s}&includeAllVersions=true", .{ base, text, category, options.page_size, (options.page -| 1) *| options.page_size, search.sort, order });
+        const bytes = try getAsset(self.allocator, self.io, url);
+        defer self.allocator.free(bytes);
+        return parseOpenVsxSearchPage(self.allocator, bytes);
+    }
+
+    fn queryCompatible(self: ExtensionGalleryService, options: Query) !Page {
         var request = request_mod.RequestService.init(self.allocator, self.io);
         defer request.deinit();
         var headers = Headers.init(self.allocator);
@@ -193,6 +465,24 @@ pub const ExtensionGalleryService = struct {
         defer response.deinit();
         if (response.status_code != 200) return error.GalleryRequestFailed;
         return Page.parse(self.allocator, response.body.bytes);
+    }
+
+    fn queryOpenVsxExact(self: ExtensionGalleryService, allocator: Allocator, base: []const u8, identifier: []const u8, all_versions: bool) !?GalleryExtension {
+        // Identifiers have been validated as publisher/name components.
+        // Request all target variants and page version history when needed.
+        var exact: OpenVsxExact = .{};
+        var offset: usize = 0;
+        while (true) {
+            const url = try std.fmt.allocPrint(self.allocator, "{s}/api/v2/-/query?extensionId={s}&includeAllVersions={s}&size=1000&offset={d}", .{ base, identifier, if (all_versions) "true" else "false", offset });
+            defer self.allocator.free(url);
+            const bytes = try getAsset(self.allocator, self.io, url);
+            defer self.allocator.free(bytes);
+            const page = try exact.append(allocator, identifier, bytes);
+            if (page.extensions.len == 0) break;
+            offset += page.extensions.len;
+            if (offset >= page.totalSize) break;
+        }
+        return exact.result();
     }
 };
 

@@ -5496,14 +5496,31 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             return if (hover_received) error.ZigLanguageStatusNotReceived else error.ZlsHoverNotReceived;
         }
 
+        // The deterministic CI suite uses the pinned development bundles.
+        // Opt-in release qualification exercises the exact unpacked Open VSX
+        // packages as user extensions, without substituting those fixtures.
+        fn testLanguageExtension(allocator: Allocator, io: std.Io, name: []const u8) !Extensions.ExtensionPath {
+            const optional = std.mem.eql(u8, name, "typescript-language-features") or
+                std.mem.eql(u8, name, "html-language-features") or
+                std.mem.eql(u8, name, "css-language-features") or std.mem.eql(u8, name, "emmet");
+            const gallery_root = if (optional) std.c.getenv("MINECODE_E2E_GALLERY_EXTENSIONS") else null;
+            const root = if (gallery_root) |value| std.mem.span(value) else "host/dist/extensions";
+            const path = try std.fs.path.join(allocator, &.{ root, name });
+            errdefer allocator.free(path);
+            const manifest = try std.fs.path.join(allocator, &.{ path, "package.json" });
+            defer allocator.free(manifest);
+            try std.Io.Dir.cwd().access(io, manifest, .{});
+            return .{ .path = path, .is_builtin = gallery_root == null };
+        }
+
         test "Extensions: real TypeScript extension drives the language features" {
             if (!build_options.e2e) return error.SkipZigTest;
             const io = std.testing.io;
             std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
-            std.Io.Dir.cwd().access(io, "host/dist/extensions/typescript-language-features/package.json", .{}) catch return error.SkipZigTest;
-            std.Io.Dir.cwd().access(io, "host/dist/extensions/node_modules/typescript/lib/tsserver.js", .{}) catch return error.SkipZigTest;
-
             const allocator = std.testing.allocator;
+            const extension = try testLanguageExtension(allocator, io, "typescript-language-features");
+            defer allocator.free(extension.path);
+            if (extension.is_builtin) try std.Io.Dir.cwd().access(io, "host/dist/extensions/node_modules/typescript/lib/tsserver.js", .{});
             var tmp = std.testing.tmpDir(.{});
             defer tmp.cleanup();
             try tmp.dir.writeFile(io, .{ .sub_path = "sample.ts", .data =
@@ -5523,7 +5540,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                 allocator,
                 io,
                 workbench.extensionHostServices(),
-                &.{.{ .path = "host/dist/extensions/typescript-language-features", .is_builtin = true }},
+                &.{extension},
                 ".cache-ext/data-ts-test",
                 "host/dist",
             );
@@ -5701,10 +5718,10 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             if (!build_options.e2e) return error.SkipZigTest;
             const io = std.testing.io;
             std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
-            std.Io.Dir.cwd().access(io, "host/dist/extensions/typescript-language-features/package.json", .{}) catch return error.SkipZigTest;
-            std.Io.Dir.cwd().access(io, "host/dist/extensions/node_modules/typescript/lib/tsserver.js", .{}) catch return error.SkipZigTest;
-
             const allocator = std.testing.allocator;
+            const extension = try testLanguageExtension(allocator, io, "typescript-language-features");
+            defer allocator.free(extension.path);
+            if (extension.is_builtin) try std.Io.Dir.cwd().access(io, "host/dist/extensions/node_modules/typescript/lib/tsserver.js", .{});
             var tmp = std.testing.tmpDir(.{});
             defer tmp.cleanup();
             try tmp.dir.writeFile(io, .{ .sub_path = "broken.cjs", .data =
@@ -5724,7 +5741,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                 allocator,
                 io,
                 workbench.extensionHostServices(),
-                &.{.{ .path = "host/dist/extensions/typescript-language-features", .is_builtin = true }},
+                &.{extension},
                 ".cache-ext/data-js-test",
                 "host/dist",
             );
@@ -5870,6 +5887,8 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const io = std.testing.io;
             std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
             const allocator = std.testing.allocator;
+            const extension = try testLanguageExtension(allocator, io, name);
+            defer allocator.free(extension.path);
             var catalog = try @import("../../services/extensions/common/extensionsRegistry.zig").scan(allocator, io, &.{ "vscode/extensions/configuration-editing", "vscode/extensions/lua" });
             defer catalog.deinit();
             var tmp = std.testing.tmpDir(.{});
@@ -5882,10 +5901,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             defer workbench_window.deinit();
             workbench.setDeclarativeExtensions(&catalog);
             try workbench.enableLanguageFeatures();
-            var extensions = try Extensions.init(allocator, io, workbench.extensionHostServices(), &.{.{
-                .path = "host/dist/extensions/" ++ name,
-                .is_builtin = true,
-            }}, ".cache-ext/test-" ++ name, "host/dist");
+            var extensions = try Extensions.init(allocator, io, workbench.extensionHostServices(), &.{extension}, ".cache-ext/test-" ++ name, "host/dist");
             defer extensions.deinit();
             const model = workbench.activeTab().?.editor.model;
             const deadline = time_compat.milliTimestamp(std.testing.io) + 15_000;

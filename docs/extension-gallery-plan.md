@@ -1,292 +1,122 @@
-# Extension gallery plan: current self-contained language servers
+# Open VSX extensions and slim releases
 
-**Status:** proposed, not implemented.
-
-## Are Theia / Open VSX built-ins current?
-
-No, not relative to this repository.
-
-| Source | Version | Date | Relation to minecode |
-|---|---|---|---|
-| minecode `vscode/` pin | **1.147.0** | commit `e31c2e52`, Nov 2026 | The source of truth |
-| Theia GitHub release | **1.108.2** | Mar 2026 | Older VS Code tree |
-| Open VSX `vscode.*` | **1.95.3** | Dec 2024 | Older still |
-
-The Theia project does exactly the packaging work we want:
-
-- It builds the MIT-licensed VS Code built-ins as standalone VSIXs.
-- It includes the TypeScript SDK inside the TypeScript VSIX (`extension/deps/typescript`)
-  and the HTML server's SDK inside the HTML VSIX
-  (`extension/server/node_modules/typescript`).
-- It patches the TypeScript extension's hard-coded `../node_modules` lookup, so
-  the package is self-contained.
-- It publishes the results to Open VSX under the `vscode` namespace.
-
-But its newest published binary is **1.108.2**, not the 1.147.0 tree this repo
-pins. Installing it would be convenient, but it would ship older language
-servers and older extension implementations. It is useful as a **packaging
-reference and compatibility fallback**, not as the default release source.
+**Status:** implemented for the four qualified language-feature extensions.
 
 ## Decision
 
-Build the five self-contained VSIXs from the pinned `vscode/` tree using the
-same packaging approach Theia uses. Then publish them as one gallery bundle.
-This keeps the language servers exactly in sync with the extension host and
-does not depend on Theia, Open VSX, or Marketplace versions.
+Use the existing Extensions workbench and Open VSX gallery, not a separate
+Minecode gallery, repackaged VSIXs, release bundle, or version-specific index.
+The pinned VS Code 1.147.0 tree remains the specification for the editor, host
+and deterministic development integration tests. A downloaded extension is a
+normal user installation; its version need not equal the host's version.
 
-Marketplace publishing is not needed for the panel. If a separate VS Code
-Marketplace distribution is wanted later, it still requires an Extension Pack,
-five child extensions, a publisher account/OIDC, and a distinct publisher; a
-single VSIX containing five extensions is not supported.
+## Intentional difference from upstream VS Code
 
-## Goal and success criteria
+The registry transport is a product-specific adaptation, not a change to the
+extension-management architecture. Open VSX's VS Code-compatible
+`extensionquery` does not expose the qualified `vscode.*` extensions, whereas
+its [native API](https://open-vsx.org/swagger-ui/index.html) does. Minecode
+uses native `/api/-/search` for ordinary searches and `/api/v2/-/query` for
+exact identifiers and version metadata. Native responses are normalized to
+the same gallery models, version selection, asset and installer contracts.
+Search summaries are resolved to full version metadata before installation.
+The compatible query transport is retained for custom compatible galleries
+and criteria not provided by native search (exact tags, multiple categories,
+and sorting by name, publisher or publication date).
 
-- Default release contains no TS/HTML/CSS/Emmet/PHP language servers or SDK.
-- Extensions panel shows **one** "Minecode Language Servers" item.
-- Installing it downloads one bundle of five VSIXs built from the pinned tree.
-- After restart, all five language servers work as they do today.
-- Core archive target: **~18–21 MB** (from 29.3 MB).
-- `lib/minecode` shrinks to ~47 MB extracted, but is not eliminated.
-- Full development builds/tests remain full.
+## Product isolation
 
-## What this does to `lib`
+Minecode defaults to `~/.minecode/extensions`. The existing directory
+resolution order is `--extensions-dir`, `MINECODE_EXTENSIONS`,
+`MINECODE_PORTABLE/extensions`, then the product default. Portable mode also
+uses `MINECODE_PORTABLE/user-data`. The old VS Code extension and portable
+variables are ignored. Existing VS Code extensions and their `extensions.json`
+profile are not migrated, updated or removed. Explicit overrides can still
+select another directory. VS Code user and workspace settings remain compatible.
 
-`lib/minecode` remains because it contains the Node extension host and core
-extensions:
+## Release inventory
 
-| Remaining component | Approx. extracted |
-|---|---:|
-| `extensionHost.mjs` | 6.0 MB |
-| Core extensions (auth, terminal-suggest, merge-conflict, config/extension editing, npm, tasks, simple-browser, search-result, copilot) | 13.1 MB |
-| `jsonServer.mjs` | 0.8 MB |
-| Runtime `node_modules` (ripgrep, spdlog, proxy-agent, elkjs, katex, beautiful-mermaid, undici, …) | ~27.7 MB |
-| **Total** | **~47.6 MB** |
+`src/vs/platform/product/common/galleryExtensions.txt` is the shared inventory of omitted packages.
+Open Extensions (`Ctrl-Shift-X`) and search for the exact extension ID using
+`@id:<id>`, then Install the compatible release from Open VSX.
 
-Zero `lib` would require deleting the Node extension host, which also deletes
-gallery and user-extension support.
+| Extension | Qualified Open VSX version | Release disposition |
+| --- | --- | --- |
+| [`vscode.typescript-language-features`](https://open-vsx.org/extension/vscode/typescript-language-features) | 1.95.3 | Download on demand; VSIX includes `deps/typescript` |
+| [`vscode.html-language-features`](https://open-vsx.org/extension/vscode/html-language-features) | 1.95.3 | Download on demand; VSIX includes the HTML server's TypeScript SDK |
+| [`vscode.css-language-features`](https://open-vsx.org/extension/vscode/css-language-features) | 1.95.3 | Download on demand |
+| [`vscode.emmet`](https://open-vsx.org/extension/vscode/emmet) | 1.95.3 | Download on demand |
+| `vscode.php-language-features` | 1.95.3 | Keep the pinned bundle: the gallery package declares `engines.vscode: 0.10.0` and fails the normal compatibility check |
+| Terminal Suggest, auth, Git Base, task providers, configuration/extension editing, Merge Conflict, Search Result, Simple Browser, custom Copilot adapter | — | Keep current bundled integration; not part of this qualification |
 
-## Packaging the current VSIXs
+The gallery selects compatible versions using its existing engine, target
+platform and channel checks. The values above describe the tested packages,
+not a hard-coded version restriction. New versions still need runtime
+compatibility testing; older packages need not expose every feature of the
+pinned tree. Do not bypass API proposal or engine validation to make an
+incompatible package install.
 
-Add `host/package-vsix.js` (our own implementation; Theia's EPL-licensed
-scripts are a behavioral reference, not copied code):
+The JSON language server remains core. Declarative language basics, grammars,
+language configurations, snippets, themes and icons remain bundled, so normal
+syntax highlighting and editing work before any gallery downloads. The omitted
+language-feature manifests must also be absent from the system catalog: a
+newer pinned system manifest with the same ID would shadow an older downloaded
+user extension. All four are npm/Node-based user extensions, not native ports.
 
-- Input: `host/dist/language-servers`.
-- Output: `host/dist/vsix/` with five VSIXs:
-  - `vscode.typescript-language-features.vsix`
-  - `vscode.html-language-features.vsix`
-  - `vscode.css-language-features.vsix`
-  - `vscode.emmet.vsix`
-  - `vscode.php-language-features.vsix`
-- Each VSIX uses the standard layout:
-  - `extension/` payload
-  - `extension.vsixmanifest`
-  - `[Content_Types].xml`
-- TypeScript VSIX:
-  - Add `extension/deps/typescript` from `host/node_modules/typescript`.
-  - Patch the bundled SDK lookup from
-    `getContributedVersion("bundled", "vscode.typescript-language-features", ["..", "node_modules"])`
-    to the self-contained `[".", "deps"]` form used by Theia. Apply this as a
-    documented build-time adaptation in `host/build-builtin-extensions.js`
-    (esbuild `onLoad` transform), not by editing upstream files.
-- HTML VSIX:
-  - Add `extension/server/node_modules/typescript` from
-    `host/node_modules/typescript`; the HTML server's external `typescript`
-    import resolves there.
-- CSS/Emmet/PHP VSIXs are self-contained without the SDK.
-- Include `LICENSE-vscode.txt` and the existing `package.nls.json`,
-  `schemas`, `server/lib`, etc.
-- Use the extension package.json `publisher: "vscode"` and original IDs, so
-  the host sees the same IDs it expects. Do not republish under a new publisher.
+## Build and package
 
-## One gallery bundle
+- Full development `zig build`, `zig build host` and CI retain the pinned
+  fixtures in `host/dist/extensions` and their TypeScript SDK. CI does not
+  depend on a live registry to run the native interoperability suite.
+- Releases use `-Dgallery-extensions=true` for both the native install and
+  `zig build host json-server`. The manifest catalog omits the inventory;
+  `node host/build-builtin-extensions.js --gallery-extensions` builds only
+  retained runtime extensions into a separate `host/dist/gallery-release-extensions`
+  tree. The ordinary development output is untouched.
+- `scripts/package-release.sh` excludes those directories and the shared
+  TypeScript SDK from release staging even if an older full install is used.
+  `host/runtime/package.json` no longer includes TypeScript. The TypeScript
+  and HTML gallery packages own their SDKs independently.
+- The release workflow checks that the omitted manifests, bundles and shared
+  SDK are absent before packaging. Retained runtime features, the pinned Node
+  host and JSON server remain in `lib/minecode`. All release targets use the
+  same policy.
 
-Create one bundle asset per release:
+For a local slim install, use a fresh prefix to avoid stale artifacts:
 
-```text
-minecode-language-servers-<version>.zip
-  bundle.json
-  README.md
-  licenses/
-  vsix/
-    vscode.typescript-language-features.vsix
-    vscode.html-language-features.vsix
-    vscode.css-language-features.vsix
-    vscode.emmet.vsix
-    vscode.php-language-features.vsix
+```sh
+zig build -Dgallery-extensions=true --prefix /tmp/minecode-slim
+zig build host json-server -Dgallery-extensions=true --prefix /tmp/minecode-slim
+MINECODE_INSTALL_ROOT=/tmp/minecode-slim scripts/package-release.sh 0.0.0-dev macos-arm64
 ```
 
-`bundle.json`:
+## Verification
 
-```json
-{
-  "schemaVersion": 1,
-  "minecodeVersion": "0.2.0",
-  "extensions": [
-    {"id": "vscode.typescript-language-features", "vsix": "vsix/vscode.typescript-language-features.vsix"},
-    {"id": "vscode.html-language-features", "vsix": "vsix/vscode.html-language-features.vsix"},
-    {"id": "vscode.css-language-features", "vsix": "vsix/vscode.css-language-features.vsix"},
-    {"id": "vscode.emmet", "vsix": "vsix/vscode.emmet.vsix"},
-    {"id": "vscode.php-language-features", "vsix": "vsix/vscode.php-language-features.vsix"}
-  ]
-}
-```
+- Normal native CI continues to exercise the complete pinned development
+  fixture suite on Linux, macOS and Windows.
+- Optional gallery qualification uses the existing E2E fixture assertions
+  rather than new mocks. Download the selected VSIXs, extract each `extension/`
+  payload into a directory named after the extension (without the publisher),
+  and run:
 
-The release index has one entry:
+  ```sh
+  MINECODE_E2E_GALLERY_EXTENSIONS=/path/to/unpacked/extensions \
+    zig build test-e2e -De2e-progress=true --summary all
+  ```
 
-```json
-{
-  "schemaVersion": 1,
-  "minecodeVersion": "0.2.0",
-  "bundles": [
-    {
-      "id": "minecode.language-servers",
-      "version": "0.2.0",
-      "displayName": "Minecode Language Servers",
-      "description": "TypeScript, HTML, CSS, Emmet and PHP language features",
-      "downloadUrl": "https://github.com/chendesheng/minecode/releases/download/v0.2.0/minecode-language-servers-0.2.0.zip",
-      "sha256": "…",
-      "size": 12345,
-      "contains": [
-        "vscode.typescript-language-features",
-        "vscode.html-language-features",
-        "vscode.css-language-features",
-        "vscode.emmet",
-        "vscode.php-language-features"
-      ]
-    }
-  ]
-}
-```
+  The selected four packages are activated as user extensions; other tests
+  still use pinned fixtures. Missing selected manifests fail the tests.
+- On macOS, native registry searches found both `vscode.emmet` and
+  `ms-python.python`; all four Open VSX 1.95.3 packages installed directly
+  through the gallery with signature verification enabled in an isolated
+  profile. The full qualification E2E run passed
+  31 tests (two opt-in real ZLS tests skipped), including TypeScript diagnostics,
+  completion, hover and formatting, JavaScript diagnostics, CSS and HTML
+  completion, and Emmet expansion. The Open VSX payloads themselves have not
+  yet been qualified on Linux or Windows.
+- The macOS arm64 ReleaseSmall package was approximately 16.94 MiB, with
+  the four optional features and shared TypeScript SDK absent and the
+  retained system extensions, Node host and JSON server present.
 
-The release workflow builds the bundle + index from the same tag. No external
-registry is required.
-
-## Gallery service and install
-
-- `common/extensionGallery.zig`: bundle/index schema, validation,
-  `IGallery` interface.
-- `browser/extensionGalleryService.zig` (or `node/`): `RequestService`, async
-  install jobs, `on_change`.
-- Fetch the version-specific index; verify the bundle SHA-256 and size.
-- Extract the bundle into a dot-prefixed temp directory under the user
-  extensions directory.
-- Read `bundle.json`; validate `minecodeVersion` and each VSIX path.
-- For each VSIX:
-  - Extract it into a temp directory.
-  - Require exactly one top-level `extension/` payload.
-  - Validate `extension/package.json` ID/version.
-  - Move `extension/` to
-    `<extensions>/<publisher>.<name>-<version>`.
-- Preflight all five destinations; fail on partial/conflicting installs rather
-  than mixing versions.
-- Roll back already-moved extension directories if a later move fails.
-- Call `ExtensionsWorkbenchService.refresh()`; emit a restart notice.
-- Cancel jobs and clean temp dirs on deinit.
-- No shared SDK dependency; each VSIX carries what it needs.
-
-`ExtensionsWorkbenchService` gets a `userLocation()` getter. Reuse the
-`markdownPreview.zig` worker/`dispatch.Task` pattern for async completion.
-
-## Panel UI
-
-Add an installed/available mode to `ExtensionsListView`:
-
-- Title actions: **Browse Extensions** and **Installed**, plus Refresh.
-- Register `workbench.extensions.action.showAvailableExtensions` and
-  `workbench.extensions.action.showInstalledExtensions`; update the
-  command-palette snapshot fixture.
-- Browse mode fetches the index on first entry/Refresh; placeholder "Search
-  Available Extensions".
-- One row: "Minecode Language Servers", detail `Available · <size>`,
-  `Installing…`, or `Installed`.
-- Installed state is true when all five `contains` IDs are in the local
-  inventory.
-- Enter/left click installs; context menu adds Install for available,
-  Open/Enable/Disable for installed.
-- Loading/error states: "Loading extensions…", "Unable to load the extension
-  gallery." with Refresh retry.
-- On success: "Installed Minecode Language Servers. Restart minecode to
-  activate."; the five extensions appear in the installed list after refresh.
-
-## Wiring and version
-
-- `src/tui/extensionsViewHost.zig` creates the gallery service with
-  `workbench.async_io`, `&workbench.window_events`, `extensions_service`, and
-  `user_location`; deinit in `detach`.
-- Add `-Dversion` (default `0.0.0-dev`) to app/test build options; `--version`
-  output; the release workflow passes the tag version.
-- Default index URL is built from the compiled version;
-  `MINECODE_EXTENSIONS_GALLERY` overrides it for forks/tests.
-- If no user extensions directory or no async Io, browse reports unavailable.
-
-## Core slimming
-
-- Split `host/build-builtin-extensions.js` into:
-  - `host/dist/extensions` (core)
-  - `host/dist/language-servers` (five; used for VSIX packaging and full dev)
-- Add `--core-only` / `--language-servers-only` and clean each output.
-- Add `-Doptional-language-servers=true` to `build.zig`:
-  - skip the five manifests from `share/minecode/extensions`;
-  - install only core extensions into `lib/minecode/extensions`;
-  - skip language-server dirs and SDK.
-- `zig build host` uses `--core-only` in slim mode.
-- Remove `typescript` from `host/runtime/package.json` and regenerate its
-  lockfile; the gallery VSIXs carry their own SDK.
-- Default dev builds remain full.
-
-## Tests and CI
-
-- VSIX packaging test: build a VSIX from a fixture extension; assert
-  `extension/package.json`, manifest, and payload.
-- TypeScript VSIX test: assert `extension/deps/typescript` and the patched
-  bundled lookup.
-- HTML VSIX test: assert `extension/server/node_modules/typescript` and that
-  the server resolves it.
-- Install-flow test with fake bundle/VSIX fixtures:
-  - installs five fake extensions into a temp extensions dir;
-  - verifies VSIX prefix handling, ID/version validation, rollback, cleanup;
-  - verifies scanner visibility.
-- VSIX path validation test (absolute/`..` entries).
-- View test: one row, available/installing/installed, install action, errors.
-- Update `src/tui/fixtures/workbench-palette.jsonl`.
-- Update `extensionHostAdapter.zig` and `ci.yml` paths to
-  `host/dist/language-servers`.
-- Linux CI slim step: build slim core, assert five manifests/bundles absent;
-  build VSIXs + bundle; validate hashes.
-- Keep full `zig build test` and `zig build test-e2e` green using the pinned
-  language servers.
-
-## Documentation
-
-- `README.md`: default release omits language servers; Extensions → Browse
-  installs one current bundle; restart; `lib` remains.
-- `docs/extension-gallery.md`: VSIX packaging, bundle/index schema, publishing,
-  self-hosting, trust, install paths.
-- `docs/extensions.md`: current pinned VSIXs; Theia is a packaging reference,
-  not the shipped version.
-- `docs/vscode-builtin-extension-status.md`: five language features are
-  bundle-installed from the pinned tree.
-- `host/runtime/README.md`: SDK is inside the TS/HTML VSIXs.
-- Release notes: v0.2.0 assets, one-row install, JSON core, version match.
-
-## Fallback and compatibility
-
-- Theia 1.108.2 prebuilt VSIXs may be used only as a **temporary compatibility
-  experiment**; they are not the default because they are older than the
-  1.147.0 pin.
-- If building the current VSIXs uncovers an upstream limitation, the known
-  Theia patch points (`deps/typescript`, HTML server SDK) are the reference for
-  fixing it.
-- Do not silently fall back to older Open VSX versions. A version mismatch must
-  be visible.
-
-## Non-goals
-
-- No Theia/Open VSX dependency for the shipped language servers.
-- No Marketplace publishing; Theia already publishes older Open VSX versions,
-  and Marketplace would require an Extension Pack/publisher.
-- No multi-extension VSIX; the bundle contains five VSIXs and installs them as
-  five extensions.
-- No auto-update, uninstall, ratings, recommendations, or hot reload.
-- No zero-`lib` build.
-- JSON remains core.
+No custom VSIX builder, publishing workflow, gallery index, or alternate
+extension-management service is needed.

@@ -1,13 +1,17 @@
 // Bundle desktop entry points from the pinned checkout. Clients locate their
 // servers, schemas and TypeScript SDK relative to the installed manifest.
 import { build } from 'esbuild';
-import { cp, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const upstream = path.resolve(here, '../vscode/extensions');
-const destination = path.join(here, 'dist/extensions');
+const galleryRelease = process.argv.includes('--gallery-extensions');
+const galleryExtensions = new Set(readFileSync(path.join(here, '../src/vs/platform/product/common/galleryExtensions.txt'), 'utf8').trim().split(/\r?\n/));
+const destination = path.join(here, galleryRelease ? 'dist/gallery-release-extensions' : 'dist/extensions');
+const isBundled = name => !galleryRelease || !galleryExtensions.has(name);
 const modules = path.join(here, 'node_modules');
 const options = {
     platform: 'node', target: 'node24', bundle: true, format: 'cjs',
@@ -17,6 +21,7 @@ const options = {
 };
 
 async function bundleExtension(name, client, resources = [], alias = {}, external = []) {
+    if (!isBundled(name)) return;
     const root = path.join(upstream, name);
     const target = path.join(destination, name);
     const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
@@ -40,6 +45,7 @@ async function bundleExtension(name, client, resources = [], alias = {}, externa
 
 async function bundleWebLanguage(language) {
     const name = language + '-language-features';
+    if (!isBundled(name)) return;
     const server = path.join(destination, name, 'server');
     const source = path.join(upstream, name, 'server');
     await bundleExtension(name, 'client/dist/node/' + language + 'ClientMain.js');
@@ -54,6 +60,7 @@ async function bundleWebLanguage(language) {
 }
 
 export async function bundleTypeScript() {
+    if (!isBundled('typescript-language-features')) return;
     await bundleExtension('typescript-language-features', 'dist/extension.js', ['schemas']);
     const sdk = path.join(destination, 'node_modules/typescript');
     await mkdir(sdk, { recursive: true });
@@ -62,6 +69,9 @@ export async function bundleTypeScript() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+    // Release output is isolated from the complete development/test bundles.
+    if (galleryRelease) await rm(destination, { recursive: true, force: true });
+    await mkdir(destination, { recursive: true });
     await cp(path.join(upstream, '../product.json'), path.join(here, 'dist/product.json'));
     await bundleExtension('configuration-editing', 'dist/configurationEditingMain.js');
     await bundleExtension('extension-editing', 'dist/extensionEditingMain.js');

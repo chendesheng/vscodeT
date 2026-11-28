@@ -2,6 +2,7 @@
 # Package an installed minecode tree for a release.
 #
 # Usage: scripts/package-release.sh <version> <target> [output-dir]
+# MINECODE_INSTALL_ROOT can select a separate Zig install prefix.
 #
 # The executable resolves its runtime assets relative to its own directory:
 #   <prefix>/bin/minecode
@@ -19,6 +20,7 @@ version=${1#v}
 target=$2
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 out=${3:-"$root/dist"}
+install_root=${MINECODE_INSTALL_ROOT:-"$root/zig-out"}
 
 case "$version" in
     ""|*[!A-Za-z0-9._-]*)
@@ -46,7 +48,7 @@ case "$stage" in
 esac
 
 binary=""
-for candidate in "$root/zig-out/bin/minecode" "$root/zig-out/bin/minecode.exe"; do
+for candidate in "$install_root/bin/minecode" "$install_root/bin/minecode.exe"; do
     if [ -f "$candidate" ]; then
         binary=$candidate
         break
@@ -56,7 +58,7 @@ if [ -z "$binary" ]; then
     echo "missing installed binary; run 'zig build' first" >&2
     exit 1
 fi
-if [ ! -d "$root/zig-out/share/minecode/extensions" ]; then
+if [ ! -d "$install_root/share/minecode/extensions" ]; then
     echo "missing built-in extension catalog; run 'zig build' first" >&2
     exit 1
 fi
@@ -67,9 +69,17 @@ mkdir -p "$stage/bin" "$stage/share" "$stage/lib" "$stage/licenses"
 cp "$binary" "$stage/bin/$(basename -- "$binary")"
 chmod 0755 "$stage/bin/$(basename -- "$binary")" 2>/dev/null || true
 
-cp -R "$root/zig-out/share/minecode" "$stage/share/minecode"
+cp -R "$install_root/share/minecode" "$stage/share/minecode"
 
-lib_src="$root/zig-out/lib/minecode"
+# Staging is the release boundary even if zig-out contains older full-build
+# artifacts. Remove only the optional packages from this disposable copy;
+# the installed development tree is left untouched.
+while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    rm -rf "$stage/share/minecode/extensions/$name"
+done < "$root/src/vs/platform/product/common/galleryExtensions.txt"
+
+lib_src="$install_root/lib/minecode"
 if [ -d "$lib_src" ]; then
     mkdir -p "$stage/lib/minecode"
     for item in extensionHost.mjs jsonServer.mjs render-math.mjs render-mermaid.mjs product.json extensions; do
@@ -83,6 +93,11 @@ if [ -d "$lib_src" ]; then
             exit 1
         fi
     done
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        rm -rf "$stage/lib/minecode/extensions/$name"
+    done < "$root/src/vs/platform/product/common/galleryExtensions.txt"
+    rm -rf "$stage/lib/minecode/extensions/node_modules/typescript"
     # Install only the runtime manifest. Build-only packages stay in
     # host/package.json and never enter the archive. Select the target's
     # optional native packages even when this runs on a cross-compiling host.

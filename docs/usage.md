@@ -42,12 +42,17 @@ only files opens an empty workspace, matching upstream VS Code. `--session`
 restores the saved tab/group session and writes it back on exit; `--preview`
 opens a single file read-only.
 
-The TUI user-data directory is selected in upstream order: `VSCODE_PORTABLE`
+The TUI user-data directory is selected in upstream order: `MINECODE_PORTABLE`
 (`<portable>/user-data`), `VSCODE_APPDATA` (`<appdata>/minecode`),
 `--user-data-dir <dir>`, then the platform application-data directory
 (`~/Library/Application Support/minecode`, `$XDG_CONFIG_HOME/minecode`,
 `%APPDATA%\minecode`). The extensions directory follows `--extensions-dir`,
-`VSCODE_EXTENSIONS`, `VSCODE_PORTABLE`, then `~/.vscode/extensions`.
+`MINECODE_EXTENSIONS`, `MINECODE_PORTABLE`, then `~/.minecode/extensions`.
+The default is independent of VS Code; extensions already installed in
+`~/.vscode/extensions` are left untouched and are not automatically loaded
+or migrated. Explicit overrides can still select a different directory.
+`VSCODE_EXTENSIONS` and `VSCODE_PORTABLE` are not read by Minecode; use the
+`MINECODE_` equivalents instead.
 
 `--logsPath` overrides the log directory. `--extensions-dir` also controls
 which declarative extensions and themes are scanned at startup.
@@ -68,9 +73,11 @@ sibling directories relative to its own location:
   Without it the editor still opens files with the embedded fallbacks, but the
   full built-in language/theme catalog and its contributions are missing.
 - `lib/minecode` — the optional Node extension host, JSON language server,
-  TypeScript SDK and built-in executable extensions. Without it, TypeScript,
-  HTML, CSS, Emmet, Git and the other Node-backed features stay disabled; Node
-  must also be on `PATH` when this directory is present.
+  and retained executable extensions. Default releases omit TypeScript, HTML,
+  CSS and Emmet language-feature packages and their shared SDK; install them
+  from Open VSX as user extensions. Full development builds retain the pinned
+  fixtures. Without the host, Node-backed features stay disabled; Node must
+  also be on `PATH` when this directory is present.
 
 `share/minecode/extensions` and `lib/minecode/extensions` are not duplicates of
 the same layer. The workbench scans `share` for declarative contributions
@@ -249,13 +256,14 @@ zig build test-e2e                        # boots the Node host and runs TypeScr
 ```
 
 The native binary resolves executable extensions from its install prefix.
-`zig build host` builds the launcher and executable extensions from the pinned
-checkout. These provide TypeScript/JavaScript, HTML, CSS/Less/SCSS, Emmet,
+The full development `zig build host` builds the launcher and executable
+extensions from the pinned checkout. These provide TypeScript/JavaScript, HTML, CSS/Less/SCSS, Emmet,
 PHP, Git Base, Search Result, configuration and manifest authoring, Merge Conflict,
 Simple Browser, Terminal Suggest, GitHub and Microsoft authentication, and the
 npm, Grunt, Gulp and Jake task providers. The build installs their bundles, language
 servers and TypeScript SDK under `lib/minecode` in the same prefix
-as `zig build` (including `--prefix`). The ordinary native build requires
+as `zig build` (including `--prefix`). Default releases use `-Dgallery-extensions=true` to omit the four optional
+language-feature packages and shared SDK. The ordinary native build requires
 no Node installation. The host receives the same enabled, deduplicated installed
 inventory as the declarative registry, including user and declarative-only
 extensions. Bundled system extensions use the installed runtime bundle when
@@ -284,8 +292,16 @@ Languages. `@installed`, `@enabled`, `@disabled`, `@updates`, `@outdated`,
 `@popular`, `@contribute:<feature>`, category, tag, file-extension and ID
 filters select local or gallery views. A sort-only search sorts the installed
 view; exact IDs resolve installed extensions before querying Marketplace. Ctrl+Space or the search filter control completes query tokens.
-The gallery is Open VSX by default (`MINECODE_EXTENSION_GALLERY_URL` overrides
-the compatible gallery endpoint). Searches are delayed, cancellable and paged
+The gallery is Open VSX by default, using its native search and identifier
+APIs. `MINECODE_EXTENSION_GALLERY_URL` can override the gallery endpoint.
+The compatible query transport remains available for other compatible
+providers and search criteria the native API does not support. This registry
+adaptation is an intentional difference from upstream VS Code. In a default release, install optional language
+features by searching for `@id:vscode.typescript-language-features`,
+`@id:vscode.html-language-features`, `@id:vscode.css-language-features` or
+`@id:vscode.emmet`, then choosing Install. Syntax highlighting and basic
+editing are available without these downloads. See the
+[release inventory and qualification](extension-gallery-plan.md). Searches are delayed, cancellable and paged
 on scroll; publisher, install counts, ratings, channel and update metadata
 appear in list rows and the editor. The extension icon remains unchanged when
 a pre-release bookmark is shown.
@@ -312,8 +328,8 @@ Dependency and pack relationships are resolved for installation and checked for
 uninstall and enablement; confirmation is requested when other members change.
 
 Gallery installation stages downloaded VSIX packages in the effective user
-extensions directory (`--extensions-dir`, `VSCODE_EXTENSIONS`,
-`VSCODE_PORTABLE`, or `~/.vscode/extensions`), validates identity, version,
+extensions directory (`--extensions-dir`, `MINECODE_EXTENSIONS`,
+`MINECODE_PORTABLE`, or `~/.minecode/extensions`), validates identity, version,
 engine and archive entries, and publishes the selected versions together.
 The active version is recorded in the extension profile; cached versions can
 be selected again. Open VSX Ed25519 signatures are verified natively when

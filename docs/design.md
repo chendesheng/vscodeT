@@ -550,8 +550,11 @@ checksums; `workflow_dispatch` builds the same artifacts without publishing.
 
 Release packaging installs the runtime-only Node manifest in
 `host/runtime/package.json` beside `lib/minecode`. Build-only packages such as
-`esbuild`, the telemetry/auth source trees and the Emmet helper remain in
-`host/package.json` for bundling but are not installed into the archive.
+`esbuild`, the telemetry/auth source trees, the Emmet helper and the TypeScript
+SDK remain in `host/package.json` for development bundling but are not installed
+into the archive. The release workflow uses `-Dgallery-extensions=true` for
+both install steps; `src/vs/platform/product/common/galleryExtensions.txt` specifies the language-feature
+packages supplied by Open VSX rather than the system catalog.
 
 ### Install layout
 
@@ -565,9 +568,11 @@ sibling directories relative to its own location:
   Without it the editor still opens files with the embedded fallbacks, but the
   full built-in language/theme catalog and its contributions are missing.
 - `lib/minecode` — the optional Node extension host, JSON language server,
-  TypeScript SDK and built-in executable extensions. Without it, TypeScript,
-  HTML, CSS, Emmet, Git and the other Node-backed features stay disabled; Node
-  must also be on `PATH` when this directory is present.
+  and retained executable extensions. Default releases omit TypeScript, HTML,
+  CSS and Emmet language-feature packages and their shared SDK; install them
+  from Open VSX as user extensions. Full development builds retain the pinned
+  fixtures. Without the host, Node-backed features stay disabled; Node must
+  also be on `PATH` when this directory is present.
 
 `share/minecode/extensions` and `lib/minecode/extensions` are not duplicates of
 the same layer. The workbench scans `share` for declarative contributions
@@ -866,7 +871,7 @@ in [terminal-ui.md](terminal-ui.md).
   Linux, `%APPDATA%\Code\User` on Windows). There is no environment override,
   matching upstream. The terminal layer is the TUI profile's
   `<user-data-dir>/User/settings.json`, using upstream `userDataPath.ts`
-  precedence: `VSCODE_PORTABLE` → `<portable>/user-data`, `VSCODE_APPDATA` →
+  precedence: `MINECODE_PORTABLE` → `<portable>/user-data`, `VSCODE_APPDATA` →
   `<appdata>/minecode`, `--user-data-dir <dir>`, then the platform
   application-data directory (`~/Library/Application Support/minecode`,
   `$XDG_CONFIG_HOME/minecode`, `%APPDATA%\minecode`).
@@ -889,7 +894,7 @@ in [terminal-ui.md](terminal-ui.md).
   the pinned built-ins (including all ten `theme-defaults` themes) followed by
   user extensions in scan order (later scan order wins for duplicate theme
   ids). `src/tui/vscodeProfile.zig` resolves the extensions path with
-  upstream's `--extensions-dir`/`VSCODE_EXTENSIONS`/`VSCODE_PORTABLE`
+  upstream's `--extensions-dir`/`MINECODE_EXTENSIONS`/`MINECODE_PORTABLE`
   behavior, and `extensionsScannerService` loads each enabled extension's
   languages, grammars, snippets and `configurationDefaults` as well as its
   themes. The

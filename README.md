@@ -68,7 +68,13 @@ zig build run -- ~/code/project
 `-Donig-static=true` links the vendored Oniguruma instead. The optional Node
 host and language servers are built with `zig build host` and
 `zig build json-server`; see
-[docs/usage.md](docs/usage.md#node-extension-host).
+[docs/usage.md](docs/usage.md#node-extension-host). Gallery extensions are
+installed to `~/.minecode/extensions` by default, independently of VS Code.
+Release archives leave TypeScript/JavaScript IntelliSense, HTML and CSS
+language services, and Emmet to Open VSX; syntax highlighting remains built in.
+Unlike upstream VS Code, Minecode uses the native Open VSX registry API for
+ordinary gallery searches and extension identifier/version lookup.
+See [the extension gallery plan](docs/extension-gallery-plan.md).
 
 Keybindings, terminal shortcuts and rebinding rules are in
 [docs/usage.md](docs/usage.md#key-reference). [docs/design.md](docs/design.md)

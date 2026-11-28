@@ -27,6 +27,9 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const watcher_only = b.option(bool, "watcher-only", "Build only the file-watcher tests") orelse false;
+    // The release distribution gets these optional language features from
+    // Open VSX; full development builds retain the pinned CI fixtures.
+    const gallery_extensions = b.option(bool, "gallery-extensions", "Omit optional Open VSX language-feature packages from the install") orelse false;
     const enable_fsevents = fseventsEnabled(b, target);
     const onig_paths = OnigPaths{
         .include_dir = b.option([]const u8, "onig-include", "Directory containing oniguruma.h"),
@@ -101,7 +104,7 @@ pub fn build(b: *std.Build) void {
         // such a dependency.
         const run_cmd = b.addRunFile(b.graph.path(.install_bin, exe.out_filename));
         const catalog_step = b.step("builtin-extensions", "Install the pinned built-in extension manifests and declarative assets");
-        installBuiltinExtensions(b, catalog_step) catch |err| {
+        installBuiltinExtensions(b, catalog_step, gallery_extensions) catch |err| {
             std.debug.panic("Could not stage built-in extensions: {s}", .{@errorName(err)});
         };
         b.getInstallStep().dependOn(catalog_step);
@@ -117,14 +120,14 @@ pub fn build(b: *std.Build) void {
     }
 
     setupWatcherTests(b, target, optimize);
-    setupExtensionHost(b);
+    setupExtensionHost(b, gallery_extensions);
 }
 
 const catalog_path = "share/minecode/extensions";
 
 /// Install only data consumed by the workbench. Executable bundles use the
 /// separate host build and are never loaded from this manifest directory.
-fn installBuiltinExtensions(b: *std.Build, step: *std.Build.Step) !void {
+fn installBuiltinExtensions(b: *std.Build, step: *std.Build.Step, gallery_extensions: bool) !void {
     const io = b.graph.io;
     const source = try b.root.joinString(b.allocator, "vscode/extensions");
     // Editor builds without the optional upstream submodule retain embedded
@@ -141,7 +144,7 @@ fn installBuiltinExtensions(b: *std.Build, step: *std.Build.Step) !void {
     var entries = root.iterate();
     while (try entries.next(io)) |entry| {
         if (entry.kind != .directory) continue;
-        if (isDeferredOrTestExtension(entry.name)) continue;
+        if (isDeferredOrTestExtension(entry.name) or (gallery_extensions and isGalleryExtension(entry.name))) continue;
         const src = b.pathJoin(&.{ source, entry.name });
         const dest = b.pathJoin(&.{ catalog_path, entry.name });
         const manifest = b.pathJoin(&.{ src, "package.json" });
@@ -182,6 +185,13 @@ fn installBuiltinExtensions(b: *std.Build, step: *std.Build.Step) !void {
     }
 }
 
+// One inventory is shared by the build, host bundler and release packager.
+fn isGalleryExtension(name: []const u8) bool {
+    var names = std.mem.tokenizeAny(u8, @embedFile("src/vs/platform/product/common/galleryExtensions.txt"), "\r\n");
+    while (names.next()) |optional| if (std.mem.eql(u8, optional, name)) return true;
+    return false;
+}
+
 fn isDeferredOrTestExtension(name: []const u8) bool {
     const excluded = [_][]const u8{
         "debug-auto-launch", "debug-server-ready",    "ipynb",                      "notebook-renderers",
@@ -195,13 +205,14 @@ fn isDeferredOrTestExtension(name: []const u8) bool {
 /// needs Node and the `host/` npm dependencies. Keep it behind an explicit step
 /// so `zig build` stays hermetic. The bundle always reads the pinned `vscode/`
 /// submodule, which is the source the generated RPC table comes from.
-fn setupExtensionHost(b: *std.Build) void {
+fn setupExtensionHost(b: *std.Build, gallery_extensions: bool) void {
     const host_step = b.step("host", "Bundle the Node extension host (host/dist/extensionHost.mjs)");
     const host_build = b.addSystemCommand(&.{ "node", "build.js" });
     host_build.setCwd(b.path("host"));
     const runtime_dir = "lib/minecode";
     const extensions_build = b.addSystemCommand(&.{ "node", "build-builtin-extensions.js" });
     extensions_build.setCwd(b.path("host"));
+    if (gallery_extensions) extensions_build.addArg("--gallery-extensions");
     const install_host = b.addInstallFile(b.path("host/dist/extensionHost.mjs"), runtime_dir ++ "/extensionHost.mjs");
     install_host.step.dependOn(&host_build.step);
     host_step.dependOn(&install_host.step);
@@ -212,7 +223,7 @@ fn setupExtensionHost(b: *std.Build) void {
     const product = b.addInstallFile(b.path("vscode/product.json"), runtime_dir ++ "/product.json");
     host_step.dependOn(&product.step);
     const install_extensions = b.addInstallDirectory(.{
-        .source_dir = b.path("host/dist/extensions"),
+        .source_dir = b.path(if (gallery_extensions) "host/dist/gallery-release-extensions" else "host/dist/extensions"),
         .install_dir = .prefix,
         .install_subdir = runtime_dir ++ "/extensions",
     });

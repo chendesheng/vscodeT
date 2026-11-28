@@ -13,9 +13,9 @@
 //!
 //! The TUI user data dir ports `getUserDataPath` from
 //! `src/vs/platform/environment/node/userDataPath.ts`: portable mode
-//! (`VSCODE_PORTABLE`), `VSCODE_APPDATA`, `--user-data-dir`, then the
-//! platform application-data directory. There is no TUI-specific environment
-//! variable; every override is an upstream CLI switch or environment variable.
+//! (`MINECODE_PORTABLE`), `VSCODE_APPDATA`, `--user-data-dir`, then the
+//! platform application-data directory. Minecode uses product-specific names
+//! for the portable and extensions overrides to avoid sharing VS Code's data.
 //!
 //! The VS Code base profile is the stable VS Code location on the host. It has
 //! no environment override, matching the fact that VS Code itself has no
@@ -45,11 +45,11 @@ pub const Environment = struct {
     userprofile: ?[]const u8 = null,
     /// Upstream `VSCODE_CWD`, used to resolve a relative `--user-data-dir`.
     cwd: ?[]const u8 = null,
-    /// Upstream `VSCODE_PORTABLE`.
+    /// Minecode counterpart of upstream portable mode (`MINECODE_PORTABLE`).
     env_portable: ?[]const u8 = null,
     /// Upstream `VSCODE_APPDATA`.
     env_appdata: ?[]const u8 = null,
-    /// Upstream `VSCODE_EXTENSIONS`.
+    /// Minecode extension-directory override (`MINECODE_EXTENSIONS`).
     env_extensions: ?[]const u8 = null,
     /// Upstream `--user-data-dir`.
     cli_user_data_dir: ?[]const u8 = null,
@@ -58,8 +58,8 @@ pub const Environment = struct {
     /// Upstream `--logsPath`.
     cli_logs_path: ?[]const u8 = null,
 
-    /// Reads the terminal process environment. Only upstream variables are
-    /// consulted; the CLI values are filled by the caller from parsed args.
+    /// Reads the terminal process environment. Portable and extensions paths
+    /// use Minecode's own variables; the caller supplies the parsed CLI values.
     pub fn fromProcess(environ: *const std.process.Environ.Map) Environment {
         const windows = platform.OS == .Windows;
         return .{
@@ -74,9 +74,9 @@ pub const Environment = struct {
             .appdata = environ.get("APPDATA"),
             .userprofile = environ.get("USERPROFILE"),
             .cwd = environ.get("VSCODE_CWD"),
-            .env_portable = environ.get("VSCODE_PORTABLE"),
+            .env_portable = environ.get("MINECODE_PORTABLE"),
             .env_appdata = environ.get("VSCODE_APPDATA"),
-            .env_extensions = environ.get("VSCODE_EXTENSIONS"),
+            .env_extensions = environ.get("MINECODE_EXTENSIONS"),
         };
     }
 };
@@ -89,7 +89,7 @@ pub const Profile = struct {
     user_data_dir: ?[]u8 = null,
     settings_paths: []const []const u8 = &.{},
     keybindings_paths: []const []const u8 = &.{},
-    /// Upstream `extensionsPath` (CLI, `VSCODE_EXTENSIONS`, portable, home).
+    /// Upstream `extensionsPath` (CLI, `MINECODE_EXTENSIONS`, portable, home).
     extensions_dir: ?[]u8 = null,
     logs_dir: ?[]u8 = null,
 
@@ -167,7 +167,7 @@ pub fn discover(allocator: Allocator, env: Environment) !Profile {
     return profile;
 }
 
-/// Port of `getDefaultUserDataPath` + `VSCODE_PORTABLE`/`VSCODE_APPDATA`/
+/// Port of `getDefaultUserDataPath` + `MINECODE_PORTABLE`/`VSCODE_APPDATA`/
 /// `--user-data-dir` precedence from upstream `userDataPath.ts`.
 fn userDataDir(allocator: Allocator, env: Environment) !?[]u8 {
     if (env.env_portable) |portable| {
@@ -271,7 +271,7 @@ test "vscodeProfile: macOS defaults use Code/User and the TUI user data folder" 
         &.{ home, "Library", "Application Support", "minecode", "User", "keybindings.json" },
         profile.tuiKeybindingsPath().?,
     );
-    try expectPath(allocator, &.{ home, ".vscode", "extensions" }, profile.extensions_dir.?);
+    try expectPath(allocator, &.{ home, ".minecode", "extensions" }, profile.extensions_dir.?);
     try expectPath(
         allocator,
         &.{ home, "Library", "Application Support", "minecode", "logs" },
@@ -300,6 +300,7 @@ test "vscodeProfile: Linux honours XDG_CONFIG_HOME" {
         &.{ xdg, "minecode", "User", "keybindings.json" },
         profile.tuiKeybindingsPath().?,
     );
+    try expectPath(allocator, &.{ home, ".minecode", "extensions" }, profile.extensions_dir.?);
 }
 
 test "vscodeProfile: Windows uses APPDATA and USERPROFILE extensions" {
@@ -318,9 +319,27 @@ test "vscodeProfile: Windows uses APPDATA and USERPROFILE extensions" {
         &.{ appdata, "minecode", "User", "settings.json" },
         profile.tuiSettingsPath().?,
     );
+    try expectPath(allocator, &.{ "C:\\Users\\me", ".minecode", "extensions" }, profile.extensions_dir.?);
 }
 
-test "vscodeProfile: upstream portable and appdata variables win" {
+test "vscodeProfile: only Minecode extensions and portable environment variables are read" {
+    const allocator = std.testing.allocator;
+    var environ = std.process.Environ.Map.init(allocator);
+    defer environ.deinit();
+    try environ.put("VSCODE_EXTENSIONS", "/vscode/extensions");
+    try environ.put("VSCODE_PORTABLE", "/vscode/portable");
+    const old = Environment.fromProcess(&environ);
+    try std.testing.expect(old.env_extensions == null);
+    try std.testing.expect(old.env_portable == null);
+
+    try environ.put("MINECODE_EXTENSIONS", "/minecode/extensions");
+    try environ.put("MINECODE_PORTABLE", "/minecode/portable");
+    const current = Environment.fromProcess(&environ);
+    try std.testing.expectEqualStrings("/minecode/extensions", current.env_extensions.?);
+    try std.testing.expectEqualStrings("/minecode/portable", current.env_portable.?);
+}
+
+test "vscodeProfile: Minecode portable and appdata variables win" {
     const allocator = std.testing.allocator;
     const portable_root = native("/portable", "C:\\portable");
     var portable = try discover(allocator, .{

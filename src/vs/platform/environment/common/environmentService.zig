@@ -2,7 +2,7 @@
 // `src/vs/platform/environment/common/environmentService.ts`.
 //
 // The TUI has no launch-argument or product service of its own, so the caller
-// supplies the same inputs VS Code derives them from. The resolution order and
+// supplies product-specific environment inputs. The resolution order and
 // the `resolve`/`join` behavior of the upstream getter are preserved.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -13,9 +13,9 @@ pub const Environment = struct {
     user_home: []const u8,
     /// `--extensions-dir`.
     cli_extensions_dir: ?[]const u8 = null,
-    /// `VSCODE_EXTENSIONS`.
+    /// `MINECODE_EXTENSIONS`.
     env_extensions: ?[]const u8 = null,
-    /// `VSCODE_PORTABLE`.
+    /// `MINECODE_PORTABLE`.
     env_portable: ?[]const u8 = null,
 
     pub fn extensionsPath(self: Environment, allocator: Allocator) Allocator.Error![]u8 {
@@ -26,17 +26,17 @@ pub const Environment = struct {
     }
 };
 
-test "extensionsPath: default is <home>/<dataFolderName>/extensions" {
+test "extensionsPath: Minecode uses its own home extensions directory by default" {
     const allocator = std.testing.allocator;
     const environment = Environment{ .user_home = "/home/user" };
     const path = try environment.extensionsPath(allocator);
     defer allocator.free(path);
-    const expected = try std.fs.path.join(allocator, &.{ "/home/user", product.data_folder_name, "extensions" });
+    const expected = try std.fs.path.join(allocator, &.{ "/home/user", ".minecode", "extensions" });
     defer allocator.free(expected);
     try std.testing.expectEqualStrings(expected, path);
 }
 
-test "extensionsPath: VSCODE_PORTABLE overrides the home default" {
+test "extensionsPath: MINECODE_PORTABLE overrides the home default" {
     const allocator = std.testing.allocator;
     const environment = Environment{
         .user_home = "/home/user",
@@ -49,7 +49,7 @@ test "extensionsPath: VSCODE_PORTABLE overrides the home default" {
     try std.testing.expectEqualStrings(expected, path);
 }
 
-test "extensionsPath: VSCODE_EXTENSIONS overrides portable and home" {
+test "extensionsPath: MINECODE_EXTENSIONS overrides portable and home" {
     const allocator = std.testing.allocator;
     const environment = Environment{
         .user_home = "/home/user",

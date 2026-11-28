@@ -1060,6 +1060,13 @@ pub const ExtensionsWorkbenchService = struct {
 
     pub fn install(self: *ExtensionsWorkbenchService, extension: IExtension) !void {
         const url = extension.vsix_url orelse return error.ExtensionPackageUnavailable;
+        // Open VSX's native search only includes compact version summaries.
+        // Resolve the authoritative channel, engine and target metadata before
+        // a direct Install action on a search row (detail editors already do
+        // this). Reuse the existing version/channel job and installer.
+        if (extension.manifest_url == null and gallery.openVsxBase(self.gallery_url orelse "") != null) {
+            return self.queryVersionAction(extension.identifier, if (extension.is_pre_release) .prerelease else .release);
+        }
         return self.startManagementTarget(.install, extension.identifier, extension.version, url, extension.is_pre_release, false, extension.target_platform, extension.uuid, false);
     }
 

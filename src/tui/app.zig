@@ -297,9 +297,9 @@ pub fn main(init: std.process.Init) !void {
     defer if (args.logs_path) |path| allocator.free(path);
 
     // Profile discovery resolves the TUI user-data dir with upstream's
-    // `VSCODE_PORTABLE`/`VSCODE_APPDATA`/`--user-data-dir` precedence and the
-    // extensions path with `--extensions-dir`/`VSCODE_EXTENSIONS`/
-    // `VSCODE_PORTABLE`. The VS Code `Code/User` profile is the base layer.
+    // `MINECODE_PORTABLE`/`VSCODE_APPDATA`/`--user-data-dir` precedence and the
+    // extensions path with `--extensions-dir`/`MINECODE_EXTENSIONS`/
+    // `MINECODE_PORTABLE`. The VS Code `Code/User` profile is the base layer.
     var vscode_environment = vscode_profile.Environment.fromProcess(init.environ_map);
     vscode_environment.cli_extensions_dir = args.extensions_dir;
     vscode_environment.cli_user_data_dir = args.user_data_dir;

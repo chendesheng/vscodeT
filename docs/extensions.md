@@ -58,7 +58,12 @@ extension/publisher update preferences.
 
 `extensionGalleryService.zig` and `extensionManagementService.zig` own
 HTTP queries/assets, signature validation and staged VSIX publication. The
-management transaction resolves dependencies/pack members before publishing
+gallery transport deliberately differs from upstream VS Code: normal Open VSX
+searches and identifier lookups use its native API, with response metadata
+normalized to the upstream-shaped gallery models. The compatible query
+transport handles custom compatible providers and unsupported native search
+criteria. See [the gallery decision](extension-gallery-plan.md#intentional-difference-from-upstream-vs-code).
+The management transaction resolves dependencies/pack members before publishing
 active profile selections. Enablement accounts for dependency state and
 persists global/workspace overrides. `extensionsWorkbenchService.zig` delivers
 inventory, gallery, management and update changes to subscribers, schedules

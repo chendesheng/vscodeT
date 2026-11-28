@@ -18,7 +18,7 @@ Every new feature is a literal port from the pinned `vscode/` checkout, not a te
 
 ## Corrections to the previous draft
 
-- **No custom extension-directory fallback.** Automatic pickup uses the ported upstream `IEnvironmentService.extensionsPath` resolution (default `~/.vscode/extensions`; explicit `--extensions-dir`/`VSCODE_EXTENSIONS`/`VSCODE_PORTABLE` still win). The previous plan's `.vscode-server`/Insiders/OSS fallback is removed as non-upstream behavior.
+- **No custom extension-directory fallback.** Automatic pickup uses the ported upstream `IEnvironmentService.extensionsPath` resolution (default `~/.minecode/extensions`; explicit `--extensions-dir`/`MINECODE_EXTENSIONS`/`MINECODE_PORTABLE` still win). The previous plan's `.vscode-server`/Insiders/OSS fallback is removed as non-upstream behavior.
 - **No executable-only host inventory in the UI service.** Align the host extension set with upstream `AbstractExtensionService`/`ExtensionHostManager`: all enabled, deduped installed extensions (system + user) are handed to the host; the host's activation events decide what runs. The port's split install layout (catalog manifests vs. runtime bundles) is handled at path resolution only and documented.
 - **No ad hoc save hook, bulk-edit callback or host inventory in the TUI adapter.** Port the upstream `ITextFileService` working-copy/save-participant flow, `IBulkEditService` and `MainThreadBulkEdits`; the actor calls the portable service exactly as upstream.
 - **No skipped portable behavior.** Rename preview, inlay-hint hover/click locations, code-action lightbulb/menu, workspace-symbol query/cancel/resolve, signature-help overloads, semantic token range requests and provider-change events are all in scope.
@@ -27,7 +27,7 @@ Every new feature is a literal port from the pinned `vscode/` checkout, not a te
 
 ## Scope
 
-Target: `ziglang.vscode-zig` installed in the effective VS Code extensions directory, running in the real Node extension host, launching ZLS. The reference combination is Zig extension **0.7.0**, Zig **0.17.0** and ZLS **0.17.0**, as installed locally during review. The extension bundles `vscode-languageclient` 10.0.0-next.15; the host's mock-client dependency (10.1.1) is not a substitute for exercising that bundled client. Record the version, client capabilities and negotiated server capabilities for each reference run; a version change requires rechecking the matrix, not silently changing the acceptance scope.
+Target: `ziglang.vscode-zig` installed in the effective Minecode extensions directory, running in the real Node extension host, launching ZLS. The reference combination is Zig extension **0.7.0**, Zig **0.17.0** and ZLS **0.17.0**, as installed locally during review. The extension bundles `vscode-languageclient` 10.0.0-next.15; the host's mock-client dependency (10.1.1) is not a substitute for exercising that bundled client. Record the version, client capabilities and negotiated server capabilities for each reference run; a version change requires rechecking the matrix, not silently changing the acceptance scope.
 
 ### Advertised ZLS server capabilities
 
@@ -174,7 +174,7 @@ The terminal's actual shared `EditorDocument` now invokes the registered `MainTh
 
 - Port the upstream tests named above, plus `extHostBulkEdits.test.ts`, `mainThreadBulkEdits.test.ts`, `extHostDocumentSaveParticipant.test.ts`, `extHostFileSystemEventService.test.ts`, `parameterHintsModel.test.ts`, the code-action tests, semantic-token tests, folding tests, smart-select and word-highlighter tests.
 - Add TUI integration tests for every widget/controller and e2e tests via the mock languageclient; assert behavior, event order and disposal, not just registration counts.
-- Acceptance: a standard `~/.vscode/extensions` install of `ziglang.vscode-zig` is listed automatically and passed to the host; opening a `.zig` file activates it and starts ZLS with the reference settings; every advertised ZLS capability works; will-save edits and rename/code-action workspace edits apply; no request blocks input or leaks caches; all build/test/check-workbench/format/diff checks pass; the required mock CI e2e passes and the reference real-extension run passes with no unsupported advertised capability. Verify the output command, language status, workspace synchronization and nested save ordering; a skipped real run is not proof of real integration.
+- Acceptance: a standard `~/.minecode/extensions` install of `ziglang.vscode-zig` is listed automatically and passed to the host; opening a `.zig` file activates it and starts ZLS with the reference settings; every advertised ZLS capability works; will-save edits and rename/code-action workspace edits apply; no request blocks input or leaks caches; all build/test/check-workbench/format/diff checks pass; the required mock CI e2e passes and the reference real-extension run passes with no unsupported advertised capability. Verify the output command, language status, workspace synchronization and nested save ordering; a skipped real run is not proof of real integration.
 
 ## Verification
 

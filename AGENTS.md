@@ -131,6 +131,13 @@ remaining portable gaps separately; do not call an unported portable layer a
 terminal limitation or claim the entire upstream feature is ported when only
 part of it is present.
 
+The extension gallery is an intentional product difference from upstream:
+Minecode uses Open VSX's native search and identifier/version APIs rather than
+the VS Code Marketplace protocol for normal gallery queries. Keep the
+registry-specific adapter inside the gallery service and preserve upstream
+extension-management contracts. See `docs/extension-gallery-plan.md` for the
+provider decision and compatible-query fallback.
+
 ## Standalone vscode-textmate port
 
 - `textmate/` is a standalone Zig package outside `src/` porting the
