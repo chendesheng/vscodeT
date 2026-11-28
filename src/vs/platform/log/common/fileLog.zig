@@ -255,10 +255,30 @@ pub const FileLoggerService = struct {
         }
     }
 
+    pub const Entry = struct { level: log.LogLevel, message: []const u8 };
+
     pub fn append(self: *FileLoggerService, resource: std.Uri, level: log.LogLevel, message: []const u8) !void {
+        try self.appendBatch(resource, &.{.{ .level = level, .message = message }});
+    }
+
+    /// A $log RPC carries an ordered batch. Format it once and write only
+    /// that batch, preserving raw output-channel byte offsets.
+    pub fn appendBatch(self: *FileLoggerService, resource: std.Uri, entries: []const Entry) !void {
         const logger = (try self.getLogger(resource)) orelse return error.LoggerNotCreated;
         if (!logger.locally_created) return error.LoggerNotCreated;
-        if (!log.canLog(logger.options.level, level)) return;
+        var writer = std.Io.Writer.Allocating.init(self.allocator);
+        defer writer.deinit();
+        for (entries) |entry| {
+            if (!log.canLog(logger.options.level, entry.level)) continue;
+            if (logger.options.raw) {
+                try writer.writer.writeAll(entry.message);
+            } else {
+                try writeTimestamp(&writer.writer, time_compat.milliTimestamp());
+                try writer.writer.print(" [{s}] {s}\n", .{ levelLabel(entry.level), entry.message });
+            }
+        }
+        const bytes = writer.written();
+        if (bytes.len == 0) return;
         // The upstream file logger rotates formatted logs at 5 MiB. Raw
         // channels explicitly opt out because their offsets refer to one file.
         if (!logger.options.no_rotation) {
@@ -275,13 +295,6 @@ pub const FileLoggerService = struct {
                 logger.backup_index = if (logger.backup_index == 5) 1 else logger.backup_index + 1;
             }
         }
-        var writer = std.Io.Writer.Allocating.init(self.allocator);
-        defer writer.deinit();
-        const bytes = if (logger.options.raw) message else blk: {
-            try writeTimestamp(&writer.writer, time_compat.milliTimestamp());
-            try writer.writer.print(" [{s}] {s}\n", .{ levelLabel(level), message });
-            break :blk writer.written();
-        };
         try self.files.writeFile(resource, bytes, .{ .create = true, .overwrite = true, .append = true });
     }
 };

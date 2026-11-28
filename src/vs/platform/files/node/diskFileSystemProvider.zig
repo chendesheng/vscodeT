@@ -150,21 +150,16 @@ pub const DiskFileSystemProvider = struct {
         if (exists and options.create and !options.overwrite) return error.FileExists;
         defer self.fire(&.{.{ .type = if (exists) .UPDATED else .ADDED, .resource = resource }});
         if (options.append) {
-            const existing = self.files.readFile(resource) catch |err| switch (err) {
-                error.FileNotFound => null,
-                else => return mapError(err),
-            };
-            defer if (existing) |value| {
-                var buffer = value;
-                buffer.deinit(self.allocator);
-            };
-            const old_len = if (existing) |buffer| buffer.bytes.len else 0;
-            const combined = try self.allocator.alloc(u8, old_len + content.len);
-            defer self.allocator.free(combined);
-            if (existing) |buffer| @memcpy(combined[0..old_len], buffer.bytes);
-            @memcpy(combined[old_len..], content);
-            const data = @import("../../../base/common/buffer.zig").VSBuffer{ .bytes = combined };
-            self.files.writeFile(resource, data) catch |err| return mapError(err);
+            // Upstream opens the file in append mode and writes only the new
+            // bytes. std.Io currently has no append-open flag; as in our fd
+            // write path, use the file's end position on the owning thread.
+            const file = if (options.create)
+                Io.Dir.cwd().createFile(self.io, resource, .{ .truncate = false, .exclusive = !options.overwrite }) catch |err| return mapError(err)
+            else
+                Io.Dir.cwd().openFile(self.io, resource, .{ .mode = .write_only }) catch |err| return mapError(err);
+            defer file.close(self.io);
+            const file_stat = file.stat(self.io) catch |err| return mapError(err);
+            file.writePositionalAll(self.io, content, file_stat.size) catch |err| return mapError(err);
         } else {
             const data = @import("../../../base/common/buffer.zig").VSBuffer{ .bytes = @constCast(content) };
             self.files.writeFile(resource, data) catch |err| return mapError(err);
@@ -534,4 +529,26 @@ test "disk provider: filters delivered watcher changes by watch requests" {
     provider.unwatch(root);
     provider.deliverChanges(&.{.{ .type = .ADDED, .resource = inside }});
     try testing.expectEqual(@as(usize, 1), sink.count);
+}
+
+test "DiskFileSystemProvider append does not allocate or rewrite the existing contents" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const a = std.testing.allocator;
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(root);
+    const path = try std.fs.path.join(a, &.{ root, "channel.log" });
+    defer a.free(path);
+    try tmp.dir.writeFile(io, .{ .sub_path = "channel.log", .data = "existing\n" });
+
+    // The append must be independent of the size of the existing file and
+    // must work without allocating a copy of it.
+    var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = 0 });
+    var provider = DiskFileSystemProvider.init(failing.allocator(), io);
+    defer provider.deinit();
+    try provider.writeFile(path, "new\n", .{ .create = true, .overwrite = true, .append = true });
+    const actual = try tmp.dir.readFileAlloc(io, "channel.log", a, .limited(1024));
+    defer a.free(actual);
+    try std.testing.expectEqualStrings("existing\nnew\n", actual);
 }

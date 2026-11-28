@@ -2593,7 +2593,9 @@ Editor contributions:
   rename/copy/open-read-write-close and operation change events), records
   `watch` requests and filters host-forwarded watcher changes through
   `deliverChanges`, and is tested directly, through `ProviderFileService` and
-  for watcher filtering.
+  for watcher filtering. Appends write at the end of the existing file rather
+  than reading and rewriting it; extension log RPC batches preserve message
+  order and raw output offsets in a single append.
 
 - The terminal network request layer is ported in
   `base/parts/request/common/request.zig` and

@@ -23,13 +23,16 @@ pub const MainThreadLoggerService = struct {
             try self.service.createLogger(resource, parseOptions(if (args.len > 1 and args[1] == .json) args[1].json else .null));
         } else if (std.mem.eql(u8, method, "$log")) {
             if (args.len < 2 or args[1] != .json or args[1].json != .array) return error.InvalidArguments;
-            for (args[1].json.array.items) |message| {
+            const messages = args[1].json.array.items;
+            const entries = try arena.alloc(FileLoggerService.Entry, messages.len);
+            for (messages, entries) |message, *entry| {
                 if (message != .array or message.array.items.len != 2) return error.InvalidArguments;
                 const level = message.array.items[0];
                 const text = message.array.items[1];
                 if (level != .integer or level.integer < 0 or level.integer > 5 or text != .string) return error.InvalidArguments;
-                try self.service.append(resource, @fromBackingInt(@intCast(level.integer)), text.string);
+                entry.* = .{ .level = @fromBackingInt(@intCast(level.integer)), .message = text.string };
             }
+            try self.service.appendBatch(resource, entries);
         } else if (std.mem.eql(u8, method, "$flush")) {
             // FileLoggerService writes are synchronous at the native file
             // service boundary; the bytes are already available to the view.

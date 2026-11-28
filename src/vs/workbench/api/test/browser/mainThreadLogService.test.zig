@@ -30,9 +30,22 @@ test "MainThreadLogger: unformatted output preserves byte offsets and metadata" 
     var actor = actor_mod.MainThreadLoggerService{ .service = &loggers };
     const opts = rpc.Arg{ .json = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"id\":\"zig-log\",\"name\":\"Zig\",\"donotUseFormatters\":true,\"donotRotate\":true,\"logLevel\":\"always\"}", .{}) };
     try std.testing.expect((try actor.invoke("$createLogger", &.{ resource, opts }, a)) == .empty);
+    var writes: usize = 0;
+    const listener = @import("../../../../platform/files/common/files.zig").IFileChangeListener{
+        .context = &writes,
+        .callback = struct {
+            fn changed(context: *anyopaque, _: []const @import("../../../../platform/files/common/files.zig").IFileChange) void {
+                const count: *usize = @ptrCast(@alignCast(context));
+                count.* += 1;
+            }
+        }.changed,
+    };
+    disk.addChangeListener(listener);
+    defer disk.removeChangeListener(listener);
     const messages = rpc.Arg{ .json = try std.json.parseFromSliceLeaky(std.json.Value, a, "[[3,\"hello\"],[3,\"é\\n\"]]", .{}) };
     try std.testing.expect((try actor.invoke("$log", &.{ resource, messages }, a)) == .empty);
     try std.testing.expect((try actor.invoke("$flush", &.{resource}, a)) == .empty);
+    try std.testing.expectEqual(@as(usize, 1), writes);
     try std.testing.expectEqualStrings("helloé\n", try files.readFileUri(a, uri));
     // Disposing the registry entry does not delete the file.
     try std.testing.expectEqualStrings("zig-log", (try loggers.getLogger(uri)).?.options.id.?);
