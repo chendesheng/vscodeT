@@ -61,7 +61,7 @@ fn runCase(case: oracle.Case) !void {
     // whole key list as one `:normal!` batch. The seed change therefore stays
     // in the same undo block as the replayed commands, and the batch stops at
     // the first failed motion (`j`/`k` past the buffer edge).
-    const harness = try Harness.initWithWidth(std.testing.allocator, "", case.width);
+    const harness = try Harness.initWithSize(std.testing.allocator, "", case.width, case.height);
     defer harness.deinit();
 
     harness.editor.beginUndoGroup();
@@ -90,19 +90,26 @@ fn runCase(case: oracle.Case) !void {
     defer std.testing.allocator.free(actual_text);
     const actual_cursor = harness.cursor();
     const actual_mode = harness.mode();
+    const actual_scroll = harness.scroll();
+    const expected_scroll = state.scroll orelse {
+        std.debug.print("cassette {s}: missing recorded scroll\n", .{case.case});
+        return error.MissingScroll;
+    };
 
     if (!std.mem.eql(u8, actual_text, state.text) or
         actual_cursor.lineNumber != state.cursor[0] or
         actual_cursor.column != state.cursor[1] or
-        actual_mode != expected_mode)
+        actual_mode != expected_mode or
+        actual_scroll.top_line != expected_scroll.top_line or
+        actual_scroll.left != expected_scroll.left)
     {
         std.debug.print(
             \\
             \\Vim cassette mismatch: {s}
             \\  reference: {s}
             \\  seed: {s}
-            \\  expected: text={s} cursor={d}:{d} mode={s}
-            \\  actual:   text={s} cursor={d}:{d} mode={s}
+            \\  expected: text={s} cursor={d}:{d} mode={s} scroll={d}:{d}
+            \\  actual:   text={s} cursor={d}:{d} mode={s} scroll={d}:{d}
             \\
         , .{
             case.case,
@@ -112,10 +119,14 @@ fn runCase(case: oracle.Case) !void {
             state.cursor[0],
             state.cursor[1],
             state.mode,
+            expected_scroll.top_line,
+            expected_scroll.left,
             actual_text,
             actual_cursor.lineNumber,
             actual_cursor.column,
             @tagName(actual_mode),
+            actual_scroll.top_line,
+            actual_scroll.left,
         });
         std.debug.print("  keys:", .{});
         for (case.keys) |token| std.debug.print(" {s}", .{token});
