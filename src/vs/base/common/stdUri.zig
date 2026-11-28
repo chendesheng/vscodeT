@@ -185,10 +185,21 @@ pub fn resourceKeyFromComponents(allocator: Allocator, components: Components) !
         try out.appendSlice("//");
         try out.appendSlice(components.authority);
     }
+    const path_start = out.items.len;
     if (is_file and components.authority.len == 0) {
         try appendFilePath(&out, components.path);
     } else {
         try out.appendSlice(components.path);
+    }
+    // URI.toString() normalizes drive letters (but not HTTP(S) paths).
+    // An LSP server returns its URI from URI.toString(), so a native D:\file
+    // model and the returned file:///d:/file must have the same identity.
+    if (!std.ascii.eqlIgnoreCase(components.scheme, "http") and !std.ascii.eqlIgnoreCase(components.scheme, "https")) {
+        const normalized = out.items[path_start..];
+        const drive_index: usize = if (normalized.len > 0 and normalized[0] == '/') 1 else 0;
+        if (normalized.len > drive_index + 1 and std.ascii.isAlphabetic(normalized[drive_index]) and normalized[drive_index + 1] == ':') {
+            normalized[drive_index] = std.ascii.toLower(normalized[drive_index]);
+        }
     }
     if (components.query.len > 0) {
         try out.append('?');
@@ -293,7 +304,13 @@ test "std.Uri bridge: native Windows file paths serialize as parseable URIs" {
         .path = "C:\\Users\\me\\a b.zig",
     });
     defer allocator.free(key);
-    try std.testing.expectEqualStrings("file:///C:/Users/me/a b.zig", key);
+    try std.testing.expectEqualStrings("file:///c:/Users/me/a b.zig", key);
+    const roundtrip = try resourceKey(allocator, try std.Uri.parse("file:///c:/Users/me/a%20b.zig"));
+    defer allocator.free(roundtrip);
+    try std.testing.expectEqualStrings(key, roundtrip);
+    const uppercase = try resourceKey(allocator, try std.Uri.parse("file:///C:/Users/me/a%20b.zig"));
+    defer allocator.free(uppercase);
+    try std.testing.expectEqualStrings(key, uppercase);
 
     // The old serialization (`file://C:\...`) put the drive in the authority,
     // where `C:` fails to parse as a port.
@@ -301,7 +318,7 @@ test "std.Uri bridge: native Windows file paths serialize as parseable URIs" {
     defer arena.deinit();
     const parsed = try std.Uri.parse(key);
     try std.testing.expect(parsed.host == null);
-    try std.testing.expectEqualStrings("/C:/Users/me/a b.zig", try path(parsed, arena.allocator()));
+    try std.testing.expectEqualStrings("/c:/Users/me/a b.zig", try path(parsed, arena.allocator()));
 }
 
 test "std.Uri bridge: file fsPath maps URI and native spellings to the native path" {
@@ -377,4 +394,11 @@ test "std.Uri bridge: Windows RPC URI components match URI.file" {
     const native_key = try resourceKeyFromComponents(a, .{ .scheme = "file", .path = "\\\\server\\share\\a b.zig" });
     const remote_key = try resourceKeyFromComponents(a, try componentsFromJson(unc, a));
     try std.testing.expectEqualStrings(remote_key, native_key);
+}
+
+test "std.Uri bridge: drive-like HTTP paths remain case-sensitive" {
+    const allocator = std.testing.allocator;
+    const key = try resourceKey(allocator, try std.Uri.parse("https://example.com/C:/path"));
+    defer allocator.free(key);
+    try std.testing.expectEqualStrings("https://example.com/C:/path", key);
 }
