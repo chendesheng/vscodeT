@@ -233,6 +233,7 @@ pub const ListView = struct {
                 .y = y + visible_top,
                 .width = width,
                 .height = visible_bottom - visible_top,
+                .offset_y = @intFromFloat(@max(0, @as(f64, @floatFromInt(visible_top)) - top)),
                 .index = index,
                 .selected = self.selected != null and self.selected.? == index,
                 .focused_selection = self.focused and self.selected != null and self.selected.? == index,
