@@ -342,6 +342,31 @@ pub fn installVSIXFile(allocator: Allocator, io: std.Io, location: []const u8, s
 /// Remove the selected identifiers from the default profile together. The
 /// package cache is shared by profiles, and is not deleted by this operation.
 /// Validate remaining dependents before making the profile change visible.
+/// Update the selected profile version without reinstalling its package.
+pub fn updatePinned(allocator: Allocator, io: std.Io, location: []const u8, identifier: []const u8, pinned: bool) !void {
+    var profile = try profiles.Profile.load(allocator, io, location);
+    defer profile.deinit();
+    var inventory = try scanner.scanAllExtensions(allocator, io, null, location);
+    defer inventory.deinit(allocator);
+    var found = false;
+    for (inventory.all) |extension| {
+        const matches = util.areSameExtensions(identifier, extension.identifier);
+        if (!matches and profile.exists) continue;
+        var metadata: std.json.ObjectMap = .empty;
+        const arena = profile.arena.allocator();
+        if (extension.manifest.value == .object) if (extension.manifest.value.object.get("__metadata")) |value| {
+            if (value == .object) metadata = try value.object.clone(arena);
+        };
+        if (matches) {
+            found = true;
+            try metadata.put(arena, "pinned", .{ .bool = pinned });
+        }
+        try profile.select(extension.identifier, extension.version, extension.location, .{ .object = metadata });
+    }
+    if (!found) return error.ExtensionNotInstalled;
+    try profile.save(io);
+}
+
 pub fn uninstallMany(allocator: Allocator, io: std.Io, location: []const u8, identifiers: []const []const u8) !void {
     var profile = try profiles.Profile.load(allocator, io, location);
     defer profile.deinit();

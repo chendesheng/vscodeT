@@ -106,3 +106,25 @@ test "ExtensionManagementService: dependent removal validates before changing pr
     defer inventory.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 0), inventory.all.len);
 }
+
+test "ExtensionManagementService: update pinned metadata without reinstalling" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const length = try tmp.dir.realPath(io, &path);
+    const root = path[0..length];
+    try management.installVSIX(allocator, io, root, @embedFile("fixture.vsix"), "pub.example", "1.0.0");
+    const scanner = @import("../../common/extensionsScannerService.zig");
+    for ([_]bool{ true, false }) |pinned| {
+        try management.updatePinned(allocator, io, root, "PUB.EXAMPLE", pinned);
+        var inventory = try scanner.scanAllExtensions(allocator, io, null, root);
+        defer inventory.deinit(allocator);
+        const extension = inventory.find("pub.example") orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqualStrings("1.0.0", extension.version);
+        const metadata = extension.manifest.value.object.get("__metadata").?;
+        try std.testing.expectEqual(pinned, metadata.object.get("pinned").?.bool);
+        try std.testing.expectEqualStrings("vsix", metadata.object.get("source").?.string);
+    }
+}
