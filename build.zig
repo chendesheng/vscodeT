@@ -43,16 +43,8 @@ pub fn build(b: *std.Build) void {
 
         // A static build translates the same vendored header and lets this
         // build link one Oniguruma archive instead of a second system copy.
-        // The dependency build option takes an absolute path, so derive it
-        // from this build file's directory rather than the process cwd.
-        const build_dir = std.fs.path.dirname(@src().file) orelse ".";
-        const absolute_build_dir = std.Io.Dir.cwd().realPathFileAlloc(
-            b.graph.io,
-            build_dir,
-            b.allocator,
-        ) catch @panic("could not resolve the build root");
         const textmate_onig_include = if (onig_static)
-            b.pathJoin(&.{ absolute_build_dir, "third_party/oniguruma/src" })
+            vendoredOnigInclude(b)
         else
             onig_paths.include_dir orelse "";
         const vscode_textmate_dep = b.dependency("vscode_textmate", .{
@@ -597,6 +589,18 @@ fn onigModule(
     addOnigLibraryPath(b, module, paths);
     module.linkSystemLibrary("onig", .{});
     return module;
+}
+
+/// Absolute include directory for the vendored Oniguruma header. Dependency
+/// build options take a path string, so this cannot stay a LazyPath.
+fn vendoredOnigInclude(b: *std.Build) []const u8 {
+    const build_dir = std.fs.path.dirname(@src().file) orelse ".";
+    const absolute_build_dir = std.Io.Dir.cwd().realPathFileAlloc(
+        b.graph.io,
+        build_dir,
+        b.allocator,
+    ) catch @panic("could not resolve the build root");
+    return b.pathJoin(&.{ absolute_build_dir, "third_party/oniguruma/src" });
 }
 
 /// Native static Oniguruma library built from the pinned submodule. POSIX
@@ -1146,16 +1150,24 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const run_ui_tests = b.addRunArtifact(ui_tests);
     test_step.dependOn(&run_ui_tests.step);
 
+    const textmate_tests_onig_include = if (onig_static)
+        vendoredOnigInclude(b)
+    else
+        onig_paths.include_dir orelse "";
     const vscode_textmate_dep = b.dependency("vscode_textmate", .{
         .target = target,
         .optimize = optimize,
-        .@"onig-include" = onig_paths.include_dir orelse "",
+        .@"onig-include" = textmate_tests_onig_include,
         .@"onig-lib" = onig_paths.lib_dir orelse "",
+        .@"onig-link" = !onig_static,
     });
     const vscode_textmate_tests = b.addTest(.{
         .name = "vscode_textmate_tests",
         .root_module = vscode_textmate_dep.module("vscode_textmate"),
     });
+    // The textmate package no longer links Oniguruma itself when the embedder
+    // asks it not to; importing the shared module carries the static archive.
+    if (onig_static) vscode_textmate_tests.root_module.addImport("oniguruma", onig);
     const run_vscode_textmate_tests = b.addRunArtifact(vscode_textmate_tests);
     test_step.dependOn(&run_vscode_textmate_tests.step);
 }
