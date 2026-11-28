@@ -2605,14 +2605,26 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const relative_len = try tmp.dir.realPathFile(io, "fixture.json", &path_buffer);
             const relative = path_buffer[0..relative_len];
 
+            std.debug.print("[language-fixture] create workbench\n", .{});
             const workbench_window = try TestWindow.init(allocator, io, &.{relative}, 80, 24);
             const workbench = workbench_window.workbench;
-            defer workbench_window.deinit();
+            defer {
+                std.debug.print("[language-fixture] dispose workbench\n", .{});
+                workbench_window.deinit();
+                std.debug.print("[language-fixture] disposed workbench\n", .{});
+            }
+            std.debug.print("[language-fixture] enable language features\n", .{});
             try workbench.enableLanguageFeatures();
 
+            std.debug.print("[language-fixture] start extension host\n", .{});
             var extension_host = try Extensions.init(allocator, io, workbench.extensionHostServices(), &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }}, ".cache-ext/data-language-fixture", "host/dist");
-            defer extension_host.deinit();
+            defer {
+                std.debug.print("[language-fixture] dispose extension host\n", .{});
+                extension_host.deinit();
+                std.debug.print("[language-fixture] disposed extension host\n", .{});
+            }
 
+            std.debug.print("[language-fixture] wait for activation\n", .{});
             const deadline = time_compat.milliTimestamp(std.testing.io) + 10_000;
             const features = workbench.language_features.?;
             const model = workbench.activeTab().?.editor.model;
@@ -2623,6 +2635,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                 time_compat.sleepMillis(std.testing.io, 10);
             }
             try std.testing.expect(extension_host.eager_start_request == null);
+            std.debug.print("[language-fixture] hover\n", .{});
             const hover_providers = try features.hover_provider.ordered(allocator, model, false);
             defer allocator.free(hover_providers);
             try std.testing.expect(hover_providers.len > 0);
@@ -2640,6 +2653,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqualStrings("fixture hover verbosity 2: fixture hover", verbose.contents[0].value);
             try std.testing.expect(verbose.can_decrease_verbosity.?);
 
+            std.debug.print("[language-fixture] workspace symbols\n", .{});
             // Workspace symbols use a debounced # provider and resolve the
             // selected URI-only symbol before opening its UTF-16 location.
             try workbench.commands.execute("workbench.action.showAllSymbols");
@@ -2663,6 +2677,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(!workbench.quick_access.isOpen());
             try std.testing.expectEqual(Position.init(2, 3), workbench.activeTab().?.editor.modelCursorPosition());
 
+            std.debug.print("[language-fixture] selection\n", .{});
             // The async selection provider must be cancelled when the caret
             // moves, then its nested ranges participate in expand/shrink.
             const selection_editor = workbench.activeTab().?.editor;
@@ -2694,6 +2709,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             defer allocator.free(shrunk);
             try std.testing.expect(shrunk[0].startColumn > 1 or shrunk[0].endColumn < model.getLineMaxColumn(2));
 
+            std.debug.print("[language-fixture] folding\n", .{});
             // Syntax ranges replace the indent fallback, drive the gutter and
             // refresh when the provider's change event arrives.
             const folding_deadline = time_compat.milliTimestamp(std.testing.io) + 5000;
@@ -2717,6 +2733,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(selection_editor.folding.regionStartingAt(1) != null);
 
             const ParameterHintsController = @import("../../../editor/contrib/parameterHints/browser/parameterHints.zig").ParameterHintsController;
+            std.debug.print("[language-fixture] parameter hints\n", .{});
             try std.testing.expect(selection_editor.parameter_hints_available);
             try workbench.commands.execute("editor.action.triggerParameterHints");
             const hints = selection_editor.getInstantiatedContribution(ParameterHintsController).?;
@@ -2737,6 +2754,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
             const RenameSkeleton = @import("../../../editor/contrib/rename/browser/rename.zig").RenameSkeleton;
             const rename_languages = @import("../../../editor/common/languages.zig");
+            std.debug.print("[language-fixture] rename\n", .{});
             const RenameProbe = struct {
                 location: ?rename_languages.RenameLocation = null,
                 edit: ?rename_languages.RenameEdit = null,
@@ -2797,6 +2815,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(!selection_editor.rename_input_visible);
 
             const SemanticResult = @import("../../../editor/common/languages.zig").SemanticTokensResult;
+            std.debug.print("[language-fixture] semantic tokens\n", .{});
             const SemanticProbe = struct {
                 result: ?SemanticResult = null,
                 failure: ?anyerror = null,
@@ -2858,6 +2877,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(semantic_probe.changed);
 
             const inlay_languages = @import("../../../editor/common/languages.zig");
+            std.debug.print("[language-fixture] inlay hints\n", .{});
             const InlayProbe = struct {
                 list: ?inlay_languages.InlayHintList = null,
                 resolved: ?inlay_languages.InlayHint = null,
@@ -2983,6 +3003,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
 
             const action_model = @import("../../../editor/contrib/codeAction/browser/codeAction.zig");
             const action_types = @import("../../../editor/contrib/codeAction/common/types.zig");
+            std.debug.print("[language-fixture] code actions\n", .{});
             const ActionReceiver = struct {
                 result: ?*action_model.ManagedCodeActionSet = null,
                 failure: ?anyerror = null,
@@ -3040,6 +3061,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try workbench.activeTab().?.editor.undo();
             try std.testing.expectEqualStrings("{", try model.borrowLineContent(1));
 
+            std.debug.print("[language-fixture] completion and symbols\n", .{});
             const completion_providers = try features.completion_provider.ordered(allocator, model, false);
             defer allocator.free(completion_providers);
             try std.testing.expect(completion_providers.len > 0);
@@ -3081,6 +3103,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqual(@as(?usize, 1), deferred_results.completion_items);
             try std.testing.expectEqual(@as(?usize, 1), deferred_results.symbols);
 
+            std.debug.print("[language-fixture] nested workspace edits\n", .{});
             // A fiber awaiting an extension command can receive a nested
             // workspace edit request before the command itself replies.
             const Nested = struct {
@@ -3109,6 +3132,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expectEqualStrings(" {", try model.borrowLineContent(1));
             try workbench.activeTab().?.editor.undo();
 
+            std.debug.print("[language-fixture] save participant\n", .{});
             // The real onWillSave listener sends a nested workspace edit.
             // It must be applied before the disk write and will-save reply.
             const command_actor = proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands);
@@ -3130,6 +3154,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(std.mem.startsWith(u8, saved_bytes, " {"));
             try save_editor.undo();
 
+            std.debug.print("[language-fixture] extension document save\n", .{});
             // Extension-initiated TextDocument.save must also reply only
             // after its participant and disk snapshot have completed.
             var saved_by_extension: ?bool = null;
@@ -3153,6 +3178,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(!save_editor.isDirty());
             try save_editor.undo();
 
+            std.debug.print("[language-fixture] navigation providers\n", .{});
             const declaration_providers = try features.declaration_provider.ordered(allocator, model, false);
             defer allocator.free(declaration_providers);
             try std.testing.expect(declaration_providers.len > 0);
@@ -3176,6 +3202,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             defer allocator.free(reference_providers);
             try std.testing.expect(reference_providers.len > 0);
 
+            std.debug.print("[language-fixture] commands and hover\n", .{});
             // Extension command names reach the same workbench actions.
             try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.goToDeclaration"));
             try waitNavigation(workbench);
@@ -3235,6 +3262,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             defer undone.deinit();
             try std.testing.expectEqualStrings(before_inline.items, undone.items);
 
+            std.debug.print("[language-fixture] viewport semantic tokens\n", .{});
             // Range-only providers paint visible lines without marking the
             // document as completely colored. Exercise this independently of
             // the full/delta provider and through actual theme metadata.
